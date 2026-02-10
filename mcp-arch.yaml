@@ -1,0 +1,44 @@
+repo: "."
+ignore:
+  # Dependencies and tooling
+  - "vendor/**"
+  - "node_modules/**"
+  - ".git/**"
+  - ".archmcp/**"
+  # Tests
+  - "**/*_test.go"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  # Next.js / build and cache
+  - ".next/**"
+  - "out/**"
+  - ".vercel/**"
+  - ".turbo/**"
+  # Documentation
+  - "**/*.md"
+  - "**/*.mdx"
+  # Config / data (YAML, JSON)
+  - "**/*.yml"
+  - "**/*.yaml"
+  - "**/*.json"
+  # CI / ops
+  - "Jenkinsfile"
+  - "**/Jenkinsfile"
+  - "**/Jenkinsfile*"
+  # Optional: Docker and env files
+  - "Dockerfile"
+  - "**/Dockerfile*"
+  - "**/.env*"
+extractors:
+  - go
+  - typescript
+explainers:
+  - cycles
+  - layers
+renderers:
+  - llm_context
+output:
+  dir: ".archmcp"
+  max_context_tokens: 4000

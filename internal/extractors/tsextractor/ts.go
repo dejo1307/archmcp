@@ -1,0 +1,487 @@
+package tsextractor
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/dejo1307/archmcp/internal/facts"
+
+	sitter "github.com/tree-sitter/go-tree-sitter"
+	typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
+)
+
+// TSExtractor extracts architectural facts from TypeScript/TSX source code using tree-sitter.
+type TSExtractor struct{}
+
+// New creates a new TSExtractor.
+func New() *TSExtractor {
+	return &TSExtractor{}
+}
+
+func (e *TSExtractor) Name() string {
+	return "typescript"
+}
+
+// Detect returns true if the repository contains tsconfig.json or a package.json with TypeScript dependencies.
+func (e *TSExtractor) Detect(repoPath string) (bool, error) {
+	// Check for tsconfig.json
+	if _, err := os.Stat(filepath.Join(repoPath, "tsconfig.json")); err == nil {
+		return true, nil
+	}
+
+	// Check for package.json with TypeScript
+	pkgPath := filepath.Join(repoPath, "package.json")
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return false, nil
+	}
+
+	var pkg map[string]any
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return false, nil
+	}
+
+	// Check deps and devDeps for typescript
+	for _, key := range []string{"dependencies", "devDependencies"} {
+		if deps, ok := pkg[key].(map[string]any); ok {
+			if _, ok := deps["typescript"]; ok {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// Extract parses TypeScript/TSX files and emits architectural facts.
+func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
+	var allFacts []facts.Fact
+
+	// Detect if this is a Next.js project
+	isNextJS := detectNextJS(repoPath)
+
+	// Group files by directory for module detection
+	modules := make(map[string]bool)
+
+	for _, relFile := range files {
+		select {
+		case <-ctx.Done():
+			return allFacts, ctx.Err()
+		default:
+		}
+
+		if !isTypeScriptFile(relFile) {
+			continue
+		}
+
+		absFile := filepath.Join(repoPath, relFile)
+		src, err := os.ReadFile(absFile)
+		if err != nil {
+			log.Printf("[ts-extractor] error reading %s: %v", relFile, err)
+			continue
+		}
+
+		fileFacts := e.extractFile(src, relFile, isNextJS)
+		allFacts = append(allFacts, fileFacts...)
+
+		dir := filepath.Dir(relFile)
+		modules[dir] = true
+	}
+
+	// Emit module facts for each directory
+	for dir := range modules {
+		allFacts = append(allFacts, facts.Fact{
+			Kind: facts.KindModule,
+			Name: dir,
+			File: dir,
+			Props: map[string]any{
+				"language": "typescript",
+			},
+		})
+	}
+
+	return allFacts, nil
+}
+
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS bool) []facts.Fact {
+	var result []facts.Fact
+
+	lang := typescript.LanguageTypescript()
+	if strings.HasSuffix(relFile, ".tsx") {
+		lang = typescript.LanguageTSX()
+	}
+
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(sitter.NewLanguage(lang))
+
+	tree := parser.Parse(src, nil)
+	defer tree.Close()
+
+	root := tree.RootNode()
+
+	// Extract from the tree
+	result = append(result, e.extractImports(root, src, relFile)...)
+	result = append(result, e.extractDeclarations(root, src, relFile)...)
+
+	// Detect Next.js routes
+	if isNextJS {
+		if routeFact := detectRoute(relFile); routeFact != nil {
+			result = append(result, *routeFact)
+		}
+	}
+
+	return result
+}
+
+func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile string) []facts.Fact {
+	var result []facts.Fact
+	dir := filepath.Dir(relFile)
+
+	for i := range root.ChildCount() {
+		child := root.Child(i)
+		if child.Kind() != "import_statement" {
+			continue
+		}
+
+		// Find the import source (string)
+		source := findChildByKind(child, "string")
+		if source == nil {
+			continue
+		}
+
+		importPath := strings.Trim(nodeText(source, src), `"'`)
+
+		result = append(result, facts.Fact{
+			Kind: facts.KindDependency,
+			Name: dir + " -> " + importPath,
+			File: relFile,
+			Line: int(child.StartPosition().Row) + 1,
+			Props: map[string]any{
+				"language": "typescript",
+			},
+			Relations: []facts.Relation{
+				{Kind: facts.RelImports, Target: importPath},
+			},
+		})
+	}
+
+	return result
+}
+
+func (e *TSExtractor) extractDeclarations(root *sitter.Node, src []byte, relFile string) []facts.Fact {
+	var result []facts.Fact
+	dir := filepath.Dir(relFile)
+
+	for i := range root.ChildCount() {
+		child := root.Child(i)
+		ff := e.extractNode(child, src, relFile, dir, false)
+		result = append(result, ff...)
+	}
+
+	return result
+}
+
+func (e *TSExtractor) extractNode(node *sitter.Node, src []byte, relFile, dir string, isExported bool) []facts.Fact {
+	var result []facts.Fact
+
+	switch node.Kind() {
+	case "export_statement":
+		// Process the declaration inside the export
+		decl := findChildByKind(node, "function_declaration")
+		if decl == nil {
+			decl = findChildByKind(node, "class_declaration")
+		}
+		if decl == nil {
+			decl = findChildByKind(node, "interface_declaration")
+		}
+		if decl == nil {
+			decl = findChildByKind(node, "type_alias_declaration")
+		}
+		if decl == nil {
+			decl = findChildByKind(node, "lexical_declaration")
+		}
+		if decl != nil {
+			return e.extractNode(decl, src, relFile, dir, true)
+		}
+
+	case "function_declaration":
+		name := findChildByKind(node, "identifier")
+		if name != nil {
+			symbolName := nodeText(name, src)
+			result = append(result, facts.Fact{
+				Kind: facts.KindSymbol,
+				Name: dir + "." + symbolName,
+				File: relFile,
+				Line: int(node.StartPosition().Row) + 1,
+				Props: map[string]any{
+					"symbol_kind": facts.SymbolFunc,
+					"exported":    isExported,
+					"language":    "typescript",
+				},
+				Relations: []facts.Relation{
+					{Kind: facts.RelDeclares, Target: dir},
+				},
+			})
+		}
+
+	case "class_declaration":
+		name := findChildByKind(node, "type_identifier")
+		if name != nil {
+			symbolName := nodeText(name, src)
+			f := facts.Fact{
+				Kind: facts.KindSymbol,
+				Name: dir + "." + symbolName,
+				File: relFile,
+				Line: int(node.StartPosition().Row) + 1,
+				Props: map[string]any{
+					"symbol_kind": facts.SymbolClass,
+					"exported":    isExported,
+					"language":    "typescript",
+				},
+				Relations: []facts.Relation{
+					{Kind: facts.RelDeclares, Target: dir},
+				},
+			}
+
+			// Check for implements clause
+			for j := range node.ChildCount() {
+				c := node.Child(j)
+				if c.Kind() == "implements_clause" {
+					for k := range c.ChildCount() {
+						t := c.Child(k)
+						if t.Kind() == "type_identifier" {
+							f.Relations = append(f.Relations, facts.Relation{
+								Kind:   facts.RelImplements,
+								Target: nodeText(t, src),
+							})
+						}
+					}
+				}
+			}
+
+			result = append(result, f)
+		}
+
+	case "interface_declaration":
+		name := findChildByKind(node, "type_identifier")
+		if name != nil {
+			symbolName := nodeText(name, src)
+			result = append(result, facts.Fact{
+				Kind: facts.KindSymbol,
+				Name: dir + "." + symbolName,
+				File: relFile,
+				Line: int(node.StartPosition().Row) + 1,
+				Props: map[string]any{
+					"symbol_kind": facts.SymbolInterface,
+					"exported":    isExported,
+					"language":    "typescript",
+				},
+				Relations: []facts.Relation{
+					{Kind: facts.RelDeclares, Target: dir},
+				},
+			})
+		}
+
+	case "type_alias_declaration":
+		name := findChildByKind(node, "type_identifier")
+		if name != nil {
+			symbolName := nodeText(name, src)
+			result = append(result, facts.Fact{
+				Kind: facts.KindSymbol,
+				Name: dir + "." + symbolName,
+				File: relFile,
+				Line: int(node.StartPosition().Row) + 1,
+				Props: map[string]any{
+					"symbol_kind": facts.SymbolType,
+					"exported":    isExported,
+					"language":    "typescript",
+				},
+				Relations: []facts.Relation{
+					{Kind: facts.RelDeclares, Target: dir},
+				},
+			})
+		}
+
+	case "lexical_declaration":
+		// const/let/var declarations
+		for j := range node.ChildCount() {
+			decl := node.Child(j)
+			if decl.Kind() == "variable_declarator" {
+				name := findChildByKind(decl, "identifier")
+				if name != nil {
+					symbolName := nodeText(name, src)
+					// Check if the value is an arrow function
+					symbolKind := facts.SymbolVariable
+					value := findChildByKind(decl, "arrow_function")
+					if value != nil {
+						symbolKind = facts.SymbolFunc
+					}
+
+					result = append(result, facts.Fact{
+						Kind: facts.KindSymbol,
+						Name: dir + "." + symbolName,
+						File: relFile,
+						Line: int(node.StartPosition().Row) + 1,
+						Props: map[string]any{
+							"symbol_kind": symbolKind,
+							"exported":    isExported,
+							"language":    "typescript",
+						},
+						Relations: []facts.Relation{
+							{Kind: facts.RelDeclares, Target: dir},
+						},
+					})
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// detectRoute checks if a file path corresponds to a Next.js route.
+func detectRoute(relFile string) *facts.Fact {
+	// Next.js App Router: app/**/page.tsx, app/**/route.tsx
+	// Next.js Pages Router: pages/**/*.tsx
+
+	parts := strings.Split(filepath.ToSlash(relFile), "/")
+
+	// App Router
+	for i, p := range parts {
+		if p == "app" && i < len(parts)-1 {
+			fileName := parts[len(parts)-1]
+			baseName := strings.TrimSuffix(strings.TrimSuffix(fileName, ".tsx"), ".ts")
+
+			if baseName == "page" || baseName == "route" || baseName == "layout" || baseName == "loading" || baseName == "error" {
+				routePath := "/" + strings.Join(parts[i+1:len(parts)-1], "/")
+				if routePath == "/" {
+					routePath = "/"
+				}
+
+				method := "GET"
+				if baseName == "route" {
+					method = "ALL" // API route handler
+				}
+
+				return &facts.Fact{
+					Kind: facts.KindRoute,
+					Name: routePath,
+					File: relFile,
+					Line: 1,
+					Props: map[string]any{
+						"method":    method,
+						"type":      baseName,
+						"router":    "app",
+						"language":  "typescript",
+						"framework": "nextjs",
+					},
+				}
+			}
+		}
+	}
+
+	// Pages Router
+	for i, p := range parts {
+		if p == "pages" && i < len(parts)-1 {
+			remaining := parts[i+1:]
+			fileName := remaining[len(remaining)-1]
+			baseName := strings.TrimSuffix(strings.TrimSuffix(fileName, ".tsx"), ".ts")
+
+			// Skip _app, _document, _error
+			if strings.HasPrefix(baseName, "_") {
+				return nil
+			}
+
+			routeParts := make([]string, 0, len(remaining))
+			for j, rp := range remaining {
+				if j == len(remaining)-1 {
+					if baseName != "index" {
+						routeParts = append(routeParts, baseName)
+					}
+				} else {
+					routeParts = append(routeParts, rp)
+				}
+			}
+
+			routePath := "/" + strings.Join(routeParts, "/")
+
+			// Detect API routes
+			isAPI := len(remaining) > 0 && remaining[0] == "api"
+			method := "GET"
+			if isAPI {
+				method = "ALL"
+			}
+
+			return &facts.Fact{
+				Kind: facts.KindRoute,
+				Name: routePath,
+				File: relFile,
+				Line: 1,
+				Props: map[string]any{
+					"method":    method,
+					"type":      "page",
+					"router":    "pages",
+					"language":  "typescript",
+					"framework": "nextjs",
+				},
+			}
+		}
+	}
+
+	return nil
+}
+
+// detectNextJS checks if the repository is a Next.js project.
+func detectNextJS(repoPath string) bool {
+	// Check next.config.*
+	for _, name := range []string{"next.config.js", "next.config.mjs", "next.config.ts"} {
+		if _, err := os.Stat(filepath.Join(repoPath, name)); err == nil {
+			return true
+		}
+	}
+
+	// Check package.json for next dependency
+	data, err := os.ReadFile(filepath.Join(repoPath, "package.json"))
+	if err != nil {
+		return false
+	}
+
+	var pkg map[string]any
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return false
+	}
+
+	for _, key := range []string{"dependencies", "devDependencies"} {
+		if deps, ok := pkg[key].(map[string]any); ok {
+			if _, ok := deps["next"]; ok {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func isTypeScriptFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".ts" || ext == ".tsx"
+}
+
+func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
+	for i := range node.ChildCount() {
+		child := node.Child(i)
+		if child.Kind() == kind {
+			return child
+		}
+	}
+	return nil
+}
+
+func nodeText(node *sitter.Node, src []byte) string {
+	return string(src[node.StartByte():node.EndByte()])
+}
