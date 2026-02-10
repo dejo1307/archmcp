@@ -31,8 +31,18 @@ ignore:
   - "Dockerfile"
   - "**/Dockerfile*"
   - "**/.env*"
+  # Kotlin / Android build and cache
+  - "build/**"
+  - "**/build/**"
+  - ".gradle/**"
+  - "**/.gradle/**"
+  - "**/generated/**"
+  # Kotlin tests
+  - "**/*Test.kt"
+  - "**/androidTest/**"
 extractors:
   - go
+  - kotlin
   - typescript
 explainers:
   - cycles
