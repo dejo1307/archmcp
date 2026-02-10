@@ -75,6 +75,43 @@ Or if installed via `go install`:
 }
 ```
 
+### Testing from the command line
+
+You can run a one-shot snapshot generation without starting the MCP server. This is useful for testing the pipeline or running it from CI.
+
+**Syntax:**
+
+```bash
+archmcp --generate [config_path]
+```
+
+- `config_path` is optional; default is `mcp-arch.yaml`. The repository path is taken from the config's `repo` field (default `"."`).
+- Artifacts are written to the configured `output.dir` (default `.archmcp/`).
+
+**Example:** from the repository root (e.g. the archmcp repo itself):
+
+```bash
+./archmcp --generate
+```
+
+Or with an explicit config file:
+
+```bash
+./archmcp --generate mcp-arch.yaml
+```
+
+On success, a summary is printed to stderr:
+
+```
+Snapshot complete:
+  Repository:  /path/to/repo
+  Facts:       N
+  Insights:    M
+  Artifacts:   K
+  Duration:    ...
+  Output:      /path/to/repo/.archmcp
+```
+
 ### MCP Resources
 
 | URI | Description |
