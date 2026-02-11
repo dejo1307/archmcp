@@ -29,14 +29,17 @@ type layerDef struct {
 
 // Predefined layer patterns for common architectures.
 var (
-	// Hexagonal / Clean Architecture layers
+	// Hexagonal / Clean Architecture layers.
+	// Order matters: more specific patterns (application, adapter) are checked before
+	// broader ones (domain) to avoid misclassification of paths like Domain/UseCases.
 	hexagonalLayers = []layerDef{
-		{Name: "domain", Patterns: []string{"domain", "entity", "entities", "model", "models", "core"}, Level: 0},
-		{Name: "application", Patterns: []string{"application", "usecase", "usecases", "service", "services", "app"}, Level: 1},
+		{Name: "application", Patterns: []string{"application", "usecase", "usecases"}, Level: 1},
 		{Name: "port", Patterns: []string{"port", "ports", "interface", "interfaces"}, Level: 1},
-		{Name: "adapter", Patterns: []string{"adapter", "adapters", "infrastructure", "infra", "gateway"}, Level: 2},
-		{Name: "handler", Patterns: []string{"handler", "handlers", "controller", "controllers", "api", "http", "grpc", "rest"}, Level: 3},
+		{Name: "adapter", Patterns: []string{"adapter", "adapters", "infrastructure", "infra", "gateway", "network"}, Level: 2},
 		{Name: "repository", Patterns: []string{"repository", "repositories", "repo", "repos", "store", "storage", "persistence", "db", "database"}, Level: 2},
+		{Name: "presentation", Patterns: []string{"presentation", "ui", "view", "views", "screen", "screens", "page", "pages"}, Level: 3},
+		{Name: "handler", Patterns: []string{"handler", "handlers", "controller", "controllers", "api", "http", "grpc", "rest"}, Level: 3},
+		{Name: "domain", Patterns: []string{"domain", "entity", "entities", "model", "models", "core"}, Level: 0},
 	}
 
 	// Next.js layers

@@ -169,6 +169,11 @@ func (r *LLMContextRenderer) writeEntryPoints(sb *strings.Builder, snapshot *fac
 				entryPoints = append(entryPoints, fmt.Sprintf("- **handler**: `%s` (%s)", f.Name, f.File))
 			}
 		}
+
+		// iOS/macOS app entry point (@main struct conforming to App)
+		if iosComp, _ := f.Props["ios_component"].(string); iosComp == "swiftui_app" {
+			entryPoints = append(entryPoints, fmt.Sprintf("- **app**: `%s` (%s)", f.Name, f.File))
+		}
 	}
 
 	// Routes as entry points
@@ -365,15 +370,29 @@ func (r *LLMContextRenderer) writeFeatureGuide(sb *strings.Builder, snapshot *fa
 		}
 	}
 
+	// Detect dominant language for platform-specific guidance.
+	dominantLang := detectDominantLanguage(snapshot)
+
 	switch archPattern {
 	case "hexagonal":
-		sb.WriteString("This project follows a hexagonal/clean architecture:\n\n")
-		sb.WriteString("1. **Define domain types** in the domain/model layer\n")
-		sb.WriteString("2. **Define a port** (interface) in the port layer for external interactions\n")
-		sb.WriteString("3. **Implement the use case** in the application/service layer\n")
-		sb.WriteString("4. **Implement adapters** for infrastructure (DB, API clients, etc.)\n")
-		sb.WriteString("5. **Add the handler** (HTTP/gRPC) in the handler layer\n")
-		sb.WriteString("6. **Wire dependencies** in the main/cmd entry point\n")
+		if dominantLang == "swift" {
+			sb.WriteString("This project follows a clean architecture pattern (iOS/Swift):\n\n")
+			sb.WriteString("1. **Define domain model** in Domain/Models\n")
+			sb.WriteString("2. **Define repository protocol** in Domain/Repositories\n")
+			sb.WriteString("3. **Implement use case** in Domain/UseCases\n")
+			sb.WriteString("4. **Implement repository** in Data/Repositories (calls API services)\n")
+			sb.WriteString("5. **Create ViewModel** in Presentation/ (depends on use cases via DI)\n")
+			sb.WriteString("6. **Build SwiftUI View** consuming the ViewModel\n")
+			sb.WriteString("7. **Wire dependencies** in Core/DI/DIContainer\n")
+		} else {
+			sb.WriteString("This project follows a hexagonal/clean architecture:\n\n")
+			sb.WriteString("1. **Define domain types** in the domain/model layer\n")
+			sb.WriteString("2. **Define a port** (interface) in the port layer for external interactions\n")
+			sb.WriteString("3. **Implement the use case** in the application/service layer\n")
+			sb.WriteString("4. **Implement adapters** for infrastructure (DB, API clients, etc.)\n")
+			sb.WriteString("5. **Add the handler** (HTTP/gRPC) in the handler layer\n")
+			sb.WriteString("6. **Wire dependencies** in the main/cmd entry point\n")
+		}
 
 	case "nextjs":
 		sb.WriteString("This project follows a Next.js architecture:\n\n")
@@ -409,6 +428,27 @@ func (r *LLMContextRenderer) writeMeta(sb *strings.Builder, snapshot *facts.Snap
 	sb.WriteString(fmt.Sprintf("*Generated at %s in %s. %d facts, %d insights.*\n",
 		snapshot.Meta.GeneratedAt, snapshot.Meta.Duration,
 		snapshot.Meta.FactCount, snapshot.Meta.InsightCount))
+}
+
+// detectDominantLanguage returns the most common language across module facts.
+func detectDominantLanguage(snapshot *facts.Snapshot) string {
+	counts := make(map[string]int)
+	for _, f := range snapshot.Facts {
+		if f.Kind == facts.KindModule {
+			if lang, ok := f.Props["language"].(string); ok {
+				counts[lang]++
+			}
+		}
+	}
+	best := ""
+	bestCount := 0
+	for lang, count := range counts {
+		if count > bestCount {
+			best = lang
+			bestCount = count
+		}
+	}
+	return best
 }
 
 func filterByKind(ff []facts.Fact, kind string) []facts.Fact {

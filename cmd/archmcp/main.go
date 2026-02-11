@@ -13,6 +13,7 @@ import (
 	"github.com/dejo1307/archmcp/internal/explainers/layers"
 	"github.com/dejo1307/archmcp/internal/extractors/goextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/kotlinextractor"
+	"github.com/dejo1307/archmcp/internal/extractors/swiftextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/tsextractor"
 	"github.com/dejo1307/archmcp/internal/renderers/llmcontext"
 	"github.com/dejo1307/archmcp/internal/server"
@@ -51,6 +52,7 @@ func main() {
 	eng.RegisterExtractor(goextractor.New())
 	eng.RegisterExtractor(kotlinextractor.New())
 	eng.RegisterExtractor(tsextractor.New())
+	eng.RegisterExtractor(swiftextractor.New())
 
 	// Register explainers
 	eng.RegisterExplainer(cycles.New())
