@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dejo1307/archmcp/internal/config"
 	"github.com/dejo1307/archmcp/internal/engine"
+	"github.com/dejo1307/archmcp/internal/facts"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -126,10 +129,12 @@ type generateSnapshotArgs struct {
 
 // queryFactsArgs are the arguments for the query_facts tool.
 type queryFactsArgs struct {
-	Kind     string `json:"kind,omitempty" jsonschema:"Filter by fact kind: module, symbol, route, storage, or dependency"`
-	File     string `json:"file,omitempty" jsonschema:"Filter by file path"`
-	Name     string `json:"name,omitempty" jsonschema:"Filter by name using substring match"`
-	Relation string `json:"relation,omitempty" jsonschema:"Filter by relation kind: declares, imports, calls, implements, or depends_on"`
+	Kind      string `json:"kind,omitempty" jsonschema:"Filter by fact kind: module, symbol, route, storage, or dependency"`
+	File      string `json:"file,omitempty" jsonschema:"Filter by file path"`
+	Name      string `json:"name,omitempty" jsonschema:"Filter by name using substring match"`
+	Relation  string `json:"relation,omitempty" jsonschema:"Filter by relation kind: declares, imports, calls, implements, or depends_on"`
+	Prop      string `json:"prop,omitempty" jsonschema:"Filter by property name (e.g. ios_component, framework, symbol_kind)"`
+	PropValue string `json:"prop_value,omitempty" jsonschema:"Filter by property value (requires prop to be set)"`
 }
 
 // registerTools adds MCP tools for snapshot generation and fact querying.
@@ -198,6 +203,22 @@ func (s *Server) registerTools() {
 
 		results := store.Query(args.Kind, args.File, args.Name, args.Relation)
 
+		// Post-filter by property if specified
+		if args.Prop != "" {
+			var filtered []facts.Fact
+			for _, f := range results {
+				v, ok := f.Props[args.Prop]
+				if !ok {
+					continue
+				}
+				if args.PropValue != "" && fmt.Sprintf("%v", v) != args.PropValue {
+					continue
+				}
+				filtered = append(filtered, f)
+			}
+			results = filtered
+		}
+
 		// Limit output
 		truncated := false
 		if len(results) > 100 {
@@ -221,6 +242,110 @@ func (s *Server) registerTools() {
 			},
 		}, nil, nil
 	})
+
+	// Tool: show_symbol
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "show_symbol",
+		Description: "Show source code for a symbol found in the architectural snapshot. Returns the actual implementation with surrounding context lines.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args showSymbolArgs) (*mcp.CallToolResult, any, error) {
+		snapshot := s.eng.Snapshot()
+		if snapshot == nil {
+			return errorResult("No snapshot available. Run generate_snapshot first."), nil, nil
+		}
+
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+
+		if args.Name == "" {
+			return errorResult("name is required"), nil, nil
+		}
+
+		results := store.Query("symbol", "", args.Name, "")
+		if len(results) == 0 {
+			return errorResult(fmt.Sprintf("No symbols matching %q", args.Name)), nil, nil
+		}
+
+		contextLines := args.ContextLines
+		if contextLines <= 0 {
+			contextLines = 30
+		}
+
+		// Limit to 5 results
+		if len(results) > 5 {
+			results = results[:5]
+		}
+
+		repoPath := snapshot.Meta.RepoPath
+		var sb strings.Builder
+
+		for i, fact := range results {
+			if i > 0 {
+				sb.WriteString("\n---\n\n")
+			}
+
+			// Header
+			sb.WriteString(fmt.Sprintf("### %s\n", fact.Name))
+			sb.WriteString(fmt.Sprintf("File: %s  Line: %d\n", fact.File, fact.Line))
+
+			// Show props summary
+			if sig, ok := fact.Props["signature"].(string); ok {
+				sb.WriteString(fmt.Sprintf("Signature:\n```\n%s\n```\n", sig))
+			}
+			if comp, ok := fact.Props["ios_component"].(string); ok {
+				sb.WriteString(fmt.Sprintf("iOS Component: %s\n", comp))
+			}
+
+			sb.WriteString("\n")
+
+			// Read source file
+			absFile := filepath.Join(repoPath, fact.File)
+			source, err := readSourceWindow(absFile, fact.Line, contextLines)
+			if err != nil {
+				sb.WriteString(fmt.Sprintf("_Could not read source: %v_\n", err))
+				continue
+			}
+
+			sb.WriteString(fmt.Sprintf("```swift\n%s\n```\n", source))
+		}
+
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: sb.String()},
+			},
+		}, nil, nil
+	})
+}
+
+// showSymbolArgs are the arguments for the show_symbol tool.
+type showSymbolArgs struct {
+	Name         string `json:"name" jsonschema:"required,Symbol name to look up (substring match)"`
+	ContextLines int    `json:"context_lines,omitempty" jsonschema:"Number of source lines to show around the symbol (default 30)"`
+}
+
+// readSourceWindow reads lines from a file centered around the given line number.
+func readSourceWindow(absFile string, centerLine, contextLines int) (string, error) {
+	data, err := os.ReadFile(absFile)
+	if err != nil {
+		return "", err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	startLine := centerLine - contextLines/2
+	if startLine < 1 {
+		startLine = 1
+	}
+	endLine := centerLine + contextLines/2
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+
+	var sb strings.Builder
+	for i := startLine; i <= endLine; i++ {
+		sb.WriteString(fmt.Sprintf("%4d│ %s\n", i, lines[i-1]))
+	}
+	return sb.String(), nil
 }
 
 func errorResult(msg string) *mcp.CallToolResult {

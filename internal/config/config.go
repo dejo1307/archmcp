@@ -38,7 +38,7 @@ func Default() *Config {
 			"**/*.spec.tsx",
 			".archmcp/**",
 		},
-		Extractors: []string{"go", "kotlin", "typescript"},
+		Extractors: []string{"go", "kotlin", "typescript", "swift"},
 		Explainers: []string{"cycles", "layers"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{

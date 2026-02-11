@@ -12,7 +12,7 @@ archmcp runs as a stdio-based MCP server. When connected to an LLM client (such 
 The pipeline:
 
 ```
-Repository -> File Walker -> Extractors (Go, Kotlin, TypeScript) -> Fact Store
+Repository -> File Walker -> Extractors (Go, Kotlin, TypeScript, Swift) -> Fact Store
   -> Explainers (cycles, layers) -> Insights
   -> Renderers (LLM context) -> Artifacts
   -> MCP Server (resources + tools)
@@ -25,10 +25,13 @@ Repository -> File Walker -> Extractors (Go, Kotlin, TypeScript) -> Fact Store
 | Go         | `go/ast`      | `go.mod` present   |
 | Kotlin     | regex scanner | `build.gradle.kts` or `build.gradle` with Kotlin/Android |
 | TypeScript | tree-sitter   | `tsconfig.json` or `package.json` with TypeScript |
+| Swift      | regex scanner | `Package.swift`, `.xcodeproj`, or `.xcworkspace` present |
 
 Next.js route detection (App Router and Pages Router) is included in the TypeScript extractor.
 
 The Kotlin extractor includes Android-specific awareness: it detects Jetpack Compose (`@Composable`), Hilt DI (`@HiltViewModel`, `@Module`, `@AndroidEntryPoint`), Room database (`@Entity`, `@Dao`, `@Database`), ViewModels, Repositories, Use Cases, Workers, and other Android architecture components.
+
+The Swift extractor includes iOS-specific awareness: it detects SwiftUI views (`View`, `App`, `Scene` conformances), UIKit components (`UIViewController`, `UIView` subclasses), Combine ViewModels (`ObservableObject`, `@Observable`), architectural patterns (Repositories, Use Cases, Coordinators, Services, DI Containers), and `@MainActor` annotations.
 
 ## Installation
 
@@ -204,7 +207,7 @@ Once the snapshot exists, you do not need to reference archmcp explicitly. The L
 - **Regenerate after major changes.** If you add new packages, rename modules, or restructure directories, run `generate_snapshot` again so the LLM has fresh context.
 - **Use `query_facts` for precision.** When you need specifics (all interfaces, all imports from a package, all call sites of a function), `query_facts` with filters is faster than asking the LLM to grep.
 - **Combine with file reading.** The snapshot tells the LLM *what exists and how it connects*. When the LLM needs actual implementation details, it will still read individual files -- but now it knows exactly *which* files to read.
-- **Works across languages.** If your repo has Go, Kotlin, and TypeScript (e.g., a Go backend with an Android app and a Next.js frontend), archmcp extracts all and presents a unified architecture view.
+- **Works across languages.** If your repo has Go, Kotlin, TypeScript, and Swift (e.g., a Go backend with Android and iOS apps and a Next.js frontend), archmcp extracts all and presents a unified architecture view.
 - **Check insights for surprises.** The cycle detector and layer analyzer often surface architectural issues that are invisible during day-to-day development. Ask: "Are there any architectural insights or warnings for this project?"
 
 ## Configuration
@@ -265,7 +268,7 @@ output:
 |-------|-------------|---------|
 | `repo` | Repository root path | `"."` |
 | `ignore` | Glob patterns for files/dirs to skip | vendor, node_modules, .git, tests, Next.js dirs, docs (.md, .mdx), config (yml, yaml, json), CI (e.g. Jenkinsfile), Dockerfile, .env* |
-| `extractors` | Enabled extractors | `["go", "kotlin", "typescript"]` |
+| `extractors` | Enabled extractors | `["go", "kotlin", "typescript", "swift"]` |
 | `explainers` | Enabled explainers | `["cycles", "layers"]` |
 | `renderers` | Enabled renderers | `["llm_context"]` |
 | `output.dir` | Output directory for artifacts | `".archmcp"` |
@@ -299,7 +302,7 @@ Each fact can have **relations** to other facts: `declares`, `imports`, `calls`,
 
 Three plugin interfaces drive the pipeline:
 
-- **Extractors** -- parse source code and emit facts (e.g., Go AST, Kotlin regex scanner, TypeScript tree-sitter)
+- **Extractors** -- parse source code and emit facts (e.g., Go AST, Kotlin regex scanner, Swift regex scanner, TypeScript tree-sitter)
 - **Explainers** -- analyze facts and produce insights (e.g., cycle detection, layer analysis)
 - **Renderers** -- generate output artifacts from the snapshot (e.g., LLM context markdown)
 
@@ -324,6 +327,7 @@ archmcp/
 │   │   ├── registry.go              # Extractor interface + registry
 │   │   ├── goextractor/go.go        # Go AST extractor
 │   │   ├── kotlinextractor/kotlin.go # Kotlin regex extractor (Android-aware)
+│   │   ├── swiftextractor/swift.go  # Swift regex extractor (iOS-aware)
 │   │   └── tsextractor/ts.go        # TypeScript tree-sitter extractor
 │   ├── explainers/
 │   │   ├── registry.go              # Explainer interface + registry

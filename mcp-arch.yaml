@@ -40,10 +40,23 @@ ignore:
   # Kotlin tests
   - "**/*Test.kt"
   - "**/androidTest/**"
+  # Swift / Xcode build and cache
+  - "DerivedData/**"
+  - "**/DerivedData/**"
+  - "*.xcodeproj/**"
+  - "*.xcworkspace/**"
+  - "Pods/**"
+  - "**/Pods/**"
+  - ".build/**"
+  - "**/.build/**"
+  # Swift tests
+  - "**/*Tests.swift"
+  - "**/*Test.swift"
 extractors:
   - go
   - kotlin
   - typescript
+  - swift
 explainers:
   - cycles
   - layers

@@ -29,7 +29,6 @@ type Engine struct {
 	renderers  *renderers.Registry
 	store      *facts.Store
 	snapshot   *facts.Snapshot
-	prevHashes map[string]string // file -> sha256 hash from previous run
 }
 
 // New creates a new Engine with the given config.
@@ -87,9 +86,6 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string) (*facts.
 		return nil, fmt.Errorf("resolving repo path: %w", err)
 	}
 
-	// Load previous hashes for incremental support
-	e.loadPreviousHashes(absRepo)
-
 	// Clear previous state
 	e.store.Clear()
 
@@ -100,27 +96,11 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string) (*facts.
 	}
 	log.Printf("[engine] found %d files in %s", len(files), absRepo)
 
-	// 2. Compute hashes and filter to changed files
-	currentHashes, changedFiles := e.filterChangedFiles(absRepo, files)
-	log.Printf("[engine] %d of %d files changed since last run", len(changedFiles), len(files))
+	// 2. Compute file hashes (for snapshot metadata)
+	currentHashes := e.computeFileHashes(absRepo, files)
 
-	// 3. Detect and run extractors (on changed files only if we have previous data, otherwise all)
-	filesToExtract := files
-	if len(e.prevHashes) > 0 && len(changedFiles) < len(files) {
-		filesToExtract = changedFiles
-		// If no files changed, reload previous facts and skip extraction
-		if len(changedFiles) == 0 {
-			prevFactsPath := filepath.Join(absRepo, e.cfg.Output.Dir, "facts.jsonl")
-			if err := e.store.ReadJSONLFile(prevFactsPath); err == nil {
-				log.Printf("[engine] no changes detected, reloaded %d facts from cache", e.store.Count())
-			} else {
-				// Cache miss, extract everything
-				filesToExtract = files
-			}
-		}
-	}
-
-	usedExtractors, err := e.runExtractors(ctx, absRepo, filesToExtract)
+	// 3. Detect and run extractors
+	usedExtractors, err := e.runExtractors(ctx, absRepo, files)
 	if err != nil {
 		return nil, fmt.Errorf("extraction: %w", err)
 	}
@@ -402,53 +382,19 @@ func (e *Engine) GetArtifact(name string) ([]byte, error) {
 	}
 }
 
-// loadPreviousHashes reads file hashes from the previous snapshot.meta.json.
-func (e *Engine) loadPreviousHashes(repoPath string) {
-	metaPath := filepath.Join(repoPath, e.cfg.Output.Dir, "snapshot.meta.json")
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		e.prevHashes = nil
-		return
-	}
-
-	var meta facts.SnapshotMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		e.prevHashes = nil
-		return
-	}
-
-	e.prevHashes = make(map[string]string, len(meta.FileHashes))
-	for _, fh := range meta.FileHashes {
-		e.prevHashes[fh.Path] = fh.Hash
-	}
-	log.Printf("[engine] loaded %d file hashes from previous snapshot", len(e.prevHashes))
-}
-
-// filterChangedFiles computes SHA-256 hashes for all files and returns
-// the current hash map and the list of files that have changed since the previous run.
-func (e *Engine) filterChangedFiles(repoPath string, files []string) (map[string]string, []string) {
-	currentHashes := make(map[string]string, len(files))
-	var changed []string
-
+// computeFileHashes computes SHA-256 hashes for all files (used in snapshot metadata).
+func (e *Engine) computeFileHashes(repoPath string, files []string) map[string]string {
+	hashes := make(map[string]string, len(files))
 	for _, relFile := range files {
 		absFile := filepath.Join(repoPath, relFile)
 		data, err := os.ReadFile(absFile)
 		if err != nil {
-			// Can't hash, treat as changed
-			changed = append(changed, relFile)
 			continue
 		}
-
 		h := sha256.Sum256(data)
-		hash := hex.EncodeToString(h[:])
-		currentHashes[relFile] = hash
-
-		if prevHash, ok := e.prevHashes[relFile]; !ok || prevHash != hash {
-			changed = append(changed, relFile)
-		}
+		hashes[relFile] = hex.EncodeToString(h[:])
 	}
-
-	return currentHashes, changed
+	return hashes
 }
 
 // fileModTime returns the modification time of a file as an RFC3339 string.
