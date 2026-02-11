@@ -134,6 +134,172 @@ func (s *Store) Query(kind, file, name, relKind string) []Fact {
 	return result
 }
 
+// QueryOpts holds the full set of query filters for QueryAdvanced.
+// Multi-value filters within a dimension are OR-combined; filters across
+// different dimensions are AND-combined.
+type QueryOpts struct {
+	Kind       string   // single kind filter (exact match)
+	Kinds      []string // multi-kind filter (OR with Kind)
+	File       string   // exact file filter
+	Files      []string // multi-file filter (OR with File)
+	FilePrefix string   // file path prefix filter (e.g. "internal/server")
+	Name       string   // substring name filter
+	Names      []string // exact name batch filter (OR)
+	RelKind    string   // relation kind filter
+	Prop       string   // property name filter
+	PropValue  string   // property value filter (requires Prop)
+	Offset     int      // number of results to skip
+	Limit      int      // max results to return (0 = default 100, max 500)
+}
+
+// QueryAdvanced returns facts matching the provided filter options along with
+// the total count of matches before offset/limit are applied.
+func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Merge single and multi-value filters into sets for efficient lookup.
+	kindSet := mergeIntoSet(opts.Kind, opts.Kinds)
+	fileSet := mergeIntoSet(opts.File, opts.Files)
+	nameSet := make(map[string]struct{}, len(opts.Names))
+	for _, n := range opts.Names {
+		if n != "" {
+			nameSet[n] = struct{}{}
+		}
+	}
+
+	var matched []Fact
+	for _, f := range s.facts {
+		// Kind filter
+		if len(kindSet) > 0 {
+			if _, ok := kindSet[f.Kind]; !ok {
+				continue
+			}
+		}
+
+		// File filter (exact match set OR prefix)
+		if len(fileSet) > 0 || opts.FilePrefix != "" {
+			fileMatch := false
+			if len(fileSet) > 0 {
+				_, fileMatch = fileSet[f.File]
+			}
+			if !fileMatch && opts.FilePrefix != "" {
+				fileMatch = strings.HasPrefix(f.File, opts.FilePrefix)
+			}
+			if !fileMatch {
+				continue
+			}
+		}
+
+		// Name filter: substring (Name) OR exact batch (Names)
+		if opts.Name != "" || len(nameSet) > 0 {
+			nameMatch := false
+			if opts.Name != "" && strings.Contains(f.Name, opts.Name) {
+				nameMatch = true
+			}
+			if !nameMatch && len(nameSet) > 0 {
+				_, nameMatch = nameSet[f.Name]
+			}
+			if !nameMatch {
+				continue
+			}
+		}
+
+		// Relation kind filter
+		if opts.RelKind != "" {
+			hasRel := false
+			for _, r := range f.Relations {
+				if r.Kind == opts.RelKind {
+					hasRel = true
+					break
+				}
+			}
+			if !hasRel {
+				continue
+			}
+		}
+
+		// Property filter (applied before limit, unlike the old query_facts handler)
+		if opts.Prop != "" {
+			v, ok := f.Props[opts.Prop]
+			if !ok {
+				continue
+			}
+			if opts.PropValue != "" && fmt.Sprintf("%v", v) != opts.PropValue {
+				continue
+			}
+		}
+
+		matched = append(matched, f)
+	}
+
+	total := len(matched)
+
+	// Apply offset
+	if opts.Offset > 0 {
+		if opts.Offset >= len(matched) {
+			return nil, total
+		}
+		matched = matched[opts.Offset:]
+	}
+
+	// Apply limit
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if len(matched) > limit {
+		matched = matched[:limit]
+	}
+
+	return matched, total
+}
+
+// LookupByExactName returns all facts with the given exact name using the index.
+func (s *Store) LookupByExactName(name string) []Fact {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.collectByIndex(s.byName[name])
+}
+
+// ReverseLookup returns all facts that have a relation targeting the given name.
+// If relKind is non-empty, only relations of that kind are considered.
+func (s *Store) ReverseLookup(targetName, relKind string) []Fact {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []Fact
+	for _, f := range s.facts {
+		for _, r := range f.Relations {
+			if r.Target == targetName && (relKind == "" || r.Kind == relKind) {
+				result = append(result, f)
+				break
+			}
+		}
+	}
+	return result
+}
+
+// mergeIntoSet combines a single value and a slice into a set.
+// Empty strings are ignored.
+func mergeIntoSet(single string, multi []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(multi)+1)
+	if single != "" {
+		set[single] = struct{}{}
+	}
+	for _, v := range multi {
+		if v != "" {
+			set[v] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
 // Modules returns all module facts.
 func (s *Store) Modules() []Fact {
 	return s.ByKind(KindModule)
