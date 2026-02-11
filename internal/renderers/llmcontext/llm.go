@@ -64,7 +64,11 @@ func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapsho
 	// Enforce token budget (rough estimate: 1 token ~= 4 chars)
 	maxChars := r.maxTokens * 4
 	if len(content) > maxChars {
-		content = content[:maxChars-100] + "\n\n---\n*[Truncated to fit token budget]*\n"
+		cutpoint := maxChars - 100
+		if cutpoint < 0 {
+			cutpoint = 0
+		}
+		content = content[:cutpoint] + "\n\n---\n*[Truncated to fit token budget]*\n"
 	}
 
 	return []facts.Artifact{
