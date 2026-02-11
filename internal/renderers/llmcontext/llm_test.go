@@ -48,18 +48,15 @@ func TestTokenBudgetEnforcement(t *testing.T) {
 	}
 
 	content := string(artifacts[0].Content)
-	if !strings.Contains(content, "[Truncated to fit token budget]") {
-		t.Error("expected truncation marker in output")
+	hasTruncation := strings.Contains(content, "[Truncated in:") || strings.Contains(content, "[Omitted:")
+	if !hasTruncation {
+		t.Error("expected truncation or omission marker in output")
 	}
-	// Content should be within budget (400 chars + truncation message ~42 chars)
-	maxExpected := 100*4 + 50
+	// Content should be within budget (400 chars + truncation/omission message)
+	maxExpected := 100*4 + 80
 	if len(content) > maxExpected {
 		t.Errorf("content length %d exceeds expected truncated size %d", len(content), maxExpected)
 	}
-
-	// BUG: Very small budgets (maxTokens < 26) cause panic because
-	// maxChars-100 becomes negative in llm.go:67 content[:maxChars-100].
-	// This documents the edge case — don't use budgets below ~26 tokens.
 }
 
 func TestDetectDominantLanguage(t *testing.T) {

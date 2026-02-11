@@ -133,7 +133,7 @@ type queryFactsArgs struct {
 	File      string `json:"file,omitempty" jsonschema:"Filter by file path"`
 	Name      string `json:"name,omitempty" jsonschema:"Filter by name using substring match"`
 	Relation  string `json:"relation,omitempty" jsonschema:"Filter by relation kind: declares, imports, calls, implements, or depends_on"`
-	Prop      string `json:"prop,omitempty" jsonschema:"Filter by property name (e.g. ios_component, framework, symbol_kind)"`
+	Prop      string `json:"prop,omitempty" jsonschema:"Filter by property name (e.g. source, symbol_kind, exported, framework, storage_kind)"`
 	PropValue string `json:"prop_value,omitempty" jsonschema:"Filter by property value (requires prop to be set)"`
 
 	// Batch filters — OR within dimension, AND across dimensions
@@ -148,6 +148,9 @@ type queryFactsArgs struct {
 
 	// Relation expansion
 	IncludeRelated bool `json:"include_related,omitempty" jsonschema:"If true, inline the full fact data for each relation target instead of just the target name"`
+
+	// Output format
+	OutputMode string `json:"output_mode,omitempty" jsonschema:"Output format: 'full' (default JSON), 'compact' (markdown table), or 'names' (just names and files)"`
 }
 
 // enrichedFact wraps a Fact with resolved relation targets.
@@ -163,6 +166,28 @@ type queryResponse struct {
 	Offset  int  `json:"offset"`
 	Limit   int  `json:"limit"`
 	HasMore bool `json:"has_more"`
+}
+
+// renderCompact formats facts as a markdown table for minimal token usage.
+func renderCompact(results []facts.Fact, total int) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d results (showing %d):\n\n", total, len(results)))
+	sb.WriteString("| Kind | Name | File | Line |\n")
+	sb.WriteString("|------|------|------|------|\n")
+	for _, f := range results {
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %d |\n", f.Kind, f.Name, f.File, f.Line))
+	}
+	return sb.String()
+}
+
+// renderNamesOnly returns just names and files, one per line.
+func renderNamesOnly(results []facts.Fact, total int) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d results (showing %d):\n\n", total, len(results)))
+	for _, f := range results {
+		sb.WriteString(fmt.Sprintf("%s  %s:%d\n", f.Name, f.File, f.Line))
+	}
+	return sb.String()
 }
 
 // registerTools adds MCP tools for snapshot generation and fact querying.
@@ -222,7 +247,7 @@ func (s *Server) registerTools() {
 	// Tool: query_facts
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "query_facts",
-		Description: "Query the extracted architectural facts by kind, file, name, or relation type. Returns matching facts as JSON. Supports batch filters (names, files, kinds), file prefix matching, pagination (offset/limit), and relation expansion (include_related).",
+		Description: "Query the extracted architectural facts by kind, file, name, or relation type. Returns matching facts as JSON. Supports batch filters (names, files, kinds), file prefix matching, pagination (offset/limit), and relation expansion (include_related). For dependencies, filter with prop='source' and prop_value='internal'|'external'|'stdlib' to control noise.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args queryFactsArgs) (*mcp.CallToolResult, any, error) {
 		store := s.eng.Store()
 		if store.Count() == 0 {
@@ -245,6 +270,22 @@ func (s *Server) registerTools() {
 		}
 
 		results, total := store.QueryAdvanced(opts)
+
+		// Compact output modes: return text instead of JSON
+		switch args.OutputMode {
+		case "compact":
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: renderCompact(results, total)},
+				},
+			}, nil, nil
+		case "names":
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: renderNamesOnly(results, total)},
+				},
+			}, nil, nil
+		}
 
 		// Determine if advanced features are in use (triggers structured response)
 		useAdvanced := args.IncludeRelated || args.Offset > 0 || args.Limit > 0 ||
