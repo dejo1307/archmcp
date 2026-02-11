@@ -248,17 +248,22 @@ func (e *TSExtractor) extractNode(node *sitter.Node, src []byte, relFile, dir st
 				},
 			}
 
-			// Check for implements clause
+			// Check for implements clause (nested under class_heritage)
 			for j := range node.ChildCount() {
 				c := node.Child(j)
-				if c.Kind() == "implements_clause" {
+				if c.Kind() == "class_heritage" {
 					for k := range c.ChildCount() {
-						t := c.Child(k)
-						if t.Kind() == "type_identifier" {
-							f.Relations = append(f.Relations, facts.Relation{
-								Kind:   facts.RelImplements,
-								Target: nodeText(t, src),
-							})
+						heritage := c.Child(k)
+						if heritage.Kind() == "implements_clause" {
+							for l := range heritage.ChildCount() {
+								t := heritage.Child(l)
+								if t.Kind() == "type_identifier" {
+									f.Relations = append(f.Relations, facts.Relation{
+										Kind:   facts.RelImplements,
+										Target: nodeText(t, src),
+									})
+								}
+							}
 						}
 					}
 				}
