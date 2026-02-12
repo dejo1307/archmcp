@@ -35,7 +35,6 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 	}, nil)
 
 	s.mcp = mcpServer
-	s.registerResources()
 	s.registerTools()
 
 	return s, nil
@@ -45,81 +44,6 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 func (s *Server) Run(ctx context.Context) error {
 	log.Println("[server] starting MCP server on stdio transport")
 	return s.mcp.Run(ctx, &mcp.StdioTransport{})
-}
-
-// registerResources adds MCP resources for snapshot artifacts.
-func (s *Server) registerResources() {
-	// Resource: architecture context (the main LLM summary)
-	s.mcp.AddResource(&mcp.Resource{
-		URI:         "arch://snapshot/context",
-		Name:        "Architecture Context",
-		Description: "Compact LLM-ready architecture summary of the repository",
-		MIMEType:    "text/markdown",
-	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		content, err := s.eng.GetArtifact("llm_context.md")
-		if err != nil {
-			return nil, fmt.Errorf("no snapshot available: %w (run generate_snapshot first)", err)
-		}
-		return &mcp.ReadResourceResult{
-			Contents: []*mcp.ResourceContents{
-				{URI: req.Params.URI, Text: string(content), MIMEType: "text/markdown"},
-			},
-		}, nil
-	})
-
-	// Resource: facts
-	s.mcp.AddResource(&mcp.Resource{
-		URI:         "arch://snapshot/facts",
-		Name:        "Architecture Facts",
-		Description: "All extracted architectural facts in JSONL format",
-		MIMEType:    "application/jsonl",
-	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		content, err := s.eng.GetArtifact("facts.jsonl")
-		if err != nil {
-			return nil, fmt.Errorf("no snapshot available: %w (run generate_snapshot first)", err)
-		}
-		return &mcp.ReadResourceResult{
-			Contents: []*mcp.ResourceContents{
-				{URI: req.Params.URI, Text: string(content), MIMEType: "application/jsonl"},
-			},
-		}, nil
-	})
-
-	// Resource: insights
-	s.mcp.AddResource(&mcp.Resource{
-		URI:         "arch://snapshot/insights",
-		Name:        "Architecture Insights",
-		Description: "Architectural insights and analysis results",
-		MIMEType:    "application/json",
-	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		content, err := s.eng.GetArtifact("insights.json")
-		if err != nil {
-			return nil, fmt.Errorf("no snapshot available: %w (run generate_snapshot first)", err)
-		}
-		return &mcp.ReadResourceResult{
-			Contents: []*mcp.ResourceContents{
-				{URI: req.Params.URI, Text: string(content), MIMEType: "application/json"},
-			},
-		}, nil
-	})
-
-	// Resource: meta
-	s.mcp.AddResource(&mcp.Resource{
-		URI:         "arch://snapshot/meta",
-		Name:        "Snapshot Metadata",
-		Description: "Metadata about the last snapshot generation",
-		MIMEType:    "application/json",
-	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		content, err := s.eng.GetArtifact("snapshot.meta.json")
-		if err != nil {
-			return nil, fmt.Errorf("no snapshot available: %w (run generate_snapshot first)", err)
-		}
-		return &mcp.ReadResourceResult{
-			Contents: []*mcp.ResourceContents{
-				{URI: req.Params.URI, Text: string(content), MIMEType: "application/json"},
-			},
-		}, nil
-	})
 }
 
 // generateSnapshotArgs are the arguments for the generate_snapshot tool.
@@ -227,7 +151,7 @@ func (s *Server) registerTools() {
 				"- Duration: %s\n"+
 				"- Extractors: %v\n"+
 				"- Explainers: %v\n\n"+
-				"Use the arch://snapshot/context resource to read the LLM-ready summary.",
+				"Use query_facts or explore to inspect the extracted architecture.",
 			snapshot.Meta.RepoPath,
 			snapshot.Meta.FactCount,
 			snapshot.Meta.InsightCount,
