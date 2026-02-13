@@ -171,6 +171,7 @@ extractors:
   - go
   - kotlin
   - typescript
+  - swift
 explainers:
   - cycles
   - layers
