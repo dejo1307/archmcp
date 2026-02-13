@@ -41,6 +41,7 @@ func (e *GoExtractor) Detect(repoPath string) (bool, error) {
 func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
 	var allFacts []facts.Fact
 	fset := token.NewFileSet()
+	modulePath := readModulePath(repoPath)
 
 	// Group files by directory (package)
 	packages := make(map[string][]string)
@@ -59,14 +60,14 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		default:
 		}
 
-		pkgFacts := e.extractPackage(fset, repoPath, pkgDir, pkgFiles)
+		pkgFacts := e.extractPackage(fset, repoPath, pkgDir, pkgFiles, modulePath)
 		allFacts = append(allFacts, pkgFacts...)
 	}
 
 	return allFacts, nil
 }
 
-func (e *GoExtractor) extractPackage(fset *token.FileSet, repoPath, pkgDir string, files []string) []facts.Fact {
+func (e *GoExtractor) extractPackage(fset *token.FileSet, repoPath, pkgDir string, files []string, modulePath string) []facts.Fact {
 	var result []facts.Fact
 	var pkgName string
 
@@ -88,7 +89,7 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, repoPath, pkgDir strin
 			pkgName = f.Name.Name
 		}
 
-		fileFacts := e.extractFile(fset, f, relFile, pkgDir)
+		fileFacts := e.extractFile(fset, f, relFile, pkgDir, modulePath)
 		result = append(result, fileFacts...)
 	}
 
@@ -109,7 +110,7 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, repoPath, pkgDir strin
 	return result
 }
 
-func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir string) []facts.Fact {
+func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string) []facts.Fact {
 	var result []facts.Fact
 
 	// Extract imports
@@ -122,6 +123,7 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 			Line: fset.Position(imp.Pos()).Line,
 			Props: map[string]any{
 				"language": "go",
+				"source":   classifyImport(importPath, modulePath),
 			},
 			Relations: []facts.Relation{
 				{Kind: facts.RelImports, Target: importPath},
@@ -138,6 +140,12 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 			result = append(result, e.extractGenDecl(fset, d, relFile, pkgDir)...)
 		}
 	}
+
+	// Extract route registrations
+	result = append(result, extractRoutes(fset, f, relFile, pkgDir)...)
+
+	// Extract storage patterns
+	result = append(result, extractStorage(fset, f, relFile, pkgDir)...)
 
 	return result
 }
@@ -282,6 +290,38 @@ func extractCalls(node ast.Node) []string {
 		return true
 	})
 	return calls
+}
+
+// readModulePath reads the module path from go.mod in the given repo.
+func readModulePath(repoPath string) string {
+	data, err := os.ReadFile(filepath.Join(repoPath, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "module ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "module "))
+		}
+	}
+	return ""
+}
+
+// classifyImport returns "stdlib", "internal", or "external" for a Go import path.
+func classifyImport(importPath, modulePath string) string {
+	// stdlib: first path segment has no dots
+	firstSegment := importPath
+	if i := strings.Index(importPath, "/"); i >= 0 {
+		firstSegment = importPath[:i]
+	}
+	if !strings.Contains(firstSegment, ".") {
+		return "stdlib"
+	}
+	// internal: starts with the module path
+	if modulePath != "" && (importPath == modulePath || strings.HasPrefix(importPath, modulePath+"/")) {
+		return "internal"
+	}
+	return "external"
 }
 
 // typeExprToString converts a type expression to a string representation.

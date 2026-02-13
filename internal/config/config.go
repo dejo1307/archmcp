@@ -43,7 +43,7 @@ func Default() *Config {
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
 			Dir:              ".archmcp",
-			MaxContextTokens: 4000,
+			MaxContextTokens: 16000,
 		},
 	}
 }
@@ -66,7 +66,7 @@ func Load(path string) (*Config, error) {
 		cfg.Output.Dir = ".archmcp"
 	}
 	if cfg.Output.MaxContextTokens == 0 {
-		cfg.Output.MaxContextTokens = 4000
+		cfg.Output.MaxContextTokens = 16000
 	}
 
 	return cfg, nil

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dejo1307/archmcp/internal/facts"
 )
 
 func TestReadSourceWindow(t *testing.T) {
@@ -94,6 +96,225 @@ func TestReadSourceWindow_LineNumberFormat(t *testing.T) {
 	for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
 		if !strings.Contains(line, "│") {
 			t.Errorf("line missing │ separator: %q", line)
+		}
+	}
+}
+
+// --- explore helper tests ---
+
+// newTestServer creates a Server with a pre-populated fact store for testing explore methods.
+func newTestServer(store *facts.Store) *Server {
+	return &Server{}
+}
+
+func populateTestStore() *facts.Store {
+	store := facts.NewStore()
+	store.Add(
+		// Module
+		facts.Fact{Kind: facts.KindModule, Name: "internal/server", Props: map[string]any{"language": "go", "package": "server"}},
+		// Symbols declared in that module
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/server.New", File: "internal/server/server.go", Line: 26,
+			Props:     map[string]any{"symbol_kind": "function", "exported": true, "language": "go"},
+			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: "internal/server"}}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/server.Run", File: "internal/server/server.go", Line: 45,
+			Props:     map[string]any{"symbol_kind": "method", "exported": true, "language": "go"},
+			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: "internal/server"}, {Kind: facts.RelCalls, Target: "internal/engine.Store"}}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/server.handleQuery", File: "internal/server/handler.go", Line: 10,
+			Props:     map[string]any{"symbol_kind": "function", "exported": false, "language": "go"},
+			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: "internal/server"}, {Kind: facts.RelCalls, Target: "internal/facts.Store.Query"}}},
+		// Another module
+		facts.Fact{Kind: facts.KindModule, Name: "internal/facts", Props: map[string]any{"language": "go", "package": "facts"}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/facts.Store.Query", File: "internal/facts/store.go", Line: 105,
+			Props:     map[string]any{"symbol_kind": "method", "exported": true, "language": "go"},
+			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: "internal/facts"}}},
+		// Dependency
+		facts.Fact{Kind: facts.KindDependency, Name: "internal/server -> internal/facts", File: "internal/server/server.go",
+			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "internal/facts"}}},
+		// Symbol in a different directory
+		facts.Fact{Kind: facts.KindSymbol, Name: "cmd.main", File: "cmd/main.go", Line: 1,
+			Props: map[string]any{"symbol_kind": "function", "exported": false, "language": "go"}},
+	)
+	return store
+}
+
+func TestExploreModule(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreModule(store, "internal/server", 1, &sb)
+	if !found {
+		t.Fatal("exploreModule should find 'internal/server'")
+	}
+
+	output := sb.String()
+
+	// Should contain the module header
+	if !strings.Contains(output, "# Module: internal/server") {
+		t.Error("missing module header")
+	}
+	// Should list symbols
+	if !strings.Contains(output, "internal/server.New") {
+		t.Error("missing symbol New")
+	}
+	if !strings.Contains(output, "internal/server.Run") {
+		t.Error("missing symbol Run")
+	}
+	if !strings.Contains(output, "internal/server.handleQuery") {
+		t.Error("missing symbol handleQuery")
+	}
+	// Should show dependents (who imports internal/server -> none in test data)
+	// Should show the symbols table
+	if !strings.Contains(output, "Symbols (3)") {
+		t.Error("missing symbols count")
+	}
+}
+
+func TestExploreModule_NotFound(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreModule(store, "nonexistent", 1, &sb)
+	if found {
+		t.Error("exploreModule should return false for nonexistent module")
+	}
+}
+
+func TestExploreModule_Depth2(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreModule(store, "internal/server", 2, &sb)
+	if !found {
+		t.Fatal("exploreModule should find 'internal/server'")
+	}
+
+	output := sb.String()
+	// Depth 2 should include symbol relations section
+	if !strings.Contains(output, "Symbol Relations") {
+		t.Error("depth=2 should include Symbol Relations section")
+	}
+	// Should show the calls relation from Run
+	if !strings.Contains(output, "internal/engine.Store") {
+		t.Error("depth=2 should show call targets")
+	}
+}
+
+func TestExploreFile(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreFile(store, "internal/server/server.go", 1, &sb)
+	if !found {
+		t.Fatal("exploreFile should find 'internal/server/server.go'")
+	}
+
+	output := sb.String()
+	if !strings.Contains(output, "# File: internal/server/server.go") {
+		t.Error("missing file header")
+	}
+	// Should list the symbols in this file (New, Run) and the dependency
+	if !strings.Contains(output, "internal/server.New") {
+		t.Error("missing symbol New")
+	}
+	if !strings.Contains(output, "internal/server.Run") {
+		t.Error("missing symbol Run")
+	}
+}
+
+func TestExploreFile_NotFound(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreFile(store, "nonexistent.go", 1, &sb)
+	if found {
+		t.Error("exploreFile should return false for nonexistent file")
+	}
+}
+
+func TestExploreSymbol(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreSymbol(store, "Store.Query", 1, &sb)
+	if !found {
+		t.Fatal("exploreSymbol should find 'Store.Query'")
+	}
+
+	output := sb.String()
+	if !strings.Contains(output, "# Symbol: Store.Query") {
+		t.Error("missing symbol header")
+	}
+	if !strings.Contains(output, "internal/facts/store.go") {
+		t.Error("missing file reference")
+	}
+	// Should include Referenced By section (handleQuery calls it)
+	if !strings.Contains(output, "Referenced By") {
+		t.Error("missing Referenced By section")
+	}
+	if !strings.Contains(output, "internal/server.handleQuery") {
+		t.Error("missing caller handleQuery in Referenced By")
+	}
+}
+
+func TestExploreSymbol_NotFound(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreSymbol(store, "NonExistentSymbol", 1, &sb)
+	if found {
+		t.Error("exploreSymbol should return false for nonexistent symbol")
+	}
+}
+
+func TestExploreDirectory(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreDirectory(store, "internal/server", &sb)
+	if !found {
+		t.Fatal("exploreDirectory should find 'internal/server'")
+	}
+
+	output := sb.String()
+	if !strings.Contains(output, "# Directory: internal/server") {
+		t.Error("missing directory header")
+	}
+	if !strings.Contains(output, "Summary") {
+		t.Error("missing Summary section")
+	}
+}
+
+func TestExploreDirectory_NotFound(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreDirectory(store, "nonexistent/dir", &sb)
+	if found {
+		t.Error("exploreDirectory should return false for nonexistent directory")
+	}
+}
+
+func TestCapitalize(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"module", "Module"},
+		{"symbol", "Symbol"},
+		{"", ""},
+		{"A", "A"},
+	}
+	for _, tt := range tests {
+		if got := capitalize(tt.input); got != tt.want {
+			t.Errorf("capitalize(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

@@ -17,7 +17,7 @@ type LLMContextRenderer struct {
 // New creates a new LLMContextRenderer with the given token budget.
 func New(maxTokens int) *LLMContextRenderer {
 	if maxTokens <= 0 {
-		maxTokens = 4000
+		maxTokens = 16000
 	}
 	return &LLMContextRenderer{maxTokens: maxTokens}
 }
@@ -26,67 +26,84 @@ func (r *LLMContextRenderer) Name() string {
 	return "llm_context"
 }
 
-// Render produces the llm_context.md artifact.
+// section holds a rendered section with its display name.
+type section struct {
+	name    string
+	content string
+}
+
+// Render produces the llm_context.md artifact using progressive summarization.
+// Sections are ordered by priority; lower-priority sections are omitted first
+// when the token budget is tight.
 func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapshot) ([]facts.Artifact, error) {
+	// Sections ordered by priority (most important first)
+	sections := []section{
+		{"Repository Map", r.renderRepoMap(snapshot)},
+		{"Architecture Pattern", r.renderArchPattern(snapshot)},
+		{"Entry Points", r.renderEntryPoints(snapshot)},
+		{"Routes", r.renderRoutes(snapshot)},
+		{"Storage", r.renderStorage(snapshot)},
+		{"Dependency Rules", r.renderDependencyRules(snapshot)},
+		{"Critical Modules", r.renderCriticalModules(snapshot)},
+		{"Risk Zones", r.renderRiskZones(snapshot)},
+		{"How to Add a Feature", r.renderFeatureGuide(snapshot)},
+		{"Meta", r.renderMeta(snapshot)},
+	}
+
+	header := "# Architecture Snapshot\n\n"
+	maxChars := r.maxTokens * 4 // rough estimate: 1 token ~= 4 chars
+	remaining := maxChars - len(header)
+
 	var sb strings.Builder
+	sb.WriteString(header)
 
-	sb.WriteString("# Architecture Snapshot\n\n")
-
-	// 1. Repository Map
-	r.writeRepoMap(&sb, snapshot)
-
-	// 2. Architecture Pattern
-	r.writeArchPattern(&sb, snapshot)
-
-	// 3. Entry Points
-	r.writeEntryPoints(&sb, snapshot)
-
-	// 4. Dependency Rules
-	r.writeDependencyRules(&sb, snapshot)
-
-	// 5. Critical Modules
-	r.writeCriticalModules(&sb, snapshot)
-
-	// 6. Routes (if any)
-	r.writeRoutes(&sb, snapshot)
-
-	// 7. Risk Zones
-	r.writeRiskZones(&sb, snapshot)
-
-	// 8. How to Add a Feature
-	r.writeFeatureGuide(&sb, snapshot)
-
-	// 9. Meta
-	r.writeMeta(&sb, snapshot)
-
-	content := sb.String()
-
-	// Enforce token budget (rough estimate: 1 token ~= 4 chars)
-	maxChars := r.maxTokens * 4
-	if len(content) > maxChars {
-		cutpoint := maxChars - 100
-		if cutpoint < 0 {
-			cutpoint = 0
+	for i, sec := range sections {
+		if sec.content == "" {
+			continue
 		}
-		content = content[:cutpoint] + "\n\n---\n*[Truncated to fit token budget]*\n"
+		if len(sec.content) <= remaining {
+			sb.WriteString(sec.content)
+			remaining -= len(sec.content)
+		} else if remaining > 200 {
+			// Partially include this section
+			cutpoint := remaining - 100
+			if cutpoint < 0 {
+				cutpoint = 0
+			}
+			sb.WriteString(sec.content[:cutpoint])
+			sb.WriteString(fmt.Sprintf("\n\n---\n*[Truncated in: %s]*\n", sec.name))
+			remaining = 0
+			break
+		} else {
+			// List omitted sections
+			var omitted []string
+			for _, s := range sections[i:] {
+				if s.content != "" {
+					omitted = append(omitted, s.name)
+				}
+			}
+			sb.WriteString(fmt.Sprintf("\n\n---\n*[Omitted: %s]*\n", strings.Join(omitted, ", ")))
+			break
+		}
 	}
 
 	return []facts.Artifact{
 		{
 			Name:    "llm_context.md",
-			Content: []byte(content),
+			Content: []byte(sb.String()),
 			Type:    "text/markdown",
 		},
 	}, nil
 }
 
-func (r *LLMContextRenderer) writeRepoMap(sb *strings.Builder, snapshot *facts.Snapshot) {
+func (r *LLMContextRenderer) renderRepoMap(snapshot *facts.Snapshot) string {
+	var sb strings.Builder
 	sb.WriteString("## Repository Map\n\n")
 
 	modules := filterByKind(snapshot.Facts, facts.KindModule)
 	if len(modules) == 0 {
 		sb.WriteString("_No modules detected._\n\n")
-		return
+		return sb.String()
 	}
 
 	// Group symbols by module
@@ -122,9 +139,11 @@ func (r *LLMContextRenderer) writeRepoMap(sb *strings.Builder, snapshot *facts.S
 			mod.Name, lang, symbolCounts[mod.Name], exportedCounts[mod.Name]))
 	}
 	sb.WriteString("\n")
+	return sb.String()
 }
 
-func (r *LLMContextRenderer) writeArchPattern(sb *strings.Builder, snapshot *facts.Snapshot) {
+func (r *LLMContextRenderer) renderArchPattern(snapshot *facts.Snapshot) string {
+	var sb strings.Builder
 	sb.WriteString("## Architecture Pattern\n\n")
 
 	// Find architecture insights
@@ -140,14 +159,16 @@ func (r *LLMContextRenderer) writeArchPattern(sb *strings.Builder, snapshot *fac
 				}
 				sb.WriteString("\n")
 			}
-			return
+			return sb.String()
 		}
 	}
 
 	sb.WriteString("_No specific architecture pattern detected._\n\n")
+	return sb.String()
 }
 
-func (r *LLMContextRenderer) writeEntryPoints(sb *strings.Builder, snapshot *facts.Snapshot) {
+func (r *LLMContextRenderer) renderEntryPoints(snapshot *facts.Snapshot) string {
+	var sb strings.Builder
 	sb.WriteString("## Entry Points\n\n")
 
 	var entryPoints []string
@@ -189,7 +210,7 @@ func (r *LLMContextRenderer) writeEntryPoints(sb *strings.Builder, snapshot *fac
 
 	if len(entryPoints) == 0 {
 		sb.WriteString("_No entry points detected._\n\n")
-		return
+		return sb.String()
 	}
 
 	sort.Strings(entryPoints)
@@ -197,9 +218,60 @@ func (r *LLMContextRenderer) writeEntryPoints(sb *strings.Builder, snapshot *fac
 		sb.WriteString(ep + "\n")
 	}
 	sb.WriteString("\n")
+	return sb.String()
 }
 
-func (r *LLMContextRenderer) writeDependencyRules(sb *strings.Builder, snapshot *facts.Snapshot) {
+func (r *LLMContextRenderer) renderRoutes(snapshot *facts.Snapshot) string {
+	routes := filterByKind(snapshot.Facts, facts.KindRoute)
+	if len(routes) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Routes\n\n")
+	sb.WriteString("| Method | Path | File | Type |\n")
+	sb.WriteString("|--------|------|------|------|\n")
+
+	sort.Slice(routes, func(i, j int) bool {
+		return routes[i].Name < routes[j].Name
+	})
+
+	for _, route := range routes {
+		method, _ := route.Props["method"].(string)
+		routeType, _ := route.Props["type"].(string)
+		sb.WriteString(fmt.Sprintf("| %s | `%s` | `%s` | %s |\n", method, route.Name, route.File, routeType))
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (r *LLMContextRenderer) renderStorage(snapshot *facts.Snapshot) string {
+	storage := filterByKind(snapshot.Facts, facts.KindStorage)
+	if len(storage) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Storage\n\n")
+	sb.WriteString("| Name | Kind | Operation | File |\n")
+	sb.WriteString("|------|------|-----------|------|\n")
+
+	sort.Slice(storage, func(i, j int) bool {
+		return storage[i].Name < storage[j].Name
+	})
+
+	for _, s := range storage {
+		storageKind, _ := s.Props["storage_kind"].(string)
+		operation, _ := s.Props["operation"].(string)
+		sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | `%s` |\n",
+			s.Name, storageKind, operation, s.File))
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (r *LLMContextRenderer) renderDependencyRules(snapshot *facts.Snapshot) string {
+	var sb strings.Builder
 	sb.WriteString("## Dependency Rules\n\n")
 
 	// Collect unique module-to-module internal dependencies
@@ -234,7 +306,7 @@ func (r *LLMContextRenderer) writeDependencyRules(sb *strings.Builder, snapshot 
 
 	if len(edges) == 0 {
 		sb.WriteString("_No internal dependency rules detected._\n\n")
-		return
+		return sb.String()
 	}
 
 	sort.Strings(edges)
@@ -242,9 +314,11 @@ func (r *LLMContextRenderer) writeDependencyRules(sb *strings.Builder, snapshot 
 		sb.WriteString(e + "\n")
 	}
 	sb.WriteString("\n")
+	return sb.String()
 }
 
-func (r *LLMContextRenderer) writeCriticalModules(sb *strings.Builder, snapshot *facts.Snapshot) {
+func (r *LLMContextRenderer) renderCriticalModules(snapshot *facts.Snapshot) string {
+	var sb strings.Builder
 	sb.WriteString("## Critical Modules\n\n")
 
 	// Compute fan-in (imported by others) and fan-out (imports others)
@@ -301,7 +375,7 @@ func (r *LLMContextRenderer) writeCriticalModules(sb *strings.Builder, snapshot 
 
 	if limit == 0 {
 		sb.WriteString("_No cross-module dependencies detected._\n\n")
-		return
+		return sb.String()
 	}
 
 	sb.WriteString("| Module | Fan-In | Fan-Out | Criticality |\n")
@@ -316,31 +390,10 @@ func (r *LLMContextRenderer) writeCriticalModules(sb *strings.Builder, snapshot 
 		sb.WriteString(fmt.Sprintf("| `%s` | %d | %d | %s |\n", s.Name, s.FanIn, s.FanOut, criticality))
 	}
 	sb.WriteString("\n")
+	return sb.String()
 }
 
-func (r *LLMContextRenderer) writeRoutes(sb *strings.Builder, snapshot *facts.Snapshot) {
-	routes := filterByKind(snapshot.Facts, facts.KindRoute)
-	if len(routes) == 0 {
-		return
-	}
-
-	sb.WriteString("## Routes\n\n")
-	sb.WriteString("| Method | Path | File | Type |\n")
-	sb.WriteString("|--------|------|------|------|\n")
-
-	sort.Slice(routes, func(i, j int) bool {
-		return routes[i].Name < routes[j].Name
-	})
-
-	for _, route := range routes {
-		method, _ := route.Props["method"].(string)
-		routeType, _ := route.Props["type"].(string)
-		sb.WriteString(fmt.Sprintf("| %s | `%s` | `%s` | %s |\n", method, route.Name, route.File, routeType))
-	}
-	sb.WriteString("\n")
-}
-
-func (r *LLMContextRenderer) writeRiskZones(sb *strings.Builder, snapshot *facts.Snapshot) {
+func (r *LLMContextRenderer) renderRiskZones(snapshot *facts.Snapshot) string {
 	var risks []string
 
 	for _, insight := range snapshot.Insights {
@@ -352,17 +405,20 @@ func (r *LLMContextRenderer) writeRiskZones(sb *strings.Builder, snapshot *facts
 	}
 
 	if len(risks) == 0 {
-		return
+		return ""
 	}
 
+	var sb strings.Builder
 	sb.WriteString("## Risk Zones\n\n")
 	for _, risk := range risks {
 		sb.WriteString(risk + "\n")
 	}
 	sb.WriteString("\n")
+	return sb.String()
 }
 
-func (r *LLMContextRenderer) writeFeatureGuide(sb *strings.Builder, snapshot *facts.Snapshot) {
+func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string {
+	var sb strings.Builder
 	sb.WriteString("## How to Add a Feature\n\n")
 
 	// Determine guide based on detected architecture
@@ -425,13 +481,16 @@ func (r *LLMContextRenderer) writeFeatureGuide(sb *strings.Builder, snapshot *fa
 	}
 
 	sb.WriteString("\n")
+	return sb.String()
 }
 
-func (r *LLMContextRenderer) writeMeta(sb *strings.Builder, snapshot *facts.Snapshot) {
+func (r *LLMContextRenderer) renderMeta(snapshot *facts.Snapshot) string {
+	var sb strings.Builder
 	sb.WriteString("---\n\n")
 	sb.WriteString(fmt.Sprintf("*Generated at %s in %s. %d facts, %d insights.*\n",
 		snapshot.Meta.GeneratedAt, snapshot.Meta.Duration,
 		snapshot.Meta.FactCount, snapshot.Meta.InsightCount))
+	return sb.String()
 }
 
 // detectDominantLanguage returns the most common language across module facts.
