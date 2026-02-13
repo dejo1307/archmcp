@@ -1,13 +1,20 @@
-# archmcp - MCP Architectural Snapshot Server
+# archmcp
 
-A local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that generates compact architectural snapshots of repositories for LLM-assisted development. It eliminates repeated "grep-style" code exploration by providing a structured, language-agnostic view of your codebase.
+Give your AI agent a map of the codebase before it starts exploring.
+
+archmcp is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that generates compact architectural snapshots of repositories. Run it once, and your AI coding agent (Claude Code, Cursor, Copilot, or any MCP-compatible tool) gets a structured overview of modules, symbols, dependencies, routes, and architectural patterns -- before it reads a single file.
+
+## What This Is (and Isn't)
+
+**A first step, not a replacement.** archmcp is designed to run *before* your AI agent starts exploring code. It gives the agent a structural overview so it knows where to look and what connects to what. It does not replace grep, file search, code reading, or any traditional discovery tool -- it makes them more effective by providing upfront context.
+
+**Input for AI agents.** The snapshot output (modules, symbols, dependencies, architectural patterns) is structured context designed for LLM consumption. It is not a dashboard, not a visualization tool, not a documentation generator. It answers the question: *"What does this codebase look like?"* so the agent can skip the guessing phase.
+
+**Built for multi-repo work.** When you work across multiple repositories -- a Go backend, a TypeScript frontend, a Kotlin Android app, a Swift iOS app -- having an architectural snapshot of each repo lets AI agents understand cross-repo structure without manually exploring every codebase from scratch.
 
 ## How It Works
 
-archmcp runs as a stdio-based MCP server. When connected to an LLM client (such as Cursor, Claude Desktop, or any MCP-compatible tool), it exposes:
-
-- **Resources** -- pre-generated architectural summaries the LLM can read automatically
-- **Tools** -- on-demand snapshot generation and fact querying
+archmcp runs as a stdio-based MCP server. When connected to an LLM client, it exposes pre-generated architectural summaries (resources) and on-demand snapshot generation and querying (tools).
 
 The pipeline:
 
@@ -18,22 +25,7 @@ Repository -> File Walker -> Extractors (Go, Kotlin, TypeScript, Swift) -> Fact 
   -> MCP Server (resources + tools)
 ```
 
-## Supported Languages
-
-| Language   | Extractor     | Detection          |
-|------------|---------------|--------------------|
-| Go         | `go/ast`      | `go.mod` present   |
-| Kotlin     | regex scanner | `build.gradle.kts` or `build.gradle` with Kotlin/Android |
-| TypeScript | tree-sitter   | `tsconfig.json` or `package.json` with TypeScript |
-| Swift      | regex scanner | `Package.swift`, `.xcodeproj`, or `.xcworkspace` present |
-
-Next.js route detection (App Router and Pages Router) is included in the TypeScript extractor.
-
-The Kotlin extractor includes Android-specific awareness: it detects Jetpack Compose (`@Composable`), Hilt DI (`@HiltViewModel`, `@Module`, `@AndroidEntryPoint`), Room database (`@Entity`, `@Dao`, `@Database`), ViewModels, Repositories, Use Cases, Workers, and other Android architecture components.
-
-The Swift extractor includes iOS-specific awareness: it detects SwiftUI views (`View`, `App`, `Scene` conformances), UIKit components (`UIViewController`, `UIView` subclasses), Combine ViewModels (`ObservableObject`, `@Observable`), architectural patterns (Repositories, Use Cases, Coordinators, Services, DI Containers), and `@MainActor` annotations.
-
-## Installation
+## Quick Start
 
 ### Prerequisites
 
@@ -46,15 +38,13 @@ The Swift extractor includes iOS-specific awareness: it detects SwiftUI views (`
 go build -o archmcp ./cmd/archmcp
 ```
 
-### Install globally
+Or install globally:
 
 ```bash
 go install ./cmd/archmcp
 ```
 
-## Usage
-
-### As an MCP Server
+### Connect to your MCP client
 
 Add to your MCP client configuration. For example, in Cursor's `mcp.json`:
 
@@ -83,78 +73,17 @@ Or if installed via `go install`:
 
 ### Testing from the command line
 
-You can run a one-shot snapshot generation without starting the MCP server. This is useful for testing the pipeline or running it from CI.
-
-**Syntax:**
+Run a one-shot snapshot generation without starting the MCP server:
 
 ```bash
 archmcp --generate [config_path]
 ```
 
-- `config_path` is optional; default is `mcp-arch.yaml`. The repository path is taken from the config's `repo` field (default `"."`).
-- Artifacts are written to the configured `output.dir` (default `.archmcp/`).
-
-**Example:** from the repository root (e.g. the archmcp repo itself):
-
-```bash
-./archmcp --generate
-```
-
-Or with an explicit config file:
-
-```bash
-./archmcp --generate mcp-arch.yaml
-```
-
-On success, a summary is printed to stderr:
-
-```
-Snapshot complete:
-  Repository:  /path/to/repo
-  Facts:       N
-  Insights:    M
-  Artifacts:   K
-  Duration:    ...
-  Output:      /path/to/repo/.archmcp
-```
-
-### MCP Resources
-
-| URI | Description |
-|-----|-------------|
-| `arch://snapshot/context` | Compact LLM-ready architecture summary (Markdown) |
-| `arch://snapshot/facts` | All extracted facts (JSONL) |
-| `arch://snapshot/insights` | Architectural insights (JSON) |
-| `arch://snapshot/meta` | Snapshot metadata (JSON) |
-
-### MCP Tools
-
-#### `generate_snapshot`
-
-Triggers a full snapshot generation for a repository.
-
-**Parameters:**
-- `repo_path` (string, optional): Path to the repository. Defaults to the configured repo path.
-
-**Example usage by LLM:**
-> "Generate an architectural snapshot of /home/user/myproject"
-
-#### `query_facts`
-
-Queries the extracted fact store with filters.
-
-**Parameters:**
-- `kind` (string, optional): Filter by fact kind (`module`, `symbol`, `route`, `storage`, `dependency`)
-- `file` (string, optional): Filter by file path
-- `name` (string, optional): Filter by name (substring match)
-- `relation` (string, optional): Filter by relation kind (`declares`, `imports`, `calls`, `implements`, `depends_on`)
-
-**Example usage by LLM:**
-> "Query all route facts" or "Find all symbols in the handler package"
+`config_path` is optional (default: `mcp-arch.yaml`). Artifacts are written to the configured `output.dir` (default `.archmcp/`).
 
 ## Developer Workflow
 
-The recommended workflow is: **generate a snapshot first**, then lean on the architectural context in all your subsequent prompts. You only need to regenerate when the codebase changes significantly.
+**Generate a snapshot first**, then lean on the architectural context in all your subsequent prompts. Regenerate when the codebase changes significantly.
 
 ### Step 1: Generate the snapshot
 
@@ -162,53 +91,43 @@ When you open a project in Cursor (or any MCP-compatible tool), start by asking:
 
 > "Generate an architectural snapshot of /path/to/my/project"
 
-This runs the full pipeline (extract, explain, render) and takes milliseconds even on large repos. The LLM now has access to the architecture summary, facts, and insights through the MCP resources.
+This runs the full pipeline and takes milliseconds even on large repos. The LLM now has access to the architecture summary, facts, and insights through the MCP resources.
 
 ### Step 2: Use the context in your prompts
 
 Once the snapshot exists, you do not need to reference archmcp explicitly. The LLM can read the `arch://snapshot/context` resource automatically. Just ask your questions naturally -- the architectural context is there.
 
-### Real-World Prompt Examples
-
-**Onboarding to a new codebase:**
+### Example Prompts
 
 > "I just joined this project. Based on the architecture snapshot, give me a tour of the codebase -- what are the main modules, how do they relate, and where should I start reading?"
 
-> "What architecture pattern does this project follow? What are the key entry points?"
-
-**Understanding architecture before making changes:**
-
-> "I need to change how user events are processed. Which modules are involved in the event pipeline? Show me the dependency chain."
+> "I need to add a new API endpoint for user preferences. Based on the detected architecture, which packages should I touch and in what order?"
 
 > "Are there any cyclic dependencies or layer violations I should be aware of before refactoring?"
 
-**Finding where to add a new feature:**
-
-> "I need to add a new API endpoint for user preferences. Based on the detected architecture, which packages should I touch and in what order?"
-
-> "Where would a new Kafka consumer for order events fit in this codebase?"
-
-**Investigating dependencies and risk zones:**
-
-> "Which modules have the highest fan-in? Those are the ones most likely to break if I change their API."
-
-> "Query all facts with relation 'imports' to see the full dependency graph."
-
-**Querying specific facts for targeted exploration:**
-
-> "Query all symbol facts with name 'Handler' to find every handler in the codebase."
-
 > "Query all route facts to see every API endpoint and which files define them."
 
-> "Query all module facts to get a quick overview of every package."
-
-### Tips for Getting the Most Out of archmcp
+### Tips
 
 - **Regenerate after major changes.** If you add new packages, rename modules, or restructure directories, run `generate_snapshot` again so the LLM has fresh context.
 - **Use `query_facts` for precision.** When you need specifics (all interfaces, all imports from a package, all call sites of a function), `query_facts` with filters is faster than asking the LLM to grep.
 - **Combine with file reading.** The snapshot tells the LLM *what exists and how it connects*. When the LLM needs actual implementation details, it will still read individual files -- but now it knows exactly *which* files to read.
-- **Works across languages.** If your repo has Go, Kotlin, TypeScript, and Swift (e.g., a Go backend with Android and iOS apps and a Next.js frontend), archmcp extracts all and presents a unified architecture view.
-- **Check insights for surprises.** The cycle detector and layer analyzer often surface architectural issues that are invisible during day-to-day development. Ask: "Are there any architectural insights or warnings for this project?"
+- **Check insights for surprises.** The cycle detector and layer analyzer often surface architectural issues that are invisible during day-to-day development.
+
+## Supported Languages
+
+| Language   | Extractor     | Detection          |
+|------------|---------------|--------------------|
+| Go         | `go/ast`      | `go.mod` present   |
+| Kotlin     | regex scanner | `build.gradle.kts` or `build.gradle` with Kotlin/Android |
+| TypeScript | tree-sitter   | `tsconfig.json` or `package.json` with TypeScript |
+| Swift      | regex scanner | `Package.swift`, `.xcodeproj`, or `.xcworkspace` present |
+
+Next.js route detection (App Router and Pages Router) is included in the TypeScript extractor.
+
+The Kotlin extractor includes Android-specific awareness: it detects Jetpack Compose (`@Composable`), Hilt DI (`@HiltViewModel`, `@Module`, `@AndroidEntryPoint`), Room database (`@Entity`, `@Dao`, `@Database`), ViewModels, Repositories, Use Cases, Workers, and other Android architecture components.
+
+The Swift extractor includes iOS-specific awareness: it detects SwiftUI views (`View`, `App`, `Scene` conformances), UIKit components (`UIViewController`, `UIView` subclasses), Combine ViewModels (`ObservableObject`, `@Observable`), architectural patterns (Repositories, Use Cases, Coordinators, Services, DI Containers), and `@MainActor` annotations.
 
 ## Configuration
 
@@ -284,6 +203,52 @@ After running `generate_snapshot`, the following files are written to the output
 | `facts.jsonl` | All extracted facts, one JSON object per line |
 | `insights.json` | Architectural insights with confidence scores |
 | `snapshot.meta.json` | Metadata including file hashes for incremental updates |
+
+## MCP Reference
+
+### Resources
+
+| URI | Description |
+|-----|-------------|
+| `arch://snapshot/context` | Compact LLM-ready architecture summary (Markdown) |
+| `arch://snapshot/facts` | All extracted facts (JSONL) |
+| `arch://snapshot/insights` | Architectural insights (JSON) |
+| `arch://snapshot/meta` | Snapshot metadata (JSON) |
+
+### Tools
+
+#### `generate_snapshot`
+
+Triggers a full snapshot generation for a repository.
+
+**Parameters:**
+- `repo_path` (string, optional): Path to the repository. Defaults to the configured repo path.
+
+#### `query_facts`
+
+Queries the extracted fact store with filters.
+
+**Parameters:**
+- `kind` (string, optional): Filter by fact kind (`module`, `symbol`, `route`, `storage`, `dependency`)
+- `file` (string, optional): Filter by file path
+- `name` (string, optional): Filter by name (substring match)
+- `relation` (string, optional): Filter by relation kind (`declares`, `imports`, `calls`, `implements`, `depends_on`)
+
+#### `explore`
+
+Rich markdown exploration of a module, file, symbol, or directory in a single call.
+
+**Parameters:**
+- `focus` (string, required): Module name, file path, or symbol name to explore
+- `depth` (integer, optional): How deep to follow relations (1=direct only, 2=include relations of relations)
+
+#### `show_symbol`
+
+Show source code for a symbol found in the snapshot.
+
+**Parameters:**
+- `name` (string, required): Symbol name to look up (substring match)
+- `context_lines` (integer, optional): Number of source lines to show around the symbol (default 30)
 
 ## Architecture
 
