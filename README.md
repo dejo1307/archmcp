@@ -2,15 +2,15 @@
 
 Give your AI agent a map of the codebase before it starts exploring.
 
-archmcp is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that generates compact architectural snapshots of repositories. Run it once, and your AI coding agent (Claude Code, Cursor, Copilot, or any MCP-compatible tool) gets a structured overview of modules, symbols, dependencies, routes, and architectural patterns -- before it reads a single file.
+archmcp is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that generates compact architectural snapshots of repositories. Run it once, and your AI coding agent (Claude Code, Cursor, Copilot, or any MCP-compatible tool) gets a structured overview of modules, symbols, dependencies, routes, and architectural patterns - before it reads a single file.
 
 ## What This Is (and Isn't)
 
-**A first step, not a replacement.** archmcp is designed to run *before* your AI agent starts exploring code. It gives the agent a structural overview so it knows where to look and what connects to what. It does not replace grep, file search, code reading, or any traditional discovery tool -- it makes them more effective by providing upfront context.
+**A first step, not a replacement.** archmcp is designed to run *before* your AI agent starts exploring code. It gives the agent a structural overview so it knows where to look and what connects to what. It does not replace grep, file search, code reading, or any traditional discovery tool - it makes them more effective by providing upfront context.
 
 **Input for AI agents.** The snapshot output (modules, symbols, dependencies, architectural patterns) is structured context designed for LLM consumption. It is not a dashboard, not a visualization tool, not a documentation generator. It answers the question: *"What does this codebase look like?"* so the agent can skip the guessing phase.
 
-**Built for multi-repo work.** When you work across multiple repositories -- a Go backend, a TypeScript frontend, a Kotlin Android app, a Swift iOS app -- having an architectural snapshot of each repo lets AI agents understand cross-repo structure without manually exploring every codebase from scratch.
+**Built for multi-repo work.** When you work across multiple repositories - a Go backend, a TypeScript frontend, a Kotlin Android app, a Swift iOS app - having an architectural snapshot of each repo lets AI agents understand cross-repo structure without manually exploring every codebase from scratch.
 
 ## How It Works
 
@@ -95,11 +95,11 @@ This runs the full pipeline and takes milliseconds even on large repos. The LLM 
 
 ### Step 2: Use the context in your prompts
 
-Once the snapshot exists, you do not need to reference archmcp explicitly. The LLM can read the `arch://snapshot/context` resource automatically. Just ask your questions naturally -- the architectural context is there.
+Once the snapshot exists, you do not need to reference archmcp explicitly. The LLM can read the `arch://snapshot/context` resource automatically. Just ask your questions naturally - the architectural context is there.
 
 ### Example Prompts
 
-> "I just joined this project. Based on the architecture snapshot, give me a tour of the codebase -- what are the main modules, how do they relate, and where should I start reading?"
+> "I just joined this project. Based on the architecture snapshot, give me a tour of the codebase - what are the main modules, how do they relate, and where should I start reading?"
 
 > "I need to add a new API endpoint for user preferences. Based on the detected architecture, which packages should I touch and in what order?"
 
@@ -111,7 +111,7 @@ Once the snapshot exists, you do not need to reference archmcp explicitly. The L
 
 - **Regenerate after major changes.** If you add new packages, rename modules, or restructure directories, run `generate_snapshot` again so the LLM has fresh context.
 - **Use `query_facts` for precision.** When you need specifics (all interfaces, all imports from a package, all call sites of a function), `query_facts` with filters is faster than asking the LLM to grep.
-- **Combine with file reading.** The snapshot tells the LLM *what exists and how it connects*. When the LLM needs actual implementation details, it will still read individual files -- but now it knows exactly *which* files to read.
+- **Combine with file reading.** The snapshot tells the LLM *what exists and how it connects*. When the LLM needs actual implementation details, it will still read individual files - but now it knows exactly *which* files to read.
 - **Check insights for surprises.** The cycle detector and layer analyzer often surface architectural issues that are invisible during day-to-day development.
 
 ## Supported Languages
@@ -256,10 +256,10 @@ Show source code for a symbol found in the snapshot.
 
 Facts are language-agnostic architectural primitives:
 
-- **Module** -- a package, directory, or logical grouping
-- **Symbol** -- a function, type, class, interface, variable, or constant
-- **Route** -- an HTTP/API route (e.g., Next.js pages)
-- **Dependency** -- an import/require relationship
+- **Module** - a package, directory, or logical grouping
+- **Symbol** - a function, type, class, interface, variable, or constant
+- **Route** - an HTTP/API route (e.g., Next.js pages)
+- **Dependency** - an import/require relationship
 
 Each fact can have **relations** to other facts: `declares`, `imports`, `calls`, `implements`, `depends_on`.
 
@@ -267,9 +267,9 @@ Each fact can have **relations** to other facts: `declares`, `imports`, `calls`,
 
 Three plugin interfaces drive the pipeline:
 
-- **Extractors** -- parse source code and emit facts (e.g., Go AST, Kotlin regex scanner, Swift regex scanner, TypeScript tree-sitter)
-- **Explainers** -- analyze facts and produce insights (e.g., cycle detection, layer analysis)
-- **Renderers** -- generate output artifacts from the snapshot (e.g., LLM context markdown)
+- **Extractors** - parse source code and emit facts (e.g., Go AST, Kotlin regex scanner, Swift regex scanner, TypeScript tree-sitter)
+- **Explainers** - analyze facts and produce insights (e.g., cycle detection, layer analysis)
+- **Renderers** - generate output artifacts from the snapshot (e.g., LLM context markdown)
 
 All plugins are registered in-process via Go interfaces. Future versions may support JSON-RPC subprocess isolation.
 
