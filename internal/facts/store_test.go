@@ -611,18 +611,18 @@ func TestReverseLookup(t *testing.T) {
 func TestByRepo(t *testing.T) {
 	s := NewStore()
 	s.Add(
-		Fact{Kind: KindSymbol, Name: "Foo", File: "lib/foo.rb", Repo: "svc-pricing"},
-		Fact{Kind: KindSymbol, Name: "Bar", File: "lib/bar.rb", Repo: "core"},
+		Fact{Kind: KindSymbol, Name: "Foo", File: "lib/foo.rb", Repo: "go-service"},
+		Fact{Kind: KindSymbol, Name: "Bar", File: "lib/bar.rb", Repo: "ruby-monolith"},
 		Fact{Kind: KindSymbol, Name: "Baz", File: "lib/baz.rb"}, // no repo
 	)
 
-	got := s.ByRepo("svc-pricing")
+	got := s.ByRepo("go-service")
 	if len(got) != 1 || got[0].Name != "Foo" {
-		t.Errorf("ByRepo(svc-pricing) = %v, want [Foo]", got)
+		t.Errorf("ByRepo(go-service) = %v, want [Foo]", got)
 	}
-	got = s.ByRepo("core")
+	got = s.ByRepo("ruby-monolith")
 	if len(got) != 1 || got[0].Name != "Bar" {
-		t.Errorf("ByRepo(core) = %v, want [Bar]", got)
+		t.Errorf("ByRepo(ruby-monolith) = %v, want [Bar]", got)
 	}
 	got = s.ByRepo("nonexistent")
 	if len(got) != 0 {
@@ -633,22 +633,22 @@ func TestByRepo(t *testing.T) {
 func TestQueryAdvanced_RepoFilter(t *testing.T) {
 	s := NewStore()
 	s.Add(
-		Fact{Kind: KindSymbol, Name: "Foo", File: "svc-pricing/lib/foo.rb", Repo: "svc-pricing"},
-		Fact{Kind: KindSymbol, Name: "Bar", File: "core/lib/bar.rb", Repo: "core"},
-		Fact{Kind: KindSymbol, Name: "Baz", File: "svc-pricing/lib/baz.rb", Repo: "svc-pricing"},
+		Fact{Kind: KindSymbol, Name: "Foo", File: "go-service/lib/foo.rb", Repo: "go-service"},
+		Fact{Kind: KindSymbol, Name: "Bar", File: "ruby-monolith/lib/bar.rb", Repo: "ruby-monolith"},
+		Fact{Kind: KindSymbol, Name: "Baz", File: "go-service/lib/baz.rb", Repo: "go-service"},
 	)
 
-	results, total := s.QueryAdvanced(QueryOpts{Repo: "svc-pricing"})
+	results, total := s.QueryAdvanced(QueryOpts{Repo: "go-service"})
 	if total != 2 {
 		t.Errorf("total = %d, want 2", total)
 	}
 	for _, r := range results {
-		if r.Repo != "svc-pricing" {
-			t.Errorf("expected repo svc-pricing, got %q", r.Repo)
+		if r.Repo != "go-service" {
+			t.Errorf("expected repo go-service, got %q", r.Repo)
 		}
 	}
 
-	results, total = s.QueryAdvanced(QueryOpts{Repo: "core"})
+	results, total = s.QueryAdvanced(QueryOpts{Repo: "ruby-monolith"})
 	if total != 1 {
 		t.Errorf("total = %d, want 1", total)
 	}
@@ -660,13 +660,13 @@ func TestQueryAdvanced_RepoFilter(t *testing.T) {
 func TestQueryAdvanced_RepoAndFilePrefixCombined(t *testing.T) {
 	s := NewStore()
 	s.Add(
-		Fact{Kind: KindSymbol, Name: "Foo", File: "svc-pricing/lib/foo.rb", Repo: "svc-pricing"},
-		Fact{Kind: KindSymbol, Name: "Bar", File: "svc-pricing/app/bar.rb", Repo: "svc-pricing"},
-		Fact{Kind: KindSymbol, Name: "Baz", File: "core/lib/baz.rb", Repo: "core"},
+		Fact{Kind: KindSymbol, Name: "Foo", File: "go-service/lib/foo.rb", Repo: "go-service"},
+		Fact{Kind: KindSymbol, Name: "Bar", File: "go-service/app/bar.rb", Repo: "go-service"},
+		Fact{Kind: KindSymbol, Name: "Baz", File: "ruby-monolith/lib/baz.rb", Repo: "ruby-monolith"},
 	)
 
 	// Repo AND FilePrefix
-	results, total := s.QueryAdvanced(QueryOpts{Repo: "svc-pricing", FilePrefix: "svc-pricing/lib"})
+	results, total := s.QueryAdvanced(QueryOpts{Repo: "go-service", FilePrefix: "go-service/lib"})
 	if total != 1 {
 		t.Errorf("total = %d, want 1", total)
 	}
@@ -739,16 +739,16 @@ func TestTagRange_FilePrefixQuery(t *testing.T) {
 	s := NewStore()
 	// Simulate multi-repo: two repos tagged differently
 	s.Add(makeSymbol("A", "lib/a.rb", SymbolFunc, true))
-	s.TagRange(0, "core", "core/")
+	s.TagRange(0, "ruby-monolith", "ruby-monolith/")
 
 	start := s.Count()
 	s.Add(makeSymbol("B", "lib/b.rb", SymbolFunc, true))
 	s.TagRange(start, "pricing", "pricing/")
 
 	// FilePrefix should distinguish repos
-	coreResults, _ := s.QueryAdvanced(QueryOpts{FilePrefix: "core/"})
+	coreResults, _ := s.QueryAdvanced(QueryOpts{FilePrefix: "ruby-monolith/"})
 	if len(coreResults) != 1 || coreResults[0].Name != "A" {
-		t.Errorf("core prefix: got %v, want [A]", coreResults)
+		t.Errorf("ruby-monolith prefix: got %v, want [A]", coreResults)
 	}
 
 	pricingResults, _ := s.QueryAdvanced(QueryOpts{FilePrefix: "pricing/"})
@@ -777,15 +777,15 @@ func TestTagUntagged_UntaggedFacts(t *testing.T) {
 	s.Add(Fact{Kind: KindSymbol, Name: "C", File: "other/c.rb", Repo: "other-repo",
 		Props: map[string]any{"symbol_kind": SymbolFunc, "exported": true}})
 
-	prefixed := s.TagUntagged("core", "core/")
+	prefixed := s.TagUntagged("ruby-monolith", "ruby-monolith/")
 	if prefixed != 2 {
-		t.Errorf("TagUntagged returned %d, want 2 (only core facts prefixed)", prefixed)
+		t.Errorf("TagUntagged returned %d, want 2 (only ruby-monolith facts prefixed)", prefixed)
 	}
 
 	// A and B should have Repo set and files prefixed
 	a := s.ByName("A")
-	if len(a) != 1 || a[0].Repo != "core" || a[0].File != "core/lib/a.rb" {
-		t.Errorf("A: Repo=%q File=%q, want core, core/lib/a.rb", a[0].Repo, a[0].File)
+	if len(a) != 1 || a[0].Repo != "ruby-monolith" || a[0].File != "ruby-monolith/lib/a.rb" {
+		t.Errorf("A: Repo=%q File=%q, want ruby-monolith, ruby-monolith/lib/a.rb", a[0].Repo, a[0].File)
 	}
 
 	// C should be unchanged (different repo)
@@ -798,12 +798,12 @@ func TestTagUntagged_UntaggedFacts(t *testing.T) {
 	if got := s.ByFile("lib/a.rb"); len(got) != 0 {
 		t.Error("old file path lib/a.rb should no longer be indexed")
 	}
-	if got := s.ByFile("core/lib/a.rb"); len(got) != 1 {
-		t.Error("new file path core/lib/a.rb should be indexed")
+	if got := s.ByFile("ruby-monolith/lib/a.rb"); len(got) != 1 {
+		t.Error("new file path ruby-monolith/lib/a.rb should be indexed")
 	}
 
 	// Running again should prefix 0 (already prefixed)
-	prefixed = s.TagUntagged("core", "core/")
+	prefixed = s.TagUntagged("ruby-monolith", "ruby-monolith/")
 	if prefixed != 0 {
 		t.Errorf("second TagUntagged returned %d, want 0", prefixed)
 	}
@@ -814,27 +814,27 @@ func TestTagUntagged_AlreadyRepoTagged(t *testing.T) {
 	// Facts that already have Repo set (from SetRepoRange in non-append mode)
 	// but file paths are NOT prefixed yet.
 	s.Add(
-		Fact{Kind: KindSymbol, Name: "A", File: "lib/a.rb", Repo: "core",
+		Fact{Kind: KindSymbol, Name: "A", File: "lib/a.rb", Repo: "ruby-monolith",
 			Props: map[string]any{"symbol_kind": SymbolFunc, "exported": true}},
-		Fact{Kind: KindSymbol, Name: "B", File: "lib/b.rb", Repo: "core",
+		Fact{Kind: KindSymbol, Name: "B", File: "lib/b.rb", Repo: "ruby-monolith",
 			Props: map[string]any{"symbol_kind": SymbolFunc, "exported": true}},
 	)
 
 	// TagUntagged should still prefix their file paths
-	prefixed := s.TagUntagged("core", "core/")
+	prefixed := s.TagUntagged("ruby-monolith", "ruby-monolith/")
 	if prefixed != 2 {
 		t.Errorf("TagUntagged returned %d, want 2 (files need prefixing)", prefixed)
 	}
 
 	a := s.ByName("A")
-	if len(a) != 1 || a[0].File != "core/lib/a.rb" {
-		t.Errorf("A.File = %q, want core/lib/a.rb", a[0].File)
+	if len(a) != 1 || a[0].File != "ruby-monolith/lib/a.rb" {
+		t.Errorf("A.File = %q, want ruby-monolith/lib/a.rb", a[0].File)
 	}
 
 	// byRepo index should not have duplicates
-	coreFacts := s.ByRepo("core")
+	coreFacts := s.ByRepo("ruby-monolith")
 	if len(coreFacts) != 2 {
-		t.Errorf("ByRepo(core) = %d, want 2", len(coreFacts))
+		t.Errorf("ByRepo(ruby-monolith) = %d, want 2", len(coreFacts))
 	}
 }
 

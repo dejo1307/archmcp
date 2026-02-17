@@ -1,0 +1,95 @@
+# archmcp configuration for cross-repo analysis.
+#
+# This config enables all extractors so it works regardless of which
+# languages each repository uses. Use append mode to build a combined
+# snapshot across multiple repositories.
+#
+# Workflow:
+#   1. Generate the first repo:
+#      > "Generate an architectural snapshot of /path/to/ruby-monolith"
+#
+#   2. Append additional repos:
+#      > "Generate a snapshot of /path/to/go-service with append mode"
+#
+#   3. Query across repos:
+#      > "Query all route facts"                      (all repos)
+#      > "Query all symbols in go-service"             (single repo)
+#
+# Each repo is tagged with a label derived from its directory name
+# (e.g. /path/to/go-service -> "go-service"). File paths in the
+# fact store are prefixed with the repo label in multi-repo mode.
+
+repo: "."
+ignore:
+  # Dependencies and tooling
+  - "vendor/**"
+  - "node_modules/**"
+  - ".git/**"
+  - ".archmcp/**"
+  # Go tests
+  - "**/*_test.go"
+  # TypeScript tests
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  # Kotlin / Android build and cache
+  - "build/**"
+  - "**/build/**"
+  - ".gradle/**"
+  - "**/.gradle/**"
+  - "**/generated/**"
+  - "**/*Test.kt"
+  - "**/androidTest/**"
+  # Swift / Xcode build and cache
+  - "DerivedData/**"
+  - "**/DerivedData/**"
+  - "*.xcodeproj/**"
+  - "*.xcworkspace/**"
+  - "Pods/**"
+  - "**/Pods/**"
+  - ".build/**"
+  - "**/.build/**"
+  - "**/*Tests.swift"
+  - "**/*Test.swift"
+  # Ruby / Rails
+  - "**/*_spec.rb"
+  - "**/*_test.rb"
+  - "tmp/**"
+  - "log/**"
+  - "public/assets/**"
+  - "public/packs/**"
+  # Next.js / build and cache
+  - ".next/**"
+  - "out/**"
+  - ".vercel/**"
+  - ".turbo/**"
+  # Documentation
+  - "**/*.md"
+  - "**/*.mdx"
+  # Config / data
+  - "**/*.yml"
+  - "**/*.yaml"
+  - "**/*.json"
+  # CI / ops
+  - "Jenkinsfile"
+  - "**/Jenkinsfile"
+  - "**/Jenkinsfile*"
+  # Docker and env files
+  - "Dockerfile"
+  - "**/Dockerfile*"
+  - "**/.env*"
+extractors:
+  - go
+  - kotlin
+  - typescript
+  - swift
+  - ruby
+explainers:
+  - cycles
+  - layers
+renderers:
+  - llm_context
+output:
+  dir: ".archmcp"
+  max_context_tokens: 16000

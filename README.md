@@ -10,7 +10,7 @@ archmcp is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.i
 
 **Input for AI agents.** The snapshot output (modules, symbols, dependencies, architectural patterns) is structured context designed for LLM consumption. It is not a dashboard, not a visualization tool, not a documentation generator. It answers the question: *"What does this codebase look like?"* so the agent can skip the guessing phase.
 
-**Built for multi-repo work.** When you work across multiple repositories - a Go backend, a TypeScript frontend, a Kotlin Android app, a Swift iOS app - having an architectural snapshot of each repo lets AI agents understand cross-repo structure without manually exploring every codebase from scratch.
+**Built for multi-repo work.** When you work across multiple repositories - a Go backend, a TypeScript frontend, a Kotlin Android app, a Swift iOS app, a Ruby on Rails API - having an architectural snapshot of each repo lets AI agents understand cross-repo structure without manually exploring every codebase from scratch. Use `append` mode to build a combined snapshot across multiple repos and query them together.
 
 ## How It Works
 
@@ -19,7 +19,7 @@ archmcp runs as a stdio-based MCP server. When connected to an LLM client, it ex
 The pipeline:
 
 ```
-Repository -> File Walker -> Extractors (Go, Kotlin, TypeScript, Swift) -> Fact Store
+Repository -> File Walker -> Extractors (Go, Kotlin, TypeScript, Swift, Ruby) -> Fact Store
   -> Explainers (cycles, layers) -> Insights
   -> Renderers (LLM context) -> Artifacts
   -> MCP Server (resources + tools)
@@ -122,12 +122,15 @@ Once the snapshot exists, you do not need to reference archmcp explicitly. The L
 | Kotlin     | regex scanner | `build.gradle.kts` or `build.gradle` with Kotlin/Android |
 | TypeScript | tree-sitter   | `tsconfig.json` or `package.json` with TypeScript |
 | Swift      | regex scanner | `Package.swift`, `.xcodeproj`, or `.xcworkspace` present |
+| Ruby       | regex scanner | `Gemfile` present  |
 
 Next.js route detection (App Router and Pages Router) is included in the TypeScript extractor.
 
 The Kotlin extractor includes Android-specific awareness: it detects Jetpack Compose (`@Composable`), Hilt DI (`@HiltViewModel`, `@Module`, `@AndroidEntryPoint`), Room database (`@Entity`, `@Dao`, `@Database`), ViewModels, Repositories, Use Cases, Workers, and other Android architecture components.
 
 The Swift extractor includes iOS-specific awareness: it detects SwiftUI views (`View`, `App`, `Scene` conformances), UIKit components (`UIViewController`, `UIView` subclasses), Combine ViewModels (`ObservableObject`, `@Observable`), architectural patterns (Repositories, Use Cases, Coordinators, Services, DI Containers), and `@MainActor` annotations.
+
+The Ruby extractor includes Rails-specific awareness: it detects ActiveRecord models (associations like `has_many`, `belongs_to`, `has_one`, `has_and_belongs_to_many`; scopes; table name inference), Rails route DSL parsing (`config/routes.rb` - resources, namespaces, scopes, member/collection blocks), and Packwerk package boundary detection (`packwerk.yml`, `package.yml` with dependency enforcement). It also extracts modules, classes, methods with visibility tracking (`private`, `protected`, `public`), mixins (`include`, `extend`, `prepend`), `ActiveSupport::Concern` modules, constants, and attributes (`attr_reader`, `attr_writer`, `attr_accessor`).
 
 ## Configuration
 
@@ -147,6 +150,8 @@ ignore:
   - "**/*.test.tsx"
   - "**/*.spec.ts"
   - "**/*.spec.tsx"
+  - "**/*_spec.rb"
+  - "**/*_test.rb"
   # Next.js / build and cache
   - ".next/**"
   - "out/**"
@@ -167,11 +172,36 @@ ignore:
   - "Dockerfile"
   - "**/Dockerfile*"
   - "**/.env*"
+  # Kotlin / Android build and cache
+  - "build/**"
+  - "**/build/**"
+  - ".gradle/**"
+  - "**/.gradle/**"
+  - "**/generated/**"
+  - "**/*Test.kt"
+  - "**/androidTest/**"
+  # Swift / Xcode build and cache
+  - "DerivedData/**"
+  - "**/DerivedData/**"
+  - "*.xcodeproj/**"
+  - "*.xcworkspace/**"
+  - "Pods/**"
+  - "**/Pods/**"
+  - ".build/**"
+  - "**/.build/**"
+  - "**/*Tests.swift"
+  - "**/*Test.swift"
+  # Ruby / Rails
+  - "tmp/**"
+  - "log/**"
+  - "public/assets/**"
+  - "public/packs/**"
 extractors:
   - go
   - kotlin
   - typescript
   - swift
+  - ruby
 explainers:
   - cycles
   - layers
@@ -179,7 +209,7 @@ renderers:
   - llm_context
 output:
   dir: ".archmcp"
-  max_context_tokens: 4000
+  max_context_tokens: 16000
 ```
 
 ### Configuration Reference
@@ -188,11 +218,39 @@ output:
 |-------|-------------|---------|
 | `repo` | Repository root path | `"."` |
 | `ignore` | Glob patterns for files/dirs to skip | vendor, node_modules, .git, tests, Next.js dirs, docs (.md, .mdx), config (yml, yaml, json), CI (e.g. Jenkinsfile), Dockerfile, .env* |
-| `extractors` | Enabled extractors | `["go", "kotlin", "typescript", "swift"]` |
+| `extractors` | Enabled extractors | `["go", "kotlin", "typescript", "swift", "ruby"]` |
 | `explainers` | Enabled explainers | `["cycles", "layers"]` |
 | `renderers` | Enabled renderers | `["llm_context"]` |
 | `output.dir` | Output directory for artifacts | `".archmcp"` |
-| `output.max_context_tokens` | Token budget for LLM context | `4000` |
+| `output.max_context_tokens` | Token budget for LLM context | `16000` |
+
+## Cross-Repo Analysis
+
+archmcp supports analyzing multiple repositories together. Use `append` mode to incrementally build a combined fact store across repos, then query across all of them.
+
+### How It Works
+
+1. **Generate the first snapshot** as usual (single-repo mode).
+2. **Append additional repos** by calling `generate_snapshot` with `append=true`. Each appended repo's facts are tagged with a **repo label** (derived from the directory basename, e.g. `/path/to/go-service` becomes `go-service`) and file paths are prefixed with the label (e.g. `go-service/lib/foo.rb`).
+3. **Query across repos** using the `repo` filter on `query_facts` to scope results to a specific repo, or omit it to query all repos at once.
+
+### Example Workflow
+
+> "Generate an architectural snapshot of /path/to/ruby-monolith"
+
+This creates the initial snapshot. Now add a second repo:
+
+> "Generate a snapshot of /path/to/go-service with append mode"
+
+Both repos are now in the fact store. You can query them together:
+
+> "Query all route facts across both repos"
+
+Or filter to a specific repo:
+
+> "Query all symbols in go-service"
+
+The `show_symbol` and `explore` tools automatically resolve file paths across repos, so source code viewing works seamlessly in multi-repo mode.
 
 ## Output Artifacts
 
@@ -220,20 +278,32 @@ After running `generate_snapshot`, the following files are written to the output
 
 #### `generate_snapshot`
 
-Triggers a full snapshot generation for a repository.
+Triggers a full snapshot generation for a repository. Parses source code, extracts facts, detects patterns, and produces an LLM-ready context summary. Use `append=true` to add a second repository without clearing existing facts (for cross-repo analysis).
 
 **Parameters:**
 - `repo_path` (string, optional): Path to the repository. Defaults to the configured repo path.
+- `append` (boolean, optional): If true, keep existing facts and add new ones with repo-prefixed file paths (for multi-repo analysis). Default false.
 
 #### `query_facts`
 
-Queries the extracted fact store with filters.
+Queries the extracted fact store with filters. Supports batch filters (OR within dimension, AND across dimensions), pagination, relation expansion, and multiple output formats.
 
 **Parameters:**
 - `kind` (string, optional): Filter by fact kind (`module`, `symbol`, `route`, `storage`, `dependency`)
 - `file` (string, optional): Filter by file path
 - `name` (string, optional): Filter by name (substring match)
 - `relation` (string, optional): Filter by relation kind (`declares`, `imports`, `calls`, `implements`, `depends_on`)
+- `prop` (string, optional): Filter by property name (e.g. `source`, `symbol_kind`, `exported`, `framework`, `storage_kind`)
+- `prop_value` (string, optional): Filter by property value (requires `prop` to be set)
+- `names` (string[], optional): Filter by multiple exact names (OR). Use instead of `name` for batch lookups.
+- `files` (string[], optional): Filter by multiple file paths (OR). Use instead of `file` for batch lookups.
+- `kinds` (string[], optional): Filter by multiple kinds (OR). Use instead of `kind` for batch lookups.
+- `file_prefix` (string, optional): Filter by file path prefix (e.g. `internal/server` to match all files in that directory)
+- `repo` (string, optional): Filter by repository label (set in multi-repo/append mode, e.g. `go-service`)
+- `offset` (integer, optional): Number of results to skip for pagination. Default 0.
+- `limit` (integer, optional): Maximum number of results to return (1-500). Default 100.
+- `include_related` (boolean, optional): If true, inline the full fact data for each relation target instead of just the target name.
+- `output_mode` (string, optional): Output format: `full` (default JSON), `compact` (markdown table), or `names` (just names and files).
 
 #### `explore`
 
@@ -259,7 +329,7 @@ Facts are language-agnostic architectural primitives:
 
 - **Module** - a package, directory, or logical grouping
 - **Symbol** - a function, type, class, interface, variable, or constant
-- **Route** - an HTTP/API route (e.g., Next.js pages)
+- **Route** - an HTTP/API route (e.g., Next.js pages, Rails routes)
 - **Dependency** - an import/require relationship
 
 Each fact can have **relations** to other facts: `declares`, `imports`, `calls`, `implements`, `depends_on`.
@@ -268,7 +338,7 @@ Each fact can have **relations** to other facts: `declares`, `imports`, `calls`,
 
 Three plugin interfaces drive the pipeline:
 
-- **Extractors** - parse source code and emit facts (e.g., Go AST, Kotlin regex scanner, Swift regex scanner, TypeScript tree-sitter)
+- **Extractors** - parse source code and emit facts (e.g., Go AST, Kotlin regex scanner, Swift regex scanner, Ruby regex scanner, TypeScript tree-sitter)
 - **Explainers** - analyze facts and produce insights (e.g., cycle detection, layer analysis)
 - **Renderers** - generate output artifacts from the snapshot (e.g., LLM context markdown)
 
@@ -294,7 +364,12 @@ archmcp/
 │   │   ├── goextractor/go.go        # Go AST extractor
 │   │   ├── kotlinextractor/kotlin.go # Kotlin regex extractor (Android-aware)
 │   │   ├── swiftextractor/swift.go  # Swift regex extractor (iOS-aware)
-│   │   └── tsextractor/ts.go        # TypeScript tree-sitter extractor
+│   │   ├── tsextractor/ts.go        # TypeScript tree-sitter extractor
+│   │   └── rubyextractor/
+│   │       ├── ruby.go              # Ruby regex extractor (Rails-aware)
+│   │       ├── routes.go            # Rails route DSL parser
+│   │       ├── packwerk.go          # Packwerk package boundary detector
+│   │       └── storage.go           # ActiveRecord model/storage extractor
 │   ├── explainers/
 │   │   ├── registry.go              # Explainer interface + registry
 │   │   ├── cycles/cycles.go         # Cyclic dependency detector
@@ -303,6 +378,14 @@ archmcp/
 │   │   ├── registry.go              # Renderer interface + registry
 │   │   └── llmcontext/llm.go        # LLM context markdown renderer
 │   └── server/server.go             # MCP server wiring
+├── examples/                         # Per-language config examples
+│   ├── go.yaml
+│   ├── kotlin.yaml
+│   ├── typescript.yaml
+│   ├── swift.yaml
+│   ├── ruby.yaml
+│   ├── multi-repo.yaml
+│   └── full.yaml
 ├── mcp-arch.yaml                    # Default config
 ├── go.mod
 └── go.sum

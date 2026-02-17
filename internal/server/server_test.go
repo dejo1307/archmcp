@@ -321,7 +321,7 @@ func TestExploreDirectory_NotFound(t *testing.T) {
 
 func TestNormalizeToRelative_AbsolutePath(t *testing.T) {
 	srv := &Server{
-		eng: newEngineWithSnapshot("/Users/me/vinted"),
+		eng: newEngineWithSnapshot("/Users/me/development"),
 	}
 
 	tests := []struct {
@@ -329,9 +329,9 @@ func TestNormalizeToRelative_AbsolutePath(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"absolute subdir", "/Users/me/vinted/svc-pricing", "svc-pricing"},
-		{"absolute file", "/Users/me/vinted/svc-pricing/lib/foo.rb", "svc-pricing/lib/foo.rb"},
-		{"absolute repo root", "/Users/me/vinted", "."},
+		{"absolute subdir", "/Users/me/development/go-service", "go-service"},
+		{"absolute file", "/Users/me/development/go-service/lib/foo.rb", "go-service/lib/foo.rb"},
+		{"absolute repo root", "/Users/me/development", "."},
 		{"already relative", "internal/server", "internal/server"},
 		{"unrelated absolute", "/other/path/foo", "/other/path/foo"},
 		{"empty string", "", ""},
@@ -350,8 +350,8 @@ func TestNormalizeToRelative_AbsolutePath(t *testing.T) {
 func TestNormalizeToRelative_MultiRepo(t *testing.T) {
 	eng := newEngineWithSnapshot("/Users/me/workspace")
 	eng.SetRepoPaths(map[string]string{
-		"svc-pricing": "/Users/me/vinted/svc-pricing",
-		"core":        "/Users/me/vinted/core",
+		"go-service":    "/Users/me/development/go-service",
+		"ruby-monolith": "/Users/me/development/ruby-monolith",
 	})
 	srv := &Server{eng: eng}
 
@@ -360,9 +360,9 @@ func TestNormalizeToRelative_MultiRepo(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"multi-repo svc-pricing dir", "/Users/me/vinted/svc-pricing", "svc-pricing"},
-		{"multi-repo svc-pricing file", "/Users/me/vinted/svc-pricing/lib/foo.rb", "svc-pricing/lib/foo.rb"},
-		{"multi-repo core file", "/Users/me/vinted/core/lib/bar.rb", "core/lib/bar.rb"},
+		{"multi-repo go-service dir", "/Users/me/development/go-service", "go-service"},
+		{"multi-repo go-service file", "/Users/me/development/go-service/lib/foo.rb", "go-service/lib/foo.rb"},
+		{"multi-repo ruby-monolith file", "/Users/me/development/ruby-monolith/lib/bar.rb", "ruby-monolith/lib/bar.rb"},
 		{"unrelated absolute", "/other/path/foo", "/other/path/foo"},
 		{"relative passthrough", "internal/server", "internal/server"},
 	}
@@ -380,90 +380,90 @@ func TestNormalizeToRelative_MultiRepo(t *testing.T) {
 // --- Integration tests: original reported use cases ---
 
 // TestScenario_QueryFactsWithFilePrefixCrossRepo simulates the first reported issue:
-// query_facts with file_prefix like "svc-pricing/..." or "core/..." returned nothing.
+// query_facts with file_prefix like "go-service/..." or "ruby-monolith/..." returned nothing.
 func TestScenario_QueryFactsWithFilePrefixCrossRepo(t *testing.T) {
-	eng := newEngineWithSnapshot("/Users/me/vinted/workspace")
+	eng := newEngineWithSnapshot("/Users/me/development/workspace")
 	eng.SetRepoPaths(map[string]string{
-		"svc-pricing": "/Users/me/vinted/svc-pricing",
-		"core":        "/Users/me/vinted/core",
+		"go-service":    "/Users/me/development/go-service",
+		"ruby-monolith": "/Users/me/development/ruby-monolith",
 	})
 	srv := &Server{eng: eng}
 
 	store := eng.Store()
 
-	// Simulate repo A facts (svc-pricing) - files prefixed as in append mode
+	// Simulate repo A facts (go-service) - files prefixed as in append mode
 	store.Add(
-		facts.Fact{Kind: facts.KindModule, Name: "Pricing", File: "svc-pricing/lib/pricing.rb", Repo: "svc-pricing",
+		facts.Fact{Kind: facts.KindModule, Name: "Pricing", File: "go-service/lib/pricing.rb", Repo: "go-service",
 			Props: map[string]any{"language": "ruby"}},
-		facts.Fact{Kind: facts.KindSymbol, Name: "PricingService", File: "svc-pricing/lib/pricing_service.rb", Line: 5, Repo: "svc-pricing",
-			Props: map[string]any{"symbol_kind": "class", "exported": true, "language": "ruby"},
+		facts.Fact{Kind: facts.KindSymbol, Name: "PricingService", File: "go-service/lib/pricing_service.rb", Line: 5, Repo: "go-service",
+			Props:     map[string]any{"symbol_kind": "class", "exported": true, "language": "ruby"},
 			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "CoreUtils"}}},
-		facts.Fact{Kind: facts.KindDependency, Name: "svc-pricing -> core", File: "svc-pricing/lib/pricing_service.rb", Repo: "svc-pricing",
-			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "core"}}},
+		facts.Fact{Kind: facts.KindDependency, Name: "go-service -> ruby-monolith", File: "go-service/lib/pricing_service.rb", Repo: "go-service",
+			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "ruby-monolith"}}},
 	)
 
-	// Simulate repo B facts (core)
+	// Simulate repo B facts (ruby-monolith)
 	store.Add(
-		facts.Fact{Kind: facts.KindModule, Name: "Core", File: "core/lib/core.rb", Repo: "core",
+		facts.Fact{Kind: facts.KindModule, Name: "Core", File: "ruby-monolith/lib/core.rb", Repo: "ruby-monolith",
 			Props: map[string]any{"language": "ruby"}},
-		facts.Fact{Kind: facts.KindSymbol, Name: "CoreUtils", File: "core/lib/utils.rb", Line: 10, Repo: "core",
+		facts.Fact{Kind: facts.KindSymbol, Name: "CoreUtils", File: "ruby-monolith/lib/utils.rb", Line: 10, Repo: "ruby-monolith",
 			Props: map[string]any{"symbol_kind": "class", "exported": true, "language": "ruby"}},
 	)
 
-	// Test 1: query_facts with file_prefix "svc-pricing" should find svc-pricing facts
-	results, total := store.QueryAdvanced(facts.QueryOpts{FilePrefix: "svc-pricing"})
+	// Test 1: query_facts with file_prefix "go-service" should find go-service facts
+	results, total := store.QueryAdvanced(facts.QueryOpts{FilePrefix: "go-service"})
 	if total != 3 {
-		t.Errorf("file_prefix=svc-pricing: total=%d, want 3", total)
+		t.Errorf("file_prefix=go-service: total=%d, want 3", total)
 	}
 	for _, f := range results {
-		if !strings.HasPrefix(f.File, "svc-pricing") {
-			t.Errorf("unexpected file %q in svc-pricing results", f.File)
+		if !strings.HasPrefix(f.File, "go-service") {
+			t.Errorf("unexpected file %q in go-service results", f.File)
 		}
 	}
 
-	// Test 2: query_facts with file_prefix "core" should find core facts
-	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "core"})
+	// Test 2: query_facts with file_prefix "ruby-monolith" should find ruby-monolith facts
+	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "ruby-monolith"})
 	if total != 2 {
-		t.Errorf("file_prefix=core: total=%d, want 2", total)
+		t.Errorf("file_prefix=ruby-monolith: total=%d, want 2", total)
 	}
 
 	// Test 3: repo filter should work
-	results, total = store.QueryAdvanced(facts.QueryOpts{Repo: "svc-pricing"})
+	results, total = store.QueryAdvanced(facts.QueryOpts{Repo: "go-service"})
 	if total != 3 {
-		t.Errorf("repo=svc-pricing: total=%d, want 3", total)
+		t.Errorf("repo=go-service: total=%d, want 3", total)
 	}
 
 	// Test 4: normalize absolute path to file_prefix
-	normalized := srv.normalizeToRelative("/Users/me/vinted/svc-pricing/lib")
-	if normalized != "svc-pricing/lib" {
-		t.Errorf("normalize(/Users/me/vinted/svc-pricing/lib) = %q, want svc-pricing/lib", normalized)
+	normalized := srv.normalizeToRelative("/Users/me/development/go-service/lib")
+	if normalized != "go-service/lib" {
+		t.Errorf("normalize(/Users/me/development/go-service/lib) = %q, want go-service/lib", normalized)
 	}
 	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: normalized})
 	if total != 3 {
-		t.Errorf("normalized file_prefix: total=%d, want 3 (module + symbol + dep all in svc-pricing/lib/)", total)
+		t.Errorf("normalized file_prefix: total=%d, want 3 (module + symbol + dep all in go-service/lib/)", total)
 	}
 }
 
 // TestScenario_ExploreWithAbsolutePathCrossRepo simulates the second reported issue:
-// explore with focus "/Users/.../svc-pricing" returned "No facts matching focus".
+// explore with focus "/Users/.../go-service" returned "No facts matching focus".
 func TestScenario_ExploreWithAbsolutePathCrossRepo(t *testing.T) {
 	eng := newEngineWithSnapshot("/Users/me/workspace")
 	eng.SetRepoPaths(map[string]string{
-		"svc-pricing": "/Users/me/vinted/svc-pricing",
-		"core":        "/Users/me/vinted/core",
+		"go-service":    "/Users/me/development/go-service",
+		"ruby-monolith": "/Users/me/development/ruby-monolith",
 	})
 	srv := &Server{eng: eng}
 
 	store := eng.Store()
 	store.Add(
-		facts.Fact{Kind: facts.KindSymbol, Name: "PricingService", File: "svc-pricing/lib/pricing_service.rb", Line: 5, Repo: "svc-pricing",
+		facts.Fact{Kind: facts.KindSymbol, Name: "PricingService", File: "go-service/lib/pricing_service.rb", Line: 5, Repo: "go-service",
 			Props: map[string]any{"symbol_kind": "class", "exported": true}},
-		facts.Fact{Kind: facts.KindSymbol, Name: "CoreUtils", File: "core/lib/utils.rb", Line: 10, Repo: "core",
+		facts.Fact{Kind: facts.KindSymbol, Name: "CoreUtils", File: "ruby-monolith/lib/utils.rb", Line: 10, Repo: "ruby-monolith",
 			Props: map[string]any{"symbol_kind": "class", "exported": true}},
 	)
 
-	// Test: explore with absolute path to svc-pricing repo root
-	focus := srv.normalizeToRelative("/Users/me/vinted/svc-pricing")
+	// Test: explore with absolute path to go-service repo root
+	focus := srv.normalizeToRelative("/Users/me/development/go-service")
 	t.Logf("normalized focus: %q", focus)
 
 	var sb strings.Builder
@@ -476,8 +476,8 @@ func TestScenario_ExploreWithAbsolutePathCrossRepo(t *testing.T) {
 		t.Errorf("explore output should contain PricingService, got:\n%s", output)
 	}
 
-	// Test: explore with absolute path to core repo root
-	focus = srv.normalizeToRelative("/Users/me/vinted/core")
+	// Test: explore with absolute path to ruby-monolith repo root
+	focus = srv.normalizeToRelative("/Users/me/development/ruby-monolith")
 	t.Logf("normalized focus: %q", focus)
 
 	sb.Reset()
@@ -491,9 +491,9 @@ func TestScenario_ExploreWithAbsolutePathCrossRepo(t *testing.T) {
 	}
 
 	// Test: explore with absolute path to subdirectory
-	focus = srv.normalizeToRelative("/Users/me/vinted/svc-pricing/lib")
-	if focus != "svc-pricing/lib" {
-		t.Errorf("normalized subdir = %q, want svc-pricing/lib", focus)
+	focus = srv.normalizeToRelative("/Users/me/development/go-service/lib")
+	if focus != "go-service/lib" {
+		t.Errorf("normalized subdir = %q, want go-service/lib", focus)
 	}
 
 	sb.Reset()
@@ -506,7 +506,7 @@ func TestScenario_ExploreWithAbsolutePathCrossRepo(t *testing.T) {
 // TestScenario_ExploreSingleRepoAbsolutePath tests the single-repo case where
 // someone passes the repo root as an absolute path to explore.
 func TestScenario_ExploreSingleRepoAbsolutePath(t *testing.T) {
-	eng := newEngineWithSnapshot("/Users/me/vinted/svc-pricing")
+	eng := newEngineWithSnapshot("/Users/me/development/go-service")
 	srv := &Server{eng: eng}
 
 	store := eng.Store()
@@ -520,7 +520,7 @@ func TestScenario_ExploreSingleRepoAbsolutePath(t *testing.T) {
 	)
 
 	// Normalize the exact repo root
-	focus := srv.normalizeToRelative("/Users/me/vinted/svc-pricing")
+	focus := srv.normalizeToRelative("/Users/me/development/go-service")
 	t.Logf("single-repo root normalized to: %q", focus)
 
 	// Raw exploreSymbol WOULD match "." as substring of "pricing.Service" etc.
@@ -550,7 +550,7 @@ func TestScenario_ExploreSingleRepoAbsolutePath(t *testing.T) {
 	}
 
 	// Normalize a subdirectory - should work
-	focus = srv.normalizeToRelative("/Users/me/vinted/svc-pricing/lib")
+	focus = srv.normalizeToRelative("/Users/me/development/go-service/lib")
 	if focus != "lib" {
 		t.Errorf("normalized subdir = %q, want lib", focus)
 	}
@@ -566,7 +566,7 @@ func TestScenario_ExploreSingleRepoAbsolutePath(t *testing.T) {
 	}
 
 	// Normalize a specific file path
-	focus = srv.normalizeToRelative("/Users/me/vinted/svc-pricing/lib/pricing_service.go")
+	focus = srv.normalizeToRelative("/Users/me/development/go-service/lib/pricing_service.go")
 	if focus != "lib/pricing_service.go" {
 		t.Errorf("normalized file = %q, want lib/pricing_service.go", focus)
 	}
@@ -579,16 +579,16 @@ func TestScenario_ExploreSingleRepoAbsolutePath(t *testing.T) {
 }
 
 // TestScenario_FirstRepoNoAppendThenAppend simulates the exact reported issue:
-// 1. generate_snapshot(repo_path="/path/core") — no append, facts have Repo: ""
-// 2. generate_snapshot(repo_path="/path/svc-pricing", append=true)
-// 3. query_facts(repo: "core") should return results (retroactively tagged)
+// 1. generate_snapshot(repo_path="/path/ruby-monolith") — no append, facts have Repo: ""
+// 2. generate_snapshot(repo_path="/path/go-service", append=true)
+// 3. query_facts(repo: "ruby-monolith") should return results (retroactively tagged)
 func TestScenario_FirstRepoNoAppendThenAppend(t *testing.T) {
-	eng := newEngineWithSnapshot("/Users/me/vinted/core")
+	eng := newEngineWithSnapshot("/Users/me/development/ruby-monolith")
 	srv := &Server{eng: eng}
 
 	store := eng.Store()
 
-	// Step 1: Simulate facts from "core" (the first non-append snapshot).
+	// Step 1: Simulate facts from "ruby-monolith" (the first non-append snapshot).
 	// These facts have Repo: "" and unprefixed file paths — exactly like
 	// what GenerateSnapshot produces without append.
 	store.Add(
@@ -602,18 +602,18 @@ func TestScenario_FirstRepoNoAppendThenAppend(t *testing.T) {
 
 	// In the new flow, SetRepoRange is called right after extraction even in
 	// non-append mode, so Repo is already set.
-	store.SetRepoRange(0, "core")
+	store.SetRepoRange(0, "ruby-monolith")
 
 	// Verify: repo filter works immediately (before any append)
-	results, total := store.QueryAdvanced(facts.QueryOpts{Repo: "core"})
+	results, total := store.QueryAdvanced(facts.QueryOpts{Repo: "ruby-monolith"})
 	if total != 3 {
-		t.Errorf("before append: repo=core should return 3, got %d", total)
+		t.Errorf("before append: repo=ruby-monolith should return 3, got %d", total)
 	}
 
 	// Step 2: Simulate entering append mode.
 	// TagUntagged retroactively prefixes file paths for facts that already
 	// have Repo set but lack the file prefix.
-	prevLabel := "core" // filepath.Base("/Users/me/vinted/core")
+	prevLabel := "ruby-monolith" // filepath.Base("/Users/me/development/ruby-monolith")
 	tagged := store.TagUntagged(prevLabel, prevLabel+"/")
 	t.Logf("retroactively prefixed %d facts with file prefix %q", tagged, prevLabel+"/")
 
@@ -621,59 +621,59 @@ func TestScenario_FirstRepoNoAppendThenAppend(t *testing.T) {
 		t.Errorf("expected 3 file paths prefixed, got %d", tagged)
 	}
 
-	// Now add svc-pricing facts (simulating what TagRange does)
+	// Now add go-service facts (simulating what TagRange does)
 	preCount := store.Count()
 	store.Add(
 		facts.Fact{Kind: facts.KindSymbol, Name: "PricingService", File: "lib/pricing_service.rb", Line: 5,
-			Props: map[string]any{"symbol_kind": "class", "exported": true, "language": "ruby"},
+			Props:     map[string]any{"symbol_kind": "class", "exported": true, "language": "ruby"},
 			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "CoreUtils"}}},
 	)
-	store.TagRange(preCount, "svc-pricing", "svc-pricing/")
+	store.TagRange(preCount, "go-service", "go-service/")
 
 	// Step 3: Verify both repos are now queryable
 
-	// repo: "core" should now return results
-	results, total = store.QueryAdvanced(facts.QueryOpts{Repo: "core"})
+	// repo: "ruby-monolith" should now return results
+	results, total = store.QueryAdvanced(facts.QueryOpts{Repo: "ruby-monolith"})
 	if total != 3 {
-		t.Errorf("repo=core: total=%d, want 3", total)
+		t.Errorf("repo=ruby-monolith: total=%d, want 3", total)
 	}
 	for _, f := range results {
-		if f.Repo != "core" {
-			t.Errorf("expected Repo=core, got %q for %s", f.Repo, f.Name)
+		if f.Repo != "ruby-monolith" {
+			t.Errorf("expected Repo=ruby-monolith, got %q for %s", f.Repo, f.Name)
 		}
 	}
 
-	// repo: "svc-pricing" should return results
-	results, total = store.QueryAdvanced(facts.QueryOpts{Repo: "svc-pricing"})
+	// repo: "go-service" should return results
+	results, total = store.QueryAdvanced(facts.QueryOpts{Repo: "go-service"})
 	if total != 1 {
-		t.Errorf("repo=svc-pricing: total=%d, want 1", total)
+		t.Errorf("repo=go-service: total=%d, want 1", total)
 	}
 
-	// file_prefix: "core" should work (files are now core/lib/...)
-	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "core/"})
+	// file_prefix: "ruby-monolith" should work (files are now ruby-monolith/lib/...)
+	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "ruby-monolith/"})
 	if total != 3 {
-		t.Errorf("file_prefix=core/: total=%d, want 3", total)
+		t.Errorf("file_prefix=ruby-monolith/: total=%d, want 3", total)
 	}
 
-	// file_prefix: "svc-pricing" should work
-	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "svc-pricing/"})
+	// file_prefix: "go-service" should work
+	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "go-service/"})
 	if total != 1 {
-		t.Errorf("file_prefix=svc-pricing/: total=%d, want 1", total)
+		t.Errorf("file_prefix=go-service/: total=%d, want 1", total)
 	}
 
-	// explore with absolute path to core should resolve
-	focus := srv.normalizeToRelative("/Users/me/vinted/core")
-	t.Logf("normalized focus for core: %q", focus)
+	// explore with absolute path to ruby-monolith should resolve
+	focus := srv.normalizeToRelative("/Users/me/development/ruby-monolith")
+	t.Logf("normalized focus for ruby-monolith: %q", focus)
 
-	// In multi-repo mode, normalizeToRelative should find core in repoPaths
+	// In multi-repo mode, normalizeToRelative should find ruby-monolith in repoPaths
 	eng.SetRepoPaths(map[string]string{
-		"core":        "/Users/me/vinted/core",
-		"svc-pricing": "/Users/me/vinted/svc-pricing",
+		"ruby-monolith": "/Users/me/development/ruby-monolith",
+		"go-service":    "/Users/me/development/go-service",
 	})
-	focus = srv.normalizeToRelative("/Users/me/vinted/core")
-	t.Logf("normalized focus for core (with repoPaths): %q", focus)
-	if focus != "core" {
-		t.Errorf("expected focus=core, got %q", focus)
+	focus = srv.normalizeToRelative("/Users/me/development/ruby-monolith")
+	t.Logf("normalized focus for ruby-monolith (with repoPaths): %q", focus)
+	if focus != "ruby-monolith" {
+		t.Errorf("expected focus=ruby-monolith, got %q", focus)
 	}
 
 	var sb strings.Builder

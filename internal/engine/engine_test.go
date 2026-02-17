@@ -124,8 +124,8 @@ func TestResolveFactFile_MultiRepo(t *testing.T) {
 	cfg := config.Default()
 	eng, _ := New(cfg)
 	eng.SetRepoPaths(map[string]string{
-		"svc-pricing": "/Users/me/vinted/svc-pricing",
-		"core":        "/Users/me/vinted/core",
+		"go-service":    "/Users/me/development/go-service",
+		"ruby-monolith": "/Users/me/development/ruby-monolith",
 	})
 	eng.SetSnapshot(&facts.Snapshot{
 		Meta: facts.SnapshotMeta{RepoPath: "/Users/me/workspace"},
@@ -137,14 +137,14 @@ func TestResolveFactFile_MultiRepo(t *testing.T) {
 		want string
 	}{
 		{
-			"multi-repo svc-pricing",
-			facts.Fact{File: "svc-pricing/lib/foo.rb", Repo: "svc-pricing"},
-			filepath.Join("/Users/me/vinted/svc-pricing", "lib/foo.rb"),
+			"multi-repo go-service",
+			facts.Fact{File: "go-service/lib/foo.rb", Repo: "go-service"},
+			filepath.Join("/Users/me/development/go-service", "lib/foo.rb"),
 		},
 		{
-			"multi-repo core",
-			facts.Fact{File: "core/lib/bar.rb", Repo: "core"},
-			filepath.Join("/Users/me/vinted/core", "lib/bar.rb"),
+			"multi-repo ruby-monolith",
+			facts.Fact{File: "ruby-monolith/lib/bar.rb", Repo: "ruby-monolith"},
+			filepath.Join("/Users/me/development/ruby-monolith", "lib/bar.rb"),
 		},
 		{
 			"no repo label falls back to snapshot",

@@ -1,0 +1,98 @@
+# archmcp full configuration with all languages enabled.
+#
+# This config includes all supported extractors and comprehensive
+# ignore patterns for every language. Use this as a starting point
+# and remove sections that don't apply to your project.
+#
+# Supported extractors:
+#   - go         (detection: go.mod)
+#   - kotlin     (detection: build.gradle.kts or build.gradle with Kotlin/Android)
+#   - typescript (detection: tsconfig.json or package.json with TypeScript)
+#   - swift      (detection: Package.swift, .xcodeproj, or .xcworkspace)
+#   - ruby       (detection: Gemfile)
+
+repo: "."
+ignore:
+  # Dependencies and tooling
+  - "vendor/**"
+  - "node_modules/**"
+  - ".git/**"
+  - ".archmcp/**"
+
+  # Go tests
+  - "**/*_test.go"
+
+  # TypeScript tests
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+
+  # Kotlin / Android build and cache
+  - "build/**"
+  - "**/build/**"
+  - ".gradle/**"
+  - "**/.gradle/**"
+  - "**/generated/**"
+  - "**/*Test.kt"
+  - "**/androidTest/**"
+
+  # Swift / Xcode build and cache
+  - "DerivedData/**"
+  - "**/DerivedData/**"
+  - "*.xcodeproj/**"
+  - "*.xcworkspace/**"
+  - "Pods/**"
+  - "**/Pods/**"
+  - ".build/**"
+  - "**/.build/**"
+  - "**/*Tests.swift"
+  - "**/*Test.swift"
+
+  # Ruby / Rails
+  - "**/*_spec.rb"
+  - "**/*_test.rb"
+  - "tmp/**"
+  - "log/**"
+  - "public/assets/**"
+  - "public/packs/**"
+
+  # Next.js / build and cache
+  - ".next/**"
+  - "out/**"
+  - ".vercel/**"
+  - ".turbo/**"
+
+  # Documentation
+  - "**/*.md"
+  - "**/*.mdx"
+
+  # Config / data (YAML, JSON)
+  - "**/*.yml"
+  - "**/*.yaml"
+  - "**/*.json"
+
+  # CI / ops
+  - "Jenkinsfile"
+  - "**/Jenkinsfile"
+  - "**/Jenkinsfile*"
+
+  # Docker and env files
+  - "Dockerfile"
+  - "**/Dockerfile*"
+  - "**/.env*"
+
+extractors:
+  - go
+  - kotlin
+  - typescript
+  - swift
+  - ruby
+explainers:
+  - cycles
+  - layers
+renderers:
+  - llm_context
+output:
+  dir: ".archmcp"
+  max_context_tokens: 16000
