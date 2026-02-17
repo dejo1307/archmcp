@@ -1,0 +1,48 @@
+# archmcp configuration for a Kotlin / Android project.
+#
+# Detection: The Kotlin extractor activates when build.gradle.kts or
+#            build.gradle contains "kotlin" or "android".
+# Features:  Classes, interfaces, objects, functions, Android components
+#            (Jetpack Compose, Hilt DI, Room database, ViewModels,
+#            Repositories, Use Cases, Workers).
+
+repo: "."
+ignore:
+  # Dependencies and tooling
+  - "vendor/**"
+  - ".git/**"
+  - ".archmcp/**"
+  # Kotlin / Android build and cache
+  - "build/**"
+  - "**/build/**"
+  - ".gradle/**"
+  - "**/.gradle/**"
+  - "**/generated/**"
+  # Tests
+  - "**/*Test.kt"
+  - "**/androidTest/**"
+  # Documentation
+  - "**/*.md"
+  - "**/*.mdx"
+  # Config / data
+  - "**/*.yml"
+  - "**/*.yaml"
+  - "**/*.json"
+  # CI / ops
+  - "Jenkinsfile"
+  - "**/Jenkinsfile"
+  - "**/Jenkinsfile*"
+  # Docker and env files
+  - "Dockerfile"
+  - "**/Dockerfile*"
+  - "**/.env*"
+extractors:
+  - kotlin
+explainers:
+  - cycles
+  - layers
+renderers:
+  - llm_context
+output:
+  dir: ".archmcp"
+  max_context_tokens: 16000

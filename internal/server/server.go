@@ -49,6 +49,7 @@ func (s *Server) Run(ctx context.Context) error {
 // generateSnapshotArgs are the arguments for the generate_snapshot tool.
 type generateSnapshotArgs struct {
 	RepoPath string `json:"repo_path" jsonschema:"Path to the repository to analyze. Defaults to the configured repo path."`
+	Append   bool   `json:"append,omitempty" jsonschema:"If true, keep existing facts and add new ones with repo-prefixed file paths (for multi-repo analysis). Default false."`
 }
 
 // queryFactsArgs are the arguments for the query_facts tool.
@@ -65,6 +66,7 @@ type queryFactsArgs struct {
 	Files      []string `json:"files,omitempty" jsonschema:"Filter by multiple file paths (OR). Use instead of file for batch lookups."`
 	Kinds      []string `json:"kinds,omitempty" jsonschema:"Filter by multiple kinds (OR). Use instead of kind for batch lookups."`
 	FilePrefix string   `json:"file_prefix,omitempty" jsonschema:"Filter by file path prefix (e.g. internal/server to match all files in that directory)"`
+	Repo       string   `json:"repo,omitempty" jsonschema:"Filter by repository label (set in multi-repo/append mode, e.g. 'go-service')"`
 
 	// Pagination
 	Offset int `json:"offset,omitempty" jsonschema:"Number of results to skip for pagination. Default 0."`
@@ -119,7 +121,7 @@ func (s *Server) registerTools() {
 	// Tool: generate_snapshot
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "generate_snapshot",
-		Description: "Generate an architectural snapshot of a repository. Parses source code, extracts facts, detects patterns, and produces an LLM-ready context summary.",
+		Description: "Generate an architectural snapshot of a repository. Parses source code, extracts facts, detects patterns, and produces an LLM-ready context summary. Use append=true to add a second repository without clearing existing facts (for cross-repo analysis).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args generateSnapshotArgs) (*mcp.CallToolResult, any, error) {
 		repoPath := args.RepoPath
 		if repoPath == "" {
@@ -131,7 +133,7 @@ func (s *Server) registerTools() {
 			return errorResult(fmt.Sprintf("invalid repo path: %v", err)), nil, nil
 		}
 
-		snapshot, err := s.eng.GenerateSnapshot(ctx, absRepo)
+		snapshot, err := s.eng.GenerateSnapshot(ctx, absRepo, args.Append)
 		if err != nil {
 			return errorResult(fmt.Sprintf("snapshot generation failed: %v", err)), nil, nil
 		}
@@ -178,14 +180,23 @@ func (s *Server) registerTools() {
 			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
 		}
 
+		// Normalize absolute filesystem paths to store-relative paths.
+		normFile := s.normalizeToRelative(args.File)
+		normPrefix := s.normalizeToRelative(args.FilePrefix)
+		var normFiles []string
+		for _, f := range args.Files {
+			normFiles = append(normFiles, s.normalizeToRelative(f))
+		}
+
 		opts := facts.QueryOpts{
 			Kind:       args.Kind,
 			Kinds:      args.Kinds,
-			File:       args.File,
-			Files:      args.Files,
-			FilePrefix: args.FilePrefix,
+			File:       normFile,
+			Files:      normFiles,
+			FilePrefix: normPrefix,
 			Name:       args.Name,
 			Names:      args.Names,
+			Repo:       args.Repo,
 			RelKind:    args.Relation,
 			Prop:       args.Prop,
 			PropValue:  args.PropValue,
@@ -214,7 +225,7 @@ func (s *Server) registerTools() {
 		// Determine if advanced features are in use (triggers structured response)
 		useAdvanced := args.IncludeRelated || args.Offset > 0 || args.Limit > 0 ||
 			len(args.Names) > 0 || len(args.Files) > 0 || len(args.Kinds) > 0 ||
-			args.FilePrefix != ""
+			args.FilePrefix != "" || args.Repo != ""
 
 		// Enrich with related facts if requested
 		var output any
@@ -315,7 +326,6 @@ func (s *Server) registerTools() {
 			results = results[:5]
 		}
 
-		repoPath := snapshot.Meta.RepoPath
 		var sb strings.Builder
 
 		for i, fact := range results {
@@ -337,8 +347,8 @@ func (s *Server) registerTools() {
 
 			sb.WriteString("\n")
 
-			// Read source file
-			absFile := filepath.Join(repoPath, fact.File)
+			// Read source file (handles both single-repo and multi-repo paths)
+			absFile := s.eng.ResolveFactFile(&fact)
 			source, err := readSourceWindow(absFile, fact.Line, contextLines)
 			if err != nil {
 				sb.WriteString(fmt.Sprintf("_Could not read source: %v_\n", err))
@@ -383,15 +393,22 @@ func (s *Server) registerTools() {
 
 		var sb strings.Builder
 
+		// Normalize absolute filesystem paths to store-relative paths.
+		focus := s.normalizeToRelative(args.Focus)
+
 		// Try to determine focus type by matching against store indexes.
 		// Priority: exact module name > exact file > symbol name substring > file prefix (directory)
+		// Special case: "." means the repo root (from normalizing an absolute path that
+		// equals the snapshot RepoPath). Route directly to directory exploration to avoid
+		// "." accidentally substring-matching dotted symbol names.
 		switch {
-		case s.exploreModule(store, args.Focus, depth, &sb):
-		case s.exploreFile(store, args.Focus, depth, &sb):
-		case s.exploreSymbol(store, args.Focus, depth, &sb):
-		case s.exploreDirectory(store, args.Focus, &sb):
+		case focus == "." && s.exploreDirectory(store, focus, &sb):
+		case focus != "." && s.exploreModule(store, focus, depth, &sb):
+		case focus != "." && s.exploreFile(store, focus, depth, &sb):
+		case focus != "." && s.exploreSymbol(store, focus, depth, &sb):
+		case s.exploreDirectory(store, focus, &sb):
 		default:
-			return errorResult(fmt.Sprintf("No facts matching focus %q. Try a module name, file path, symbol name, or directory prefix.", args.Focus)), nil, nil
+			return errorResult(fmt.Sprintf("No facts matching focus %q. Try a module name, file path, symbol name, or directory prefix.", focus)), nil, nil
 		}
 
 		return &mcp.CallToolResult{
@@ -635,7 +652,10 @@ func (s *Server) exploreSymbol(store *facts.Store, focus string, depth int, sb *
 // exploreDirectory renders a directory summary if the focus matches a file prefix.
 func (s *Server) exploreDirectory(store *facts.Store, focus string, sb *strings.Builder) bool {
 	prefix := focus
-	if !strings.HasSuffix(prefix, "/") {
+	if prefix == "." {
+		// "." means repo root — match all files (no prefix filter).
+		prefix = ""
+	} else if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
 
@@ -744,6 +764,35 @@ func capitalize(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// normalizeToRelative converts an absolute filesystem path to a store-relative
+// path by stripping known repo root prefixes. If the path is already relative
+// or doesn't match any known repo root, it is returned unchanged.
+func (s *Server) normalizeToRelative(p string) string {
+	if !filepath.IsAbs(p) {
+		return p
+	}
+
+	// Try multi-repo paths first (populated in append mode).
+	for label, absRoot := range s.eng.RepoPaths() {
+		rel, err := filepath.Rel(absRoot, p)
+		if err == nil && !strings.HasPrefix(rel, "..") {
+			// Prefix with repo label so it matches the prefixed fact files.
+			return filepath.ToSlash(filepath.Join(label, rel))
+		}
+	}
+
+	// Fall back to the single-snapshot repo path.
+	snap := s.eng.Snapshot()
+	if snap != nil {
+		rel, err := filepath.Rel(snap.Meta.RepoPath, p)
+		if err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
+	}
+
+	return p
 }
 
 func errorResult(msg string) *mcp.CallToolResult {

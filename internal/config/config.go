@@ -36,9 +36,11 @@ func Default() *Config {
 			"**/*.test.tsx",
 			"**/*.spec.ts",
 			"**/*.spec.tsx",
+			"**/*_spec.rb",
+			"**/*_test.rb",
 			".archmcp/**",
 		},
-		Extractors: []string{"go", "kotlin", "typescript", "swift"},
+		Extractors: []string{"go", "kotlin", "typescript", "swift", "ruby"},
 		Explainers: []string{"cycles", "layers"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{

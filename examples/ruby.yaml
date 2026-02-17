@@ -1,0 +1,54 @@
+# archmcp configuration for a Ruby / Rails project.
+#
+# Detection: The Ruby extractor activates when a Gemfile is present.
+#            Rails-specific features activate when config/application.rb
+#            or bin/rails is found.
+# Features:  Modules, classes, methods (with visibility), constants,
+#            attributes (attr_reader/writer/accessor), mixins (include,
+#            extend, prepend), ActiveSupport::Concern, ActiveRecord models
+#            (associations, scopes, table inference), Rails route DSL
+#            parsing (resources, namespaces, scopes, member/collection),
+#            Packwerk package boundary detection.
+
+repo: "."
+ignore:
+  # Dependencies and tooling
+  - "vendor/**"
+  - ".git/**"
+  - ".archmcp/**"
+  # Tests
+  - "**/*_spec.rb"
+  - "**/*_test.rb"
+  - "spec/**"
+  - "test/**"
+  # Ruby / Rails
+  - "tmp/**"
+  - "log/**"
+  - "public/assets/**"
+  - "public/packs/**"
+  - "node_modules/**"
+  # Documentation
+  - "**/*.md"
+  - "**/*.mdx"
+  # Config / data
+  - "**/*.yml"
+  - "**/*.yaml"
+  - "**/*.json"
+  # CI / ops
+  - "Jenkinsfile"
+  - "**/Jenkinsfile"
+  - "**/Jenkinsfile*"
+  # Docker and env files
+  - "Dockerfile"
+  - "**/Dockerfile*"
+  - "**/.env*"
+extractors:
+  - ruby
+explainers:
+  - cycles
+  - layers
+renderers:
+  - llm_context
+output:
+  dir: ".archmcp"
+  max_context_tokens: 16000

@@ -1,0 +1,52 @@
+# archmcp configuration for a Swift / iOS project.
+#
+# Detection: The Swift extractor activates when Package.swift, .xcodeproj,
+#            or .xcworkspace is present.
+# Features:  Classes, structs, enums, protocols, extensions, actors,
+#            SwiftUI views (View, App, Scene), UIKit components,
+#            Combine ViewModels (ObservableObject, @Observable),
+#            architectural patterns (Repositories, Use Cases, Coordinators,
+#            Services, DI Containers), @MainActor annotations.
+
+repo: "."
+ignore:
+  # Dependencies and tooling
+  - ".git/**"
+  - ".archmcp/**"
+  # Swift / Xcode build and cache
+  - "DerivedData/**"
+  - "**/DerivedData/**"
+  - "*.xcodeproj/**"
+  - "*.xcworkspace/**"
+  - "Pods/**"
+  - "**/Pods/**"
+  - ".build/**"
+  - "**/.build/**"
+  # Tests
+  - "**/*Tests.swift"
+  - "**/*Test.swift"
+  # Documentation
+  - "**/*.md"
+  - "**/*.mdx"
+  # Config / data
+  - "**/*.yml"
+  - "**/*.yaml"
+  - "**/*.json"
+  # CI / ops
+  - "Jenkinsfile"
+  - "**/Jenkinsfile"
+  - "**/Jenkinsfile*"
+  # Docker and env files
+  - "Dockerfile"
+  - "**/Dockerfile*"
+  - "**/.env*"
+extractors:
+  - swift
+explainers:
+  - cycles
+  - layers
+renderers:
+  - llm_context
+output:
+  dir: ".archmcp"
+  max_context_tokens: 16000

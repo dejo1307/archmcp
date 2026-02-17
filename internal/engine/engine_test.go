@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/dejo1307/archmcp/internal/config"
+	"github.com/dejo1307/archmcp/internal/facts"
 )
 
 func TestIsIgnored(t *testing.T) {
@@ -98,6 +100,64 @@ func TestIsIgnored(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("isIgnored(%q, isDir=%v) with patterns %v = %v, want %v",
 					tt.relPath, tt.isDir, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveFactFile_SingleRepo(t *testing.T) {
+	cfg := config.Default()
+	eng, _ := New(cfg)
+	eng.SetSnapshot(&facts.Snapshot{
+		Meta: facts.SnapshotMeta{RepoPath: "/Users/me/myrepo"},
+	})
+
+	f := &facts.Fact{File: "internal/server/server.go"}
+	got := eng.ResolveFactFile(f)
+	want := filepath.Join("/Users/me/myrepo", "internal/server/server.go")
+	if got != want {
+		t.Errorf("ResolveFactFile = %q, want %q", got, want)
+	}
+}
+
+func TestResolveFactFile_MultiRepo(t *testing.T) {
+	cfg := config.Default()
+	eng, _ := New(cfg)
+	eng.SetRepoPaths(map[string]string{
+		"go-service":    "/Users/me/development/go-service",
+		"ruby-monolith": "/Users/me/development/ruby-monolith",
+	})
+	eng.SetSnapshot(&facts.Snapshot{
+		Meta: facts.SnapshotMeta{RepoPath: "/Users/me/workspace"},
+	})
+
+	tests := []struct {
+		name string
+		fact facts.Fact
+		want string
+	}{
+		{
+			"multi-repo go-service",
+			facts.Fact{File: "go-service/lib/foo.rb", Repo: "go-service"},
+			filepath.Join("/Users/me/development/go-service", "lib/foo.rb"),
+		},
+		{
+			"multi-repo ruby-monolith",
+			facts.Fact{File: "ruby-monolith/lib/bar.rb", Repo: "ruby-monolith"},
+			filepath.Join("/Users/me/development/ruby-monolith", "lib/bar.rb"),
+		},
+		{
+			"no repo label falls back to snapshot",
+			facts.Fact{File: "internal/server.go"},
+			filepath.Join("/Users/me/workspace", "internal/server.go"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := eng.ResolveFactFile(&tt.fact)
+			if got != tt.want {
+				t.Errorf("ResolveFactFile = %q, want %q", got, tt.want)
 			}
 		})
 	}

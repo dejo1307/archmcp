@@ -4,8 +4,9 @@ package facts
 type Fact struct {
 	Kind      string         `json:"kind"`                // e.g. "module", "symbol", "route", "storage", "dependency"
 	Name      string         `json:"name"`                // Canonical name
-	File      string         `json:"file,omitempty"`      // Source file (relative to repo root)
+	File      string         `json:"file,omitempty"`      // Source file (relative to repo root, or repo-prefixed in multi-repo mode)
 	Line      int            `json:"line,omitempty"`      // Line number in file
+	Repo      string         `json:"repo,omitempty"`      // Repository label (set in multi-repo/append mode)
 	Props     map[string]any `json:"props,omitempty"`     // Kind-specific properties
 	Relations []Relation     `json:"relations,omitempty"` // Edges to other facts
 }

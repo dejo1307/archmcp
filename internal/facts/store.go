@@ -19,6 +19,7 @@ type Store struct {
 	byKind map[string][]int // kind -> indices into facts
 	byFile map[string][]int // file -> indices into facts
 	byName map[string][]int // name -> indices into facts
+	byRepo map[string][]int // repo label -> indices into facts
 }
 
 // NewStore creates an empty fact store.
@@ -27,6 +28,7 @@ func NewStore() *Store {
 		byKind: make(map[string][]int),
 		byFile: make(map[string][]int),
 		byName: make(map[string][]int),
+		byRepo: make(map[string][]int),
 	}
 }
 
@@ -43,6 +45,9 @@ func (s *Store) Add(ff ...Fact) {
 		}
 		if f.Name != "" {
 			s.byName[f.Name] = append(s.byName[f.Name], idx)
+		}
+		if f.Repo != "" {
+			s.byRepo[f.Repo] = append(s.byRepo[f.Repo], idx)
 		}
 	}
 }
@@ -82,6 +87,13 @@ func (s *Store) ByName(name string) []Fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.collectByIndex(s.byName[name])
+}
+
+// ByRepo returns all facts for the given repo label.
+func (s *Store) ByRepo(repo string) []Fact {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.collectByIndex(s.byRepo[repo])
 }
 
 // ByRelation returns all facts that have a relation of the given kind.
@@ -145,6 +157,7 @@ type QueryOpts struct {
 	FilePrefix string   // file path prefix filter (e.g. "internal/server")
 	Name       string   // substring name filter
 	Names      []string // exact name batch filter (OR)
+	Repo       string   // repo label filter (exact match, for multi-repo mode)
 	RelKind    string   // relation kind filter
 	Prop       string   // property name filter
 	PropValue  string   // property value filter (requires Prop)
@@ -175,6 +188,11 @@ func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
 			if _, ok := kindSet[f.Kind]; !ok {
 				continue
 			}
+		}
+
+		// Repo filter
+		if opts.Repo != "" && f.Repo != opts.Repo {
+			continue
 		}
 
 		// File filter (exact match set OR prefix)
@@ -300,6 +318,88 @@ func mergeIntoSet(single string, multi []string) map[string]struct{} {
 	return set
 }
 
+// SetRepoRange sets the Repo field for facts at indices [startIdx, current
+// length) without modifying file paths. Used in non-append mode so the repo
+// filter works even for single-repo snapshots.
+func (s *Store) SetRepoRange(startIdx int, repo string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := startIdx; i < len(s.facts); i++ {
+		f := &s.facts[i]
+		if f.Repo == "" {
+			f.Repo = repo
+			s.byRepo[repo] = append(s.byRepo[repo], i)
+		}
+	}
+}
+
+// TagRange sets the Repo field and prefixes File paths for facts added at
+// indices [startIdx, current length). Used by the engine in append mode to
+// namespace facts from different repositories.
+func (s *Store) TagRange(startIdx int, repo, filePrefix string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := startIdx; i < len(s.facts); i++ {
+		f := &s.facts[i]
+		f.Repo = repo
+		if f.File != "" {
+			oldFile := f.File
+			f.File = filePrefix + f.File
+			// Update byFile index: remove old key, add new key.
+			s.removeFromIndex(s.byFile, oldFile, i)
+			s.byFile[f.File] = append(s.byFile[f.File], i)
+		}
+		s.byRepo[repo] = append(s.byRepo[repo], i)
+	}
+}
+
+func (s *Store) removeFromIndex(idx map[string][]int, key string, target int) {
+	indices := idx[key]
+	for j, v := range indices {
+		if v == target {
+			idx[key] = append(indices[:j], indices[j+1:]...)
+			break
+		}
+	}
+	if len(idx[key]) == 0 {
+		delete(idx, key)
+	}
+}
+
+// TagUntagged sets the Repo field and prefixes File paths for all facts that
+// belong to the given repo (or have an empty Repo). This is used when entering
+// append mode to retroactively label and prefix facts from a prior single-repo
+// snapshot so they become filterable alongside newly appended facts.
+func (s *Store) TagUntagged(repo, filePrefix string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for i := range s.facts {
+		f := &s.facts[i]
+
+		// Skip facts belonging to a DIFFERENT repo (from a prior append).
+		if f.Repo != "" && f.Repo != repo {
+			continue
+		}
+
+		// Set Repo if not already set.
+		if f.Repo == "" {
+			f.Repo = repo
+			s.byRepo[repo] = append(s.byRepo[repo], i)
+		}
+
+		// Prefix the file path if it doesn't already have the prefix.
+		if f.File != "" && !strings.HasPrefix(f.File, filePrefix) {
+			oldFile := f.File
+			f.File = filePrefix + f.File
+			s.removeFromIndex(s.byFile, oldFile, i)
+			s.byFile[f.File] = append(s.byFile[f.File], i)
+			count++
+		}
+	}
+	return count
+}
+
 // Modules returns all module facts.
 func (s *Store) Modules() []Fact {
 	return s.ByKind(KindModule)
@@ -318,6 +418,7 @@ func (s *Store) Clear() {
 	s.byKind = make(map[string][]int)
 	s.byFile = make(map[string][]int)
 	s.byName = make(map[string][]int)
+	s.byRepo = make(map[string][]int)
 }
 
 // WriteJSONL writes all facts as JSONL to the given writer.

@@ -29,6 +29,7 @@ type Engine struct {
 	renderers  *renderers.Registry
 	store      *facts.Store
 	snapshot   *facts.Snapshot
+	repoPaths  map[string]string // repo label -> absolute path (populated in append mode)
 }
 
 // New creates a new Engine with the given config.
@@ -73,8 +74,53 @@ func (e *Engine) Config() *config.Config {
 	return e.cfg
 }
 
+// SetRepoPaths sets the repo label -> absolute path mapping (used in tests).
+func (e *Engine) SetRepoPaths(paths map[string]string) {
+	e.repoPaths = paths
+}
+
+// SetSnapshot sets the snapshot (used in tests).
+func (e *Engine) SetSnapshot(snap *facts.Snapshot) {
+	e.snapshot = snap
+}
+
+// RepoPaths returns the repo label -> absolute path mapping (populated in append mode).
+func (e *Engine) RepoPaths() map[string]string {
+	if e.repoPaths == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(e.repoPaths))
+	for k, v := range e.repoPaths {
+		cp[k] = v
+	}
+	return cp
+}
+
+// ResolveFactFile returns the absolute filesystem path for a fact's File field.
+// In multi-repo mode, it strips the repo-label prefix and joins with the
+// corresponding repo root. In single-repo mode it falls back to the snapshot's
+// RepoPath.
+func (e *Engine) ResolveFactFile(f *facts.Fact) string {
+	// Multi-repo: if the fact has a Repo label that maps to a known path,
+	// strip the repo prefix from f.File and join with the absolute root.
+	if f.Repo != "" && e.repoPaths != nil {
+		if absRoot, ok := e.repoPaths[f.Repo]; ok {
+			rel := strings.TrimPrefix(f.File, f.Repo+"/")
+			return filepath.Join(absRoot, rel)
+		}
+	}
+
+	// Single-repo fallback.
+	if e.snapshot != nil {
+		return filepath.Join(e.snapshot.Meta.RepoPath, f.File)
+	}
+	return f.File
+}
+
 // GenerateSnapshot runs the full pipeline: walk -> extract -> explain -> render.
-func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string) (*facts.Snapshot, error) {
+// When appendMode is true the existing store is preserved and new facts are
+// added with file paths prefixed by the repo basename, enabling multi-repo queries.
+func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMode bool) (*facts.Snapshot, error) {
 	start := time.Now()
 
 	if repoPath == "" {
@@ -86,8 +132,32 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string) (*facts.
 		return nil, fmt.Errorf("resolving repo path: %w", err)
 	}
 
-	// Clear previous state
-	e.store.Clear()
+	repoLabel := filepath.Base(absRepo)
+
+	if appendMode {
+		// Track repo label -> absolute path for multi-repo resolution.
+		if e.repoPaths == nil {
+			e.repoPaths = make(map[string]string)
+		}
+		e.repoPaths[repoLabel] = absRepo
+
+		// Retroactively tag facts from a prior single-repo snapshot so they
+		// are filterable by repo alongside the newly appended facts.
+		if e.snapshot != nil && e.store.Count() > 0 {
+			prevLabel := filepath.Base(e.snapshot.Meta.RepoPath)
+			if _, alreadyTracked := e.repoPaths[prevLabel]; !alreadyTracked {
+				tagged := e.store.TagUntagged(prevLabel, prevLabel+"/")
+				if tagged > 0 {
+					e.repoPaths[prevLabel] = e.snapshot.Meta.RepoPath
+					log.Printf("[engine] retroactively tagged %d existing facts with repo label %q", tagged, prevLabel)
+				}
+			}
+		}
+	} else {
+		// Clear previous state (default single-repo behaviour).
+		e.store.Clear()
+		e.repoPaths = nil
+	}
 
 	// 1. Walk repository and collect files
 	files, err := e.walkRepo(absRepo)
@@ -100,11 +170,24 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string) (*facts.
 	currentHashes := e.computeFileHashes(absRepo, files)
 
 	// 3. Detect and run extractors
+	preCount := e.store.Count()
 	usedExtractors, err := e.runExtractors(ctx, absRepo, files)
 	if err != nil {
 		return nil, fmt.Errorf("extraction: %w", err)
 	}
-	log.Printf("[engine] extracted %d facts using %d extractors", e.store.Count(), len(usedExtractors))
+	newCount := e.store.Count()
+	log.Printf("[engine] extracted %d facts using %d extractors", newCount, len(usedExtractors))
+
+	// Always set Repo on newly extracted facts so the repo filter works
+	// even in single-repo mode.
+	e.store.SetRepoRange(preCount, repoLabel)
+
+	// In append mode, additionally prefix file paths so facts from
+	// different repos are distinguishable by file path.
+	if appendMode {
+		e.store.TagRange(preCount, repoLabel, repoLabel+"/")
+		log.Printf("[engine] prefixed %d facts with repo label %q", newCount-preCount, repoLabel)
+	}
 
 	// 4. Run explainers
 	allInsights, usedExplainers, err := e.runExplainers(ctx)

@@ -52,11 +52,19 @@ ignore:
   # Swift tests
   - "**/*Tests.swift"
   - "**/*Test.swift"
+  # Ruby / Rails
+  - "**/*_spec.rb"
+  - "**/*_test.rb"
+  - "tmp/**"
+  - "log/**"
+  - "public/assets/**"
+  - "public/packs/**"
 extractors:
   - go
   - kotlin
   - typescript
   - swift
+  - ruby
 explainers:
   - cycles
   - layers

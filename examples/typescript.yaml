@@ -1,0 +1,49 @@
+# archmcp configuration for a TypeScript / Next.js project.
+#
+# Detection: The TypeScript extractor activates when tsconfig.json exists
+#            or package.json has TypeScript in dependencies/devDependencies.
+# Features:  Classes, functions, interfaces, types, imports/dependencies,
+#            Next.js route detection (App Router and Pages Router).
+
+repo: "."
+ignore:
+  # Dependencies and tooling
+  - "node_modules/**"
+  - ".git/**"
+  - ".archmcp/**"
+  # Tests
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  # Next.js / build and cache
+  - ".next/**"
+  - "out/**"
+  - ".vercel/**"
+  - ".turbo/**"
+  - "dist/**"
+  # Documentation
+  - "**/*.md"
+  - "**/*.mdx"
+  # Config / data
+  - "**/*.yml"
+  - "**/*.yaml"
+  - "**/*.json"
+  # CI / ops
+  - "Jenkinsfile"
+  - "**/Jenkinsfile"
+  - "**/Jenkinsfile*"
+  # Docker and env files
+  - "Dockerfile"
+  - "**/Dockerfile*"
+  - "**/.env*"
+extractors:
+  - typescript
+explainers:
+  - cycles
+  - layers
+renderers:
+  - llm_context
+output:
+  dir: ".archmcp"
+  max_context_tokens: 16000
