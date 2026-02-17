@@ -606,6 +606,282 @@ func TestReverseLookup(t *testing.T) {
 	}
 }
 
+// --- Repo / multi-repo tests ---
+
+func TestByRepo(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		Fact{Kind: KindSymbol, Name: "Foo", File: "lib/foo.rb", Repo: "svc-pricing"},
+		Fact{Kind: KindSymbol, Name: "Bar", File: "lib/bar.rb", Repo: "core"},
+		Fact{Kind: KindSymbol, Name: "Baz", File: "lib/baz.rb"}, // no repo
+	)
+
+	got := s.ByRepo("svc-pricing")
+	if len(got) != 1 || got[0].Name != "Foo" {
+		t.Errorf("ByRepo(svc-pricing) = %v, want [Foo]", got)
+	}
+	got = s.ByRepo("core")
+	if len(got) != 1 || got[0].Name != "Bar" {
+		t.Errorf("ByRepo(core) = %v, want [Bar]", got)
+	}
+	got = s.ByRepo("nonexistent")
+	if len(got) != 0 {
+		t.Errorf("ByRepo(nonexistent) = %d, want 0", len(got))
+	}
+}
+
+func TestQueryAdvanced_RepoFilter(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		Fact{Kind: KindSymbol, Name: "Foo", File: "svc-pricing/lib/foo.rb", Repo: "svc-pricing"},
+		Fact{Kind: KindSymbol, Name: "Bar", File: "core/lib/bar.rb", Repo: "core"},
+		Fact{Kind: KindSymbol, Name: "Baz", File: "svc-pricing/lib/baz.rb", Repo: "svc-pricing"},
+	)
+
+	results, total := s.QueryAdvanced(QueryOpts{Repo: "svc-pricing"})
+	if total != 2 {
+		t.Errorf("total = %d, want 2", total)
+	}
+	for _, r := range results {
+		if r.Repo != "svc-pricing" {
+			t.Errorf("expected repo svc-pricing, got %q", r.Repo)
+		}
+	}
+
+	results, total = s.QueryAdvanced(QueryOpts{Repo: "core"})
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(results) != 1 || results[0].Name != "Bar" {
+		t.Errorf("expected [Bar], got %v", results)
+	}
+}
+
+func TestQueryAdvanced_RepoAndFilePrefixCombined(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		Fact{Kind: KindSymbol, Name: "Foo", File: "svc-pricing/lib/foo.rb", Repo: "svc-pricing"},
+		Fact{Kind: KindSymbol, Name: "Bar", File: "svc-pricing/app/bar.rb", Repo: "svc-pricing"},
+		Fact{Kind: KindSymbol, Name: "Baz", File: "core/lib/baz.rb", Repo: "core"},
+	)
+
+	// Repo AND FilePrefix
+	results, total := s.QueryAdvanced(QueryOpts{Repo: "svc-pricing", FilePrefix: "svc-pricing/lib"})
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(results) != 1 || results[0].Name != "Foo" {
+		t.Errorf("expected [Foo], got %v", results)
+	}
+}
+
+func TestTagRange(t *testing.T) {
+	s := NewStore()
+	// Pre-existing facts (from repo A)
+	s.Add(
+		makeSymbol("Existing", "a/foo.go", SymbolFunc, true),
+	)
+
+	startIdx := s.Count() // 1
+
+	// New facts (from repo B)
+	s.Add(
+		makeSymbol("New1", "lib/new1.rb", SymbolFunc, true),
+		makeSymbol("New2", "app/new2.rb", SymbolFunc, true),
+	)
+
+	s.TagRange(startIdx, "repo-b", "repo-b/")
+
+	// Existing fact should be unchanged
+	existing := s.ByName("Existing")
+	if len(existing) != 1 || existing[0].Repo != "" || existing[0].File != "a/foo.go" {
+		t.Errorf("existing fact mutated: repo=%q file=%q", existing[0].Repo, existing[0].File)
+	}
+
+	// New facts should be tagged and prefixed
+	new1 := s.ByName("New1")
+	if len(new1) != 1 {
+		t.Fatalf("New1 not found")
+	}
+	if new1[0].Repo != "repo-b" {
+		t.Errorf("New1.Repo = %q, want repo-b", new1[0].Repo)
+	}
+	if new1[0].File != "repo-b/lib/new1.rb" {
+		t.Errorf("New1.File = %q, want repo-b/lib/new1.rb", new1[0].File)
+	}
+
+	new2 := s.ByName("New2")
+	if len(new2) != 1 {
+		t.Fatalf("New2 not found")
+	}
+	if new2[0].File != "repo-b/app/new2.rb" {
+		t.Errorf("New2.File = %q, want repo-b/app/new2.rb", new2[0].File)
+	}
+
+	// byFile index should be updated
+	byOldFile := s.ByFile("lib/new1.rb")
+	if len(byOldFile) != 0 {
+		t.Error("old file path should no longer be indexed")
+	}
+	byNewFile := s.ByFile("repo-b/lib/new1.rb")
+	if len(byNewFile) != 1 {
+		t.Error("new file path should be indexed")
+	}
+
+	// byRepo index should be populated
+	repoFacts := s.ByRepo("repo-b")
+	if len(repoFacts) != 2 {
+		t.Errorf("ByRepo(repo-b) = %d, want 2", len(repoFacts))
+	}
+}
+
+func TestTagRange_FilePrefixQuery(t *testing.T) {
+	s := NewStore()
+	// Simulate multi-repo: two repos tagged differently
+	s.Add(makeSymbol("A", "lib/a.rb", SymbolFunc, true))
+	s.TagRange(0, "core", "core/")
+
+	start := s.Count()
+	s.Add(makeSymbol("B", "lib/b.rb", SymbolFunc, true))
+	s.TagRange(start, "pricing", "pricing/")
+
+	// FilePrefix should distinguish repos
+	coreResults, _ := s.QueryAdvanced(QueryOpts{FilePrefix: "core/"})
+	if len(coreResults) != 1 || coreResults[0].Name != "A" {
+		t.Errorf("core prefix: got %v, want [A]", coreResults)
+	}
+
+	pricingResults, _ := s.QueryAdvanced(QueryOpts{FilePrefix: "pricing/"})
+	if len(pricingResults) != 1 || pricingResults[0].Name != "B" {
+		t.Errorf("pricing prefix: got %v, want [B]", pricingResults)
+	}
+
+	// Both repos returned without filter
+	all, total := s.QueryAdvanced(QueryOpts{})
+	if total != 2 {
+		t.Errorf("total = %d, want 2", total)
+	}
+	if len(all) != 2 {
+		t.Errorf("all = %d, want 2", len(all))
+	}
+}
+
+func TestTagUntagged_UntaggedFacts(t *testing.T) {
+	s := NewStore()
+	// Untagged facts (from old single-repo mode without SetRepoRange)
+	s.Add(
+		makeSymbol("A", "lib/a.rb", SymbolFunc, true),
+		makeSymbol("B", "lib/b.rb", SymbolFunc, true),
+	)
+	// Already tagged fact from a different repo
+	s.Add(Fact{Kind: KindSymbol, Name: "C", File: "other/c.rb", Repo: "other-repo",
+		Props: map[string]any{"symbol_kind": SymbolFunc, "exported": true}})
+
+	prefixed := s.TagUntagged("core", "core/")
+	if prefixed != 2 {
+		t.Errorf("TagUntagged returned %d, want 2 (only core facts prefixed)", prefixed)
+	}
+
+	// A and B should have Repo set and files prefixed
+	a := s.ByName("A")
+	if len(a) != 1 || a[0].Repo != "core" || a[0].File != "core/lib/a.rb" {
+		t.Errorf("A: Repo=%q File=%q, want core, core/lib/a.rb", a[0].Repo, a[0].File)
+	}
+
+	// C should be unchanged (different repo)
+	c := s.ByName("C")
+	if len(c) != 1 || c[0].Repo != "other-repo" || c[0].File != "other/c.rb" {
+		t.Errorf("C: Repo=%q File=%q, want other-repo, other/c.rb", c[0].Repo, c[0].File)
+	}
+
+	// byFile index should be updated
+	if got := s.ByFile("lib/a.rb"); len(got) != 0 {
+		t.Error("old file path lib/a.rb should no longer be indexed")
+	}
+	if got := s.ByFile("core/lib/a.rb"); len(got) != 1 {
+		t.Error("new file path core/lib/a.rb should be indexed")
+	}
+
+	// Running again should prefix 0 (already prefixed)
+	prefixed = s.TagUntagged("core", "core/")
+	if prefixed != 0 {
+		t.Errorf("second TagUntagged returned %d, want 0", prefixed)
+	}
+}
+
+func TestTagUntagged_AlreadyRepoTagged(t *testing.T) {
+	s := NewStore()
+	// Facts that already have Repo set (from SetRepoRange in non-append mode)
+	// but file paths are NOT prefixed yet.
+	s.Add(
+		Fact{Kind: KindSymbol, Name: "A", File: "lib/a.rb", Repo: "core",
+			Props: map[string]any{"symbol_kind": SymbolFunc, "exported": true}},
+		Fact{Kind: KindSymbol, Name: "B", File: "lib/b.rb", Repo: "core",
+			Props: map[string]any{"symbol_kind": SymbolFunc, "exported": true}},
+	)
+
+	// TagUntagged should still prefix their file paths
+	prefixed := s.TagUntagged("core", "core/")
+	if prefixed != 2 {
+		t.Errorf("TagUntagged returned %d, want 2 (files need prefixing)", prefixed)
+	}
+
+	a := s.ByName("A")
+	if len(a) != 1 || a[0].File != "core/lib/a.rb" {
+		t.Errorf("A.File = %q, want core/lib/a.rb", a[0].File)
+	}
+
+	// byRepo index should not have duplicates
+	coreFacts := s.ByRepo("core")
+	if len(coreFacts) != 2 {
+		t.Errorf("ByRepo(core) = %d, want 2", len(coreFacts))
+	}
+}
+
+func TestSetRepoRange(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		makeSymbol("A", "lib/a.rb", SymbolFunc, true),
+		makeSymbol("B", "lib/b.rb", SymbolFunc, true),
+	)
+
+	s.SetRepoRange(0, "myrepo")
+
+	a := s.ByName("A")
+	if len(a) != 1 || a[0].Repo != "myrepo" {
+		t.Errorf("A.Repo = %q, want myrepo", a[0].Repo)
+	}
+	// File should be unchanged (no prefixing in SetRepoRange)
+	if a[0].File != "lib/a.rb" {
+		t.Errorf("A.File = %q, want lib/a.rb (should not be prefixed)", a[0].File)
+	}
+
+	// byRepo index should work
+	repoFacts := s.ByRepo("myrepo")
+	if len(repoFacts) != 2 {
+		t.Errorf("ByRepo(myrepo) = %d, want 2", len(repoFacts))
+	}
+
+	// Running SetRepoRange again should not double-index
+	s.SetRepoRange(0, "myrepo")
+	repoFacts = s.ByRepo("myrepo")
+	if len(repoFacts) != 2 {
+		t.Errorf("after second SetRepoRange: ByRepo(myrepo) = %d, want 2", len(repoFacts))
+	}
+}
+
+func TestClear_ResetsRepoIndex(t *testing.T) {
+	s := NewStore()
+	s.Add(Fact{Kind: KindSymbol, Name: "Foo", File: "a.go", Repo: "myrepo"})
+	if got := s.ByRepo("myrepo"); len(got) != 1 {
+		t.Fatalf("pre-clear ByRepo = %d, want 1", len(got))
+	}
+	s.Clear()
+	if got := s.ByRepo("myrepo"); len(got) != 0 {
+		t.Errorf("post-clear ByRepo = %d, want 0", len(got))
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := NewStore()
 	const n = 100
