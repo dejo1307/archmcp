@@ -508,6 +508,58 @@ func TestFindPath_EdgesHaveCorrectKinds(t *testing.T) {
 	}
 }
 
+func TestNewGraph_DeduplicatesEdges(t *testing.T) {
+	s := NewStore()
+	// Two facts with identical relations (same source->kind->target).
+	s.Add(
+		Fact{Kind: KindDependency, Name: "dep1", File: "models/a.rb", Relations: []Relation{
+			{Kind: RelDependsOn, Target: "User"},
+		}},
+		Fact{Kind: KindDependency, Name: "dep2", File: "models/b.rb", Relations: []Relation{
+			{Kind: RelDependsOn, Target: "User"},
+		}},
+		Fact{Kind: KindSymbol, Name: "User", File: "models/user.rb"},
+		// A fact with a duplicate relation on itself.
+		Fact{Kind: KindModule, Name: "A", File: "a.rb", Relations: []Relation{
+			{Kind: RelImports, Target: "B"},
+		}},
+		// Another fact that also creates the same A->imports->B edge.
+		Fact{Kind: KindDependency, Name: "A -> B", File: "a.rb", Relations: []Relation{
+			{Kind: RelImports, Target: "B"},
+		}},
+		Fact{Kind: KindModule, Name: "B", File: "b.rb"},
+	)
+	s.BuildGraph()
+	g := s.Graph()
+
+	// dep1->User and dep2->User are distinct source nodes, so both edges exist.
+	// But A->imports->B should appear only once despite two facts creating it.
+	fwd := g.Forward()
+	aEdges := fwd["A"]
+	count := 0
+	for _, e := range aEdges {
+		if e.RelKind == RelImports && e.Target == "B" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("A->imports->B should appear exactly once, got %d", count)
+	}
+
+	// Reverse: B should have exactly one incoming imports edge from A.
+	rev := g.Reverse()
+	bEdges := rev["B"]
+	count = 0
+	for _, e := range bEdges {
+		if e.RelKind == RelImports && e.Target == "A" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("B reverse imports from A should appear exactly once, got %d", count)
+	}
+}
+
 // --- helpers ---
 
 func nodeNames(nodes []TraversalNode) []string {

@@ -221,6 +221,69 @@ func TestExploreModule_Depth2(t *testing.T) {
 	}
 }
 
+func TestExploreModule_DependsOnAndImplements(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		// A Ruby-style packwerk module with depends_on relations.
+		facts.Fact{Kind: facts.KindModule, Name: "packages/orders",
+			Props: map[string]any{"language": "ruby", "framework": "rails", "packwerk": true},
+			Relations: []facts.Relation{
+				{Kind: facts.RelDependsOn, Target: "packages/payments"},
+				{Kind: facts.RelDependsOn, Target: "packages/users"},
+			}},
+		// Target modules.
+		facts.Fact{Kind: facts.KindModule, Name: "packages/payments",
+			Props: map[string]any{"language": "ruby"},
+			Relations: []facts.Relation{
+				{Kind: facts.RelDependsOn, Target: "packages/orders"},
+			}},
+		facts.Fact{Kind: facts.KindModule, Name: "packages/users",
+			Props: map[string]any{"language": "ruby"}},
+		// A dependency fact with implements (mixin).
+		facts.Fact{Kind: facts.KindDependency, Name: "Order -> Cacheable",
+			File: "packages/orders/app/models/order.rb",
+			Relations: []facts.Relation{
+				{Kind: facts.RelImplements, Target: "Cacheable"},
+			}},
+	)
+
+	srv := newTestServer(store)
+	var sb strings.Builder
+	found := srv.exploreModule(store, "packages/orders", 1, &sb)
+	if !found {
+		t.Fatal("exploreModule should find 'packages/orders'")
+	}
+
+	output := sb.String()
+
+	// Should render depends_on section with packwerk dependencies.
+	if !strings.Contains(output, "### Depends_on") {
+		t.Error("missing Depends_on subsection")
+	}
+	if !strings.Contains(output, "packages/payments") {
+		t.Error("missing depends_on target packages/payments")
+	}
+	if !strings.Contains(output, "packages/users") {
+		t.Error("missing depends_on target packages/users")
+	}
+
+	// Should render implements section with mixin.
+	if !strings.Contains(output, "### Implements") {
+		t.Error("missing Implements subsection")
+	}
+	if !strings.Contains(output, "Cacheable") {
+		t.Error("missing implements target Cacheable")
+	}
+
+	// Should render dependents (packages/payments depends_on packages/orders).
+	if !strings.Contains(output, "## Dependents") {
+		t.Error("missing Dependents section")
+	}
+	if !strings.Contains(output, "packages/payments") {
+		t.Error("packages/payments should appear as a dependent")
+	}
+}
+
 func TestExploreFile(t *testing.T) {
 	store := populateTestStore()
 	srv := newTestServer(store)
@@ -916,6 +979,49 @@ func TestExploreFile_NoFallbackNeeded(t *testing.T) {
 	output := sb.String()
 	if !strings.Contains(output, "# File: internal/server/server.go") {
 		t.Error("exact match should use original focus in header")
+	}
+}
+
+func TestShowSymbol_PrefersExactMatch(t *testing.T) {
+	// Simulate the show_symbol handler's lookup logic:
+	// exact match via LookupByExactName should take priority over substring.
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "Transaction",
+			File: "models/transaction.rb", Line: 5,
+			Props: map[string]any{"symbol_kind": "class", "language": "ruby"}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "AutoTransactionsTogglePatch",
+			File: "initializers/patches.rb", Line: 8,
+			Props: map[string]any{"symbol_kind": "interface", "language": "ruby"}},
+		// A non-symbol fact named "Transaction" should be ignored.
+		facts.Fact{Kind: facts.KindStorage, Name: "Transaction",
+			File: "models/transaction.rb",
+			Props: map[string]any{"storage_kind": "model"}},
+	)
+
+	// Replicate the handler's resolution: exact match, filter to symbols.
+	results := store.LookupByExactName("Transaction")
+	var symbolResults []facts.Fact
+	for _, r := range results {
+		if r.Kind == facts.KindSymbol {
+			symbolResults = append(symbolResults, r)
+		}
+	}
+
+	if len(symbolResults) != 1 {
+		t.Fatalf("expected 1 symbol result, got %d", len(symbolResults))
+	}
+	if symbolResults[0].Name != "Transaction" {
+		t.Errorf("expected exact match 'Transaction', got %q", symbolResults[0].Name)
+	}
+	if symbolResults[0].File != "models/transaction.rb" {
+		t.Errorf("expected file models/transaction.rb, got %q", symbolResults[0].File)
+	}
+
+	// Substring search would return both -- verify the exact path avoids this.
+	substring := store.Query("symbol", "", "Transaction", "")
+	if len(substring) < 2 {
+		t.Errorf("substring search should match at least 2 symbols, got %d", len(substring))
 	}
 }
 

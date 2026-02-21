@@ -8,11 +8,12 @@ import (
 // Graph provides adjacency-list indexes and traversal operations over a Store.
 // It is a derived index rebuilt from the Store's facts after each snapshot generation.
 type Graph struct {
-	mu      sync.RWMutex
-	forward map[string][]Edge // fact name → outgoing edges
-	reverse map[string][]Edge // fact name → incoming edges
-	facts   []Fact            // reference to the store's facts (for metadata lookups)
-	factIdx map[string]int    // fact name → first index in facts slice
+	mu       sync.RWMutex
+	forward  map[string][]Edge    // fact name → outgoing edges
+	reverse  map[string][]Edge    // fact name → incoming edges
+	facts    []Fact               // reference to the store's facts (for metadata lookups)
+	factIdx  map[string]int       // fact name → first index in facts slice
+	edgeSeen map[string]struct{}  // deduplication: "source\x00kind\x00target"
 }
 
 // Edge represents a directed relationship between two facts.
@@ -81,10 +82,11 @@ type PathResult struct {
 // "internal/server -> internal/config" → target "internal/config".
 func NewGraph(ff []Fact) *Graph {
 	g := &Graph{
-		forward: make(map[string][]Edge),
-		reverse: make(map[string][]Edge),
-		facts:   ff,
-		factIdx: make(map[string]int, len(ff)),
+		forward:  make(map[string][]Edge),
+		reverse:  make(map[string][]Edge),
+		facts:    ff,
+		factIdx:  make(map[string]int, len(ff)),
+		edgeSeen: make(map[string]struct{}),
 	}
 
 	// First pass: index all fact names and collect module names
@@ -396,6 +398,11 @@ func (g *Graph) ImpactSet(target string, maxDepth, maxNodes int, includeForward 
 }
 
 func (g *Graph) addEdge(source, relKind, target string) {
+	key := source + "\x00" + relKind + "\x00" + target
+	if _, exists := g.edgeSeen[key]; exists {
+		return
+	}
+	g.edgeSeen[key] = struct{}{}
 	g.forward[source] = append(g.forward[source], Edge{
 		RelKind: relKind,
 		Target:  target,

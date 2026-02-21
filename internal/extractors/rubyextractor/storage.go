@@ -1,6 +1,7 @@
 package rubyextractor
 
 import (
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -56,6 +57,8 @@ func extractStorageFacts(relFile string, fileFacts []facts.Fact) []facts.Fact {
 	// to read the source file. We'll use the fileFacts to identify model boundaries
 	// and build storage facts.
 
+	dir := filepath.Dir(relFile)
+
 	// For each model class, emit a storage fact.
 	for className := range modelClasses {
 		tableName := inferTableName(className)
@@ -71,7 +74,7 @@ func extractStorageFacts(relFile string, fileFacts []facts.Fact) []facts.Fact {
 				"framework":    "rails",
 			},
 			Relations: []facts.Relation{
-				{Kind: facts.RelDeclares, Target: className},
+				{Kind: facts.RelDeclares, Target: dir},
 			},
 		})
 	}

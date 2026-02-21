@@ -172,9 +172,13 @@ func parsePackwerk(repoPath string) *packwerkInfo {
 
 		var rels []facts.Relation
 		for _, dep := range pkgCfg.Dependencies {
+			target := dep
+			if target == "." {
+				target = "root"
+			}
 			rels = append(rels, facts.Relation{
 				Kind:   facts.RelDependsOn,
-				Target: dep,
+				Target: target,
 			})
 		}
 

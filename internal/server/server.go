@@ -335,7 +335,19 @@ func (s *Server) registerTools() {
 			return errorResult("name is required"), nil, nil
 		}
 
-		results := store.Query("symbol", "", args.Name, "")
+		// Prefer exact match to avoid substring noise (e.g. "Transaction" matching "AutoTransactionsTogglePatch").
+		results := store.LookupByExactName(args.Name)
+		// Filter to symbols only
+		symbolResults := results[:0]
+		for _, r := range results {
+			if r.Kind == facts.KindSymbol {
+				symbolResults = append(symbolResults, r)
+			}
+		}
+		results = symbolResults
+		if len(results) == 0 {
+			results = store.Query("symbol", "", args.Name, "")
+		}
 		if len(results) == 0 {
 			return errorResult(fmt.Sprintf("No symbols matching %q", args.Name)), nil, nil
 		}
@@ -671,25 +683,62 @@ func (s *Server) exploreModule(store *facts.Store, focus string, depth int, sb *
 		sb.WriteString("\n")
 	}
 
-	// Dependencies: facts with kind=dependency whose file starts with the module path
+	// Dependencies: facts with kind=dependency whose file starts with the module path,
+	// plus direct depends_on relations from the module fact itself (packwerk).
 	deps, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindDependency, FilePrefix: mod.Name + "/"})
-	if len(deps) > 0 {
-		sb.WriteString(fmt.Sprintf("## Dependencies (%d)\n\n", len(deps)))
-		for _, dep := range deps {
-			for _, r := range dep.Relations {
-				if r.Kind == facts.RelImports {
-					sb.WriteString(fmt.Sprintf("- %s\n", r.Target))
-				}
+	// Collect all dependency targets grouped by relation kind.
+	depsByKind := make(map[string][]string) // relKind → targets
+	seen := make(map[string]struct{})
+	for _, dep := range deps {
+		for _, r := range dep.Relations {
+			key := r.Kind + ":" + r.Target
+			if _, dup := seen[key]; dup {
+				continue
 			}
+			seen[key] = struct{}{}
+			depsByKind[r.Kind] = append(depsByKind[r.Kind], r.Target)
 		}
-		sb.WriteString("\n")
+	}
+	// Also include the module's own depends_on relations (from packwerk).
+	for _, r := range mod.Relations {
+		key := r.Kind + ":" + r.Target
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		depsByKind[r.Kind] = append(depsByKind[r.Kind], r.Target)
+	}
+	totalDeps := 0
+	for _, targets := range depsByKind {
+		totalDeps += len(targets)
+	}
+	if totalDeps > 0 {
+		sb.WriteString(fmt.Sprintf("## Dependencies (%d)\n\n", totalDeps))
+		for _, relKind := range []string{facts.RelDependsOn, facts.RelImports, facts.RelImplements} {
+			targets := depsByKind[relKind]
+			if len(targets) == 0 {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("### %s (%d)\n\n", capitalize(relKind), len(targets)))
+			for _, t := range targets {
+				sb.WriteString(fmt.Sprintf("- %s\n", t))
+			}
+			sb.WriteString("\n")
+		}
 	}
 
-	// Reverse dependencies: who imports this module
+	// Reverse dependencies: who depends on or imports this module
 	dependents := store.ReverseLookup(mod.Name, facts.RelImports)
-	if len(dependents) > 0 {
-		sb.WriteString(fmt.Sprintf("## Dependents (%d)\n\n", len(dependents)))
-		for _, dep := range dependents {
+	revDeps := store.ReverseLookup(mod.Name, facts.RelDependsOn)
+	allDependents := append(dependents, revDeps...)
+	if len(allDependents) > 0 {
+		depSeen := make(map[string]struct{})
+		sb.WriteString(fmt.Sprintf("## Dependents (%d)\n\n", len(allDependents)))
+		for _, dep := range allDependents {
+			if _, dup := depSeen[dep.Name]; dup {
+				continue
+			}
+			depSeen[dep.Name] = struct{}{}
 			sb.WriteString(fmt.Sprintf("- %s\n", dep.Name))
 		}
 		sb.WriteString("\n")
