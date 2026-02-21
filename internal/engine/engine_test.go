@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/dejo1307/archmcp/internal/config"
@@ -160,5 +162,34 @@ func TestResolveFactFile_MultiRepo(t *testing.T) {
 				t.Errorf("ResolveFactFile = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestGenerateSnapshot_ConcurrentCallsSerialized verifies that the engine mutex
+// prevents concurrent GenerateSnapshot calls from corrupting shared state.
+func TestGenerateSnapshot_ConcurrentCallsSerialized(t *testing.T) {
+	cfg := config.Default()
+	eng, _ := New(cfg)
+
+	// Use a non-existent repo path — GenerateSnapshot will fail at walkRepo,
+	// but that's fine: we're testing that concurrent calls don't panic or
+	// produce a data race. The mutex should serialize them.
+	var wg sync.WaitGroup
+	errs := make([]error, 3)
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, errs[idx] = eng.GenerateSnapshot(context.Background(), t.TempDir(), false)
+		}(i)
+	}
+	wg.Wait()
+
+	// All calls should complete without panic. Errors from missing extractors
+	// or empty repos are expected — the key thing is no race.
+	for i, err := range errs {
+		if err != nil {
+			t.Logf("goroutine %d error (expected): %v", i, err)
+		}
 	}
 }

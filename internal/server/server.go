@@ -163,6 +163,17 @@ func (s *Server) registerTools() {
 			snapshot.Meta.Explainers,
 		)
 
+		if args.Append {
+			repoLabel := filepath.Base(absRepo)
+			summary += fmt.Sprintf(
+				"\n\n**Multi-repo mode active.** Repo label: %q\n"+
+					"- Filter by repo: query_facts(repo=%q)\n"+
+					"- File paths are prefixed: e.g. %s/src/...\n"+
+					"- Generate additional repos with append=true (sequentially, not in parallel).",
+				repoLabel, repoLabel, repoLabel,
+			)
+		}
+
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{Text: summary},
@@ -188,12 +199,17 @@ func (s *Server) registerTools() {
 			normFiles = append(normFiles, s.normalizeToRelative(f))
 		}
 
+		// In multi-repo mode, expand the file prefix to include repo labels
+		// if the user provided a bare relative path (e.g. "src/" instead of "golf-ui/src/").
+		prefixes := s.expandFilePrefix(normPrefix)
+
+		// Query with the first (or only) prefix.
 		opts := facts.QueryOpts{
 			Kind:       args.Kind,
 			Kinds:      args.Kinds,
 			File:       normFile,
 			Files:      normFiles,
-			FilePrefix: normPrefix,
+			FilePrefix: prefixes[0],
 			Name:       args.Name,
 			Names:      args.Names,
 			Repo:       args.Repo,
@@ -205,6 +221,14 @@ func (s *Server) registerTools() {
 		}
 
 		results, total := store.QueryAdvanced(opts)
+
+		// If multiple repo labels matched, merge results from additional prefixes.
+		for _, p := range prefixes[1:] {
+			opts.FilePrefix = p
+			extra, extraTotal := store.QueryAdvanced(opts)
+			results = append(results, extra...)
+			total += extraTotal
+		}
 
 		// Compact output modes: return text instead of JSON
 		switch args.OutputMode {
@@ -404,6 +428,7 @@ func (s *Server) registerTools() {
 		switch {
 		case focus == "." && s.exploreDirectory(store, focus, &sb):
 		case focus != "." && s.exploreModule(store, focus, depth, &sb):
+		case focus != "." && s.exploreModuleSubstring(store, focus, depth, &sb):
 		case focus != "." && s.exploreFile(store, focus, depth, &sb):
 		case focus != "." && s.exploreSymbol(store, focus, depth, &sb):
 		case s.exploreDirectory(store, focus, &sb):
@@ -695,6 +720,27 @@ func (s *Server) exploreModule(store *facts.Store, focus string, depth int, sb *
 	return true
 }
 
+// exploreModuleSubstring tries substring matching on module names when exact
+// module match fails. If exactly one module matches, it delegates to the full
+// exploreModule rendering. If multiple match, it lists them so the user can
+// pick the right one.
+func (s *Server) exploreModuleSubstring(store *facts.Store, focus string, depth int, sb *strings.Builder) bool {
+	matches, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindModule, Name: focus})
+	if len(matches) == 0 {
+		return false
+	}
+	if len(matches) == 1 {
+		return s.exploreModule(store, matches[0].Name, depth, sb)
+	}
+	// Multiple matches — list them so the user can refine.
+	sb.WriteString(fmt.Sprintf("# Multiple modules matching %q (%d)\n\n", focus, len(matches)))
+	for _, m := range matches {
+		sb.WriteString(fmt.Sprintf("- `%s` (%s)\n", m.Name, m.File))
+	}
+	sb.WriteString("\nUse the full module name for detailed exploration.\n")
+	return true
+}
+
 // exploreFile renders a file exploration if the focus matches an exact file path.
 func (s *Server) exploreFile(store *facts.Store, focus string, depth int, sb *strings.Builder) bool {
 	fileFacts := store.ByFile(focus)
@@ -836,7 +882,14 @@ func (s *Server) exploreDirectory(store *facts.Store, focus string, sb *strings.
 		prefix += "/"
 	}
 
-	dirFacts, total := store.QueryAdvanced(facts.QueryOpts{FilePrefix: prefix, Limit: 500})
+	// In multi-repo mode, expand bare prefixes to include repo labels.
+	prefixes := s.expandFilePrefix(prefix)
+	dirFacts, total := store.QueryAdvanced(facts.QueryOpts{FilePrefix: prefixes[0], Limit: 500})
+	for _, p := range prefixes[1:] {
+		extra, extraTotal := store.QueryAdvanced(facts.QueryOpts{FilePrefix: p, Limit: 500})
+		dirFacts = append(dirFacts, extra...)
+		total += extraTotal
+	}
 	if total == 0 {
 		return false
 	}
@@ -970,6 +1023,49 @@ func (s *Server) normalizeToRelative(p string) string {
 	}
 
 	return p
+}
+
+// expandFilePrefix expands a relative file prefix for multi-repo mode.
+// When repoPaths are configured and the prefix doesn't already start with a
+// known repo label, it returns all "{label}/{prefix}" variants that have
+// matches in the store. If only one repo matches, it returns that single
+// expanded prefix. If multiple repos match, it returns all variants.
+// In single-repo mode or when the prefix already has a repo label, it returns
+// the input unchanged.
+func (s *Server) expandFilePrefix(prefix string) []string {
+	if prefix == "" || filepath.IsAbs(prefix) || s.eng == nil {
+		return []string{prefix}
+	}
+
+	repoPaths := s.eng.RepoPaths()
+	if len(repoPaths) == 0 {
+		return []string{prefix}
+	}
+
+	// Check if prefix already starts with a known repo label.
+	for label := range repoPaths {
+		if prefix == label || strings.HasPrefix(prefix, label+"/") {
+			return []string{prefix}
+		}
+	}
+
+	// Try prefixing with each repo label and check for matches.
+	store := s.eng.Store()
+	var expanded []string
+	for label := range repoPaths {
+		candidate := label + "/" + prefix
+		// Quick check: does the store have any facts with this file prefix?
+		_, total := store.QueryAdvanced(facts.QueryOpts{FilePrefix: candidate, Limit: 1})
+		if total > 0 {
+			expanded = append(expanded, candidate)
+		}
+	}
+
+	if len(expanded) == 0 {
+		// No matches with any repo label; return original (maybe it matches as-is).
+		return []string{prefix}
+	}
+	return expanded
 }
 
 func errorResult(msg string) *mcp.CallToolResult {

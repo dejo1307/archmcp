@@ -692,6 +692,130 @@ func TestScenario_FirstRepoNoAppendThenAppend(t *testing.T) {
 	_ = results // avoid unused
 }
 
+// --- exploreModuleSubstring tests ---
+
+func TestExploreModuleSubstring_SingleMatch(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	// "server" should substring-match "internal/server" (the only module containing "server")
+	found := srv.exploreModuleSubstring(store, "server", 1, &sb)
+	if !found {
+		t.Fatal("exploreModuleSubstring should find a module matching 'server'")
+	}
+
+	output := sb.String()
+	// Single match delegates to full exploreModule rendering
+	if !strings.Contains(output, "# Module: internal/server") {
+		t.Errorf("expected full module exploration, got:\n%s", output)
+	}
+}
+
+func TestExploreModuleSubstring_MultipleMatches(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	// "internal" should substring-match both "internal/server" and "internal/facts"
+	found := srv.exploreModuleSubstring(store, "internal", 1, &sb)
+	if !found {
+		t.Fatal("exploreModuleSubstring should find modules matching 'internal'")
+	}
+
+	output := sb.String()
+	if !strings.Contains(output, "Multiple modules matching") {
+		t.Errorf("expected disambiguation list, got:\n%s", output)
+	}
+	if !strings.Contains(output, "internal/server") {
+		t.Error("should list internal/server")
+	}
+	if !strings.Contains(output, "internal/facts") {
+		t.Error("should list internal/facts")
+	}
+}
+
+func TestExploreModuleSubstring_NoMatch(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreModuleSubstring(store, "nonexistent", 1, &sb)
+	if found {
+		t.Error("exploreModuleSubstring should return false for nonexistent")
+	}
+}
+
+// --- expandFilePrefix tests ---
+
+func TestExpandFilePrefix_SingleRepo(t *testing.T) {
+	eng := newEngineWithSnapshot("/Users/me/development/myrepo")
+	srv := &Server{eng: eng}
+
+	// No repoPaths set — single repo mode. Should pass through.
+	prefixes := srv.expandFilePrefix("src/")
+	if len(prefixes) != 1 || prefixes[0] != "src/" {
+		t.Errorf("single-repo: expected [src/], got %v", prefixes)
+	}
+}
+
+func TestExpandFilePrefix_MultiRepoExpands(t *testing.T) {
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	eng.SetRepoPaths(map[string]string{
+		"golf-ui": "/Users/me/development/golf-ui",
+		"golf":    "/Users/me/development/golf",
+	})
+	srv := &Server{eng: eng}
+
+	store := eng.Store()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "AuthForm", File: "golf-ui/src/components/Auth.tsx", Repo: "golf-ui"},
+		facts.Fact{Kind: facts.KindSymbol, Name: "LoginPage", File: "golf-ui/src/pages/login.tsx", Repo: "golf-ui"},
+		facts.Fact{Kind: facts.KindModule, Name: "internal/auth", File: "golf/internal/auth/auth.go", Repo: "golf"},
+	)
+
+	// "src/" doesn't start with a repo label — should expand to "golf-ui/src/"
+	prefixes := srv.expandFilePrefix("src/")
+	if len(prefixes) != 1 || prefixes[0] != "golf-ui/src/" {
+		t.Errorf("expected [golf-ui/src/], got %v", prefixes)
+	}
+
+	// "internal/" should expand to "golf/internal/"
+	prefixes = srv.expandFilePrefix("internal/")
+	if len(prefixes) != 1 || prefixes[0] != "golf/internal/" {
+		t.Errorf("expected [golf/internal/], got %v", prefixes)
+	}
+}
+
+func TestExpandFilePrefix_AlreadyPrefixed(t *testing.T) {
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	eng.SetRepoPaths(map[string]string{
+		"golf-ui": "/Users/me/development/golf-ui",
+	})
+	srv := &Server{eng: eng}
+
+	store := eng.Store()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "AuthForm", File: "golf-ui/src/Auth.tsx", Repo: "golf-ui"},
+	)
+
+	// Already prefixed — should pass through unchanged.
+	prefixes := srv.expandFilePrefix("golf-ui/src/")
+	if len(prefixes) != 1 || prefixes[0] != "golf-ui/src/" {
+		t.Errorf("already-prefixed: expected [golf-ui/src/], got %v", prefixes)
+	}
+}
+
+func TestExpandFilePrefix_Empty(t *testing.T) {
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	srv := &Server{eng: eng}
+
+	prefixes := srv.expandFilePrefix("")
+	if len(prefixes) != 1 || prefixes[0] != "" {
+		t.Errorf("empty: expected [\"\"], got %v", prefixes)
+	}
+}
+
 func TestCapitalize(t *testing.T) {
 	tests := []struct {
 		input, want string
