@@ -20,7 +20,7 @@ The pipeline:
 
 ```
 Repository -> File Walker -> Extractors (Go, Kotlin, TypeScript, Swift, Ruby) -> Fact Store
-  -> Explainers (cycles, layers) -> Insights
+  -> Graph Index -> Explainers (cycles, layers) -> Insights
   -> Renderers (LLM context) -> Artifacts
   -> MCP Server (resources + tools)
 ```
@@ -106,6 +106,12 @@ Once the snapshot exists, you do not need to reference archmcp explicitly. The L
 > "Are there any cyclic dependencies or layer violations I should be aware of before refactoring?"
 
 > "Query all route facts to see every API endpoint and which files define them."
+
+> "What does the config module transitively depend on? Show me the full graph."
+
+> "What is the call chain from main to handleRequest? Show me the path."
+
+> "What would break if I refactor internal/server? Show me the impact analysis."
 
 ### Tips
 
@@ -321,6 +327,38 @@ Show source code for a symbol found in the snapshot.
 - `name` (string, required): Symbol name to look up (substring match)
 - `context_lines` (integer, optional): Number of source lines to show around the symbol (default 30)
 
+#### `traverse`
+
+Walk the dependency/call graph from a starting point. Use `direction='forward'` to answer "what does X depend on?" and `direction='reverse'` to answer "what depends on X?". Returns a list of nodes and edges up to the specified depth. Use this instead of multiple explore calls when you need to understand transitive relationships.
+
+**Parameters:**
+- `start` (string, required): Starting node name (fact name, module name, or symbol name). Substring match.
+- `direction` (string, optional): `'forward'` follows outgoing relations (what does X depend on?), `'reverse'` follows incoming relations (what depends on X?). Default: `forward`.
+- `relation_kinds` (string[], optional): Filter to specific relation types: `imports`, `calls`, `declares`, `implements`, `depends_on`. Default: all.
+- `node_kinds` (string[], optional): Filter results to specific fact kinds: `module`, `symbol`, `dependency`, `route`, `storage`. Default: all.
+- `max_depth` (int, optional): Maximum traversal depth (1-20). Default: 5.
+- `max_nodes` (int, optional): Maximum nodes to return (1-500). Traversal stops when this limit is reached. Default: 100.
+
+#### `find_path`
+
+Find the shortest path between two nodes in the architectural graph. Use this to answer 'how does X reach Y?' or 'what is the call chain from main to this function?'. Returns the path as an ordered list of nodes and edges, or reports that no path exists.
+
+**Parameters:**
+- `from` (string, required): Source node name (substring match).
+- `to` (string, required): Target node name (substring match).
+- `relation_kinds` (string[], optional): Filter to specific relation types. Default: all.
+- `max_depth` (int, optional): Maximum path length to search (1-20). Default: 10.
+
+#### `impact_analysis`
+
+Analyze the impact of changing a module, symbol, or file. Returns all nodes that transitively depend on the target (i.e., what would be affected if the target changes), grouped by depth. Use this for refactoring planning, understanding blast radius, and change risk assessment.
+
+**Parameters:**
+- `target` (string, required): The node being changed (fact name, substring match).
+- `max_depth` (int, optional): How many hops of impact to compute (1-10). Default: 3.
+- `max_nodes` (int, optional): Maximum impacted nodes to return (1-500). Default: 200.
+- `include_forward` (bool, optional): Include what the target depends on (what might break the target). Default: false.
+
 ## Architecture
 
 ### Fact Model
@@ -333,6 +371,10 @@ Facts are language-agnostic architectural primitives:
 - **Dependency** - an import/require relationship
 
 Each fact can have **relations** to other facts: `declares`, `imports`, `calls`, `implements`, `depends_on`.
+
+### Graph Index
+
+After facts are extracted, archmcp builds a bidirectional adjacency-list graph from all facts and relations. This graph enables the three traversal tools (`traverse`, `find_path`, `impact_analysis`) to efficiently answer questions about transitive dependencies, call chains, and change impact without re-scanning the fact store. The graph is built once per snapshot and cached in memory.
 
 ### Plugin System
 
@@ -358,7 +400,9 @@ archmcp/
 │   ├── engine/engine.go             # Pipeline orchestrator
 │   ├── facts/
 │   │   ├── model.go                 # Fact types and constants
-│   │   └── store.go                 # In-memory store + JSONL I/O
+│   │   ├── store.go                 # In-memory store + JSONL I/O
+│   │   ├── graph.go                 # Graph index (traverse, find_path, impact_analysis)
+│   │   └── graph_test.go            # Graph tests
 │   ├── extractors/
 │   │   ├── registry.go              # Extractor interface + registry
 │   │   ├── goextractor/go.go        # Go AST extractor
