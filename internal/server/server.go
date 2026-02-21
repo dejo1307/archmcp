@@ -342,7 +342,7 @@ func (s *Server) registerTools() {
 
 		contextLines := args.ContextLines
 		if contextLines <= 0 {
-			contextLines = 30
+			contextLines = 60
 		}
 
 		// Limit to 5 results
@@ -742,8 +742,40 @@ func (s *Server) exploreModuleSubstring(store *facts.Store, focus string, depth 
 }
 
 // exploreFile renders a file exploration if the focus matches an exact file path.
+// In multi-repo mode, it also tries repo-label prefixed paths and common extensions.
 func (s *Server) exploreFile(store *facts.Store, focus string, depth int, sb *strings.Builder) bool {
 	fileFacts := store.ByFile(focus)
+
+	// In multi-repo mode, try repo-label prefixed paths.
+	if len(fileFacts) == 0 {
+		for _, label := range s.repoLabels() {
+			fileFacts = store.ByFile(label + "/" + focus)
+			if len(fileFacts) > 0 {
+				focus = label + "/" + focus
+				break
+			}
+		}
+	}
+
+	// Try appending common extensions (with and without repo labels).
+	if len(fileFacts) == 0 {
+		extensions := []string{".go", ".ts", ".tsx", ".kt", ".swift", ".rb"}
+		candidates := make([]string, 0, len(extensions)*(1+len(s.repoLabels())))
+		for _, ext := range extensions {
+			candidates = append(candidates, focus+ext)
+			for _, label := range s.repoLabels() {
+				candidates = append(candidates, label+"/"+focus+ext)
+			}
+		}
+		for _, c := range candidates {
+			fileFacts = store.ByFile(c)
+			if len(fileFacts) > 0 {
+				focus = c
+				break
+			}
+		}
+	}
+
 	if len(fileFacts) == 0 {
 		return false
 	}
@@ -961,10 +993,12 @@ func (s *Server) exploreDirectory(store *facts.Store, focus string, sb *strings.
 // showSymbolArgs are the arguments for the show_symbol tool.
 type showSymbolArgs struct {
 	Name         string `json:"name" jsonschema:"required,Symbol name to look up (substring match)"`
-	ContextLines int    `json:"context_lines,omitempty" jsonschema:"Number of source lines to show around the symbol (default 30)"`
+	ContextLines int    `json:"context_lines,omitempty" jsonschema:"Number of source lines to show around the symbol (default 60)"`
 }
 
-// readSourceWindow reads lines from a file centered around the given line number.
+// readSourceWindow reads lines from a file around the given line number.
+// The window is asymmetric: 1/4 of context before the line, 3/4 after,
+// since symbol declarations are at the start of the interesting code.
 func readSourceWindow(absFile string, centerLine, contextLines int) (string, error) {
 	data, err := os.ReadFile(absFile)
 	if err != nil {
@@ -972,11 +1006,13 @@ func readSourceWindow(absFile string, centerLine, contextLines int) (string, err
 	}
 
 	lines := strings.Split(string(data), "\n")
-	startLine := centerLine - contextLines/2
+	before := contextLines / 4
+	after := contextLines - before
+	startLine := centerLine - before
 	if startLine < 1 {
 		startLine = 1
 	}
-	endLine := centerLine + contextLines/2
+	endLine := centerLine + after
 	if endLine > len(lines) {
 		endLine = len(lines)
 	}
@@ -1023,6 +1059,22 @@ func (s *Server) normalizeToRelative(p string) string {
 	}
 
 	return p
+}
+
+// repoLabels returns the known repo labels from multi-repo mode, or nil.
+func (s *Server) repoLabels() []string {
+	if s.eng == nil {
+		return nil
+	}
+	rp := s.eng.RepoPaths()
+	if len(rp) == 0 {
+		return nil
+	}
+	labels := make([]string, 0, len(rp))
+	for l := range rp {
+		labels = append(labels, l)
+	}
+	return labels
 }
 
 // expandFilePrefix expands a relative file prefix for multi-repo mode.

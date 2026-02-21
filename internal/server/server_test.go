@@ -30,9 +30,14 @@ func TestReadSourceWindow(t *testing.T) {
 		wantStart    int
 		wantEnd      int
 	}{
-		{"center middle", 5, 6, 2, 8},
-		{"center at start", 1, 10, 1, 6},
-		{"center at end", 10, 10, 5, 10},
+		// Asymmetric window: 1/4 before, 3/4 after the center line.
+		// context=6 → before=1, after=5: 5-1=4 to 5+5=10
+		{"center middle", 5, 6, 4, 10},
+		// context=10 → before=2, after=8: 1-2=-1→1 to 1+8=9
+		{"center at start", 1, 10, 1, 9},
+		// context=10 → before=2, after=8: 10-2=8 to 10+8=18→10
+		{"center at end", 10, 10, 8, 10},
+		// context=20 → before=5, after=15: 5-5=0→1 to 5+15=20→10
 		{"context larger than file", 5, 20, 1, 10},
 	}
 
@@ -813,6 +818,104 @@ func TestExpandFilePrefix_Empty(t *testing.T) {
 	prefixes := srv.expandFilePrefix("")
 	if len(prefixes) != 1 || prefixes[0] != "" {
 		t.Errorf("empty: expected [\"\"], got %v", prefixes)
+	}
+}
+
+// --- exploreFile fallback tests ---
+
+func TestExploreFile_RepoLabelFallback(t *testing.T) {
+	// Simulate multi-repo mode where files are stored with repo-label prefix.
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	eng.SetRepoPaths(map[string]string{
+		"golf-ui": "/Users/me/development/golf-ui",
+		"golf":    "/Users/me/development/golf",
+	})
+	srv := &Server{eng: eng}
+
+	store := eng.Store()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "src/stores.useAuthStore", File: "golf-ui/src/stores/authStore.ts", Line: 5, Repo: "golf-ui",
+			Props: map[string]any{"symbol_kind": "function", "exported": true, "language": "typescript"}},
+		facts.Fact{Kind: facts.KindModule, Name: "src/stores/authStore", File: "golf-ui/src/stores/authStore.ts", Repo: "golf-ui",
+			Props: map[string]any{"language": "typescript"}},
+	)
+
+	// Bare path without repo label — should fall back to golf-ui/src/stores/authStore.ts
+	var sb strings.Builder
+	found := srv.exploreFile(store, "src/stores/authStore.ts", 1, &sb)
+	if !found {
+		t.Fatal("exploreFile should find 'src/stores/authStore.ts' via repo-label fallback")
+	}
+	output := sb.String()
+	if !strings.Contains(output, "golf-ui/src/stores/authStore.ts") {
+		t.Errorf("expected resolved file path in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "useAuthStore") {
+		t.Error("expected useAuthStore symbol in output")
+	}
+}
+
+func TestExploreFile_ExtensionFallback(t *testing.T) {
+	// Simulate multi-repo mode where user omits the file extension.
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	eng.SetRepoPaths(map[string]string{
+		"golf-ui": "/Users/me/development/golf-ui",
+	})
+	srv := &Server{eng: eng}
+
+	store := eng.Store()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "src/stores.useAuthStore", File: "golf-ui/src/stores/authStore.ts", Line: 5, Repo: "golf-ui",
+			Props: map[string]any{"symbol_kind": "function", "exported": true}},
+	)
+
+	// No extension + no repo label — should try "src/stores/authStore" + ".ts" + "golf-ui/" prefix
+	var sb strings.Builder
+	found := srv.exploreFile(store, "src/stores/authStore", 1, &sb)
+	if !found {
+		t.Fatal("exploreFile should find 'src/stores/authStore' via extension + repo-label fallback")
+	}
+	output := sb.String()
+	if !strings.Contains(output, "golf-ui/src/stores/authStore.ts") {
+		t.Errorf("expected resolved file path in output, got:\n%s", output)
+	}
+}
+
+func TestExploreFile_ExtensionFallback_SingleRepo(t *testing.T) {
+	// Single-repo mode — extension guessing should still work without repo labels.
+	srv := newTestServer(nil)
+
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/server.New", File: "internal/server/server.go", Line: 26,
+			Props: map[string]any{"symbol_kind": "function", "exported": true}},
+	)
+
+	// Without extension — should try "internal/server/server" + ".go"
+	var sb strings.Builder
+	found := srv.exploreFile(store, "internal/server/server", 1, &sb)
+	if !found {
+		t.Fatal("exploreFile should find 'internal/server/server' via .go extension fallback")
+	}
+	output := sb.String()
+	if !strings.Contains(output, "internal/server/server.go") {
+		t.Errorf("expected resolved file path, got:\n%s", output)
+	}
+}
+
+func TestExploreFile_NoFallbackNeeded(t *testing.T) {
+	// Exact match — no fallback should be needed.
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreFile(store, "internal/server/server.go", 1, &sb)
+	if !found {
+		t.Fatal("exploreFile should find exact match")
+	}
+	output := sb.String()
+	if !strings.Contains(output, "# File: internal/server/server.go") {
+		t.Error("exact match should use original focus in header")
 	}
 }
 
