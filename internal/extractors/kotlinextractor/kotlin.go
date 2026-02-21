@@ -46,6 +46,10 @@ func (e *KotlinExtractor) Extract(ctx context.Context, repoPath string, files []
 
 	isAndroid := detectAndroidProject(repoPath)
 
+	// Detect source root and base package for import resolution
+	sourceRoot := detectKotlinSourceRoot(repoPath, files)
+	basePackage := detectKotlinBasePackage(repoPath)
+
 	modules := make(map[string]bool)
 
 	for _, relFile := range files {
@@ -66,7 +70,7 @@ func (e *KotlinExtractor) Extract(ctx context.Context, repoPath string, files []
 			continue
 		}
 
-		fileFacts := extractFile(f, relFile, isAndroid)
+		fileFacts := extractFile(f, relFile, isAndroid, sourceRoot, basePackage)
 		f.Close()
 		allFacts = append(allFacts, fileFacts...)
 
@@ -134,7 +138,7 @@ type pendingClass struct {
 }
 
 // extractFile parses a single Kotlin file and returns facts.
-func extractFile(f *os.File, relFile string, isAndroid bool) []facts.Fact {
+func extractFile(f *os.File, relFile string, isAndroid bool, sourceRoot, basePackage string) []facts.Fact {
 	var result []facts.Fact
 	dir := filepath.Dir(relFile)
 
@@ -193,16 +197,26 @@ func extractFile(f *os.File, relFile string, isAndroid bool) []facts.Fact {
 			// Import statements.
 			if m := importRe.FindStringSubmatch(line); m != nil {
 				importPath := m[1]
+
+				// Resolve internal imports to filesystem-relative paths
+				resolved, isExternal := resolveKotlinImport(importPath, sourceRoot, basePackage)
+
+				importSource := "internal"
+				if isExternal {
+					importSource = "external"
+				}
+
 				result = append(result, facts.Fact{
 					Kind: facts.KindDependency,
-					Name: dir + " -> " + importPath,
+					Name: dir + " -> " + resolved,
 					File: relFile,
 					Line: lineNum,
 					Props: map[string]any{
 						"language": "kotlin",
+						"source":   importSource,
 					},
 					Relations: []facts.Relation{
-						{Kind: facts.RelImports, Target: importPath},
+						{Kind: facts.RelImports, Target: resolved},
 					},
 				})
 				pendingAnnotations = nil
@@ -696,4 +710,79 @@ func supertypeMatches(supertypes string, names ...string) bool {
 
 func isKotlinFile(path string) bool {
 	return strings.HasSuffix(strings.ToLower(path), ".kt")
+}
+
+// detectKotlinSourceRoot examines Kotlin files to determine the source root directory.
+// It reads the package declaration from the first Kotlin file and derives the source root
+// by removing the package-as-path suffix from the file's directory.
+// For example, file "app/src/main/java/com/foo/bar/MyFile.kt" with package "com.foo.bar"
+// yields source root "app/src/main/java/".
+func detectKotlinSourceRoot(repoPath string, files []string) string {
+	for _, relFile := range files {
+		if !isKotlinFile(relFile) {
+			continue
+		}
+		absFile := filepath.Join(repoPath, relFile)
+		f, err := os.Open(absFile)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if m := packageRe.FindStringSubmatch(line); m != nil {
+				pkg := m[1]
+				pkgPath := strings.ReplaceAll(pkg, ".", "/")
+				dir := filepath.ToSlash(filepath.Dir(relFile))
+				if strings.HasSuffix(dir, pkgPath) {
+					root := strings.TrimSuffix(dir, pkgPath)
+					f.Close()
+					return root
+				}
+				f.Close()
+				return ""
+			}
+		}
+		f.Close()
+	}
+	return ""
+}
+
+// detectKotlinBasePackage reads the Android namespace from build.gradle.kts
+// to determine the project's base package (e.g., "com.fairwayhub.fairway").
+// This is used to distinguish internal imports from external library imports.
+func detectKotlinBasePackage(repoPath string) string {
+	// Try build.gradle.kts and build.gradle in app/ and root
+	candidates := []string{
+		filepath.Join(repoPath, "app", "build.gradle.kts"),
+		filepath.Join(repoPath, "app", "build.gradle"),
+		filepath.Join(repoPath, "build.gradle.kts"),
+		filepath.Join(repoPath, "build.gradle"),
+	}
+	nsRe := regexp.MustCompile(`namespace\s*=?\s*"([^"]+)"`)
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if m := nsRe.FindSubmatch(data); m != nil {
+			return string(m[1])
+		}
+	}
+	return ""
+}
+
+// resolveKotlinImport normalizes a Kotlin import path.
+// Internal imports (matching the base package) are converted from dotted package names
+// to filesystem-relative paths so the graph can match them to module facts.
+// External imports are left as-is.
+func resolveKotlinImport(importPath, sourceRoot, basePackage string) (string, bool) {
+	// If we have a base package and the import matches it, it's internal
+	if basePackage != "" && sourceRoot != "" && strings.HasPrefix(importPath, basePackage+".") {
+		asPath := strings.ReplaceAll(importPath, ".", "/")
+		return filepath.ToSlash(filepath.Clean(sourceRoot + asPath)), false
+	}
+
+	// Everything else is external
+	return importPath, true
 }

@@ -64,6 +64,9 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// Detect if this is a Next.js project
 	isNextJS := detectNextJS(repoPath)
 
+	// Parse tsconfig.json for path alias mappings (e.g., "@/*" → "src/*")
+	aliases := parseTSPathAliases(repoPath)
+
 	// Group files by directory for module detection
 	modules := make(map[string]bool)
 
@@ -85,7 +88,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			continue
 		}
 
-		fileFacts := e.extractFile(src, relFile, isNextJS)
+		fileFacts := e.extractFile(src, relFile, isNextJS, aliases)
 		allFacts = append(allFacts, fileFacts...)
 
 		dir := filepath.Dir(relFile)
@@ -107,7 +110,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	return allFacts, nil
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS bool) []facts.Fact {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS bool, aliases map[string]string) []facts.Fact {
 	var result []facts.Fact
 
 	lang := typescript.LanguageTypescript()
@@ -125,7 +128,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS bool) []f
 	root := tree.RootNode()
 
 	// Extract from the tree
-	result = append(result, e.extractImports(root, src, relFile)...)
+	result = append(result, e.extractImports(root, src, relFile, aliases)...)
 	result = append(result, e.extractDeclarations(root, src, relFile)...)
 
 	// Detect Next.js routes
@@ -138,7 +141,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS bool) []f
 	return result
 }
 
-func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile string) []facts.Fact {
+func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile string, aliases map[string]string) []facts.Fact {
 	var result []facts.Fact
 	dir := filepath.Dir(relFile)
 
@@ -156,16 +159,25 @@ func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile stri
 
 		importPath := strings.Trim(nodeText(source, src), `"'`)
 
+		// Resolve path aliases and relative imports to filesystem-relative paths
+		resolved, isExternal := resolveImportPath(importPath, dir, aliases)
+
+		importSource := "internal"
+		if isExternal {
+			importSource = "external"
+		}
+
 		result = append(result, facts.Fact{
 			Kind: facts.KindDependency,
-			Name: dir + " -> " + importPath,
+			Name: dir + " -> " + resolved,
 			File: relFile,
 			Line: int(child.StartPosition().Row) + 1,
 			Props: map[string]any{
 				"language": "typescript",
+				"source":   importSource,
 			},
 			Relations: []facts.Relation{
-				{Kind: facts.RelImports, Target: importPath},
+				{Kind: facts.RelImports, Target: resolved},
 			},
 		})
 	}
@@ -489,4 +501,61 @@ func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
 
 func nodeText(node *sitter.Node, src []byte) string {
 	return string(src[node.StartByte():node.EndByte()])
+}
+
+// parseTSPathAliases reads tsconfig.json and extracts path alias mappings.
+// For example, "@/*": ["./src/*"] maps prefix "@/" to replacement "src/".
+func parseTSPathAliases(repoPath string) map[string]string {
+	aliases := make(map[string]string)
+
+	data, err := os.ReadFile(filepath.Join(repoPath, "tsconfig.json"))
+	if err != nil {
+		return aliases
+	}
+
+	var config struct {
+		CompilerOptions struct {
+			Paths map[string][]string `json:"paths"`
+		} `json:"compilerOptions"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return aliases
+	}
+
+	for pattern, targets := range config.CompilerOptions.Paths {
+		if len(targets) == 0 {
+			continue
+		}
+		// Pattern like "@/*" → prefix "@/"
+		// Target like "./src/*" → replacement "src/"
+		if strings.HasSuffix(pattern, "*") && strings.HasSuffix(targets[0], "*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			replacement := strings.TrimSuffix(targets[0], "*")
+			replacement = strings.TrimPrefix(replacement, "./")
+			aliases[prefix] = replacement
+		}
+	}
+
+	return aliases
+}
+
+// resolveImportPath normalizes a TypeScript import path to a filesystem-relative path.
+// It handles path aliases (@/), relative imports (./), and identifies external packages.
+func resolveImportPath(importPath, fileDir string, aliases map[string]string) (string, bool) {
+	// Try alias resolution first
+	for prefix, replacement := range aliases {
+		if strings.HasPrefix(importPath, prefix) {
+			rest := strings.TrimPrefix(importPath, prefix)
+			return filepath.ToSlash(filepath.Clean(replacement + rest)), false
+		}
+	}
+
+	// Relative imports
+	if strings.HasPrefix(importPath, ".") {
+		resolved := filepath.ToSlash(filepath.Clean(filepath.Join(fileDir, importPath)))
+		return resolved, false
+	}
+
+	// Everything else is external (react, next/image, @tanstack/react-query, etc.)
+	return importPath, true
 }

@@ -266,7 +266,7 @@ import React from 'react'
 	hasReact := false
 	for _, d := range deps {
 		for _, r := range d.Relations {
-			if r.Target == "./utils" {
+			if r.Target == "src/utils" {
 				hasUtils = true
 			}
 			if r.Target == "react" {
@@ -275,7 +275,7 @@ import React from 'react'
 		}
 	}
 	if !hasUtils {
-		t.Error("expected import for ./utils")
+		t.Error("expected import for src/utils")
 	}
 	if !hasReact {
 		t.Error("expected import for react")

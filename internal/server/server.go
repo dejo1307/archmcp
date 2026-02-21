@@ -417,12 +417,189 @@ func (s *Server) registerTools() {
 			},
 		}, nil, nil
 	})
+
+	// Tool: traverse
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "traverse",
+		Description: "Walk the dependency/call graph from a starting point. Use direction='forward' to answer 'what does X depend on?' and direction='reverse' to answer 'what depends on X?'. Returns a list of nodes and edges up to the specified depth. Use this instead of multiple explore calls when you need to understand transitive relationships.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args traverseArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		graph := store.Graph()
+		if graph == nil {
+			return errorResult("No graph available. Run generate_snapshot first."), nil, nil
+		}
+
+		if args.Start == "" {
+			return errorResult("start is required"), nil, nil
+		}
+
+		// Resolve start name: try exact match first, then substring
+		startName, err := s.resolveNodeName(store, args.Start)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+
+		direction := args.Direction
+		if direction == "" {
+			direction = "forward"
+		}
+		if direction != "forward" && direction != "reverse" {
+			return errorResult("direction must be 'forward' or 'reverse'"), nil, nil
+		}
+
+		result := graph.Traverse(startName, direction, args.RelationKinds, args.NodeKinds, args.MaxDepth, args.MaxNodes)
+
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to marshal results: %v", err)), nil, nil
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: string(data)},
+			},
+		}, nil, nil
+	})
+
+	// Tool: find_path
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "find_path",
+		Description: "Find the shortest path between two nodes in the architectural graph. Use this to answer 'how does X reach Y?' or 'what is the call chain from main to this function?'. Returns the path as an ordered list of nodes and edges, or reports that no path exists.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args findPathArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		graph := store.Graph()
+		if graph == nil {
+			return errorResult("No graph available. Run generate_snapshot first."), nil, nil
+		}
+
+		if args.From == "" || args.To == "" {
+			return errorResult("both 'from' and 'to' are required"), nil, nil
+		}
+
+		fromName, err := s.resolveNodeName(store, args.From)
+		if err != nil {
+			return errorResult(fmt.Sprintf("from: %v", err)), nil, nil
+		}
+		toName, err := s.resolveNodeName(store, args.To)
+		if err != nil {
+			return errorResult(fmt.Sprintf("to: %v", err)), nil, nil
+		}
+
+		result := graph.FindPath(fromName, toName, args.RelationKinds, args.MaxDepth)
+
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to marshal results: %v", err)), nil, nil
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: string(data)},
+			},
+		}, nil, nil
+	})
+
+	// Tool: impact_analysis
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "impact_analysis",
+		Description: "Analyze the impact of changing a module, symbol, or file. Returns all nodes that transitively depend on the target (i.e., what would be affected if the target changes), grouped by depth. Use this for refactoring planning, understanding blast radius, and change risk assessment.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args impactAnalysisArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		graph := store.Graph()
+		if graph == nil {
+			return errorResult("No graph available. Run generate_snapshot first."), nil, nil
+		}
+
+		if args.Target == "" {
+			return errorResult("target is required"), nil, nil
+		}
+
+		targetName, err := s.resolveNodeName(store, args.Target)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+
+		result := graph.ImpactSet(targetName, args.MaxDepth, args.MaxNodes, args.IncludeForward)
+
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to marshal results: %v", err)), nil, nil
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: string(data)},
+			},
+		}, nil, nil
+	})
+}
+
+// resolveNodeName resolves a user-provided name to an exact fact name.
+// It tries exact match first, then substring match, returning an error if
+// no match is found or if the substring is ambiguous (>10 matches).
+func (s *Server) resolveNodeName(store *facts.Store, input string) (string, error) {
+	input = s.normalizeToRelative(input)
+
+	// Try exact match first
+	exact := store.LookupByExactName(input)
+	if len(exact) > 0 {
+		return exact[0].Name, nil
+	}
+
+	// Try substring match
+	results := store.Query("", "", input, "")
+	if len(results) == 0 {
+		return "", fmt.Errorf("no facts matching %q", input)
+	}
+	if len(results) > 10 {
+		names := make([]string, 0, 5)
+		for i, r := range results {
+			if i >= 5 {
+				break
+			}
+			names = append(names, r.Name)
+		}
+		return "", fmt.Errorf("ambiguous name %q matches %d facts (e.g. %s). Be more specific", input, len(results), strings.Join(names, ", "))
+	}
+	return results[0].Name, nil
 }
 
 // exploreArgs are the arguments for the explore tool.
 type exploreArgs struct {
 	Focus string `json:"focus" jsonschema:"required,Module name, file path, or symbol name to explore"`
 	Depth int    `json:"depth,omitempty" jsonschema:"How deep to follow relations (1=direct only, 2=include relations of relations). Default 1, max 2."`
+}
+
+// traverseArgs are the arguments for the traverse tool.
+type traverseArgs struct {
+	Start         string   `json:"start" jsonschema:"required,Starting node name (fact name, module name, or symbol name). Substring match."`
+	Direction     string   `json:"direction,omitempty" jsonschema:"'forward' follows outgoing relations (what does X depend on?), 'reverse' follows incoming relations (what depends on X?). Default: forward."`
+	RelationKinds []string `json:"relation_kinds,omitempty" jsonschema:"Filter to specific relation types: imports, calls, declares, implements, depends_on. Default: all."`
+	MaxDepth      int      `json:"max_depth,omitempty" jsonschema:"Maximum traversal depth (1-20). Default: 5."`
+	MaxNodes      int      `json:"max_nodes,omitempty" jsonschema:"Maximum nodes to return (1-500). Traversal stops when this limit is reached. Default: 100."`
+	NodeKinds     []string `json:"node_kinds,omitempty" jsonschema:"Filter results to specific fact kinds: module, symbol, dependency, route, storage. Default: all."`
+}
+
+// findPathArgs are the arguments for the find_path tool.
+type findPathArgs struct {
+	From          string   `json:"from" jsonschema:"required,Source node name (substring match)."`
+	To            string   `json:"to" jsonschema:"required,Target node name (substring match)."`
+	RelationKinds []string `json:"relation_kinds,omitempty" jsonschema:"Filter to specific relation types. Default: all."`
+	MaxDepth      int      `json:"max_depth,omitempty" jsonschema:"Maximum path length to search (1-20). Default: 10."`
+}
+
+// impactAnalysisArgs are the arguments for the impact_analysis tool.
+type impactAnalysisArgs struct {
+	Target         string `json:"target" jsonschema:"required,The node being changed (fact name, substring match)."`
+	MaxDepth       int    `json:"max_depth,omitempty" jsonschema:"How many hops of impact to compute (1-10). Default: 3."`
+	MaxNodes       int    `json:"max_nodes,omitempty" jsonschema:"Maximum impacted nodes to return (1-500). Default: 200."`
+	IncludeForward bool   `json:"include_forward,omitempty" jsonschema:"Include what the target depends on (what might break the target). Default: false."`
 }
 
 // exploreModule renders a module exploration if the focus matches a module name.

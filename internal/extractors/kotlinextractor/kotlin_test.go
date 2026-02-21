@@ -22,7 +22,7 @@ func extractFromString(t *testing.T, src string, isAndroid bool) []facts.Fact {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	return extractFile(f, "pkg/test.kt", isAndroid)
+	return extractFile(f, "pkg/test.kt", isAndroid, "", "")
 }
 
 func findFact(ff []facts.Fact, name string) (facts.Fact, bool) {

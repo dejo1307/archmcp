@@ -189,6 +189,10 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		log.Printf("[engine] prefixed %d facts with repo label %q", newCount-preCount, repoLabel)
 	}
 
+	// 3b. Build graph index for traversal queries
+	e.store.BuildGraph()
+	log.Printf("[engine] built graph index (%d nodes, %d edges)", e.store.Graph().NodeCount(), e.store.Graph().EdgeCount())
+
 	// 4. Run explainers
 	allInsights, usedExplainers, err := e.runExplainers(ctx)
 	if err != nil {
