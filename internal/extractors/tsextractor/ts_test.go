@@ -296,6 +296,71 @@ func TestExtract_NonExportedDeclaration(t *testing.T) {
 	}
 }
 
+func TestExtract_ClassMethods(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/service.ts": `export class ApiClient {
+  private baseUrl: string = '/api'
+
+  login(username: string, password: string) {
+    return fetch(this.baseUrl + '/login')
+  }
+
+  logout() {
+    return fetch(this.baseUrl + '/logout')
+  }
+
+  private refreshToken() {
+    return fetch(this.baseUrl + '/refresh')
+  }
+}`,
+	}, false)
+
+	// Class itself should be extracted
+	cls, ok := findFact(ff, "src.ApiClient")
+	if !ok {
+		t.Fatal("expected fact for src.ApiClient")
+	}
+	if cls.Props["symbol_kind"] != facts.SymbolClass {
+		t.Errorf("class symbol_kind = %v, want class", cls.Props["symbol_kind"])
+	}
+
+	// Public methods should be extracted
+	login, ok := findFact(ff, "src.ApiClient.login")
+	if !ok {
+		t.Fatal("expected fact for src.ApiClient.login")
+	}
+	if login.Props["symbol_kind"] != facts.SymbolMethod {
+		t.Errorf("login symbol_kind = %v, want method", login.Props["symbol_kind"])
+	}
+	if login.Props["exported"] != true {
+		t.Errorf("login exported = %v, want true", login.Props["exported"])
+	}
+	if login.Props["receiver"] != "ApiClient" {
+		t.Errorf("login receiver = %v, want ApiClient", login.Props["receiver"])
+	}
+
+	// logout should be extracted
+	_, ok = findFact(ff, "src.ApiClient.logout")
+	if !ok {
+		t.Fatal("expected fact for src.ApiClient.logout")
+	}
+
+	// Private method should be extracted but marked as not exported
+	refresh, ok := findFact(ff, "src.ApiClient.refreshToken")
+	if !ok {
+		t.Fatal("expected fact for src.ApiClient.refreshToken")
+	}
+	if refresh.Props["exported"] != false {
+		t.Errorf("refreshToken exported = %v, want false (private)", refresh.Props["exported"])
+	}
+
+	// Constructor should NOT be extracted
+	_, ok = findFact(ff, "src.ApiClient.constructor")
+	if ok {
+		t.Error("constructor should not be extracted as a method")
+	}
+}
+
 func TestIsTypeScriptFile(t *testing.T) {
 	tests := []struct {
 		path string

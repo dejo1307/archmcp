@@ -282,6 +282,51 @@ func (e *TSExtractor) extractNode(node *sitter.Node, src []byte, relFile, dir st
 			}
 
 			result = append(result, f)
+
+			// Extract class methods
+			classBody := findChildByKind(node, "class_body")
+			if classBody != nil {
+				for j := range classBody.ChildCount() {
+					member := classBody.Child(j)
+					if member.Kind() != "method_definition" && member.Kind() != "public_field_definition" {
+						continue
+					}
+					methodName := findChildByKind(member, "property_identifier")
+					if methodName == nil {
+						methodName = findChildByKind(member, "identifier")
+					}
+					if methodName == nil {
+						continue
+					}
+					mName := nodeText(methodName, src)
+					if strings.HasPrefix(mName, "#") || mName == "constructor" {
+						continue
+					}
+					isPrivate := false
+					for k := range member.ChildCount() {
+						c := member.Child(k)
+						if c.Kind() == "accessibility_modifier" && nodeText(c, src) == "private" {
+							isPrivate = true
+							break
+						}
+					}
+					result = append(result, facts.Fact{
+						Kind: facts.KindSymbol,
+						Name: dir + "." + symbolName + "." + mName,
+						File: relFile,
+						Line: int(member.StartPosition().Row) + 1,
+						Props: map[string]any{
+							"symbol_kind": facts.SymbolMethod,
+							"exported":    isExported && !isPrivate,
+							"language":    "typescript",
+							"receiver":    symbolName,
+						},
+						Relations: []facts.Relation{
+							{Kind: facts.RelDeclares, Target: dir},
+						},
+					})
+				}
+			}
 		}
 
 	case "interface_declaration":

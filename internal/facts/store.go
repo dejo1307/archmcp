@@ -129,7 +129,7 @@ func (s *Store) Query(kind, file, name, relKind string) []Fact {
 		if file != "" && f.File != file {
 			continue
 		}
-		if name != "" && !strings.Contains(f.Name, name) {
+		if name != "" && !strings.Contains(strings.ToLower(f.Name), strings.ToLower(name)) {
 			continue
 		}
 		if relKind != "" {
@@ -184,6 +184,8 @@ func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
 		}
 	}
 
+	nameLower := strings.ToLower(opts.Name)
+
 	var matched []Fact
 	for _, f := range s.facts {
 		// Kind filter
@@ -215,7 +217,7 @@ func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
 		// Name filter: substring (Name) OR exact batch (Names)
 		if opts.Name != "" || len(nameSet) > 0 {
 			nameMatch := false
-			if opts.Name != "" && strings.Contains(f.Name, opts.Name) {
+			if opts.Name != "" && strings.Contains(strings.ToLower(f.Name), nameLower) {
 				nameMatch = true
 			}
 			if !nameMatch && len(nameSet) > 0 {

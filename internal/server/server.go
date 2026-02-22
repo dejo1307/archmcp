@@ -133,7 +133,20 @@ func (s *Server) registerTools() {
 			return errorResult(fmt.Sprintf("invalid repo path: %v", err)), nil, nil
 		}
 
-		snapshot, err := s.eng.GenerateSnapshot(ctx, absRepo, args.Append)
+		// Auto-enable append mode when switching to a different repo
+		// while facts from another repo are already loaded.
+		appendMode := args.Append
+		autoAppended := false
+		if !appendMode && s.eng.Store().Count() > 0 && s.eng.Snapshot() != nil {
+			prevRepo := s.eng.Snapshot().Meta.RepoPath
+			if prevRepo != "" && prevRepo != absRepo {
+				appendMode = true
+				autoAppended = true
+				log.Printf("[server] auto-enabled append mode: switching from %s to %s", prevRepo, absRepo)
+			}
+		}
+
+		snapshot, err := s.eng.GenerateSnapshot(ctx, absRepo, appendMode)
 		if err != nil {
 			return errorResult(fmt.Sprintf("snapshot generation failed: %v", err)), nil, nil
 		}
@@ -163,14 +176,18 @@ func (s *Server) registerTools() {
 			snapshot.Meta.Explainers,
 		)
 
-		if args.Append {
+		if appendMode {
 			repoLabel := filepath.Base(absRepo)
+			autoNote := ""
+			if autoAppended {
+				autoNote = " (auto-enabled: different repo detected)"
+			}
 			summary += fmt.Sprintf(
-				"\n\n**Multi-repo mode active.** Repo label: %q\n"+
+				"\n\n**Multi-repo mode active%s.** Repo label: %q\n"+
 					"- Filter by repo: query_facts(repo=%q)\n"+
 					"- File paths are prefixed: e.g. %s/src/...\n"+
 					"- Generate additional repos with append=true (sequentially, not in parallel).",
-				repoLabel, repoLabel, repoLabel,
+				autoNote, repoLabel, repoLabel, repoLabel,
 			)
 		}
 
@@ -578,8 +595,8 @@ func (s *Server) registerTools() {
 }
 
 // resolveNodeName resolves a user-provided name to an exact fact name.
-// It tries exact match first, then substring match, returning an error if
-// no match is found or if the substring is ambiguous (>10 matches).
+// It tries exact match first, then substring match with smart disambiguation
+// that prefers struct/class/interface definitions over their methods.
 func (s *Server) resolveNodeName(store *facts.Store, input string) (string, error) {
 	input = s.normalizeToRelative(input)
 
@@ -594,6 +611,46 @@ func (s *Server) resolveNodeName(store *facts.Store, input string) (string, erro
 	if len(results) == 0 {
 		return "", fmt.Errorf("no facts matching %q", input)
 	}
+	if len(results) == 1 {
+		return results[0].Name, nil
+	}
+
+	// Smart disambiguation: when multiple matches exist, try to find the
+	// most likely intended target rather than immediately erroring.
+
+	// 1. Prefer exact name suffix match (e.g., "AuthHandler" matching
+	//    "adapters.AuthHandler" over "adapters.AuthHandler.Login")
+	var suffixMatches []facts.Fact
+	for _, r := range results {
+		parts := strings.Split(r.Name, ".")
+		if len(parts) > 0 && parts[len(parts)-1] == input {
+			suffixMatches = append(suffixMatches, r)
+		}
+	}
+	if len(suffixMatches) == 1 {
+		return suffixMatches[0].Name, nil
+	}
+
+	// 2. Among suffix matches (or all results), prefer struct/class/interface
+	candidates := results
+	if len(suffixMatches) > 0 {
+		candidates = suffixMatches
+	}
+	for _, r := range candidates {
+		sk, _ := r.Props["symbol_kind"].(string)
+		if sk == "struct" || sk == "class" || sk == "interface" {
+			return r.Name, nil
+		}
+	}
+
+	// 3. Prefer module-level facts over symbol-level
+	for _, r := range candidates {
+		if r.Kind == facts.KindModule {
+			return r.Name, nil
+		}
+	}
+
+	// 4. If still ambiguous beyond threshold, report error with guidance
 	if len(results) > 10 {
 		names := make([]string, 0, 5)
 		for i, r := range results {
@@ -602,7 +659,7 @@ func (s *Server) resolveNodeName(store *facts.Store, input string) (string, erro
 			}
 			names = append(names, r.Name)
 		}
-		return "", fmt.Errorf("ambiguous name %q matches %d facts (e.g. %s). Be more specific", input, len(results), strings.Join(names, ", "))
+		return "", fmt.Errorf("ambiguous name %q matches %d facts (e.g. %s). Use a fully qualified name or filter by prop=symbol_kind", input, len(results), strings.Join(names, ", "))
 	}
 	return results[0].Name, nil
 }

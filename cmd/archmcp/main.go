@@ -9,6 +9,7 @@ import (
 
 	"github.com/dejo1307/archmcp/internal/config"
 	"github.com/dejo1307/archmcp/internal/engine"
+	"github.com/dejo1307/archmcp/internal/facts"
 	"github.com/dejo1307/archmcp/internal/explainers/cycles"
 	"github.com/dejo1307/archmcp/internal/explainers/layers"
 	"github.com/dejo1307/archmcp/internal/extractors/goextractor"
@@ -87,6 +88,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  Duration:    %s\n", snapshot.Meta.Duration)
 		fmt.Fprintf(os.Stderr, "  Output:      %s\n", filepath.Join(repoPath, cfg.Output.Dir))
 		os.Exit(0)
+	}
+
+	// Auto-load existing snapshot if available (so queries work immediately
+	// without requiring a generate_snapshot call first).
+	if repoPath, err := filepath.Abs(cfg.Repo); err == nil {
+		factsPath := filepath.Join(repoPath, cfg.Output.Dir, "facts.jsonl")
+		if _, err := os.Stat(factsPath); err == nil {
+			log.Printf("[main] loading existing snapshot from %s", factsPath)
+			if err := eng.Store().ReadJSONLFile(factsPath); err != nil {
+				log.Printf("[main] warning: failed to load existing facts: %v", err)
+			} else {
+				repoLabel := filepath.Base(repoPath)
+				eng.Store().SetRepoRange(0, repoLabel)
+				eng.Store().BuildGraph()
+				eng.SetSnapshot(&facts.Snapshot{
+					Meta: facts.SnapshotMeta{RepoPath: repoPath},
+				})
+				log.Printf("[main] loaded %d facts from existing snapshot", eng.Store().Count())
+			}
+		}
 	}
 
 	// MCP server mode (default)
