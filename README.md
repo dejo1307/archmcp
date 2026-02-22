@@ -25,6 +25,18 @@ Repository -> File Walker -> Extractors (Go, Kotlin, TypeScript, Swift, Ruby) ->
   -> MCP Server (resources + tools)
 ```
 
+## See It In Action
+
+The examples below show the archmcp output in action. Specific prompts were asking different models to explain authentication and authorization flows in detail across the three repositories where one was Web UI client, another backend, and the third one custom authentication provider.
+
+### Generating a snapshot (Claude Code)
+
+![Generating an architectural snapshot in Claude Code](docs/screenshots/claude_code_haiku_three_repos_analysis.png)
+
+### Generating a snapshot (Opencode)
+
+![Generating an architectural snapshot in Opencode](docs/screenshots/opencode_qwen3_coder_next_three_repos_analysis.png)
+
 ## Quick Start
 
 ### Prerequisites
