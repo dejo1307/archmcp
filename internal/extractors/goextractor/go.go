@@ -116,6 +116,15 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 	// Extract imports
 	for _, imp := range f.Imports {
 		importPath := strings.Trim(imp.Path.Value, `"`)
+
+		// Normalize internal import targets to short paths (e.g.
+		// "github.com/foo/bar/internal/pkg" → "internal/pkg") so they
+		// match the module fact names used elsewhere in the store.
+		relTarget := importPath
+		if modulePath != "" && strings.HasPrefix(importPath, modulePath+"/") {
+			relTarget = strings.TrimPrefix(importPath, modulePath+"/")
+		}
+
 		result = append(result, facts.Fact{
 			Kind: facts.KindDependency,
 			Name: pkgDir + " -> " + importPath,
@@ -126,7 +135,7 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 				"source":   classifyImport(importPath, modulePath),
 			},
 			Relations: []facts.Relation{
-				{Kind: facts.RelImports, Target: importPath},
+				{Kind: facts.RelImports, Target: relTarget},
 			},
 		})
 	}

@@ -638,7 +638,7 @@ func extractAssociationsFromFile(absPath string, relFile string) []facts.Fact {
 
 			result = append(result, facts.Fact{
 				Kind: facts.KindDependency,
-				Name: assocKind + " :" + assocName,
+				Name: relFile + ":" + assocKind + " :" + assocName,
 				File: relFile,
 				Line: lineNum + 1,
 				Props: map[string]any{

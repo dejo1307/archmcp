@@ -20,6 +20,9 @@ type Store struct {
 	byFile map[string][]int // file -> indices into facts
 	byName map[string][]int // name -> indices into facts
 	byRepo map[string][]int // repo label -> indices into facts
+
+	// Graph provides adjacency-list traversal over fact relations
+	graph *Graph
 }
 
 // NewStore creates an empty fact store.
@@ -126,7 +129,7 @@ func (s *Store) Query(kind, file, name, relKind string) []Fact {
 		if file != "" && f.File != file {
 			continue
 		}
-		if name != "" && !strings.Contains(f.Name, name) {
+		if name != "" && !strings.Contains(strings.ToLower(f.Name), strings.ToLower(name)) {
 			continue
 		}
 		if relKind != "" {
@@ -181,6 +184,8 @@ func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
 		}
 	}
 
+	nameLower := strings.ToLower(opts.Name)
+
 	var matched []Fact
 	for _, f := range s.facts {
 		// Kind filter
@@ -212,7 +217,7 @@ func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
 		// Name filter: substring (Name) OR exact batch (Names)
 		if opts.Name != "" || len(nameSet) > 0 {
 			nameMatch := false
-			if opts.Name != "" && strings.Contains(f.Name, opts.Name) {
+			if opts.Name != "" && strings.Contains(strings.ToLower(f.Name), nameLower) {
 				nameMatch = true
 			}
 			if !nameMatch && len(nameSet) > 0 {
@@ -419,6 +424,22 @@ func (s *Store) Clear() {
 	s.byFile = make(map[string][]int)
 	s.byName = make(map[string][]int)
 	s.byRepo = make(map[string][]int)
+	s.graph = nil
+}
+
+// BuildGraph constructs the adjacency-list graph index from the current facts.
+// Call this after all facts have been added and tagged (e.g. after snapshot generation).
+func (s *Store) BuildGraph() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.graph = NewGraph(s.facts)
+}
+
+// Graph returns the current graph index, or nil if BuildGraph has not been called.
+func (s *Store) Graph() *Graph {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.graph
 }
 
 // WriteJSONL writes all facts as JSONL to the given writer.

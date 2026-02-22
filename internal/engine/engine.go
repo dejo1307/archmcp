@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dejo1307/archmcp/internal/config"
@@ -23,6 +24,7 @@ import (
 
 // Engine orchestrates the snapshot generation pipeline.
 type Engine struct {
+	mu         sync.Mutex // serializes GenerateSnapshot calls
 	cfg        *config.Config
 	extractors *extractors.Registry
 	explainers *explainers.Registry
@@ -121,6 +123,9 @@ func (e *Engine) ResolveFactFile(f *facts.Fact) string {
 // When appendMode is true the existing store is preserved and new facts are
 // added with file paths prefixed by the repo basename, enabling multi-repo queries.
 func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMode bool) (*facts.Snapshot, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	start := time.Now()
 
 	if repoPath == "" {
@@ -188,6 +193,10 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		e.store.TagRange(preCount, repoLabel, repoLabel+"/")
 		log.Printf("[engine] prefixed %d facts with repo label %q", newCount-preCount, repoLabel)
 	}
+
+	// 3b. Build graph index for traversal queries
+	e.store.BuildGraph()
+	log.Printf("[engine] built graph index (%d nodes, %d edges)", e.store.Graph().NodeCount(), e.store.Graph().EdgeCount())
 
 	// 4. Run explainers
 	allInsights, usedExplainers, err := e.runExplainers(ctx)

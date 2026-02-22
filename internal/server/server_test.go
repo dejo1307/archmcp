@@ -30,9 +30,14 @@ func TestReadSourceWindow(t *testing.T) {
 		wantStart    int
 		wantEnd      int
 	}{
-		{"center middle", 5, 6, 2, 8},
-		{"center at start", 1, 10, 1, 6},
-		{"center at end", 10, 10, 5, 10},
+		// Asymmetric window: 1/4 before, 3/4 after the center line.
+		// context=6 → before=1, after=5: 5-1=4 to 5+5=10
+		{"center middle", 5, 6, 4, 10},
+		// context=10 → before=2, after=8: 1-2=-1→1 to 1+8=9
+		{"center at start", 1, 10, 1, 9},
+		// context=10 → before=2, after=8: 10-2=8 to 10+8=18→10
+		{"center at end", 10, 10, 8, 10},
+		// context=20 → before=5, after=15: 5-5=0→1 to 5+15=20→10
 		{"context larger than file", 5, 20, 1, 10},
 	}
 
@@ -213,6 +218,69 @@ func TestExploreModule_Depth2(t *testing.T) {
 	// Should show the calls relation from Run
 	if !strings.Contains(output, "internal/engine.Store") {
 		t.Error("depth=2 should show call targets")
+	}
+}
+
+func TestExploreModule_DependsOnAndImplements(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		// A Ruby-style packwerk module with depends_on relations.
+		facts.Fact{Kind: facts.KindModule, Name: "packages/orders",
+			Props: map[string]any{"language": "ruby", "framework": "rails", "packwerk": true},
+			Relations: []facts.Relation{
+				{Kind: facts.RelDependsOn, Target: "packages/payments"},
+				{Kind: facts.RelDependsOn, Target: "packages/users"},
+			}},
+		// Target modules.
+		facts.Fact{Kind: facts.KindModule, Name: "packages/payments",
+			Props: map[string]any{"language": "ruby"},
+			Relations: []facts.Relation{
+				{Kind: facts.RelDependsOn, Target: "packages/orders"},
+			}},
+		facts.Fact{Kind: facts.KindModule, Name: "packages/users",
+			Props: map[string]any{"language": "ruby"}},
+		// A dependency fact with implements (mixin).
+		facts.Fact{Kind: facts.KindDependency, Name: "Order -> Cacheable",
+			File: "packages/orders/app/models/order.rb",
+			Relations: []facts.Relation{
+				{Kind: facts.RelImplements, Target: "Cacheable"},
+			}},
+	)
+
+	srv := newTestServer(store)
+	var sb strings.Builder
+	found := srv.exploreModule(store, "packages/orders", 1, &sb)
+	if !found {
+		t.Fatal("exploreModule should find 'packages/orders'")
+	}
+
+	output := sb.String()
+
+	// Should render depends_on section with packwerk dependencies.
+	if !strings.Contains(output, "### Depends_on") {
+		t.Error("missing Depends_on subsection")
+	}
+	if !strings.Contains(output, "packages/payments") {
+		t.Error("missing depends_on target packages/payments")
+	}
+	if !strings.Contains(output, "packages/users") {
+		t.Error("missing depends_on target packages/users")
+	}
+
+	// Should render implements section with mixin.
+	if !strings.Contains(output, "### Implements") {
+		t.Error("missing Implements subsection")
+	}
+	if !strings.Contains(output, "Cacheable") {
+		t.Error("missing implements target Cacheable")
+	}
+
+	// Should render dependents (packages/payments depends_on packages/orders).
+	if !strings.Contains(output, "## Dependents") {
+		t.Error("missing Dependents section")
+	}
+	if !strings.Contains(output, "packages/payments") {
+		t.Error("packages/payments should appear as a dependent")
 	}
 }
 
@@ -690,6 +758,271 @@ func TestScenario_FirstRepoNoAppendThenAppend(t *testing.T) {
 	}
 
 	_ = results // avoid unused
+}
+
+// --- exploreModuleSubstring tests ---
+
+func TestExploreModuleSubstring_SingleMatch(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	// "server" should substring-match "internal/server" (the only module containing "server")
+	found := srv.exploreModuleSubstring(store, "server", 1, &sb)
+	if !found {
+		t.Fatal("exploreModuleSubstring should find a module matching 'server'")
+	}
+
+	output := sb.String()
+	// Single match delegates to full exploreModule rendering
+	if !strings.Contains(output, "# Module: internal/server") {
+		t.Errorf("expected full module exploration, got:\n%s", output)
+	}
+}
+
+func TestExploreModuleSubstring_MultipleMatches(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	// "internal" should substring-match both "internal/server" and "internal/facts"
+	found := srv.exploreModuleSubstring(store, "internal", 1, &sb)
+	if !found {
+		t.Fatal("exploreModuleSubstring should find modules matching 'internal'")
+	}
+
+	output := sb.String()
+	if !strings.Contains(output, "Multiple modules matching") {
+		t.Errorf("expected disambiguation list, got:\n%s", output)
+	}
+	if !strings.Contains(output, "internal/server") {
+		t.Error("should list internal/server")
+	}
+	if !strings.Contains(output, "internal/facts") {
+		t.Error("should list internal/facts")
+	}
+}
+
+func TestExploreModuleSubstring_NoMatch(t *testing.T) {
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreModuleSubstring(store, "nonexistent", 1, &sb)
+	if found {
+		t.Error("exploreModuleSubstring should return false for nonexistent")
+	}
+}
+
+// --- expandFilePrefix tests ---
+
+func TestExpandFilePrefix_SingleRepo(t *testing.T) {
+	eng := newEngineWithSnapshot("/Users/me/development/myrepo")
+	srv := &Server{eng: eng}
+
+	// No repoPaths set — single repo mode. Should pass through.
+	prefixes := srv.expandFilePrefix("src/")
+	if len(prefixes) != 1 || prefixes[0] != "src/" {
+		t.Errorf("single-repo: expected [src/], got %v", prefixes)
+	}
+}
+
+func TestExpandFilePrefix_MultiRepoExpands(t *testing.T) {
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	eng.SetRepoPaths(map[string]string{
+		"golf-ui": "/Users/me/development/golf-ui",
+		"golf":    "/Users/me/development/golf",
+	})
+	srv := &Server{eng: eng}
+
+	store := eng.Store()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "AuthForm", File: "golf-ui/src/components/Auth.tsx", Repo: "golf-ui"},
+		facts.Fact{Kind: facts.KindSymbol, Name: "LoginPage", File: "golf-ui/src/pages/login.tsx", Repo: "golf-ui"},
+		facts.Fact{Kind: facts.KindModule, Name: "internal/auth", File: "golf/internal/auth/auth.go", Repo: "golf"},
+	)
+
+	// "src/" doesn't start with a repo label — should expand to "golf-ui/src/"
+	prefixes := srv.expandFilePrefix("src/")
+	if len(prefixes) != 1 || prefixes[0] != "golf-ui/src/" {
+		t.Errorf("expected [golf-ui/src/], got %v", prefixes)
+	}
+
+	// "internal/" should expand to "golf/internal/"
+	prefixes = srv.expandFilePrefix("internal/")
+	if len(prefixes) != 1 || prefixes[0] != "golf/internal/" {
+		t.Errorf("expected [golf/internal/], got %v", prefixes)
+	}
+}
+
+func TestExpandFilePrefix_AlreadyPrefixed(t *testing.T) {
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	eng.SetRepoPaths(map[string]string{
+		"golf-ui": "/Users/me/development/golf-ui",
+	})
+	srv := &Server{eng: eng}
+
+	store := eng.Store()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "AuthForm", File: "golf-ui/src/Auth.tsx", Repo: "golf-ui"},
+	)
+
+	// Already prefixed — should pass through unchanged.
+	prefixes := srv.expandFilePrefix("golf-ui/src/")
+	if len(prefixes) != 1 || prefixes[0] != "golf-ui/src/" {
+		t.Errorf("already-prefixed: expected [golf-ui/src/], got %v", prefixes)
+	}
+}
+
+func TestExpandFilePrefix_Empty(t *testing.T) {
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	srv := &Server{eng: eng}
+
+	prefixes := srv.expandFilePrefix("")
+	if len(prefixes) != 1 || prefixes[0] != "" {
+		t.Errorf("empty: expected [\"\"], got %v", prefixes)
+	}
+}
+
+// --- exploreFile fallback tests ---
+
+func TestExploreFile_RepoLabelFallback(t *testing.T) {
+	// Simulate multi-repo mode where files are stored with repo-label prefix.
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	eng.SetRepoPaths(map[string]string{
+		"golf-ui": "/Users/me/development/golf-ui",
+		"golf":    "/Users/me/development/golf",
+	})
+	srv := &Server{eng: eng}
+
+	store := eng.Store()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "src/stores.useAuthStore", File: "golf-ui/src/stores/authStore.ts", Line: 5, Repo: "golf-ui",
+			Props: map[string]any{"symbol_kind": "function", "exported": true, "language": "typescript"}},
+		facts.Fact{Kind: facts.KindModule, Name: "src/stores/authStore", File: "golf-ui/src/stores/authStore.ts", Repo: "golf-ui",
+			Props: map[string]any{"language": "typescript"}},
+	)
+
+	// Bare path without repo label — should fall back to golf-ui/src/stores/authStore.ts
+	var sb strings.Builder
+	found := srv.exploreFile(store, "src/stores/authStore.ts", 1, &sb)
+	if !found {
+		t.Fatal("exploreFile should find 'src/stores/authStore.ts' via repo-label fallback")
+	}
+	output := sb.String()
+	if !strings.Contains(output, "golf-ui/src/stores/authStore.ts") {
+		t.Errorf("expected resolved file path in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "useAuthStore") {
+		t.Error("expected useAuthStore symbol in output")
+	}
+}
+
+func TestExploreFile_ExtensionFallback(t *testing.T) {
+	// Simulate multi-repo mode where user omits the file extension.
+	eng := newEngineWithSnapshot("/Users/me/workspace")
+	eng.SetRepoPaths(map[string]string{
+		"golf-ui": "/Users/me/development/golf-ui",
+	})
+	srv := &Server{eng: eng}
+
+	store := eng.Store()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "src/stores.useAuthStore", File: "golf-ui/src/stores/authStore.ts", Line: 5, Repo: "golf-ui",
+			Props: map[string]any{"symbol_kind": "function", "exported": true}},
+	)
+
+	// No extension + no repo label — should try "src/stores/authStore" + ".ts" + "golf-ui/" prefix
+	var sb strings.Builder
+	found := srv.exploreFile(store, "src/stores/authStore", 1, &sb)
+	if !found {
+		t.Fatal("exploreFile should find 'src/stores/authStore' via extension + repo-label fallback")
+	}
+	output := sb.String()
+	if !strings.Contains(output, "golf-ui/src/stores/authStore.ts") {
+		t.Errorf("expected resolved file path in output, got:\n%s", output)
+	}
+}
+
+func TestExploreFile_ExtensionFallback_SingleRepo(t *testing.T) {
+	// Single-repo mode — extension guessing should still work without repo labels.
+	srv := newTestServer(nil)
+
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/server.New", File: "internal/server/server.go", Line: 26,
+			Props: map[string]any{"symbol_kind": "function", "exported": true}},
+	)
+
+	// Without extension — should try "internal/server/server" + ".go"
+	var sb strings.Builder
+	found := srv.exploreFile(store, "internal/server/server", 1, &sb)
+	if !found {
+		t.Fatal("exploreFile should find 'internal/server/server' via .go extension fallback")
+	}
+	output := sb.String()
+	if !strings.Contains(output, "internal/server/server.go") {
+		t.Errorf("expected resolved file path, got:\n%s", output)
+	}
+}
+
+func TestExploreFile_NoFallbackNeeded(t *testing.T) {
+	// Exact match — no fallback should be needed.
+	store := populateTestStore()
+	srv := newTestServer(store)
+
+	var sb strings.Builder
+	found := srv.exploreFile(store, "internal/server/server.go", 1, &sb)
+	if !found {
+		t.Fatal("exploreFile should find exact match")
+	}
+	output := sb.String()
+	if !strings.Contains(output, "# File: internal/server/server.go") {
+		t.Error("exact match should use original focus in header")
+	}
+}
+
+func TestShowSymbol_PrefersExactMatch(t *testing.T) {
+	// Simulate the show_symbol handler's lookup logic:
+	// exact match via LookupByExactName should take priority over substring.
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "Transaction",
+			File: "models/transaction.rb", Line: 5,
+			Props: map[string]any{"symbol_kind": "class", "language": "ruby"}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "AutoTransactionsTogglePatch",
+			File: "initializers/patches.rb", Line: 8,
+			Props: map[string]any{"symbol_kind": "interface", "language": "ruby"}},
+		// A non-symbol fact named "Transaction" should be ignored.
+		facts.Fact{Kind: facts.KindStorage, Name: "Transaction",
+			File: "models/transaction.rb",
+			Props: map[string]any{"storage_kind": "model"}},
+	)
+
+	// Replicate the handler's resolution: exact match, filter to symbols.
+	results := store.LookupByExactName("Transaction")
+	var symbolResults []facts.Fact
+	for _, r := range results {
+		if r.Kind == facts.KindSymbol {
+			symbolResults = append(symbolResults, r)
+		}
+	}
+
+	if len(symbolResults) != 1 {
+		t.Fatalf("expected 1 symbol result, got %d", len(symbolResults))
+	}
+	if symbolResults[0].Name != "Transaction" {
+		t.Errorf("expected exact match 'Transaction', got %q", symbolResults[0].Name)
+	}
+	if symbolResults[0].File != "models/transaction.rb" {
+		t.Errorf("expected file models/transaction.rb, got %q", symbolResults[0].File)
+	}
+
+	// Substring search would return both -- verify the exact path avoids this.
+	substring := store.Query("symbol", "", "Transaction", "")
+	if len(substring) < 2 {
+		t.Errorf("substring search should match at least 2 symbols, got %d", len(substring))
+	}
 }
 
 func TestCapitalize(t *testing.T) {

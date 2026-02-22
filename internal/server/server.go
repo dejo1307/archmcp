@@ -133,7 +133,20 @@ func (s *Server) registerTools() {
 			return errorResult(fmt.Sprintf("invalid repo path: %v", err)), nil, nil
 		}
 
-		snapshot, err := s.eng.GenerateSnapshot(ctx, absRepo, args.Append)
+		// Auto-enable append mode when switching to a different repo
+		// while facts from another repo are already loaded.
+		appendMode := args.Append
+		autoAppended := false
+		if !appendMode && s.eng.Store().Count() > 0 && s.eng.Snapshot() != nil {
+			prevRepo := s.eng.Snapshot().Meta.RepoPath
+			if prevRepo != "" && prevRepo != absRepo {
+				appendMode = true
+				autoAppended = true
+				log.Printf("[server] auto-enabled append mode: switching from %s to %s", prevRepo, absRepo)
+			}
+		}
+
+		snapshot, err := s.eng.GenerateSnapshot(ctx, absRepo, appendMode)
 		if err != nil {
 			return errorResult(fmt.Sprintf("snapshot generation failed: %v", err)), nil, nil
 		}
@@ -163,6 +176,21 @@ func (s *Server) registerTools() {
 			snapshot.Meta.Explainers,
 		)
 
+		if appendMode {
+			repoLabel := filepath.Base(absRepo)
+			autoNote := ""
+			if autoAppended {
+				autoNote = " (auto-enabled: different repo detected)"
+			}
+			summary += fmt.Sprintf(
+				"\n\n**Multi-repo mode active%s.** Repo label: %q\n"+
+					"- Filter by repo: query_facts(repo=%q)\n"+
+					"- File paths are prefixed: e.g. %s/src/...\n"+
+					"- Generate additional repos with append=true (sequentially, not in parallel).",
+				autoNote, repoLabel, repoLabel, repoLabel,
+			)
+		}
+
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{Text: summary},
@@ -188,12 +216,17 @@ func (s *Server) registerTools() {
 			normFiles = append(normFiles, s.normalizeToRelative(f))
 		}
 
+		// In multi-repo mode, expand the file prefix to include repo labels
+		// if the user provided a bare relative path (e.g. "src/" instead of "golf-ui/src/").
+		prefixes := s.expandFilePrefix(normPrefix)
+
+		// Query with the first (or only) prefix.
 		opts := facts.QueryOpts{
 			Kind:       args.Kind,
 			Kinds:      args.Kinds,
 			File:       normFile,
 			Files:      normFiles,
-			FilePrefix: normPrefix,
+			FilePrefix: prefixes[0],
 			Name:       args.Name,
 			Names:      args.Names,
 			Repo:       args.Repo,
@@ -205,6 +238,14 @@ func (s *Server) registerTools() {
 		}
 
 		results, total := store.QueryAdvanced(opts)
+
+		// If multiple repo labels matched, merge results from additional prefixes.
+		for _, p := range prefixes[1:] {
+			opts.FilePrefix = p
+			extra, extraTotal := store.QueryAdvanced(opts)
+			results = append(results, extra...)
+			total += extraTotal
+		}
 
 		// Compact output modes: return text instead of JSON
 		switch args.OutputMode {
@@ -311,14 +352,26 @@ func (s *Server) registerTools() {
 			return errorResult("name is required"), nil, nil
 		}
 
-		results := store.Query("symbol", "", args.Name, "")
+		// Prefer exact match to avoid substring noise (e.g. "Transaction" matching "AutoTransactionsTogglePatch").
+		results := store.LookupByExactName(args.Name)
+		// Filter to symbols only
+		symbolResults := results[:0]
+		for _, r := range results {
+			if r.Kind == facts.KindSymbol {
+				symbolResults = append(symbolResults, r)
+			}
+		}
+		results = symbolResults
+		if len(results) == 0 {
+			results = store.Query("symbol", "", args.Name, "")
+		}
 		if len(results) == 0 {
 			return errorResult(fmt.Sprintf("No symbols matching %q", args.Name)), nil, nil
 		}
 
 		contextLines := args.ContextLines
 		if contextLines <= 0 {
-			contextLines = 30
+			contextLines = 60
 		}
 
 		// Limit to 5 results
@@ -404,6 +457,7 @@ func (s *Server) registerTools() {
 		switch {
 		case focus == "." && s.exploreDirectory(store, focus, &sb):
 		case focus != "." && s.exploreModule(store, focus, depth, &sb):
+		case focus != "." && s.exploreModuleSubstring(store, focus, depth, &sb):
 		case focus != "." && s.exploreFile(store, focus, depth, &sb):
 		case focus != "." && s.exploreSymbol(store, focus, depth, &sb):
 		case s.exploreDirectory(store, focus, &sb):
@@ -417,12 +471,229 @@ func (s *Server) registerTools() {
 			},
 		}, nil, nil
 	})
+
+	// Tool: traverse
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "traverse",
+		Description: "Walk the dependency/call graph from a starting point. Use direction='forward' to answer 'what does X depend on?' and direction='reverse' to answer 'what depends on X?'. Returns a list of nodes and edges up to the specified depth. Use this instead of multiple explore calls when you need to understand transitive relationships.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args traverseArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		graph := store.Graph()
+		if graph == nil {
+			return errorResult("No graph available. Run generate_snapshot first."), nil, nil
+		}
+
+		if args.Start == "" {
+			return errorResult("start is required"), nil, nil
+		}
+
+		// Resolve start name: try exact match first, then substring
+		startName, err := s.resolveNodeName(store, args.Start)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+
+		direction := args.Direction
+		if direction == "" {
+			direction = "forward"
+		}
+		if direction != "forward" && direction != "reverse" {
+			return errorResult("direction must be 'forward' or 'reverse'"), nil, nil
+		}
+
+		result := graph.Traverse(startName, direction, args.RelationKinds, args.NodeKinds, args.MaxDepth, args.MaxNodes)
+
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to marshal results: %v", err)), nil, nil
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: string(data)},
+			},
+		}, nil, nil
+	})
+
+	// Tool: find_path
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "find_path",
+		Description: "Find the shortest path between two nodes in the architectural graph. Use this to answer 'how does X reach Y?' or 'what is the call chain from main to this function?'. Returns the path as an ordered list of nodes and edges, or reports that no path exists.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args findPathArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		graph := store.Graph()
+		if graph == nil {
+			return errorResult("No graph available. Run generate_snapshot first."), nil, nil
+		}
+
+		if args.From == "" || args.To == "" {
+			return errorResult("both 'from' and 'to' are required"), nil, nil
+		}
+
+		fromName, err := s.resolveNodeName(store, args.From)
+		if err != nil {
+			return errorResult(fmt.Sprintf("from: %v", err)), nil, nil
+		}
+		toName, err := s.resolveNodeName(store, args.To)
+		if err != nil {
+			return errorResult(fmt.Sprintf("to: %v", err)), nil, nil
+		}
+
+		result := graph.FindPath(fromName, toName, args.RelationKinds, args.MaxDepth)
+
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to marshal results: %v", err)), nil, nil
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: string(data)},
+			},
+		}, nil, nil
+	})
+
+	// Tool: impact_analysis
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name:        "impact_analysis",
+		Description: "Analyze the impact of changing a module, symbol, or file. Returns all nodes that transitively depend on the target (i.e., what would be affected if the target changes), grouped by depth. Use this for refactoring planning, understanding blast radius, and change risk assessment.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args impactAnalysisArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		graph := store.Graph()
+		if graph == nil {
+			return errorResult("No graph available. Run generate_snapshot first."), nil, nil
+		}
+
+		if args.Target == "" {
+			return errorResult("target is required"), nil, nil
+		}
+
+		targetName, err := s.resolveNodeName(store, args.Target)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+
+		result := graph.ImpactSet(targetName, args.MaxDepth, args.MaxNodes, args.IncludeForward)
+
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to marshal results: %v", err)), nil, nil
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: string(data)},
+			},
+		}, nil, nil
+	})
+}
+
+// resolveNodeName resolves a user-provided name to an exact fact name.
+// It tries exact match first, then substring match with smart disambiguation
+// that prefers struct/class/interface definitions over their methods.
+func (s *Server) resolveNodeName(store *facts.Store, input string) (string, error) {
+	input = s.normalizeToRelative(input)
+
+	// Try exact match first
+	exact := store.LookupByExactName(input)
+	if len(exact) > 0 {
+		return exact[0].Name, nil
+	}
+
+	// Try substring match
+	results := store.Query("", "", input, "")
+	if len(results) == 0 {
+		return "", fmt.Errorf("no facts matching %q", input)
+	}
+	if len(results) == 1 {
+		return results[0].Name, nil
+	}
+
+	// Smart disambiguation: when multiple matches exist, try to find the
+	// most likely intended target rather than immediately erroring.
+
+	// 1. Prefer exact name suffix match (e.g., "AuthHandler" matching
+	//    "adapters.AuthHandler" over "adapters.AuthHandler.Login")
+	var suffixMatches []facts.Fact
+	for _, r := range results {
+		parts := strings.Split(r.Name, ".")
+		if len(parts) > 0 && parts[len(parts)-1] == input {
+			suffixMatches = append(suffixMatches, r)
+		}
+	}
+	if len(suffixMatches) == 1 {
+		return suffixMatches[0].Name, nil
+	}
+
+	// 2. Among suffix matches (or all results), prefer struct/class/interface
+	candidates := results
+	if len(suffixMatches) > 0 {
+		candidates = suffixMatches
+	}
+	for _, r := range candidates {
+		sk, _ := r.Props["symbol_kind"].(string)
+		if sk == "struct" || sk == "class" || sk == "interface" {
+			return r.Name, nil
+		}
+	}
+
+	// 3. Prefer module-level facts over symbol-level
+	for _, r := range candidates {
+		if r.Kind == facts.KindModule {
+			return r.Name, nil
+		}
+	}
+
+	// 4. If still ambiguous beyond threshold, report error with guidance
+	if len(results) > 10 {
+		names := make([]string, 0, 5)
+		for i, r := range results {
+			if i >= 5 {
+				break
+			}
+			names = append(names, r.Name)
+		}
+		return "", fmt.Errorf("ambiguous name %q matches %d facts (e.g. %s). Use a fully qualified name or filter by prop=symbol_kind", input, len(results), strings.Join(names, ", "))
+	}
+	return results[0].Name, nil
 }
 
 // exploreArgs are the arguments for the explore tool.
 type exploreArgs struct {
 	Focus string `json:"focus" jsonschema:"required,Module name, file path, or symbol name to explore"`
 	Depth int    `json:"depth,omitempty" jsonschema:"How deep to follow relations (1=direct only, 2=include relations of relations). Default 1, max 2."`
+}
+
+// traverseArgs are the arguments for the traverse tool.
+type traverseArgs struct {
+	Start         string   `json:"start" jsonschema:"required,Starting node name (fact name, module name, or symbol name). Substring match."`
+	Direction     string   `json:"direction,omitempty" jsonschema:"'forward' follows outgoing relations (what does X depend on?), 'reverse' follows incoming relations (what depends on X?). Default: forward."`
+	RelationKinds []string `json:"relation_kinds,omitempty" jsonschema:"Filter to specific relation types: imports, calls, declares, implements, depends_on. Default: all."`
+	MaxDepth      int      `json:"max_depth,omitempty" jsonschema:"Maximum traversal depth (1-20). Default: 5."`
+	MaxNodes      int      `json:"max_nodes,omitempty" jsonschema:"Maximum nodes to return (1-500). Traversal stops when this limit is reached. Default: 100."`
+	NodeKinds     []string `json:"node_kinds,omitempty" jsonschema:"Filter results to specific fact kinds: module, symbol, dependency, route, storage. Default: all."`
+}
+
+// findPathArgs are the arguments for the find_path tool.
+type findPathArgs struct {
+	From          string   `json:"from" jsonschema:"required,Source node name (substring match)."`
+	To            string   `json:"to" jsonschema:"required,Target node name (substring match)."`
+	RelationKinds []string `json:"relation_kinds,omitempty" jsonschema:"Filter to specific relation types. Default: all."`
+	MaxDepth      int      `json:"max_depth,omitempty" jsonschema:"Maximum path length to search (1-20). Default: 10."`
+}
+
+// impactAnalysisArgs are the arguments for the impact_analysis tool.
+type impactAnalysisArgs struct {
+	Target         string `json:"target" jsonschema:"required,The node being changed (fact name, substring match)."`
+	MaxDepth       int    `json:"max_depth,omitempty" jsonschema:"How many hops of impact to compute (1-10). Default: 3."`
+	MaxNodes       int    `json:"max_nodes,omitempty" jsonschema:"Maximum impacted nodes to return (1-500). Default: 200."`
+	IncludeForward bool   `json:"include_forward,omitempty" jsonschema:"Include what the target depends on (what might break the target). Default: false."`
 }
 
 // exploreModule renders a module exploration if the focus matches a module name.
@@ -469,25 +740,62 @@ func (s *Server) exploreModule(store *facts.Store, focus string, depth int, sb *
 		sb.WriteString("\n")
 	}
 
-	// Dependencies: facts with kind=dependency whose file starts with the module path
+	// Dependencies: facts with kind=dependency whose file starts with the module path,
+	// plus direct depends_on relations from the module fact itself (packwerk).
 	deps, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindDependency, FilePrefix: mod.Name + "/"})
-	if len(deps) > 0 {
-		sb.WriteString(fmt.Sprintf("## Dependencies (%d)\n\n", len(deps)))
-		for _, dep := range deps {
-			for _, r := range dep.Relations {
-				if r.Kind == facts.RelImports {
-					sb.WriteString(fmt.Sprintf("- %s\n", r.Target))
-				}
+	// Collect all dependency targets grouped by relation kind.
+	depsByKind := make(map[string][]string) // relKind → targets
+	seen := make(map[string]struct{})
+	for _, dep := range deps {
+		for _, r := range dep.Relations {
+			key := r.Kind + ":" + r.Target
+			if _, dup := seen[key]; dup {
+				continue
 			}
+			seen[key] = struct{}{}
+			depsByKind[r.Kind] = append(depsByKind[r.Kind], r.Target)
 		}
-		sb.WriteString("\n")
+	}
+	// Also include the module's own depends_on relations (from packwerk).
+	for _, r := range mod.Relations {
+		key := r.Kind + ":" + r.Target
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		depsByKind[r.Kind] = append(depsByKind[r.Kind], r.Target)
+	}
+	totalDeps := 0
+	for _, targets := range depsByKind {
+		totalDeps += len(targets)
+	}
+	if totalDeps > 0 {
+		sb.WriteString(fmt.Sprintf("## Dependencies (%d)\n\n", totalDeps))
+		for _, relKind := range []string{facts.RelDependsOn, facts.RelImports, facts.RelImplements} {
+			targets := depsByKind[relKind]
+			if len(targets) == 0 {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("### %s (%d)\n\n", capitalize(relKind), len(targets)))
+			for _, t := range targets {
+				sb.WriteString(fmt.Sprintf("- %s\n", t))
+			}
+			sb.WriteString("\n")
+		}
 	}
 
-	// Reverse dependencies: who imports this module
+	// Reverse dependencies: who depends on or imports this module
 	dependents := store.ReverseLookup(mod.Name, facts.RelImports)
-	if len(dependents) > 0 {
-		sb.WriteString(fmt.Sprintf("## Dependents (%d)\n\n", len(dependents)))
-		for _, dep := range dependents {
+	revDeps := store.ReverseLookup(mod.Name, facts.RelDependsOn)
+	allDependents := append(dependents, revDeps...)
+	if len(allDependents) > 0 {
+		depSeen := make(map[string]struct{})
+		sb.WriteString(fmt.Sprintf("## Dependents (%d)\n\n", len(allDependents)))
+		for _, dep := range allDependents {
+			if _, dup := depSeen[dep.Name]; dup {
+				continue
+			}
+			depSeen[dep.Name] = struct{}{}
 			sb.WriteString(fmt.Sprintf("- %s\n", dep.Name))
 		}
 		sb.WriteString("\n")
@@ -518,9 +826,62 @@ func (s *Server) exploreModule(store *facts.Store, focus string, depth int, sb *
 	return true
 }
 
+// exploreModuleSubstring tries substring matching on module names when exact
+// module match fails. If exactly one module matches, it delegates to the full
+// exploreModule rendering. If multiple match, it lists them so the user can
+// pick the right one.
+func (s *Server) exploreModuleSubstring(store *facts.Store, focus string, depth int, sb *strings.Builder) bool {
+	matches, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindModule, Name: focus})
+	if len(matches) == 0 {
+		return false
+	}
+	if len(matches) == 1 {
+		return s.exploreModule(store, matches[0].Name, depth, sb)
+	}
+	// Multiple matches — list them so the user can refine.
+	sb.WriteString(fmt.Sprintf("# Multiple modules matching %q (%d)\n\n", focus, len(matches)))
+	for _, m := range matches {
+		sb.WriteString(fmt.Sprintf("- `%s` (%s)\n", m.Name, m.File))
+	}
+	sb.WriteString("\nUse the full module name for detailed exploration.\n")
+	return true
+}
+
 // exploreFile renders a file exploration if the focus matches an exact file path.
+// In multi-repo mode, it also tries repo-label prefixed paths and common extensions.
 func (s *Server) exploreFile(store *facts.Store, focus string, depth int, sb *strings.Builder) bool {
 	fileFacts := store.ByFile(focus)
+
+	// In multi-repo mode, try repo-label prefixed paths.
+	if len(fileFacts) == 0 {
+		for _, label := range s.repoLabels() {
+			fileFacts = store.ByFile(label + "/" + focus)
+			if len(fileFacts) > 0 {
+				focus = label + "/" + focus
+				break
+			}
+		}
+	}
+
+	// Try appending common extensions (with and without repo labels).
+	if len(fileFacts) == 0 {
+		extensions := []string{".go", ".ts", ".tsx", ".kt", ".swift", ".rb"}
+		candidates := make([]string, 0, len(extensions)*(1+len(s.repoLabels())))
+		for _, ext := range extensions {
+			candidates = append(candidates, focus+ext)
+			for _, label := range s.repoLabels() {
+				candidates = append(candidates, label+"/"+focus+ext)
+			}
+		}
+		for _, c := range candidates {
+			fileFacts = store.ByFile(c)
+			if len(fileFacts) > 0 {
+				focus = c
+				break
+			}
+		}
+	}
+
 	if len(fileFacts) == 0 {
 		return false
 	}
@@ -659,7 +1020,14 @@ func (s *Server) exploreDirectory(store *facts.Store, focus string, sb *strings.
 		prefix += "/"
 	}
 
-	dirFacts, total := store.QueryAdvanced(facts.QueryOpts{FilePrefix: prefix, Limit: 500})
+	// In multi-repo mode, expand bare prefixes to include repo labels.
+	prefixes := s.expandFilePrefix(prefix)
+	dirFacts, total := store.QueryAdvanced(facts.QueryOpts{FilePrefix: prefixes[0], Limit: 500})
+	for _, p := range prefixes[1:] {
+		extra, extraTotal := store.QueryAdvanced(facts.QueryOpts{FilePrefix: p, Limit: 500})
+		dirFacts = append(dirFacts, extra...)
+		total += extraTotal
+	}
 	if total == 0 {
 		return false
 	}
@@ -731,10 +1099,12 @@ func (s *Server) exploreDirectory(store *facts.Store, focus string, sb *strings.
 // showSymbolArgs are the arguments for the show_symbol tool.
 type showSymbolArgs struct {
 	Name         string `json:"name" jsonschema:"required,Symbol name to look up (substring match)"`
-	ContextLines int    `json:"context_lines,omitempty" jsonschema:"Number of source lines to show around the symbol (default 30)"`
+	ContextLines int    `json:"context_lines,omitempty" jsonschema:"Number of source lines to show around the symbol (default 60)"`
 }
 
-// readSourceWindow reads lines from a file centered around the given line number.
+// readSourceWindow reads lines from a file around the given line number.
+// The window is asymmetric: 1/4 of context before the line, 3/4 after,
+// since symbol declarations are at the start of the interesting code.
 func readSourceWindow(absFile string, centerLine, contextLines int) (string, error) {
 	data, err := os.ReadFile(absFile)
 	if err != nil {
@@ -742,11 +1112,13 @@ func readSourceWindow(absFile string, centerLine, contextLines int) (string, err
 	}
 
 	lines := strings.Split(string(data), "\n")
-	startLine := centerLine - contextLines/2
+	before := contextLines / 4
+	after := contextLines - before
+	startLine := centerLine - before
 	if startLine < 1 {
 		startLine = 1
 	}
-	endLine := centerLine + contextLines/2
+	endLine := centerLine + after
 	if endLine > len(lines) {
 		endLine = len(lines)
 	}
@@ -793,6 +1165,65 @@ func (s *Server) normalizeToRelative(p string) string {
 	}
 
 	return p
+}
+
+// repoLabels returns the known repo labels from multi-repo mode, or nil.
+func (s *Server) repoLabels() []string {
+	if s.eng == nil {
+		return nil
+	}
+	rp := s.eng.RepoPaths()
+	if len(rp) == 0 {
+		return nil
+	}
+	labels := make([]string, 0, len(rp))
+	for l := range rp {
+		labels = append(labels, l)
+	}
+	return labels
+}
+
+// expandFilePrefix expands a relative file prefix for multi-repo mode.
+// When repoPaths are configured and the prefix doesn't already start with a
+// known repo label, it returns all "{label}/{prefix}" variants that have
+// matches in the store. If only one repo matches, it returns that single
+// expanded prefix. If multiple repos match, it returns all variants.
+// In single-repo mode or when the prefix already has a repo label, it returns
+// the input unchanged.
+func (s *Server) expandFilePrefix(prefix string) []string {
+	if prefix == "" || filepath.IsAbs(prefix) || s.eng == nil {
+		return []string{prefix}
+	}
+
+	repoPaths := s.eng.RepoPaths()
+	if len(repoPaths) == 0 {
+		return []string{prefix}
+	}
+
+	// Check if prefix already starts with a known repo label.
+	for label := range repoPaths {
+		if prefix == label || strings.HasPrefix(prefix, label+"/") {
+			return []string{prefix}
+		}
+	}
+
+	// Try prefixing with each repo label and check for matches.
+	store := s.eng.Store()
+	var expanded []string
+	for label := range repoPaths {
+		candidate := label + "/" + prefix
+		// Quick check: does the store have any facts with this file prefix?
+		_, total := store.QueryAdvanced(facts.QueryOpts{FilePrefix: candidate, Limit: 1})
+		if total > 0 {
+			expanded = append(expanded, candidate)
+		}
+	}
+
+	if len(expanded) == 0 {
+		// No matches with any repo label; return original (maybe it matches as-is).
+		return []string{prefix}
+	}
+	return expanded
 }
 
 func errorResult(msg string) *mcp.CallToolResult {

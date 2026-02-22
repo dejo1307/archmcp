@@ -99,7 +99,7 @@ func TestQuery_MultiFilter(t *testing.T) {
 		{"filter by kind=module", KindModule, "", "", "", 1},
 		{"filter by file", KindSymbol, "a/foo.go", "", "", 1},
 		{"name substring Foo matches FooBar and BazFoo", KindSymbol, "", "Foo", "", 2},
-		{"name substring is case-sensitive", KindSymbol, "", "foo", "", 0},
+		{"name substring is case-insensitive", KindSymbol, "", "foo", "", 2},
 		{"name substring Qux", "", "", "Qux", "", 1},
 		{"filter by relKind imports", "", "", "", RelImports, 1},
 		{"combined kind+name", KindSymbol, "", "Bar", "", 1},
