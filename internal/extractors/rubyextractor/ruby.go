@@ -154,6 +154,20 @@ var (
 	blockOpenerRe  = regexp.MustCompile(
 		`(?:^\s*(?:if|unless|case|while|until|for|begin)\b)|` +
 			`\bdo\s*(?:\|[^|]*\|)?\s*$`)
+
+	// qualifiedCallRe matches calls where the receiver is a constant/class name
+	// (PascalCase or Namespace::Class). No trailing char required because Ruby
+	// method calls are valid without parentheses: Config.load_defaults
+	qualifiedCallRe = regexp.MustCompile(`\b([A-Z]\w*(?:::[A-Z]\w*)*)\.([\w?!=]+)`)
+	// receiverCallRe matches calls on lowercase receivers with explicit parens: object.method(
+	// Parens are required here to reduce noise from attribute reads.
+	receiverCallRe = regexp.MustCompile(`\b([a-z_]\w*)\.([\w?!=]+)\s*\(`)
+	// endlessMethodRe detects Ruby 3.0+ endless method syntax:
+	//   def name = expr         (no params)
+	//   def name(args) = expr   (with params)
+	// We require whitespace after = to distinguish from setter defs (def foo=(v))
+	// and from == comparisons. RE2 has no lookahead, so we use \s as the guard.
+	endlessMethodRe = regexp.MustCompile(`\)\s*=\s|\bdef\s+(?:self\.)?[\w?!]+\s*=\s`)
 )
 
 // scopeEntry tracks a class/module nesting level.
@@ -161,6 +175,12 @@ type scopeEntry struct {
 	name  string
 	kind  string // "class", "module", or "eigenclass"
 	depth int
+}
+
+// methodEntry tracks an active method body for call accumulation.
+type methodEntry struct {
+	name       string
+	startDepth int
 }
 
 // extractFile parses a single Ruby file and returns facts.
@@ -175,11 +195,13 @@ func extractFile(f *os.File, relFile string, isRails bool, exportedByPackwerk bo
 		lineNum        int
 		depth          int
 		scopeStack     []scopeEntry
+		methodStack    []methodEntry
 		visibility     = "public"
 		isConcern      bool
 		moduleFunction bool
 		heredocEnd     string // non-empty when inside a heredoc
 	)
+	callAccum := make(map[string][]string)
 
 	for scanner.Scan() {
 		lineNum++
@@ -225,6 +247,10 @@ func extractFile(f *os.File, relFile string, isRails bool, exportedByPackwerk bo
 					visibility = "public"
 					moduleFunction = false
 				}
+			}
+			// Pop method stack when the end closes a method body.
+			if len(methodStack) > 0 && methodStack[len(methodStack)-1].startDepth == depth {
+				methodStack = methodStack[:len(methodStack)-1]
 			}
 			continue
 		}
@@ -346,6 +372,8 @@ func extractFile(f *os.File, relFile string, isRails bool, exportedByPackwerk bo
 			isSelf := m[1] == "self."
 			methodName := m[2]
 			isInline := inlineEndRe.MatchString(line)
+			// Endless method: def name = expr  or  def name(args) = expr
+			isEndless := !isInline && endlessMethodRe.MatchString(line)
 
 			// module_function makes subsequent defs into class methods.
 			if moduleFunction {
@@ -380,19 +408,33 @@ func extractFile(f *os.File, relFile string, isRails bool, exportedByPackwerk bo
 				props["framework"] = "rails"
 			}
 
+			// For endless methods, extract calls from the expression on this line.
+			var defLineCalls []string
+			if isEndless {
+				defLineCalls = extractRubyCalls(line)
+			}
+
+			rels := []facts.Relation{{Kind: facts.RelDeclares, Target: dir}}
+			seen := make(map[string]bool)
+			for _, callee := range defLineCalls {
+				if !seen[callee] {
+					seen[callee] = true
+					rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: callee})
+				}
+			}
+
 			result = append(result, facts.Fact{
-				Kind: facts.KindSymbol,
-				Name: fullName,
-				File: relFile,
-				Line: lineNum,
-				Props: props,
-				Relations: []facts.Relation{
-					{Kind: facts.RelDeclares, Target: dir},
-				},
+				Kind:      facts.KindSymbol,
+				Name:      fullName,
+				File:      relFile,
+				Line:      lineNum,
+				Props:     props,
+				Relations: rels,
 			})
 
-			// Only increment depth if this is NOT a one-liner def.
-			if !isInline {
+			// Endless and inline one-liners have no body — don't push to stack or increment depth.
+			if !isInline && !isEndless {
+				methodStack = append(methodStack, methodEntry{name: fullName, startDepth: depth})
 				depth++
 			}
 
@@ -536,6 +578,12 @@ func extractFile(f *os.File, relFile string, isRails bool, exportedByPackwerk bo
 			continue
 		}
 
+		// Accumulate method calls for any line inside an active method body.
+		if len(methodStack) > 0 {
+			mName := methodStack[len(methodStack)-1].name
+			callAccum[mName] = append(callAccum[mName], extractRubyCalls(line)...)
+		}
+
 		// Track depth for other block openers (if/unless/case/while/do etc.).
 		// Note: module/class/def are already handled above and won't reach here.
 		if blockOpenerRe.MatchString(line) {
@@ -545,6 +593,31 @@ func extractFile(f *os.File, relFile string, isRails bool, exportedByPackwerk bo
 		// Enter heredoc mode after processing this line.
 		if lineHasHeredoc {
 			heredocEnd = heredocTerminator
+		}
+	}
+
+	// Attach accumulated RelCalls edges to each method/function fact.
+	seen := make(map[string]map[string]bool)
+	for i, f := range result {
+		sk, _ := f.Props["symbol_kind"].(string)
+		if f.Kind != facts.KindSymbol ||
+			(sk != facts.SymbolMethod && sk != facts.SymbolFunc) {
+			continue
+		}
+		calls, ok := callAccum[f.Name]
+		if !ok {
+			continue
+		}
+		if seen[f.Name] == nil {
+			seen[f.Name] = make(map[string]bool)
+		}
+		for _, callee := range calls {
+			if seen[f.Name][callee] {
+				continue
+			}
+			seen[f.Name][callee] = true
+			result[i].Relations = append(result[i].Relations,
+				facts.Relation{Kind: facts.RelCalls, Target: callee})
 		}
 	}
 
@@ -565,6 +638,28 @@ func qualifiedName(stack []scopeEntry, name string) string {
 		parts = append(parts, name)
 	}
 	return strings.Join(parts, "::")
+}
+
+// extractRubyCalls returns callee names found on a single source line.
+// It detects two tiers:
+//   - Qualified (high-confidence): ConstantName.method or Ns::Class.method
+//   - Receiver (medium-confidence): variable.method(
+func extractRubyCalls(line string) []string {
+	var out []string
+	seen := make(map[string]bool)
+	add := func(s string) {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, m := range qualifiedCallRe.FindAllStringSubmatch(line, -1) {
+		add(m[1] + "." + m[2])
+	}
+	for _, m := range receiverCallRe.FindAllStringSubmatch(line, -1) {
+		add(m[1] + "." + m[2])
+	}
+	return out
 }
 
 // isRubyFile returns true if the file has a .rb extension.
