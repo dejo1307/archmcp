@@ -128,6 +128,10 @@ func NewGraph(ff []Fact) *Graph {
 		}
 	}
 
+	// edgeSeen is only needed during construction; release it so the GC can
+	// reclaim the O(edges × 3 strings) backing memory.
+	g.edgeSeen = nil
+
 	return g
 }
 
@@ -178,9 +182,10 @@ func (g *Graph) Traverse(start, direction string, relKinds, nodeKinds []string, 
 	truncated := false
 	maxDepthReached := 0
 
-	for len(queue) > 0 {
-		item := queue[0]
-		queue = queue[1:]
+	// Use an index pointer instead of re-slicing to avoid keeping the full
+	// backing array alive for the duration of traversal.
+	for qi := 0; qi < len(queue); qi++ {
+		item := queue[qi]
 
 		if item.depth >= maxDepth {
 			continue
@@ -281,16 +286,16 @@ func (g *Graph) FindPath(from, to string, relKinds []string, maxDepth int) PathR
 	}
 
 	visited := make(map[string]bool)
-	parent := make(map[string]string)    // child → parent
-	parentEdge := make(map[string]Edge)  // child → edge from parent
+	parent := make(map[string]string)   // child → parent
+	parentEdge := make(map[string]Edge) // child → edge from parent
 
 	visited[from] = true
 	queue := []queueItem{{name: from, depth: 0}}
 
 	found := false
-	for len(queue) > 0 && !found {
-		item := queue[0]
-		queue = queue[1:]
+	// Use an index pointer to avoid keeping the full backing array alive.
+	for qi := 0; qi < len(queue) && !found; qi++ {
+		item := queue[qi]
 
 		if item.depth >= maxDepth {
 			continue
@@ -435,6 +440,36 @@ func fileDirectory(file string) string {
 		return file[:i]
 	}
 	return "."
+}
+
+// ReverseFacts returns all facts that have a relation targeting targetName.
+// When relKind is non-empty only edges of that kind are considered.
+// It uses the reverse adjacency index (O(1) lookup) instead of scanning all facts.
+func (g *Graph) ReverseFacts(targetName, relKind string) []Fact {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	edges := g.reverse[targetName]
+	if len(edges) == 0 {
+		return nil
+	}
+
+	result := make([]Fact, 0, len(edges))
+	seen := make(map[string]struct{}, len(edges))
+	for _, e := range edges {
+		if relKind != "" && e.RelKind != relKind {
+			continue
+		}
+		sourceName := e.Target // reverse edge stores the source in Target field
+		if _, already := seen[sourceName]; already {
+			continue
+		}
+		seen[sourceName] = struct{}{}
+		if idx, ok := g.factIdx[sourceName]; ok && idx < len(g.facts) {
+			result = append(result, g.facts[idx])
+		}
+	}
+	return result
 }
 
 // Forward returns the forward adjacency map (for use by explainers like cycles).

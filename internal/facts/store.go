@@ -121,15 +121,55 @@ func (s *Store) Query(kind, file, name, relKind string) []Fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var result []Fact
-	for _, f := range s.facts {
-		if kind != "" && f.Kind != kind {
-			continue
+	// Use the kind index when available to avoid a full scan.
+	candidates := s.facts
+	if kind != "" {
+		if idxs, ok := s.byKind[kind]; ok {
+			return s.queryFromIndices(idxs, kind, file, name, relKind)
 		}
+		return nil // kind specified but no facts of that kind exist
+	}
+
+	var result []Fact
+	for _, f := range candidates {
 		if file != "" && f.File != file {
 			continue
 		}
 		if name != "" && !strings.Contains(strings.ToLower(f.Name), strings.ToLower(name)) {
+			continue
+		}
+		if relKind != "" {
+			hasRel := false
+			for _, r := range f.Relations {
+				if r.Kind == relKind {
+					hasRel = true
+					break
+				}
+			}
+			if !hasRel {
+				continue
+			}
+		}
+		result = append(result, f)
+	}
+	return result
+}
+
+// queryFromIndices applies file/name/relKind filters over a pre-selected index
+// slice, avoiding a full scan of s.facts when a kind (or file) index is used.
+// kind is already matched by the caller's index selection and is not re-checked.
+func (s *Store) queryFromIndices(indices []int, kind, file, name, relKind string) []Fact {
+	nameLower := strings.ToLower(name)
+	var result []Fact
+	for _, idx := range indices {
+		if idx >= len(s.facts) {
+			continue
+		}
+		f := s.facts[idx]
+		if file != "" && f.File != file {
+			continue
+		}
+		if name != "" && !strings.Contains(strings.ToLower(f.Name), nameLower) {
 			continue
 		}
 		if relKind != "" {
@@ -186,18 +226,74 @@ func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
 
 	nameLower := strings.ToLower(opts.Name)
 
-	var matched []Fact
-	for _, f := range s.facts {
+	// Select the narrowest available index as the candidate set to avoid a
+	// full O(N) scan when a high-selectivity filter is present.
+	//
+	// Priority: single-kind > single-file > exact-name batch > full scan.
+	// Multi-kind and multi-file filters still fall back to the full slice
+	// because building a union of index slices is only worthwhile when the
+	// union is significantly smaller than N, which is hard to determine
+	// cheaply; the remaining filters then trim the result.
+	type iterMode int
+	const (
+		iterFull      iterMode = iota // scan all s.facts
+		iterKindIndex                 // scan byKind[kind] indices
+		iterFileIndex                 // scan byFile[file] indices
+		iterNameUnion                 // scan union of byName[name] indices
+	)
+
+	mode := iterFull
+	var indexSlice []int // for iterKindIndex / iterFileIndex
+
+	if len(kindSet) == 1 {
+		for k := range kindSet {
+			if idxs, ok := s.byKind[k]; ok {
+				indexSlice = idxs
+				mode = iterKindIndex
+			} else {
+				// Kind filter specified but no facts of that kind — fast exit.
+				return nil, 0
+			}
+		}
+	} else if len(fileSet) == 1 && opts.FilePrefix == "" {
+		for f := range fileSet {
+			if idxs, ok := s.byFile[f]; ok {
+				indexSlice = idxs
+				mode = iterFileIndex
+			} else {
+				return nil, 0
+			}
+		}
+	} else if len(nameSet) > 0 && opts.Name == "" {
+		// Exact-name batch: union of byName index entries.
+		// Only switch to this mode when no substring filter is also active,
+		// to keep the logic simple.
+		total := 0
+		for n := range nameSet {
+			total += len(s.byName[n])
+		}
+		if total < len(s.facts) {
+			union := make([]int, 0, total)
+			for n := range nameSet {
+				union = append(union, s.byName[n]...)
+			}
+			indexSlice = union
+			mode = iterNameUnion
+		}
+	}
+
+	// factAt retrieves a fact by absolute index in s.facts, regardless of mode.
+	filterFact := func(f Fact) bool {
 		// Kind filter
 		if len(kindSet) > 0 {
 			if _, ok := kindSet[f.Kind]; !ok {
-				continue
+				return false
 			}
 		}
 
 		// Repo filter
 		if opts.Repo != "" && f.Repo != opts.Repo {
-			continue
+			return false
 		}
 
 		// File filter (exact match set OR prefix)
@@ -210,7 +306,7 @@ func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
 				fileMatch = strings.HasPrefix(f.File, opts.FilePrefix)
 			}
 			if !fileMatch {
-				continue
+				return false
 			}
 		}
 
@@ -224,7 +320,7 @@ func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
 				_, nameMatch = nameSet[f.Name]
 			}
 			if !nameMatch {
-				continue
+				return false
 			}
 		}
 
@@ -238,22 +334,42 @@ func (s *Store) QueryAdvanced(opts QueryOpts) ([]Fact, int) {
 				}
 			}
 			if !hasRel {
-				continue
+				return false
 			}
 		}
 
-		// Property filter (applied before limit, unlike the old query_facts handler)
+		// Property filter
 		if opts.Prop != "" {
 			v, ok := f.Props[opts.Prop]
 			if !ok {
-				continue
+				return false
 			}
 			if opts.PropValue != "" && fmt.Sprintf("%v", v) != opts.PropValue {
-				continue
+				return false
 			}
 		}
 
-		matched = append(matched, f)
+		return true
+	}
+
+	var matched []Fact
+
+	switch mode {
+	case iterKindIndex, iterFileIndex, iterNameUnion:
+		for _, idx := range indexSlice {
+			if idx >= len(s.facts) {
+				continue
+			}
+			if filterFact(s.facts[idx]) {
+				matched = append(matched, s.facts[idx])
+			}
+		}
+	default:
+		for _, f := range s.facts {
+			if filterFact(f) {
+				matched = append(matched, f)
+			}
+		}
 	}
 
 	total := len(matched)
@@ -290,7 +406,18 @@ func (s *Store) LookupByExactName(name string) []Fact {
 
 // ReverseLookup returns all facts that have a relation targeting the given name.
 // If relKind is non-empty, only relations of that kind are considered.
+// When the graph index is available it delegates to the O(1) reverse map;
+// otherwise it falls back to a linear scan of all facts.
 func (s *Store) ReverseLookup(targetName, relKind string) []Fact {
+	s.mu.RLock()
+	g := s.graph
+	s.mu.RUnlock()
+
+	if g != nil {
+		return g.ReverseFacts(targetName, relKind)
+	}
+
+	// Graph not yet built — linear scan fallback.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var result []Fact
