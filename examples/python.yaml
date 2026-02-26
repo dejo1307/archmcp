@@ -1,0 +1,67 @@
+# archmcp configuration for a Python project.
+#
+# Detection: The Python extractor activates when any of the following are found
+#            at the repo root or up to 3 subdirectory levels deep (for monorepos):
+#            pyproject.toml, setup.py, requirements.txt, Pipfile,
+#            pytest.ini, mypy.ini, tox.ini, setup.cfg
+#
+# Features:  Classes (with base class / RelImplements edges, generic params stripped),
+#            functions and methods (sync and async), indentation-based scope tracking
+#            for nested classes, imports (bare import and from...import),
+#            FastAPI / Starlette route decorators (@router.get/post/put/delete/...),
+#            SQLAlchemy __tablename__ storage facts, multi-line docstring skipping.
+
+repo: "."
+ignore:
+  # Dependencies and tooling
+  - ".git/**"
+  - ".archmcp/**"
+  - "__pycache__/**"
+  - "**/__pycache__/**"
+  - ".venv/**"
+  - "**/.venv/**"
+  - "venv/**"
+  - "**/venv/**"
+  - ".tox/**"
+  - "**/.tox/**"
+  - ".mypy_cache/**"
+  - "**/.mypy_cache/**"
+  - ".pytest_cache/**"
+  - "**/.pytest_cache/**"
+  - "*.egg-info/**"
+  - "**/*.egg-info/**"
+  - "dist/**"
+  - "build/**"
+  # Tests
+  - "**/test_*.py"
+  - "**/*_test.py"
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/conftest.py"
+  # Documentation
+  - "**/*.md"
+  - "**/*.mdx"
+  # Config / data
+  - "**/*.yml"
+  - "**/*.yaml"
+  - "**/*.json"
+  # CI / ops
+  - "Jenkinsfile"
+  - "**/Jenkinsfile"
+  - "**/Jenkinsfile*"
+  - "Dockerfile"
+  - "**/Dockerfile*"
+  - "**/.env*"
+  # Alembic migrations (generated SQL — low signal)
+  - "**/alembic/**"
+  - "**/migrations/**"
+extractors:
+  - python
+explainers:
+  - cycles
+  - layers
+renderers:
+  - llm_context
+output:
+  dir: ".archmcp"
+  max_context_tokens: 16000

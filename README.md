@@ -10,7 +10,7 @@ archmcp is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.i
 
 **Input for AI agents.** The snapshot output (modules, symbols, dependencies, architectural patterns) is structured context designed for LLM consumption. It is not a dashboard, not a visualization tool, not a documentation generator. It answers the question: *"What does this codebase look like?"* so the agent can skip the guessing phase.
 
-**Built for multi-repo work.** When you work across multiple repositories - a Go backend, a TypeScript frontend, a Kotlin Android app, a Swift iOS app, a Ruby on Rails API - having an architectural snapshot of each repo lets AI agents understand cross-repo structure without manually exploring every codebase from scratch. Use `append` mode to build a combined snapshot across multiple repos and query them together.
+**Built for multi-repo work.** When you work across multiple repositories - a Go backend, a TypeScript frontend, a Python FastAPI service, a Kotlin Android app, a Swift iOS app, a Ruby on Rails API - having an architectural snapshot of each repo lets AI agents understand cross-repo structure without manually exploring every codebase from scratch. Use `append` mode to build a combined snapshot across multiple repos and query them together.
 
 ## How It Works
 
@@ -19,7 +19,7 @@ archmcp runs as a stdio-based MCP server. When connected to an LLM client, it ex
 The pipeline:
 
 ```
-Repository -> File Walker -> Extractors (Go, Kotlin, TypeScript, Swift, Ruby) -> Fact Store
+Repository -> File Walker -> Extractors (Go, Kotlin, Python, TypeScript, Swift, Ruby) -> Fact Store
   -> Graph Index -> Explainers (cycles, layers) -> Insights
   -> Renderers (LLM context) -> Artifacts
   -> MCP Server (resources + tools)
@@ -138,6 +138,7 @@ Once the snapshot exists, you do not need to reference archmcp explicitly. The L
 |------------|---------------|--------------------|
 | Go         | `go/ast`      | `go.mod` present   |
 | Kotlin     | regex scanner | `build.gradle.kts` or `build.gradle` with Kotlin/Android |
+| Python     | regex scanner | `pyproject.toml`, `setup.py`, `requirements.txt`, `Pipfile`, `pytest.ini`, `mypy.ini`, or `tox.ini` present (root or up to 3 levels deep for monorepos) |
 | TypeScript | tree-sitter   | `tsconfig.json` or `package.json` with TypeScript |
 | Swift      | regex scanner | `Package.swift`, `.xcodeproj`, or `.xcworkspace` present |
 | Ruby       | regex scanner | `Gemfile` present  |
@@ -145,6 +146,15 @@ Once the snapshot exists, you do not need to reference archmcp explicitly. The L
 Next.js route detection (App Router and Pages Router) is included in the TypeScript extractor.
 
 The Kotlin extractor includes Android-specific awareness: it detects Jetpack Compose (`@Composable`), Hilt DI (`@HiltViewModel`, `@Module`, `@AndroidEntryPoint`), Room database (`@Entity`, `@Dao`, `@Database`), ViewModels, Repositories, Use Cases, Workers, and other Android architecture components.
+
+The Python extractor uses indentation-based scope tracking to correctly handle nested classes and methods. It includes framework-specific awareness:
+- **FastAPI / Starlette**: detects route decorators (`@router.get`, `@router.post`, `@app.delete`, etc.) and emits `route` facts with HTTP method, path, and handler name
+- **SQLAlchemy**: detects `__tablename__` assignments and emits `storage` facts linked to their model class
+- **Pydantic, dataclasses, ABCs, enums**: all captured as `class` symbols with `RelImplements` edges for each base class (generic parameters like `CRUDBase[Model, Schema]` are stripped to just `CRUDBase`)
+- **Async functions**: `async def` functions and methods carry `async: true` in their props
+- **Imports**: both `import foo.bar` and `from foo.bar import ...` are captured as `dependency` facts using Python's file-based module path as the source (e.g. `services/recommender` rather than just `services`)
+- **Monorepos**: detection walks up to 3 subdirectory levels so projects like `python/api/pyproject.toml` are found automatically
+- **Docstrings**: triple-quoted strings (`"""`, `'''`) are skipped so their content is never mistaken for declarations
 
 The Swift extractor includes iOS-specific awareness: it detects SwiftUI views (`View`, `App`, `Scene` conformances), UIKit components (`UIViewController`, `UIView` subclasses), Combine ViewModels (`ObservableObject`, `@Observable`), architectural patterns (Repositories, Use Cases, Coordinators, Services, DI Containers), and `@MainActor` annotations.
 
@@ -217,6 +227,7 @@ ignore:
 extractors:
   - go
   - kotlin
+  - python
   - typescript
   - swift
   - ruby
@@ -236,7 +247,7 @@ output:
 |-------|-------------|---------|
 | `repo` | Repository root path | `"."` |
 | `ignore` | Glob patterns for files/dirs to skip | vendor, node_modules, .git, tests, Next.js dirs, docs (.md, .mdx), config (yml, yaml, json), CI (e.g. Jenkinsfile), Dockerfile, .env* |
-| `extractors` | Enabled extractors | `["go", "kotlin", "typescript", "swift", "ruby"]` |
+| `extractors` | Enabled extractors | `["go", "kotlin", "python", "typescript", "swift", "ruby"]` |
 | `explainers` | Enabled explainers | `["cycles", "layers"]` |
 | `renderers` | Enabled renderers | `["llm_context"]` |
 | `output.dir` | Output directory for artifacts | `".archmcp"` |
@@ -392,7 +403,7 @@ After facts are extracted, archmcp builds a bidirectional adjacency-list graph f
 
 Three plugin interfaces drive the pipeline:
 
-- **Extractors** - parse source code and emit facts (e.g., Go AST, Kotlin regex scanner, Swift regex scanner, Ruby regex scanner, TypeScript tree-sitter)
+- **Extractors** - parse source code and emit facts (e.g., Go AST, Kotlin regex scanner, Python regex scanner, Swift regex scanner, Ruby regex scanner, TypeScript tree-sitter)
 - **Explainers** - analyze facts and produce insights (e.g., cycle detection, layer analysis)
 - **Renderers** - generate output artifacts from the snapshot (e.g., LLM context markdown)
 
@@ -419,6 +430,7 @@ archmcp/
 │   │   ├── registry.go              # Extractor interface + registry
 │   │   ├── goextractor/go.go        # Go AST extractor
 │   │   ├── kotlinextractor/kotlin.go # Kotlin regex extractor (Android-aware)
+│   │   ├── pythonextractor/python.go # Python regex extractor (FastAPI/SQLAlchemy-aware)
 │   │   ├── swiftextractor/swift.go  # Swift regex extractor (iOS-aware)
 │   │   ├── tsextractor/ts.go        # TypeScript tree-sitter extractor
 │   │   └── rubyextractor/
@@ -437,6 +449,7 @@ archmcp/
 ├── examples/                         # Per-language config examples
 │   ├── go.yaml
 │   ├── kotlin.yaml
+│   ├── python.yaml
 │   ├── typescript.yaml
 │   ├── swift.yaml
 │   ├── ruby.yaml

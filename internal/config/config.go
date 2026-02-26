@@ -40,7 +40,7 @@ func Default() *Config {
 			"**/*_test.rb",
 			".archmcp/**",
 		},
-		Extractors: []string{"go", "kotlin", "typescript", "swift", "ruby"},
+		Extractors: []string{"go", "kotlin", "python", "typescript", "swift", "ruby"},
 		Explainers: []string{"cycles", "layers"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{

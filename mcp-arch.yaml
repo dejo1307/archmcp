@@ -62,6 +62,7 @@ ignore:
 extractors:
   - go
   - kotlin
+  - python
   - typescript
   - swift
   - ruby

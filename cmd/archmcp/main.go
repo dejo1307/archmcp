@@ -14,6 +14,7 @@ import (
 	"github.com/dejo1307/archmcp/internal/explainers/layers"
 	"github.com/dejo1307/archmcp/internal/extractors/goextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/kotlinextractor"
+	"github.com/dejo1307/archmcp/internal/extractors/pythonextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/rubyextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/swiftextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/tsextractor"
@@ -38,7 +39,17 @@ func main() {
 		}
 	}
 
+	// If the config path is relative, resolve it first against the current
+	// working directory, then (as a fallback) against the directory containing
+	// the binary itself. This ensures the config is found when Cursor starts
+	// the MCP server from a different working directory.
 	cfg, err := config.Load(cfgPath)
+	if err != nil && !filepath.IsAbs(cfgPath) {
+		if exePath, exErr := os.Executable(); exErr == nil {
+			exeDir := filepath.Dir(exePath)
+			cfg, err = config.Load(filepath.Join(exeDir, cfgPath))
+		}
+	}
 	if err != nil {
 		// If config file doesn't exist, use defaults
 		fmt.Fprintf(os.Stderr, "warning: %v, using defaults\n", err)
@@ -53,6 +64,7 @@ func main() {
 	// Register extractors
 	eng.RegisterExtractor(goextractor.New())
 	eng.RegisterExtractor(kotlinextractor.New())
+	eng.RegisterExtractor(pythonextractor.New())
 	eng.RegisterExtractor(tsextractor.New())
 	eng.RegisterExtractor(swiftextractor.New())
 	eng.RegisterExtractor(rubyextractor.New())
