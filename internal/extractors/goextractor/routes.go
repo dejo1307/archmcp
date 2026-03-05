@@ -74,6 +74,15 @@ func extractRoutesFromStmt(fset *token.FileSet, stmt ast.Stmt, prefixes map[stri
 			for _, r := range routes {
 				*result = append(*result, routeToFact(r, relFile, pkgDir))
 			}
+			// Recurse into function literal arguments (e.g. r.Group(func(r chi.Router) { r.Get(...) })).
+			// This captures routes registered inside oapi-codegen's HandlerWithOptions pattern.
+			for _, arg := range call.Args {
+				if fn, ok := arg.(*ast.FuncLit); ok && fn.Body != nil {
+					for _, inner := range fn.Body.List {
+						extractRoutesFromStmt(fset, inner, prefixes, framework, relFile, pkgDir, result)
+					}
+				}
+			}
 		}
 
 	case *ast.AssignStmt:
@@ -381,11 +390,33 @@ func extractStringArg(call *ast.CallExpr, index int) string {
 	if index >= len(call.Args) {
 		return ""
 	}
-	lit, ok := call.Args[index].(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
-		return ""
+	return extractStringExpr(call.Args[index])
+}
+
+// extractStringExpr extracts a string value from an expression.
+// Handles plain string literals and binary concatenation (e.g. options.BaseURL+"/path").
+// For concatenations where only the right side is a path literal (starts with "/"),
+// the path portion is returned so oapi-codegen patterns resolve correctly.
+func extractStringExpr(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING {
+			return strings.Trim(e.Value, `"`)
+		}
+	case *ast.BinaryExpr:
+		if e.Op == token.ADD {
+			right := extractStringExpr(e.Y)
+			// When the right side is an absolute path ("/..."), use it directly.
+			// This correctly handles `options.BaseURL + "/api/v1/..."` where BaseURL
+			// is a runtime variable that is typically empty or a host prefix.
+			if strings.HasPrefix(right, "/") {
+				return right
+			}
+			left := extractStringExpr(e.X)
+			return left + right
+		}
 	}
-	return strings.Trim(lit.Value, `"`)
+	return ""
 }
 
 // exprToString converts an expression to a human-readable string.
