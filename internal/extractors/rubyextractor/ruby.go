@@ -155,6 +155,10 @@ var (
 		`(?:^\s*(?:if|unless|case|while|until|for|begin)\b)|` +
 			`\bdo\s*(?:\|[^|]*\|)?\s*$`)
 
+	// openAPISpecPathRe matches openapi_spec_path declarations in Rails API controllers.
+	// Example: openapi_spec_path 'packages/items/api/openapi/api.yml'
+	openAPISpecPathRe = regexp.MustCompile(`^\s*openapi_spec_path\s+['"]([^'"]+)['"]`)
+
 	// qualifiedCallRe matches calls where the receiver is a constant/class name
 	// (PascalCase or Namespace::Class). No trailing char required because Ruby
 	// method calls are valid without parentheses: Config.load_defaults
@@ -509,6 +513,30 @@ func extractFile(f *os.File, relFile string, isRails bool, exportedByPackwerk bo
 				},
 				Relations: []facts.Relation{
 					{Kind: facts.RelImplements, Target: mixinName},
+				},
+			})
+			continue
+		}
+
+		// openapi_spec_path 'path/to/spec.yml' — links a controller to its OpenAPI spec.
+		if m := openAPISpecPathRe.FindStringSubmatch(line); m != nil {
+			specFile := m[1]
+			scopeName := qualifiedName(scopeStack, "")
+			if scopeName == "" {
+				scopeName = dir
+			}
+			result = append(result, facts.Fact{
+				Kind: facts.KindDependency,
+				Name: scopeName + " -> " + specFile,
+				File: relFile,
+				Line: lineNum,
+				Props: map[string]any{
+					"language":  "ruby",
+					"type":      "openapi_spec",
+					"spec_file": specFile,
+				},
+				Relations: []facts.Relation{
+					{Kind: facts.RelDependsOn, Target: specFile},
 				},
 			})
 			continue

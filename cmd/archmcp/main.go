@@ -14,6 +14,7 @@ import (
 	"github.com/dejo1307/archmcp/internal/explainers/layers"
 	"github.com/dejo1307/archmcp/internal/extractors/goextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/kotlinextractor"
+	"github.com/dejo1307/archmcp/internal/extractors/openapiextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/pythonextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/rubyextractor"
 	"github.com/dejo1307/archmcp/internal/extractors/swiftextractor"
@@ -64,6 +65,7 @@ func main() {
 	// Register extractors
 	eng.RegisterExtractor(goextractor.New())
 	eng.RegisterExtractor(kotlinextractor.New())
+	eng.RegisterExtractor(openapiextractor.New())
 	eng.RegisterExtractor(pythonextractor.New())
 	eng.RegisterExtractor(tsextractor.New())
 	eng.RegisterExtractor(swiftextractor.New())
