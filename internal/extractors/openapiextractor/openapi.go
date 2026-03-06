@@ -102,9 +102,9 @@ type openAPISpec struct {
 	Paths   map[string]map[string]interface{} `yaml:"paths"`
 }
 
-// openAPIInfo captures the info block, including Vinted-specific gateway config.
+// openAPIInfo captures the info block, including custom gateway config extensions.
 type openAPIInfo struct {
-	// x-gateway-config is a Vinted extension that configures the API Gateway.
+	// x-gateway-config is a custom extension that configures the API Gateway.
 	// Example: { at-gateway-prefix: "/svc-navigation" }
 	GatewayConfig map[string]interface{} `yaml:"x-gateway-config"`
 }
@@ -150,7 +150,7 @@ func parseOpenAPIFile(absPath, relFile string) ([]facts.Fact, error) {
 		role = "client"
 	}
 
-	// Extract the Vinted API Gateway prefix from info.x-gateway-config.
+	// Extract the API Gateway prefix from info.x-gateway-config.
 	// When set, the gateway routes requests at "<prefix><path>" to this service.
 	gatewayPrefix := ""
 	if prefix, ok := spec.Info.GatewayConfig["at-gateway-prefix"].(string); ok {
@@ -207,8 +207,8 @@ func parseOpenAPIFile(absPath, relFile string) ([]facts.Fact, error) {
 							props["tags"] = tagStrings
 						}
 					}
-					// x-gateway-capabilities is a Vinted extension marking which
-					// operations are exposed at the API Gateway and their auth requirements.
+				// x-gateway-capabilities is a custom extension marking which
+				// operations are exposed at the API Gateway and their auth requirements.
 					if caps, ok := opMap["x-gateway-capabilities"].(map[string]interface{}); ok {
 						if exposed, ok := caps["exposed"].(bool); ok {
 							props["exposed"] = exposed

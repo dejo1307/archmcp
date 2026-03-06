@@ -26,35 +26,64 @@ func (e *TSExtractor) Name() string {
 	return "typescript"
 }
 
-// Detect returns true if the repository contains tsconfig.json or a package.json with TypeScript dependencies.
+// Detect returns true if the repository (or one of its immediate subdirectories
+// in the case of a monorepo) contains TypeScript markers.
 func (e *TSExtractor) Detect(repoPath string) (bool, error) {
-	// Check for tsconfig.json
-	if _, err := os.Stat(filepath.Join(repoPath, "tsconfig.json")); err == nil {
-		return true, nil
+	_, found := findTSRoot(repoPath)
+	return found, nil
+}
+
+// findTSRoot returns the directory that is the TypeScript project root, along
+// with a boolean indicating whether one was found. It checks repoPath itself
+// first, then one level of subdirectories to handle monorepos where the
+// TypeScript code lives in a subfolder (e.g. a "client/" directory).
+func findTSRoot(repoPath string) (string, bool) {
+	if hasTSMarkers(repoPath) {
+		return repoPath, true
 	}
 
-	// Check for package.json with TypeScript
-	pkgPath := filepath.Join(repoPath, "package.json")
-	data, err := os.ReadFile(pkgPath)
+	entries, err := os.ReadDir(repoPath)
 	if err != nil {
-		return false, nil
+		return repoPath, false
 	}
-
-	var pkg map[string]any
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return false, nil
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		sub := filepath.Join(repoPath, entry.Name())
+		if hasTSMarkers(sub) {
+			return sub, true
+		}
 	}
+	return repoPath, false
+}
 
-	// Check deps and devDeps for typescript
-	for _, key := range []string{"dependencies", "devDependencies"} {
-		if deps, ok := pkg[key].(map[string]any); ok {
-			if _, ok := deps["typescript"]; ok {
-				return true, nil
-			}
+// hasTSMarkers returns true if the directory looks like a TypeScript project root.
+func hasTSMarkers(dir string) bool {
+	// tsconfig.json (standard) or tsconfig.base.json (Nx monorepo)
+	for _, name := range []string{"tsconfig.json", "tsconfig.base.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
 		}
 	}
 
-	return false, nil
+	// package.json with a typescript dependency
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return false
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return false
+	}
+	for _, key := range []string{"dependencies", "devDependencies"} {
+		if deps, ok := pkg[key].(map[string]any); ok {
+			if _, ok := deps["typescript"]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Extract parses TypeScript/TSX files and emits architectural facts.
@@ -112,6 +141,12 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 
 func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS bool, aliases map[string]string) []facts.Fact {
 	var result []facts.Fact
+
+	// Parse openapi-typescript generated files for backend API route dependencies.
+	// These are client-role route facts showing which backend routes the TS code calls.
+	if openapiRoutes := extractOpenAPITypescriptFacts(src, relFile); len(openapiRoutes) > 0 {
+		result = append(result, openapiRoutes...)
+	}
 
 	lang := typescript.LanguageTypescript()
 	if strings.HasSuffix(relFile, ".tsx") {
@@ -420,7 +455,19 @@ func detectRoute(relFile string) *facts.Fact {
 			baseName := strings.TrimSuffix(strings.TrimSuffix(fileName, ".tsx"), ".ts")
 
 			if baseName == "page" || baseName == "route" || baseName == "layout" || baseName == "loading" || baseName == "error" {
-				routePath := "/" + strings.Join(parts[i+1:len(parts)-1], "/")
+				// Strip Next.js route groups — directory segments wrapped in ()
+				// that act as layout organizers without affecting the URL.
+				// e.g. (standard), (client-data), (header) → removed from path.
+				segParts := parts[i+1 : len(parts)-1]
+				urlParts := make([]string, 0, len(segParts))
+				for _, seg := range segParts {
+					if len(seg) >= 2 && seg[0] == '(' && seg[len(seg)-1] == ')' {
+						continue // route group — not part of the URL
+					}
+					urlParts = append(urlParts, seg)
+				}
+
+				routePath := "/" + strings.Join(urlParts, "/")
 				if routePath == "/" {
 					routePath = "/"
 				}
@@ -499,25 +546,30 @@ func detectRoute(relFile string) *facts.Fact {
 }
 
 // detectNextJS checks if the repository is a Next.js project.
+// It searches the TypeScript root directory (which may be a subdirectory in a
+// monorepo) for next.config.* files or a package.json with a "next" dependency.
 func detectNextJS(repoPath string) bool {
-	// Check next.config.*
+	tsRoot, _ := findTSRoot(repoPath)
+	return detectNextJSAt(tsRoot) || (tsRoot != repoPath && detectNextJSAt(repoPath))
+}
+
+func detectNextJSAt(dir string) bool {
+	// Check next.config.* at this directory level
 	for _, name := range []string{"next.config.js", "next.config.mjs", "next.config.ts"} {
-		if _, err := os.Stat(filepath.Join(repoPath, name)); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			return true
 		}
 	}
 
 	// Check package.json for next dependency
-	data, err := os.ReadFile(filepath.Join(repoPath, "package.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
 		return false
 	}
-
 	var pkg map[string]any
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		return false
 	}
-
 	for _, key := range []string{"dependencies", "devDependencies"} {
 		if deps, ok := pkg[key].(map[string]any); ok {
 			if _, ok := deps["next"]; ok {
@@ -525,7 +577,6 @@ func detectNextJS(repoPath string) bool {
 			}
 		}
 	}
-
 	return false
 }
 
@@ -548,14 +599,34 @@ func nodeText(node *sitter.Node, src []byte) string {
 	return string(src[node.StartByte():node.EndByte()])
 }
 
-// parseTSPathAliases reads tsconfig.json and extracts path alias mappings.
-// For example, "@/*": ["./src/*"] maps prefix "@/" to replacement "src/".
+// parseTSPathAliases reads tsconfig.json (or tsconfig.base.json for Nx monorepos)
+// and extracts path alias mappings. For example "@/*": ["./src/*"] maps prefix
+// "@/" to replacement "src/". It searches the TypeScript root directory first
+// to support monorepos where the tsconfig lives in a subdirectory.
 func parseTSPathAliases(repoPath string) map[string]string {
-	aliases := make(map[string]string)
+	tsRoot, _ := findTSRoot(repoPath)
 
-	data, err := os.ReadFile(filepath.Join(repoPath, "tsconfig.json"))
+	// Prefer tsconfig.json; fall back to tsconfig.base.json (Nx monorepo pattern).
+	for _, name := range []string{"tsconfig.json", "tsconfig.base.json"} {
+		if aliases, ok := tryParseTSConfigAliases(filepath.Join(tsRoot, name)); ok {
+			return aliases
+		}
+	}
+	// Also try the original repoPath if tsRoot is different.
+	if tsRoot != repoPath {
+		for _, name := range []string{"tsconfig.json", "tsconfig.base.json"} {
+			if aliases, ok := tryParseTSConfigAliases(filepath.Join(repoPath, name)); ok {
+				return aliases
+			}
+		}
+	}
+	return make(map[string]string)
+}
+
+func tryParseTSConfigAliases(tsconfigPath string) (map[string]string, bool) {
+	data, err := os.ReadFile(tsconfigPath)
 	if err != nil {
-		return aliases
+		return nil, false
 	}
 
 	var config struct {
@@ -564,15 +635,15 @@ func parseTSPathAliases(repoPath string) map[string]string {
 		} `json:"compilerOptions"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
-		return aliases
+		return nil, false
 	}
 
+	aliases := make(map[string]string)
 	for pattern, targets := range config.CompilerOptions.Paths {
 		if len(targets) == 0 {
 			continue
 		}
-		// Pattern like "@/*" → prefix "@/"
-		// Target like "./src/*" → replacement "src/"
+		// "@/*": ["./src/*"] → prefix "@/" maps to replacement "src/"
 		if strings.HasSuffix(pattern, "*") && strings.HasSuffix(targets[0], "*") {
 			prefix := strings.TrimSuffix(pattern, "*")
 			replacement := strings.TrimSuffix(targets[0], "*")
@@ -580,8 +651,7 @@ func parseTSPathAliases(repoPath string) map[string]string {
 			aliases[prefix] = replacement
 		}
 	}
-
-	return aliases
+	return aliases, true
 }
 
 // resolveImportPath normalizes a TypeScript import path to a filesystem-relative path.
