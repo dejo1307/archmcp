@@ -819,6 +819,7 @@ type nameResolution struct {
 // otherwise it returns an empty name with a resolution-only response so the
 // caller can choose from Candidates or re-invoke with a scoped/exact name.
 func (s *Server) resolveNodeName(store *facts.Store, input string) (string, *nameResolution, error) {
+	input = s.maybePrefixRepoLabel(input)
 	query := input
 	sq := parseScopedQuery(input)
 	scoped := sq.Repo != "" || len(sq.Kinds) > 0 || sq.FilePrefix != "" || sq.SymbolKind != ""
@@ -847,6 +848,26 @@ func (s *Server) resolveNodeName(store *facts.Store, input string) (string, *nam
 		if name, ok := s.resolveRepoLabelToServiceNode(store, term); ok {
 			return name, nil, nil
 		}
+		// Fallback 3: the term is a FILE basename (e.g. "auth_routes") with no
+		// fact named after it — resolve to the symbol(s) declared in that file, so
+		// file-shaped targets are pathable. A single owner resolves directly;
+		// several are surfaced as candidates.
+		if fileMatches := s.resolveByFileBasename(store, sq, term); len(fileMatches) > 0 {
+			if len(fileMatches) == 1 {
+				return fileMatches[0].Name, nil, nil
+			}
+			ranked := rankCandidates(fileMatches, sq)
+			return "", &nameResolution{
+				Query:        query,
+				Alternatives: candidateNames(fileMatches, ""),
+				Candidates:   topCandidates(ranked),
+				Ambiguous:    true,
+			}, nil
+		}
+		if sugg := s.suggestNames(store, sq, term); len(sugg) > 0 {
+			return "", nil, fmt.Errorf("no facts matching %q; did you mean: %s "+
+				"(tip: scope with repo:/kind:/file:)", query, strings.Join(sugg, ", "))
+		}
 		return "", nil, fmt.Errorf("no facts matching %q", query)
 	}
 	if len(results) == 1 {
@@ -865,6 +886,19 @@ func (s *Server) resolveNodeName(store *facts.Store, input string) (string, *nam
 	ranked := rankCandidates(results, sq)
 	confidence := pickConfidence(ranked, sq.Term)
 	top := ranked[0].Name
+
+	// In multi-repo mode, if the top-tier matches span 2+ repos and no repo:
+	// scope was given, refuse to silently guess the user's repo — surface the
+	// candidates (which carry their repo) so the caller can pin it down.
+	if s.crossRepoAmbiguous(ranked, sq) {
+		return "", &nameResolution{
+			Query:        query,
+			Alternatives: candidateNames(results, ""),
+			Candidates:   topCandidates(ranked),
+			Confidence:   confidence,
+			Ambiguous:    true,
+		}, nil
+	}
 
 	// One candidate clearly dominates (e.g. a unique suffix-exact name among
 	// substring matches). Auto-resolve to it, but surface the resolution with its
@@ -986,6 +1020,147 @@ func (s *Server) resolveRepoLabelToServiceNode(store *facts.Store, input string)
 	}
 
 	return "", false
+}
+
+// maybePrefixRepoLabel rewrites "<repo> <term>" → "repo:<repo> <term>" when the
+// first whitespace token is exactly a known repo label and a remainder follows.
+// It is a no-op in single-repo mode (RepoPaths is nil), when the input has no
+// remainder, or when the first token is already a scope token. This lets a bare
+// "go-auth AuthHandler" resolve the same as "repo:go-auth AuthHandler".
+func (s *Server) maybePrefixRepoLabel(input string) string {
+	if s.eng == nil {
+		return input
+	}
+	fields := strings.Fields(input)
+	if len(fields) < 2 {
+		return input
+	}
+	if _, _, ok := splitScopeToken(fields[0]); ok {
+		return input // already scoped
+	}
+	if paths := s.eng.RepoPaths(); paths[fields[0]] != "" {
+		return "repo:" + input
+	}
+	return input
+}
+
+// crossRepoAmbiguous reports whether, in multi-repo mode with no repo: scope, the
+// candidates sharing the top match tier span 2+ repos — meaning auto-picking one
+// would silently guess the user's repo. A unique top-tier match (e.g. a single
+// suffix-exact name in one repo) is NOT cross-repo ambiguous and still resolves.
+func (s *Server) crossRepoAmbiguous(ranked []scoredCandidate, sq scopedQuery) bool {
+	if sq.Repo != "" || len(ranked) < 2 || s.eng == nil || len(s.eng.RepoPaths()) < 2 {
+		return false
+	}
+	term := strings.ToLower(sq.Term)
+	topTier := matchTier(ranked[0].Name, term)
+	repos := make(map[string]struct{})
+	for _, c := range ranked {
+		if matchTier(c.Name, term) != topTier {
+			break // ranked is tier-sorted; stop at the first lower tier
+		}
+		repos[c.Repo] = struct{}{}
+	}
+	return len(repos) >= 2
+}
+
+// suggestNames does a relaxed substring search to recover near-misses when an
+// input matched nothing exactly. It searches on the longest alphanumeric run of
+// the term (and its last dotted segment) and returns up to 5 fact names,
+// repo-qualified in multi-repo mode, so a no-match error is never a dead end.
+func (s *Server) suggestNames(store *facts.Store, sq scopedQuery, term string) []string {
+	probe := longestAlnumRun(term)
+	if seg := lastSegment(term); len(seg) > len(probe) {
+		probe = longestAlnumRun(seg)
+	}
+	if len(probe) < 3 {
+		return nil
+	}
+	matches, _ := store.QueryAdvanced(facts.QueryOpts{Name: probe, Repo: sq.Repo, Limit: 50})
+	multiRepo := s.eng != nil && len(s.eng.RepoPaths()) > 1
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 5)
+	for _, m := range matches {
+		name := m.Name
+		if multiRepo && m.Repo != "" {
+			name = "repo:" + m.Repo + " " + m.Name
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+		if len(out) >= 5 {
+			break
+		}
+	}
+	return out
+}
+
+// resolveByFileBasename maps a file-basename term to the symbols declared in the
+// matching file(s). Enola does not name a fact after a source file, so a target
+// like "auth_routes" (the file auth_routes.go) is otherwise unresolvable for
+// graph tools; this returns the pathable symbol nodes that live in that file.
+// Honors a repo: scope when present. Returns distinct symbol facts.
+func (s *Server) resolveByFileBasename(store *facts.Store, sq scopedQuery, term string) []facts.Fact {
+	lt := strings.ToLower(term)
+	seen := make(map[string]struct{})
+	var out []facts.Fact
+	for _, f := range store.ByKind(facts.KindSymbol) {
+		if f.File == "" || !fileBaseMatches(f.File, lt) {
+			continue
+		}
+		if sq.Repo != "" && !strings.EqualFold(f.Repo, sq.Repo) {
+			continue
+		}
+		if _, dup := seen[f.Name]; dup {
+			continue
+		}
+		seen[f.Name] = struct{}{}
+		out = append(out, f)
+	}
+	return out
+}
+
+// fileBaseMatches reports whether lowerTerm equals path's basename, with or
+// without a trailing source extension (case-insensitive). "a/b/auth_routes.go"
+// matches both "auth_routes.go" and "auth_routes"; it never matches a bare
+// extension like "go".
+func fileBaseMatches(path, lowerTerm string) bool {
+	base := strings.ToLower(path)
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	if base == lowerTerm {
+		return true
+	}
+	if i := strings.LastIndexByte(base, '.'); i > 0 && codeExtensions[base[i+1:]] {
+		return base[:i] == lowerTerm
+	}
+	return false
+}
+
+// longestAlnumRun returns the longest maximal run of [A-Za-z0-9_] in s. Used to
+// derive a robust substring probe from a dotted/spaced term.
+func longestAlnumRun(s string) string {
+	best, start := "", -1
+	flush := func(end int) {
+		if start >= 0 && end-start > len(best) {
+			best = s[start:end]
+		}
+		start = -1
+	}
+	for i, r := range s {
+		if r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			if start < 0 {
+				start = i
+			}
+		} else {
+			flush(i)
+		}
+	}
+	flush(len(s))
+	return best
 }
 
 // candidateNames collects up to maxAlternatives fact names from results,
@@ -1321,24 +1496,88 @@ func (s *Server) writeNestedModules(store *facts.Store, modName string, directSy
 	sb.WriteString("\nUse explore on a nested module above to drill in.\n\n")
 }
 
+// maxModuleSubstringList caps how many candidate modules a non-delegated substring
+// match lists, so a broad term (e.g. "golf" across several repos) yields a compact,
+// actionable summary instead of dumping hundreds of lines.
+const maxModuleSubstringList = 15
+
 // exploreModuleSubstring tries substring matching on module names when exact
-// module match fails. If exactly one module matches, it delegates to the full
-// exploreModule rendering. If multiple match, it lists them so the user can
-// pick the right one.
+// module match fails. It ranks matches (exact > suffix-exact > prefix > substring)
+// and, when a single match clearly dominates, delegates to the full exploreModule
+// rendering. Otherwise it renders a bounded, repo-grouped summary so a broad term
+// does not dump 100 raw module lines; the caller is told how to narrow it.
 func (s *Server) exploreModuleSubstring(store *facts.Store, focus string, depth int, mode string, sb *strings.Builder) bool {
-	matches, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindModule, Name: focus})
+	matches, total := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindModule, Name: focus, Limit: 500})
 	if len(matches) == 0 {
 		return false
 	}
-	if len(matches) == 1 {
+
+	term := strings.ToLower(focus)
+	tier := func(name string) int {
+		n := strings.ToLower(name)
+		switch {
+		case n == term:
+			return 3
+		case hasShortName(n, term):
+			return 2
+		case strings.HasPrefix(n, term):
+			return 1
+		default:
+			return 0
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		ti, tj := tier(matches[i].Name), tier(matches[j].Name)
+		if ti != tj {
+			return ti > tj
+		}
+		return matches[i].Name < matches[j].Name
+	})
+
+	// A single match, or a unique exact/suffix-exact top match, is unambiguous —
+	// drill straight in.
+	if len(matches) == 1 || (tier(matches[0].Name) >= 2 && tier(matches[1].Name) < tier(matches[0].Name)) {
 		return s.exploreModule(store, matches[0].Name, depth, mode, sb)
 	}
-	// Multiple matches — list them so the user can refine.
-	sb.WriteString(fmt.Sprintf("# Multiple modules matching %q (%d)\n\n", focus, len(matches)))
-	for _, m := range matches {
-		sb.WriteString(fmt.Sprintf("- `%s` (%s)\n", m.Name, m.File))
+
+	// Multiple plausible matches — summarize, grouped by repo, capped.
+	shown := matches
+	if len(shown) > maxModuleSubstringList {
+		shown = shown[:maxModuleSubstringList]
 	}
-	sb.WriteString("\nUse the full module name for detailed exploration.\n")
+	fmt.Fprintf(sb, "# Modules matching %q (showing %d of %d)\n\n", focus, len(shown), total)
+
+	byRepo := make(map[string]int)
+	repoOrder := make([]string, 0)
+	for _, m := range matches {
+		r := m.Repo
+		if r == "" {
+			r = "(primary)"
+		}
+		if _, ok := byRepo[r]; !ok {
+			repoOrder = append(repoOrder, r)
+		}
+		byRepo[r]++
+	}
+	if len(repoOrder) > 1 {
+		sort.Strings(repoOrder)
+		sb.WriteString("By repo: ")
+		parts := make([]string, 0, len(repoOrder))
+		for _, r := range repoOrder {
+			parts = append(parts, fmt.Sprintf("%s (%d)", r, byRepo[r]))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n\n")
+	}
+
+	for _, m := range shown {
+		if m.Repo != "" {
+			fmt.Fprintf(sb, "- `%s` (repo:%s)\n", m.Name, m.Repo)
+		} else {
+			fmt.Fprintf(sb, "- `%s`\n", m.Name)
+		}
+	}
+	sb.WriteString("\nNarrow with a `repo:<label>` scope, a full module name, or a more specific substring.\n")
 	return true
 }
 

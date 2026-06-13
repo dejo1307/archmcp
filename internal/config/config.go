@@ -41,10 +41,12 @@ func Default() *Config {
 			".enola/**",
 			// Build / cache artifacts. These are generated output (often transpiled
 			// JS, e.g. Next.js .next/) and must never be indexed as source — doing so
-			// pollutes query_facts with thousands of spurious facts.
+			// pollutes query_facts with thousands of spurious facts. The **/<dir>/**
+			// form matches the directory at ANY depth (e.g. Gradle/Android emit
+			// data/build/kspCaches/...), not just at the repo root.
 			".next/**",
 			"dist/**",
-			"build/**",
+			"**/build/**",
 			"out/**",
 			".vercel/**",
 			".turbo/**",
@@ -52,6 +54,8 @@ func Default() *Config {
 			".nuxt/**",
 			".svelte-kit/**",
 			"__pycache__/**",
+			"**/Pods/**",
+			"**/.gradle/**",
 		},
 		Extractors: []string{"go", "kotlin", "openapi", "python", "typescript", "swift", "ruby"},
 		Explainers: []string{"cycles", "layers", "crossrepo"},

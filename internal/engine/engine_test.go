@@ -90,6 +90,36 @@ func TestIsIgnored(t *testing.T) {
 			[]string{"vendor/**"},
 			true,
 		},
+		{
+			"nested build dir via **/build/**",
+			"data/build/kspCaches/devDebug/Gen.kt", false,
+			[]string{"**/build/**"},
+			true,
+		},
+		{
+			"top-level build dir via **/build/**",
+			"build/output.kt", false,
+			[]string{"**/build/**"},
+			true,
+		},
+		{
+			"build as filename is not a build dir",
+			"cmd/build.go", false,
+			[]string{"**/build/**"},
+			false,
+		},
+		{
+			"rebuild is a different segment",
+			"rebuild/main.go", false,
+			[]string{"**/build/**"},
+			false,
+		},
+		{
+			"cocoapods at any depth",
+			"Pods/Alamofire/Source/Request.swift", false,
+			[]string{"**/Pods/**"},
+			true,
+		},
 	}
 
 	for _, tt := range tests {

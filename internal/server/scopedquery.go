@@ -124,9 +124,10 @@ type scoredCandidate struct {
 
 // matchTier classifies how directly a fact's name answers the term, as a coarse
 // rank that dominates the finer per-kind tweaks in scoreCandidate. This is the
-// key intent signal: a symbol whose short name IS the term (suffix-exact) must
+// key intent signal: a fact whose short name IS the term (suffix-exact) must
 // always outrank one that merely contains the term as a substring, regardless of
-// kind. 2 = whole-name exact, 1 = suffix-exact (last dotted segment), 0 = substring.
+// kind. 2 = whole-name exact, 1 = suffix-exact (any natural short name — see
+// shortNames), 0 = substring.
 func matchTier(name, term string) int {
 	if term == "" {
 		return 0
@@ -135,10 +136,57 @@ func matchTier(name, term string) int {
 	if n == term {
 		return 2
 	}
-	if strings.ToLower(lastSegment(name)) == term {
+	if hasShortName(n, term) {
 		return 1
 	}
 	return 0
+}
+
+// hasShortName reports whether term equals any of lowerName's natural short-name
+// forms (see shortNames). lowerName must already be lowercased.
+func hasShortName(lowerName, term string) bool {
+	for _, seg := range shortNames(lowerName) {
+		if seg == term {
+			return true
+		}
+	}
+	return false
+}
+
+// codeExtensions are source-file extensions stripped from a path basename when
+// deriving its short name, so a file fact resolves by its base name (e.g.
+// "golf/internal/http/auth_routes.go" → "auth_routes"). Restricted to a known set
+// so a dotted symbol member (e.g. "pkg.Server.New") is never mistaken for a file
+// with extension ".New".
+var codeExtensions = map[string]bool{
+	"go": true, "ts": true, "tsx": true, "js": true, "jsx": true, "mjs": true, "cjs": true,
+	"py": true, "rb": true, "kt": true, "kts": true, "java": true, "swift": true,
+	"c": true, "cc": true, "cpp": true, "h": true, "hpp": true, "cs": true, "rs": true,
+	"php": true, "scala": true, "m": true, "mm": true,
+}
+
+// shortNames returns the natural "short name" forms a term may match as a
+// suffix-exact hit (tier 1), all lowercased. It covers the three naming
+// conventions Enola fact names use:
+//   - dotted symbol member ("pkg.Type.method"     → "method")
+//   - path basename        ("internal/domain/x"   → "x")
+//   - file basename        (".../auth_routes.go"  → "auth_routes", ext stripped)
+//
+// lowerName must already be lowercased.
+func shortNames(lowerName string) []string {
+	forms := make([]string, 0, 3)
+	if i := strings.LastIndexByte(lowerName, '.'); i >= 0 {
+		forms = append(forms, lowerName[i+1:]) // dotted member (or bare extension)
+	}
+	base := lowerName
+	if i := strings.LastIndexByte(lowerName, '/'); i >= 0 {
+		base = lowerName[i+1:]
+		forms = append(forms, base) // path basename (with any extension)
+	}
+	if i := strings.LastIndexByte(base, '.'); i > 0 && codeExtensions[base[i+1:]] {
+		forms = append(forms, base[:i]) // file basename, source extension stripped
+	}
+	return forms
 }
 
 // scoreCandidate assigns a heuristic relevance score (higher is better). The

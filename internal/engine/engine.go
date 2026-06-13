@@ -317,6 +317,21 @@ func (e *Engine) isIgnored(relPath string, isDir bool) bool {
 	relPath = filepath.ToSlash(relPath)
 
 	for _, pattern := range e.cfg.Ignore {
+		// "**/<seg>/**" — ignore a directory named <seg> at ANY depth (and
+		// everything under it). The literal-prefix branch below cannot handle this
+		// because the leading "**/" is not a real path component; match by checking
+		// whether any path segment equals <seg>. Also covers the top-level case.
+		if strings.HasPrefix(pattern, "**/") && strings.HasSuffix(pattern, "/**") {
+			seg := strings.TrimSuffix(strings.TrimPrefix(pattern, "**/"), "/**")
+			if seg != "" && !strings.Contains(seg, "/") {
+				for _, part := range strings.Split(relPath, "/") {
+					if part == seg {
+						return true
+					}
+				}
+			}
+		}
+
 		// Handle directory-only patterns
 		if strings.HasSuffix(pattern, "/**") {
 			dirPrefix := strings.TrimSuffix(pattern, "/**")
