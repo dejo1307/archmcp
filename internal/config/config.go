@@ -39,6 +39,19 @@ func Default() *Config {
 			"**/*_spec.rb",
 			"**/*_test.rb",
 			".enola/**",
+			// Build / cache artifacts. These are generated output (often transpiled
+			// JS, e.g. Next.js .next/) and must never be indexed as source — doing so
+			// pollutes query_facts with thousands of spurious facts.
+			".next/**",
+			"dist/**",
+			"build/**",
+			"out/**",
+			".vercel/**",
+			".turbo/**",
+			"coverage/**",
+			".nuxt/**",
+			".svelte-kit/**",
+			"__pycache__/**",
 		},
 		Extractors: []string{"go", "kotlin", "openapi", "python", "typescript", "swift", "ruby"},
 		Explainers: []string{"cycles", "layers", "crossrepo"},

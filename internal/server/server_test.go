@@ -163,7 +163,7 @@ func TestExploreModule(t *testing.T) {
 	srv := newTestServer(store)
 
 	var sb strings.Builder
-	found := srv.exploreModule(store, "internal/server", 1, &sb)
+	found := srv.exploreModule(store, "internal/server", 1, modeSummary, &sb)
 	if !found {
 		t.Fatal("exploreModule should find 'internal/server'")
 	}
@@ -224,7 +224,7 @@ func TestExploreModule_NestedModules(t *testing.T) {
 	srv := newTestServer(store)
 
 	var sb strings.Builder
-	found := srv.exploreModule(store, "src/app", 1, &sb)
+	found := srv.exploreModule(store, "src/app", 1, modeSummary, &sb)
 	if !found {
 		t.Fatal("exploreModule should find 'src/app'")
 	}
@@ -253,7 +253,7 @@ func TestExploreModule_NotFound(t *testing.T) {
 	srv := newTestServer(store)
 
 	var sb strings.Builder
-	found := srv.exploreModule(store, "nonexistent", 1, &sb)
+	found := srv.exploreModule(store, "nonexistent", 1, modeSummary, &sb)
 	if found {
 		t.Error("exploreModule should return false for nonexistent module")
 	}
@@ -264,13 +264,13 @@ func TestExploreModule_Depth2(t *testing.T) {
 	srv := newTestServer(store)
 
 	var sb strings.Builder
-	found := srv.exploreModule(store, "internal/server", 2, &sb)
+	found := srv.exploreModule(store, "internal/server", 2, modeCompact, &sb)
 	if !found {
 		t.Fatal("exploreModule should find 'internal/server'")
 	}
 
 	output := sb.String()
-	// Depth 2 should include symbol relations section
+	// Depth 2 in compact/full mode keeps the per-symbol relations section.
 	if !strings.Contains(output, "Symbol Relations") {
 		t.Error("depth=2 should include Symbol Relations section")
 	}
@@ -308,7 +308,7 @@ func TestExploreModule_DependsOnAndImplements(t *testing.T) {
 
 	srv := newTestServer(store)
 	var sb strings.Builder
-	found := srv.exploreModule(store, "packages/orders", 1, &sb)
+	found := srv.exploreModule(store, "packages/orders", 1, modeSummary, &sb)
 	if !found {
 		t.Fatal("exploreModule should find 'packages/orders'")
 	}
@@ -827,7 +827,7 @@ func TestExploreModuleSubstring_SingleMatch(t *testing.T) {
 
 	var sb strings.Builder
 	// "server" should substring-match "internal/server" (the only module containing "server")
-	found := srv.exploreModuleSubstring(store, "server", 1, &sb)
+	found := srv.exploreModuleSubstring(store, "server", 1, modeSummary, &sb)
 	if !found {
 		t.Fatal("exploreModuleSubstring should find a module matching 'server'")
 	}
@@ -845,7 +845,7 @@ func TestExploreModuleSubstring_MultipleMatches(t *testing.T) {
 
 	var sb strings.Builder
 	// "internal" should substring-match both "internal/server" and "internal/facts"
-	found := srv.exploreModuleSubstring(store, "internal", 1, &sb)
+	found := srv.exploreModuleSubstring(store, "internal", 1, modeSummary, &sb)
 	if !found {
 		t.Fatal("exploreModuleSubstring should find modules matching 'internal'")
 	}
@@ -867,7 +867,7 @@ func TestExploreModuleSubstring_NoMatch(t *testing.T) {
 	srv := newTestServer(store)
 
 	var sb strings.Builder
-	found := srv.exploreModuleSubstring(store, "nonexistent", 1, &sb)
+	found := srv.exploreModuleSubstring(store, "nonexistent", 1, modeSummary, &sb)
 	if found {
 		t.Error("exploreModuleSubstring should return false for nonexistent")
 	}
