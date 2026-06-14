@@ -1818,3 +1818,99 @@ func TestResolveNodeName_NoMatchSuggests(t *testing.T) {
 		t.Errorf("error should suggest candidates, got: %v", err)
 	}
 }
+
+// --- #3: package-qualified resolution + find_path try-candidates ---
+
+func TestMatchTier_QualifiedSuffix(t *testing.T) {
+	// matchTier expects an already-lowercased term (callers lowercase sq.Term).
+	if got := matchTier("internal/domain/ticket.Repository", "ticket.repository"); got != 1 {
+		t.Errorf("qualified-suffix tier = %d, want 1", got)
+	}
+	if got := matchTier("internal/adapters/contracts.Repository", "ticket.repository"); got != 0 {
+		t.Errorf("non-suffix tier = %d, want 0", got)
+	}
+	// Suffix must align on a '.'/'/' boundary, not mid-token.
+	if got := matchTier("internal/domain/myticket.Repository", "ticket.repository"); got != 0 {
+		t.Errorf("mid-token suffix tier = %d, want 0", got)
+	}
+}
+
+func TestResolveNodeName_PackageQualified(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/domain/ticket.Repository", Props: map[string]any{"symbol_kind": "interface"}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/domain/cart.Repository", Props: map[string]any{"symbol_kind": "interface"}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/adapters/http/contracts.Repository", Props: map[string]any{"symbol_kind": "interface"}},
+	)
+	srv := newTestServer(store)
+
+	// Package-qualified term pins exactly one node.
+	if name, _, err := srv.resolveNodeName(store, "ticket.Repository"); err != nil || name != "internal/domain/ticket.Repository" {
+		t.Errorf("resolve(ticket.Repository) = %q, %v; want internal/domain/ticket.Repository", name, err)
+	}
+	// Bare common name stays ambiguous (3 matches over threshold → empty Matched).
+	name, res, err := srv.resolveNodeName(store, "Repository")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "" {
+		t.Errorf("bare Repository should be ambiguous, got %q", name)
+	}
+	if res == nil || res.Matched != "" {
+		t.Fatalf("expected refusal with empty Matched, got %+v", res)
+	}
+}
+
+func TestPathCandidates_LeadsWithResolved(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/domain/cart.CartService", Props: map[string]any{"symbol_kind": "struct"}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/adapters/http/contracts.CartService", Props: map[string]any{"symbol_kind": "struct"}},
+	)
+	srv := newTestServer(store)
+	name, res, _ := srv.resolveNodeName(store, "CartService") // 2 candidates < threshold → best guess
+	cands := srv.pathCandidates(store, "CartService", name, res)
+	if len(cands) < 2 {
+		t.Errorf("expected both CartService candidates, got %v", cands)
+	}
+	if cands[0] != name {
+		t.Errorf("pathCandidates should lead with the resolved name %q, got %v", name, cands)
+	}
+}
+
+func TestBestPath_TriesCandidates(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/domain/cart.CartService", Props: map[string]any{"symbol_kind": "struct"}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "internal/adapters/http/contracts.CartService", Props: map[string]any{"symbol_kind": "struct"}},
+		// Only the domain CartService is reachable from the handler.
+		facts.Fact{Kind: facts.KindSymbol, Name: "pkg/handler.Handler", Props: map[string]any{"symbol_kind": "struct"},
+			Relations: []facts.Relation{{Kind: facts.RelInstantiates, Target: "internal/domain/cart.CartService"}}},
+	)
+	store.BuildGraph()
+	srv := newTestServer(store)
+
+	from := []string{"pkg/handler.Handler"}
+	to := []string{"internal/adapters/http/contracts.CartService", "internal/domain/cart.CartService"}
+	res := srv.bestPath(store.Graph(), from, to, nil, 0)
+	if !res.Found {
+		t.Fatal("expected a path to the reachable CartService candidate")
+	}
+	if res.To != "internal/domain/cart.CartService" {
+		t.Errorf("bestPath connected to %q, want internal/domain/cart.CartService", res.To)
+	}
+}
+
+func TestBestPath_NoPath(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindSymbol, Name: "a.Foo", Props: map[string]any{"symbol_kind": "struct"}},
+		facts.Fact{Kind: facts.KindSymbol, Name: "b.Bar", Props: map[string]any{"symbol_kind": "struct"}},
+	)
+	store.BuildGraph()
+	srv := newTestServer(store)
+	res := srv.bestPath(store.Graph(), []string{"a.Foo"}, []string{"b.Bar"}, nil, 0)
+	if res.Found {
+		t.Error("expected no path between disconnected nodes")
+	}
+}

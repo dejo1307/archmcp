@@ -910,6 +910,26 @@ func TestImpactSet_NonTypeUnchanged(t *testing.T) {
 	}
 }
 
+// TestTraverseFrom_ReverseTypeRollup documents the #6 fix: reverse traversal of a
+// bare type finds nothing (its reverse adjacency is empty — callers reference its
+// methods/constructor, not the type), but seeding with RollupSeeds surfaces the
+// cross-repo caller, matching impact_analysis.
+func TestTraverseFrom_ReverseTypeRollup(t *testing.T) {
+	g, _ := buildCrossRepoTypeStore()
+
+	// Bare reverse traversal of the type: no callers reference the type directly.
+	bare := g.Traverse("adapters.AuthHandler", "reverse", nil, nil, 3, 100)
+	if got := nodeNames(bare.Nodes); contains(got, "pkg/auth.Setup") {
+		t.Errorf("bare reverse unexpectedly found the caller; got %v", got)
+	}
+
+	// Seeded with the type's methods + constructor: the cross-repo caller appears.
+	seeded := g.TraverseFrom(g.RollupSeeds("adapters.AuthHandler"), "reverse", nil, nil, 3, 100)
+	if got := nodeNames(seeded.Nodes); !contains(got, "pkg/auth.Setup") {
+		t.Errorf("seeded reverse did not surface cross-repo caller pkg/auth.Setup; got %v", got)
+	}
+}
+
 // impactNodes flattens an ImpactResult's depth buckets into a node slice.
 func impactNodes(res ImpactResult) []TraversalNode {
 	var out []TraversalNode

@@ -219,6 +219,23 @@ func (g *Graph) Traverse(start, direction string, relKinds, nodeKinds []string, 
 	return g.traverseFrom([]string{start}, direction, relKinds, nodeKinds, maxDepth, maxNodes)
 }
 
+// TraverseFrom performs a BFS traversal seeded at every name in starts (see
+// Traverse for the parameters). Use with RollupSeeds so a reverse traversal of a
+// type also covers its methods and constructor — otherwise callers that reference
+// the type only through its methods are missed (the bug impact_analysis avoids).
+func (g *Graph) TraverseFrom(starts []string, direction string, relKinds, nodeKinds []string, maxDepth, maxNodes int) TraversalResult {
+	return g.traverseFrom(starts, direction, relKinds, nodeKinds, maxDepth, maxNodes)
+}
+
+// RollupSeeds returns name plus, when name is a type symbol
+// (struct/class/interface/type), its methods (via has_method edges) and its
+// constructor (New<Type> in the same package). For any other node it returns just
+// name. This is the seed set reverse traversal needs to find everything that
+// references the entity through any of its members.
+func (g *Graph) RollupSeeds(name string) []string {
+	return g.impactSeeds(name)
+}
+
 // traverseFrom is the multi-source BFS underlying Traverse. Every name in starts
 // is seeded at depth 0 (deduplicated), so a logical entity spread across several
 // fact nodes — e.g. a type plus its methods and constructor — can be traversed as

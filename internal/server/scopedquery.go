@@ -136,7 +136,7 @@ func matchTier(name, term string) int {
 	if n == term {
 		return 2
 	}
-	if hasShortName(n, term) {
+	if hasShortName(n, term) || isQualifiedSuffix(n, term) {
 		return 1
 	}
 	return 0
@@ -151,6 +151,19 @@ func hasShortName(lowerName, term string) bool {
 		}
 	}
 	return false
+}
+
+// isQualifiedSuffix reports whether term is a suffix of lowerName that begins on a
+// package/path boundary, so a package-qualified term like "ticket.Repository"
+// matches ".../ticket.Repository" but not ".../contracts.Repository". This lets a
+// caller disambiguate an otherwise-common short name (e.g. "Repository") by
+// prefixing its package. lowerName must already be lowercased.
+func isQualifiedSuffix(lowerName, term string) bool {
+	if len(term) >= len(lowerName) || !strings.HasSuffix(lowerName, term) {
+		return false
+	}
+	b := lowerName[len(lowerName)-len(term)-1]
+	return b == '.' || b == '/'
 }
 
 // codeExtensions are source-file extensions stripped from a path basename when

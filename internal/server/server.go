@@ -577,9 +577,10 @@ func (s *Server) registerTools() {
 		Name: "traverse",
 		Description: "Walk the dependency/call graph from a starting node. " +
 			"direction='forward' answers \"what does X depend on?\"; direction='reverse' answers \"what depends on X?\". " +
-			"start= accepts substring match plus scoped prefixes (repo:, kind:, file:) to disambiguate; returns ranked candidates with confidence when ambiguous. " +
+			"start= accepts substring match plus scoped prefixes (repo:, kind:, file:) and package-qualified names (e.g. 'domain/cart.CartService') to disambiguate; returns ranked candidates with confidence when ambiguous. " +
 			"relation_kinds filter: imports, calls, declares, implements, depends_on, has_method. " +
 			"Forward traversal from a struct/interface follows has_method edges to its methods (and then their calls). " +
+			"Reverse traversal from a struct/interface automatically includes its methods and constructor as origins, so it surfaces callers (including cross-repo) that reference the type only through a method — matching impact_analysis. " +
 			"Note: interface method calls cannot be statically bound to a concrete implementation, so such call edges may be absent or appear as unresolved nodes. " +
 			"node_kinds filters output (not traversal itself): module, symbol, dependency, route, storage. " +
 			"TOKEN COST — output_mode ladder: 'summary' (DEFAULT) aggregates counts by node/relation kind, internal/external split, and hottest modules (small, no node list); 'compact' lists nodes grouped by depth; 'full' returns the raw JSON node/edge graph and can be VERY large. " +
@@ -635,7 +636,16 @@ func (s *Server) registerTools() {
 			return errorResult("direction must be 'forward' or 'reverse'"), nil, nil
 		}
 
-		result := graph.Traverse(startName, direction, args.RelationKinds, args.NodeKinds, args.MaxDepth, args.MaxNodes)
+		// Reverse traversal of a type must seed its methods + constructor (callers
+		// reference those, not the bare type), matching impact_analysis — otherwise
+		// cross-repo and same-repo dependents are missed. Forward already follows
+		// has_method edges from the type, so it needs no rollup.
+		var result facts.TraversalResult
+		if direction == "reverse" {
+			result = graph.TraverseFrom(graph.RollupSeeds(startName), direction, args.RelationKinds, args.NodeKinds, args.MaxDepth, args.MaxNodes)
+		} else {
+			result = graph.Traverse(startName, direction, args.RelationKinds, args.NodeKinds, args.MaxDepth, args.MaxNodes)
+		}
 
 		resp := traverseResponse{Resolution: res, TraversalResult: result}
 		if wantsFullOutput(mode) {
@@ -653,10 +663,13 @@ func (s *Server) registerTools() {
 		Description: "Find the shortest path (BFS, by hop count) between two nodes in the architectural graph. " +
 			"Answers \"how does X reach Y?\" or \"what is the call chain from A to B?\". " +
 			"from= and to= use substring match with smart disambiguation, and accept scoped prefixes " +
-			"(repo:, kind:, file:) to pin down an ambiguous name, e.g. from=\"repo:go-auth Login\". " +
-			"When a name is ambiguous the response carries a resolution object with ranked candidates and a " +
-			"confidence score; one dominant candidate (>80% confidence) is auto-resolved so the path is still returned. " +
-			"Returns an ordered list of nodes and edges, or reports no path found within max_depth hops.",
+			"(repo:, kind:, file:) plus PACKAGE-QUALIFIED names to pin down a common short name — e.g. " +
+			"to=\"ticket.Repository\" or to=\"repo:golf domain/cart.CartService\" resolves where bare " +
+			"\"Repository\"/\"CartService\" would be ambiguous. " +
+			"When an endpoint is ambiguous, find_path TRIES the top candidates (and, for a type, its methods/constructor) " +
+			"and returns the first path it finds; the response carries resolution objects with the ranked candidates. " +
+			"If no path connects any candidate pair, found=false and a 'note' explains whether the endpoints were " +
+			"ambiguous (with the candidates tried) or resolved uniquely but unreachable within max_depth hops.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args findPathArgs) (*mcp.CallToolResult, any, error) {
 		if s.toolCallback != nil {
 			s.toolCallback("find_path")
@@ -682,23 +695,46 @@ func (s *Server) registerTools() {
 		if err != nil {
 			return errorResult(fmt.Sprintf("to: %v", err)), nil, nil
 		}
-		// If either endpoint was too ambiguous to resolve, refuse to guess and
-		// return the resolution(s) with an empty path.
-		if (fromRes != nil && fromRes.Matched == "") || (toRes != nil && toRes.Matched == "") {
+
+		// Build ranked candidate lists for each endpoint (most-likely first) and try
+		// a path across the combinations rather than silently giving up when a name
+		// is ambiguous. This delivers the "give me vague names and I'll find the
+		// connection" behavior.
+		fromCands := s.pathCandidates(store, args.From, fromName, fromRes)
+		toCands := s.pathCandidates(store, args.To, toName, toRes)
+		if len(fromCands) == 0 || len(toCands) == 0 {
 			return jsonResult(findPathResponse{
 				FromResolution: fromRes,
 				ToResolution:   toRes,
 				PathResult:     facts.PathResult{From: fromName, To: toName, Found: false},
+				Note:           "could not resolve both endpoints to a graph node",
+				FromTried:      fromCands,
+				ToTried:        toCands,
 			})
 		}
 
-		result := graph.FindPath(fromName, toName, args.RelationKinds, args.MaxDepth)
+		result := s.bestPath(graph, fromCands, toCands, args.RelationKinds, args.MaxDepth)
 
-		return jsonResult(findPathResponse{
+		resp := findPathResponse{
 			FromResolution: fromRes,
 			ToResolution:   toRes,
 			PathResult:     result,
-		})
+			FromTried:      fromCands,
+			ToTried:        toCands,
+		}
+		if !result.Found {
+			ambiguous := len(fromCands) > 1 || len(toCands) > 1
+			if ambiguous {
+				resp.Note = fmt.Sprintf("no path within %d hops between any candidate pair "+
+					"(from: %d candidate(s), to: %d candidate(s)). Narrow with a package-qualified "+
+					"name (e.g. \"repo:<label> pkg.Type\") — see from_tried/to_tried.",
+					effectiveMaxDepth(args.MaxDepth), len(fromCands), len(toCands))
+			} else {
+				resp.Note = fmt.Sprintf("both endpoints resolved uniquely, but no path connects them within %d hops",
+					effectiveMaxDepth(args.MaxDepth))
+			}
+		}
+		return jsonResult(resp)
 	})
 
 	// Tool: impact_analysis
@@ -784,6 +820,14 @@ const maxCandidates = 3
 // resolution (at or above ambiguousMatchThreshold matches) is resolved
 // automatically to its top-scoring candidate instead of being refused.
 const autoPickConfidence = 0.80
+
+// maxPathCandidates caps how many ranked candidates find_path considers per
+// endpoint when a name is ambiguous.
+const maxPathCandidates = 8
+
+// maxPathAttempts caps the total FindPath probes find_path runs across the
+// candidate/seed combinations, so a doubly-ambiguous query stays bounded.
+const maxPathAttempts = 40
 
 // nameResolution reports how a user-provided name was resolved to a concrete
 // fact name. It is surfaced in tool responses ONLY when the input matched more
@@ -1138,6 +1182,96 @@ func fileBaseMatches(path, lowerTerm string) bool {
 		return base[:i] == lowerTerm
 	}
 	return false
+}
+
+// rankedCandidatesFor returns the facts matching an input (after repo-prefix
+// auto-detection and scope parsing), ranked most-relevant first. Used by find_path
+// to consider more candidates than the capped set carried in a nameResolution.
+func (s *Server) rankedCandidatesFor(store *facts.Store, input string) []scoredCandidate {
+	input = s.maybePrefixRepoLabel(input)
+	sq := parseScopedQuery(input)
+	term := s.normalizeToRelative(sq.Term)
+	return rankCandidates(s.gatherCandidates(store, sq, term), sq)
+}
+
+// pathCandidates returns the ranked node names find_path should try for one
+// endpoint, most-likely first and capped at maxPathCandidates. It leads with the
+// resolved name (preserving resolveNodeName's exact/service/file-basename
+// fallbacks), then any candidates from the resolution, then broadens with a fresh
+// ranking so a heavily-ambiguous name (10+ matches) is not limited to the few
+// candidates echoed in the resolution object.
+func (s *Server) pathCandidates(store *facts.Store, input, resolved string, res *nameResolution) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, maxPathCandidates)
+	add := func(n string) {
+		if n == "" || len(out) >= maxPathCandidates {
+			return
+		}
+		if _, dup := seen[n]; dup {
+			return
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	add(resolved)
+	if res != nil {
+		for _, c := range res.Candidates {
+			add(c.Name)
+		}
+	}
+	for _, c := range s.rankedCandidatesFor(store, input) {
+		add(c.Name)
+	}
+	return out
+}
+
+// bestPath tries to connect any from-candidate to any to-candidate, expanding each
+// to-candidate with RollupSeeds (a path to a type usually ends at one of its
+// methods/constructor). It scans in ranked order, keeps the shortest path found,
+// and is bounded by maxPathAttempts (returning early on a ≤2-hop hit). When no
+// path exists it returns a not-found PathResult naming the first from/to tried.
+func (s *Server) bestPath(graph *facts.Graph, fromCands, toCands []string, relKinds []string, maxDepth int) facts.PathResult {
+	var best facts.PathResult
+	attempts := 0
+	for _, from := range fromCands {
+		for _, to := range toCands {
+			for _, target := range graph.RollupSeeds(to) {
+				if attempts >= maxPathAttempts {
+					if best.Found {
+						return best
+					}
+					return facts.PathResult{From: fromCands[0], To: toCands[0], Found: false}
+				}
+				attempts++
+				r := graph.FindPath(from, target, relKinds, maxDepth)
+				if !r.Found {
+					continue
+				}
+				if !best.Found || len(r.Path) < len(best.Path) {
+					best = r
+				}
+				if len(best.Path) <= 2 { // direct or one-hop: good enough
+					return best
+				}
+			}
+		}
+	}
+	if best.Found {
+		return best
+	}
+	return facts.PathResult{From: fromCands[0], To: toCands[0], Found: false}
+}
+
+// effectiveMaxDepth mirrors graph.FindPath's clamping (0 → 10, cap 20) so the
+// not-found note reports the depth actually searched.
+func effectiveMaxDepth(maxDepth int) int {
+	if maxDepth <= 0 {
+		return 10
+	}
+	if maxDepth > 20 {
+		return 20
+	}
+	return maxDepth
 }
 
 // longestAlnumRun returns the longest maximal run of [A-Za-z0-9_] in s. Used to
@@ -2510,5 +2644,12 @@ type impactResponse struct {
 type findPathResponse struct {
 	FromResolution *nameResolution `json:"from_resolution,omitempty"`
 	ToResolution   *nameResolution `json:"to_resolution,omitempty"`
+	// Note explains a found:false result — whether the endpoints were ambiguous
+	// (with the candidates tried) or resolved uniquely but unreachable.
+	Note string `json:"note,omitempty"`
+	// FromTried/ToTried are the ranked endpoint candidates find_path attempted,
+	// most-likely first, so the caller can see what was searched.
+	FromTried []string `json:"from_tried,omitempty"`
+	ToTried   []string `json:"to_tried,omitempty"`
 	facts.PathResult
 }
