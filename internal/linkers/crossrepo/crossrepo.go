@@ -12,6 +12,11 @@
 //   - Import / shared-lib references: a dependency whose import target names
 //     another loaded repo (by @scope or leading path segment) means the
 //     importer depends on that repo.
+//   - Shared symbol surface: when two repos declare enough of the same
+//     distinctive types (a vendored/shared protocol header, e.g. the onelab
+//     GmshClient/GmshServer classes copied between repos), they are coupled.
+//     This signal is symmetric, so it is emitted as a bidirectional pair of
+//     edges marked via="shared_symbols".
 //
 // The result is expressed as synthetic facts: one KindService node per repo and
 // one KindDependency edge per (consumer -> provider) pair. Because these are
@@ -47,9 +52,10 @@ const minSharedSegments = 2
 type edge struct {
 	consumer  string
 	provider  string
-	via       map[string]bool // "http", "import"
+	via       map[string]bool // "http", "import", "shared_symbols"
 	endpoints map[string]bool // "METHOD /path"
 	imports   map[string]bool // sample import targets
+	symbols   map[string]bool // sample shared type identities
 }
 
 func (e *edge) note(via string) {
@@ -72,6 +78,7 @@ func ComputeLinks(all []facts.Fact) []facts.Fact {
 	edges := map[string]*edge{}
 	linkHTTP(all, edges)
 	linkImports(all, normToLabel, edges)
+	linkSharedSymbols(all, edges)
 
 	return materialize(edges, repoLabels(normToLabel))
 }
@@ -273,6 +280,152 @@ func importCandidates(target string) []string {
 	return out
 }
 
+// --- signal (C): shared symbol surface ---
+
+// minSharedSymbols is the fewest distinct distinctive type identities two repos
+// must share before a shared-symbol edge is drawn. Set above 2 so an incidental
+// name collision (a `JsonParser` both repos happen to define) cannot fabricate a
+// dependency, while genuinely shared/vendored code (a protocol header copied
+// between repos) shares many.
+const minSharedSymbols = 3
+
+// genericTypeNames are common unqualified type names too generic to link on by
+// themselves. Namespaced identities (e.g. "onelab::number") bypass this list —
+// sharing a namespace across repos is itself meaningful.
+var genericTypeNames = map[string]bool{
+	"config": true, "error": true, "manager": true, "options": true,
+	"result": true, "base": true, "impl": true, "utils": true, "util": true,
+	"common": true, "exception": true, "context": true, "data": true,
+	"info": true, "item": true, "node": true, "entry": true, "helper": true,
+	"settings": true, "logger": true, "test": true, "main": true, "model": true,
+	"request": true, "response": true, "status": true, "value": true,
+}
+
+// linkSharedSymbols connects repos that declare enough of the same distinctive
+// types. The relationship is symmetric (shared/vendored code, not a one-way
+// dependency), so qualifying pairs get a bidirectional pair of edges.
+func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
+	repoModules := moduleNamesByRepo(all)
+
+	// identity -> set of repos that declare a type with that identity.
+	idToRepos := map[string]map[string]bool{}
+	for _, f := range all {
+		if f.Kind != facts.KindSymbol || f.Repo == "" || !isTypeSymbol(f) {
+			continue
+		}
+		id := typeIdentity(f.Name, repoModules[f.Repo])
+		if !isDistinctiveIdentity(id) {
+			continue
+		}
+		if idToRepos[id] == nil {
+			idToRepos[id] = map[string]bool{}
+		}
+		idToRepos[id][f.Repo] = true
+	}
+
+	// For each identity shared by 2+ repos, record it against every repo pair.
+	// pairShared["a\x00b"] (a<b) -> set of shared identities.
+	pairShared := map[string]map[string]bool{}
+	for id, repos := range idToRepos {
+		if len(repos) < 2 {
+			continue
+		}
+		rs := make([]string, 0, len(repos))
+		for r := range repos {
+			rs = append(rs, r)
+		}
+		sort.Strings(rs)
+		for i := 0; i < len(rs); i++ {
+			for j := i + 1; j < len(rs); j++ {
+				key := rs[i] + "\x00" + rs[j]
+				if pairShared[key] == nil {
+					pairShared[key] = map[string]bool{}
+				}
+				pairShared[key][id] = true
+			}
+		}
+	}
+
+	// Materialize a bidirectional edge for each pair over the threshold.
+	for key, ids := range pairShared {
+		if len(ids) < minSharedSymbols {
+			continue
+		}
+		a, b, _ := strings.Cut(key, "\x00")
+		for _, pair := range [2][2]string{{a, b}, {b, a}} {
+			e := edgeFor(edges, pair[0], pair[1])
+			e.note("shared_symbols")
+			if e.symbols == nil {
+				e.symbols = map[string]bool{}
+			}
+			for id := range ids {
+				e.symbols[id] = true
+			}
+		}
+	}
+}
+
+// isTypeSymbol reports whether a symbol fact is a type-like declaration (the
+// portable "contract surface"), excluding functions, methods, variables, etc.
+func isTypeSymbol(f facts.Fact) bool {
+	switch propString(f, "symbol_kind") {
+	case facts.SymbolClass, facts.SymbolStruct, facts.SymbolInterface, facts.SymbolEnum:
+		return true
+	}
+	return false
+}
+
+// moduleNamesByRepo returns, per repo, the module (directory) names sorted
+// longest-first, so the longest matching prefix can be stripped from a symbol.
+func moduleNamesByRepo(all []facts.Fact) map[string][]string {
+	byRepo := map[string][]string{}
+	for _, f := range all {
+		if f.Kind != facts.KindModule || f.Repo == "" {
+			continue
+		}
+		byRepo[f.Repo] = append(byRepo[f.Repo], f.Name)
+	}
+	for r := range byRepo {
+		ms := byRepo[r]
+		sort.Slice(ms, func(i, j int) bool { return len(ms[i]) > len(ms[j]) })
+	}
+	return byRepo
+}
+
+// typeIdentity strips the repo-specific "<module>." directory prefix from a
+// symbol's name, returning the portable namespace/type-qualified remainder that
+// is shared across repos (e.g. "src/common.onelab::Foo" -> "onelab::Foo",
+// "Common.onelab::Foo" -> "onelab::Foo"). The repo's own module names are used so
+// the differing directory layouts of two repos do not defeat the match.
+func typeIdentity(name string, modules []string) string {
+	for _, m := range modules { // longest first
+		if len(name) > len(m)+1 && strings.HasPrefix(name, m+".") {
+			return name[len(m)+1:]
+		}
+	}
+	// Fallback: strip up to the first "." when no module matched.
+	if i := strings.IndexByte(name, '.'); i >= 0 && i+1 < len(name) {
+		return name[i+1:]
+	}
+	return name
+}
+
+// isDistinctiveIdentity filters out identities too generic to safely link on. A
+// namespaced identity (containing "::" or ".") is always kept; an unqualified one
+// is kept only if it is reasonably long and not a common generic type name.
+func isDistinctiveIdentity(id string) bool {
+	if id == "" {
+		return false
+	}
+	if strings.Contains(id, "::") || strings.Contains(id, ".") {
+		return true
+	}
+	if len(id) < 5 {
+		return false
+	}
+	return !genericTypeNames[strings.ToLower(id)]
+}
+
 // --- materialization ---
 
 func edgeFor(edges map[string]*edge, consumer, provider string) *edge {
@@ -322,6 +475,11 @@ func materialize(edges map[string]*edge, allRepos []string) []facts.Fact {
 			imps := sortedKeys(e.imports)
 			props["import_count"] = len(imps)
 			props["import_samples"] = cap25(imps)
+		}
+		if len(e.symbols) > 0 {
+			syms := sortedKeys(e.symbols)
+			props["symbol_count"] = len(syms)
+			props["symbol_samples"] = cap25(syms)
 		}
 
 		depFacts = append(depFacts, facts.Fact{

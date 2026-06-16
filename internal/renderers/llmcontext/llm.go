@@ -224,6 +224,9 @@ func crossRepoDetail(e facts.Fact) string {
 	if n := propInt(e, "import_count"); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d import(s): %s", n, samplePreview(propStrSlice(e, "import_samples"))))
 	}
+	if n := propInt(e, "symbol_count"); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d shared symbol(s): %s", n, samplePreview(propStrSlice(e, "symbol_samples"))))
+	}
 	if len(parts) == 0 {
 		return "cross-repo dependency"
 	}

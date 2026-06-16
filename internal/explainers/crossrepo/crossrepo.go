@@ -74,6 +74,9 @@ func edgeDetail(d facts.Fact) string {
 	if n := propInt(d, "import_count"); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d import(s)", n))
 	}
+	if n := propInt(d, "symbol_count"); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d shared symbol(s)", n))
+	}
 	if len(parts) == 0 {
 		return "cross-repo dependency"
 	}

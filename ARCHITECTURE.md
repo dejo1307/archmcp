@@ -262,15 +262,16 @@ enola can analyze multiple repositories together. Use `append` mode to increment
 
 ### Linking, not just co-locating
 
-Appending several repos does more than pool their facts — a linking pass connects the per-repo graphs using two signals the extractors already capture:
+Appending several repos does more than pool their facts — a linking pass connects the per-repo graphs using three signals the extractors already capture:
 
 - **HTTP route role matching** — a route a repo *calls* (`role:"client"`, e.g. from a generated OpenAPI client) is matched to a route another repo *serves* (`role:"server"`, or a framework route) by normalized path + method. The caller is recorded as depending on the servee.
 - **Import / shared-lib references** — an import whose scope or leading segment names another loaded repo (e.g. `@app-web/lib-api`, `lib-core/money`) records a dependency on that repo.
+- **Shared symbol surface** — when two repos declare enough of the same distinctive types (e.g. a vendored protocol header copied between them — the `onelab::*` / `GmshClient` / `GmshServer` classes shared by *gmsh* and *getdp*), they are coupled. The match is on each type's portable identity (the namespace-qualified name with the repo-specific directory prefix stripped), filtered to type-like symbols (class/struct/interface/enum) and to distinctive names — namespaced identities always count; bare names must be non-generic and reasonably long. A pair links only above a small shared-type threshold, so an incidental `Config`/`JsonParser` collision can't fabricate a dependency. This relationship is symmetric, so it is emitted as a **bidirectional** pair of edges marked `via:"shared_symbols"`.
 
 These become real, queryable facts:
 
 - A `service` node per repo (`query_facts kind=service`), named by its repo label.
-- A cross-repo dependency edge per `consumer → provider` pair, carrying the matched endpoints and import samples.
+- A cross-repo dependency edge per `consumer → provider` pair, carrying the matched endpoints, import samples, and shared-symbol samples.
 
 Because they're ordinary graph nodes and edges, the traversal tools become cross-repo aware with no extra steps — `traverse`, `find_path`, and `impact_analysis` all reach across repo boundaries. The cross-repo dependencies also appear as a **Cross-Repo Dependencies** section in `llm_context.md`, so an agent reading the snapshot sees them without running a tool.
 

@@ -374,3 +374,102 @@ func TestComputeLinks_PerRepoServiceNodes(t *testing.T) {
 		}
 	}
 }
+
+// --- (C) shared symbol surface ---
+
+func module(repo, name string) facts.Fact {
+	return facts.Fact{Kind: facts.KindModule, Name: name, Repo: repo}
+}
+
+func typeSym(repo, name, kind string) facts.Fact {
+	return facts.Fact{
+		Kind:  facts.KindSymbol,
+		Name:  name,
+		Repo:  repo,
+		Props: map[string]any{"symbol_kind": kind},
+	}
+}
+
+func TestComputeLinks_SharedSymbolsMatch(t *testing.T) {
+	// getdp and gmsh both declare the vendored onelab/GmshSocket types, under
+	// different directory prefixes (src/common vs Common). Enough distinctive
+	// shared types must link them, bidirectionally and via shared_symbols.
+	in := []facts.Fact{
+		module("getdp", "src/common"),
+		typeSym("getdp", "src/common.GmshClient", facts.SymbolClass),
+		typeSym("getdp", "src/common.GmshServer", facts.SymbolClass),
+		typeSym("getdp", "src/common.onelab::remoteNetworkClient", facts.SymbolClass),
+		module("gmsh", "Common"),
+		typeSym("gmsh", "Common.GmshClient", facts.SymbolClass),
+		typeSym("gmsh", "Common.GmshServer", facts.SymbolClass),
+		typeSym("gmsh", "Common.onelab::remoteNetworkClient", facts.SymbolClass),
+	}
+	out := ComputeLinks(in)
+
+	for _, pair := range [][2]string{{"getdp", "gmsh"}, {"gmsh", "getdp"}} {
+		e := findEdge(out, pair[0], pair[1])
+		if e == nil {
+			t.Fatalf("missing shared-symbol edge %s -> %s; out=%+v", pair[0], pair[1], out)
+		}
+		if via, _ := e.Props["via"].([]string); !reflect.DeepEqual(via, []string{"shared_symbols"}) {
+			t.Errorf("via = %v, want [shared_symbols]", e.Props["via"])
+		}
+		if c, _ := e.Props["symbol_count"].(int); c != 3 {
+			t.Errorf("symbol_count = %v, want 3", e.Props["symbol_count"])
+		}
+		if !hasServiceEdge(out, pair[0], pair[1]) {
+			t.Errorf("%s service node missing depends_on %s", pair[0], pair[1])
+		}
+	}
+}
+
+func TestComputeLinks_SharedSymbolsBelowThreshold(t *testing.T) {
+	// Only one distinctive shared type (below minSharedSymbols) → no link.
+	in := []facts.Fact{
+		module("alpha", "core"),
+		typeSym("alpha", "core.WidgetRegistry", facts.SymbolClass),
+		module("beta", "lib"),
+		typeSym("beta", "lib.WidgetRegistry", facts.SymbolClass),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("single shared type should not link: %+v", edges)
+	}
+}
+
+func TestComputeLinks_SharedSymbolsGenericNamesIgnored(t *testing.T) {
+	// Common generic/short unqualified type names are not distinctive enough to
+	// link two otherwise-unrelated repos, even at count >= threshold.
+	in := []facts.Fact{
+		module("alpha", "core"),
+		typeSym("alpha", "core.Config", facts.SymbolClass),
+		typeSym("alpha", "core.Error", facts.SymbolStruct),
+		typeSym("alpha", "core.Node", facts.SymbolClass),
+		typeSym("alpha", "core.Item", facts.SymbolClass),
+		module("beta", "lib"),
+		typeSym("beta", "lib.Config", facts.SymbolClass),
+		typeSym("beta", "lib.Error", facts.SymbolStruct),
+		typeSym("beta", "lib.Node", facts.SymbolClass),
+		typeSym("beta", "lib.Item", facts.SymbolClass),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("generic shared names should not link: %+v", edges)
+	}
+}
+
+func TestComputeLinks_SharedSymbolsNonTypesIgnored(t *testing.T) {
+	// Functions/methods/variables are not the contract surface; sharing them
+	// (even many) must not link repos.
+	in := []facts.Fact{
+		module("alpha", "core"),
+		typeSym("alpha", "core.processRequest", facts.SymbolFunc),
+		typeSym("alpha", "core.parseHeader", facts.SymbolFunc),
+		typeSym("alpha", "core.computeChecksum", facts.SymbolFunc),
+		module("beta", "lib"),
+		typeSym("beta", "lib.processRequest", facts.SymbolFunc),
+		typeSym("beta", "lib.parseHeader", facts.SymbolFunc),
+		typeSym("beta", "lib.computeChecksum", facts.SymbolFunc),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("shared non-type symbols should not link: %+v", edges)
+	}
+}
