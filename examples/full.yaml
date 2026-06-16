@@ -10,6 +10,7 @@
 #   - typescript (detection: tsconfig.json or package.json with TypeScript)
 #   - swift      (detection: Package.swift, .xcodeproj, or .xcworkspace)
 #   - ruby       (detection: Gemfile)
+#   - cpp        (detection: .cpp/.hpp/... or CMakeLists.txt/Makefile + header)
 
 repo: "."
 ignore:
@@ -83,6 +84,7 @@ ignore:
   - "**/.env*"
 
 extractors:
+  - cpp
   - go
   - kotlin
   - typescript

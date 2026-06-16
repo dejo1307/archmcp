@@ -101,13 +101,22 @@ Binaries are published for Linux, macOS (amd64/arm64), and Windows (amd64). You 
 
 ### Connect it to your agent
 
-Add enola to your MCP client configuration. For example, in Cursor's `mcp.json`:
+**Claude Code** — register enola as an MCP server with one command. This assumes the `enola` binary is on your `PATH` (the install script above puts it in `~/.local/bin`):
+
+```bash
+claude mcp add enola enola /path/to/enola/mcp-arch.yaml
+```
+
+The shape is `claude mcp add <name> <command> [args…]`: the first `enola` names the server, the second is the binary, and the trailing path is the config it reads. That config's `repo:` is only the *default* repository — you can still snapshot any repo by passing `repo_path` to `generate_snapshot`. Verify it registered with `claude mcp list`, then start Claude Code and ask it to generate a snapshot.
+
+**Cursor / other MCP clients** — add enola to your client's MCP configuration. For example, in Cursor's `mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "enola": {
-      "command": "enola"
+      "command": "enola",
+      "args": ["/path/to/enola/mcp-arch.yaml"]
     }
   }
 }
@@ -149,6 +158,7 @@ Working across several repos? Generate the first, then add the rest with append 
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
 | Ruby       | `Gemfile` (Rails / ActiveRecord / Packwerk aware) |
+| C++        | `.cpp`/`.hpp`/… source or `CMakeLists.txt`/`Makefile` + header (header/source method merging, namespaces, templates) |
 | OpenAPI    | any spec with an `openapi:` / `swagger:` key |
 
 Framework- and platform-specific detection for each language is described in **[ARCHITECTURE.md → Supported languages](ARCHITECTURE.md#supported-languages)**.

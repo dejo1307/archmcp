@@ -111,7 +111,7 @@ File Walker ──▶ Extractors ──▶ Fact Store ──▶ Cross-Repo Linke
  (apply        (Go, Kotlin,    (indexed by     (only with 2+         (bidirectional)
   ignore        Python, TS,     kind / file /    repos loaded)             │
   globs)        Swift, Ruby,    name / repo)                               ▼
-                OpenAPI)                                              Explainers
+                C++, OpenAPI)                                         Explainers
                                                                   (cycles, layers,
                                                                      crossrepo)
                                                                           │
@@ -321,7 +321,7 @@ The bundled [`mcp-arch.yaml`](mcp-arch.yaml) ships a much fuller `ignore` list (
 |-------|-------------|---------|
 | `repo` | Repository root path | `"."` |
 | `ignore` | Glob patterns for files/dirs to skip | vendor, node_modules, .git, tests, build dirs, docs, config data, … |
-| `extractors` | Enabled extractors | `["go", "kotlin", "openapi", "python", "typescript", "swift", "ruby"]` |
+| `extractors` | Enabled extractors | `["cpp", "go", "kotlin", "openapi", "python", "typescript", "swift", "ruby"]` |
 | `explainers` | Enabled explainers | `["cycles", "layers", "crossrepo"]` |
 | `renderers` | Enabled renderers | `["llm_context"]` |
 | `output.dir` | Output directory for artifacts | `".enola"` |
@@ -341,6 +341,7 @@ Each extractor is detected by characteristic project files and then parses what 
 | TypeScript | tree-sitter      | `tsconfig.json`, `tsconfig.base.json`, or `package.json` with TypeScript (root or one level deep) |
 | Swift      | tree-sitter      | `Package.swift`, `.xcodeproj`, or `.xcworkspace` present |
 | Ruby       | regex scanner    | `Gemfile` present |
+| C++        | tree-sitter      | a C++ source (`.cpp`/`.cc`/`.cxx`/`.hpp`/...) present, or a build file (`CMakeLists.txt`/`Makefile`/`meson.build`/`*.vcxproj`) plus any header |
 | OpenAPI    | YAML/JSON scanner| any file containing `openapi:` or `swagger:` |
 
 **Go** uses the standard-library parser directly, so symbols, methods, interfaces, imports, and call edges are exact.
@@ -356,6 +357,8 @@ Each extractor is detected by characteristic project files and then parses what 
 **OpenAPI** scans for spec files independently of the main walker (so it finds them even when `*.yaml`/`*.json` are globally ignored), confirming candidates by an `openapi:`/`swagger:` key. It emits one `route` per operation enriched with method, `operationId`, summary, tags, and a spec back-reference; specs under an `openapi/client/` directory are marked `role:"client"`. Gateway extensions (`x-gateway-config`, `x-gateway-capabilities`) are parsed into props.
 
 **Ruby** is Rails-aware: ActiveRecord models (`has_many`, `belongs_to`, scopes, table inference), the route DSL in `config/routes.rb` (resources, namespaces, member/collection blocks), and Packwerk package boundaries (`package.yml` dependency enforcement). It also tracks modules, classes, methods with visibility, mixins (`include`/`extend`/`prepend`), `ActiveSupport::Concern`, constants, and attributes.
+
+**C++** is parsed with tree-sitter and handles the header/source split that defines the language. Classes, structs, unions, enums (incl. `enum class`), namespaces, free functions and methods, data members, and `typedef`/`using` aliases become symbol facts named `<dir>.<ns1::ns2::Class::member>` — enola's `<dir>.` module convention on the outside, native C++ `::` scope inside. Because an out-of-line definition `Class::method` (parsed from a `qualified_identifier`) yields the same canonical name as its in-class declaration, a dedup pass **merges a header's method prototype with its `.cpp` definition** into a single symbol (the definition wins for file/line and carries the call-graph edges). Base classes become `implements` edges; method bodies are walked for `calls`/`instantiates` edges; quoted `#include "x.h"` becomes a `dependency` resolved to the declaring module, while system `<...>` includes are skipped. Templates are unwrapped to their inner declaration and flagged `templated`, and the walker descends through `#if`/`#ifdef` preprocessor guards (so code wrapped in `#if defined(HAVE_*)` and headers behind include guards are still extracted). *Limitation:* header/source merging relies on the `.h` and `.cpp` living in the same directory (the common layout); split `include/` + `src/` trees are not merged.
 
 ---
 

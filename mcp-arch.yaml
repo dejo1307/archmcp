@@ -66,6 +66,7 @@ ignore:
   - "public/assets/**"
   - "public/packs/**"
 extractors:
+  - cpp
   - go
   - kotlin
   - openapi

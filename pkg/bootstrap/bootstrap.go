@@ -13,6 +13,7 @@ import (
 	crossrepoexp "github.com/enola-labs/enola/internal/explainers/crossrepo"
 	"github.com/enola-labs/enola/internal/explainers/cycles"
 	"github.com/enola-labs/enola/internal/explainers/layers"
+	"github.com/enola-labs/enola/internal/extractors/cppextractor"
 	"github.com/enola-labs/enola/internal/extractors/goextractor"
 	"github.com/enola-labs/enola/internal/extractors/kotlinextractor"
 	"github.com/enola-labs/enola/internal/extractors/openapiextractor"
@@ -152,6 +153,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	}
 
 	// Register all OSS extractors
+	eng.RegisterExtractor(cppextractor.New())
 	eng.RegisterExtractor(goextractor.New())
 	eng.RegisterExtractor(kotlinextractor.New())
 	eng.RegisterExtractor(openapiextractor.New())

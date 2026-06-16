@@ -1,0 +1,51 @@
+# enola configuration for a C++ project.
+#
+# Detection: The C++ extractor activates when an unambiguous C++ source
+#            (.cpp/.cc/.cxx/.hpp/...) is present, or a build file
+#            (CMakeLists.txt/Makefile/meson.build/*.vcxproj) plus any header.
+# Features:  Classes, structs, unions, enums (incl. enum class), free functions
+#            and methods (inline AND out-of-line "Class::method" definitions,
+#            merged into one symbol), namespaces (qualified "<dir>.ns::Class::member"
+#            naming), inheritance edges (base classes), a call graph
+#            (calls / instantiations), and #include dependency edges. Templates are
+#            unwrapped and flagged; system <...> includes are skipped.
+
+repo: "."
+ignore:
+  # VCS and tooling
+  - ".git/**"
+  - ".enola/**"
+  # CMake / build output (at any depth)
+  - "build/**"
+  - "**/build/**"
+  - "cmake-build-*/**"
+  - "**/cmake-build-*/**"
+  - "CMakeFiles/**"
+  - "**/CMakeFiles/**"
+  - "**/*.o"
+  - "**/*.obj"
+  - "**/*.a"
+  - "**/*.so"
+  - "**/*.dylib"
+  # Vendored third-party code
+  - "contrib/**"
+  - "third_party/**"
+  - "extern/**"
+  # Pure C sources (handled by a future C extractor, not this one)
+  - "**/*.c"
+  # Documentation / config / data
+  - "**/*.md"
+  - "**/*.yml"
+  - "**/*.yaml"
+  - "**/*.json"
+extractors:
+  - cpp
+explainers:
+  - cycles
+  - layers
+  - crossrepo
+renderers:
+  - llm_context
+output:
+  dir: ".enola"
+  max_context_tokens: 16000
