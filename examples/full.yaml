@@ -6,6 +6,7 @@
 #
 # Supported extractors:
 #   - go         (detection: go.mod)
+#   - java       (detection: pom.xml, build.gradle, or .java sources)
 #   - kotlin     (detection: build.gradle.kts or build.gradle with Kotlin/Android)
 #   - typescript (detection: tsconfig.json or package.json with TypeScript)
 #   - swift      (detection: Package.swift, .xcodeproj, or .xcworkspace)
@@ -86,6 +87,7 @@ ignore:
 extractors:
   - cpp
   - go
+  - java
   - kotlin
   - typescript
   - swift

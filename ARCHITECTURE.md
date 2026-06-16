@@ -108,10 +108,10 @@ Repository
    │
    ▼
 File Walker ──▶ Extractors ──▶ Fact Store ──▶ Cross-Repo Linker ──▶ Graph Index
- (apply        (Go, Kotlin,    (indexed by     (only with 2+         (bidirectional)
-  ignore        Python, TS,     kind / file /    repos loaded)             │
-  globs)        Swift, Ruby,    name / repo)                               ▼
-                C++, OpenAPI)                                         Explainers
+ (apply        (Go, Java,      (indexed by     (only with 2+         (bidirectional)
+  ignore        Kotlin, Python, kind / file /    repos loaded)             │
+  globs)        TS, Swift,      name / repo)                               ▼
+                Ruby, C++, OpenAPI)                                   Explainers
                                                                   (cycles, layers,
                                                                      crossrepo)
                                                                           │
@@ -299,6 +299,7 @@ ignore:
   - "**/*.yaml"
 extractors:
   - go
+  - java
   - kotlin
   - openapi
   - python
@@ -322,7 +323,7 @@ The bundled [`mcp-arch.yaml`](mcp-arch.yaml) ships a much fuller `ignore` list (
 |-------|-------------|---------|
 | `repo` | Repository root path | `"."` |
 | `ignore` | Glob patterns for files/dirs to skip | vendor, node_modules, .git, tests, build dirs, docs, config data, … |
-| `extractors` | Enabled extractors | `["cpp", "go", "kotlin", "openapi", "python", "typescript", "swift", "ruby"]` |
+| `extractors` | Enabled extractors | `["cpp", "go", "java", "kotlin", "openapi", "python", "typescript", "swift", "ruby"]` |
 | `explainers` | Enabled explainers | `["cycles", "layers", "crossrepo"]` |
 | `renderers` | Enabled renderers | `["llm_context"]` |
 | `output.dir` | Output directory for artifacts | `".enola"` |
@@ -337,6 +338,7 @@ Each extractor is detected by characteristic project files and then parses what 
 | Language   | Parser           | Detected by |
 |------------|------------------|-------------|
 | Go         | `go/ast`         | `go.mod` present |
+| Java       | tree-sitter      | `pom.xml` (Maven) present, or any `.java` source file (a Gradle build file alone does **not** trigger it — Kotlin/Android use Gradle too) |
 | Kotlin     | tree-sitter      | `build.gradle.kts` / `build.gradle` with Kotlin/Android |
 | Python     | tree-sitter      | `pyproject.toml`, `setup.py`, `requirements.txt`, `Pipfile`, `pytest.ini`, `mypy.ini`, `tox.ini`, or `setup.cfg` (root or up to 3 levels deep) |
 | TypeScript | tree-sitter      | `tsconfig.json`, `tsconfig.base.json`, or `package.json` with TypeScript (root or one level deep) |
@@ -350,6 +352,8 @@ Each extractor is detected by characteristic project files and then parses what 
 **TypeScript** (tree-sitter) includes Next.js route detection (App Router and Pages Router), monorepo detection one level deep, and parsing of `openapi-typescript`-generated client files — each operation is emitted as a `route` fact with `role:"client"`. App Router route groups like `(standard)` are stripped from URLs.
 
 **Python** is parsed with tree-sitter (the concrete syntax tree handles nested classes/methods and docstrings natively, replacing the older indentation scanner). It understands **FastAPI/Starlette** route decorators and **Django** routes — `@api_view([...])` and `urls.py` `path()`/`re_path()` — emitting a `route` fact per endpoint. It emits `storage` facts for **SQLAlchemy** `__tablename__` and **Django models** (table name inferred from the class name), and classifies Django views and serializers via a `django_component` prop. It captures `async def` (`async: true`), decorator props (`@property`, `@staticmethod`, `@classmethod`, `@abstractmethod`, and Celery `@task`/`@shared_task`), and return-type hints. Each class emits an `implements` edge per base class, with generic type parameters stripped (`CRUDBase[Model, Id]` → `CRUDBase`), and both `import` forms become `dependency` facts. Crucially, the Python extractor now walks function and method bodies for call sites, emitting `calls` and `instantiates` edges (filtering out builtins) — so Python code participates in the dependency/call graph and is reachable by `traverse`, `find_path`, and `impact_analysis`. Monorepo detection walks up to 3 levels.
+
+**Java** (tree-sitter) is framework-aware for the JVM server ecosystem. It emits symbol facts for classes, interfaces, enums, records, and annotation types, plus their methods, constructors, and fields, named with enola's `<dir>.<Type>` / `<dir>.<Type>.<method>` convention (nested types are qualified through the enclosing type). `extends`/`implements` become `implements` edges, `new X()` becomes `instantiates`, same-class method calls become `calls`, and both import forms become `dependency` facts split into internal vs. external. Because Java imports are explicit, type-reference edges are resolved through a project-wide fully-qualified-name index built in a second pass — so `implements`/`instantiates`/`injects` targets point at the canonical declaring symbol in another file or module rather than a bare name. Framework specialization covers **Spring MVC** (a `@RestController`/`@Controller` class's `@RequestMapping` base path is combined with method-level `@GetMapping`/`@PostMapping`/`@PutMapping`/`@DeleteMapping`/`@PatchMapping`/`@RequestMapping(method=…)` into one `route` per endpoint, carrying the HTTP method and the handler symbol), **Spring stereotypes** (`@Service`/`@Component`/`@Repository`/`@Controller`/`@Configuration` classified via a `component` prop), **dependency injection** (`@Autowired` fields, constructor injection, and Lombok `@RequiredArgsConstructor` over `final` fields → `injects` edges), and **JPA / Spring Data storage** (`@Entity` → a `storage` fact with `storage_kind: entity`; `@Repository` and `JpaRepository`/`CrudRepository`-style interfaces → `storage_kind: repository`). A `@Table(name = …)` is captured, and when the name is given as a `static final String` constant it is resolved to its literal value — the original identifier is preserved in a `table_constant` prop. **Apache Dubbo** is recognized too: `@SPI`/`@Activate`/`@DubboService` tag the type with `framework: "dubbo"` (`dubbo_spi`, `dubbo_activate`). Detection requires Maven (`pom.xml`) or real `.java` sources, so a pure-Kotlin Gradle project is left to the Kotlin extractor.
 
 **Kotlin** is Android-aware: it detects Jetpack Compose (`@Composable`), Hilt DI (`@HiltViewModel`, `@Module`, `@AndroidEntryPoint`), Room (`@Entity`, `@Dao`, `@Database`), ViewModels, Repositories, Use Cases, and Workers.
 

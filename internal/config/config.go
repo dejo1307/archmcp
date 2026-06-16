@@ -57,7 +57,7 @@ func Default() *Config {
 			"**/Pods/**",
 			"**/.gradle/**",
 		},
-		Extractors: []string{"cpp", "go", "kotlin", "openapi", "python", "typescript", "swift", "ruby"},
+		Extractors: []string{"cpp", "go", "java", "kotlin", "openapi", "python", "typescript", "swift", "ruby"},
 		Explainers: []string{"cycles", "layers", "crossrepo"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{

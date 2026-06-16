@@ -68,6 +68,7 @@ ignore:
 extractors:
   - cpp
   - go
+  - java
   - kotlin
   - openapi
   - python

@@ -15,6 +15,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/layers"
 	"github.com/enola-labs/enola/internal/extractors/cppextractor"
 	"github.com/enola-labs/enola/internal/extractors/goextractor"
+	"github.com/enola-labs/enola/internal/extractors/javaextractor"
 	"github.com/enola-labs/enola/internal/extractors/kotlinextractor"
 	"github.com/enola-labs/enola/internal/extractors/openapiextractor"
 	"github.com/enola-labs/enola/internal/extractors/pythonextractor"
@@ -155,6 +156,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	// Register all OSS extractors
 	eng.RegisterExtractor(cppextractor.New())
 	eng.RegisterExtractor(goextractor.New())
+	eng.RegisterExtractor(javaextractor.New())
 	eng.RegisterExtractor(kotlinextractor.New())
 	eng.RegisterExtractor(openapiextractor.New())
 	eng.RegisterExtractor(pythonextractor.New())

@@ -153,6 +153,7 @@ Working across several repos? Generate the first, then add the rest with append 
 | Language   | Detected by |
 |------------|-------------|
 | Go         | `go.mod` |
+| Java       | `pom.xml` (Maven) or `.java` sources (Spring routes / JPA / Lombok DI / Dubbo SPI aware) |
 | TypeScript | `tsconfig.json` / `package.json` with TypeScript (Next.js & monorepo aware) |
 | Python     | `pyproject.toml`, `requirements.txt`, `setup.py`, … (FastAPI / Django / SQLAlchemy aware) |
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
