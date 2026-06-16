@@ -1,14 +1,10 @@
 package rubyextractor
 
 import (
-	"path/filepath"
-	"regexp"
 	"strings"
-
-	"github.com/enola-labs/enola/internal/facts"
 )
 
-// ActiveRecord patterns.
+// ActiveRecord base-class detection.
 var (
 	// Base classes that indicate an ActiveRecord model.
 	arBaseClasses = []string{
@@ -17,122 +13,7 @@ var (
 	}
 	// Suffix convention for abstract base models (e.g. ItemsModel, ShippingModel).
 	arModelSuffix = "Model"
-
-	associationRe = regexp.MustCompile(
-		`^\s*(has_many|has_one|belongs_to|has_and_belongs_to_many)\s+:(\w+)`)
-	scopeRe       = regexp.MustCompile(`^\s*scope\s+:(\w+)`)
-	validatesRe   = regexp.MustCompile(`^\s*validates?\s+:(\w+)`)
-	tableNameRe   = regexp.MustCompile(`^\s*self\.table_name\s*=\s*['"](\w+)['"]`)
 )
-
-// extractStorageFacts scans the file-level facts for ActiveRecord model classes
-// and emits storage facts with associations, scopes, and table names.
-func extractStorageFacts(relFile string, fileFacts []facts.Fact) []facts.Fact {
-	var result []facts.Fact
-
-	// First, identify which classes in this file are ActiveRecord models.
-	modelClasses := make(map[string]bool)
-	for _, f := range fileFacts {
-		if f.Kind != facts.KindSymbol {
-			continue
-		}
-		sk, _ := f.Props["symbol_kind"].(string)
-		if sk != facts.SymbolClass {
-			continue
-		}
-		superclass, _ := f.Props["superclass"].(string)
-		if isARBaseClass(superclass) {
-			modelClasses[f.Name] = true
-		}
-	}
-
-	if len(modelClasses) == 0 {
-		return nil
-	}
-
-	// Re-scan the file to extract associations, scopes, validations, and table name.
-	// We do this by re-reading from the already-parsed facts plus scanning the source again.
-	// For efficiency, we extract what we can from a simple second pass of the file facts.
-	// However, associations/scopes/validates aren't captured as facts yet, so we need
-	// to read the source file. We'll use the fileFacts to identify model boundaries
-	// and build storage facts.
-
-	dir := filepath.Dir(relFile)
-
-	// For each model class, emit a storage fact.
-	for className := range modelClasses {
-		tableName := inferTableName(className)
-
-		result = append(result, facts.Fact{
-			Kind: facts.KindStorage,
-			Name: className,
-			File: relFile,
-			Props: map[string]any{
-				"storage_kind": "model",
-				"table":        tableName,
-				"language":     "ruby",
-				"framework":    "rails",
-			},
-			Relations: []facts.Relation{
-				{Kind: facts.RelDeclares, Target: dir},
-			},
-		})
-	}
-
-	return result
-}
-
-// extractStorageDetailsFromFile does a second pass on an open file to extract
-// associations, scopes, validations, and explicit table names for models.
-// This is called from the main Extract loop.
-func extractStorageDetailsFromFile(lines []string, modelClasses map[string]bool) []facts.Fact {
-	var result []facts.Fact
-
-	for lineNum, line := range lines {
-		// Association declarations.
-		if m := associationRe.FindStringSubmatch(line); m != nil {
-			assocKind := m[1]
-			assocName := m[2]
-
-			targetModel := singularize(assocName)
-			if assocKind == "has_many" || assocKind == "has_and_belongs_to_many" {
-				targetModel = singularize(assocName)
-			} else {
-				targetModel = assocName
-			}
-			targetModel = snakeToCamel(targetModel)
-
-			result = append(result, facts.Fact{
-				Kind: facts.KindDependency,
-				Name: assocKind + " :" + assocName,
-				Line: lineNum + 1,
-				Props: map[string]any{
-					"language":         "ruby",
-					"association_kind": assocKind,
-				},
-				Relations: []facts.Relation{
-					{Kind: facts.RelDependsOn, Target: targetModel},
-				},
-			})
-		}
-
-		// Scope declarations.
-		if m := scopeRe.FindStringSubmatch(line); m != nil {
-			result = append(result, facts.Fact{
-				Kind: facts.KindSymbol,
-				Name: "scope:" + m[1],
-				Line: lineNum + 1,
-				Props: map[string]any{
-					"symbol_kind": facts.SymbolFunc,
-					"language":    "ruby",
-					"scope":       true,
-				},
-			})
-		}
-	}
-
-	return result
-}
 
 // isARBaseClass returns true if the superclass indicates an ActiveRecord model.
 func isARBaseClass(superclass string) bool {

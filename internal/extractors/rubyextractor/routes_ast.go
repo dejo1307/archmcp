@@ -1,0 +1,243 @@
+package rubyextractor
+
+import (
+	"path/filepath"
+	"strings"
+
+	"github.com/enola-labs/enola/internal/facts"
+	sitter "github.com/tree-sitter/go-tree-sitter"
+	ruby "github.com/tree-sitter/tree-sitter-ruby/bindings/go"
+)
+
+// parseRouteFileAST parses a Rails route file with tree-sitter and emits KindRoute
+// facts. Block boundaries come from the grammar (do_block) rather than counting
+// `do`/`end`, so nested namespaces/resources/scopes are tracked precisely.
+func parseRouteFileAST(src []byte, relFile string) []facts.Fact {
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(sitter.NewLanguage(ruby.Language())); err != nil {
+		return nil
+	}
+	tree := parser.Parse(src, nil)
+	defer tree.Close()
+
+	rw := &routeWalker{src: src, relFile: relFile, dir: filepath.Dir(relFile)}
+	rw.walk(tree.RootNode(), nil)
+	return rw.out
+}
+
+type routeWalker struct {
+	src     []byte
+	relFile string
+	dir     string
+	out     []facts.Fact
+}
+
+// walk iterates the statements of a program / body_statement, dispatching each
+// route-DSL call with the current scope stack.
+func (rw *routeWalker) walk(node *sitter.Node, stack []routeScope) {
+	if node == nil {
+		return
+	}
+	for i := uint(0); i < node.ChildCount(); i++ {
+		c := node.Child(i)
+		if c.Kind() == "call" {
+			rw.handleCall(c, stack)
+		}
+	}
+}
+
+// blockBody returns the body_statement of a call's do/brace block, or nil.
+func blockBody(call *sitter.Node) *sitter.Node {
+	block := call.ChildByFieldName("block")
+	if block == nil {
+		return nil
+	}
+	return block.ChildByFieldName("body")
+}
+
+func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
+	method := rubyText(call.ChildByFieldName("method"), rw.src)
+	args := call.ChildByFieldName("arguments")
+	body := blockBody(call)
+	prefix := buildPrefix(stack)
+
+	switch method {
+	case "get", "post", "put", "patch", "delete":
+		path := firstStringArg(args, rw.src)
+		if path == "" {
+			return
+		}
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		props := map[string]any{
+			"method":    strings.ToUpper(method),
+			"framework": "rails",
+			"language":  "ruby",
+		}
+		if handler := pairString(args, "to", rw.src); handler != "" {
+			props["handler"] = handler
+		}
+		rw.emit(prefix+path, line(call), props)
+
+	case "root":
+		handler := pairString(args, "to", rw.src)
+		if handler == "" {
+			handler = firstStringArg(args, rw.src)
+		}
+		props := map[string]any{
+			"method":    "GET",
+			"framework": "rails",
+			"language":  "ruby",
+		}
+		if handler != "" {
+			props["handler"] = handler
+		}
+		rw.emit(prefix+"/", line(call), props)
+
+	case "resources", "resource":
+		name := firstSymbolArg(args, rw.src)
+		if name == "" {
+			return
+		}
+		only := pairSymbols(args, "only", rw.src)
+		except := pairSymbols(args, "except", rw.src)
+		resourcePath := prefix + "/" + name
+		for _, a := range restfulActions(only, except) {
+			rw.emit(resourcePath+a.suffix, line(call), map[string]any{
+				"method":    a.method,
+				"framework": "rails",
+				"language":  "ruby",
+				"resource":  name,
+				"action":    a.name,
+			})
+		}
+		if body != nil {
+			rw.walk(body, append(stack, routeScope{pathPrefix: "/" + name}))
+		}
+
+	case "namespace":
+		name := firstSymbolArg(args, rw.src)
+		if name == "" || body == nil {
+			return
+		}
+		rw.walk(body, append(stack, routeScope{pathPrefix: "/" + name, module: name}))
+
+	case "scope":
+		ns := routeScope{}
+		if path := firstStringArg(args, rw.src); path != "" {
+			if !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
+			ns.pathPrefix = path
+		} else if mod := pairSymbol(args, "module", rw.src); mod != "" {
+			ns.module = mod
+		}
+		if body != nil {
+			rw.walk(body, append(stack, ns))
+		}
+
+	case "member", "collection":
+		memberPrefix := ""
+		if method == "member" {
+			memberPrefix = "/:id"
+		}
+		if body != nil {
+			rw.walk(body, append(stack, routeScope{pathPrefix: memberPrefix}))
+		}
+
+	case "draw":
+		// `draw do ... end` is the routes wrapper (Rails.application.routes.draw,
+		// engine routers, etc.) — recurse into the block. `draw(:pkg)` with no
+		// block is a packwerk delegation — emit a DRAW route.
+		if body != nil {
+			rw.walk(body, stack)
+			return
+		}
+		if pkg := firstSymbolArg(args, rw.src); pkg != "" {
+			rw.out = append(rw.out, facts.Fact{
+				Kind: facts.KindRoute,
+				Name: prefix + "/" + pkg,
+				File: rw.relFile,
+				Line: line(call),
+				Props: map[string]any{
+					"method":    "DRAW",
+					"framework": "rails",
+					"language":  "ruby",
+					"delegate":  pkg,
+				},
+			})
+		}
+
+	default:
+		// Unknown DSL call (constraints, concern, authenticate, ...) — descend into
+		// any block so nested routes are still discovered.
+		if body != nil {
+			rw.walk(body, stack)
+		}
+	}
+}
+
+// emit appends a route fact with a declares relation to the file's directory.
+func (rw *routeWalker) emit(name string, lineNum int, props map[string]any) {
+	rw.out = append(rw.out, facts.Fact{
+		Kind:      facts.KindRoute,
+		Name:      name,
+		File:      rw.relFile,
+		Line:      lineNum,
+		Props:     props,
+		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: rw.dir}},
+	})
+}
+
+// --- keyword-argument helpers ---
+
+// pairString returns the string content of a `key: "value"` pair.
+func pairString(args *sitter.Node, key string, src []byte) string {
+	if v := findPairValue(args, key, src); v != nil {
+		return firstStringArg(v, src)
+	}
+	return ""
+}
+
+// pairSymbol returns the symbol name of a `key: :value` pair.
+func pairSymbol(args *sitter.Node, key string, src []byte) string {
+	if v := findPairValue(args, key, src); v != nil && v.Kind() == "simple_symbol" {
+		return strings.TrimPrefix(rubyText(v, src), ":")
+	}
+	return ""
+}
+
+// pairSymbols returns the symbol names of a `key: [:a, :b]` pair.
+func pairSymbols(args *sitter.Node, key string, src []byte) map[string]bool {
+	out := make(map[string]bool)
+	v := findPairValue(args, key, src)
+	if v == nil {
+		return out
+	}
+	for i := uint(0); i < v.ChildCount(); i++ {
+		if v.Child(i).Kind() == "simple_symbol" {
+			out[strings.TrimPrefix(rubyText(v.Child(i), src), ":")] = true
+		}
+	}
+	return out
+}
+
+// findPairValue returns the value node of a `key: value` pair in an argument_list.
+func findPairValue(args *sitter.Node, key string, src []byte) *sitter.Node {
+	if args == nil {
+		return nil
+	}
+	for i := uint(0); i < args.ChildCount(); i++ {
+		c := args.Child(i)
+		if c.Kind() != "pair" {
+			continue
+		}
+		k := c.ChildByFieldName("key")
+		if k != nil && strings.TrimSuffix(rubyText(k, src), ":") == key {
+			return c.ChildByFieldName("value")
+		}
+	}
+	return nil
+}

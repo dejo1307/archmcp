@@ -9,9 +9,29 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 )
 
+// symbolsByName indexes the symbol facts in a result by name (storage/dependency
+// facts may share a class name, so they are excluded here).
+func symbolsByName(result []facts.Fact) map[string]facts.Fact {
+	m := make(map[string]facts.Fact)
+	for _, f := range result {
+		if f.Kind == facts.KindSymbol {
+			m[f.Name] = f
+		}
+	}
+	return m
+}
+
+// hasCall returns true if the fact has a RelCalls relation to target.
+func hasCall(f facts.Fact, target string) bool {
+	for _, r := range f.Relations {
+		if r.Kind == facts.RelCalls && r.Target == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestExtractFile_BasicClassAndMethod(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "order.rb")
 	src := `# frozen_string_literal: true
 
 module Orders
@@ -26,53 +46,27 @@ module Orders
   end
 end
 `
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	result := extractFileAST([]byte(src), "packages/orders/app/models/order.rb", true, false)
+	byName := symbolsByName(result)
 
-	result := extractFile(f, "packages/orders/app/models/order.rb", true, false)
-
-	// Collect by kind and name.
-	byName := make(map[string]facts.Fact)
-	for _, fact := range result {
-		byName[fact.Name] = fact
-	}
-
-	// Module Orders.
 	mod, ok := byName["Orders"]
 	if !ok {
 		t.Fatal("missing module Orders")
 	}
-	if mod.Kind != facts.KindSymbol {
-		t.Errorf("Orders kind = %q, want symbol", mod.Kind)
-	}
-	sk, _ := mod.Props["symbol_kind"].(string)
-	if sk != facts.SymbolInterface {
+	if sk, _ := mod.Props["symbol_kind"].(string); sk != facts.SymbolInterface {
 		t.Errorf("Orders symbol_kind = %q, want interface", sk)
 	}
 
-	// Class Orders::Order.
 	cls, ok := byName["Orders::Order"]
 	if !ok {
 		t.Fatal("missing class Orders::Order")
 	}
-	if cls.Kind != facts.KindSymbol {
-		t.Errorf("Orders::Order kind = %q, want symbol", cls.Kind)
-	}
-	sk, _ = cls.Props["symbol_kind"].(string)
-	if sk != facts.SymbolClass {
+	if sk, _ := cls.Props["symbol_kind"].(string); sk != facts.SymbolClass {
 		t.Errorf("Orders::Order symbol_kind = %q, want class", sk)
 	}
-	superclass, _ := cls.Props["superclass"].(string)
-	if superclass != "ApplicationRecord" {
-		t.Errorf("superclass = %q, want ApplicationRecord", superclass)
+	if sc, _ := cls.Props["superclass"].(string); sc != "ApplicationRecord" {
+		t.Errorf("superclass = %q, want ApplicationRecord", sc)
 	}
-	// Should have implements relation to ApplicationRecord.
 	hasImpl := false
 	for _, r := range cls.Relations {
 		if r.Kind == facts.RelImplements && r.Target == "ApplicationRecord" {
@@ -83,55 +77,43 @@ end
 		t.Error("Orders::Order missing implements relation to ApplicationRecord")
 	}
 
-	// Instance method Orders::Order#total.
 	meth, ok := byName["Orders::Order#total"]
 	if !ok {
 		t.Fatal("missing method Orders::Order#total")
 	}
-	sk, _ = meth.Props["symbol_kind"].(string)
-	if sk != facts.SymbolMethod {
+	if sk, _ := meth.Props["symbol_kind"].(string); sk != facts.SymbolMethod {
 		t.Errorf("total symbol_kind = %q, want method", sk)
 	}
 
-	// Class method Orders::Order.recent.
 	cmeth, ok := byName["Orders::Order.recent"]
 	if !ok {
 		t.Fatal("missing class method Orders::Order.recent")
 	}
-	sk, _ = cmeth.Props["symbol_kind"].(string)
-	if sk != facts.SymbolFunc {
+	if sk, _ := cmeth.Props["symbol_kind"].(string); sk != facts.SymbolFunc {
 		t.Errorf("recent symbol_kind = %q, want function", sk)
 	}
 }
 
 func TestStorageFacts_DeclaresTargetIsDirectory(t *testing.T) {
 	relFile := "packages/items/app/models/item.rb"
+	src := `class Item < ApplicationRecord
+end
+`
+	result := extractFileAST([]byte(src), relFile, true, true)
 
-	fileFacts := []facts.Fact{
-		{
-			Kind: facts.KindSymbol,
-			Name: "Item",
-			File: relFile,
-			Line: 3,
-			Props: map[string]any{
-				"symbol_kind": facts.SymbolClass,
-				"superclass":  "ApplicationRecord",
-				"language":    "ruby",
-			},
-		},
+	var storageFact *facts.Fact
+	for i, f := range result {
+		if f.Kind == facts.KindStorage && f.Name == "Item" {
+			storageFact = &result[i]
+			break
+		}
 	}
-
-	result := extractStorageFacts(relFile, fileFacts)
-	if len(result) == 0 {
-		t.Fatal("expected at least one storage fact")
+	if storageFact == nil {
+		t.Fatal("expected a storage fact named Item")
 	}
-
-	storageFact := result[0]
-	if storageFact.Name != "Item" {
-		t.Errorf("storage fact name = %q, want Item", storageFact.Name)
+	if sk, _ := storageFact.Props["storage_kind"].(string); sk != "model" {
+		t.Errorf("storage_kind = %q, want model", sk)
 	}
-
-	// The declares target must be the directory, not the class name.
 	if len(storageFact.Relations) == 0 {
 		t.Fatal("storage fact has no relations")
 	}
@@ -146,37 +128,26 @@ func TestStorageFacts_DeclaresTargetIsDirectory(t *testing.T) {
 }
 
 func TestAssociationFactNames_IncludeFilePath(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "order.rb")
+	relFile := "packages/orders/app/models/order.rb"
 	src := `class Order < ApplicationRecord
   belongs_to :user
   has_many :items
 end
 `
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	result := extractFileAST([]byte(src), relFile, true, true)
 
-	relFile := "packages/orders/app/models/order.rb"
-	result := extractAssociationsFromFile(path, relFile)
-
-	if len(result) == 0 {
-		t.Fatal("expected association facts")
-	}
-
-	for _, fact := range result {
-		if fact.Kind != facts.KindDependency {
+	names := make(map[string]bool)
+	for _, f := range result {
+		if f.Kind != facts.KindDependency {
 			continue
 		}
-		if !strings.HasPrefix(fact.Name, relFile+":") {
-			t.Errorf("association fact name %q should start with file path %q", fact.Name, relFile+":")
+		if _, ok := f.Props["association_kind"]; !ok {
+			continue
 		}
-	}
-
-	// Verify specific associations.
-	names := make(map[string]bool)
-	for _, fact := range result {
-		names[fact.Name] = true
+		if !strings.HasPrefix(f.Name, relFile+":") {
+			t.Errorf("association fact name %q should start with file path %q", f.Name, relFile+":")
+		}
+		names[f.Name] = true
 	}
 	if !names[relFile+":belongs_to :user"] {
 		t.Error("missing belongs_to :user with file prefix")
@@ -184,19 +155,23 @@ end
 	if !names[relFile+":has_many :items"] {
 		t.Error("missing has_many :items with file prefix")
 	}
+
+	// has_many target is singularized + camelized; belongs_to is camelized as-is.
+	for _, f := range result {
+		if f.Name == relFile+":has_many :items" {
+			if f.Relations[0].Target != "Item" {
+				t.Errorf("has_many :items target = %q, want Item", f.Relations[0].Target)
+			}
+		}
+		if f.Name == relFile+":belongs_to :user" {
+			if f.Relations[0].Target != "User" {
+				t.Errorf("belongs_to :user target = %q, want User", f.Relations[0].Target)
+			}
+		}
+	}
 }
 
 // --- RelCalls extraction tests ---
-
-// hasCall returns true if the fact has a RelCalls relation to target.
-func hasCall(f facts.Fact, target string) bool {
-	for _, r := range f.Relations {
-		if r.Kind == facts.RelCalls && r.Target == target {
-			return true
-		}
-	}
-	return false
-}
 
 func TestExtractFile_QualifiedClassMethodCall(t *testing.T) {
 	src := `module Items
@@ -207,30 +182,13 @@ func TestExtractFile_QualifiedClassMethodCall(t *testing.T) {
   end
 end
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "fetch_service.rb")
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	result := extractFile(f, "packages/items/app/services/fetch_service.rb", false, true)
-
-	byName := make(map[string]facts.Fact)
-	for _, fact := range result {
-		byName[fact.Name] = fact
-	}
-
-	meth, ok := byName["Items::FetchService#call"]
+	result := extractFileAST([]byte(src), "packages/items/app/services/fetch_service.rb", false, true)
+	meth, ok := symbolsByName(result)["Items::FetchService#call"]
 	if !ok {
 		t.Fatal("missing method Items::FetchService#call")
 	}
 	if !hasCall(meth, "Items::Facade.fetch_item_fields") {
-		t.Errorf("Items::FetchService#call missing RelCalls -> Items::Facade.fetch_item_fields; relations = %v", meth.Relations)
+		t.Errorf("missing RelCalls -> Items::Facade.fetch_item_fields; relations = %v", meth.Relations)
 	}
 }
 
@@ -243,30 +201,13 @@ func TestExtractFile_MultiLevelNamespaceCall(t *testing.T) {
   end
 end
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "builder.rb")
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	result := extractFile(f, "packages/homepage_sources/app/builder.rb", false, true)
-
-	byName := make(map[string]facts.Fact)
-	for _, fact := range result {
-		byName[fact.Name] = fact
-	}
-
-	meth, ok := byName["HomepageSources::Builder#build"]
+	result := extractFileAST([]byte(src), "packages/homepage_sources/app/builder.rb", false, true)
+	meth, ok := symbolsByName(result)["HomepageSources::Builder#build"]
 	if !ok {
 		t.Fatal("missing method HomepageSources::Builder#build")
 	}
 	if !hasCall(meth, "HomepageSources::ItemDto.from_ids") {
-		t.Errorf("HomepageSources::Builder#build missing RelCalls -> HomepageSources::ItemDto.from_ids; relations = %v", meth.Relations)
+		t.Errorf("missing RelCalls -> HomepageSources::ItemDto.from_ids; relations = %v", meth.Relations)
 	}
 }
 
@@ -277,30 +218,13 @@ func TestExtractFile_ReceiverVariableCall(t *testing.T) {
   end
 end
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "order_processor.rb")
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	result := extractFile(f, "app/models/order_processor.rb", false, true)
-
-	byName := make(map[string]facts.Fact)
-	for _, fact := range result {
-		byName[fact.Name] = fact
-	}
-
-	meth, ok := byName["OrderProcessor#process"]
+	result := extractFileAST([]byte(src), "app/models/order_processor.rb", false, true)
+	meth, ok := symbolsByName(result)["OrderProcessor#process"]
 	if !ok {
 		t.Fatal("missing method OrderProcessor#process")
 	}
 	if !hasCall(meth, "service.call") {
-		t.Errorf("OrderProcessor#process missing RelCalls -> service.call; relations = %v", meth.Relations)
+		t.Errorf("missing RelCalls -> service.call; relations = %v", meth.Relations)
 	}
 }
 
@@ -312,29 +236,11 @@ func TestExtractFile_CallsDeduplication(t *testing.T) {
   end
 end
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "dispatcher.rb")
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	result := extractFile(f, "app/dispatcher.rb", false, true)
-
-	byName := make(map[string]facts.Fact)
-	for _, fact := range result {
-		byName[fact.Name] = fact
-	}
-
-	meth, ok := byName["Dispatcher#run"]
+	result := extractFileAST([]byte(src), "app/dispatcher.rb", false, true)
+	meth, ok := symbolsByName(result)["Dispatcher#run"]
 	if !ok {
 		t.Fatal("missing method Dispatcher#run")
 	}
-
 	count := 0
 	for _, r := range meth.Relations {
 		if r.Kind == facts.RelCalls && r.Target == "Items::Facade.fetch_item_fields" {
@@ -342,53 +248,33 @@ end
 		}
 	}
 	if count != 1 {
-		t.Errorf("expected exactly 1 RelCalls edge to Items::Facade.fetch_item_fields, got %d", count)
+		t.Errorf("expected exactly 1 RelCalls edge, got %d", count)
 	}
 }
 
 func TestExtractFile_TopLevelMethodCalls(t *testing.T) {
-	// Ruby allows method calls without parentheses; qualifiedCallRe must capture
-	// them even when there is no trailing '(' character.
+	// Ruby allows method calls without parentheses; the qualified tier must still
+	// capture them.
 	src := `def bootstrap
   Config.load_defaults
   Rails.application.initialize!
 end
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "init.rb")
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	result := extractFile(f, "config/init.rb", false, true)
-
-	byName := make(map[string]facts.Fact)
-	for _, fact := range result {
-		byName[fact.Name] = fact
-	}
-
-	meth, ok := byName["config.bootstrap"]
+	result := extractFileAST([]byte(src), "config/init.rb", false, true)
+	meth, ok := symbolsByName(result)["config.bootstrap"]
 	if !ok {
 		t.Fatal("missing top-level method config.bootstrap")
 	}
-	// Config.load_defaults has no parens — qualifiedCallRe must still fire.
 	if !hasCall(meth, "Config.load_defaults") {
-		t.Errorf("config.bootstrap missing RelCalls -> Config.load_defaults; relations = %v", meth.Relations)
+		t.Errorf("missing RelCalls -> Config.load_defaults; relations = %v", meth.Relations)
 	}
-	// Rails.application.initialize! — qualifiedCallRe captures the first segment: Rails.application.
 	if !hasCall(meth, "Rails.application") {
-		t.Errorf("config.bootstrap missing RelCalls -> Rails.application; relations = %v", meth.Relations)
+		t.Errorf("missing RelCalls -> Rails.application; relations = %v", meth.Relations)
 	}
 }
 
 func TestExtractFile_EndlessMethodCall(t *testing.T) {
 	// Ruby 3.0+ endless method: def name(args) = Expr.call(args)
-	// The call is on the same line as the def — must be captured directly.
 	src := `module HomepageSources
   class ItemDto
     ITEM_FIELDS = %i[id title].freeze
@@ -397,76 +283,280 @@ func TestExtractFile_EndlessMethodCall(t *testing.T) {
   end
 end
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "item_dto.rb")
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	result := extractFile(f, "packages/homepage_sources/app/public/homepage_sources/item_dto.rb", false, true)
-
-	byName := make(map[string]facts.Fact)
-	for _, fact := range result {
-		byName[fact.Name] = fact
-	}
+	result := extractFileAST([]byte(src), "packages/homepage_sources/app/public/homepage_sources/item_dto.rb", false, true)
+	byName := symbolsByName(result)
 
 	meth, ok := byName["HomepageSources::ItemDto#fields_by_id"]
 	if !ok {
 		t.Fatal("missing method HomepageSources::ItemDto#fields_by_id")
 	}
 	if !hasCall(meth, "Items::Facade.fetch_item_fields") {
-		t.Errorf("fields_by_id missing RelCalls -> Items::Facade.fetch_item_fields; relations = %v", meth.Relations)
+		t.Errorf("missing RelCalls -> Items::Facade.fetch_item_fields; relations = %v", meth.Relations)
+	}
+	// The ALL-CAPS constant should be captured.
+	if _, ok := byName["HomepageSources::ItemDto::ITEM_FIELDS"]; !ok {
+		t.Error("missing constant HomepageSources::ItemDto::ITEM_FIELDS")
 	}
 }
 
-func TestExtractRubyCalls_QualifiedAndReceiver(t *testing.T) {
-	cases := []struct {
-		line  string
-		want  []string
-	}{
-		{
-			line: "      Items::Facade.fetch_item_fields(ids, ITEM_FIELDS)",
-			want: []string{"Items::Facade.fetch_item_fields"},
-		},
-		{
-			line: "      service.call(x)",
-			want: []string{"service.call"},
-		},
-		{
-			line: "      Foo::Bar::Baz.do_thing(a, b)",
-			want: []string{"Foo::Bar::Baz.do_thing"},
-		},
-		{
-			// Chained call: qualifiedCallRe captures Rails.logger (first segment);
-			// receiverCallRe captures logger.info (lowercase receiver with parens).
-			line: "      Rails.logger.info('msg')",
-			want: []string{"Rails.logger", "logger.info"},
-		},
-	}
-
-	for _, tc := range cases {
-		got := extractRubyCalls(tc.line)
-		gotSet := make(map[string]bool)
-		for _, g := range got {
-			gotSet[g] = true
+func TestCallEdges_QualifiedAndReceiverAndChain(t *testing.T) {
+	src := `class Logger
+  def run(x)
+    Items::Facade.fetch_item_fields(x)
+    service.call(x)
+    Rails.logger.info("msg")
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/logger.rb", false, true)
+	meth := symbolsByName(result)["Logger#run"]
+	for _, want := range []string{
+		"Items::Facade.fetch_item_fields", // scope-resolution receiver
+		"service.call",                    // lowercase receiver with args
+		"Rails.logger",                    // qualified inner of a chain
+		"logger.info",                     // chained receiver with args
+	} {
+		if !hasCall(meth, want) {
+			t.Errorf("missing RelCalls -> %s; relations = %v", want, meth.Relations)
 		}
-		for _, w := range tc.want {
-			if !gotSet[w] {
-				t.Errorf("extractRubyCalls(%q): missing %q in %v", tc.line, w, got)
+	}
+}
+
+// --- AST-only coverage (cases the regex scanner handled poorly) ---
+
+func TestAST_MultiLineCallArguments(t *testing.T) {
+	src := `class Svc
+  def run(ids)
+    Items::Facade.fetch_item_fields(
+      ids,
+      FIELDS,
+    )
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/svc.rb", false, true)
+	meth := symbolsByName(result)["Svc#run"]
+	if !hasCall(meth, "Items::Facade.fetch_item_fields") {
+		t.Errorf("multi-line call not captured; relations = %v", meth.Relations)
+	}
+}
+
+func TestAST_HeredocContainingEnd(t *testing.T) {
+	// A heredoc body containing a bare "end" line used to corrupt the regex
+	// depth counter; the grammar treats it as string content.
+	src := "class Foo\n" +
+		"  def bar\n" +
+		"    sql = <<~SQL\n" +
+		"      SELECT 1\n" +
+		"      end\n" +
+		"    SQL\n" +
+		"    Other.call(sql)\n" +
+		"  end\n" +
+		"end\n"
+	result := extractFileAST([]byte(src), "app/foo.rb", false, true)
+	byName := symbolsByName(result)
+	if _, ok := byName["Foo"]; !ok {
+		t.Fatal("missing class Foo")
+	}
+	meth, ok := byName["Foo#bar"]
+	if !ok {
+		t.Fatal("missing method Foo#bar (heredoc likely broke scope tracking)")
+	}
+	if !hasCall(meth, "Other.call") {
+		t.Errorf("call after heredoc not captured; relations = %v", meth.Relations)
+	}
+}
+
+func TestAST_NestedModulesAndEigenclass(t *testing.T) {
+	src := `module A
+  module B
+    class C
+      class << self
+        def build
+        end
+      end
+    end
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/a.rb", false, true)
+	byName := symbolsByName(result)
+	if _, ok := byName["A::B::C"]; !ok {
+		t.Fatal("missing deeply nested class A::B::C")
+	}
+	build, ok := byName["A::B::C.build"]
+	if !ok {
+		t.Fatal("missing eigenclass method A::B::C.build")
+	}
+	if sk, _ := build.Props["symbol_kind"].(string); sk != facts.SymbolFunc {
+		t.Errorf("eigenclass method symbol_kind = %q, want func", sk)
+	}
+}
+
+func TestAST_ConcernDetection(t *testing.T) {
+	src := `module Trackable
+  extend ActiveSupport::Concern
+end
+`
+	result := extractFileAST([]byte(src), "app/models/concerns/trackable.rb", true, true)
+	mod := symbolsByName(result)["Trackable"]
+	if c, _ := mod.Props["concern"].(bool); !c {
+		t.Errorf("Trackable should be flagged concern:true; props = %v", mod.Props)
+	}
+	// extend ActiveSupport::Concern must not be emitted as a mixin dependency.
+	for _, f := range result {
+		if f.Kind == facts.KindDependency {
+			for _, r := range f.Relations {
+				if r.Target == "ActiveSupport::Concern" {
+					t.Error("ActiveSupport::Concern should not be a mixin dependency")
+				}
 			}
 		}
 	}
 }
 
+func TestAST_MixinsAndImports(t *testing.T) {
+	src := `class Account < ApplicationRecord
+  include Trackable
+  prepend Auditable
+  attr_accessor :name, :token
+  require "set"
+  require_relative "../helper"
+end
+`
+	result := extractFileAST([]byte(src), "app/models/account.rb", true, true)
+
+	var includeKind, prependKind, reqRel string
+	attrs := map[string]bool{}
+	imports := map[string]bool{}
+	for _, f := range result {
+		if f.Kind == facts.KindDependency {
+			if mk, _ := f.Props["mixin_kind"].(string); mk != "" {
+				if f.Relations[0].Target == "Trackable" {
+					includeKind = mk
+				}
+				if f.Relations[0].Target == "Auditable" {
+					prependKind = mk
+				}
+			}
+			if rr, _ := f.Props["require_relative"].(bool); rr {
+				reqRel = f.Relations[0].Target
+			}
+			for _, r := range f.Relations {
+				if r.Kind == facts.RelImports {
+					imports[r.Target] = true
+				}
+			}
+		}
+		if f.Kind == facts.KindSymbol {
+			if ak, _ := f.Props["attr_kind"].(string); ak == "accessor" {
+				attrs[f.Name] = true
+			}
+		}
+	}
+	if includeKind != "include" {
+		t.Errorf("include mixin_kind = %q, want include", includeKind)
+	}
+	if prependKind != "prepend" {
+		t.Errorf("prepend mixin_kind = %q, want prepend", prependKind)
+	}
+	if reqRel != "../helper" {
+		t.Errorf("require_relative target = %q, want ../helper", reqRel)
+	}
+	if !imports["set"] {
+		t.Error("missing require 'set' import")
+	}
+	if !attrs["Account#name"] || !attrs["Account#token"] {
+		t.Errorf("missing attr_accessor symbols; got %v", attrs)
+	}
+}
+
+// --- route tests ---
+
+func TestRoutes_NestedNamespaceResourcesMember(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  namespace :admin do
+    resources :users, only: [:index, :show] do
+      member do
+        post "ban"
+      end
+    end
+  end
+  draw(:billing)
+end
+`
+	result := parseRouteFileAST([]byte(src), "config/routes.rb")
+	names := make(map[string]facts.Fact)
+	for _, f := range result {
+		if f.Kind == facts.KindRoute {
+			names[f.Name] = f
+		}
+	}
+
+	for _, want := range []string{"/admin/users", "/admin/users/:id", "/admin/users/:id/ban", "/billing"} {
+		if _, ok := names[want]; !ok {
+			t.Errorf("missing route %q; got %v", want, keys(names))
+		}
+	}
+	// only: [:index, :show] must exclude create/new/edit/destroy.
+	for _, absent := range []string{"/admin/users/new", "/admin/users/:id/edit"} {
+		if _, ok := names[absent]; ok {
+			t.Errorf("route %q should be excluded by only:", absent)
+		}
+	}
+	if f, ok := names["/admin/users/:id/ban"]; ok {
+		if m, _ := f.Props["method"].(string); m != "POST" {
+			t.Errorf("ban route method = %q, want POST", m)
+		}
+	}
+	if f, ok := names["/billing"]; ok {
+		if m, _ := f.Props["method"].(string); m != "DRAW" {
+			t.Errorf("draw route method = %q, want DRAW", m)
+		}
+	}
+}
+
+func TestRoutes_VerbWithHandler(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  root to: "home#index"
+  get "/health", to: "health#show"
+end
+`
+	result := parseRouteFileAST([]byte(src), "config/routes.rb")
+	byName := make(map[string]facts.Fact)
+	for _, f := range result {
+		byName[f.Name] = f
+	}
+	root, ok := byName["/"]
+	if !ok {
+		t.Fatal("missing root route")
+	}
+	if h, _ := root.Props["handler"].(string); h != "home#index" {
+		t.Errorf("root handler = %q, want home#index", h)
+	}
+	health, ok := byName["/health"]
+	if !ok {
+		t.Fatal("missing /health route")
+	}
+	if h, _ := health.Props["handler"].(string); h != "health#show" {
+		t.Errorf("/health handler = %q, want health#show", h)
+	}
+	if m, _ := health.Props["method"].(string); m != "GET" {
+		t.Errorf("/health method = %q, want GET", m)
+	}
+}
+
+func keys(m map[string]facts.Fact) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestPackwerk_RootDependencyNormalization(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create packwerk.yml.
 	packwerkYml := `package_paths:
   - "."
   - "packages/*"
@@ -474,15 +564,11 @@ func TestPackwerk_RootDependencyNormalization(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "packwerk.yml"), []byte(packwerkYml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	// Root package.yml.
 	rootPkg := `enforce_dependencies: true
 `
 	if err := os.WriteFile(filepath.Join(dir, "package.yml"), []byte(rootPkg), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	// A sub-package that depends on root (".").
 	pkgDir := filepath.Join(dir, "packages", "orders")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -501,7 +587,6 @@ dependencies:
 		t.Fatal("packwerk should be detected")
 	}
 
-	// Find the orders module fact.
 	var ordersFact *facts.Fact
 	for i, f := range info.facts {
 		if f.Name == "packages/orders" {
@@ -513,7 +598,6 @@ dependencies:
 		t.Fatal("missing packages/orders module fact")
 	}
 
-	// The dependency on "." should be normalized to "root".
 	hasDotTarget := false
 	hasRootTarget := false
 	for _, r := range ordersFact.Relations {
@@ -533,7 +617,6 @@ dependencies:
 		t.Error("expected dependency target 'root' after normalization")
 	}
 
-	// The root module should be named "root", not ".".
 	var rootFact *facts.Fact
 	for i, f := range info.facts {
 		if f.Name == "root" {
