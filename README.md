@@ -164,7 +164,7 @@ Working across several repos? Generate the first, then add the rest with append 
 
 Framework- and platform-specific detection for each language is described in **[ARCHITECTURE.md → Supported languages](ARCHITECTURE.md#supported-languages)**.
 
-> Python is parsed with tree-sitter and now contributes call and dependency edges to the graph, so `traverse`, `find_path`, and `impact_analysis` reach into Python code — not just modules and routes.
+> Python and Ruby are parsed with tree-sitter and contribute call and dependency edges to the graph, so `traverse`, `find_path`, and `impact_analysis` reach into them — not just modules and routes.
 
 ---
 
