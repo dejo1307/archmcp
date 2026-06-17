@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/pkg/bootstrap"
+	"github.com/enola-labs/enola/pkg/explain"
 )
 
 func main() {
@@ -16,12 +18,24 @@ func main() {
 	ctx := context.Background()
 
 	generateMode := false
+	explainMode := false
 	cfgPath := "mcp-arch.yaml"
+	explainRepo := "" // optional positional repo path for --explain
+
 	for _, arg := range os.Args[1:] {
-		if arg == "--generate" {
+		switch arg {
+		case "--generate":
 			generateMode = true
-		} else {
-			cfgPath = arg
+		case "--explain":
+			explainMode = true
+		default:
+			// In --explain mode the positional argument is the repository path;
+			// otherwise it is the config file path.
+			if explainMode {
+				explainRepo = arg
+			} else {
+				cfgPath = arg
+			}
 		}
 	}
 
@@ -30,6 +44,11 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("failed to create engine: %v", err)
+	}
+
+	if explainMode {
+		runExplain(ctx, eng, cfg, explainRepo)
+		os.Exit(0)
 	}
 
 	if generateMode {
@@ -67,4 +86,25 @@ func main() {
 	if err := srv.Run(ctx); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// runExplain indexes the given repository (defaulting to the configured repo)
+// and prints a human-readable statistical summary to stdout.
+func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, repoArg string) {
+	repo := repoArg
+	if repo == "" {
+		repo = cfg.Repo
+	}
+	repoPath, err := filepath.Abs(repo)
+	if err != nil {
+		log.Fatalf("failed to resolve repo path: %v", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Analyzing %s …\n", repoPath)
+	if _, err := eng.GenerateSnapshot(ctx, repoPath, false); err != nil {
+		log.Fatalf("snapshot generation failed: %v", err)
+	}
+
+	report := explain.Compute(eng)
+	fmt.Print(report.Render())
 }

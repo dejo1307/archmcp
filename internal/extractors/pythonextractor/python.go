@@ -107,6 +107,11 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 		modules[dir] = true
 	}
 
+	// Resolve dotted import targets to internal module slash paths (and classify
+	// stdlib/external) now that the full module set is known. Without this,
+	// Python imports never match module Names downstream.
+	resolveImports(allFacts, modules)
+
 	for dir := range modules {
 		allFacts = append(allFacts, facts.Fact{
 			Kind: facts.KindModule,
