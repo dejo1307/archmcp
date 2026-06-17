@@ -311,38 +311,82 @@ func extractTypeName(s string) string {
 
 // --- Source-root and import resolution (project-level) ---
 
-// detectKotlinSourceRoot derives the source root directory from the first
-// Kotlin file's package declaration. For "app/src/main/java/com/foo/Bar.kt"
-// declaring `package com.foo`, it returns "app/src/main/java/".
+// detectKotlinSourceRoot derives the source-root directory shared by the
+// project's production Kotlin files, by stripping each file's package path from
+// its directory. For "app/src/main/java/com/foo/Bar.kt" declaring `package
+// com.foo`, the per-file root is "app/src/main/java/".
+//
+// It deliberately ignores test source sets (src/test, src/androidTest) and picks
+// the MOST COMMON production root rather than the first file seen. File order is
+// not guaranteed: with the old "first file wins" logic, a project whose first
+// walked file was a test ("app/src/androidTest/java/…") resolved every internal
+// import under that test root, so the targets never matched the real (main)
+// module dirs and coupling collapsed to zero.
 func detectKotlinSourceRoot(repoPath string, files []string) string {
+	counts := make(map[string]int) // production source root -> file count
+	fallback := ""                 // any root seen, used only if all files are tests
+	haveFallback := false
+
 	for _, relFile := range files {
 		if !isKotlinFile(relFile) {
 			continue
 		}
-		absFile := filepath.Join(repoPath, relFile)
-		f, err := os.Open(absFile)
-		if err != nil {
+		root, ok := kotlinFileSourceRoot(repoPath, relFile)
+		if !ok {
 			continue
 		}
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if m := packageRe.FindStringSubmatch(line); m != nil {
-				pkg := m[1]
-				pkgPath := strings.ReplaceAll(pkg, ".", "/")
-				dir := filepath.ToSlash(filepath.Dir(relFile))
-				if strings.HasSuffix(dir, pkgPath) {
-					root := strings.TrimSuffix(dir, pkgPath)
-					f.Close()
-					return root
-				}
-				f.Close()
-				return ""
-			}
+		if !haveFallback {
+			fallback, haveFallback = root, true
 		}
-		f.Close()
+		if isKotlinTestSource(relFile) {
+			continue
+		}
+		counts[root]++
 	}
-	return ""
+
+	best, bestN, found := "", 0, false
+	for root, n := range counts {
+		if !found || n > bestN || (n == bestN && root < best) {
+			best, bestN, found = root, n, true
+		}
+	}
+	if found {
+		return best
+	}
+	return fallback
+}
+
+// kotlinFileSourceRoot returns a single file's source root: its directory with
+// its package path stripped. ok is false when the file has no package decl.
+func kotlinFileSourceRoot(repoPath, relFile string) (string, bool) {
+	absFile := filepath.Join(repoPath, relFile)
+	f, err := os.Open(absFile)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		m := packageRe.FindStringSubmatch(scanner.Text())
+		if m == nil {
+			continue
+		}
+		pkgPath := strings.ReplaceAll(m[1], ".", "/")
+		dir := filepath.ToSlash(filepath.Dir(relFile))
+		if strings.HasSuffix(dir, pkgPath) {
+			return strings.TrimSuffix(dir, pkgPath), true
+		}
+		return "", true // package found but dir doesn't mirror it — root is ""
+	}
+	return "", false
+}
+
+// isKotlinTestSource reports whether a file lives in a Gradle test source set
+// (src/test or src/androidTest), which must not drive source-root detection.
+func isKotlinTestSource(relFile string) bool {
+	p := filepath.ToSlash(relFile)
+	return strings.Contains(p, "/src/test/") || strings.HasPrefix(p, "src/test/") ||
+		strings.Contains(p, "/src/androidTest/") || strings.HasPrefix(p, "src/androidTest/")
 }
 
 // detectKotlinBasePackage reads the Android namespace from build.gradle.kts so
