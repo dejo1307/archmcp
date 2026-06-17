@@ -14,7 +14,7 @@ import (
 // facts. It is a superset of extractFile: every symbol / import / route / storage
 // fact is preserved, and RelCalls / RelInstantiates edges are added when call
 // sites are observed inside function bodies.
-func extractFileAST(src []byte, relFile string, isDjango bool) []facts.Fact {
+func extractFileAST(src []byte, relFile string, isDjango bool, idx *pySymbolIndex) []facts.Fact {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(python.Language())); err != nil {
@@ -33,6 +33,7 @@ func extractFileAST(src []byte, relFile string, isDjango bool) []facts.Fact {
 		module:   module,
 		dir:      dir,
 		isDjango: isDjango,
+		idx:      idx,
 	}
 	w.walkModule(tree.RootNode())
 	return w.out
@@ -62,6 +63,14 @@ type pyWalker struct {
 	// methodSets[i] is the set of methods declared directly in typeStack[i],
 	// used to resolve bare same-class calls.
 	methodSets []map[string]bool
+
+	// idx is the global symbol index, nil when called from tests that do not
+	// need cross-file resolution. All lookups must nil-check.
+	idx *pySymbolIndex
+
+	// localTypes maps a variable name in the current function scope to its
+	// canonical qualified type. Reset at the entry of every handleFunction call.
+	localTypes map[string]string
 }
 
 func (w *pyWalker) pushOwner(idx int)       { w.ownerStack = append(w.ownerStack, idx) }
@@ -531,7 +540,12 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 	w.out = append(w.out, f)
 	w.pushOwner(len(w.out) - 1)
 	if bodyNode := node.ChildByFieldName("body"); bodyNode != nil {
+		w.localTypes = collectParamTypes(node.ChildByFieldName("parameters"), w.src, w.importMap, w.module)
+		for k, v := range collectLocalTypes(bodyNode, w.src, w.importMap, w.module) {
+			w.localTypes[k] = v
+		}
 		w.walkForCalls(bodyNode)
+		w.localTypes = nil
 	}
 	w.popOwner()
 }
@@ -659,7 +673,6 @@ func (w *pyWalker) emitCallEdge(fn *sitter.Node) {
 		}
 
 	case "attribute":
-		// self.method() or obj.method() — only resolve self.method.
 		objNode := fn.ChildByFieldName("object")
 		attrNode := fn.ChildByFieldName("attribute")
 		if objNode == nil || attrNode == nil {
@@ -674,6 +687,60 @@ func (w *pyWalker) emitCallEdge(fn *sitter.Node) {
 					Target: w.module + "." + w.enclosingType() + "." + attr,
 				})
 			}
+			return
+		}
+		// Resolve the receiver to a qualified type via localTypes or importMap.
+		qualType := w.resolveVarType(obj)
+		if qualType == "" {
+			return
+		}
+		owner.Relations = append(owner.Relations, facts.Relation{
+			Kind:   facts.RelCalls,
+			Target: qualType + "." + attr,
+		})
+		w.emitImplementorCalls(owner, attr, qualType)
+	}
+}
+
+// resolveVarType returns the canonical qualified type for a local variable name,
+// checking localTypes first then importMap (for class-level references).
+// Returns "" when the type cannot be statically determined.
+func (w *pyWalker) resolveVarType(obj string) string {
+	if w.localTypes != nil {
+		if t, ok := w.localTypes[obj]; ok {
+			return t
+		}
+	}
+	if w.importMap != nil {
+		if t, ok := w.importMap[obj]; ok && t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// emitImplementorCalls emits additional RelCalls edges to all concrete classes
+// that implement qualType, when a matching method exists on each implementor.
+func (w *pyWalker) emitImplementorCalls(owner *facts.Fact, methodName, qualType string) {
+	if w.idx == nil {
+		return
+	}
+	bare := lastComponent(qualType)
+	seen := make(map[string]bool)
+	for _, key := range []string{bare, qualType} {
+		for _, concreteQual := range w.idx.implMap[key] {
+			if seen[concreteQual] {
+				continue
+			}
+			seen[concreteQual] = true
+			info, ok := w.idx.classes[concreteQual]
+			if !ok || !info.methods[methodName] {
+				continue
+			}
+			owner.Relations = append(owner.Relations, facts.Relation{
+				Kind:   facts.RelCalls,
+				Target: concreteQual + "." + methodName,
+			})
 		}
 	}
 }
@@ -780,6 +847,298 @@ func pyCapitalized(s string) bool {
 		return false
 	}
 	return unicode.IsUpper([]rune(s)[0])
+}
+
+// --- Type resolution helpers ---
+
+// resolveTypeNamePy converts a raw annotation string to a canonical qualified name
+// using the file's importMap. Returns "" for external/unresolvable/built-in types.
+func resolveTypeNamePy(typeStr, module string, importMap map[string]string) string {
+	typeStr = strings.TrimSpace(typeStr)
+	typeStr = stripGenericWrapper(typeStr)
+	if typeStr == "" || pyBuiltinTypes[typeStr] {
+		return ""
+	}
+	if strings.Contains(typeStr, ".") {
+		parts := strings.SplitN(typeStr, ".", 2)
+		if importMap != nil {
+			if t, ok := importMap[parts[0]]; ok && t != "" {
+				return t + "." + parts[1]
+			}
+		}
+		// Dotted name not in importMap — treat as external, skip.
+		return ""
+	}
+	if importMap != nil {
+		if t, ok := importMap[typeStr]; ok {
+			return t // "" means external → caller drops it
+		}
+	}
+	// Not imported and not a built-in — assume same-module class.
+	return module + "." + typeStr
+}
+
+// stripGenericWrapper strips the outermost generic wrapper from a type string.
+// Handles bracket generics (Optional[X], List[X], Union[X, None]) and PEP-604
+// union syntax (X | None, X | Y).
+func stripGenericWrapper(s string) string {
+	// PEP-604 union: "X | Y" — take the first non-None part.
+	if strings.Contains(s, "|") && !strings.Contains(s, "[") {
+		for _, part := range strings.Split(s, "|") {
+			part = strings.TrimSpace(part)
+			if part != "None" && part != "" {
+				return part
+			}
+		}
+		return ""
+	}
+	i := strings.Index(s, "[")
+	if i < 0 {
+		return s
+	}
+	inner := strings.TrimSpace(s[i+1 : len(s)-1])
+	if comma := strings.Index(inner, ","); comma >= 0 {
+		part := strings.TrimSpace(inner[:comma])
+		if part == "None" {
+			part = strings.TrimSpace(inner[comma+1:])
+		}
+		return part
+	}
+	return inner
+}
+
+// pyBuiltinTypes is the set of Python built-in and standard-library primitive
+// type names that should not be resolved to project facts.
+var pyBuiltinTypes = map[string]bool{
+	"str": true, "int": true, "float": true, "bool": true, "bytes": true,
+	"bytearray": true, "list": true, "dict": true, "set": true, "tuple": true,
+	"frozenset": true, "type": true, "object": true, "complex": true,
+	"None": true, "NoneType": true, "Any": true, "Optional": true, "Union": true,
+	"List": true, "Dict": true, "Set": true, "Tuple": true, "FrozenSet": true,
+	"Type": true, "Callable": true, "ClassVar": true, "Final": true,
+	"Literal": true, "TypeVar": true, "Generic": true, "NamedTuple": true,
+	"TypedDict": true, "Iterator": true, "Generator": true, "Iterable": true,
+	"AsyncIterator": true, "AsyncGenerator": true, "AsyncIterable": true,
+	"Sequence": true, "MutableSequence": true, "Mapping": true,
+	"MutableMapping": true, "IO": true, "TextIO": true, "BinaryIO": true,
+	"Pattern": true, "Match": true, "AnyStr": true, "Text": true,
+	"Awaitable": true, "Coroutine": true, "T": true,
+}
+
+// collectParamTypes scans a function parameter list and returns a map of
+// param name → qualified type for all typed parameters (skipping self/cls).
+func collectParamTypes(params *sitter.Node, src []byte, importMap map[string]string, module string) map[string]string {
+	result := make(map[string]string)
+	if params == nil {
+		return result
+	}
+	for i := uint(0); i < uint(params.ChildCount()); i++ {
+		c := params.Child(i)
+		var paramName string
+		var typeNode *sitter.Node
+		switch c.Kind() {
+		case "typed_parameter":
+			// The identifier is the first child; type is a named field.
+			if first := c.Child(0); first != nil && first.Kind() == "identifier" {
+				paramName = pyText(first, src)
+			}
+			typeNode = c.ChildByFieldName("type")
+		case "typed_default_parameter":
+			if n := c.ChildByFieldName("name"); n != nil {
+				paramName = pyText(n, src)
+			}
+			typeNode = c.ChildByFieldName("type")
+		}
+		if paramName == "" || paramName == "self" || paramName == "cls" || typeNode == nil {
+			continue
+		}
+		if resolved := resolveTypeNamePy(pyText(typeNode, src), module, importMap); resolved != "" {
+			result[paramName] = resolved
+		}
+	}
+	return result
+}
+
+// collectLocalTypes scans a function body for type-inferable assignments and
+// returns a map of local variable name → qualified type.
+func collectLocalTypes(body *sitter.Node, src []byte, importMap map[string]string, module string) map[string]string {
+	result := make(map[string]string)
+	collectLocalTypesNode(body, src, importMap, module, result)
+	return result
+}
+
+func collectLocalTypesNode(node *sitter.Node, src []byte, importMap map[string]string, module string, result map[string]string) {
+	if node == nil {
+		return
+	}
+	switch node.Kind() {
+	case "function_definition", "class_definition", "decorated_definition":
+		return // do not cross scope boundaries
+	case "annotated_assignment":
+		// x: Type  or  x: Type = value
+		leftNode := node.ChildByFieldName("left")
+		annotNode := node.ChildByFieldName("annotation")
+		if leftNode != nil && leftNode.Kind() == "identifier" && annotNode != nil {
+			name := pyText(leftNode, src)
+			if resolved := resolveTypeNamePy(pyText(annotNode, src), module, importMap); resolved != "" {
+				result[name] = resolved
+			}
+		}
+		return
+	case "assignment":
+		// x = MyClass()
+		leftNode := node.ChildByFieldName("left")
+		rightNode := node.ChildByFieldName("right")
+		if leftNode != nil && leftNode.Kind() == "identifier" && rightNode != nil {
+			if rightNode.Kind() == "call" {
+				if fnNode := rightNode.ChildByFieldName("function"); fnNode != nil && fnNode.Kind() == "identifier" {
+					ctorName := pyText(fnNode, src)
+					if pyCapitalized(ctorName) && !pyBuiltins[ctorName] {
+						if resolved := resolveTypeNamePy(ctorName, module, importMap); resolved != "" {
+							result[pyText(leftNode, src)] = resolved
+						}
+					}
+				}
+			}
+		}
+		return
+	default:
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			collectLocalTypesNode(node.Child(i), src, importMap, module, result)
+		}
+	}
+}
+
+// --- Multi-file symbol index ---
+
+// pyClassInfo records what was learned about a class during the index pass.
+type pyClassInfo struct {
+	qualName   string
+	bases      []string
+	isAbstract bool
+	methods    map[string]bool
+}
+
+// pySymbolIndex is the global symbol table built by the index pass.
+type pySymbolIndex struct {
+	classes map[string]*pyClassInfo // "module.ClassName" → info
+	implMap map[string][]string     // base name → concrete implementor qual names
+}
+
+// buildFileIndex scans src for class declarations and populates idx.
+// It does not emit any facts — it is read-only over the AST.
+func buildFileIndex(src []byte, relFile string, idx *pySymbolIndex) {
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(sitter.NewLanguage(python.Language())); err != nil {
+		return
+	}
+	tree := parser.Parse(src, nil)
+	defer tree.Close()
+
+	module := strings.TrimSuffix(relFile, ".py")
+	root := tree.RootNode()
+	for i := uint(0); i < uint(root.ChildCount()); i++ {
+		node := root.Child(i)
+		switch node.Kind() {
+		case "class_definition":
+			indexClass(node, src, module, idx)
+		case "decorated_definition":
+			for j := uint(0); j < uint(node.ChildCount()); j++ {
+				if node.Child(j).Kind() == "class_definition" {
+					indexClass(node.Child(j), src, module, idx)
+					break
+				}
+			}
+		}
+	}
+}
+
+// indexClass records a class from the index pass into idx.
+func indexClass(node *sitter.Node, src []byte, module string, idx *pySymbolIndex) {
+	nameNode := node.ChildByFieldName("name")
+	if nameNode == nil {
+		return
+	}
+	name := pyText(nameNode, src)
+	qualName := module + "." + name
+
+	var bases []string
+	isAbstract := false
+
+	if args := node.ChildByFieldName("superclasses"); args != nil {
+		for i := uint(0); i < uint(args.ChildCount()); i++ {
+			c := args.Child(i)
+			var base string
+			switch c.Kind() {
+			case "identifier":
+				base = pyText(c, src)
+			case "attribute":
+				base = pyText(c, src)
+			case "subscript":
+				if valueNode := c.ChildByFieldName("value"); valueNode != nil {
+					base = pyText(valueNode, src)
+				}
+			}
+			if base != "" {
+				last := lastComponent(base)
+				if last == "ABC" || last == "ABCMeta" || last == "Protocol" {
+					isAbstract = true
+				}
+				bases = append(bases, base)
+			}
+		}
+	}
+
+	bodyNode := node.ChildByFieldName("body")
+	methods := collectPyMethodNames(bodyNode, src)
+
+	if !isAbstract && bodyNode != nil && hasAbstractMethod(bodyNode, src) {
+		isAbstract = true
+	}
+
+	idx.classes[qualName] = &pyClassInfo{
+		qualName:   qualName,
+		bases:      bases,
+		isAbstract: isAbstract,
+		methods:    methods,
+	}
+}
+
+// hasAbstractMethod reports whether any method in a class body has @abstractmethod.
+func hasAbstractMethod(body *sitter.Node, src []byte) bool {
+	for i := uint(0); i < uint(body.ChildCount()); i++ {
+		c := body.Child(i)
+		if c.Kind() != "decorated_definition" {
+			continue
+		}
+		for j := uint(0); j < uint(c.ChildCount()); j++ {
+			d := c.Child(j)
+			if d.Kind() == "decorator" {
+				text := pyText(d, src)
+				if m := decoratorRe.FindStringSubmatch(text); m != nil {
+					if lastComponent(m[1]) == "abstractmethod" {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// finalizeImplMap populates idx.implMap by inverting the implements edges:
+// for each concrete class C that lists base B, C is appended to implMap[B].
+func finalizeImplMap(idx *pySymbolIndex) {
+	idx.implMap = make(map[string][]string)
+	for qualName, info := range idx.classes {
+		if info.isAbstract {
+			continue
+		}
+		for _, base := range info.bases {
+			idx.implMap[base] = append(idx.implMap[base], qualName)
+		}
+	}
 }
 
 // pyBuiltins are Python built-in functions that appear as bare calls without

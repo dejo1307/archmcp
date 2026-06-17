@@ -3,6 +3,7 @@ package pythonextractor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -19,7 +20,23 @@ func astExtract(t *testing.T, filename, src string, isDjango bool) []facts.Fact 
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return extractFileAST([]byte(src), filename, isDjango)
+	return extractFileAST([]byte(src), filename, isDjango, nil)
+}
+
+// astExtractWithIndex runs the index pass over all provided sources, then
+// extracts facts from targetFile using that index.
+func astExtractWithIndex(t *testing.T, files map[string]string, targetFile string, isDjango bool) []facts.Fact {
+	t.Helper()
+	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo)}
+	for filename, src := range files {
+		buildFileIndex([]byte(src), filename, idx)
+	}
+	finalizeImplMap(idx)
+	src, ok := files[targetFile]
+	if !ok {
+		t.Fatalf("targetFile %q not in files map", targetFile)
+	}
+	return extractFileAST([]byte(src), targetFile, isDjango, idx)
 }
 
 // relsByKind returns all relations of a given kind from a fact.
@@ -409,5 +426,194 @@ from . import utils
 		if !found {
 			t.Errorf("dependency %q missing RelImports relation", d.Name)
 		}
+	}
+}
+
+// --- Symbol resolution tests ---
+
+func TestAST_TypedParam_AttributeCall(t *testing.T) {
+	src := `
+from .queue import Queue
+
+def consume(q: Queue):
+    q.pop()
+`
+	result := astExtract(t, "app/worker.py", src, false)
+	idx := byName(result)
+
+	fn, ok := idx["app/worker.consume"]
+	if !ok {
+		t.Fatalf("missing app/worker.consume; keys: %v", keys(idx))
+	}
+	calls := relsByKind(fn, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "app/queue.Queue.pop" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("consume: RelCalls = %v, want app/queue.Queue.pop", calls)
+	}
+}
+
+func TestAST_ConstructorAssignment_AttributeCall(t *testing.T) {
+	src := `
+from .repo import UserRepo
+
+def handle():
+    repo = UserRepo()
+    repo.find(1)
+`
+	result := astExtract(t, "app/handler.py", src, false)
+	idx := byName(result)
+
+	fn, ok := idx["app/handler.handle"]
+	if !ok {
+		t.Fatalf("missing app/handler.handle; keys: %v", keys(idx))
+	}
+	calls := relsByKind(fn, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "app/repo.UserRepo.find" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("handle: RelCalls = %v, want app/repo.UserRepo.find", calls)
+	}
+}
+
+func TestAST_AnnotatedAssignment_AttributeCall(t *testing.T) {
+	src := `
+from .logger import FileLogger
+
+def process():
+    log: FileLogger = FileLogger()
+    log.write("done")
+`
+	result := astExtract(t, "app/svc.py", src, false)
+	idx := byName(result)
+
+	fn, ok := idx["app/svc.process"]
+	if !ok {
+		t.Fatalf("missing app/svc.process; keys: %v", keys(idx))
+	}
+	calls := relsByKind(fn, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "app/logger.FileLogger.write" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("process: RelCalls = %v, want app/logger.FileLogger.write", calls)
+	}
+}
+
+func TestAST_NoPhantomEdge_UnresolvableReceiver(t *testing.T) {
+	src := `
+def handle(req):
+    req.method()
+`
+	result := astExtract(t, "app/h.py", src, false)
+	idx := byName(result)
+
+	fn, ok := idx["app/h.handle"]
+	if !ok {
+		t.Fatalf("missing app/h.handle")
+	}
+	calls := relsByKind(fn, facts.RelCalls)
+	for _, c := range calls {
+		if strings.Contains(c, ".method") {
+			t.Errorf("handle: unexpected call edge to unresolvable receiver: %q", c)
+		}
+	}
+}
+
+func TestAST_AbstractClass_ConcreteImplementorCalls(t *testing.T) {
+	files := map[string]string{
+		"app/interfaces.py": `
+from abc import ABC, abstractmethod
+
+class Logger(ABC):
+    @abstractmethod
+    def write(self, msg):
+        pass
+`,
+		"app/loggers.py": `
+from .interfaces import Logger
+
+class FileLogger(Logger):
+    def write(self, msg):
+        pass
+`,
+		"app/service.py": `
+from .interfaces import Logger
+
+class OrderService:
+    def process(self, logger: Logger):
+        logger.write("order processed")
+`,
+	}
+
+	result := astExtractWithIndex(t, files, "app/service.py", false)
+	idx := byName(result)
+
+	fn, ok := idx["app/service.OrderService.process"]
+	if !ok {
+		t.Fatalf("missing app/service.OrderService.process; keys: %v", keys(idx))
+	}
+	calls := relsByKind(fn, facts.RelCalls)
+
+	wantDirect := "app/interfaces.Logger.write"
+	wantConcrete := "app/loggers.FileLogger.write"
+	foundDirect, foundConcrete := false, false
+	for _, c := range calls {
+		if c == wantDirect {
+			foundDirect = true
+		}
+		if c == wantConcrete {
+			foundConcrete = true
+		}
+	}
+	if !foundDirect {
+		t.Errorf("process: missing RelCalls to abstract %q; got %v", wantDirect, calls)
+	}
+	if !foundConcrete {
+		t.Errorf("process: missing RelCalls to concrete %q; got %v", wantConcrete, calls)
+	}
+}
+
+func TestAST_IsAbstract_Detection(t *testing.T) {
+	src := `
+from abc import ABC, abstractmethod
+
+class MyInterface(ABC):
+    @abstractmethod
+    def execute(self):
+        pass
+
+class ConcreteImpl(MyInterface):
+    def execute(self):
+        pass
+`
+	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo)}
+	buildFileIndex([]byte(src), "app/types.py", idx)
+
+	iface, ok := idx.classes["app/types.MyInterface"]
+	if !ok {
+		t.Fatal("missing app/types.MyInterface in index")
+	}
+	if !iface.isAbstract {
+		t.Error("MyInterface: expected isAbstract=true")
+	}
+
+	impl, ok := idx.classes["app/types.ConcreteImpl"]
+	if !ok {
+		t.Fatal("missing app/types.ConcreteImpl in index")
+	}
+	if impl.isAbstract {
+		t.Error("ConcreteImpl: expected isAbstract=false")
 	}
 }

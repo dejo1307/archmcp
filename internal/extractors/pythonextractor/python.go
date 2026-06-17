@@ -75,6 +75,26 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 	modules := make(map[string]bool)
 	isDjango := detectDjango(repoPath)
 
+	// Pass 1: build a global symbol index across all Python files.
+	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo)}
+	for _, relFile := range files {
+		select {
+		case <-ctx.Done():
+			return allFacts, ctx.Err()
+		default:
+		}
+		if !isPythonFile(relFile) {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			continue
+		}
+		buildFileIndex(src, relFile, idx)
+	}
+	finalizeImplMap(idx)
+
+	// Pass 2: extract facts using the populated symbol index.
 	for _, relFile := range files {
 		select {
 		case <-ctx.Done():
@@ -95,13 +115,11 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 
 		src, readErr := readAll(f)
 		f.Close()
-		var fileFacts []facts.Fact
 		if readErr != nil {
 			log.Printf("[python-extractor] error reading %s: %v", relFile, readErr)
 			continue
 		}
-		fileFacts = extractFileAST(src, relFile, isDjango)
-		allFacts = append(allFacts, fileFacts...)
+		allFacts = append(allFacts, extractFileAST(src, relFile, isDjango, idx)...)
 
 		dir := filepath.Dir(relFile)
 		modules[dir] = true
