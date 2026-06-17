@@ -202,9 +202,18 @@ func computeHotspots(store *facts.Store, r *Report) {
 	for _, dep := range deps {
 		src := fileDir(dep.File)
 		for _, rel := range dep.Relations {
-			if rel.Kind == facts.RelImports && modules[rel.Target] {
+			if rel.Kind != facts.RelImports {
+				continue
+			}
+			// Resolve the import target to its nearest enclosing module. Some
+			// extractors (e.g. Kotlin) emit type-level targets one segment below the
+			// module dir; graph.go and the package-metrics tool already walk up, so
+			// resolve here too rather than requiring an exact module match. External
+			// targets are dotted (no '/'), so the walk-up finds nothing and they are
+			// correctly ignored.
+			if dst := resolveToModule(rel.Target, modules); dst != "" {
 				fanOut[src]++
-				fanIn[rel.Target]++
+				fanIn[dst]++
 				resolvedEdges++
 			}
 		}
@@ -311,6 +320,25 @@ func firstParenInt(s string) int {
 	}
 	n, _ := strconv.Atoi(digits.String())
 	return n
+}
+
+// resolveToModule returns the nearest enclosing module of target: target itself if
+// it is a module, else its closest ancestor directory that is. Returns "" if none.
+// Mirrors graph.go's resolveToModule (unexported there), so hotspot coupling sees
+// the same edges as traversal and package metrics.
+func resolveToModule(target string, modules map[string]bool) string {
+	cur := target
+	for cur != "" {
+		if modules[cur] {
+			return cur
+		}
+		i := strings.LastIndex(cur, "/")
+		if i < 0 {
+			return ""
+		}
+		cur = cur[:i]
+	}
+	return ""
 }
 
 // fileDir returns the directory portion of a repo-relative file path (the module

@@ -274,6 +274,56 @@ func TestRender_CouplingUnresolvedNote(t *testing.T) {
 	}
 }
 
+// subModuleFixtureFacts mimics a Kotlin snapshot: the internal import Target is a
+// type-level path one segment below the module dir (e.g. "a/b/SomeType"), and an
+// external import is dotted. computeHotspots must walk up to module "a/b".
+func subModuleFixtureFacts() []facts.Fact {
+	return []facts.Fact{
+		{Kind: facts.KindModule, Name: "a/b", File: "a/b"},
+		{Kind: facts.KindModule, Name: "a/c", File: "a/c"},
+		{Kind: facts.KindDependency, Name: "a/c -> a/b/SomeType", File: "a/c/User.kt",
+			Props:     map[string]any{"source": "internal"},
+			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "a/b/SomeType"}}},
+		{Kind: facts.KindDependency, Name: "a/c -> org.ext.Foo", File: "a/c/User.kt",
+			Props:     map[string]any{"source": "external"},
+			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "org.ext.Foo"}}},
+	}
+}
+
+func TestCompute_SubModuleTargetWalkUp(t *testing.T) {
+	eng := newTestEngine(t)
+	eng.Store().Add(subModuleFixtureFacts()...)
+	eng.Store().BuildGraph()
+	eng.SetSnapshot(&facts.Snapshot{Meta: facts.SnapshotMeta{RepoPath: "/repo/kt"}})
+	r := Compute(eng)
+
+	if r.CouplingUnresolved {
+		t.Error("sub-module import target should resolve via walk-up, not flag unresolved")
+	}
+	if len(r.Hotspots) == 0 {
+		t.Fatal("expected a hotspot for module a/b")
+	}
+	if r.Hotspots[0].Module != "a/b" || r.Hotspots[0].FanIn != 1 {
+		t.Errorf("expected a/b fan-in 1, got %+v", r.Hotspots[0])
+	}
+}
+
+func TestResolveToModule(t *testing.T) {
+	mods := map[string]bool{"a/b": true, "a": true}
+	cases := map[string]string{
+		"a/b/SomeType": "a/b", // walk up one segment
+		"a/b":          "a/b", // exact module
+		"a/x/y":        "a",   // walk up to ancestor module
+		"org.ext.Foo":  "",    // dotted external, no '/' module
+		"zzz":          "",    // unknown
+	}
+	for in, want := range cases {
+		if got := resolveToModule(in, mods); got != want {
+			t.Errorf("resolveToModule(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestHelpers(t *testing.T) {
 	if firstParenInt("Cross-repo dependencies (7 edges)") != 7 {
 		t.Error("firstParenInt failed for 7")

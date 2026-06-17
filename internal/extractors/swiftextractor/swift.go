@@ -207,6 +207,10 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		}
 	}
 
+	// Resolve bare `import X` targets to SPM module dirs and classify
+	// stdlib/external, now that all module facts (incl. SPM targets) exist.
+	resolveImports(allFacts)
+
 	return allFacts, nil
 }
 
