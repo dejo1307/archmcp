@@ -177,16 +177,27 @@ func (w *astWalker) handleImport(node *sitter.Node) {
 	}
 	importPath := nodeText(pathNode, w.src)
 
+	props := map[string]any{
+		"language": "java",
+		"import":   importPath,
+		"source":   "external", // refined to "internal" in canonicalizeTargets
+	}
+	// Mark the import shape so resolveImport can apply the parent-FQN fallback to
+	// static-member / un-indexed-type imports but NOT to wildcards (whose import
+	// string is already the package — walking to the grandparent would mis-resolve).
+	if isStatic {
+		props["static"] = true
+	}
+	if isWildcard {
+		props["wildcard"] = true
+	}
+
 	w.out = append(w.out, facts.Fact{
-		Kind: facts.KindDependency,
-		Name: w.dir + " -> " + importPath,
-		File: w.relFile,
-		Line: int(node.StartPosition().Row) + 1,
-		Props: map[string]any{
-			"language": "java",
-			"import":   importPath,
-			"source":   "external", // refined to "internal" in canonicalizeTargets
-		},
+		Kind:  facts.KindDependency,
+		Name:  w.dir + " -> " + importPath,
+		File:  w.relFile,
+		Line:  int(node.StartPosition().Row) + 1,
+		Props: props,
 		Relations: []facts.Relation{
 			{Kind: facts.RelImports, Target: importPath},
 		},
@@ -421,10 +432,10 @@ func (w *astWalker) handleField(node *sitter.Node, owner *facts.Fact) {
 			}
 		}
 		w.out = append(w.out, facts.Fact{
-			Kind: facts.KindSymbol,
-			Name: w.canonicalName(w.qualify(name)),
-			File: w.relFile,
-			Line: int(c.StartPosition().Row) + 1,
+			Kind:  facts.KindSymbol,
+			Name:  w.canonicalName(w.qualify(name)),
+			File:  w.relFile,
+			Line:  int(c.StartPosition().Row) + 1,
 			Props: props,
 			Relations: []facts.Relation{
 				{Kind: facts.RelDeclares, Target: w.dir},

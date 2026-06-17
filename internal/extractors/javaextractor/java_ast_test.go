@@ -124,9 +124,9 @@ public class Order {
 
 func TestExtract_InterfaceEnumRecord(t *testing.T) {
 	ff := extractAll(t, map[string]string{
-		"a/Shape.java":  "package a;\npublic interface Shape { double area(); }\n",
-		"a/Color.java":  "package a;\npublic enum Color { RED, GREEN, BLUE }\n",
-		"a/Point.java":  "package a;\npublic record Point(int x, int y) {}\n",
+		"a/Shape.java": "package a;\npublic interface Shape { double area(); }\n",
+		"a/Color.java": "package a;\npublic enum Color { RED, GREEN, BLUE }\n",
+		"a/Point.java": "package a;\npublic record Point(int x, int y) {}\n",
 	})
 
 	iface, _ := findFact(ff, "a.Shape")
@@ -198,6 +198,99 @@ public class Service {
 	}
 	if !externalOK {
 		t.Error("java.util.List import should be external")
+	}
+}
+
+// TestExtract_StaticImportResolvesInternal covers the parent-FQN fallback:
+// a static member import names the member, not the type, so the declaring type's
+// FQN is the parent of the import string.
+func TestExtract_StaticImportResolvesInternal(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"app/svc/Service.java": `package app.svc;
+
+import static app.data.Constants.MAX;
+
+public class Service {
+    int v = MAX;
+}
+`,
+		"app/data/Constants.java": "package app.data;\npublic class Constants { public static final int MAX = 1; }\n",
+	})
+
+	var ok bool
+	for _, f := range factsByKind(ff, facts.KindDependency) {
+		if f.Props["import"] == "app.data.Constants.MAX" {
+			if f.Props["source"] == "internal" && hasRelation(f, facts.RelImports, "app/data") {
+				ok = true
+			}
+		}
+	}
+	if !ok {
+		t.Error("static import app.data.Constants.MAX should resolve internal to module app/data")
+	}
+}
+
+// TestExtract_UnindexedTypeResolvesViaPackage covers the second fallback branch:
+// an imported type we didn't index as a top-level class still resolves to its
+// package's module dir, because the package is internal.
+func TestExtract_UnindexedTypeResolvesViaPackage(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"app/svc/Service.java": `package app.svc;
+
+import app.data.Repo.Inner;
+
+public class Service {}
+`,
+		"app/data/Repo.java": "package app.data;\npublic class Repo { public static class Inner {} }\n",
+	})
+
+	var ok bool
+	for _, f := range factsByKind(ff, facts.KindDependency) {
+		if f.Props["import"] == "app.data.Repo.Inner" {
+			// Resolves via parent type app.data.Repo (or package app.data) → app/data.
+			if f.Props["source"] == "internal" && hasRelation(f, facts.RelImports, "app/data") {
+				ok = true
+			}
+		}
+	}
+	if !ok {
+		t.Error("import of un-indexed type app.data.Repo.Inner should resolve internal to app/data")
+	}
+}
+
+// TestExtract_WildcardNotOverResolved guards that the parent-FQN fallback is NOT
+// applied to wildcard imports: an external wildcard stays external (it must not
+// walk to a grandparent), while an internal wildcard still resolves normally.
+func TestExtract_WildcardNotOverResolved(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"app/svc/Service.java": `package app.svc;
+
+import app.data.*;
+import com.external.lib.*;
+
+public class Service {}
+`,
+		"app/data/Repo.java": "package app.data;\npublic class Repo {}\n",
+	})
+
+	var internalWildcardOK, externalWildcardExternal = false, true
+	for _, f := range factsByKind(ff, facts.KindDependency) {
+		switch f.Props["import"] {
+		case "app.data":
+			if f.Props["source"] == "internal" && hasRelation(f, facts.RelImports, "app/data") {
+				internalWildcardOK = true
+			}
+		case "com.external.lib":
+			if f.Props["source"] != "external" {
+				externalWildcardExternal = false
+			}
+		}
+	}
+	if !internalWildcardOK {
+		t.Error("internal wildcard import app.data.* should resolve to app/data")
+	}
+	if !externalWildcardExternal {
+		t.Error("external wildcard import com.external.lib.* must stay external (no grandparent fallback)")
 	}
 }
 

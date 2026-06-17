@@ -153,6 +153,21 @@ func resolveImport(f *facts.Fact, typeDir, packageDir map[string]string) {
 		dir, ok = packageDir[imp]
 	}
 	if !ok {
+		// Parent-FQN fallback for static-member imports
+		// ("com.foo.Constants.MAX" -> declaring type "com.foo.Constants") and
+		// imports of internal types we didn't index ("com.foo.Bar" -> package
+		// "com.foo"). Skipped for wildcards, whose import string is already the
+		// package — walking to the grandparent would mis-resolve. Only our own
+		// types/packages are in the indices, so this never flags an external import.
+		if wc, _ := f.Props["wildcard"].(bool); !wc {
+			if parent := parentName(imp); parent != "" {
+				if dir, ok = typeDir[parent]; !ok {
+					dir, ok = packageDir[parent]
+				}
+			}
+		}
+	}
+	if !ok {
 		return // external dependency
 	}
 	f.Props["source"] = "internal"
