@@ -102,6 +102,12 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 		allFacts = append(allFacts, routeFacts...)
 	}
 
+	// Resolve constant references (inheritance, mixins, associations, calls),
+	// require_relative paths, and Packwerk dependencies into internal module
+	// coupling edges. Without this, Ruby imports never match module Names
+	// downstream and coupling collapses to zero.
+	allFacts = append(allFacts, resolveImports(allFacts, isRails)...)
+
 	return allFacts, nil
 }
 
