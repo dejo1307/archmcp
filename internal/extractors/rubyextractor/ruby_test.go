@@ -228,6 +228,73 @@ end
 	}
 }
 
+func TestExtractFile_BareMethodCalls(t *testing.T) {
+	src := `class PostsController
+  def markdown_num(arg)
+    render :json
+    helper(arg)
+    current_user
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/controllers/posts_controller.rb", true, true)
+	meth, ok := symbolsByName(result)["PostsController#markdown_num"]
+	if !ok {
+		t.Fatal("missing method PostsController#markdown_num")
+	}
+	for _, want := range []string{"render", "helper", "current_user"} {
+		if !hasCall(meth, want) {
+			t.Errorf("missing bare RelCalls -> %s; relations = %v", want, meth.Relations)
+		}
+	}
+	if hasCall(meth, "arg") {
+		t.Errorf("parameter 'arg' must not be emitted as a call; relations = %v", meth.Relations)
+	}
+}
+
+func TestExtractFile_BareCallSkipsLocalsAndKeywords(t *testing.T) {
+	src := `class A
+  def b
+    x = compute
+    x
+    raise
+    super
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/models/a.rb", false, true)
+	meth := symbolsByName(result)["A#b"]
+	if !hasCall(meth, "compute") {
+		t.Errorf("missing RelCalls -> compute; relations = %v", meth.Relations)
+	}
+	for _, bad := range []string{"x", "raise", "super"} {
+		if hasCall(meth, bad) {
+			t.Errorf("%s must not be emitted as a call; relations = %v", bad, meth.Relations)
+		}
+	}
+}
+
+func TestExtractFile_RailsCallbackSymbolCalls(t *testing.T) {
+	src := `class PostsController < ApplicationController
+  before_action :authenticate_user!
+  validate :check_something
+
+  def authenticate_user!
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/controllers/posts_controller.rb", true, true)
+	cls, ok := symbolsByName(result)["PostsController"]
+	if !ok {
+		t.Fatal("missing class PostsController")
+	}
+	for _, want := range []string{"authenticate_user!", "check_something"} {
+		if !hasCall(cls, want) {
+			t.Errorf("missing DSL RelCalls -> %s on class; relations = %v", want, cls.Relations)
+		}
+	}
+}
+
 func TestExtractFile_CallsDeduplication(t *testing.T) {
 	src := `class Dispatcher
   def run(ids)

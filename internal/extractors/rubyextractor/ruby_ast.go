@@ -41,6 +41,7 @@ type rubyScope struct {
 	visibility string // "public" | "private" | "protected"
 	moduleFunc bool   // module_function active: subsequent defs are class methods
 	isModel    bool   // ActiveRecord model: associations/scopes/table_name apply
+	symFactIdx int    // index into w.out of this scope's class/module symbol fact, or -1
 }
 
 type rubyWalker struct {
@@ -201,7 +202,7 @@ func (w *rubyWalker) handleModule(node *sitter.Node) {
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
 
-	w.push(rubyScope{name: name, kind: "module", visibility: "public"})
+	w.push(rubyScope{name: name, kind: "module", visibility: "public", symFactIdx: len(w.out) - 1})
 	w.walkBody(body)
 	w.pop()
 }
@@ -237,6 +238,7 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 		Props:     props,
 		Relations: rels,
 	})
+	clsIdx := len(w.out) - 1
 
 	// ActiveRecord model: emit a storage fact and flag the scope so the body
 	// scan picks up associations, scopes, and explicit table names.
@@ -257,7 +259,7 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 		})
 	}
 
-	w.push(rubyScope{name: name, kind: "class", visibility: "public", isModel: isModel})
+	w.push(rubyScope{name: name, kind: "class", visibility: "public", isModel: isModel, symFactIdx: clsIdx})
 	w.walkBody(node.ChildByFieldName("body"))
 	w.pop()
 }
@@ -265,7 +267,7 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 func (w *rubyWalker) handleSingletonClass(node *sitter.Node) {
 	// class << self — methods inside become class (singleton) methods. The
 	// eigenclass entry carries no name and does not affect qualification.
-	w.push(rubyScope{name: "", kind: "eigenclass", visibility: "public"})
+	w.push(rubyScope{name: "", kind: "eigenclass", visibility: "public", symFactIdx: -1})
 	w.walkBody(node.ChildByFieldName("body"))
 	w.pop()
 }
@@ -314,13 +316,23 @@ func (w *rubyWalker) handleMethod(node *sitter.Node, isClassMethod bool) {
 
 	// Accumulate RelCalls from the body onto this method (deduplicated).
 	seen := make(map[string]bool)
-	w.walkForCalls(node.ChildByFieldName("body"), ownerIdx, seen)
+	locals := collectLocals(node, w.src)
+	w.walkForCalls(node.ChildByFieldName("body"), ownerIdx, seen, locals)
 }
 
 // walkForCalls recursively scans a method body for call expressions and appends
 // RelCalls edges to the owner fact. It does not descend into nested
 // method/class/module definitions — those receive their own owner.
-func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[string]bool) {
+//
+// Three reference shapes are captured: (1) qualified calls via callTarget
+// ("Const.method", "var.method"); (2) bare calls with a method name but no
+// receiver ("render :x", "helper(arg)") → the bare method name; (3) lone
+// identifiers in expression position ("current_user") that are not known locals
+// → the bare name. (2) and (3) are why Ruby methods invoked without a receiver
+// (the common Rails case) are now recorded as referenced. Bare targets carry no
+// "." and never resolve to a constant, so the package-metrics coupling graph
+// (which keys off constant receivers) is unaffected.
+func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals map[string]bool) {
 	if node == nil {
 		return
 	}
@@ -328,14 +340,143 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[stri
 	case "method", "singleton_method", "class", "module", "singleton_class":
 		return
 	case "call":
-		if target := w.callTarget(node); target != "" && !seen[target] {
-			seen[target] = true
-			w.out[ownerIdx].Relations = append(w.out[ownerIdx].Relations,
-				facts.Relation{Kind: facts.RelCalls, Target: target})
+		method := node.ChildByFieldName("method")
+		if target := w.callTarget(node); target != "" {
+			w.addCall(ownerIdx, seen, target)
+		} else if node.ChildByFieldName("receiver") == nil && method != nil && method.Kind() == "identifier" {
+			if name := rubyText(method, w.src); !rubyNonCalls[name] {
+				w.addCall(ownerIdx, seen, name)
+			}
+		}
+		// Recurse into every child EXCEPT the callee `method` child, which has
+		// already been consumed above (otherwise it would be re-counted by the
+		// bare-identifier case below).
+		for i := uint(0); i < node.ChildCount(); i++ {
+			c := node.Child(i)
+			if method != nil && c.StartByte() == method.StartByte() && c.EndByte() == method.EndByte() {
+				continue
+			}
+			w.walkForCalls(c, ownerIdx, seen, locals)
+		}
+		return
+	case "identifier":
+		// A bare identifier outside callee position: either an arg-less method
+		// call or a local variable read. Emit unless it is a known local or a
+		// keyword/builtin; matching is conservative so over-emitting is safe.
+		if name := rubyText(node, w.src); name != "" && !locals[name] && !rubyNonCalls[name] {
+			w.addCall(ownerIdx, seen, name)
+		}
+		return
+	}
+	for i := uint(0); i < node.ChildCount(); i++ {
+		w.walkForCalls(node.Child(i), ownerIdx, seen, locals)
+	}
+}
+
+// addCall appends a deduplicated RelCalls edge to the owner fact.
+func (w *rubyWalker) addCall(ownerIdx int, seen map[string]bool, target string) {
+	if target == "" || seen[target] {
+		return
+	}
+	seen[target] = true
+	w.out[ownerIdx].Relations = append(w.out[ownerIdx].Relations,
+		facts.Relation{Kind: facts.RelCalls, Target: target})
+}
+
+// addCallToFact appends a RelCalls edge to an arbitrary fact (used for DSL
+// references attached to the enclosing class), skipping exact duplicates.
+func (w *rubyWalker) addCallToFact(idx int, target string) {
+	if target == "" || idx < 0 || idx >= len(w.out) {
+		return
+	}
+	for _, r := range w.out[idx].Relations {
+		if r.Kind == facts.RelCalls && r.Target == target {
+			return
+		}
+	}
+	w.out[idx].Relations = append(w.out[idx].Relations,
+		facts.Relation{Kind: facts.RelCalls, Target: target})
+}
+
+// rubyCallbackDSL are Rails class-body methods that take method-name symbol
+// arguments (controller filters, ActiveRecord lifecycle callbacks, custom
+// validations). `validates` is intentionally excluded — its first symbol is an
+// attribute name, not a method.
+var rubyCallbackDSL = map[string]bool{
+	"before_action": true, "after_action": true, "around_action": true,
+	"append_before_action": true, "prepend_before_action": true,
+	"skip_before_action": true, "skip_after_action": true, "skip_around_action": true,
+	"before_save": true, "after_save": true, "around_save": true,
+	"before_create": true, "after_create": true, "around_create": true,
+	"before_update": true, "after_update": true, "around_update": true,
+	"before_destroy": true, "after_destroy": true, "around_destroy": true,
+	"before_validation": true, "after_validation": true,
+	"after_commit": true, "after_rollback": true, "after_initialize": true,
+	"after_find": true, "after_touch": true,
+	"validate": true,
+}
+
+// rubyNonCalls are bare identifiers that must not be treated as method-call
+// references: keywords/builtins that commonly appear in expression position.
+// (Most Ruby keywords — self, nil, super, yield, return — are their own AST node
+// kinds and never reach the identifier case, but this guards the rest.)
+var rubyNonCalls = map[string]bool{
+	"self": true, "nil": true, "true": true, "false": true, "super": true,
+	"yield": true, "return": true, "next": true, "break": true, "redo": true,
+	"retry": true, "raise": true, "throw": true, "loop": true, "proc": true,
+	"lambda": true, "puts": true, "print": true, "p": true, "require": true,
+	"require_relative": true, "load": true, "freeze": true, "block_given?": true,
+	"__method__": true, "private": true, "protected": true, "public": true,
+	"module_function": true,
+}
+
+// collectLocals gathers the parameter names and locally-assigned variable names
+// of a method so walkForCalls can tell a local variable read apart from an
+// arg-less method call.
+func collectLocals(method *sitter.Node, src []byte) map[string]bool {
+	locals := map[string]bool{}
+	if method == nil {
+		return locals
+	}
+	if params := method.ChildByFieldName("parameters"); params != nil {
+		collectIdentifiers(params, src, locals)
+	}
+	collectAssignTargets(method.ChildByFieldName("body"), src, locals)
+	return locals
+}
+
+// collectIdentifiers adds every identifier name in a subtree to out.
+func collectIdentifiers(node *sitter.Node, src []byte, out map[string]bool) {
+	if node == nil {
+		return
+	}
+	if node.Kind() == "identifier" {
+		out[rubyText(node, src)] = true
+	}
+	for i := uint(0); i < node.ChildCount(); i++ {
+		collectIdentifiers(node.Child(i), src, out)
+	}
+}
+
+// collectAssignTargets adds the left-hand identifier(s) of every assignment in a
+// subtree to out (plain `x = …` and multiple-assignment `a, b = …`; setter
+// calls like `self.x = …` are skipped).
+func collectAssignTargets(node *sitter.Node, src []byte, out map[string]bool) {
+	if node == nil {
+		return
+	}
+	switch node.Kind() {
+	case "assignment", "operator_assignment":
+		switch left := node.ChildByFieldName("left"); {
+		case left == nil:
+		case left.Kind() == "identifier":
+			out[rubyText(left, src)] = true
+		case left.Kind() == "left_assignment_list":
+			collectIdentifiers(left, src, out)
 		}
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
-		w.walkForCalls(node.Child(i), ownerIdx, seen)
+		collectAssignTargets(node.Child(i), src, out)
 	}
 }
 
@@ -442,6 +583,19 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 	}
 	method := rubyText(node.ChildByFieldName("method"), w.src)
 	args := node.ChildByFieldName("arguments")
+
+	// Rails callback/validation DSL references methods by symbol literal
+	// (`before_action :authenticate_user!`, `validate :check`). Record each as a
+	// RelCalls edge on the enclosing class/module so callback-only methods are
+	// not mis-reported as dead code.
+	if rubyCallbackDSL[method] {
+		if cur := w.cur(); cur != nil && cur.symFactIdx >= 0 {
+			for _, name := range symbolArgs(args, w.src) {
+				w.addCallToFact(cur.symFactIdx, name)
+			}
+		}
+		return
+	}
 
 	switch method {
 	case "require", "require_relative":

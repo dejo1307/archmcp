@@ -100,6 +100,9 @@ func TestConstFromCall(t *testing.T) {
 		"::Account.active":                 "Account",
 		"config.fetch":                     "", // lowercase receiver
 		"Foo::Bar":                         "", // no method suffix
+		"markdown_num":                     "", // bare method call (no receiver) — no coupling edge
+		"authenticate_user!":               "", // bare DSL-referenced method — no coupling edge
+		"render":                           "", // bare call — no coupling edge
 	}
 	for in, want := range cases {
 		if got := constFromCall(in); got != want {
