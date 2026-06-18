@@ -252,6 +252,43 @@ class Repo:
 	}
 }
 
+// TestAST_InitReexports verifies that from-imports in __init__.py record the
+// imported short names in the dependency fact's "reexports" prop, and that
+// non-__init__ files do not.
+func TestAST_InitReexports(t *testing.T) {
+	src := "from .sub import PublicThing, OtherThing\n"
+
+	initFacts := astExtract(t, "pkg/__init__.py", src, false)
+	var dep *facts.Fact
+	for i := range initFacts {
+		if initFacts[i].Kind == facts.KindDependency {
+			dep = &initFacts[i]
+			break
+		}
+	}
+	if dep == nil {
+		t.Fatal("no dependency fact emitted for from-import")
+	}
+	names, ok := dep.Props["reexports"].([]string)
+	if !ok {
+		t.Fatalf("reexports prop missing or wrong type: %#v", dep.Props["reexports"])
+	}
+	want := map[string]bool{"PublicThing": true, "OtherThing": true}
+	if len(names) != 2 || !want[names[0]] || !want[names[1]] {
+		t.Errorf("reexports = %v, want PublicThing & OtherThing", names)
+	}
+
+	// A non-__init__ file must NOT record reexports.
+	modFacts := astExtract(t, "pkg/mod.py", src, false)
+	for _, f := range modFacts {
+		if f.Kind == facts.KindDependency {
+			if _, ok := f.Props["reexports"]; ok {
+				t.Errorf("non-__init__ file should not record reexports, got %v", f.Props["reexports"])
+			}
+		}
+	}
+}
+
 func TestAST_AbstractClassDetection(t *testing.T) {
 	src := `
 from abc import ABC, ABCMeta, abstractmethod
