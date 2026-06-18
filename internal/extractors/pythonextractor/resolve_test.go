@@ -145,6 +145,27 @@ func TestResolveImports_StdlibAndExternal(t *testing.T) {
 	}
 }
 
+// TestResolveImports_StdlibNotShadowedByInternalDir guards Fix 3: a stdlib
+// top-level name (e.g. "typing") must classify as stdlib even when an internal
+// directory happens to share that trailing segment, instead of mis-resolving to
+// it and producing a phantom internal coupling.
+func TestResolveImports_StdlibNotShadowedByInternalDir(t *testing.T) {
+	modules := modSet(
+		"providers/http/src/airflow/providers/http/hooks",
+		"providers/opsgenie/tests/unit/opsgenie/typing", // collides with stdlib "typing"
+	)
+	ff := []facts.Fact{
+		depFact("providers/http/src/airflow/providers/http/hooks/http.py", "typing"),
+	}
+	resolveImports(ff, modules)
+	if got := source(ff[0]); got != "stdlib" {
+		t.Errorf("import typing source = %q, want stdlib", got)
+	}
+	if got := importTarget(ff[0]); got != "typing" {
+		t.Errorf("import typing target = %q, want unchanged 'typing' (no phantom internal edge)", got)
+	}
+}
+
 func TestResolveImports_SelfImportNoSelfEdge(t *testing.T) {
 	// An absolute import that resolves to the importer's own dir must NOT rewrite
 	// the target to that dir (which would create a self-coupling edge).

@@ -173,6 +173,13 @@ var (
 		"Serializer": true, "ModelSerializer": true,
 		"HyperlinkedModelSerializer": true, "ListSerializer": true,
 	}
+
+	// pyAbstractBases are base classes / metaclasses that make a class abstract
+	// in Python's sense (no direct interface keyword). Used to set the "abstract"
+	// prop so package-metrics abstractness (A) is meaningful for Python.
+	pyAbstractBases = map[string]bool{
+		"ABC": true, "ABCMeta": true, "Protocol": true,
+	}
 )
 
 

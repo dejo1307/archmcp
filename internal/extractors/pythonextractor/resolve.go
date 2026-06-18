@@ -122,6 +122,13 @@ func resolveAbsolute(dotted string, idx suffixIndex, topPkgs map[string]bool, im
 		return ""
 	}
 	segs := strings.Split(dotted, ".")
+	if pyStdlib[segs[0]] {
+		// A stdlib top-level name (e.g. "typing", "abc") is never an internal
+		// import, even if some internal directory happens to share that name
+		// (e.g. a tests/.../typing dir). Suffix-matching such names produces
+		// phantom couplings, so classify as stdlib instead.
+		return ""
+	}
 	if !topPkgs[segs[0]] {
 		return "" // first segment is not an internal directory → not internal
 	}

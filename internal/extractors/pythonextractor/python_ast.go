@@ -191,16 +191,23 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 		strings.HasPrefix(pyText(node, w.src), "from .")
 
 	target := w.module + " -> " + moduleName
+	depProps := map[string]any{"language": "python", "from": true}
 	w.out = append(w.out, facts.Fact{
 		Kind: facts.KindDependency,
 		Name: target,
 		File: w.relFile,
 		Line: int(node.StartPosition().Row) + 1,
-		Props: map[string]any{"language": "python", "from": true},
+		Props: depProps,
 		Relations: []facts.Relation{
 			{Kind: facts.RelImports, Target: moduleName},
 		},
 	})
+
+	// For __init__.py, record the imported short names so the dead-code tool can
+	// treat them as re-exported (part of the package's public surface) and not
+	// flag them as orphans. Kept only here to avoid bloating every from-import.
+	isInit := w.relFile == "__init__.py" || strings.HasSuffix(w.relFile, "/__init__.py")
+	var reexported []string
 
 	// Map each imported name to a resolvable target or "" (external).
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
@@ -226,6 +233,10 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 			localName = importedName
 		}
 
+		if isInit && importedName != "" && importedName != "*" {
+			reexported = append(reexported, importedName)
+		}
+
 		if isRelative {
 			// Relative import → resolve to a local module path.
 			base := moduleName
@@ -237,6 +248,10 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 			// External or ambiguous — suppress call edges to this name.
 			w.setImport(localName, "")
 		}
+	}
+
+	if len(reexported) > 0 {
+		depProps["reexports"] = reexported
 	}
 }
 
@@ -341,11 +356,15 @@ func (w *pyWalker) handleClass(node *sitter.Node, decorators []string) {
 	props := map[string]any{
 		"symbol_kind": facts.SymbolClass,
 		"language":    "python",
+		// Python has no access keyword; the leading-underscore convention marks
+		// a name as private/internal. Lets the dead-code visibility filter work.
+		"exported": !strings.HasPrefix(name, "_"),
 	}
 	rels := []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}}
 
 	// Superclasses.
 	var bases []string
+	abstract := false
 	if args := node.ChildByFieldName("superclasses"); args != nil {
 		for i := uint(0); i < uint(args.ChildCount()); i++ {
 			c := args.Child(i)
@@ -366,8 +385,32 @@ func (w *pyWalker) handleClass(node *sitter.Node, decorators []string) {
 					bases = append(bases, base)
 					rels = append(rels, facts.Relation{Kind: facts.RelImplements, Target: base})
 				}
+			case "keyword_argument":
+				// metaclass=ABCMeta makes the class abstract.
+				nameNode := c.ChildByFieldName("name")
+				valueNode := c.ChildByFieldName("value")
+				if nameNode != nil && valueNode != nil &&
+					pyText(nameNode, w.src) == "metaclass" &&
+					lastComponent(pyText(valueNode, w.src)) == "ABCMeta" {
+					abstract = true
+				}
 			}
 		}
+	}
+	// A class is abstract if it inherits ABC/ABCMeta/Protocol, uses metaclass=ABCMeta,
+	// or declares any @abstractmethod. Recorded so package-metrics abstractness (A)
+	// is meaningful for Python (which has no interface keyword).
+	for _, base := range bases {
+		if pyAbstractBases[lastComponent(base)] {
+			abstract = true
+			break
+		}
+	}
+	if !abstract && bodyHasAbstractMethod(node.ChildByFieldName("body"), w.src) {
+		abstract = true
+	}
+	if abstract {
+		props["abstract"] = true
 	}
 
 	for _, dec := range decorators {
@@ -446,6 +489,8 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 	props := map[string]any{
 		"symbol_kind": symbolKind,
 		"language":    "python",
+		// Leading-underscore convention marks a name as private/internal.
+		"exported": !strings.HasPrefix(name, "_"),
 	}
 	if len(w.typeStack) > 0 {
 		props["receiver"] = w.typeStack[len(w.typeStack)-1]
@@ -675,6 +720,33 @@ func collectPyMethodNames(body *sitter.Node, src []byte) map[string]bool {
 		}
 	}
 	return methods
+}
+
+// bodyHasAbstractMethod reports whether a class body declares at least one
+// method decorated with @abstractmethod (or @abc.abstractmethod), a reliable
+// signal that the class is abstract.
+func bodyHasAbstractMethod(body *sitter.Node, src []byte) bool {
+	if body == nil {
+		return false
+	}
+	for i := uint(0); i < uint(body.ChildCount()); i++ {
+		c := body.Child(i)
+		if c.Kind() != "decorated_definition" {
+			continue
+		}
+		for j := uint(0); j < uint(c.ChildCount()); j++ {
+			d := c.Child(j)
+			if d.Kind() != "decorator" {
+				continue
+			}
+			if m := decoratorRe.FindStringSubmatch(pyText(d, src)); m != nil {
+				if lastComponent(m[1]) == "abstractmethod" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // hasDecorator reports whether any name in decorators has last as its

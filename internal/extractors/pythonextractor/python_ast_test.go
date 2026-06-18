@@ -252,6 +252,78 @@ class Repo:
 	}
 }
 
+func TestAST_AbstractClassDetection(t *testing.T) {
+	src := `
+from abc import ABC, ABCMeta, abstractmethod
+from typing import Protocol
+
+class FromABC(ABC):
+    pass
+
+class FromProtocol(Protocol):
+    def run(self): ...
+
+class FromMeta(metaclass=ABCMeta):
+    pass
+
+class HasAbstractMethod:
+    @abstractmethod
+    def do(self):
+        ...
+
+class Concrete:
+    def do(self):
+        return 1
+`
+	idx := byName(astExtract(t, "svc.py", src, false))
+
+	for _, name := range []string{"svc.FromABC", "svc.FromProtocol", "svc.FromMeta", "svc.HasAbstractMethod"} {
+		fn, ok := idx[name]
+		if !ok {
+			t.Fatalf("missing %q; keys: %v", name, keys(idx))
+		}
+		if fn.Props["abstract"] != true {
+			t.Errorf("%s: abstract = %v, want true", name, fn.Props["abstract"])
+		}
+	}
+	if c := idx["svc.Concrete"]; c.Props["abstract"] == true {
+		t.Error("svc.Concrete should not be abstract")
+	}
+}
+
+// TestAST_ExportedProp verifies the leading-underscore export convention.
+func TestAST_ExportedProp(t *testing.T) {
+	src := `
+class PublicClass:
+    pass
+
+class _PrivateClass:
+    pass
+
+def public_fn():
+    pass
+
+def _private_fn():
+    pass
+`
+	idx := byName(astExtract(t, "svc.py", src, false))
+	cases := map[string]bool{
+		"svc.PublicClass":   true,
+		"svc._PrivateClass": false,
+		"svc.public_fn":     true,
+		"svc._private_fn":   false,
+	}
+	for name, want := range cases {
+		fn, ok := idx[name]
+		if !ok {
+			t.Fatalf("missing %q; keys: %v", name, keys(idx))
+		}
+		if fn.Props["exported"] != want {
+			t.Errorf("%s: exported = %v, want %v", name, fn.Props["exported"], want)
+		}
+	}
+}
+
 func TestAST_SQLAlchemyTable(t *testing.T) {
 	src := `
 from sqlalchemy import Column, Integer, String
