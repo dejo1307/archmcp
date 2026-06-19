@@ -34,28 +34,55 @@ func (e *TSExtractor) Detect(repoPath string) (bool, error) {
 }
 
 // findTSRoot returns the directory that is the TypeScript project root, along
-// with a boolean indicating whether one was found. It checks repoPath itself
-// first, then one level of subdirectories to handle monorepos where the
-// TypeScript code lives in a subfolder (e.g. a "client/" directory).
+// with a boolean indicating whether one was found. Search depth adapts to
+// repo structure: Java/Gradle projects nest UI code deep (src/main/resources/ui)
+// so we search up to 8 levels; plain repos need at most 2.
 func findTSRoot(repoPath string) (string, bool) {
 	if hasTSMarkers(repoPath) {
 		return repoPath, true
 	}
+	maxDepth := 2
+	if isJavaStructured(repoPath) {
+		maxDepth = 8
+	}
+	return searchTSRoot(repoPath, 0, maxDepth)
+}
 
-	entries, err := os.ReadDir(repoPath)
+func isJavaStructured(repoPath string) bool {
+	for _, marker := range []string{"pom.xml", "build.gradle", "build.gradle.kts"} {
+		if _, err := os.Stat(filepath.Join(repoPath, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+var tsSkipDirs = map[string]bool{
+	"node_modules": true, "dist": true, ".next": true,
+	"build": true, "out": true, "target": true, "vendor": true,
+}
+
+func searchTSRoot(dir string, depth, maxDepth int) (string, bool) {
+	if depth >= maxDepth {
+		return "", false
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return repoPath, false
+		return "", false
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || tsSkipDirs[entry.Name()] {
 			continue
 		}
-		sub := filepath.Join(repoPath, entry.Name())
+		sub := filepath.Join(dir, entry.Name())
 		if hasTSMarkers(sub) {
 			return sub, true
 		}
+		if found, ok := searchTSRoot(sub, depth+1, maxDepth); ok {
+			return found, true
+		}
 	}
-	return repoPath, false
+	return "", false
 }
 
 // hasTSMarkers returns true if the directory looks like a TypeScript project root.
