@@ -42,14 +42,18 @@ func findTSRoot(repoPath string) (string, bool) {
 		return repoPath, true
 	}
 	maxDepth := 2
-	if isJavaStructured(repoPath) {
+	if isDeepNestedProject(repoPath) {
 		maxDepth = 8
 	}
 	return searchTSRoot(repoPath, 0, maxDepth)
 }
 
-func isJavaStructured(repoPath string) bool {
-	for _, marker := range []string{"pom.xml", "build.gradle", "build.gradle.kts"} {
+func isDeepNestedProject(repoPath string) bool {
+	markers := []string{
+		"pom.xml", "build.gradle", "build.gradle.kts",
+		"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt",
+	}
+	for _, marker := range markers {
 		if _, err := os.Stat(filepath.Join(repoPath, marker)); err == nil {
 			return true
 		}
