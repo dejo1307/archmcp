@@ -117,8 +117,10 @@ func hasTSMarkers(dir string) bool {
 func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
 	var allFacts []facts.Fact
 
-	// Detect if this is a Next.js project
+	// Detect frameworks
 	isNextJS := detectNextJS(repoPath)
+	isVue := detectVue(repoPath)
+	isNuxt := detectNuxt(repoPath)
 
 	// Parse tsconfig.json for path alias mappings (e.g., "@/*" → "src/*")
 	aliases := parseTSPathAliases(repoPath)
@@ -144,7 +146,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			continue
 		}
 
-		fileFacts := e.extractFile(src, relFile, isNextJS, aliases)
+		fileFacts := e.extractFile(src, relFile, isNextJS, isVue, isNuxt, aliases)
 		allFacts = append(allFacts, fileFacts...)
 
 		dir := filepath.Dir(relFile)
@@ -174,10 +176,16 @@ type extractCtx struct {
 	dir       string
 	isTSX     bool
 	isNextJS  bool
+	isVue     bool
+	isNuxt    bool
 	importMap map[string]string
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS bool, aliases map[string]string) []facts.Fact {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt bool, aliases map[string]string) []facts.Fact {
+	if isVueFile(relFile) {
+		return e.extractVueSFC(src, relFile, isNuxt, aliases)
+	}
+
 	var result []facts.Fact
 
 	// Parse openapi-typescript generated files for backend API route dependencies.
@@ -213,6 +221,8 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS bool, ali
 		dir:       filepath.Dir(relFile),
 		isTSX:     isTSX,
 		isNextJS:  isNextJS,
+		isVue:     isVue,
+		isNuxt:    isNuxt,
 		importMap: buildImportSymbols(root, src, relFile, aliases),
 	}
 	decls := e.extractDeclarations(root, ctx)
@@ -238,6 +248,21 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS bool, ali
 		if routeFact := detectRoute(relFile); routeFact != nil {
 			result = append(result, *routeFact)
 		}
+	}
+
+	// Detect Vue Router configuration files
+	if (isVue || isNuxt) && containsCreateRouterCall(root, src) {
+		result = append(result, facts.Fact{
+			Kind: facts.KindRoute,
+			Name: relFile,
+			File: relFile,
+			Line: 1,
+			Props: map[string]any{
+				"type":      "router_config",
+				"language":  "typescript",
+				"framework": "vue",
+			},
+		})
 	}
 
 	return result
@@ -695,7 +720,7 @@ func detectNextJSAt(dir string) bool {
 
 func isTypeScriptFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".ts" || ext == ".tsx"
+	return ext == ".ts" || ext == ".tsx" || ext == ".vue"
 }
 
 // hasChildKind reports whether node has a direct child of the given kind.
@@ -807,10 +832,19 @@ func classifySymbol(f *facts.Fact, name string, body *sitter.Node, ctx *extractC
 		f.Props["framework"] = "nextjs"
 		return
 	}
-	// React hook: a useXxx function.
+	// Composable (Vue/Nuxt) or hook (React): a useXxx function.
 	if symbolKind == facts.SymbolFunc && isHookName(name) {
-		f.Props["web_component"] = "hook"
-		f.Props["framework"] = "react"
+		if ctx.isVue || ctx.isNuxt {
+			f.Props["web_component"] = "composable"
+			if ctx.isNuxt {
+				f.Props["framework"] = "nuxt"
+			} else {
+				f.Props["framework"] = "vue"
+			}
+		} else {
+			f.Props["web_component"] = "hook"
+			f.Props["framework"] = "react"
+		}
 		return
 	}
 	// React component: a PascalCase function/class that renders JSX. In .tsx/.jsx
