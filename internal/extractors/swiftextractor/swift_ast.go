@@ -64,6 +64,79 @@ type astWalker struct {
 	// bare/self calls to "<dir>.<Type>.<method>".
 	typeStack   []string
 	methodStack []map[string]bool
+
+	// Per-function complexity state, set up by handleFunction around walkForCalls.
+	// metrics is nil outside a function body walk. loopDepth is the current loop
+	// nesting depth; selfName/selfShort are the enclosing function's full and short
+	// names (for direct-recursion detection).
+	metrics   *swiftBodyMetrics
+	loopDepth int
+	selfName  string
+	selfShort string
+}
+
+// swiftBodyMetrics accumulates per-function complexity signals during the single
+// walkForCalls body traversal — mirrors the Go/Python/Ruby extractors.
+type swiftBodyMetrics struct {
+	loopDepth   int             // max loop nesting depth
+	loopCount   int             // number of loop constructs (syntactic + iterator closures)
+	decisions   int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen  map[string]bool // dedup set for callsInLoop
+	recursive   bool            // body directly calls the enclosing function
+}
+
+// swiftIterators are higher-order methods whose closure runs once per element —
+// i.e. a loop. A trailing closure on a method NOT in this set (Task, async,
+// withAnimation, a completion handler) runs once and is not treated as a loop.
+// Aggregate-or-iterate names (contains/first/min…) are safe to include because a
+// closure must be present before any of these counts as a loop.
+var swiftIterators = map[string]bool{
+	"map": true, "forEach": true, "filter": true, "compactMap": true,
+	"flatMap": true, "reduce": true, "sorted": true, "min": true, "max": true,
+	"contains": true, "allSatisfy": true, "first": true, "firstIndex": true,
+	"last": true, "lastIndex": true, "partition": true, "drop": true,
+	"prefix": true, "removeAll": true, "split": true, "reversed": true,
+}
+
+// swiftCheapMethods are obviously-cheap methods that are not I/O. No-arg-ish
+// instance calls to these inside loops are not recorded in calls_in_loop, keeping
+// it focused (the enterprise keyword gate is the real precision filter).
+var swiftCheapMethods = map[string]bool{
+	"append": true, "count": true, "isEmpty": true, "first": true, "last": true,
+	"contains": true, "map": true, "filter": true, "forEach": true, "compactMap": true,
+	"flatMap": true, "reduce": true, "sorted": true, "joined": true, "description": true,
+	"hasPrefix": true, "hasSuffix": true, "uppercased": true, "lowercased": true,
+	"trimmingCharacters": true, "insert": true, "remove": true, "removeAll": true,
+	"keys": true, "values": true, "sorted_": true, "reversed": true, "enumerated": true,
+}
+
+// recordCallMetrics notes a resolved call target against the current function's
+// complexity metrics: flags direct recursion and records calls made inside loops.
+func (w *astWalker) recordCallMetrics(target string) {
+	if w.metrics == nil || target == "" {
+		return
+	}
+	if target == w.selfShort || target == w.selfName || target == "self."+w.selfShort {
+		w.metrics.recursive = true
+	}
+	w.recordInLoopCall(target)
+}
+
+// recordInLoopCall adds a target to calls_in_loop (deduped) when inside a loop,
+// without the recursion check — used for raw instance-method names whose name must
+// not be mistaken for self-recursion.
+func (w *astWalker) recordInLoopCall(target string) {
+	if w.metrics == nil || target == "" || w.loopDepth == 0 {
+		return
+	}
+	if w.metrics.inLoopSeen == nil {
+		w.metrics.inLoopSeen = make(map[string]bool)
+	}
+	if !w.metrics.inLoopSeen[target] {
+		w.metrics.inLoopSeen[target] = true
+		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
+	}
 }
 
 func (w *astWalker) pushType(name string, methods map[string]bool) {
@@ -401,7 +474,29 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	w.out = append(w.out, f)
 	ownerIdx := len(w.out) - 1
 	w.pushOwner(ownerIdx)
+	// Set up per-function complexity tracking. The Props map is shared by
+	// reference with the fact in w.out, so writing to it after the walk updates
+	// the emitted fact.
+	w.metrics = &swiftBodyMetrics{}
+	w.loopDepth = 0
+	w.selfName = f.Name
+	w.selfShort = name
 	w.walkForCalls(body)
+	props := w.out[ownerIdx].Props
+	props["cyclomatic"] = 1 + w.metrics.decisions
+	if w.metrics.loopDepth > 0 {
+		props["loop_depth"] = w.metrics.loopDepth
+	}
+	if w.metrics.loopCount > 0 {
+		props["loop_count"] = w.metrics.loopCount
+	}
+	if len(w.metrics.callsInLoop) > 0 {
+		props["calls_in_loop"] = w.metrics.callsInLoop
+	}
+	if w.metrics.recursive {
+		props["recursive_self"] = true
+	}
+	w.metrics = nil
 	w.popOwner()
 }
 
@@ -532,7 +627,39 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	if node.Kind() == "call_expression" {
+	kind := node.Kind()
+
+	// Complexity metrics: count decision points so the single body walk doubles
+	// as the cyclomatic pass. (Statement node kinds don't collide with the
+	// anonymous keyword tokens, so no IsNamed guard is needed.)
+	if w.metrics != nil {
+		switch kind {
+		case "if_statement", "guard_statement", "switch_entry",
+			"conjunction_expression", "disjunction_expression", "catch_block":
+			w.metrics.decisions++
+		}
+	}
+
+	// Syntactic loops: everything in the body runs per iteration.
+	switch kind {
+	case "for_statement", "for_statement_await", "while_statement", "repeat_while_statement":
+		if w.metrics != nil {
+			w.metrics.loopCount++
+			w.metrics.decisions++
+			if w.loopDepth+1 > w.metrics.loopDepth {
+				w.metrics.loopDepth = w.loopDepth + 1
+			}
+		}
+		w.loopDepth++
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			w.walkForCalls(node.Child(i))
+		}
+		w.loopDepth--
+		return
+	}
+
+	if kind == "call_expression" {
+		var iterClosure *sitter.Node
 		if callee := firstNamedChild(node); callee != nil {
 			name, isNav, root := calleeInfo(callee, w.src)
 			switch {
@@ -545,19 +672,102 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 					}
 				} else if target := w.resolveCall(name); target != "" {
 					w.addOwnerEdge(facts.RelCalls, target)
+					w.recordCallMetrics(target)
 				}
 			case isNav && (root == "self" || root == "Self"):
 				if w.currentMethods()[name] {
-					w.addOwnerEdge(facts.RelCalls, w.dir+"."+w.enclosingType()+"."+name)
+					t := w.dir + "." + w.enclosingType() + "." + name
+					w.addOwnerEdge(facts.RelCalls, t)
+					w.recordCallMetrics(t)
 				}
 			case isNav && isCapitalized(root) && !isSystemType(root):
 				// e.g. AppComposition.shared.makeRepo() — depend on the root type.
 				w.addOwnerEdge(facts.RelCalls, root)
+				w.recordCallMetrics(root)
+			case isNav && w.loopDepth > 0 && !swiftCheapMethods[name]:
+				// Method call on a lowercase receiver inside a loop (ctx.fetch(),
+				// repo.save()). No graph edge today, but its name feeds the perf
+				// metric so the enterprise analyzer can flag per-iteration I/O.
+				tgt := name
+				if root != "" {
+					tgt = root + "." + name
+				}
+				w.recordInLoopCall(tgt)
+			}
+			// An iterator method with a trailing closure (items.map { … }) is a
+			// loop: its closure body runs per element, but the receiver/arguments
+			// run once.
+			if w.metrics != nil && swiftIterators[name] {
+				iterClosure = trailingClosure(node)
+			}
+		}
+		if iterClosure != nil {
+			w.metrics.loopCount++
+			w.metrics.decisions++
+			if w.loopDepth+1 > w.metrics.loopDepth {
+				w.metrics.loopDepth = w.loopDepth + 1
+			}
+			for i := uint(0); i < uint(node.ChildCount()); i++ {
+				if c := node.Child(i); byteContains(c, iterClosure) {
+					w.walkClosureSubtree(c, iterClosure)
+				} else {
+					w.walkForCalls(c)
+				}
+			}
+			return
+		}
+	}
+
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		w.walkForCalls(node.Child(i))
+	}
+}
+
+// trailingClosure returns a call's closure argument (lambda_literal) — a trailing
+// closure or one passed inside the argument list — or nil if there is none.
+func trailingClosure(call *sitter.Node) *sitter.Node {
+	suffix := findChildByKind(call, "call_suffix")
+	if suffix == nil {
+		return nil
+	}
+	if l := findChildByKind(suffix, "lambda_literal"); l != nil {
+		return l
+	}
+	if va := findChildByKind(suffix, "value_arguments"); va != nil {
+		for i := uint(0); i < uint(va.ChildCount()); i++ {
+			if arg := va.Child(i); arg.Kind() == "value_argument" {
+				if l := findChildByKind(arg, "lambda_literal"); l != nil {
+					return l
+				}
 			}
 		}
 	}
+	return nil
+}
+
+func byteContains(outer, inner *sitter.Node) bool {
+	return inner.StartByte() >= outer.StartByte() && inner.EndByte() <= outer.EndByte()
+}
+
+// walkClosureSubtree descends toward an iterator's closure, bumping the loop depth
+// exactly at the closure (its body is per-iteration) while walking everything else
+// (the receiver, sibling arguments) at the current depth.
+func (w *astWalker) walkClosureSubtree(node, closure *sitter.Node) {
+	if node == nil {
+		return
+	}
+	if node.StartByte() == closure.StartByte() && node.EndByte() == closure.EndByte() {
+		w.loopDepth++
+		w.walkForCalls(node)
+		w.loopDepth--
+		return
+	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		w.walkForCalls(node.Child(i))
+		if c := node.Child(i); byteContains(c, closure) {
+			w.walkClosureSubtree(c, closure)
+		} else {
+			w.walkForCalls(c)
+		}
 	}
 }
 
