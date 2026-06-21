@@ -53,6 +53,68 @@ type rubyWalker struct {
 
 	out        []facts.Fact
 	scopeStack []rubyScope
+
+	// Per-method complexity state, set up by handleMethod around walkForCalls.
+	// metrics is nil outside a method body walk. loopDepth is the current loop
+	// nesting depth; selfName/selfShort are the enclosing method's full and short
+	// names (for direct-recursion detection — Ruby self-calls are usually bare).
+	metrics   *rubyBodyMetrics
+	loopDepth int
+	selfName  string
+	selfShort string
+}
+
+// rubyBodyMetrics accumulates per-method complexity signals during the single
+// walkForCalls body traversal — mirrors the Go/Python extractors.
+type rubyBodyMetrics struct {
+	loopDepth   int             // max loop nesting depth
+	loopCount   int             // number of loop constructs (syntactic + iterator blocks)
+	decisions   int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen  map[string]bool // dedup set for callsInLoop
+	recursive   bool            // body directly calls the enclosing method
+}
+
+// rubyIterators are methods whose block runs once per element — i.e. a loop.
+// Block-taking methods NOT in this set (transaction, tap, synchronize,
+// File.open, …) run their block once and are deliberately not treated as loops.
+// Aggregate-or-iterate methods (count/sum/find/all?…) are safe to include
+// because a block is required before any of these counts as a loop.
+var rubyIterators = map[string]bool{
+	"each": true, "each_with_index": true, "each_with_object": true,
+	"each_pair": true, "each_key": true, "each_value": true,
+	"each_slice": true, "each_cons": true, "each_line": true,
+	"each_char": true, "each_entry": true,
+	"map": true, "map!": true, "collect": true, "collect!": true,
+	"flat_map": true, "select": true, "select!": true, "filter": true,
+	"filter_map": true, "reject": true, "reject!": true,
+	"detect": true, "find": true, "find_all": true, "find_index": true,
+	"find_each": true, "find_in_batches": true, "in_batches": true,
+	"reduce": true, "inject": true, "min_by": true, "max_by": true,
+	"sort_by": true, "group_by": true, "partition": true, "chunk_while": true,
+	"zip": true, "cycle": true, "times": true, "upto": true, "downto": true,
+	"step": true, "loop": true, "all?": true, "any?": true, "none?": true,
+	"one?": true, "count": true, "sum": true, "tally_by": true,
+}
+
+// recordCallMetrics notes a resolved call target against the current method's
+// complexity metrics: flags direct recursion and records calls made inside loops.
+func (w *rubyWalker) recordCallMetrics(target string) {
+	if w.metrics == nil || target == "" {
+		return
+	}
+	if target == w.selfShort || target == w.selfName || target == "self."+w.selfShort {
+		w.metrics.recursive = true
+	}
+	if w.loopDepth > 0 {
+		if w.metrics.inLoopSeen == nil {
+			w.metrics.inLoopSeen = make(map[string]bool)
+		}
+		if !w.metrics.inLoopSeen[target] {
+			w.metrics.inLoopSeen[target] = true
+			w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
+		}
+	}
 }
 
 // --- scope helpers ---
@@ -314,10 +376,31 @@ func (w *rubyWalker) handleMethod(node *sitter.Node, isClassMethod bool) {
 	})
 	ownerIdx := len(w.out) - 1
 
-	// Accumulate RelCalls from the body onto this method (deduplicated).
+	// Accumulate RelCalls from the body onto this method (deduplicated), while
+	// computing complexity metrics in the same walk. The props map is shared by
+	// reference with the fact just appended, so writing to it after the walk
+	// updates the emitted fact.
 	seen := make(map[string]bool)
 	locals := collectLocals(node, w.src)
+	w.metrics = &rubyBodyMetrics{}
+	w.loopDepth = 0
+	w.selfName = fullName
+	w.selfShort = name
 	w.walkForCalls(node.ChildByFieldName("body"), ownerIdx, seen, locals)
+	props["cyclomatic"] = 1 + w.metrics.decisions
+	if w.metrics.loopDepth > 0 {
+		props["loop_depth"] = w.metrics.loopDepth
+	}
+	if w.metrics.loopCount > 0 {
+		props["loop_count"] = w.metrics.loopCount
+	}
+	if len(w.metrics.callsInLoop) > 0 {
+		props["calls_in_loop"] = w.metrics.callsInLoop
+	}
+	if w.metrics.recursive {
+		props["recursive_self"] = true
+	}
+	w.metrics = nil
 }
 
 // walkForCalls recursively scans a method body for call expressions and appends
@@ -336,16 +419,65 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 	if node == nil {
 		return
 	}
+	// Skip anonymous tokens (keywords/operators/punctuation). They are childless
+	// leaves, and critically the keyword token for a statement shares its Kind
+	// (e.g. the `while`/`if` keyword reports Kind "while"/"if"), which would
+	// otherwise double-count loops and decisions below.
+	if !node.IsNamed() {
+		return
+	}
+
+	// Complexity metrics: count decision points so the single body walk doubles
+	// as the cyclomatic pass. `case` itself is not counted (each `when` branch is);
+	// loop constructs are counted in their own handling below.
+	if w.metrics != nil {
+		switch node.Kind() {
+		case "if", "elsif", "unless", "if_modifier", "unless_modifier",
+			"when", "rescue", "conditional":
+			w.metrics.decisions++
+		}
+	}
+
 	switch node.Kind() {
 	case "method", "singleton_method", "class", "module", "singleton_class":
+		return
+	case "while", "until", "for", "while_modifier", "until_modifier":
+		// Syntactic loops: everything in the body runs per iteration.
+		if w.metrics != nil {
+			w.metrics.loopCount++
+			w.metrics.decisions++
+			if w.loopDepth+1 > w.metrics.loopDepth {
+				w.metrics.loopDepth = w.loopDepth + 1
+			}
+		}
+		w.loopDepth++
+		for i := uint(0); i < node.ChildCount(); i++ {
+			w.walkForCalls(node.Child(i), ownerIdx, seen, locals)
+		}
+		w.loopDepth--
 		return
 	case "call":
 		method := node.ChildByFieldName("method")
 		if target := w.callTarget(node); target != "" {
 			w.addCall(ownerIdx, seen, target)
+			w.recordCallMetrics(target)
 		} else if node.ChildByFieldName("receiver") == nil && method != nil && method.Kind() == "identifier" {
 			if name := rubyText(method, w.src); !rubyNonCalls[name] {
 				w.addCall(ownerIdx, seen, name)
+				w.recordCallMetrics(name)
+			}
+		}
+		// An iterator method with a block (users.each { … }, n.times { … }) is a
+		// loop: its block body runs per element, but the receiver and arguments
+		// are evaluated once — so only the block child walks at +1 depth (mirrors
+		// the Python comprehension handling).
+		block := node.ChildByFieldName("block")
+		isIter := block != nil && method != nil && rubyIterators[rubyText(method, w.src)]
+		if isIter && w.metrics != nil {
+			w.metrics.loopCount++
+			w.metrics.decisions++
+			if w.loopDepth+1 > w.metrics.loopDepth {
+				w.metrics.loopDepth = w.loopDepth + 1
 			}
 		}
 		// Recurse into every child EXCEPT the callee `method` child, which has
@@ -354,6 +486,12 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 		for i := uint(0); i < node.ChildCount(); i++ {
 			c := node.Child(i)
 			if method != nil && c.StartByte() == method.StartByte() && c.EndByte() == method.EndByte() {
+				continue
+			}
+			if isIter && c.StartByte() == block.StartByte() && c.EndByte() == block.EndByte() {
+				w.loopDepth++
+				w.walkForCalls(c, ownerIdx, seen, locals)
+				w.loopDepth--
 				continue
 			}
 			w.walkForCalls(c, ownerIdx, seen, locals)
@@ -365,6 +503,7 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 		// keyword/builtin; matching is conservative so over-emitting is safe.
 		if name := rubyText(node, w.src); name != "" && !locals[name] && !rubyNonCalls[name] {
 			w.addCall(ownerIdx, seen, name)
+			w.recordCallMetrics(name)
 		}
 		return
 	}
