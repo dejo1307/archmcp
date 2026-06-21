@@ -69,6 +69,86 @@ type astWalker struct {
 	// resolve same-class bare calls to "<dir>.<Type>.<method>".
 	typeStack   []string
 	methodStack []map[string]bool
+
+	// Per-function complexity state, set up by handleFunctionDeclaration around
+	// walkForCalls and saved/restored across the re-entrant nested-function walk.
+	// metrics is nil outside a function body walk. loopDepth is the current loop
+	// nesting depth; selfName/selfShort are the enclosing function's full and short
+	// names (for direct-recursion detection).
+	metrics   *kotlinBodyMetrics
+	loopDepth int
+	selfName  string
+	selfShort string
+}
+
+// kotlinBodyMetrics accumulates per-function complexity signals during the single
+// walkForCalls body traversal — mirrors the Go/Python/Ruby/Swift extractors.
+type kotlinBodyMetrics struct {
+	loopDepth   int             // max loop nesting depth
+	loopCount   int             // number of loop constructs (syntactic + lambda iterators)
+	decisions   int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen  map[string]bool // dedup set for callsInLoop
+	recursive   bool            // body directly calls the enclosing function
+}
+
+// kotlinIterators are higher-order methods whose lambda runs once per element —
+// i.e. a loop. A trailing lambda on a method NOT in this set (runBlocking, launch,
+// withContext, let/also/apply/run/with) runs once and is not treated as a loop.
+// Aggregate-or-iterate names (count/any/first…) are safe to include because a
+// trailing lambda must be present before any of these counts as a loop.
+var kotlinIterators = map[string]bool{
+	"map": true, "mapNotNull": true, "mapIndexed": true, "flatMap": true,
+	"forEach": true, "forEachIndexed": true, "onEach": true,
+	"filter": true, "filterNot": true, "filterIndexed": true,
+	"fold": true, "reduce": true, "sumOf": true, "count": true,
+	"any": true, "all": true, "none": true, "find": true, "first": true,
+	"firstOrNull": true, "last": true, "lastOrNull": true, "single": true,
+	"sortedBy": true, "sortedByDescending": true, "groupBy": true,
+	"associate": true, "associateBy": true, "associateWith": true,
+	"partition": true, "maxByOrNull": true, "minByOrNull": true,
+	"maxOfOrNull": true, "minOfOrNull": true, "takeWhile": true, "dropWhile": true,
+}
+
+// kotlinCheapMethods are obviously-cheap methods that are not I/O. No-arg-ish
+// instance calls to these inside loops are not recorded in calls_in_loop, keeping
+// it focused (the enterprise keyword gate is the real precision filter).
+var kotlinCheapMethods = map[string]bool{
+	"toString": true, "let": true, "also": true, "apply": true, "run": true,
+	"with": true, "takeIf": true, "takeUnless": true, "size": true, "count": true,
+	"isEmpty": true, "isNotEmpty": true, "length": true, "first": true, "last": true,
+	"keys": true, "values": true, "trim": true, "trimEnd": true, "trimStart": true,
+	"uppercase": true, "lowercase": true, "toInt": true, "toLong": true,
+	"toDouble": true, "toFloat": true, "add": true, "append": true, "contains": true,
+	"plus": true, "joinToString": true, "indexOf": true, "hashCode": true, "equals": true,
+}
+
+// recordCallMetrics notes a resolved call target against the current function's
+// complexity metrics: flags direct recursion and records calls made inside loops.
+func (w *astWalker) recordCallMetrics(target string) {
+	if w.metrics == nil || target == "" {
+		return
+	}
+	if target == w.selfShort || target == w.selfName || target == "this."+w.selfShort {
+		w.metrics.recursive = true
+	}
+	w.recordInLoopCall(target)
+}
+
+// recordInLoopCall adds a target to calls_in_loop (deduped) when inside a loop,
+// without the recursion check — used for raw instance-method names whose name must
+// not be mistaken for self-recursion.
+func (w *astWalker) recordInLoopCall(target string) {
+	if w.metrics == nil || target == "" || w.loopDepth == 0 {
+		return
+	}
+	if w.metrics.inLoopSeen == nil {
+		w.metrics.inLoopSeen = make(map[string]bool)
+	}
+	if !w.metrics.inLoopSeen[target] {
+		w.metrics.inLoopSeen[target] = true
+		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
+	}
 }
 
 func (w *astWalker) pushType(name string, methods map[string]bool) {
@@ -407,11 +487,38 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 	}
 
 	w.out = append(w.out, f)
-	owner := &w.out[len(w.out)-1]
-	w.pushOwner(owner)
+	ownerIdx := len(w.out) - 1
+	w.pushOwner(&w.out[ownerIdx])
+	// Set up per-function complexity tracking. walkForCalls is re-entrant (it
+	// dispatches nested function_declarations back here), so save and restore the
+	// outer state rather than clearing it. Props are written via the stable index
+	// (the pointer may be invalidated if the body walk grows w.out).
+	savedMetrics, savedDepth := w.metrics, w.loopDepth
+	savedName, savedShort := w.selfName, w.selfShort
+	w.metrics = &kotlinBodyMetrics{}
+	w.loopDepth = 0
+	w.selfName = f.Name
+	w.selfShort = name
 	if body := findChildByKind(node, "function_body"); body != nil {
 		w.walkForCalls(body)
 	}
+	m := w.metrics
+	props := w.out[ownerIdx].Props
+	props["cyclomatic"] = 1 + m.decisions
+	if m.loopDepth > 0 {
+		props["loop_depth"] = m.loopDepth
+	}
+	if m.loopCount > 0 {
+		props["loop_count"] = m.loopCount
+	}
+	if len(m.callsInLoop) > 0 {
+		props["calls_in_loop"] = m.callsInLoop
+	}
+	if m.recursive {
+		props["recursive_self"] = true
+	}
+	w.metrics, w.loopDepth = savedMetrics, savedDepth
+	w.selfName, w.selfShort = savedName, savedShort
 	w.popOwner()
 }
 
@@ -549,7 +656,40 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	}
 	kind := node.Kind()
 
+	// Complexity metrics: count decision points so the single body walk doubles as
+	// the cyclomatic pass. (Statement node kinds don't collide with the anonymous
+	// keyword tokens, so no IsNamed guard is needed.)
+	if w.metrics != nil {
+		switch kind {
+		case "if_expression", "when_entry", "catch_block":
+			w.metrics.decisions++
+		case "binary_expression":
+			if kotlinBooleanOp(node) {
+				w.metrics.decisions++
+			}
+		}
+	}
+
+	// Syntactic loops: everything in the body runs per iteration.
+	switch kind {
+	case "for_statement", "while_statement", "do_while_statement":
+		if w.metrics != nil {
+			w.metrics.loopCount++
+			w.metrics.decisions++
+			if w.loopDepth+1 > w.metrics.loopDepth {
+				w.metrics.loopDepth = w.loopDepth + 1
+			}
+		}
+		w.loopDepth++
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			w.walkChild(node.Child(i))
+		}
+		w.loopDepth--
+		return
+	}
+
 	if kind == "call_expression" {
+		var iterLambda *sitter.Node
 		// First named child is the callee expression.
 		if callee := firstNamedChild(node); callee != nil {
 			if name, isNav := calleeName(callee, w.src); name != "" {
@@ -569,46 +709,113 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 								Kind:   facts.RelCalls,
 								Target: target,
 							})
+							w.recordCallMetrics(target)
 						}
 					case navReceiverIsThis(callee, w.src):
 						// `this.method()` resolves to a sibling method of the
 						// enclosing class. Other navigation calls (method calls on a
 						// receiver of unknown type) are left unresolved.
 						if methods := w.currentMethods(); methods[name] {
+							t := w.dir + "." + w.enclosingType() + "." + name
 							owner.Relations = append(owner.Relations, facts.Relation{
 								Kind:   facts.RelCalls,
-								Target: w.dir + "." + w.enclosingType() + "." + name,
+								Target: t,
 							})
+							w.recordCallMetrics(t)
 						}
+					case w.loopDepth > 0 && isNav && !kotlinCheapMethods[name]:
+						// Method call on a non-this receiver inside a loop (dao.insert,
+						// repo.getAll). No graph edge today, but its name feeds the perf
+						// metric so the enterprise analyzer can flag per-iteration I/O.
+						tgt := name
+						if r := firstNamedChild(callee); r != nil {
+							if recv := nodeText(r, w.src); recv != "" {
+								tgt = recv + "." + name
+							}
+						}
+						w.recordInLoopCall(tgt)
 					}
 				}
+				// An iterator method with a trailing lambda (items.map { … }) is a
+				// loop: its lambda body runs per element, but the receiver/arguments
+				// run once.
+				if w.metrics != nil && kotlinIterators[name] {
+					iterLambda = findChildByKind(node, "annotated_lambda")
+				}
 			}
+		}
+		if iterLambda != nil {
+			w.metrics.loopCount++
+			w.metrics.decisions++
+			if w.loopDepth+1 > w.metrics.loopDepth {
+				w.metrics.loopDepth = w.loopDepth + 1
+			}
+			for i := uint(0); i < uint(node.ChildCount()); i++ {
+				if c := node.Child(i); byteContains(c, iterLambda) {
+					w.walkLambdaSubtree(c, iterLambda)
+				} else {
+					w.walkChild(c)
+				}
+			}
+			return
 		}
 	}
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		c := node.Child(i)
-		// Skip walking into nested declarations — they have their own owner already
-		// handled by walkSourceFile / handleClassDeclaration recursion.
-		switch c.Kind() {
-		case "class_declaration", "object_declaration", "function_declaration", "property_declaration":
-			// These should not appear nested inside other declarations at the source-file level
-			// we handle, but for class bodies a class can contain nested functions/properties.
-			// To avoid double-attributing calls, recurse via the declaration handlers.
-			switch c.Kind() {
-			case "class_declaration":
-				w.handleClassDeclaration(c)
-			case "object_declaration":
-				w.handleObjectDeclaration(c)
-			case "function_declaration":
-				w.handleFunctionDeclaration(c)
-			case "property_declaration":
-				// Treat nested property as owned by its enclosing class:
-				// walk its initializer in the current owner context.
-				w.walkForCalls(c)
-			}
-		default:
-			w.walkForCalls(c)
+		w.walkChild(node.Child(i))
+	}
+}
+
+// walkChild recurses into a child, dispatching nested declarations to their own
+// handlers (so their calls are attributed to their own owner, not the enclosing
+// function).
+func (w *astWalker) walkChild(c *sitter.Node) {
+	switch c.Kind() {
+	case "class_declaration":
+		w.handleClassDeclaration(c)
+	case "object_declaration":
+		w.handleObjectDeclaration(c)
+	case "function_declaration":
+		w.handleFunctionDeclaration(c)
+	default:
+		w.walkForCalls(c)
+	}
+}
+
+// kotlinBooleanOp reports whether a binary_expression's operator is a logical
+// connective or the Elvis operator — each adds a path for cyclomatic complexity.
+func kotlinBooleanOp(node *sitter.Node) bool {
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		switch node.Child(i).Kind() {
+		case "&&", "||", "?:":
+			return true
+		}
+	}
+	return false
+}
+
+func byteContains(outer, inner *sitter.Node) bool {
+	return inner.StartByte() >= outer.StartByte() && inner.EndByte() <= outer.EndByte()
+}
+
+// walkLambdaSubtree descends toward an iterator's trailing lambda, bumping the loop
+// depth exactly at the lambda (its body is per-iteration) while walking everything
+// else (the receiver, sibling arguments) at the current depth.
+func (w *astWalker) walkLambdaSubtree(node, lambda *sitter.Node) {
+	if node == nil {
+		return
+	}
+	if node.StartByte() == lambda.StartByte() && node.EndByte() == lambda.EndByte() {
+		w.loopDepth++
+		w.walkForCalls(node)
+		w.loopDepth--
+		return
+	}
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		if c := node.Child(i); byteContains(c, lambda) {
+			w.walkLambdaSubtree(c, lambda)
+		} else {
+			w.walkChild(c)
 		}
 	}
 }
