@@ -124,6 +124,21 @@ func TestSwComplexity_InLoopMethodCallCaptured(t *testing.T) {
 	}
 }
 
+func TestSwComplexity_NestedDeferredClosureNotInLoop(t *testing.T) {
+	// A closure defined inside an iterator closure is deferred (runs when invoked,
+	// not per element). `handle` must NOT be in calls_in_loop, while `use` (called
+	// directly per element) is.
+	ff := extractAST(t, "func run() {\n  items.forEach { x in\n    use(x)\n    onTap { handle(x) }\n  }\n}", false)
+	f, _ := findFact(ff, "pkg.run")
+	cil := swStrSlice(f, "calls_in_loop")
+	if !swContains(cil, "pkg.use") {
+		t.Errorf("calls_in_loop = %v, want to contain pkg.use (per element)", cil)
+	}
+	if swContains(cil, "pkg.handle") {
+		t.Errorf("calls_in_loop = %v, must NOT contain pkg.handle (deferred closure)", cil)
+	}
+}
+
 func TestSwComplexity_RecursiveSelf(t *testing.T) {
 	ff := extractAST(t, "func fib(_ n: Int) -> Int {\n  if n < 2 { return n }\n  return fib(n - 1) + fib(n - 2)\n}", false)
 	f, _ := findFact(ff, "pkg.fib")

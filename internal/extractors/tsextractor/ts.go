@@ -1123,6 +1123,10 @@ var tsCheapMethods = map[string]bool{
 	"toLowerCase": true, "toUpperCase": true, "toLocaleLowerCase": true,
 	"toLocaleUpperCase": true, "startsWith": true, "endsWith": true,
 	"charAt": true, "padStart": true, "padEnd": true, "repeat": true,
+	// Date / number formatters — cheap per-row work, not I/O.
+	"toLocaleDateString": true, "toLocaleString": true, "toLocaleTimeString": true,
+	"toISOString": true, "getTime": true, "getFullYear": true, "getMonth": true,
+	"getDate": true, "getHours": true, "getMinutes": true, "getDay": true,
 }
 
 // tsIsFunctionLike reports whether a node introduces a function scope (a deferred

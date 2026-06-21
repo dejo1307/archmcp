@@ -656,6 +656,21 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	}
 	kind := node.Kind()
 
+	// A lambda is a deferred scope: its body runs when the lambda is invoked, NOT
+	// per-iteration of the enclosing loops — so reset the loop depth for its
+	// subtree (e.g. a click handler defined inside a `forEach { … }` must not be
+	// counted as a per-iteration call). The iterator's OWN lambda is handled in the
+	// call_expression branch (its body walks at +1).
+	if w.metrics != nil && kind == "lambda_literal" {
+		saved := w.loopDepth
+		w.loopDepth = 0
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			w.walkForCalls(node.Child(i))
+		}
+		w.loopDepth = saved
+		return
+	}
+
 	// Complexity metrics: count decision points so the single body walk doubles as
 	// the cyclomatic pass. (Statement node kinds don't collide with the anonymous
 	// keyword tokens, so no IsNamed guard is needed.)
@@ -806,8 +821,18 @@ func (w *astWalker) walkLambdaSubtree(node, lambda *sitter.Node) {
 		return
 	}
 	if node.StartByte() == lambda.StartByte() && node.EndByte() == lambda.EndByte() {
+		// The iterator invokes this lambda per element: walk its BODY at +1. Descend
+		// to the inner lambda_literal and walk ITS children directly, rather than
+		// walkForCalls(node), which would treat the lambda as a deferred scope and
+		// reset the depth.
+		body := node
+		if lit := findChildByKind(node, "lambda_literal"); lit != nil {
+			body = lit
+		}
 		w.loopDepth++
-		w.walkForCalls(node)
+		for i := uint(0); i < uint(body.ChildCount()); i++ {
+			w.walkChild(body.Child(i))
+		}
 		w.loopDepth--
 		return
 	}

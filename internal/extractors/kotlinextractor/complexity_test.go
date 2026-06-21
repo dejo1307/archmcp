@@ -121,6 +121,21 @@ func TestKtComplexity_InLoopMethodCallCaptured(t *testing.T) {
 	}
 }
 
+func TestKtComplexity_NestedDeferredLambdaNotInLoop(t *testing.T) {
+	// A lambda defined inside an iterator lambda is deferred (runs when invoked,
+	// not per element). `handle` must NOT be in calls_in_loop, while `use` (called
+	// directly per element) is.
+	ff := extractAST(t, "fun r(items: List<Int>) {\n  items.forEach { x ->\n    use(x)\n    register { handle(x) }\n  }\n}", false)
+	f, _ := findFact(ff, "pkg.r")
+	cil := kStrSlice(f, "calls_in_loop")
+	if !kContains(cil, "pkg.use") {
+		t.Errorf("calls_in_loop = %v, want to contain pkg.use (per element)", cil)
+	}
+	if kContains(cil, "pkg.handle") {
+		t.Errorf("calls_in_loop = %v, must NOT contain pkg.handle (deferred lambda)", cil)
+	}
+}
+
 func TestKtComplexity_RecursiveSelf(t *testing.T) {
 	ff := extractAST(t, "fun fib(n: Int): Int {\n  if (n < 2) return n\n  return fib(n - 1) + fib(n - 2)\n}", false)
 	f, _ := findFact(ff, "pkg.fib")
