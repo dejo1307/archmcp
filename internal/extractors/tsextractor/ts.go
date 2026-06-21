@@ -450,18 +450,21 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 					}
 				}
 				mRels := []facts.Relation{{Kind: facts.RelDeclares, Target: dir}}
-				mRels = append(mRels, collectCalls(member, src, dir, symbolName, ctx.importMap)...)
+				callRels, m := collectCallsWithMetrics(member, src, dir, symbolName, ctx.importMap, dir+"."+symbolName+"."+mName, mName)
+				mRels = append(mRels, callRels...)
+				mProps := map[string]any{
+					"symbol_kind": facts.SymbolMethod,
+					"exported":    isExported && !isPrivate,
+					"language":    "typescript",
+					"receiver":    symbolName,
+				}
+				applyTSMetrics(mProps, m)
 				result = append(result, facts.Fact{
-					Kind: facts.KindSymbol,
-					Name: dir + "." + symbolName + "." + mName,
-					File: relFile,
-					Line: int(member.StartPosition().Row) + 1,
-					Props: map[string]any{
-						"symbol_kind": facts.SymbolMethod,
-						"exported":    isExported && !isPrivate,
-						"language":    "typescript",
-						"receiver":    symbolName,
-					},
+					Kind:      facts.KindSymbol,
+					Name:      dir + "." + symbolName + "." + mName,
+					File:      relFile,
+					Line:      int(member.StartPosition().Row) + 1,
+					Props:     mProps,
 					Relations: mRels,
 				})
 			}
@@ -522,8 +525,11 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 			}
 
 			vRels := []facts.Relation{{Kind: facts.RelDeclares, Target: dir}}
+			var vMetrics *tsBodyMetrics
 			if body != nil {
-				vRels = append(vRels, collectCalls(body, src, dir, "", ctx.importMap)...)
+				callRels, m := collectCallsWithMetrics(body, src, dir, "", ctx.importMap, dir+"."+symbolName, symbolName)
+				vRels = append(vRels, callRels...)
+				vMetrics = m
 			}
 			f := facts.Fact{
 				Kind: facts.KindSymbol,
@@ -537,6 +543,9 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 				},
 				Relations: vRels,
 			}
+			if symbolKind == facts.SymbolFunc {
+				applyTSMetrics(f.Props, vMetrics)
+			}
 			classifySymbol(&f, symbolName, body, ctx, symbolKind)
 			result = append(result, f)
 		}
@@ -549,7 +558,8 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 // location; body is walked for outgoing calls and JSX-based classification.
 func (e *TSExtractor) funcSymbol(declNode, body *sitter.Node, ctx *extractCtx, name string, exported bool) facts.Fact {
 	rels := []facts.Relation{{Kind: facts.RelDeclares, Target: ctx.dir}}
-	rels = append(rels, collectCalls(body, ctx.src, ctx.dir, "", ctx.importMap)...)
+	callRels, m := collectCallsWithMetrics(body, ctx.src, ctx.dir, "", ctx.importMap, ctx.dir+"."+name, name)
+	rels = append(rels, callRels...)
 	f := facts.Fact{
 		Kind: facts.KindSymbol,
 		Name: ctx.dir + "." + name,
@@ -562,6 +572,7 @@ func (e *TSExtractor) funcSymbol(declNode, body *sitter.Node, ctx *extractCtx, n
 		},
 		Relations: rels,
 	}
+	applyTSMetrics(f.Props, m)
 	classifySymbol(&f, name, body, ctx, facts.SymbolFunc)
 	return f
 }
@@ -1075,29 +1086,314 @@ func buildImportSymbols(root *sitter.Node, src []byte, relFile string, aliases m
 	return m
 }
 
+// tsBodyMetrics accumulates per-function complexity signals during the single
+// body walk — mirrors the Go/Python/Ruby/Swift/Kotlin extractors.
+type tsBodyMetrics struct {
+	loopDepth   int             // max loop nesting depth
+	loopCount   int             // number of loop constructs (syntactic + array-method callbacks)
+	decisions   int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen  map[string]bool // dedup set for callsInLoop
+	recursive   bool            // body directly calls the enclosing function
+}
+
+// tsIterators are array/collection methods whose callback runs once per element —
+// i.e. a loop. A function/arrow argument to a method NOT in this set (setTimeout,
+// addEventListener, .then/.catch, JSX event handlers, useEffect) runs once or
+// later and is not treated as a loop. Aggregate-or-iterate names (some/every/find)
+// are safe to include because a callback must be present before any counts.
+var tsIterators = map[string]bool{
+	"map": true, "forEach": true, "filter": true, "flatMap": true,
+	"reduce": true, "reduceRight": true, "some": true, "every": true,
+	"find": true, "findIndex": true, "findLast": true, "findLastIndex": true,
+	"sort": true, "flat": true, "group": true, "partition": true,
+}
+
+// tsCheapMethods are obviously-cheap methods that are not I/O. No-arg-ish method
+// calls to these inside loops are not recorded in calls_in_loop, keeping it focused
+// (the enterprise keyword gate is the real precision filter).
+var tsCheapMethods = map[string]bool{
+	"toString": true, "push": true, "pop": true, "shift": true, "unshift": true,
+	"slice": true, "splice": true, "join": true, "concat": true, "includes": true,
+	"indexOf": true, "length": true, "trim": true, "split": true, "replace": true,
+	"keys": true, "values": true, "entries": true, "then": true, "catch": true,
+	"finally": true, "bind": true, "call": true, "apply": true, "has": true,
+	"get": true, "set": true, "add": true, "delete": true, "toFixed": true,
+	"map": true, "forEach": true, "filter": true, "reduce": true, "sort": true,
+	"toLowerCase": true, "toUpperCase": true, "toLocaleLowerCase": true,
+	"toLocaleUpperCase": true, "startsWith": true, "endsWith": true,
+	"charAt": true, "padStart": true, "padEnd": true, "repeat": true,
+}
+
+// tsIsFunctionLike reports whether a node introduces a function scope (a deferred
+// body). Calls inside such a body are decoupled from the enclosing loops.
+func tsIsFunctionLike(kind string) bool {
+	switch kind {
+	case "arrow_function", "function_expression", "function_declaration",
+		"function", "generator_function", "generator_function_declaration",
+		"method_definition":
+		return true
+	}
+	return false
+}
+
+func tsBooleanOp(node *sitter.Node) bool {
+	for i := range node.ChildCount() {
+		switch node.Child(i).Kind() {
+		case "&&", "||", "??":
+			return true
+		}
+	}
+	return false
+}
+
+func tsByteContains(outer, inner *sitter.Node) bool {
+	return inner.StartByte() >= outer.StartByte() && inner.EndByte() <= outer.EndByte()
+}
+
+// tsIteratorCallback returns the function/arrow callback of an array-iterator call
+// (items.map(cb), items.forEach(cb)) — or nil if the call is not an iterator with a
+// closure argument.
+func tsIteratorCallback(call *sitter.Node, src []byte) *sitter.Node {
+	fn := call.ChildByFieldName("function")
+	if fn == nil || fn.Kind() != "member_expression" {
+		return nil
+	}
+	prop := fn.ChildByFieldName("property")
+	if prop == nil || !tsIterators[nodeText(prop, src)] {
+		return nil
+	}
+	args := call.ChildByFieldName("arguments")
+	if args == nil {
+		return nil
+	}
+	for i := range args.ChildCount() {
+		switch c := args.Child(i); c.Kind() {
+		case "arrow_function", "function_expression", "function":
+			return c
+		}
+	}
+	return nil
+}
+
+// tsMemberCall returns the receiver text and property name of a method call whose
+// callee is a member_expression (`obj.method()` → "obj", "method"), for recording
+// in-loop calls on unknown receivers. Returns "" property if not a member call.
+func tsMemberCall(call *sitter.Node, src []byte) (recv, prop string) {
+	fn := call.ChildByFieldName("function")
+	if fn == nil || fn.Kind() != "member_expression" {
+		return "", ""
+	}
+	p := fn.ChildByFieldName("property")
+	if p == nil {
+		return "", ""
+	}
+	prop = nodeText(p, src)
+	if o := fn.ChildByFieldName("object"); o != nil {
+		recv = nodeText(o, src)
+	}
+	return recv, prop
+}
+
+// tsBodyWalker walks a function/method body once, collecting call-edge relations
+// and (when metrics != nil) per-function complexity signals.
+type tsBodyWalker struct {
+	src                 []byte
+	dir, className      string
+	importMap           map[string]string
+	selfName, selfShort string
+	metrics             *tsBodyMetrics
+	loopDepth           int
+	rels                []facts.Relation
+	seen                map[string]bool
+}
+
+func (w *tsBodyWalker) recordCall(target string) {
+	if w.metrics == nil || target == "" {
+		return
+	}
+	if target == w.selfName || target == w.selfShort {
+		w.metrics.recursive = true
+	}
+	w.recordInLoop(target)
+}
+
+func (w *tsBodyWalker) recordInLoop(target string) {
+	if w.metrics == nil || target == "" || w.loopDepth == 0 {
+		return
+	}
+	if w.metrics.inLoopSeen == nil {
+		w.metrics.inLoopSeen = make(map[string]bool)
+	}
+	if !w.metrics.inLoopSeen[target] {
+		w.metrics.inLoopSeen[target] = true
+		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
+	}
+}
+
+func (w *tsBodyWalker) walk(n *sitter.Node) {
+	if n == nil {
+		return
+	}
+	kind := n.Kind()
+
+	// A nested function/arrow definition is a deferred scope: its body runs when the
+	// function is called, NOT per-iteration of the enclosing loops — so reset the
+	// loop depth for its subtree. This is what stops a React event handler defined
+	// inside a `.map(...)` render callback (`onClick={() => handleDelete(x)}`) from
+	// being mis-counted as a per-iteration call. The iterator's own callback is
+	// handled separately in the call_expression branch (its body walks at +1).
+	if w.metrics != nil && tsIsFunctionLike(kind) {
+		saved := w.loopDepth
+		w.loopDepth = 0
+		for i := range n.ChildCount() {
+			w.walk(n.Child(i))
+		}
+		w.loopDepth = saved
+		return
+	}
+
+	// Complexity metrics: count decision points so the single body walk doubles as
+	// the cyclomatic pass.
+	if w.metrics != nil {
+		switch kind {
+		case "if_statement", "ternary_expression", "switch_case", "catch_clause":
+			w.metrics.decisions++
+		case "binary_expression":
+			if tsBooleanOp(n) {
+				w.metrics.decisions++
+			}
+		}
+	}
+
+	// Syntactic loops: everything in the body runs per iteration.
+	switch kind {
+	case "for_statement", "for_in_statement", "while_statement", "do_statement":
+		if w.metrics != nil {
+			w.metrics.loopCount++
+			w.metrics.decisions++
+			if w.loopDepth+1 > w.metrics.loopDepth {
+				w.metrics.loopDepth = w.loopDepth + 1
+			}
+		}
+		w.loopDepth++
+		for i := range n.ChildCount() {
+			w.walk(n.Child(i))
+		}
+		w.loopDepth--
+		return
+	}
+
+	if kind == "call_expression" {
+		if target := resolveTSCall(n, w.src, w.dir, w.className, w.importMap); target != "" {
+			if !w.seen[target] {
+				w.seen[target] = true
+				w.rels = append(w.rels, facts.Relation{Kind: facts.RelCalls, Target: target})
+			}
+			w.recordCall(target)
+		} else if w.metrics != nil && w.loopDepth > 0 {
+			// Method call on an unknown receiver inside a loop (repo.findMany(),
+			// prisma.user.create()). No graph edge today, but its name feeds the perf
+			// metric so the enterprise analyzer can flag per-iteration ORM/fetch I/O.
+			if recv, prop := tsMemberCall(n, w.src); prop != "" && !tsCheapMethods[prop] {
+				tgt := prop
+				if recv != "" {
+					tgt = recv + "." + prop
+				}
+				w.recordInLoop(tgt)
+			}
+		}
+		// An array-iterator method with a callback (items.map(cb)) is a loop: its
+		// callback body runs per element, but the receiver/other args run once.
+		if w.metrics != nil {
+			if cb := tsIteratorCallback(n, w.src); cb != nil {
+				w.metrics.loopCount++
+				w.metrics.decisions++
+				if w.loopDepth+1 > w.metrics.loopDepth {
+					w.metrics.loopDepth = w.loopDepth + 1
+				}
+				for i := range n.ChildCount() {
+					if c := n.Child(i); tsByteContains(c, cb) {
+						w.walkCallbackSubtree(c, cb)
+					} else {
+						w.walk(c)
+					}
+				}
+				return
+			}
+		}
+	}
+
+	for i := range n.ChildCount() {
+		w.walk(n.Child(i))
+	}
+}
+
+// walkCallbackSubtree descends toward an iterator's callback, bumping the loop depth
+// exactly at the callback (its body is per-iteration) while walking everything else
+// (the receiver, sibling args) at the current depth.
+func (w *tsBodyWalker) walkCallbackSubtree(n, cb *sitter.Node) {
+	if n == nil {
+		return
+	}
+	if n.StartByte() == cb.StartByte() && n.EndByte() == cb.EndByte() {
+		// The iterator invokes this callback per element: walk its BODY at +1.
+		// We descend into the callback's children directly rather than walk(cb),
+		// because walk() would treat the callback as a function scope and reset
+		// the depth — but THIS callback genuinely runs per iteration.
+		w.loopDepth++
+		for i := range cb.ChildCount() {
+			w.walk(cb.Child(i))
+		}
+		w.loopDepth--
+		return
+	}
+	for i := range n.ChildCount() {
+		if c := n.Child(i); tsByteContains(c, cb) {
+			w.walkCallbackSubtree(c, cb)
+		} else {
+			w.walk(c)
+		}
+	}
+}
+
 // collectCalls walks a function/method body subtree and returns deduplicated
 // RelCalls relations for each resolvable call expression. className, when
 // non-empty, enables resolution of `this.method()` to "<dir>.<className>.<method>".
 func collectCalls(node *sitter.Node, src []byte, dir, className string, importMap map[string]string) []facts.Relation {
-	var rels []facts.Relation
-	seen := make(map[string]bool)
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n == nil {
-			return
-		}
-		if n.Kind() == "call_expression" {
-			if target := resolveTSCall(n, src, dir, className, importMap); target != "" && !seen[target] {
-				seen[target] = true
-				rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: target})
-			}
-		}
-		for i := range n.ChildCount() {
-			walk(n.Child(i))
-		}
+	w := &tsBodyWalker{src: src, dir: dir, className: className, importMap: importMap, seen: make(map[string]bool)}
+	w.walk(node)
+	return w.rels
+}
+
+// collectCallsWithMetrics is collectCalls plus per-function complexity metrics,
+// used for function/method/arrow facts. selfName/selfShort enable direct-recursion
+// detection.
+func collectCallsWithMetrics(node *sitter.Node, src []byte, dir, className string, importMap map[string]string, selfName, selfShort string) ([]facts.Relation, *tsBodyMetrics) {
+	m := &tsBodyMetrics{}
+	w := &tsBodyWalker{src: src, dir: dir, className: className, importMap: importMap, selfName: selfName, selfShort: selfShort, metrics: m, seen: make(map[string]bool)}
+	w.walk(node)
+	return w.rels, m
+}
+
+// applyTSMetrics writes the complexity props onto a function/method fact's Props.
+func applyTSMetrics(props map[string]any, m *tsBodyMetrics) {
+	if m == nil {
+		return
 	}
-	walk(node)
-	return rels
+	props["cyclomatic"] = 1 + m.decisions
+	if m.loopDepth > 0 {
+		props["loop_depth"] = m.loopDepth
+	}
+	if m.loopCount > 0 {
+		props["loop_count"] = m.loopCount
+	}
+	if len(m.callsInLoop) > 0 {
+		props["calls_in_loop"] = m.callsInLoop
+	}
+	if m.recursive {
+		props["recursive_self"] = true
+	}
 }
 
 // resolveTSCall resolves a single call_expression to a canonical target fact name,
