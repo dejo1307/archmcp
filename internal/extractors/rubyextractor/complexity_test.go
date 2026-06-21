@@ -163,6 +163,74 @@ end
 	}
 }
 
+func TestRbComplexity_InLoopAssociationRead(t *testing.T) {
+	// The classic N+1: a no-arg association read inside an iterator block. It must
+	// land in calls_in_loop (for the perf metric) but NOT become a graph edge, and
+	// a plain attribute read (u.name) must be excluded by the cheap-method stoplist.
+	src := `class Report
+  def run(users)
+    users.each do |u|
+      u.posts
+      puts u.name
+    end
+  end
+end
+`
+	f := symbolsByName(extractFileAST([]byte(src), "app/report.rb", false, false))["Report#run"]
+	cil := rbStrSlice(f, "calls_in_loop")
+	if !rbContains(cil, "posts") {
+		t.Errorf("calls_in_loop = %v, want to contain posts (association read)", cil)
+	}
+	if rbContains(cil, "name") {
+		t.Errorf("calls_in_loop = %v, must NOT contain name (cheap attribute)", cil)
+	}
+	// Metrics-only: no RelCalls graph edge for the no-arg instance call.
+	if hasCall(f, "posts") || hasCall(f, "u.posts") {
+		t.Errorf("u.posts must not become a call edge; relations=%v", f.Relations)
+	}
+}
+
+func TestRbComplexity_InLoopAssociationChain(t *testing.T) {
+	// u.posts.count — the inner association read is captured via normal recursion.
+	src := `class Report
+  def run(users)
+    users.each { |u| total += u.posts.count }
+  end
+end
+`
+	f := symbolsByName(extractFileAST([]byte(src), "app/report.rb", false, false))["Report#run"]
+	if cil := rbStrSlice(f, "calls_in_loop"); !rbContains(cil, "posts") {
+		t.Errorf("calls_in_loop = %v, want to contain posts", cil)
+	}
+}
+
+func TestRbAssociationFactCarriesName(t *testing.T) {
+	src := `class User < ApplicationRecord
+  has_many :posts
+  belongs_to :account
+end
+`
+	result := extractFileAST([]byte(src), "app/models/user.rb", true, false)
+	var gotPosts, gotAccount bool
+	for _, f := range result {
+		if f.Kind != facts.KindDependency {
+			continue
+		}
+		if _, ok := f.Props["association_kind"]; !ok {
+			continue
+		}
+		switch f.Props["association"] {
+		case "posts":
+			gotPosts = true
+		case "account":
+			gotAccount = true
+		}
+	}
+	if !gotPosts || !gotAccount {
+		t.Errorf("association facts missing Props[\"association\"] (posts=%v account=%v)", gotPosts, gotAccount)
+	}
+}
+
 func TestRbComplexity_NonIteratorBlockNotLoop(t *testing.T) {
 	// transaction takes a block but runs it once — it is NOT a loop.
 	src := `class Worker

@@ -106,15 +106,38 @@ func (w *rubyWalker) recordCallMetrics(target string) {
 	if target == w.selfShort || target == w.selfName || target == "self."+w.selfShort {
 		w.metrics.recursive = true
 	}
-	if w.loopDepth > 0 {
-		if w.metrics.inLoopSeen == nil {
-			w.metrics.inLoopSeen = make(map[string]bool)
-		}
-		if !w.metrics.inLoopSeen[target] {
-			w.metrics.inLoopSeen[target] = true
-			w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
-		}
+	w.recordInLoopCall(target)
+}
+
+// recordInLoopCall adds a target to calls_in_loop (deduped) when inside a loop,
+// without the recursion check — used for raw instance-method names (e.g. an
+// association read `u.posts`) whose name must not be mistaken for self-recursion.
+func (w *rubyWalker) recordInLoopCall(target string) {
+	if w.metrics == nil || target == "" || w.loopDepth == 0 {
+		return
 	}
+	if w.metrics.inLoopSeen == nil {
+		w.metrics.inLoopSeen = make(map[string]bool)
+	}
+	if !w.metrics.inLoopSeen[target] {
+		w.metrics.inLoopSeen[target] = true
+		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
+	}
+}
+
+// rubyCheapMethods are obviously-cheap attribute/Enumerable/Kernel methods that
+// are not DB I/O. No-arg instance calls to these inside loops are not recorded in
+// calls_in_loop, to keep it focused (the enterprise association/keyword gate is
+// the real precision filter, so this list need not be exhaustive).
+var rubyCheapMethods = map[string]bool{
+	"id": true, "name": true, "to_s": true, "to_str": true, "to_i": true,
+	"to_a": true, "to_h": true, "to_sym": true, "to_param": true, "inspect": true,
+	"hash": true, "class": true, "object_id": true, "freeze": true, "frozen?": true,
+	"dup": true, "clone": true, "present?": true, "blank?": true, "nil?": true,
+	"empty?": true, "any?": true, "size": true, "length": true, "first": true,
+	"last": true, "keys": true, "values": true, "key?": true, "include?": true,
+	"is_a?": true, "kind_of?": true, "instance_of?": true, "respond_to?": true,
+	"tap": true, "then": true, "itself": true, "send": true, "public_send": true,
 }
 
 // --- scope helpers ---
@@ -458,13 +481,22 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 		return
 	case "call":
 		method := node.ChildByFieldName("method")
+		recv := node.ChildByFieldName("receiver")
 		if target := w.callTarget(node); target != "" {
 			w.addCall(ownerIdx, seen, target)
 			w.recordCallMetrics(target)
-		} else if node.ChildByFieldName("receiver") == nil && method != nil && method.Kind() == "identifier" {
+		} else if recv == nil && method != nil && method.Kind() == "identifier" {
 			if name := rubyText(method, w.src); !rubyNonCalls[name] {
 				w.addCall(ownerIdx, seen, name)
 				w.recordCallMetrics(name)
+			}
+		} else if w.loopDepth > 0 && recv != nil && method != nil && method.Kind() == "identifier" {
+			// A no-arg instance call inside a loop that callTarget suppressed (e.g.
+			// the association read `u.posts` or a `record.reload`). It is not a graph
+			// edge, but its method name feeds the perf metric so the enterprise
+			// analyzer can flag lazy-loaded association / per-iteration I/O (N+1).
+			if name := rubyText(method, w.src); !rubyNonCalls[name] && !rubyCheapMethods[name] {
+				w.recordInLoopCall(name)
 			}
 		}
 		// An iterator method with a block (users.each { … }, n.times { … }) is a
@@ -841,6 +873,10 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 			Props: map[string]any{
 				"language":         "ruby",
 				"association_kind": method,
+				// The raw association name as it is called in code (e.g. "posts" for
+				// has_many :posts) — lets the perf analyzer flag lazy-loaded
+				// association reads inside loops (N+1).
+				"association": assoc,
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDependsOn, Target: target}},
 		})
