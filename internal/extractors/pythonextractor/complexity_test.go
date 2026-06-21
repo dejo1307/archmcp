@@ -158,6 +158,38 @@ def transform(x):
 	}
 }
 
+func TestPyComplexity_ComprehensionFirstIterableEvaluatedOnce(t *testing.T) {
+	// In `[enrich(x) for x in fetch_all()]`, fetch_all() runs once (the first
+	// for-clause iterable), while enrich(x) runs per item. Only enrich should be
+	// counted as in-loop — otherwise a materialised query reads as a false N+1.
+	src := `
+def load():
+    return [enrich(x) for x in fetch_all()]
+
+def enrich(x):
+    return x
+
+def fetch_all():
+    return []
+`
+	idx := byName(astExtract(t, "svc.py", src, false))
+	f := idx["svc.load"]
+	// Both are call edges.
+	if !hasRel(f, facts.RelCalls, "svc.enrich") || !hasRel(f, facts.RelCalls, "svc.fetch_all") {
+		t.Errorf("expected call edges to svc.enrich and svc.fetch_all; relations=%v", f.Relations)
+	}
+	cil := cxStrSlice(f, "calls_in_loop")
+	if !cxContains(cil, "svc.enrich") {
+		t.Errorf("calls_in_loop = %v, want to contain svc.enrich (per-iteration element)", cil)
+	}
+	if cxContains(cil, "svc.fetch_all") {
+		t.Errorf("calls_in_loop = %v, must NOT contain svc.fetch_all (first iterable runs once)", cil)
+	}
+	if got := cxIntProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1", got)
+	}
+}
+
 func TestPyComplexity_BooleanOperatorCyclomatic(t *testing.T) {
 	src := `
 def check(a, b):

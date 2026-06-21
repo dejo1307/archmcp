@@ -713,14 +713,17 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 		return
 	}
 
-	// Loop constructs raise the nesting depth for calls within them. Python
-	// comprehensions and generator expressions carry an implicit loop too.
-	isLoop := false
+	// Comprehensions and generator expressions carry an implicit loop, but the
+	// first for-clause's iterable is evaluated once (not per-iteration), so they
+	// need special handling — see walkComprehension.
 	switch kind {
-	case "for_statement", "while_statement",
-		"list_comprehension", "dictionary_comprehension", "set_comprehension", "generator_expression":
-		isLoop = true
+	case "list_comprehension", "dictionary_comprehension", "set_comprehension", "generator_expression":
+		w.walkComprehension(node)
+		return
 	}
+
+	// Statement loops raise the nesting depth for calls within their body.
+	isLoop := kind == "for_statement" || kind == "while_statement"
 	if isLoop {
 		if w.metrics != nil {
 			w.metrics.loopCount++
@@ -739,6 +742,57 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 	if isLoop {
 		w.loopDepth--
 	}
+}
+
+// walkComprehension handles list/set/dict comprehensions and generator
+// expressions. They carry an implicit loop (counted as one nesting level), but
+// the iterable of the FIRST for-clause is evaluated exactly once — so a call
+// there (e.g. `[x for x in session.query(...)]`) must NOT be counted as in-loop,
+// otherwise it reads as a false N+1. The element expression, if-conditions, and
+// any subsequent for-clauses do run per-iteration and are walked at inner depth.
+//
+// Simplification: a comprehension counts as a single loop level even when it has
+// multiple for-clauses (which are really nested); this keeps depth attribution
+// conservative rather than over-counting.
+func (w *pyWalker) walkComprehension(node *sitter.Node) {
+	if w.metrics != nil {
+		w.metrics.loopCount++
+		w.metrics.decisions++
+		if w.loopDepth+1 > w.metrics.loopDepth {
+			w.metrics.loopDepth = w.loopDepth + 1
+		}
+	}
+
+	// Identify the first for-clause's iterable (its "right" field).
+	var firstIter *sitter.Node
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		if c := node.Child(i); c.Kind() == "for_in_clause" {
+			firstIter = c.ChildByFieldName("right")
+			break
+		}
+	}
+	if firstIter != nil {
+		w.walkForCalls(firstIter) // evaluated once → stays at outer depth
+	}
+
+	w.loopDepth++
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child.Kind() == "for_in_clause" {
+			// Walk the clause's children at inner depth, skipping the already
+			// handled first iterable (matched by byte range).
+			for j := uint(0); j < uint(child.ChildCount()); j++ {
+				cc := child.Child(j)
+				if firstIter != nil && cc.StartByte() == firstIter.StartByte() && cc.EndByte() == firstIter.EndByte() {
+					continue
+				}
+				w.walkForCalls(cc)
+			}
+			continue
+		}
+		w.walkForCalls(child)
+	}
+	w.loopDepth--
 }
 
 // emitCallEdge resolves the callee node and appends a relation to the current owner.
