@@ -71,6 +71,136 @@ type astWalker struct {
 	// context (whether the enclosing type is a @Controller/@RestController and its
 	// class-level base path) so method handlers can emit route facts.
 	routeStack []routeScope
+
+	// Per-method complexity state, set up by handleMethod around walkForCalls and
+	// saved/restored across the re-entrant nested-type walk. metrics is nil outside
+	// a method body walk. loopDepth is the current loop nesting depth;
+	// selfName/selfShort are the enclosing method's full and short names (for
+	// direct-recursion detection).
+	metrics   *javaBodyMetrics
+	loopDepth int
+	selfName  string
+	selfShort string
+}
+
+// javaBodyMetrics accumulates per-method complexity signals during the single
+// walkForCalls body traversal — mirrors the other extractors.
+type javaBodyMetrics struct {
+	loopDepth   int             // max loop nesting depth
+	loopCount   int             // number of loop constructs (syntactic + stream lambdas)
+	decisions   int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen  map[string]bool // dedup set for callsInLoop
+	recursive   bool            // body directly calls the enclosing method
+}
+
+// javaIterators are Stream/Collection methods whose lambda argument runs once per
+// element — i.e. a loop. A lambda passed to a method NOT in this set (Runnable,
+// Comparator, a listener, a Supplier) is deferred and not treated as a loop.
+var javaIterators = map[string]bool{
+	"forEach": true, "forEachOrdered": true, "map": true, "mapToInt": true,
+	"mapToLong": true, "mapToDouble": true, "mapToObj": true, "flatMap": true,
+	"filter": true, "reduce": true, "collect": true, "anyMatch": true,
+	"allMatch": true, "noneMatch": true, "peek": true, "sorted": true,
+	"removeIf": true, "replaceAll": true, "computeIfAbsent": true, "takeWhile": true,
+	"dropWhile": true,
+}
+
+// javaCheapMethods are obviously-cheap methods that are not I/O. Calls to these on
+// an unknown receiver inside a loop are not recorded in calls_in_loop, keeping it
+// focused (the enterprise keyword gate is the real precision filter).
+var javaCheapMethods = map[string]bool{
+	"toString": true, "equals": true, "hashCode": true, "get": true, "set": true,
+	"add": true, "remove": true, "put": true, "contains": true, "size": true,
+	"isEmpty": true, "length": true, "name": true, "value": true, "builder": true,
+	"build": true, "stream": true, "iterator": true, "getClass": true, "valueOf": true,
+	"format": true, "append": true, "charAt": true, "substring": true, "trim": true,
+	"forEach": true, "map": true, "filter": true, "collect": true, "of": true,
+}
+
+// recordCallMetrics notes a resolved call target against the current method's
+// complexity metrics: flags direct recursion and records calls made inside loops.
+func (w *astWalker) recordCallMetrics(target string) {
+	if w.metrics == nil || target == "" {
+		return
+	}
+	if target == w.selfName || target == w.selfShort {
+		w.metrics.recursive = true
+	}
+	w.recordInLoop(target)
+}
+
+// recordInLoop adds a target to calls_in_loop (deduped) when inside a loop, without
+// the recursion check — used for raw instance-method names.
+func (w *astWalker) recordInLoop(target string) {
+	if w.metrics == nil || target == "" || w.loopDepth == 0 {
+		return
+	}
+	if w.metrics.inLoopSeen == nil {
+		w.metrics.inLoopSeen = make(map[string]bool)
+	}
+	if !w.metrics.inLoopSeen[target] {
+		w.metrics.inLoopSeen[target] = true
+		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
+	}
+}
+
+func javaBooleanOp(node *sitter.Node) bool {
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		switch node.Child(i).Kind() {
+		case "&&", "||":
+			return true
+		}
+	}
+	return false
+}
+
+func javaByteContains(outer, inner *sitter.Node) bool {
+	return inner.StartByte() >= outer.StartByte() && inner.EndByte() <= outer.EndByte()
+}
+
+// javaStreamLambda returns the lambda argument of a stream-iterator call
+// (items.forEach(x -> …)), or nil if the call is not an iterator with a lambda.
+func javaStreamLambda(call *sitter.Node, src []byte) *sitter.Node {
+	nameNode := call.ChildByFieldName("name")
+	if nameNode == nil || !javaIterators[nodeText(nameNode, src)] {
+		return nil
+	}
+	args := call.ChildByFieldName("arguments")
+	if args == nil {
+		return nil
+	}
+	for i := uint(0); i < uint(args.ChildCount()); i++ {
+		if c := args.Child(i); c.Kind() == "lambda_expression" {
+			return c
+		}
+	}
+	return nil
+}
+
+// walkJavaLambdaSubtree descends to a stream iterator's lambda and walks its BODY
+// at +1 (it runs per element), while walking everything else (receiver, other args)
+// at the current depth. Kind-checked so an ancestor with the same byte span isn't
+// mistaken for the lambda.
+func (w *astWalker) walkJavaLambdaSubtree(node, lambda *sitter.Node) {
+	if node == nil {
+		return
+	}
+	if node.Kind() == "lambda_expression" && node.StartByte() == lambda.StartByte() && node.EndByte() == lambda.EndByte() {
+		w.loopDepth++
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			w.walkForCalls(node.Child(i))
+		}
+		w.loopDepth--
+		return
+	}
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		if c := node.Child(i); javaByteContains(c, lambda) {
+			w.walkJavaLambdaSubtree(c, lambda)
+		} else {
+			w.walkForCalls(c)
+		}
+	}
 }
 
 type routeScope struct {
@@ -378,11 +508,38 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 	}
 
 	w.out = append(w.out, f)
-	owner := &w.out[len(w.out)-1]
-	w.pushOwner(owner)
+	ownerIdx := len(w.out) - 1
+	w.pushOwner(&w.out[ownerIdx])
+	// Set up per-method complexity tracking. walkForCalls is re-entrant (it
+	// dispatches nested type declarations back through handleMethod), so save and
+	// restore the outer state. Props are written via the stable index (the pointer
+	// may be invalidated if the body walk grows w.out).
+	savedMetrics, savedDepth := w.metrics, w.loopDepth
+	savedName, savedShort := w.selfName, w.selfShort
+	w.metrics = &javaBodyMetrics{}
+	w.loopDepth = 0
+	w.selfName = f.Name
+	w.selfShort = name
 	if body := node.ChildByFieldName("body"); body != nil {
 		w.walkForCalls(body)
 	}
+	m := w.metrics
+	props := w.out[ownerIdx].Props
+	props["cyclomatic"] = 1 + m.decisions
+	if m.loopDepth > 0 {
+		props["loop_depth"] = m.loopDepth
+	}
+	if m.loopCount > 0 {
+		props["loop_count"] = m.loopCount
+	}
+	if len(m.callsInLoop) > 0 {
+		props["calls_in_loop"] = m.callsInLoop
+	}
+	if m.recursive {
+		props["recursive_self"] = true
+	}
+	w.metrics, w.loopDepth = savedMetrics, savedDepth
+	w.selfName, w.selfShort = savedName, savedShort
 	w.popOwner()
 }
 
@@ -529,7 +686,36 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	kind := node.Kind()
+
+	// A lambda is a deferred scope: its body runs when invoked, NOT per-iteration of
+	// the enclosing loops — so reset the loop depth for its subtree (e.g. a Runnable
+	// or listener defined inside a loop). A stream iterator's OWN lambda is handled
+	// in the method_invocation branch (its body walks at +1).
+	if w.metrics != nil && kind == "lambda_expression" {
+		saved := w.loopDepth
+		w.loopDepth = 0
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			w.walkForCalls(node.Child(i))
+		}
+		w.loopDepth = saved
+		return
+	}
+
+	// Complexity metrics: count decision points so the single body walk doubles as
+	// the cyclomatic pass.
+	if w.metrics != nil {
+		switch kind {
+		case "if_statement", "ternary_expression", "switch_label", "catch_clause":
+			w.metrics.decisions++
+		case "binary_expression":
+			if javaBooleanOp(node) {
+				w.metrics.decisions++
+			}
+		}
+	}
+
+	switch kind {
 	case "class_declaration":
 		w.handleClassLike(node, facts.SymbolClass)
 		return
@@ -542,6 +728,21 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	case "record_declaration":
 		w.handleClassLike(node, facts.SymbolClass)
 		return
+	case "for_statement", "enhanced_for_statement", "while_statement", "do_statement":
+		// Syntactic loops: everything in the body runs per iteration.
+		if w.metrics != nil {
+			w.metrics.loopCount++
+			w.metrics.decisions++
+			if w.loopDepth+1 > w.metrics.loopDepth {
+				w.metrics.loopDepth = w.loopDepth + 1
+			}
+		}
+		w.loopDepth++
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			w.walkForCalls(node.Child(i))
+		}
+		w.loopDepth--
+		return
 	case "object_creation_expression":
 		if t := w.targetForType(node.ChildByFieldName("type")); t != "" {
 			if owner := w.currentOwner(); owner != nil {
@@ -550,6 +751,25 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		}
 	case "method_invocation":
 		w.handleInvocation(node)
+		// A Stream/Collection iterator with a lambda (items.forEach(x -> …)) is a
+		// loop: its lambda body runs per element, but the receiver/other args once.
+		if w.metrics != nil {
+			if lambda := javaStreamLambda(node, w.src); lambda != nil {
+				w.metrics.loopCount++
+				w.metrics.decisions++
+				if w.loopDepth+1 > w.metrics.loopDepth {
+					w.metrics.loopDepth = w.loopDepth + 1
+				}
+				for i := uint(0); i < uint(node.ChildCount()); i++ {
+					if c := node.Child(i); javaByteContains(c, lambda) {
+						w.walkJavaLambdaSubtree(c, lambda)
+					} else {
+						w.walkForCalls(c)
+					}
+				}
+				return
+			}
+		}
 	}
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
@@ -575,11 +795,22 @@ func (w *astWalker) handleInvocation(node *sitter.Node) {
 	isThis := obj != nil && nodeText(obj, w.src) == "this"
 	if obj == nil || isThis {
 		if methods := w.currentMethods(); methods[name] {
+			target := w.dir + "." + w.enclosingType() + "." + name
 			owner.Relations = append(owner.Relations, facts.Relation{
 				Kind:   facts.RelCalls,
-				Target: w.dir + "." + w.enclosingType() + "." + name,
+				Target: target,
 			})
+			w.recordCallMetrics(target)
 		}
+	} else if w.metrics != nil && w.loopDepth > 0 && !javaCheapMethods[name] {
+		// Method call on a non-this receiver inside a loop (repo.findById(), …). No
+		// graph edge today, but its name feeds the perf metric so the enterprise
+		// analyzer can flag per-iteration JPA/JDBC/network I/O.
+		tgt := name
+		if recv := nodeText(obj, w.src); recv != "" {
+			tgt = recv + "." + name
+		}
+		w.recordInLoop(tgt)
 	}
 }
 
