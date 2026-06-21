@@ -155,6 +155,7 @@ Working across several repos? Generate the first, then add the rest with append 
 | Go         | `go.mod` |
 | Java       | `pom.xml` (Maven) or `.java` sources (Spring routes / JPA / Lombok DI / Dubbo SPI aware) |
 | TypeScript | `tsconfig.json` / `package.json` with TypeScript (Next.js & monorepo aware) |
+| Vue        | `package.json` with `vue` dependency (Nuxt / Vue Router / Composition API aware) |
 | Python     | `pyproject.toml`, `requirements.txt`, `setup.py`, … (FastAPI / Django / SQLAlchemy aware) |
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
