@@ -271,7 +271,9 @@ func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile
 		symbolFact.Props["receiver"] = receiver
 	}
 
-	// Extract function calls
+	// Extract function calls and per-function complexity metrics in a single
+	// body walk. The metrics ride on Props (map[string]any) and feed the
+	// enterprise performance analyzer; they are parser-derived, never inferred.
 	if fn.Body != nil {
 		ctx := resolveCtx{
 			pkgDir:     pkgDir,
@@ -282,12 +284,27 @@ func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile
 			fieldTypes: fieldTypes,
 		}
 		ctx.localTypes = collectLocalTypes(fn.Body, ctx)
-		calls := extractCalls(fn.Body, ctx)
-		for _, call := range calls {
+		m := analyzeBody(fn.Body, ctx, qualifiedName)
+		for _, call := range m.calls {
 			symbolFact.Relations = append(symbolFact.Relations, facts.Relation{
 				Kind:   facts.RelCalls,
 				Target: call,
 			})
+		}
+		// Only emit non-trivial metrics so existing snapshots and facts from
+		// other extractors (which don't compute these) stay clean.
+		symbolFact.Props["cyclomatic"] = m.cyclomatic
+		if m.loopDepth > 0 {
+			symbolFact.Props["loop_depth"] = m.loopDepth
+		}
+		if m.loopCount > 0 {
+			symbolFact.Props["loop_count"] = m.loopCount
+		}
+		if len(m.callsInLoop) > 0 {
+			symbolFact.Props["calls_in_loop"] = m.callsInLoop
+		}
+		if m.recursiveSelf {
+			symbolFact.Props["recursive_self"] = true
 		}
 	}
 
@@ -376,28 +393,95 @@ type resolveCtx struct {
 	localTypes map[string]string // local variable name → qualified type, e.g. "svc" → "internal/auth.Service"
 }
 
-// extractCalls walks an AST node and extracts function call target names,
-// resolving them to qualified fact names where possible.
-func extractCalls(node ast.Node, ctx resolveCtx) []string {
-	var calls []string
+// bodyMetrics holds the call list and the per-function complexity signals
+// derived from a single walk of a function body.
+type bodyMetrics struct {
+	calls         []string // resolved call targets, deduped, in source order
+	callsInLoop   []string // subset of calls invoked at loop nesting depth >= 1
+	loopDepth     int      // max nesting depth of for/range loops
+	loopCount     int      // total number of for/range loops
+	cyclomatic    int      // McCabe complexity (1 + decision points)
+	recursiveSelf bool     // body directly calls the enclosing function
+}
+
+// analyzeBody walks a function body once and extracts both the call edges
+// (identical resolution to the previous extractCalls) and complexity metrics.
+//
+// Loop nesting depth is tracked without an explicit recursive walker by keeping
+// a stack of the end positions of the loops currently enclosing the node being
+// visited: ast.Inspect is pre-order, and the AST is properly nested, so a node
+// is inside every loop on the stack whose body it lexically falls within. Calls
+// inside func literals are attributed by lexical nesting; interface-dispatch
+// targets remain unresolved exactly as before.
+func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
+	var m bodyMetrics
+	decisions := 0
 	seen := make(map[string]bool)
-	ast.Inspect(node, func(n ast.Node) bool {
-		ce, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
+	inLoopSeen := make(map[string]bool)
+	var loopEnds []token.Pos // end positions of enclosing loops
+
+	ast.Inspect(body, func(n ast.Node) bool {
+		if n == nil {
+			return false
 		}
-		chain := flattenSelector(ce.Fun)
-		if chain == nil {
-			return true
+		// Pop loops whose extent we have now left.
+		for len(loopEnds) > 0 && n.Pos() >= loopEnds[len(loopEnds)-1] {
+			loopEnds = loopEnds[:len(loopEnds)-1]
 		}
-		resolved := resolveChain(chain, ctx)
-		if resolved != "" && !seen[resolved] {
-			seen[resolved] = true
-			calls = append(calls, resolved)
+		switch x := n.(type) {
+		case *ast.ForStmt:
+			m.loopCount++
+			decisions++
+			loopEnds = append(loopEnds, x.End())
+			if len(loopEnds) > m.loopDepth {
+				m.loopDepth = len(loopEnds)
+			}
+		case *ast.RangeStmt:
+			m.loopCount++
+			decisions++
+			loopEnds = append(loopEnds, x.End())
+			if len(loopEnds) > m.loopDepth {
+				m.loopDepth = len(loopEnds)
+			}
+		case *ast.IfStmt:
+			decisions++
+		case *ast.CaseClause:
+			if len(x.List) > 0 { // ignore default
+				decisions++
+			}
+		case *ast.CommClause:
+			if x.Comm != nil { // ignore default in select
+				decisions++
+			}
+		case *ast.BinaryExpr:
+			if x.Op == token.LAND || x.Op == token.LOR {
+				decisions++
+			}
+		case *ast.CallExpr:
+			chain := flattenSelector(x.Fun)
+			if chain == nil {
+				return true
+			}
+			resolved := resolveChain(chain, ctx)
+			if resolved == "" {
+				return true
+			}
+			if !seen[resolved] {
+				seen[resolved] = true
+				m.calls = append(m.calls, resolved)
+			}
+			if len(loopEnds) > 0 && !inLoopSeen[resolved] {
+				inLoopSeen[resolved] = true
+				m.callsInLoop = append(m.callsInLoop, resolved)
+			}
+			if resolved == selfName {
+				m.recursiveSelf = true
+			}
 		}
 		return true
 	})
-	return calls
+	m.cyclomatic = 1 + decisions
+	return m
 }
 
 // flattenSelector converts a (potentially deep) selector chain to a left-to-right
