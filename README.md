@@ -136,6 +136,8 @@ That's it. The snapshot takes milliseconds even on large repos, and your agent n
 
 > "Are there cyclic dependencies or layer violations I should know about before refactoring?"
 
+> "Where are the architectural risks — god classes with high fan-in, call-graph hotspots, overly complex functions, or modules buried deep in the dependency chain?"
+
 > "What would break if I refactor `internal/server`? Show me the impact analysis."
 
 Working across several repos? Generate the first, then add the rest with append mode — enola links them into one cross-repo graph:

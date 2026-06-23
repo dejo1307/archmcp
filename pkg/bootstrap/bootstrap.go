@@ -10,9 +10,14 @@ import (
 
 	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/engine"
+	"github.com/enola-labs/enola/internal/explainers/complexity"
 	crossrepoexp "github.com/enola-labs/enola/internal/explainers/crossrepo"
 	"github.com/enola-labs/enola/internal/explainers/cycles"
+	"github.com/enola-labs/enola/internal/explainers/depth"
+	"github.com/enola-labs/enola/internal/explainers/godclass"
+	"github.com/enola-labs/enola/internal/explainers/hotspots"
 	"github.com/enola-labs/enola/internal/explainers/layers"
+	"github.com/enola-labs/enola/internal/explainers/surface"
 	"github.com/enola-labs/enola/internal/extractors/cppextractor"
 	"github.com/enola-labs/enola/internal/extractors/goextractor"
 	"github.com/enola-labs/enola/internal/extractors/javaextractor"
@@ -168,6 +173,11 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExplainer(cycles.New())
 	eng.RegisterExplainer(layers.New())
 	eng.RegisterExplainer(crossrepoexp.New())
+	eng.RegisterExplainer(godclass.New())
+	eng.RegisterExplainer(hotspots.New())
+	eng.RegisterExplainer(depth.New())
+	eng.RegisterExplainer(surface.New())
+	eng.RegisterExplainer(complexity.New())
 
 	// Register all OSS renderers
 	eng.RegisterRenderer(llmcontext.New(cfg.Output.MaxContextTokens))

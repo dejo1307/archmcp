@@ -79,6 +79,11 @@ explainers:
   - cycles
   - layers
   - crossrepo
+  - god-class
+  - hotspots
+  - dependency-depth
+  - exported-surface
+  - complexity-outliers
 renderers:
   - llm_context
 output:

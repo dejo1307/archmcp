@@ -40,9 +40,9 @@ func makeStore(modules []string, deps map[string][]string) *facts.Store {
 
 func TestTarjanSCC_KnownGraphs(t *testing.T) {
 	tests := []struct {
-		name      string
-		graph     map[string][]string
-		wantCycleCount int // SCCs with size > 1
+		name           string
+		graph          map[string][]string
+		wantCycleCount int   // SCCs with size > 1
 		wantCycleSizes []int // sorted sizes of non-trivial SCCs
 	}{
 		{
@@ -144,93 +144,8 @@ func TestTarjanSCC_SelfLoop(t *testing.T) {
 	}
 }
 
-// --- isExternalImport tests ---
-
-func TestIsExternalImport(t *testing.T) {
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{"fmt", true},                    // Go stdlib (no slash)
-		{"react", true},                  // npm package (no slash)
-		{"github.com/foo/bar", true},     // Go third-party (has dot)
-		{"./relative", false},            // relative import
-		{"../parent", false},             // parent relative import
-		{"/absolute/path", false},        // absolute path
-		{"internal/pkg", false},          // internal module (has slash, no dot)
-		{"src/components", false},        // internal path (has slash, no dot)
-		// Known edge case: @types/node has slash but is npm-external.
-		// Current implementation returns false (treats as internal) because
-		// it has "/" and no ".". This documents the behavior.
-		{"@types/node", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			if got := isExternalImport(tt.path); got != tt.want {
-				t.Errorf("isExternalImport(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-// --- resolveRelativeImport tests ---
-
-func TestResolveRelativeImport(t *testing.T) {
-	tests := []struct {
-		source string
-		target string
-		want   string
-	}{
-		{"src/components", "./utils", "src/components/utils"},
-		{"src/components", "../hooks", "src/hooks"},
-		{"src/components", "../../lib", "lib"},
-		{"src/deep/nested", "../../../top", "top"},
-		{"src", "./foo", "src/foo"},
-		// "." as source: the dot stays in the joined result
-		{".", "./foo", "./foo"},
-		// Going up past root produces empty path
-		{"src", "../../above", "above"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.source+"→"+tt.target, func(t *testing.T) {
-			got := resolveRelativeImport(tt.source, tt.target)
-			if got != tt.want {
-				t.Errorf("resolveRelativeImport(%q, %q) = %q, want %q",
-					tt.source, tt.target, got, tt.want)
-			}
-		})
-	}
-}
-
-// --- buildDependencyGraph tests ---
-
-func TestBuildDependencyGraph(t *testing.T) {
-	store := makeStore(
-		[]string{"src/a", "src/b", "src/c"},
-		map[string][]string{
-			"src/a": {"src/b", "fmt", "github.com/foo/bar"},
-			"src/b": {"src/c", "react"},
-		},
-	)
-
-	graph := buildDependencyGraph(store)
-
-	// src/a should only have edge to src/b (fmt and github.com/foo/bar are external)
-	if edges, ok := graph["src/a"]; !ok {
-		t.Error("src/a not in graph")
-	} else {
-		if len(edges) != 1 || edges[0] != "src/b" {
-			t.Errorf("src/a edges = %v, want [src/b]", edges)
-		}
-	}
-
-	// src/b should only have edge to src/c (react is external)
-	if edges := graph["src/b"]; len(edges) != 1 || edges[0] != "src/c" {
-		t.Errorf("src/b edges = %v, want [src/c]", edges)
-	}
-}
+// Tests for the module-graph and import-resolution helpers now live in the
+// common package (common_test.go), where the shared implementations moved.
 
 // --- Integration tests for Explain ---
 

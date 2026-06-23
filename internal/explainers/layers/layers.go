@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/explainers/common"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -379,7 +380,7 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 
 	deps := store.ByKind(facts.KindDependency)
 	for _, dep := range deps {
-		sourceModule := fileDir(dep.File)
+		sourceModule := common.FileDir(dep.File)
 		sourceLayer, sourceOK := pattern.Modules[sourceModule]
 		if !sourceOK {
 			continue
@@ -436,12 +437,4 @@ func matchesLayer(modulePath string, patterns []string) bool {
 		}
 	}
 	return false
-}
-
-func fileDir(file string) string {
-	parts := strings.Split(file, "/")
-	if len(parts) <= 1 {
-		return "."
-	}
-	return strings.Join(parts[:len(parts)-1], "/")
 }
