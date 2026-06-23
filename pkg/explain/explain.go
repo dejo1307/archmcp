@@ -9,6 +9,7 @@
 package explain
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,6 +57,21 @@ type Section struct {
 	Body  string
 }
 
+// RankedItem is one offender in a code-health finding group: a symbol or module
+// plus a pre-formatted metric (e.g. "147 dependents", "depth 11").
+type RankedItem struct {
+	Name   string `json:"name"`
+	Detail string `json:"detail"`
+}
+
+// FindingGroup is one code-health explainer's contribution: its total count and
+// the top offenders for display.
+type FindingGroup struct {
+	Label string       `json:"label"`
+	Count int          `json:"count"`
+	Top   []RankedItem `json:"top,omitempty"`
+}
+
 // Report is the full statistical picture of a snapshot. Fields are plain types
 // only, so consumers in other modules (enola-enterprise) can read them without
 // importing enola's internal packages.
@@ -89,6 +105,11 @@ type Report struct {
 	// import edges resolved to a module — coupling analysis is unavailable, not
 	// genuinely zero. The renderer surfaces this as a note.
 	CouplingUnresolved bool `json:"coupling_unresolved,omitempty"`
+
+	// CodeHealth holds the per-explainer findings from the symbol/module-level
+	// explainers (god-class, hotspots, dependency-depth, exported-surface,
+	// complexity-outliers), each with a total count and its top offenders.
+	CodeHealth []FindingGroup `json:"code_health,omitempty"`
 
 	// ExtraSections are appended (e.g. by enterprise) and rendered after the
 	// base report.
@@ -165,8 +186,18 @@ func Compute(eng *bootstrap.Engine) *Report {
 	r.Modules = len(store.ByKind(facts.KindModule))
 
 	// Insight-derived numbers: architecture pattern, cycles, layer violations,
-	// cross-repo edges. Titles are matched against the explainer formats.
+	// cross-repo edges, plus the code-health explainer groups. Titles are matched
+	// against the explainer formats (see each explainer's Title: site).
 	if snap != nil {
+		// Code-health groups, assembled in a fixed display order. Each accumulates
+		// its count and (up to topPerGroup) top offenders; insights arrive already
+		// severity-sorted within each explainer, so first-seen == top.
+		godClass := &FindingGroup{Label: "god classes (high fan-in)"}
+		hotspots := &FindingGroup{Label: "call-graph hotspots"}
+		deepChains := &FindingGroup{Label: "deep dependency chains"}
+		surfaces := &FindingGroup{Label: "large public surfaces"}
+		complexFns := &FindingGroup{Label: "complexity outliers"}
+
 		for _, in := range snap.Insights {
 			switch {
 			case strings.HasPrefix(in.Title, "Cyclic dependency"):
@@ -178,12 +209,69 @@ func Compute(eng *bootstrap.Engine) *Report {
 				r.ArchConfidence = in.Confidence
 			case strings.HasPrefix(in.Title, "Cross-repo dependencies"):
 				r.CrossRepoEdges = firstParenInt(in.Title)
+
+			case strings.HasPrefix(in.Title, "High fan-in symbol:"):
+				name := nameBetween(in.Title, "High fan-in symbol:", " (")
+				addFinding(godClass, name, fmt.Sprintf("%d dependents", firstParenInt(in.Title)))
+			case strings.HasPrefix(in.Title, "Call-graph hotspot:"):
+				name := nameBetween(in.Title, "Call-graph hotspot:", " (")
+				ints := allInts(in.Title)
+				addFinding(hotspots, name, fanDetail(ints))
+			case strings.HasPrefix(in.Title, "Deep dependency chain:"):
+				name := nameBetween(in.Title, "Deep dependency chain:", " (")
+				addFinding(deepChains, name, fmt.Sprintf("depth %d", firstParenInt(in.Title)))
+			case strings.HasPrefix(in.Title, "Large public surface:"):
+				name := nameBetween(in.Title, "Large public surface:", " exports")
+				addFinding(surfaces, name, surfaceDetail(allInts(in.Title)))
+			case strings.HasPrefix(in.Title, "High cyclomatic complexity:"):
+				name := nameBetween(in.Title, "High cyclomatic complexity:", " (")
+				addFinding(complexFns, name, fmt.Sprintf("complexity %d", firstParenInt(in.Title)))
+			}
+		}
+
+		for _, g := range []*FindingGroup{godClass, hotspots, deepChains, surfaces, complexFns} {
+			if g.Count > 0 {
+				r.CodeHealth = append(r.CodeHealth, *g)
 			}
 		}
 	}
 
 	computeHotspots(store, r)
 	return r
+}
+
+// topPerGroup caps how many offenders each code-health group lists in the report.
+const topPerGroup = 5
+
+// addFinding increments a group's count and records the offender as a top item
+// until the per-group display cap is reached.
+func addFinding(g *FindingGroup, name, detail string) {
+	g.Count++
+	if len(g.Top) < topPerGroup {
+		g.Top = append(g.Top, RankedItem{Name: name, Detail: detail})
+	}
+}
+
+// fanDetail formats a hotspot's "fan-in N / out M" from the ints parsed out of
+// its title (fan-in first, fan-out second).
+func fanDetail(ints []int) string {
+	in, out := 0, 0
+	if len(ints) > 0 {
+		in = ints[0]
+	}
+	if len(ints) > 1 {
+		out = ints[1]
+	}
+	return fmt.Sprintf("fan-in %d / out %d", in, out)
+}
+
+// surfaceDetail formats "E/T (P%)" from the ints parsed out of a large-public-
+// surface title (exported, total, percent — in that order).
+func surfaceDetail(ints []int) string {
+	for len(ints) < 3 {
+		ints = append(ints, 0)
+	}
+	return fmt.Sprintf("%d/%d (%d%%)", ints[0], ints[1], ints[2])
 }
 
 // computeHotspots ranks modules by fan-in + fan-out (the same coupling signal as
@@ -320,6 +408,40 @@ func firstParenInt(s string) int {
 	}
 	n, _ := strconv.Atoi(digits.String())
 	return n
+}
+
+// nameBetween returns the symbol/module name in an insight title: the text after
+// prefix up to the first occurrence of stop (e.g. " (" or " exports"), trimmed.
+// Symbol and module names contain no "(", so the cut is unambiguous.
+func nameBetween(title, prefix, stop string) string {
+	s := strings.TrimPrefix(title, prefix)
+	if i := strings.Index(s, stop); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// allInts returns every run of digits in s as integers, in order. Used to pull
+// the metrics out of insight titles (e.g. "(fan-in 64, fan-out 20)" -> [64,20]).
+func allInts(s string) []int {
+	var out []int
+	digits := strings.Builder{}
+	flush := func() {
+		if digits.Len() > 0 {
+			n, _ := strconv.Atoi(digits.String())
+			out = append(out, n)
+			digits.Reset()
+		}
+	}
+	for _, ch := range s {
+		if ch >= '0' && ch <= '9' {
+			digits.WriteRune(ch)
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return out
 }
 
 // resolveToModule returns the nearest enclosing module of target: target itself if

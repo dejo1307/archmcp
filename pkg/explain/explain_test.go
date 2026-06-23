@@ -1,6 +1,7 @@
 package explain
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -342,5 +343,124 @@ func TestHelpers(t *testing.T) {
 	}
 	if fileDir("main.go") != "." {
 		t.Errorf("fileDir of bare file should be '.', got %q", fileDir("main.go"))
+	}
+}
+
+func TestCodeHealthHelpers(t *testing.T) {
+	if got := nameBetween("High fan-in symbol: internal/a.DoThing (18 dependents)", "High fan-in symbol:", " ("); got != "internal/a.DoThing" {
+		t.Errorf("nameBetween (paren): got %q", got)
+	}
+	if got := nameBetween("Large public surface: pkg/api exports 19 of 20 symbols (95%)", "Large public surface:", " exports"); got != "pkg/api" {
+		t.Errorf("nameBetween (exports): got %q", got)
+	}
+	if got := allInts("(fan-in 64, fan-out 20)"); len(got) != 2 || got[0] != 64 || got[1] != 20 {
+		t.Errorf("allInts: got %v", got)
+	}
+	if got := surfaceDetail(allInts("exports 19 of 20 symbols (95%)")); got != "19/20 (95%)" {
+		t.Errorf("surfaceDetail: got %q", got)
+	}
+	if got := fanDetail([]int{64, 20}); got != "fan-in 64 / out 20" {
+		t.Errorf("fanDetail: got %q", got)
+	}
+}
+
+// codeHealthInsights covers all 5 new explainer titles, with 6 god-class entries
+// to exercise the count vs. the top-N display cap.
+func codeHealthInsights() []facts.Insight {
+	ins := []facts.Insight{
+		{Title: "Call-graph hotspot: pkg/x.Hub (fan-in 30, fan-out 12)"},
+		{Title: "Deep dependency chain: cmd/app (depth 9)"},
+		{Title: "Large public surface: pkg/api exports 40 of 44 symbols (91%)"},
+		{Title: "High cyclomatic complexity: pkg/x.Parse (108)"},
+	}
+	// Six high-fan-in symbols, descending, to test Count=6 but Top capped at 5.
+	for i, n := range []int{90, 80, 70, 60, 50, 40} {
+		ins = append(ins, facts.Insight{
+			Title: "High fan-in symbol: pkg/x.Sym" + string(rune('A'+i)) + " (" + strconv.Itoa(n) + " dependents)",
+		})
+	}
+	return ins
+}
+
+func computeCodeHealth(t *testing.T) *Report {
+	t.Helper()
+	eng := newTestEngine(t)
+	eng.Store().Add(fixtureFacts()...)
+	eng.Store().BuildGraph()
+	eng.SetSnapshot(&facts.Snapshot{
+		Meta:     facts.SnapshotMeta{RepoPath: "/repo/health"},
+		Insights: codeHealthInsights(),
+	})
+	return Compute(eng)
+}
+
+func TestCompute_CodeHealth(t *testing.T) {
+	r := computeCodeHealth(t)
+
+	// Fixed display order, only non-empty groups present.
+	wantOrder := []string{
+		"god classes (high fan-in)",
+		"call-graph hotspots",
+		"deep dependency chains",
+		"large public surfaces",
+		"complexity outliers",
+	}
+	if len(r.CodeHealth) != len(wantOrder) {
+		t.Fatalf("got %d groups, want %d: %+v", len(r.CodeHealth), len(wantOrder), r.CodeHealth)
+	}
+	byLabel := map[string]FindingGroup{}
+	for i, g := range r.CodeHealth {
+		if g.Label != wantOrder[i] {
+			t.Errorf("group %d: got %q, want %q", i, g.Label, wantOrder[i])
+		}
+		byLabel[g.Label] = g
+	}
+
+	god := byLabel["god classes (high fan-in)"]
+	if god.Count != 6 {
+		t.Errorf("god-class count: got %d, want 6", god.Count)
+	}
+	if len(god.Top) != topPerGroup {
+		t.Errorf("god-class Top: got %d, want %d (capped)", len(god.Top), topPerGroup)
+	}
+	if god.Top[0].Name != "pkg/x.SymA" || god.Top[0].Detail != "90 dependents" {
+		t.Errorf("god-class top item: got %+v", god.Top[0])
+	}
+	if d := byLabel["call-graph hotspots"].Top[0].Detail; d != "fan-in 30 / out 12" {
+		t.Errorf("hotspot detail: got %q", d)
+	}
+	if d := byLabel["large public surfaces"].Top[0].Detail; d != "40/44 (91%)" {
+		t.Errorf("surface detail: got %q", d)
+	}
+	if d := byLabel["deep dependency chains"].Top[0].Detail; d != "depth 9" {
+		t.Errorf("depth detail: got %q", d)
+	}
+	if d := byLabel["complexity outliers"].Top[0].Detail; d != "complexity 108" {
+		t.Errorf("complexity detail: got %q", d)
+	}
+}
+
+func TestRender_CodeHealth(t *testing.T) {
+	out := computeCodeHealth(t).Render()
+	for _, want := range []string{
+		"Code health",
+		"god classes (high fan-in)",
+		"pkg/x.SymA",
+		"90 dependents",
+		"complexity outliers",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestCompute_CodeHealth_OmittedWhenEmpty(t *testing.T) {
+	r := computeFixture(t) // fixture has only the original 4 insight types
+	if len(r.CodeHealth) != 0 {
+		t.Errorf("expected no code-health groups, got %+v", r.CodeHealth)
+	}
+	if strings.Contains(r.Render(), "Code health") {
+		t.Error("Code health section should be omitted when empty")
 	}
 }

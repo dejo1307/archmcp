@@ -140,6 +140,7 @@ func (e *SurfaceExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		}
 
 		insights = append(insights, facts.Insight{
+			// Title format is parsed by pkg/explain (Code health section); keep stable.
 			Title: fmt.Sprintf("Large public surface: %s exports %d of %d symbols (%.0f%%)", c.module, exportedCount, c.ms.total, c.ratio*100),
 			Description: fmt.Sprintf(
 				"Module %q exports %d of its %d symbols (%.0f%%). A large, near-fully-exported module hides "+

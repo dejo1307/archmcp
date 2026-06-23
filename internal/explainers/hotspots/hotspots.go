@@ -107,6 +107,7 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		}
 
 		insights = append(insights, facts.Insight{
+			// Title format is parsed by pkg/explain (Code health section); keep stable.
 			Title: fmt.Sprintf("Call-graph hotspot: %s (fan-in %d, fan-out %d)", c.fact.Name, c.in, c.out),
 			Description: fmt.Sprintf(
 				"%q is a pinch point: %d symbols call into it and it calls out to %d others, so a large "+

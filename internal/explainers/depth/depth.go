@@ -79,6 +79,7 @@ func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 		}
 
 		insights = append(insights, facts.Insight{
+			// Title format is parsed by pkg/explain (Code health section); keep stable.
 			Title: fmt.Sprintf("Deep dependency chain: %s (depth %d)", r.module, depth),
 			Description: fmt.Sprintf(
 				"Module %q has a longest dependency chain of %d modules: %s. "+

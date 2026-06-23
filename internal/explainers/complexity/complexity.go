@@ -90,6 +90,7 @@ func (e *ComplexityExplainer) Explain(ctx context.Context, store *facts.Store) (
 			break
 		}
 		insights = append(insights, facts.Insight{
+			// Title format is parsed by pkg/explain (Code health section); keep stable.
 			Title: fmt.Sprintf("High cyclomatic complexity: %s (%d)", en.fact.Name, en.complexity),
 			Description: fmt.Sprintf(
 				"%q has a cyclomatic complexity of %d — well above the repo average. "+

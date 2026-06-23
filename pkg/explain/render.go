@@ -104,6 +104,20 @@ func (r *Report) Render() string {
 	}
 	b.WriteString("\n")
 
+	// Code health — symbol/module-level findings from the god-class, hotspots,
+	// dependency-depth, exported-surface and complexity explainers. Distinct from
+	// the module-coupling "Impact analysis (hotspots)" section above.
+	if len(r.CodeHealth) > 0 {
+		b.WriteString("Code health\n")
+		for _, g := range r.CodeHealth {
+			countRow(&b, g.Label, g.Count)
+			for _, it := range g.Top {
+				fmt.Fprintf(&b, "    %-44s %s\n", truncate(it.Name, 44), it.Detail)
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	// Enterprise / extra sections
 	for _, s := range r.ExtraSections {
 		fmt.Fprintf(&b, "%s\n", s.Title)

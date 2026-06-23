@@ -206,7 +206,7 @@ enola --explain
 enola --explain /path/to/repo
 ```
 
-**The report covers seven sections:**
+**The report covers eight sections:**
 - **Overview** — path, analysis time, active languages, total fact count
 - **Architectural kinds** — counts of modules, symbols, routes, storage, dependencies, services
 - **Symbol breakdown** — functions, methods, structs, interfaces, and other kinds
@@ -214,6 +214,7 @@ enola --explain /path/to/repo
 - **Dependencies** — external, internal, and stdlib import counts
 - **Architecture** — detected pattern with confidence, cyclic dependencies, layer violations, cross-repo edges
 - **Impact analysis (hotspots)** — top modules ranked by fan-in + fan-out coupling, with criticality tier and blast radius
+- **Code health** — per-explainer findings with their top offenders: god classes (high fan-in symbols), call-graph hotspots, deep dependency chains, large public surfaces, and complexity outliers
 
 No artifacts are written; `.enola/` is not touched. For a persistent snapshot with agent-readable output, use `--generate` or the MCP server.
 

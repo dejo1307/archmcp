@@ -104,6 +104,7 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 		}
 
 		insights = append(insights, facts.Insight{
+			// Title format is parsed by pkg/explain (Code health section); keep stable.
 			Title: fmt.Sprintf("High fan-in symbol: %s (%d dependents)", c.fact.Name, c.fanIn),
 			Description: fmt.Sprintf(
 				"%q is depended upon by %d other symbols — well above the repo average. "+
