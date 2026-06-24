@@ -15,7 +15,8 @@ import (
 
 // cacheVersion is mixed into every cache key. Bump it whenever the fact schema or
 // an extractor's output format changes in a way that invalidates stored facts.
-const cacheVersion = "v1"
+// v2: Swift URLSession extractor precision (file-URL exclusion, interpolation fix).
+const cacheVersion = "v2"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

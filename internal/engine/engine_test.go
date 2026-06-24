@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/explainers/coverage"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -253,6 +254,58 @@ func TestLinkCrossRepo_ConnectsServicesInGraph(t *testing.T) {
 	deps2, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Prop: "type", PropValue: "cross_repo"})
 	if len(deps2) != 1 {
 		t.Errorf("after relink, cross_repo dep facts = %d, want 1", len(deps2))
+	}
+}
+
+// TestLinkCrossRepo_CoverageGapInsight exercises the full coverage path through
+// the engine: a service whose only outbound call site cannot be resolved must get
+// edge_coverage props on its service node and a "Coverage gap" insight from the
+// coverage explainer — so it reads as a blind spot, not a true isolate.
+func TestLinkCrossRepo_CoverageGapInsight(t *testing.T) {
+	cfg := config.Default()
+	eng, _ := New(cfg)
+
+	// svc-alpha calls a path no loaded repo serves; svc-beta serves something else.
+	eng.Store().Add(
+		facts.Fact{
+			Kind: facts.KindRoute, Name: "/api/orders/{id}", Repo: "svc-alpha",
+			Props: map[string]any{"method": "GET", "role": "client"},
+		},
+		facts.Fact{
+			Kind: facts.KindRoute, Name: "/api/items/{id}", Repo: "svc-beta",
+			Props: map[string]any{"method": "GET", "role": "server"},
+		},
+	)
+	eng.linkCrossRepo()
+
+	// The svc-alpha service node carries edge_coverage with an unresolved call site.
+	var alpha *facts.Fact
+	for _, f := range eng.Store().ByKind(facts.KindService) {
+		if f.Name == "svc-alpha" {
+			ff := f
+			alpha = &ff
+		}
+	}
+	if alpha == nil {
+		t.Fatal("no svc-alpha service node")
+	}
+	if _, ok := alpha.Props["edge_coverage"]; !ok {
+		t.Errorf("svc-alpha service node missing edge_coverage prop: %+v", alpha.Props)
+	}
+
+	// The coverage explainer turns that into a "Coverage gap" insight.
+	insights, err := coverage.New().Explain(context.Background(), eng.Store())
+	if err != nil {
+		t.Fatalf("coverage Explain: %v", err)
+	}
+	found := false
+	for _, in := range insights {
+		if in.Title == "Coverage gap: service svc-alpha appears isolated but has 1 unresolved outbound call site(s)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a Coverage gap insight for svc-alpha, got %+v", insights)
 	}
 }
 

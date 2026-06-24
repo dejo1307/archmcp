@@ -92,6 +92,24 @@ func crossRepoEdges(out []facts.Fact) []facts.Fact {
 	return edges
 }
 
+// httpCoverageOf returns the http_client coverage counts attached to a service
+// node, and whether an edge_coverage entry was present.
+func httpCoverageOf(out []facts.Fact, repo string) (detected, resolved, unresolved int, ok bool) {
+	for _, f := range out {
+		if f.Kind != facts.KindService || f.Name != repo {
+			continue
+		}
+		list, _ := f.Props["edge_coverage"].([]map[string]any)
+		for _, ec := range list {
+			if ec["edge_type"] != "http_client" {
+				continue
+			}
+			return ec["detected"].(int), ec["resolved"].(int), ec["unresolved"].(int), true
+		}
+	}
+	return 0, 0, 0, false
+}
+
 // --- normalization ---
 
 func TestNormalizePath(t *testing.T) {
@@ -99,6 +117,7 @@ func TestNormalizePath(t *testing.T) {
 		"/api/items/{id}":         "/api/items/{}",
 		"/api/items/:id":          "/api/items/{}",
 		"/api/items/<id>":         "/api/items/{}",
+		"/api/items/[id]":         "/api/items/{}",
 		"/api/items/":             "/api/items",
 		"/api/items":              "/api/items",
 		"/":                       "/",
@@ -177,6 +196,36 @@ func TestComputeLinks_HTTPGatewayPath(t *testing.T) {
 	}
 }
 
+// TestComputeLinks_HTTPClientPrefixMatch covers the BFF/gateway pattern: the client
+// calls a path carrying an extra "/api/settings" prefix that the server (a different
+// repo) serves un-prefixed. Client-suffix matching must still resolve the edge.
+func TestComputeLinks_HTTPClientPrefixMatch(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("golf-ui", "/api/settings/tickets/{id}/resolve", "POST", nil),
+		serverRoute("golf", "/tickets/{id:[0-9]+}/resolve", "POST"),
+	}
+	out := ComputeLinks(in)
+	if !hasServiceEdge(out, "golf-ui", "golf") {
+		t.Fatalf("client prefix path did not resolve to server; got %+v", out)
+	}
+	// Suffix (not full-path) match → probable, and the call counts as resolved.
+	if _, r, u, ok := httpCoverageOf(out, "golf-ui"); !ok || r != 1 || u != 0 {
+		t.Errorf("golf-ui coverage = resolved %d unresolved %d (ok=%v); want 1/0", r, u, ok)
+	}
+}
+
+// TestComputeLinks_HTTPNextjsDynamicSegment checks that a Next.js-style server path
+// with a [id] dynamic segment normalizes and matches a client {} placeholder.
+func TestComputeLinks_HTTPNextjsDynamicSegment(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),
+		serverRoute("svc-beta", "/api/items/[id]", "GET"),
+	}
+	if !hasServiceEdge(ComputeLinks(in), "svc-alpha", "svc-beta") {
+		t.Errorf("Next.js [id] server segment did not match client {} placeholder")
+	}
+}
+
 func TestComputeLinks_HTTPGenericPathSkipped(t *testing.T) {
 	in := []facts.Fact{
 		clientRoute("svc-alpha", "/health", "GET", nil),
@@ -222,6 +271,47 @@ func TestComputeLinks_HTTPAmbiguousNoHintSkipped(t *testing.T) {
 		if f.Kind == facts.KindDependency {
 			t.Errorf("ambiguous match without hint produced edge: %+v", f)
 		}
+	}
+}
+
+// TestComputeLinks_CoverageBlindSpot checks that a service whose only outbound
+// HTTP-client call site cannot be resolved to any loaded server is recorded as a
+// coverage gap (detected>0, resolved=0) rather than a true isolate — while a
+// service whose call site does resolve is fully covered.
+func TestComputeLinks_CoverageBlindSpot(t *testing.T) {
+	in := []facts.Fact{
+		// svc-alpha calls a path no loaded repo serves -> unresolved blind spot.
+		clientRoute("svc-alpha", "/api/orders/{id}", "GET", nil),
+		// svc-gamma calls a path svc-beta serves -> resolved.
+		clientRoute("svc-gamma", "/api/items/{id}", "GET", nil),
+		serverRoute("svc-beta", "/api/items/{id}", "GET"),
+	}
+	out := ComputeLinks(in)
+
+	// svc-alpha: detected but unresolved, and no outbound edge formed.
+	if hasServiceEdge(out, "svc-alpha", "svc-beta") {
+		t.Errorf("svc-alpha unexpectedly linked to svc-beta")
+	}
+	d, r, u, ok := httpCoverageOf(out, "svc-alpha")
+	if !ok {
+		t.Fatalf("svc-alpha has no edge_coverage; want a coverage gap")
+	}
+	if d != 1 || r != 0 || u != 1 {
+		t.Errorf("svc-alpha coverage = detected %d resolved %d unresolved %d; want 1/0/1", d, r, u)
+	}
+
+	// svc-gamma: detected and fully resolved.
+	d, r, u, ok = httpCoverageOf(out, "svc-gamma")
+	if !ok {
+		t.Fatalf("svc-gamma has no edge_coverage")
+	}
+	if d != 1 || r != 1 || u != 0 {
+		t.Errorf("svc-gamma coverage = detected %d resolved %d unresolved %d; want 1/1/0", d, r, u)
+	}
+
+	// svc-beta serves but makes no client calls -> no coverage entry (true leaf).
+	if _, _, _, ok := httpCoverageOf(out, "svc-beta"); ok {
+		t.Errorf("svc-beta unexpectedly has edge_coverage; it makes no client calls")
 	}
 }
 
@@ -561,7 +651,7 @@ func TestComputeLinks_ConfidenceProbableHintDisambiguated(t *testing.T) {
 func TestComputeLinks_ConfidenceMixedIsVerified(t *testing.T) {
 	// One verified endpoint + one probable endpoint between the same pair → verified.
 	in := []facts.Fact{
-		clientRoute("svc-alpha", "/api/items/list", "GET", nil), // verified
+		clientRoute("svc-alpha", "/api/items/list", "GET", nil),    // verified
 		clientRoute("svc-alpha", "settings/feedback", "POST", nil), // probable (suffix)
 		serverRoute("svc-beta", "/api/items/list", "GET"),
 		serverRoute("svc-beta", "/api/settings/feedback", "POST"),

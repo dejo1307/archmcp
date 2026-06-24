@@ -803,6 +803,180 @@ func (s *Server) registerTools() {
 		}
 		return textResult(capTokens(renderImpactCompact(resp), args.MaxTokens, false)), nil, nil
 	})
+
+	// Tool: coverage_report
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "coverage_report",
+		Description: "Report per-service edge coverage so you can tell a genuinely isolated service from one whose edges enola could not resolve. " +
+			"For each service (repo) node it shows resolved outbound dependencies plus, per edge type (currently http_client), how many outbound call sites were detected, resolved to a loaded service, and left unresolved. " +
+			"Each service is classified: 'connected' (has resolved outbound edges), 'coverage_gap' (no resolved outbound edges but unresolved call sites were detected — likely NOT isolated, verify against source), or 'isolated' (no outbound edges and no detected call sites — genuinely a leaf). " +
+			"Use this before concluding a service is isolated. Only meaningful for multi-repo (append-mode) snapshots; single-repo snapshots have no service nodes. " +
+			"output_mode='summary' (DEFAULT) returns a markdown table; 'full' returns JSON. Optional repo= filters to one service.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args coverageReportArgs) (*mcp.CallToolResult, any, error) {
+		if s.toolCallback != nil {
+			s.toolCallback("coverage_report")
+		}
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+
+		report := buildCoverageReport(store, args.Repo)
+		if len(report) == 0 {
+			if args.Repo != "" {
+				return errorResult(fmt.Sprintf("No service node named %q. coverage_report needs a multi-repo (append-mode) snapshot.", args.Repo)), nil, nil
+			}
+			return textResult("No service nodes found. coverage_report needs a multi-repo (append-mode) snapshot."), nil, nil
+		}
+
+		if resolveOutputMode(args.OutputMode, modeSummary) == modeFull {
+			return jsonResult(report)
+		}
+		return textResult(renderCoverageReport(report)), nil, nil
+	})
+}
+
+type coverageReportArgs struct {
+	Repo       string `json:"repo,omitempty" jsonschema:"Optional: limit the report to one service (repo label). Default: all services."`
+	OutputMode string `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT) returns a markdown table; 'full' returns JSON."`
+}
+
+// edgeCoverage is one edge type's detected-vs-resolved tally for a service.
+type edgeCoverage struct {
+	EdgeType   string `json:"edge_type"`
+	Detected   int    `json:"detected"`
+	Resolved   int    `json:"resolved"`
+	Unresolved int    `json:"unresolved"`
+}
+
+// serviceCoverage is the coverage picture for one service node.
+type serviceCoverage struct {
+	Service         string         `json:"service"`
+	Classification  string         `json:"classification"` // connected | coverage_gap | isolated
+	OutboundEdges   int            `json:"outbound_edges"`
+	EdgeCoverage    []edgeCoverage `json:"edge_coverage,omitempty"`
+	UnresolvedTotal int            `json:"unresolved_total"`
+}
+
+// buildCoverageReport derives the per-service coverage picture from the service
+// nodes' depends_on relations and edge_coverage props. When repo is non-empty it
+// is limited to that one service.
+func buildCoverageReport(store *facts.Store, repo string) []serviceCoverage {
+	var out []serviceCoverage
+	for _, svc := range store.ByKind(facts.KindService) {
+		if repo != "" && svc.Name != repo {
+			continue
+		}
+
+		outbound := 0
+		for _, rel := range svc.Relations {
+			if rel.Kind == facts.RelDependsOn {
+				outbound++
+			}
+		}
+
+		cov := readEdgeCoverage(svc)
+		detected, unresolved := 0, 0
+		for _, c := range cov {
+			detected += c.Detected
+			unresolved += c.Unresolved
+		}
+
+		class := "connected"
+		if outbound == 0 {
+			if detected > 0 && unresolved > 0 {
+				class = "coverage_gap"
+			} else {
+				class = "isolated"
+			}
+		}
+
+		out = append(out, serviceCoverage{
+			Service:         svc.Name,
+			Classification:  class,
+			OutboundEdges:   outbound,
+			EdgeCoverage:    cov,
+			UnresolvedTotal: unresolved,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	return out
+}
+
+// readEdgeCoverage extracts the edge_coverage entries from a service node's props,
+// tolerating both the in-memory shape ([]map[string]any, int values) and the shape
+// that survives a facts.jsonl JSON round-trip ([]any of map[string]any, float64).
+func readEdgeCoverage(svc facts.Fact) []edgeCoverage {
+	if svc.Props == nil {
+		return nil
+	}
+	var raw []map[string]any
+	switch v := svc.Props["edge_coverage"].(type) {
+	case []map[string]any:
+		raw = v
+	case []any:
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				raw = append(raw, m)
+			}
+		}
+	default:
+		return nil
+	}
+	out := make([]edgeCoverage, 0, len(raw))
+	for _, m := range raw {
+		et, _ := m["edge_type"].(string)
+		out = append(out, edgeCoverage{
+			EdgeType:   et,
+			Detected:   coverageInt(m["detected"]),
+			Resolved:   coverageInt(m["resolved"]),
+			Unresolved: coverageInt(m["unresolved"]),
+		})
+	}
+	return out
+}
+
+// coverageInt reads an int-valued prop, tolerating the float64 form that survives
+// a JSON round-trip through facts.jsonl.
+func coverageInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return 0
+}
+
+// renderCoverageReport formats the per-service coverage as a markdown table, with
+// coverage gaps called out first.
+func renderCoverageReport(report []serviceCoverage) string {
+	var sb strings.Builder
+	sb.WriteString("# Coverage Report\n\n")
+	sb.WriteString("Distinguishes genuinely isolated services from those whose outbound edges could not be resolved.\n\n")
+
+	gaps := 0
+	for _, sc := range report {
+		if sc.Classification == "coverage_gap" {
+			gaps++
+		}
+	}
+	if gaps > 0 {
+		sb.WriteString(fmt.Sprintf("⚠️  %d service(s) classified `coverage_gap`: they look isolated but have unresolved outbound call sites — verify against source.\n\n", gaps))
+	}
+
+	sb.WriteString("| Service | Classification | Outbound edges | Detected | Resolved | Unresolved |\n")
+	sb.WriteString("|---|---|---|---|---|---|\n")
+	for _, sc := range report {
+		detected, resolved := 0, 0
+		for _, c := range sc.EdgeCoverage {
+			detected += c.Detected
+			resolved += c.Resolved
+		}
+		sb.WriteString(fmt.Sprintf("| %s | %s | %d | %d | %d | %d |\n",
+			sc.Service, sc.Classification, sc.OutboundEdges, detected, resolved, sc.UnresolvedTotal))
+	}
+	return sb.String()
 }
 
 // ambiguousMatchThreshold is the candidate count at or above which

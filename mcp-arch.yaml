@@ -79,6 +79,7 @@ explainers:
   - cycles
   - layers
   - crossrepo
+  - coverage
   - god-class
   - hotspots
   - dependency-depth

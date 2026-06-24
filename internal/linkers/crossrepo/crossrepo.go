@@ -59,6 +59,15 @@ type edge struct {
 	confidence string          // "verified" or "probable" — max over HTTP endpoints
 }
 
+// httpCoverage tallies, per consumer repo, how many HTTP-client call sites were
+// detected and how many resolved to a loaded service. The difference is the
+// blind spot: call sites enola saw but could not link to a target, so a service
+// with no outbound edges but unresolved>0 is a coverage gap, not truly isolated.
+type httpCoverage struct {
+	detected int
+	resolved int
+}
+
 func (e *edge) note(via string) {
 	if e.via == nil {
 		e.via = map[string]bool{}
@@ -88,11 +97,12 @@ func ComputeLinks(all []facts.Fact) []facts.Fact {
 	}
 
 	edges := map[string]*edge{}
-	linkHTTP(all, edges)
+	cov := map[string]*httpCoverage{}
+	linkHTTP(all, edges, cov)
 	linkImports(all, normToLabel, edges)
 	linkSharedSymbols(all, edges)
 
-	return materialize(edges, repoLabels(normToLabel))
+	return materialize(edges, repoLabels(normToLabel), cov)
 }
 
 // repoLabels returns the actual repo labels (the values of the
@@ -128,7 +138,7 @@ type routeRef struct {
 	fullPath string // the complete normalized server path this ref was indexed from
 }
 
-func linkHTTP(all []facts.Fact, edges map[string]*edge) {
+func linkHTTP(all []facts.Fact, edges map[string]*edge, cov map[string]*httpCoverage) {
 	// Index server routes by normalized path + method.
 	server := map[string][]routeRef{}
 	for _, f := range all {
@@ -161,6 +171,11 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge) {
 		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) != "client" {
 			continue
 		}
+		// Every client call site is a detected outbound edge. Counting here, before
+		// the low-signal filters below, means call sites we choose not to resolve
+		// (no method, generic path) and call sites with no matching server both fall
+		// into unresolved (detected - resolved) — the blind spot the report exposes.
+		covFor(cov, f.Repo).detected++
 		method := normalizeMethod(propString(f, "method"))
 		if method == "" {
 			continue
@@ -172,8 +187,20 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge) {
 		// Canonicalize the leading slash so a base-relative client path
 		// ("settings/x") matches the indexed suffix form ("/settings/x").
 		clientPath := canonicalLeadingSlash(np)
-		matches := server[routeKey(clientPath, method)]
+		// Try the client path's trailing-segment suffixes against the server suffix
+		// index, longest first. The server index already holds suffixes of every
+		// server path, so matching client suffixes too makes the join symmetric: it
+		// resolves a client call that carries an extra gateway/BFF prefix
+		// ("/api/settings/tickets/{}/resolve") to a server serving the un-prefixed
+		// path ("/tickets/{}/resolve"), as well as the reverse (a base-relative
+		// client calling a longer server path) the index already handled.
+		matches, matchedPath := lookupClientMatches(server, clientPath, method)
 		provider, unambiguous := pickProvider(f, matches)
+		// A non-empty provider means the call site matched a loaded service (a
+		// self-match is internal, not a blind spot) — count it resolved either way.
+		if provider != "" {
+			covFor(cov, f.Repo).resolved++
+		}
 		if provider == "" || provider == f.Repo {
 			continue
 		}
@@ -183,7 +210,7 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge) {
 			e.endpoints = map[string]bool{}
 		}
 		e.endpoints[method+" "+f.Name] = true
-		e.noteConfidence(matchConfidence(clientPath, np, provider, matches, unambiguous))
+		e.noteConfidence(matchConfidence(matchedPath, np, provider, matches, unambiguous))
 	}
 }
 
@@ -494,7 +521,17 @@ func edgeFor(edges map[string]*edge, consumer, provider string) *edge {
 	return e
 }
 
-func materialize(edges map[string]*edge, allRepos []string) []facts.Fact {
+// covFor returns the HTTP-client coverage tally for a repo, creating it on first use.
+func covFor(cov map[string]*httpCoverage, repo string) *httpCoverage {
+	c, ok := cov[repo]
+	if !ok {
+		c = &httpCoverage{}
+		cov[repo] = c
+	}
+	return c
+}
+
+func materialize(edges map[string]*edge, allRepos []string, cov map[string]*httpCoverage) []facts.Fact {
 	// Stable order over edges.
 	keys := make([]string, 0, len(edges))
 	for k := range edges {
@@ -570,11 +607,24 @@ func materialize(edges map[string]*edge, allRepos []string) []facts.Fact {
 		for _, p := range providers[r] {
 			rels = append(rels, facts.Relation{Kind: facts.RelDependsOn, Target: p})
 		}
+		props := map[string]any{"synthetic": SyntheticMarker}
+		// Attach detected-vs-resolved coverage so a node with no outbound edges but
+		// unresolved call sites reads as a coverage gap, not a true isolate. The list
+		// shape (one entry per edge_type) lets future edge kinds (e.g. Kafka) slot in
+		// without changing the readers.
+		if c := cov[r]; c != nil && c.detected > 0 {
+			props["edge_coverage"] = []map[string]any{{
+				"edge_type":  "http_client",
+				"detected":   c.detected,
+				"resolved":   c.resolved,
+				"unresolved": c.detected - c.resolved,
+			}}
+		}
 		out = append(out, facts.Fact{
 			Kind:      facts.KindService,
 			Name:      r,
 			Repo:      r,
-			Props:     map[string]any{"synthetic": SyntheticMarker},
+			Props:     props,
 			Relations: rels,
 		})
 	}
@@ -627,6 +677,9 @@ func normalizePath(p string) string {
 			segs[i] = "{}"
 		case strings.HasPrefix(s, "<") && strings.HasSuffix(s, ">"):
 			segs[i] = "{}"
+		case strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]"):
+			// Next.js dynamic segments: [id], [slug], [...rest].
+			segs[i] = "{}"
 		}
 	}
 	return strings.Join(segs, "/")
@@ -655,6 +708,27 @@ func pathSuffixes(normPath string) []string {
 		out = append(out, "/"+strings.Join(segs[start:], "/"))
 	}
 	return out
+}
+
+// lookupClientMatches resolves a client path against the server suffix index by
+// trying the client path's own trailing-segment suffixes longest-first and
+// returning the first (most specific) hit, plus the suffix that matched. The
+// longest suffix is the full client path, so an exact full-path match still wins
+// first; shorter suffixes then let a prefixed client path ("/api/settings/x/y")
+// match a server serving the un-prefixed path ("/x/y"). For sub-minSharedSegments
+// paths (no suffixes) it falls back to a single full-path lookup, preserving the
+// original behavior.
+func lookupClientMatches(server map[string][]routeRef, clientPath, method string) ([]routeRef, string) {
+	sufs := pathSuffixes(clientPath)
+	if len(sufs) == 0 {
+		return server[routeKey(clientPath, method)], clientPath
+	}
+	for _, suf := range sufs {
+		if m := server[routeKey(suf, method)]; len(m) > 0 {
+			return m, suf
+		}
+	}
+	return nil, clientPath
 }
 
 // canonicalLeadingSlash ensures a non-empty path starts with "/", so a

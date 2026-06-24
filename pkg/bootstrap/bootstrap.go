@@ -11,6 +11,7 @@ import (
 	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/explainers/complexity"
+	"github.com/enola-labs/enola/internal/explainers/coverage"
 	crossrepoexp "github.com/enola-labs/enola/internal/explainers/crossrepo"
 	"github.com/enola-labs/enola/internal/explainers/cycles"
 	"github.com/enola-labs/enola/internal/explainers/depth"
@@ -178,6 +179,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExplainer(cycles.New())
 	eng.RegisterExplainer(layers.New())
 	eng.RegisterExplainer(crossrepoexp.New())
+	eng.RegisterExplainer(coverage.New())
 	eng.RegisterExplainer(godclass.New())
 	eng.RegisterExplainer(hotspots.New())
 	eng.RegisterExplainer(depth.New())

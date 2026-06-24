@@ -472,7 +472,9 @@ func (r *LLMContextRenderer) renderRiskZones(snapshot *facts.Snapshot) string {
 
 	for _, insight := range snapshot.Insights {
 		if strings.Contains(insight.Title, "Cyclic dependency") ||
-			strings.Contains(insight.Title, "Layer violation") {
+			strings.Contains(insight.Title, "Layer violation") ||
+			strings.Contains(insight.Title, "Coverage gap") ||
+			strings.Contains(insight.Title, "Partial coverage") {
 			risks = append(risks, fmt.Sprintf("- **%s** (confidence: %.0f%%): %s",
 				insight.Title, insight.Confidence*100, insight.Description))
 		}

@@ -33,6 +33,7 @@ explainers:
   - cycles
   - layers
   - crossrepo
+  - coverage
 renderers:
   - llm_context
 output:
