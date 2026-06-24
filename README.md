@@ -146,7 +146,7 @@ Working across several repos? Generate the first, then add the rest with append 
 
 > "If I change the auth service, which other services are impacted?"
 
-**Regenerate after major changes** so the snapshot stays current. enola only re-parses files whose contents changed, so refreshes are fast.
+**Regenerate after major changes** so the snapshot stays current. Refreshes are fast: enola caches each language's facts and re-parses a language only when one of its files (or a shared config like `package.json`) actually changed, reusing the rest.
 
 ---
 
@@ -218,7 +218,7 @@ enola --explain /path/to/repo
 
 Every finding carries a confidence score, and it means something exact: `1.0` is a structural fact (a cycle exists; an export ratio measured), while anything below is a flagged heuristic for you to review (a god class is a statistical fan-in outlier, not a rule). The analyses are computed by graph algorithms — Tarjan's SCC for cycles, longest-path for dependency depth, mean+2σ outlier tests for the rest — so the same commit yields the same report.
 
-Here's the actual report for [Apache Airflow](https://github.com/apache/airflow) — a large polyglot codebase (Python, Java, TypeScript, and OpenAPI specs) analyzed in a single pass, 112,792 facts in ~15s:
+Here's the actual report for [Apache Airflow](https://github.com/apache/airflow) — a large polyglot codebase (Python, Java, TypeScript, and OpenAPI specs) analyzed in a single pass, 112,792 facts in ~3.5s (extraction parses files in parallel across cores; timing measured on a 16-core machine):
 
 ```
 ════════════════════════════════════════════════════════════
@@ -226,8 +226,8 @@ Here's the actual report for [Apache Airflow](https://github.com/apache/airflow)
 ════════════════════════════════════════════════════════════
 
 Overview
-  Generated:           2026-06-23T20:37:10Z
-  Analysis time:       14.968177458s
+  Generated:           2026-06-24T11:28:08Z
+  Analysis time:       3.522345875s
   Languages:           java, openapi, python, typescript
   Total facts:         112792
 

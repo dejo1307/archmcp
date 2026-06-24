@@ -33,19 +33,30 @@ type Engine struct {
 	store      *facts.Store
 	snapshot   *facts.Snapshot
 	repoPaths  map[string]string // repo label -> absolute path (populated in append mode)
+
+	// persistCache controls whether the per-extractor cache is written back to
+	// disk after a snapshot. The read path is always active when caching is
+	// enabled; one-shot --explain sets this false so it never touches .enola.
+	persistCache bool
 }
 
 // New creates a new Engine with the given config.
 // Extractors, explainers, and renderers must be registered after creation.
 func New(cfg *config.Config) (*Engine, error) {
 	return &Engine{
-		cfg:        cfg,
-		extractors: extractors.NewRegistry(),
-		explainers: explainers.NewRegistry(),
-		renderers:  renderers.NewRegistry(),
-		store:      facts.NewStore(),
+		cfg:          cfg,
+		extractors:   extractors.NewRegistry(),
+		explainers:   explainers.NewRegistry(),
+		renderers:    renderers.NewRegistry(),
+		store:        facts.NewStore(),
+		persistCache: true,
 	}, nil
 }
+
+// SetPersistCache controls whether the per-extractor cache is written to disk
+// after a snapshot. One-shot --explain disables this so it leaves .enola
+// untouched, while still reusing a cache a prior --generate may have written.
+func (e *Engine) SetPersistCache(persist bool) { e.persistCache = persist }
 
 // RegisterExtractor adds an extractor to the engine.
 func (e *Engine) RegisterExtractor(ext extractors.Extractor) {
@@ -165,22 +176,47 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		e.repoPaths = nil
 	}
 
+	// Per-stage timing breakdown (logged at the end). Snapshotting is
+	// extraction-dominated, so this makes it obvious where time goes.
+	var tWalk, tHash, tExtract, tLink, tGraph, tExplain, tRender time.Duration
+
 	// 1. Walk repository and collect files
+	tStage := time.Now()
 	files, err := e.walkRepo(absRepo)
 	if err != nil {
 		return nil, fmt.Errorf("walking repo: %w", err)
 	}
+	tWalk = time.Since(tStage)
 	log.Printf("[engine] found %d files in %s", len(files), absRepo)
 
 	// 2. Compute file hashes (for snapshot metadata)
+	tStage = time.Now()
 	currentHashes := e.computeFileHashes(absRepo, files)
+	tHash = time.Since(tStage)
 
-	// 3. Detect and run extractors
+	// 3. Detect and run extractors (with optional per-extractor caching).
+	tStage = time.Now()
+	var cache *extractorCache
+	cachePath := extractorCachePath(filepath.Join(absRepo, e.cfg.Output.Dir))
+	if e.cfg.IncrementalEnabled() {
+		cache = loadExtractorCache(cachePath)
+	}
 	preCount := e.store.Count()
-	usedExtractors, err := e.runExtractors(ctx, absRepo, files)
+	usedExtractors, err := e.runExtractors(ctx, absRepo, files, currentHashes, cache)
 	if err != nil {
 		return nil, fmt.Errorf("extraction: %w", err)
 	}
+	if cache != nil {
+		log.Printf("[engine] extractor cache: %d reused", cache.hits)
+		if e.persistCache {
+			if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+				log.Printf("[engine] could not create cache dir: %v", err)
+			} else if err := cache.save(cachePath); err != nil {
+				log.Printf("[engine] could not write extractor cache: %v", err)
+			}
+		}
+	}
+	tExtract = time.Since(tStage)
 	newCount := e.store.Count()
 	log.Printf("[engine] extracted %d facts using %d extractors", newCount, len(usedExtractors))
 
@@ -199,17 +235,23 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	// nodes and consumer→provider edges from HTTP route role matching and
 	// import/shared-lib references. Recomputed from scratch each run (prior
 	// synthetic facts are dropped first) so it stays idempotent across appends.
+	tStage = time.Now()
 	e.linkCrossRepo()
+	tLink = time.Since(tStage)
 
 	// 3c. Build graph index for traversal queries
+	tStage = time.Now()
 	e.store.BuildGraph()
+	tGraph = time.Since(tStage)
 	log.Printf("[engine] built graph index (%d nodes, %d edges)", e.store.Graph().NodeCount(), e.store.Graph().EdgeCount())
 
 	// 4. Run explainers
+	tStage = time.Now()
 	allInsights, usedExplainers, err := e.runExplainers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("explanation: %w", err)
 	}
+	tExplain = time.Since(tStage)
 	log.Printf("[engine] produced %d insights using %d explainers", len(allInsights), len(usedExplainers))
 
 	// 5. Build file hashes for the snapshot meta
@@ -241,15 +283,21 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	}
 
 	// 7. Run renderers
+	tStage = time.Now()
 	usedRenderers, err := e.runRenderers(ctx, snapshot)
 	if err != nil {
 		return nil, fmt.Errorf("rendering: %w", err)
 	}
+	tRender = time.Since(tStage)
 	snapshot.Meta.Renderers = usedRenderers
 	log.Printf("[engine] produced %d artifacts using %d renderers", len(snapshot.Artifacts), len(usedRenderers))
 
 	e.snapshot = snapshot
 	log.Printf("[engine] snapshot generated in %s", duration)
+	log.Printf("[engine] timings: walk=%s hash=%s extract=%s link=%s graph=%s explain=%s render=%s",
+		tWalk.Round(time.Millisecond), tHash.Round(time.Millisecond), tExtract.Round(time.Millisecond),
+		tLink.Round(time.Millisecond), tGraph.Round(time.Millisecond), tExplain.Round(time.Millisecond),
+		tRender.Round(time.Millisecond))
 	return snapshot, nil
 }
 
@@ -363,9 +411,16 @@ func (e *Engine) isIgnored(relPath string, isDir bool) bool {
 	return false
 }
 
-// runExtractors detects applicable extractors and runs them.
-func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []string) ([]string, error) {
+// runExtractors detects applicable extractors and runs them. When cache is
+// non-nil, extractors implementing plugin.FileOwner have their facts reused
+// whenever the files they depend on are unchanged since the last snapshot.
+func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []string, hashes map[string]string, cache *extractorCache) ([]string, error) {
 	var usedNames []string
+
+	var keys map[string]string
+	if cache != nil {
+		keys = computeExtractorKeys(e.extractors.All(), files, hashes)
+	}
 
 	for _, ext := range e.extractors.All() {
 		if !e.cfg.IsExtractorEnabled(ext.Name()) {
@@ -382,16 +437,36 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 			continue
 		}
 
+		// Reuse cached facts when this extractor's inputs are unchanged.
+		if cache != nil {
+			if key, ok := keys[ext.Name()]; ok {
+				if cached, hit := cache.get(key); hit {
+					e.store.Add(cached...)
+					usedNames = append(usedNames, ext.Name())
+					log.Printf("[engine] extractor %s: reused %d cached facts", ext.Name(), len(cached))
+					continue
+				}
+			}
+		}
+
 		log.Printf("[engine] running extractor: %s", ext.Name())
+		tExt := time.Now()
 		extracted, err := ext.Extract(ctx, repoPath, files)
 		if err != nil {
 			log.Printf("[engine] extractor %s error: %v", ext.Name(), err)
 			continue
 		}
 
+		// Cache the raw (pre-tagging) facts before the engine mutates them.
+		if cache != nil {
+			if key, ok := keys[ext.Name()]; ok {
+				cache.put(key, extracted)
+			}
+		}
+
 		e.store.Add(extracted...)
 		usedNames = append(usedNames, ext.Name())
-		log.Printf("[engine] extractor %s: emitted %d facts", ext.Name(), len(extracted))
+		log.Printf("[engine] extractor %s: emitted %d facts in %s", ext.Name(), len(extracted), time.Since(tExt).Round(time.Millisecond))
 	}
 
 	return usedNames, nil
@@ -525,7 +600,12 @@ func (e *Engine) GetArtifact(name string) ([]byte, error) {
 	}
 }
 
-// computeFileHashes computes SHA-256 hashes for all files (used in snapshot metadata).
+// computeFileHashes computes SHA-256 hashes for all files (used in snapshot
+// metadata). This stays sequential on purpose: hashing is I/O-bound and already
+// fast (~0.25s on Airflow), and parallelizing it measurably regressed — many
+// concurrent random reads contend worse than the sequential reads the OS
+// prefetches. The extraction parsing, not hashing, is the bottleneck worth
+// parallelizing.
 func (e *Engine) computeFileHashes(repoPath string, files []string) map[string]string {
 	hashes := make(map[string]string, len(files))
 	for _, relFile := range files {

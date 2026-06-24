@@ -55,6 +55,11 @@ func (e *Engine) SetSnapshot(snap *facts.Snapshot) {
 	e.eng.SetSnapshot(snap)
 }
 
+// SetPersistCache controls whether the per-extractor cache is written to disk.
+func (e *Engine) SetPersistCache(persist bool) {
+	e.eng.SetPersistCache(persist)
+}
+
 // ResolveFactFile returns the absolute filesystem path for a fact's File field.
 func (e *Engine) ResolveFactFile(f *facts.Fact) string {
 	return e.eng.ResolveFactFile(f)

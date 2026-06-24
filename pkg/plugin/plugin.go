@@ -16,6 +16,18 @@ type Extractor interface {
 	Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error)
 }
 
+// FileOwner is an optional interface an Extractor may implement to declare which
+// files it parses. The engine uses it to scope incremental caching: an
+// extractor's previously computed facts are reused only when the contents of the
+// files it owns (and the repo's shared config/manifest files) are unchanged.
+// Extractors that do not implement it are never cached and always re-run.
+type FileOwner interface {
+	// OwnsFile reports whether this extractor parses the given repo-relative
+	// file. It must be a pure function of the path (a superset is safe — owning a
+	// file the extractor ignores only narrows what counts as "shared config").
+	OwnsFile(relFile string) bool
+}
+
 // Explainer analyzes facts and produces architectural insights.
 type Explainer interface {
 	// Name returns the explainer identifier (e.g. "cycles", "layers").

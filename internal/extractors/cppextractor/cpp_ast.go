@@ -6,8 +6,8 @@ import (
 	"unicode"
 
 	"github.com/enola-labs/enola/internal/facts"
-	cpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
 	sitter "github.com/tree-sitter/go-tree-sitter"
+	cpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
 )
 
 // extractFileAST parses a C++ translation unit with tree-sitter and emits

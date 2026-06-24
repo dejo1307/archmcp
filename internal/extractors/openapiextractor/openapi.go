@@ -207,8 +207,8 @@ func parseOpenAPIFile(absPath, relFile string) ([]facts.Fact, error) {
 							props["tags"] = tagStrings
 						}
 					}
-				// x-gateway-capabilities is a custom extension marking which
-				// operations are exposed at the API Gateway and their auth requirements.
+					// x-gateway-capabilities is a custom extension marking which
+					// operations are exposed at the API Gateway and their auth requirements.
 					if caps, ok := opMap["x-gateway-capabilities"].(map[string]interface{}); ok {
 						if exposed, ok := caps["exposed"].(bool); ok {
 							props["exposed"] = exposed

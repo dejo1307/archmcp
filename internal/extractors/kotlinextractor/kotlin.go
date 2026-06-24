@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/parallel"
 )
 
 // KotlinExtractor extracts architectural facts from Kotlin source code using
@@ -54,29 +55,29 @@ func (e *KotlinExtractor) Extract(ctx context.Context, repoPath string, files []
 	sourceRoot := detectKotlinSourceRoot(repoPath, files)
 	basePackage := detectKotlinBasePackage(repoPath)
 
-	modules := make(map[string]bool)
-
+	var kotlinFiles []string
 	for _, relFile := range files {
-		select {
-		case <-ctx.Done():
-			return allFacts, ctx.Err()
-		default:
+		if isKotlinFile(relFile) {
+			kotlinFiles = append(kotlinFiles, relFile)
 		}
+	}
 
-		if !isKotlinFile(relFile) {
-			continue
-		}
-
-		absFile := filepath.Join(repoPath, relFile)
-		src, err := os.ReadFile(absFile)
+	// The detected flags above are read-only, and the per-file extractors are
+	// pure, so parse in parallel and merge in file order for deterministic output.
+	perFileFacts := parallel.MapFiles(ctx, kotlinFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[kotlin-extractor] error reading %s: %v", relFile, err)
-			continue
+			return nil
 		}
+		ff := extractFileAST(src, relFile, isAndroid, sourceRoot, basePackage)
+		return append(ff, extractRetrofitFacts(src, relFile)...)
+	})
 
-		allFacts = append(allFacts, extractFileAST(src, relFile, isAndroid, sourceRoot, basePackage)...)
-		allFacts = append(allFacts, extractRetrofitFacts(src, relFile)...)
-		modules[filepath.Dir(relFile)] = true
+	modules := make(map[string]bool)
+	for i, ff := range perFileFacts {
+		allFacts = append(allFacts, ff...)
+		modules[filepath.Dir(kotlinFiles[i])] = true
 	}
 
 	for dir := range modules {
@@ -109,6 +110,9 @@ var (
 func isKotlinFile(path string) bool {
 	return strings.HasSuffix(strings.ToLower(path), ".kt")
 }
+
+// OwnsFile implements plugin.FileOwner for incremental caching.
+func (e *KotlinExtractor) OwnsFile(relFile string) bool { return isKotlinFile(relFile) }
 
 // --- Android & framework detection helpers (called by the AST walker) ---
 

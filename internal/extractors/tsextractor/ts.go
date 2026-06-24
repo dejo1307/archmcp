@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/parallel"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
@@ -129,32 +130,31 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// Parse tsconfig.json for path alias mappings (e.g., "@/*" → "src/*")
 	aliases := parseTSPathAliases(repoPath)
 
-	// Group files by directory for module detection
-	modules := make(map[string]bool)
-
+	// Restrict to TypeScript files once, then parse them in parallel. The
+	// framework flags and path aliases above are read-only, and extractFile is a
+	// pure function of (src, relFile, …), so per-file work is independent. Results
+	// are merged in file order for deterministic output.
+	var tsFiles []string
 	for _, relFile := range files {
-		select {
-		case <-ctx.Done():
-			return allFacts, ctx.Err()
-		default:
+		if isTypeScriptFile(relFile) {
+			tsFiles = append(tsFiles, relFile)
 		}
+	}
 
-		if !isTypeScriptFile(relFile) {
-			continue
-		}
-
-		absFile := filepath.Join(repoPath, relFile)
-		src, err := os.ReadFile(absFile)
+	perFileFacts := parallel.MapFiles(ctx, tsFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[ts-extractor] error reading %s: %v", relFile, err)
-			continue
+			return nil
 		}
+		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, aliases)
+	})
 
-		fileFacts := e.extractFile(src, relFile, isNextJS, isVue, isNuxt, aliases)
+	// Group files by directory for module detection
+	modules := make(map[string]bool)
+	for i, fileFacts := range perFileFacts {
 		allFacts = append(allFacts, fileFacts...)
-
-		dir := filepath.Dir(relFile)
-		modules[dir] = true
+		modules[filepath.Dir(tsFiles[i])] = true
 	}
 
 	// Emit module facts for each directory
@@ -737,6 +737,9 @@ func isTypeScriptFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".ts" || ext == ".tsx" || ext == ".vue"
 }
+
+// OwnsFile implements plugin.FileOwner for incremental caching.
+func (e *TSExtractor) OwnsFile(relFile string) bool { return isTypeScriptFile(relFile) }
 
 // hasChildKind reports whether node has a direct child of the given kind.
 func hasChildKind(node *sitter.Node, kind string) bool {

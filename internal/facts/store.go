@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -615,17 +616,48 @@ func (s *Store) Graph() *Graph {
 	return s.graph
 }
 
-// WriteJSONL writes all facts as JSONL to the given writer.
+// WriteJSONL writes all facts as JSONL to the given writer in a deterministic
+// order. Extractors emit facts (and within-fact relations) in map-iteration
+// order, which varies run to run; sorting here makes facts.jsonl byte-stable for
+// a given commit, so the snapshot is reproducible and incremental regenerations
+// don't churn the file. Relations are sorted on a copy so the in-memory store is
+// left untouched.
 func (s *Store) WriteJSONL(w io.Writer) error {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	enc := json.NewEncoder(w)
+	lines := make([]string, 0, len(s.facts))
 	for _, f := range s.facts {
-		if err := enc.Encode(f); err != nil {
+		if len(f.Relations) > 1 {
+			rels := make([]Relation, len(f.Relations))
+			copy(rels, f.Relations)
+			sort.Slice(rels, func(i, j int) bool {
+				if rels[i].Kind != rels[j].Kind {
+					return rels[i].Kind < rels[j].Kind
+				}
+				return rels[i].Target < rels[j].Target
+			})
+			f.Relations = rels
+		}
+		b, err := json.Marshal(f)
+		if err != nil {
+			s.mu.RUnlock()
 			return fmt.Errorf("encoding fact %q: %w", f.Name, err)
 		}
+		lines = append(lines, string(b))
 	}
-	return nil
+	s.mu.RUnlock()
+
+	sort.Strings(lines)
+
+	bw := bufio.NewWriter(w)
+	for _, line := range lines {
+		if _, err := bw.WriteString(line); err != nil {
+			return err
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+	return bw.Flush()
 }
 
 // WriteJSONLFile writes all facts as JSONL to the given file path.

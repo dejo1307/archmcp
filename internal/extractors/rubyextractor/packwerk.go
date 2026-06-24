@@ -18,9 +18,9 @@ type packwerkConfig struct {
 
 // packageConfig represents a single package.yml file.
 type packageConfig struct {
-	EnforceDependencies bool     `yaml:"enforce_dependencies"`
-	EnforcePrivacy      bool     `yaml:"enforce_privacy"`
-	Dependencies        []string `yaml:"dependencies"`
+	EnforceDependencies bool           `yaml:"enforce_dependencies"`
+	EnforcePrivacy      bool           `yaml:"enforce_privacy"`
+	Dependencies        []string       `yaml:"dependencies"`
 	Metadata            map[string]any `yaml:"metadata"`
 }
 
@@ -158,10 +158,10 @@ func parsePackwerk(repoPath string) *packwerkInfo {
 		// Build module fact.
 		props := map[string]any{
 			"language":             "ruby",
-			"framework":           "rails",
-			"packwerk":            true,
+			"framework":            "rails",
+			"packwerk":             true,
 			"enforce_dependencies": pkgCfg.EnforceDependencies,
-			"enforce_privacy":     pkgCfg.EnforcePrivacy,
+			"enforce_privacy":      pkgCfg.EnforcePrivacy,
 		}
 
 		if pkgCfg.Metadata != nil {

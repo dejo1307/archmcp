@@ -5,8 +5,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/enola-labs/enola/internal/facts"
 	swift "github.com/enola-labs/enola/internal/extractors/swiftextractor/grammar"
+	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
@@ -168,7 +168,7 @@ func (w *astWalker) qualify(name string) string {
 }
 
 func (w *astWalker) pushOwner(i int) { w.ownerStack = append(w.ownerStack, i) }
-func (w *astWalker) popOwner()        { w.ownerStack = w.ownerStack[:len(w.ownerStack)-1] }
+func (w *astWalker) popOwner()       { w.ownerStack = w.ownerStack[:len(w.ownerStack)-1] }
 func (w *astWalker) currentOwner() int {
 	if len(w.ownerStack) == 0 {
 		return -1

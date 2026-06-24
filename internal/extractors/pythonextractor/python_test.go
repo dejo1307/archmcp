@@ -761,7 +761,6 @@ func TestDetect_GoRepo(t *testing.T) {
 	}
 }
 
-
 // keys returns map keys sorted for deterministic error messages.
 func keys(m map[string]facts.Fact) []string {
 	out := make([]string, 0, len(m))

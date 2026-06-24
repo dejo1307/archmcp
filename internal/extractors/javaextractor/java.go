@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/parallel"
 )
 
 // JavaExtractor extracts architectural facts from Java source code using
@@ -46,28 +47,29 @@ func (e *JavaExtractor) Detect(repoPath string) (bool, error) {
 // dependents. Module facts are emitted per directory.
 func (e *JavaExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
 	var allFacts []facts.Fact
-	modules := make(map[string]bool)
 
+	var javaFiles []string
 	for _, relFile := range files {
-		select {
-		case <-ctx.Done():
-			return allFacts, ctx.Err()
-		default:
+		if isJavaFile(relFile) {
+			javaFiles = append(javaFiles, relFile)
 		}
+	}
 
-		if !isJavaFile(relFile) {
-			continue
-		}
-
-		absFile := filepath.Join(repoPath, relFile)
-		src, err := os.ReadFile(absFile)
+	// extractFileAST is a pure function of (src, relFile); parse files in parallel
+	// and merge in file order for deterministic output.
+	perFileFacts := parallel.MapFiles(ctx, javaFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[java-extractor] error reading %s: %v", relFile, err)
-			continue
+			return nil
 		}
+		return extractFileAST(src, relFile)
+	})
 
-		allFacts = append(allFacts, extractFileAST(src, relFile)...)
-		modules[filepath.Dir(relFile)] = true
+	modules := make(map[string]bool)
+	for i, ff := range perFileFacts {
+		allFacts = append(allFacts, ff...)
+		modules[filepath.Dir(javaFiles[i])] = true
 	}
 
 	canonicalizeTargets(allFacts)
@@ -234,6 +236,9 @@ func parentName(fqn string) string {
 func isJavaFile(path string) bool {
 	return strings.HasSuffix(strings.ToLower(path), ".java")
 }
+
+// OwnsFile implements plugin.FileOwner for incremental caching.
+func (e *JavaExtractor) OwnsFile(relFile string) bool { return isJavaFile(relFile) }
 
 // containsJavaSource reports whether any .java file exists under root within
 // maxDepth directory levels. It returns on the first match and skips hidden and

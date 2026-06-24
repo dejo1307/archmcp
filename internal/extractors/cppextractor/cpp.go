@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/parallel"
 )
 
 // CppExtractor extracts architectural facts from C++ source code using
@@ -74,26 +75,28 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 	typeIndex := make(map[string]string)   // simple type name -> dir
 	headerIndex := make(map[string]string) // header/source basename -> dir
 
-	// Pass 1: AST extraction + indices.
+	// Pass 1: AST extraction (parallel) + indices (rebuilt in file order).
+	var cppFiles []string
 	for _, relFile := range files {
-		select {
-		case <-ctx.Done():
-			return allFacts, ctx.Err()
-		default:
+		if isCppFile(relFile, hFilesAreCpp) {
+			cppFiles = append(cppFiles, relFile)
 		}
+	}
 
-		if !isCppFile(relFile, hFilesAreCpp) {
-			continue
-		}
-
-		absFile := filepath.Join(repoPath, relFile)
-		src, err := os.ReadFile(absFile)
+	// extractFileAST is pure; parse in parallel. The type/header indices below are
+	// then rebuilt by iterating the per-file results in file order, so they (and
+	// their last-write-wins on duplicate names) are identical to a serial run.
+	perFileFacts := parallel.MapFiles(ctx, cppFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[cpp-extractor] error reading %s: %v", relFile, err)
-			continue
+			return nil
 		}
+		return extractFileAST(src, relFile)
+	})
 
-		fileFacts := extractFileAST(src, relFile)
+	for i, fileFacts := range perFileFacts {
+		relFile := cppFiles[i]
 		allFacts = append(allFacts, fileFacts...)
 
 		dir := filepath.Dir(relFile)
@@ -335,6 +338,17 @@ func isCppFile(path string, hFilesAreCpp bool) bool {
 		return hFilesAreCpp
 	}
 	return false
+}
+
+// OwnsFile implements plugin.FileOwner for incremental caching. It owns a
+// superset of what isCppFile parses (bare .h files are always claimed, since the
+// repo-wide hFilesAreCpp decision is not available per-file); over-claiming only
+// narrows what counts as shared config and never under-invalidates the cache.
+func (e *CppExtractor) OwnsFile(relFile string) bool {
+	if isUnambiguousCppExt(relFile) {
+		return true
+	}
+	return strings.ToLower(filepath.Ext(relFile)) == ".h"
 }
 
 // repoHasUnambiguousCpp reports whether any file in the list has a C++-only

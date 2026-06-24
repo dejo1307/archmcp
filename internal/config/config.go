@@ -15,6 +15,17 @@ type Config struct {
 	Explainers []string     `yaml:"explainers"`
 	Renderers  []string     `yaml:"renderers"`
 	Output     OutputConfig `yaml:"output"`
+
+	// Incremental enables per-extractor caching: an extractor's facts are reused
+	// across snapshots when the files it owns (and the repo's shared config files)
+	// are unchanged. Defaults to true. Set `incremental: false` to force a full
+	// re-extraction every run.
+	Incremental *bool `yaml:"incremental,omitempty"`
+}
+
+// IncrementalEnabled reports whether per-extractor caching is on (the default).
+func (c *Config) IncrementalEnabled() bool {
+	return c.Incremental == nil || *c.Incremental
 }
 
 // OutputConfig controls where and how output artifacts are generated.

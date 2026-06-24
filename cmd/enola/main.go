@@ -101,6 +101,9 @@ func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, 
 	}
 
 	fmt.Fprintf(os.Stderr, "Analyzing %s …\n", repoPath)
+	// --explain is a read-only, no-artifacts mode: reuse a cache if one exists,
+	// but never write to .enola.
+	eng.SetPersistCache(false)
 	if _, err := eng.GenerateSnapshot(ctx, repoPath, false); err != nil {
 		log.Fatalf("snapshot generation failed: %v", err)
 	}

@@ -2,7 +2,6 @@ package pythonextractor
 
 import (
 	"context"
-	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/parallel"
 )
 
 // PythonExtractor extracts architectural facts from Python source code using
@@ -70,59 +70,58 @@ func (e *PythonExtractor) Detect(repoPath string) (bool, error) {
 }
 
 // Extract parses Python files and emits architectural facts.
+//
+// Both passes parse files in parallel (bounded by GOMAXPROCS) but merge their
+// results in stable file order, so the emitted facts are byte-for-byte identical
+// regardless of how the work was scheduled. Python parsing dominates snapshot
+// time on large polyglot repos, so this is the main throughput lever.
 func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
-	var allFacts []facts.Fact
-	modules := make(map[string]bool)
 	isDjango := detectDjango(repoPath)
 
-	// Pass 1: build a global symbol index across all Python files.
-	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo)}
+	// Restrict to Python files once; both passes iterate the same ordered set.
+	var pyFiles []string
 	for _, relFile := range files {
-		select {
-		case <-ctx.Done():
-			return allFacts, ctx.Err()
-		default:
+		if isPythonFile(relFile) {
+			pyFiles = append(pyFiles, relFile)
 		}
-		if !isPythonFile(relFile) {
-			continue
-		}
+	}
+
+	// Pass 1: build a global symbol index across all Python files. Each file is
+	// indexed into a local table in parallel, then the tables are merged in file
+	// order so duplicate-module last-write-wins stays deterministic.
+	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo)}
+	localIdxs := parallel.MapFiles(ctx, pyFiles, func(relFile string) map[string]*pyClassInfo {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
-			continue
+			return nil
 		}
-		buildFileIndex(src, relFile, idx)
+		local := &pySymbolIndex{classes: make(map[string]*pyClassInfo)}
+		buildFileIndex(src, relFile, local)
+		return local.classes
+	})
+	for _, m := range localIdxs {
+		for qualName, info := range m {
+			idx.classes[qualName] = info
+		}
 	}
 	finalizeImplMap(idx)
 
-	// Pass 2: extract facts using the populated symbol index.
-	for _, relFile := range files {
-		select {
-		case <-ctx.Done():
-			return allFacts, ctx.Err()
-		default:
-		}
-
-		if !isPythonFile(relFile) {
-			continue
-		}
-
-		absFile := filepath.Join(repoPath, relFile)
-		f, err := os.Open(absFile)
+	// Pass 2: extract facts using the populated symbol index (read-only here, so
+	// the per-file work is fully independent and parallel-safe).
+	perFileFacts := parallel.MapFiles(ctx, pyFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[python-extractor] error reading %s: %v", relFile, err)
-			continue
+			return nil
 		}
+		return extractFileAST(src, relFile, isDjango, idx)
+	})
 
-		src, readErr := readAll(f)
-		f.Close()
-		if readErr != nil {
-			log.Printf("[python-extractor] error reading %s: %v", relFile, readErr)
-			continue
-		}
-		allFacts = append(allFacts, extractFileAST(src, relFile, isDjango, idx)...)
-
-		dir := filepath.Dir(relFile)
-		modules[dir] = true
+	var allFacts []facts.Fact
+	modules := make(map[string]bool)
+	for i, ff := range perFileFacts {
+		allFacts = append(allFacts, ff...)
+		modules[filepath.Dir(pyFiles[i])] = true
 	}
 
 	// Resolve dotted import targets to internal module slash paths (and classify
@@ -200,7 +199,6 @@ var (
 	}
 )
 
-
 // applyDecoratorProps sets structural boolean props on a symbol based on a
 // decorator name. Only well-known structural decorators produce props; unknown
 // decorators are silently ignored.
@@ -271,16 +269,10 @@ func lastComponent(name string) string {
 	return name
 }
 
-
 // isPythonFile returns true if the file has a .py extension.
 func isPythonFile(path string) bool {
 	return strings.HasSuffix(strings.ToLower(path), ".py")
 }
 
-// readAll reads all bytes from an open file, seeking to the start first.
-func readAll(f *os.File) ([]byte, error) {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	return io.ReadAll(f)
-}
+// OwnsFile implements plugin.FileOwner for incremental caching.
+func (e *PythonExtractor) OwnsFile(relFile string) bool { return isPythonFile(relFile) }

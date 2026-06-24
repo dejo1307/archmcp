@@ -199,20 +199,33 @@ func TestJSONL_RoundTrip(t *testing.T) {
 		t.Fatalf("count mismatch: got %d, want %d", restored.Count(), original.Count())
 	}
 
-	origAll := original.All()
-	restAll := restored.All()
-
-	for i := range origAll {
-		o, r := origAll[i], restAll[i]
-		if o.Kind != r.Kind || o.Name != r.Name || o.File != r.File || o.Line != r.Line {
-			t.Errorf("fact[%d] basic fields mismatch: %+v vs %+v", i, o, r)
+	// WriteJSONL emits facts in a deterministic (sorted) order rather than
+	// insertion order, so match facts by identity instead of position and compare
+	// relations as a set.
+	restByName := make(map[string]Fact)
+	for _, r := range restored.All() {
+		restByName[r.Name] = r
+	}
+	for _, o := range original.All() {
+		r, ok := restByName[o.Name]
+		if !ok {
+			t.Errorf("fact %q missing after round-trip", o.Name)
+			continue
+		}
+		if o.Kind != r.Kind || o.File != r.File || o.Line != r.Line {
+			t.Errorf("fact %q basic fields mismatch: %+v vs %+v", o.Name, o, r)
 		}
 		if len(o.Relations) != len(r.Relations) {
-			t.Errorf("fact[%d] relations count: %d vs %d", i, len(o.Relations), len(r.Relations))
+			t.Errorf("fact %q relations count: %d vs %d", o.Name, len(o.Relations), len(r.Relations))
+			continue
 		}
-		for j := range o.Relations {
-			if o.Relations[j] != r.Relations[j] {
-				t.Errorf("fact[%d] rel[%d]: %+v vs %+v", i, j, o.Relations[j], r.Relations[j])
+		origRels := make(map[Relation]bool)
+		for _, rel := range o.Relations {
+			origRels[rel] = true
+		}
+		for _, rel := range r.Relations {
+			if !origRels[rel] {
+				t.Errorf("fact %q has unexpected relation after round-trip: %+v", o.Name, rel)
 			}
 		}
 	}

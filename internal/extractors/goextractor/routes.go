@@ -461,10 +461,10 @@ func routeToFact(r routeInfo, relFile, pkgDir string) facts.Fact {
 	}
 
 	return facts.Fact{
-		Kind: facts.KindRoute,
-		Name: r.path,
-		File: relFile,
-		Line: r.line,
+		Kind:  facts.KindRoute,
+		Name:  r.path,
+		File:  relFile,
+		Line:  r.line,
 		Props: props,
 		Relations: []facts.Relation{
 			{Kind: facts.RelDeclares, Target: pkgDir},

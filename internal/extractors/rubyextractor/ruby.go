@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/parallel"
 )
 
 // RubyExtractor extracts architectural facts from Ruby source code using the
@@ -41,40 +42,38 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 	pkgInfo := parsePackwerk(repoPath)
 	allFacts = append(allFacts, pkgInfo.facts...)
 
-	// Track directories that contain Ruby files for module emission.
-	modules := make(map[string]bool)
-
-	// Pass 2: parse .rb files.
+	// Pass 2: parse .rb files. Route files are parsed separately by the route
+	// extractor, so they are excluded here.
+	var rbFiles []string
 	for _, relFile := range files {
-		select {
-		case <-ctx.Done():
-			return allFacts, ctx.Err()
-		default:
-		}
-
 		if !isRubyFile(relFile) {
 			continue
 		}
-
-		// Skip route files -- they're parsed separately by the route extractor.
 		if isRails && isRouteFile(relFile) {
 			continue
 		}
+		rbFiles = append(rbFiles, relFile)
+	}
 
-		absFile := filepath.Join(repoPath, relFile)
-		src, err := os.ReadFile(absFile)
+	// pkgInfo is read-only here, so per-file parsing is independent. Parse in
+	// parallel and merge in file order for deterministic output.
+	perFileFacts := parallel.MapFiles(ctx, rbFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[ruby-extractor] error reading %s: %v", relFile, err)
-			continue
+			return nil
 		}
-
 		exported := isPublicAPI(relFile, pkgInfo)
 		// extractFileAST emits symbols, imports, mixins, constants, attrs, calls,
 		// and ActiveRecord storage/associations in a single AST pass.
-		allFacts = append(allFacts, extractFileAST(src, relFile, isRails, exported)...)
+		return extractFileAST(src, relFile, isRails, exported)
+	})
 
-		dir := filepath.Dir(relFile)
-		modules[dir] = true
+	// Track directories that contain Ruby files for module emission.
+	modules := make(map[string]bool)
+	for i, ff := range perFileFacts {
+		allFacts = append(allFacts, ff...)
+		modules[filepath.Dir(rbFiles[i])] = true
 	}
 
 	// Emit module facts for directories not already covered by packwerk packages.
@@ -130,6 +129,9 @@ func detectRailsProject(repoPath string) bool {
 func isRubyFile(path string) bool {
 	return strings.HasSuffix(strings.ToLower(path), ".rb")
 }
+
+// OwnsFile implements plugin.FileOwner for incremental caching.
+func (e *RubyExtractor) OwnsFile(relFile string) bool { return isRubyFile(relFile) }
 
 // isPublicAPI checks if a file is within a packwerk package's app/public/ directory.
 func isPublicAPI(relFile string, pkg *packwerkInfo) bool {

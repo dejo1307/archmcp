@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/parallel"
 )
 
 // SwiftExtractor extracts architectural facts from Swift source code using
@@ -81,12 +82,6 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 	// that dirToFile is fully populated before the manifest parser resolves each
 	// target's representative source file.
 	for _, relFile := range files {
-		select {
-		case <-ctx.Done():
-			return allFacts, ctx.Err()
-		default:
-		}
-
 		if !isSwiftFile(relFile) {
 			continue
 		}
@@ -95,17 +90,24 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 			continue
 		}
 		swiftFiles = append(swiftFiles, relFile)
+	}
 
-		absFile := filepath.Join(repoPath, relFile)
-		src, err := os.ReadFile(absFile)
+	// extractFileAST/extractURLSessionFacts are pure; parse the source files in
+	// parallel. The indices below are rebuilt by iterating the per-file results in
+	// file order, so modules, dirToFile and typeIndex match a serial run exactly.
+	perFileFacts := parallel.MapFiles(ctx, swiftFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[swift-extractor] error reading %s: %v", relFile, err)
-			continue
+			return nil
 		}
+		ff := extractFileAST(src, relFile, isiOS)
+		return append(ff, extractURLSessionFacts(src, relFile)...)
+	})
 
-		fileFacts := extractFileAST(src, relFile, isiOS)
+	for i, fileFacts := range perFileFacts {
+		relFile := swiftFiles[i]
 		allFacts = append(allFacts, fileFacts...)
-		allFacts = append(allFacts, extractURLSessionFacts(src, relFile)...)
 
 		dir := filepath.Dir(relFile)
 		modules[dir] = true
@@ -567,6 +569,9 @@ func isPrivateAccess(text string) bool {
 func isSwiftFile(path string) bool {
 	return strings.HasSuffix(strings.ToLower(path), ".swift")
 }
+
+// OwnsFile implements plugin.FileOwner for incremental caching.
+func (e *SwiftExtractor) OwnsFile(relFile string) bool { return isSwiftFile(relFile) }
 
 func matchesXcodeProject(name string) bool {
 	return strings.HasSuffix(name, ".xcodeproj") || strings.HasSuffix(name, ".xcworkspace")

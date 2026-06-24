@@ -491,7 +491,7 @@ func TestExtract_AnonymousDefaultExport_NamedByFile(t *testing.T) {
 	// Next.js page filenames).
 	ff := extractAll(t, map[string]string{
 		"src/app/dashboard/page.tsx": `export default function() { return <div/> }`,
-		"src/components/Card.tsx":     `export default () => <div/>`,
+		"src/components/Card.tsx":    `export default () => <div/>`,
 	}, true)
 
 	page, ok := findFact(ff, "src/app/dashboard.DashboardPage")

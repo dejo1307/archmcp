@@ -6,8 +6,8 @@ import (
 	"unicode"
 
 	"github.com/enola-labs/enola/internal/facts"
-	python "github.com/tree-sitter/tree-sitter-python/bindings/go"
 	sitter "github.com/tree-sitter/go-tree-sitter"
+	python "github.com/tree-sitter/tree-sitter-python/bindings/go"
 )
 
 // extractFileAST parses a Python file with tree-sitter and emits architectural
@@ -112,8 +112,8 @@ func (w *pyWalker) recordCallMetrics(target string) {
 	}
 }
 
-func (w *pyWalker) pushOwner(idx int)       { w.ownerStack = append(w.ownerStack, idx) }
-func (w *pyWalker) popOwner()               { w.ownerStack = w.ownerStack[:len(w.ownerStack)-1] }
+func (w *pyWalker) pushOwner(idx int) { w.ownerStack = append(w.ownerStack, idx) }
+func (w *pyWalker) popOwner()         { w.ownerStack = w.ownerStack[:len(w.ownerStack)-1] }
 func (w *pyWalker) currentOwner() *facts.Fact {
 	if len(w.ownerStack) == 0 {
 		return nil
@@ -204,10 +204,10 @@ func (w *pyWalker) handleImport(node *sitter.Node) {
 			}
 			target := w.module + " -> " + name
 			w.out = append(w.out, facts.Fact{
-				Kind: facts.KindDependency,
-				Name: target,
-				File: w.relFile,
-				Line: int(node.StartPosition().Row) + 1,
+				Kind:  facts.KindDependency,
+				Name:  target,
+				File:  w.relFile,
+				Line:  int(node.StartPosition().Row) + 1,
 				Props: map[string]any{"language": "python"},
 				Relations: []facts.Relation{
 					{Kind: facts.RelImports, Target: name},
@@ -241,10 +241,10 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 	target := w.module + " -> " + moduleName
 	depProps := map[string]any{"language": "python", "from": true}
 	w.out = append(w.out, facts.Fact{
-		Kind: facts.KindDependency,
-		Name: target,
-		File: w.relFile,
-		Line: int(node.StartPosition().Row) + 1,
+		Kind:  facts.KindDependency,
+		Name:  target,
+		File:  w.relFile,
+		Line:  int(node.StartPosition().Row) + 1,
 		Props: depProps,
 		Relations: []facts.Relation{
 			{Kind: facts.RelImports, Target: moduleName},
