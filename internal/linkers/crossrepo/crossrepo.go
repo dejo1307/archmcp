@@ -50,12 +50,13 @@ const minSharedSegments = 2
 
 // edge accumulates everything justifying one consumer -> provider dependency.
 type edge struct {
-	consumer  string
-	provider  string
-	via       map[string]bool // "http", "import", "shared_symbols"
-	endpoints map[string]bool // "METHOD /path"
-	imports   map[string]bool // sample import targets
-	symbols   map[string]bool // sample shared type identities
+	consumer   string
+	provider   string
+	via        map[string]bool // "http", "http-client", "import", "shared_symbols"
+	endpoints  map[string]bool // "METHOD /path"
+	imports    map[string]bool // sample import targets
+	symbols    map[string]bool // sample shared type identities
+	confidence string          // "verified" or "probable" — max over HTTP endpoints
 }
 
 func (e *edge) note(via string) {
@@ -63,6 +64,17 @@ func (e *edge) note(via string) {
 		e.via = map[string]bool{}
 	}
 	e.via[via] = true
+}
+
+// noteConfidence records an HTTP-match confidence, keeping the strongest seen:
+// "verified" wins over "probable".
+func (e *edge) noteConfidence(c string) {
+	if e.confidence == "verified" {
+		return
+	}
+	if c == "verified" || e.confidence == "" {
+		e.confidence = c
+	}
 }
 
 // ComputeLinks analyzes a multi-repo fact set and returns synthetic facts that
@@ -110,9 +122,10 @@ func repoLabelLookup(all []facts.Fact) map[string]string {
 // --- signal (A): HTTP route role matching ---
 
 type routeRef struct {
-	repo   string
-	method string
-	path   string
+	repo     string
+	method   string
+	path     string
+	fullPath string // the complete normalized server path this ref was indexed from
 }
 
 func linkHTTP(all []facts.Fact, edges map[string]*edge) {
@@ -129,12 +142,13 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge) {
 		if method == "" {
 			continue
 		}
-		ref := routeRef{repo: f.Repo, method: method, path: f.Name}
 		// Index every trailing-segment suffix of each server path, so a client
 		// that calls a base-relative subpath ("settings/x") still matches a
 		// server serving the full path ("/api/settings/x"). serverPaths already
-		// returns normalized paths.
+		// returns normalized paths; fullPath records which full path a suffix
+		// came from, so a match can tell a full-path hit from a fragment hit.
 		for _, p := range serverPaths(f) {
+			ref := routeRef{repo: f.Repo, method: method, path: f.Name, fullPath: p}
 			for _, suf := range pathSuffixes(p) {
 				key := routeKey(suf, method)
 				server[key] = append(server[key], ref)
@@ -157,25 +171,28 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge) {
 		}
 		// Canonicalize the leading slash so a base-relative client path
 		// ("settings/x") matches the indexed suffix form ("/settings/x").
-		matches := server[routeKey(canonicalLeadingSlash(np), method)]
-		provider := pickProvider(f, matches)
+		clientPath := canonicalLeadingSlash(np)
+		matches := server[routeKey(clientPath, method)]
+		provider, unambiguous := pickProvider(f, matches)
 		if provider == "" || provider == f.Repo {
 			continue
 		}
 		e := edgeFor(edges, f.Repo, provider)
-		e.note("http")
+		e.note(httpVia(f))
 		if e.endpoints == nil {
 			e.endpoints = map[string]bool{}
 		}
 		e.endpoints[method+" "+f.Name] = true
+		e.noteConfidence(matchConfidence(clientPath, np, provider, matches, unambiguous))
 	}
 }
 
-// pickProvider resolves which provider repo a client route points at. With a
-// single candidate repo it returns it directly; with several it uses the
-// client's service hint (api / spec basename) to disambiguate, and returns ""
-// (skip) when still ambiguous.
-func pickProvider(client facts.Fact, matches []routeRef) string {
+// pickProvider resolves which provider repo a client route points at, and
+// whether that resolution was unambiguous. With a single candidate repo it
+// returns (repo, true); with several it uses the client's service hint
+// (target_hint / api / spec basename) to disambiguate, returning (repo, false),
+// and ("", false) when still ambiguous.
+func pickProvider(client facts.Fact, matches []routeRef) (string, bool) {
 	providers := map[string]bool{}
 	for _, m := range matches {
 		if m.repo != client.Repo {
@@ -184,22 +201,56 @@ func pickProvider(client facts.Fact, matches []routeRef) string {
 	}
 	switch len(providers) {
 	case 0:
-		return ""
+		return "", false
 	case 1:
 		for p := range providers {
-			return p
+			return p, true
 		}
 	}
 	hint := normalizeLabel(serviceHint(client))
 	if hint == "" {
-		return "" // ambiguous, no hint
+		return "", false // ambiguous, no hint
 	}
 	for p := range providers {
 		if normalizeLabel(p) == hint || strings.Contains(normalizeLabel(p), hint) || strings.Contains(hint, normalizeLabel(p)) {
-			return p
+			return p, false
 		}
 	}
-	return ""
+	return "", false
+}
+
+// handWrittenClientSources are the `source` prop values emitted by hand-written
+// HTTP-client extractors, as opposed to generated OpenAPI client specs.
+var handWrittenClientSources = map[string]bool{
+	"ts-http-client": true, "retrofit": true, "urlsession": true,
+	"ruby-http-client": true, "go-http-client": true,
+}
+
+// httpVia returns the via label for an HTTP edge derived from a client route:
+// "http-client" for a hand-written client call site, "http" for an OpenAPI
+// client spec (the default).
+func httpVia(client facts.Fact) string {
+	if handWrittenClientSources[propString(client, "source")] {
+		return "http-client"
+	}
+	return "http"
+}
+
+// matchConfidence classifies how trustworthy an HTTP route match is. It is
+// "verified" only when the client called a provider's complete server path
+// (not just a trailing fragment), the provider was the sole candidate (not
+// disambiguated by a name hint), and the client path carried no inferred {}
+// placeholder; otherwise "probable".
+func matchConfidence(clientPath, np, provider string, matches []routeRef, unambiguous bool) string {
+	if !unambiguous || strings.Contains(np, "{}") {
+		return "probable"
+	}
+	for _, m := range matches {
+		if m.repo == provider && m.fullPath == clientPath {
+			return "verified"
+		}
+	}
+	return "probable"
 }
 
 // serverPaths returns the normalized paths a server route is reachable at: its
@@ -213,6 +264,11 @@ func serverPaths(f facts.Fact) []string {
 }
 
 func serviceHint(f facts.Fact) string {
+	// target_hint (derived from a wrapper-client constant or base-URL env var) is
+	// the most specific provider signal, so it is consulted first.
+	if h := propString(f, "target_hint"); h != "" {
+		return h
+	}
 	if api := propString(f, "api"); api != "" {
 		return api
 	}
@@ -465,6 +521,9 @@ func materialize(edges map[string]*edge, allRepos []string) []facts.Fact {
 			"type":      "cross_repo",
 			"synthetic": SyntheticMarker,
 			"via":       sortedKeys(e.via),
+		}
+		if e.confidence != "" {
+			props["confidence"] = e.confidence
 		}
 		if len(e.endpoints) > 0 {
 			eps := sortedKeys(e.endpoints)

@@ -225,6 +225,9 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 	// Extract route registrations
 	result = append(result, extractRoutes(fset, f, relFile, pkgDir)...)
 
+	// Extract outbound HTTP-client calls
+	result = append(result, extractHTTPClientFacts(fset, f, relFile, pkgDir)...)
+
 	// Extract storage patterns
 	result = append(result, extractStorage(fset, f, relFile, pkgDir)...)
 

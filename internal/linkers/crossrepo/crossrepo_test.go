@@ -473,3 +473,117 @@ func TestComputeLinks_SharedSymbolsNonTypesIgnored(t *testing.T) {
 		t.Errorf("shared non-type symbols should not link: %+v", edges)
 	}
 }
+
+// --- via: http-client tag and confidence ---
+
+func TestComputeLinks_HTTPClientViaTag(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/list", "GET", map[string]any{"source": "go-http-client"}),
+		serverRoute("svc-beta", "/api/items/list", "GET"),
+	}
+	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	if e == nil {
+		t.Fatal("missing svc-alpha -> svc-beta edge")
+	}
+	if via, _ := e.Props["via"].([]string); !reflect.DeepEqual(via, []string{"http-client"}) {
+		t.Errorf("via = %v, want [http-client]", e.Props["via"])
+	}
+}
+
+func TestComputeLinks_OpenAPIViaStaysHTTP(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/list", "GET", map[string]any{"source": "openapi"}),
+		serverRoute("svc-beta", "/api/items/list", "GET"),
+	}
+	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	if e == nil {
+		t.Fatal("missing edge")
+	}
+	if via, _ := e.Props["via"].([]string); !reflect.DeepEqual(via, []string{"http"}) {
+		t.Errorf("via = %v, want [http]", e.Props["via"])
+	}
+}
+
+func TestComputeLinks_ConfidenceVerified(t *testing.T) {
+	// Sole provider, client calls the full server path, no inferred {}.
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/list", "GET", nil),
+		serverRoute("svc-beta", "/api/items/list", "GET"),
+	}
+	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	if e == nil || e.Props["confidence"] != "verified" {
+		t.Errorf("confidence = %v, want verified", e.Props["confidence"])
+	}
+}
+
+func TestComputeLinks_ConfidenceProbableSuffixOnly(t *testing.T) {
+	// Client calls a base-relative subpath (suffix), not the full server path.
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "settings/feedback", "POST", nil),
+		serverRoute("svc-beta", "/api/settings/feedback", "POST"),
+	}
+	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	if e == nil || e.Props["confidence"] != "probable" {
+		t.Errorf("confidence = %v, want probable", e.Props["confidence"])
+	}
+}
+
+func TestComputeLinks_ConfidenceProbableInferred(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),
+		serverRoute("svc-beta", "/api/items/{id}", "GET"),
+	}
+	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	if e == nil || e.Props["confidence"] != "probable" {
+		t.Errorf("confidence = %v, want probable (inferred {})", e.Props["confidence"])
+	}
+}
+
+func TestComputeLinks_ConfidenceProbableHintDisambiguated(t *testing.T) {
+	// Two providers serve the path; resolved only via target_hint → probable.
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/list", "GET", map[string]any{"target_hint": "svcbeta"}),
+		serverRoute("svc-beta", "/api/items/list", "GET"),
+		serverRoute("svc-other", "/api/items/list", "GET"),
+	}
+	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	if e == nil {
+		t.Fatal("missing svc-alpha -> svc-beta edge")
+	}
+	if e.Props["confidence"] != "probable" {
+		t.Errorf("confidence = %v, want probable", e.Props["confidence"])
+	}
+	if findEdge(ComputeLinks(in), "svc-alpha", "svc-other") != nil {
+		t.Error("should not link to svc-other")
+	}
+}
+
+func TestComputeLinks_ConfidenceMixedIsVerified(t *testing.T) {
+	// One verified endpoint + one probable endpoint between the same pair → verified.
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/list", "GET", nil), // verified
+		clientRoute("svc-alpha", "settings/feedback", "POST", nil), // probable (suffix)
+		serverRoute("svc-beta", "/api/items/list", "GET"),
+		serverRoute("svc-beta", "/api/settings/feedback", "POST"),
+	}
+	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	if e == nil || e.Props["confidence"] != "verified" {
+		t.Errorf("confidence = %v, want verified", e.Props["confidence"])
+	}
+}
+
+func TestComputeLinks_TargetHintResolvesProvider(t *testing.T) {
+	// target_hint "svccheckout" (from SvcCheckoutClient) resolves svc-checkout.
+	in := []facts.Fact{
+		clientRoute("core", "/api/purchase/build", "POST", map[string]any{"target_hint": "svccheckout"}),
+		serverRoute("svc-checkout", "/api/purchase/build", "POST"),
+		serverRoute("svc-other", "/api/purchase/build", "POST"),
+	}
+	out := ComputeLinks(in)
+	if findEdge(out, "core", "svc-checkout") == nil {
+		t.Error("target_hint should resolve provider svc-checkout")
+	}
+	if findEdge(out, "core", "svc-other") != nil {
+		t.Error("should not link to svc-other")
+	}
+}
