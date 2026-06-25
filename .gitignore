@@ -14,6 +14,8 @@
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
+# ...but not the coverage explainer source package (coverage.* targets reports, not source):
+!coverage.go
 *.coverprofile
 *.enola
 profile.cov
