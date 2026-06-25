@@ -302,6 +302,31 @@ func TestExtract_SvelteKitPage(t *testing.T) {
 	}
 }
 
+func TestExtract_SvelteKit_LibAlias(t *testing.T) {
+	ff := extractSvelte(t, map[string]string{
+		"src/routes/+page.svelte": `<script lang="ts">
+  import { formatName } from '$lib/utils'
+</script>
+
+<h1>{formatName('world')}</h1>
+`,
+		"src/lib/utils.ts": `export function formatName(s: string) { return s }`,
+	}, true)
+
+	deps := findFactsByKind(ff, facts.KindDependency)
+	found := false
+	for _, d := range deps {
+		for _, r := range d.Relations {
+			if r.Target == "src/lib/utils" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected $lib/utils to resolve to src/lib/utils")
+	}
+}
+
 func TestIsSvelteFile(t *testing.T) {
 	tests := []struct {
 		path string

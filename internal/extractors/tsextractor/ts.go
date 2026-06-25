@@ -131,6 +131,13 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// Parse tsconfig.json for path alias mappings (e.g., "@/*" → "src/*")
 	aliases := parseTSPathAliases(repoPath)
 
+	// SvelteKit maps $lib → src/lib by convention.
+	if isSvelteKit {
+		if _, ok := aliases["$lib/"]; !ok {
+			aliases["$lib/"] = "src/lib/"
+		}
+	}
+
 	// Restrict to TypeScript files once, then parse them in parallel. The
 	// framework flags and path aliases above are read-only, and extractFile is a
 	// pure function of (src, relFile, …), so per-file work is independent. Results
