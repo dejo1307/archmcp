@@ -204,8 +204,10 @@ func (w *astWalker) walkJavaLambdaSubtree(node, lambda *sitter.Node) {
 }
 
 type routeScope struct {
-	isController bool
-	basePath     string
+	isController  bool
+	isFeignClient bool
+	feignHint     string
+	basePath      string
 }
 
 func (w *astWalker) enclosingType() string { return strings.Join(w.typeStack, ".") }
@@ -413,8 +415,10 @@ func (w *astWalker) handleClassLike(node *sitter.Node, kind string) {
 	w.typeStack = append(w.typeStack, name)
 	w.methodStack = append(w.methodStack, collectMethodNames(body, w.src))
 	w.routeStack = append(w.routeStack, routeScope{
-		isController: isSpringController(annotations),
-		basePath:     requestMappingPath(annotations),
+		isController:  isSpringController(annotations),
+		isFeignClient: hasAnnotation(annotations, "FeignClient"),
+		feignHint:     feignServiceHint(annotations),
+		basePath:      requestMappingPath(annotations),
 	})
 
 	// Constructor-based DI: a class with a single constructor, or one annotated
@@ -499,11 +503,21 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 		f.Props["static"] = true
 	}
 
-	// Spring route: a request-mapping annotation on a controller method.
-	if rs := w.currentRoute(); rs != nil && rs.isController {
-		for _, rf := range springRouteFacts(rs.basePath, annotations, w.relFile,
-			int(node.StartPosition().Row)+1, w.dir, w.canonicalName(w.qualify(name))) {
-			w.out = append(w.out, rf)
+	// Request-mapping annotation on a method: a server route on a @Controller, or an
+	// outbound client route on a @FeignClient interface (same annotations, the
+	// class-level annotation is the discriminator).
+	if rs := w.currentRoute(); rs != nil {
+		line := int(node.StartPosition().Row) + 1
+		switch {
+		case rs.isFeignClient:
+			for _, rf := range feignClientFacts(rs.basePath, rs.feignHint, annotations, w.relFile, line, w.dir) {
+				w.out = append(w.out, rf)
+			}
+		case rs.isController:
+			for _, rf := range springRouteFacts(rs.basePath, annotations, w.relFile,
+				line, w.dir, w.canonicalName(w.qualify(name))) {
+				w.out = append(w.out, rf)
+			}
 		}
 	}
 
@@ -788,6 +802,11 @@ func (w *astWalker) handleInvocation(node *sitter.Node) {
 	}
 	name := nodeText(nameNode, w.src)
 	obj := node.ChildByFieldName("object")
+
+	// HTTP client call site (RestTemplate). Emitted independently of the call-graph
+	// edge below; guarded by a path-like literal argument so non-HTTP same-named
+	// calls (map.put, list.delete) don't match.
+	w.detectRestTemplateCall(node, name)
 
 	// Resolve bare `foo()` and `this.foo()` calls against the enclosing class's
 	// own methods. Calls on other receivers are left unresolved (the receiver's

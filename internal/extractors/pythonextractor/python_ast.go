@@ -333,13 +333,19 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 				path := m[3]
 				w.out = append(w.out, facts.Fact{
 					Kind: facts.KindRoute,
-					Name: method + " " + path,
+					// Name is the bare path (like every other extractor) so the
+					// cross-repo linker, which treats route Name as the path, can match
+					// it. Multiple methods on one path produce same-Name facts
+					// disambiguated by the method prop — the linker indexes by (path, method).
+					Name: path,
 					File: w.relFile,
 					Line: int(c.StartPosition().Row) + 1,
 					Props: map[string]any{
-						"http_method": method,
-						"path":        path,
-						"framework":   "fastapi",
+						"role":      "server",
+						"method":    method,
+						"path":      path,
+						"framework": "fastapi",
+						"language":  "python",
 					},
 				})
 				pendingRouteIndices = append(pendingRouteIndices, len(w.out)-1)
@@ -378,9 +384,11 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 						File: w.relFile,
 						Line: int(c.StartPosition().Row) + 1,
 						Props: map[string]any{
-							"http_method": meth,
-							"framework":   "django",
-							"handler":     handlerName,
+							"role":      "server",
+							"method":    meth,
+							"framework": "django",
+							"handler":   handlerName,
+							"language":  "python",
 						},
 					})
 				}
@@ -646,6 +654,7 @@ func (w *pyWalker) handleExprStatement(node *sitter.Node) {
 				File: w.relFile,
 				Line: int(node.StartPosition().Row) + 1,
 				Props: map[string]any{
+					"role":      "server",
 					"path":      m[1],
 					"handler":   m[2],
 					"framework": "django",
@@ -668,6 +677,7 @@ func (w *pyWalker) handleAssignment(node *sitter.Node) {
 				File: w.relFile,
 				Line: int(node.StartPosition().Row) + 1,
 				Props: map[string]any{
+					"role":      "server",
 					"path":      m[1],
 					"handler":   m[2],
 					"framework": "django",

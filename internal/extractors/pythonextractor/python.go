@@ -147,7 +147,7 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 
 var (
 	// routeDecoratorRe matches FastAPI/Starlette route decorators.
-	// Groups: (object, http_method, path).
+	// Groups: (object, method, path).
 	routeDecoratorRe = regexp.MustCompile(`^\s*@([\w.]+)\.(get|post|put|delete|patch|head|options)\s*\(\s*["']([^"']+)["']`)
 
 	// tableNameRe matches SQLAlchemy __tablename__ assignments. Group: (table).

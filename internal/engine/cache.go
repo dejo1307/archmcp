@@ -16,7 +16,9 @@ import (
 // cacheVersion is mixed into every cache key. Bump it whenever the fact schema or
 // an extractor's output format changes in a way that invalidates stored facts.
 // v2: Swift URLSession extractor precision (file-URL exclusion, interpolation fix).
-const cacheVersion = "v2"
+// v3: Python route facts use method/role/bare-path Name (was http_method, verb-in-name).
+// v4: Java HTTP client detection (RestTemplate call sites + @FeignClient interfaces).
+const cacheVersion = "v4"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

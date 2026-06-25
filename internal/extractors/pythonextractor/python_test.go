@@ -342,11 +342,14 @@ async def health_check():
 		t.Fatalf("expected 1 route fact, got %d", len(routes))
 	}
 	r := routes[0]
-	if r.Name != "GET /health" {
-		t.Errorf("route name = %q, want %q", r.Name, "GET /health")
+	if r.Name != "/health" {
+		t.Errorf("route name = %q, want %q", r.Name, "/health")
 	}
-	if r.Props["http_method"] != "GET" {
-		t.Errorf("http_method = %v, want GET", r.Props["http_method"])
+	if r.Props["method"] != "GET" {
+		t.Errorf("method = %v, want GET", r.Props["method"])
+	}
+	if r.Props["role"] != "server" {
+		t.Errorf("role = %v, want server", r.Props["role"])
 	}
 	if r.Props["path"] != "/health" {
 		t.Errorf("path = %v, want /health", r.Props["path"])
@@ -376,11 +379,11 @@ async def post_recommend_v2(body: RecommendV2Body) -> RecommendV2Response:
 		t.Fatalf("expected 1 route fact, got %d", len(routes))
 	}
 	r := routes[0]
-	if r.Name != "POST /v2/recommend" {
-		t.Errorf("route name = %q, want POST /v2/recommend", r.Name)
+	if r.Name != "/v2/recommend" {
+		t.Errorf("route name = %q, want /v2/recommend", r.Name)
 	}
-	if r.Props["http_method"] != "POST" {
-		t.Errorf("http_method = %v, want POST", r.Props["http_method"])
+	if r.Props["method"] != "POST" {
+		t.Errorf("method = %v, want POST", r.Props["method"])
 	}
 }
 
@@ -407,10 +410,15 @@ async def delete_item(id: int):
 		t.Fatalf("expected 3 route facts, got %d", len(routes))
 	}
 
-	idx := byName(result)
+	// Routes are now named by bare path (linker convention); same path with
+	// different methods produces same-Name facts disambiguated by the method prop.
+	got := map[string]bool{} // "METHOD path"
+	for _, r := range routes {
+		got[r.Props["method"].(string)+" "+r.Name] = true
+	}
 	for _, want := range []string{"GET /items", "POST /items", "DELETE /items/{id}"} {
-		if _, ok := idx[want]; !ok {
-			t.Errorf("missing route %q", want)
+		if !got[want] {
+			t.Errorf("missing route %q; got %v", want, got)
 		}
 	}
 }
@@ -432,8 +440,8 @@ async def login():
 	if len(routes) != 1 {
 		t.Fatalf("expected 1 route fact, got %d: %v", len(routes), routes)
 	}
-	if routes[0].Name != "POST /login" {
-		t.Errorf("route name = %q, want POST /login", routes[0].Name)
+	if routes[0].Name != "/login" || routes[0].Props["method"] != "POST" {
+		t.Errorf("route = %q method %v, want /login POST", routes[0].Name, routes[0].Props["method"])
 	}
 }
 
@@ -611,8 +619,8 @@ async def post_recommend_v2(
 	if len(routes) != 1 {
 		t.Fatalf("expected 1 route, got %d", len(routes))
 	}
-	if routes[0].Name != "POST /v2/recommend" {
-		t.Errorf("route name = %q, want POST /v2/recommend", routes[0].Name)
+	if routes[0].Name != "/v2/recommend" || routes[0].Props["method"] != "POST" {
+		t.Errorf("route = %q method %v, want /v2/recommend POST", routes[0].Name, routes[0].Props["method"])
 	}
 
 	idx := byName(result)
