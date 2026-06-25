@@ -443,6 +443,7 @@ Each extractor is detected by characteristic project files and then parses what 
 | Python     | tree-sitter      | `pyproject.toml`, `setup.py`, `requirements.txt`, `Pipfile`, `pytest.ini`, `mypy.ini`, `tox.ini`, or `setup.cfg` (root or up to 3 levels deep) |
 | TypeScript | tree-sitter      | `tsconfig.json`, `tsconfig.base.json`, or `package.json` with TypeScript (root or one level deep) |
 | Vue        | tree-sitter      | `package.json` with `vue` dependency, or `nuxt.config.js/ts/mjs` for Nuxt (root or one level deep) |
+| Svelte     | tree-sitter      | `package.json` with `svelte` dependency, or `svelte.config.js/ts/mjs` / `@sveltejs/kit` for SvelteKit |
 | Swift      | tree-sitter      | `Package.swift`, `.xcodeproj`, or `.xcworkspace` present |
 | Ruby       | tree-sitter      | `Gemfile` present |
 | C++        | tree-sitter      | a C++ source (`.cpp`/`.cc`/`.cxx`/`.hpp`/...) present, or a build file (`CMakeLists.txt`/`Makefile`/`meson.build`/`*.vcxproj`) plus any header |

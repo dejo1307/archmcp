@@ -126,6 +126,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	isNextJS := detectNextJS(repoPath)
 	isVue := detectVue(repoPath)
 	isNuxt := detectNuxt(repoPath)
+	isSvelteKit := detectSvelteKit(repoPath)
 
 	// Parse tsconfig.json for path alias mappings (e.g., "@/*" → "src/*")
 	aliases := parseTSPathAliases(repoPath)
@@ -147,7 +148,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			log.Printf("[ts-extractor] error reading %s: %v", relFile, err)
 			return nil
 		}
-		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, aliases)
+		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, aliases)
 	})
 
 	// Group files by directory for module detection
@@ -185,9 +186,12 @@ type extractCtx struct {
 	importMap map[string]string
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt bool, aliases map[string]string) []facts.Fact {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit bool, aliases map[string]string) []facts.Fact {
 	if isVueFile(relFile) {
 		return e.extractVueSFC(src, relFile, isNuxt, aliases)
+	}
+	if isSvelteFile(relFile) {
+		return e.extractSvelteSFC(src, relFile, isSvelteKit, aliases)
 	}
 
 	var result []facts.Fact
@@ -737,7 +741,7 @@ func detectNextJSAt(dir string) bool {
 
 func isTypeScriptFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".ts" || ext == ".tsx" || ext == ".vue" || ext == ".js" || ext == ".jsx"
+	return ext == ".ts" || ext == ".tsx" || ext == ".vue" || ext == ".js" || ext == ".jsx" || ext == ".svelte"
 }
 
 // OwnsFile implements plugin.FileOwner for incremental caching.
@@ -772,7 +776,8 @@ func fileSymbolName(relFile string) string {
 	base := filepath.Base(relFile)
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	switch base {
-	case "index", "page", "route", "layout", "loading", "error", "not-found", "template", "default":
+	case "index", "page", "route", "layout", "loading", "error", "not-found", "template", "default",
+		"+page", "+layout", "+error", "+server":
 		parent := filepath.Base(filepath.Dir(relFile))
 		if parent != "" && parent != "." && parent != string(filepath.Separator) {
 			return toPascal(parent) + toPascal(base)
