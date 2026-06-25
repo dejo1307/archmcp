@@ -50,14 +50,17 @@ jobs:
       - name: Golden + determinism
         run: go test -count=1 -run 'TestGolden|TestDeterminism' ./internal/engine/...
 
-  # Non-blocking for now: surfaces findings without gating merges while the
-  # existing backlog is unknown. Tighten (drop continue-on-error, broaden the
-  # linter set in .golangci.yml) once the baseline is clean.
+  # golangci-lint v2 (action @v8). only-new-issues grandfathers the existing
+  # backlog and gates only code introduced by the PR, so this is a real check
+  # without a repo-wide cleanup first. fetch-depth: 0 gives the action the base
+  # history it needs to diff. Broaden the linter set in .golangci.yml and chip
+  # away at the baseline over time.
   lint:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -66,10 +69,10 @@ jobs:
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
           version: latest
-          args: --timeout=5m
+          only-new-issues: true
 
   vuln:
     runs-on: ubuntu-latest

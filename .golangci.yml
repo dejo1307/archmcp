@@ -1,27 +1,14 @@
-# Minimal, high-signal linter set to start. The CI lint job is non-blocking
-# (continue-on-error) until this baseline is green; broaden the enabled list and
-# remove continue-on-error in ci.yml once the existing findings are addressed.
-run:
-  timeout: 5m
-  tests: true
+# golangci-lint v2 config. Minimal, high-signal linter set to start. CI runs
+# with only-new-issues=true, so the existing backlog (run `golangci-lint run`
+# locally to see it) is grandfathered and only PR-introduced findings gate the
+# build. Broaden the enabled list and chip away at the baseline over time.
+version: "2"
 
 linters:
-  disable-all: true
+  default: none
   enable:
-    - govet
-    - staticcheck
     - errcheck
+    - govet
     - ineffassign
+    - staticcheck
     - unused
-
-issues:
-  # Show all findings (don't cap per-linter/per-file) so the true baseline is visible.
-  max-issues-per-linter: 0
-  max-same-issues: 0
-  exclude-rules:
-    # Test fixtures under testdata/ are intentionally non-idiomatic sample code.
-    - path: testdata/
-      linters:
-        - errcheck
-        - staticcheck
-        - unused
