@@ -549,13 +549,13 @@ func TestScenario_QueryFactsWithFilePrefixCrossRepo(t *testing.T) {
 	}
 
 	// Test 2: query_facts with file_prefix "ruby-monolith" should find ruby-monolith facts
-	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "ruby-monolith"})
+	_, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "ruby-monolith"})
 	if total != 2 {
 		t.Errorf("file_prefix=ruby-monolith: total=%d, want 2", total)
 	}
 
 	// Test 3: repo filter should work
-	results, total = store.QueryAdvanced(facts.QueryOpts{Repo: "go-service"})
+	_, total = store.QueryAdvanced(facts.QueryOpts{Repo: "go-service"})
 	if total != 3 {
 		t.Errorf("repo=go-service: total=%d, want 3", total)
 	}
@@ -565,7 +565,7 @@ func TestScenario_QueryFactsWithFilePrefixCrossRepo(t *testing.T) {
 	if normalized != "go-service/lib" {
 		t.Errorf("normalize(/Users/me/development/go-service/lib) = %q, want go-service/lib", normalized)
 	}
-	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: normalized})
+	_, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: normalized})
 	if total != 3 {
 		t.Errorf("normalized file_prefix: total=%d, want 3 (module + symbol + dep all in go-service/lib/)", total)
 	}
@@ -732,7 +732,7 @@ func TestScenario_FirstRepoNoAppendThenAppend(t *testing.T) {
 	store.SetRepoRange(0, "ruby-monolith")
 
 	// Verify: repo filter works immediately (before any append)
-	results, total := store.QueryAdvanced(facts.QueryOpts{Repo: "ruby-monolith"})
+	_, total := store.QueryAdvanced(facts.QueryOpts{Repo: "ruby-monolith"})
 	if total != 3 {
 		t.Errorf("before append: repo=ruby-monolith should return 3, got %d", total)
 	}
@@ -760,7 +760,7 @@ func TestScenario_FirstRepoNoAppendThenAppend(t *testing.T) {
 	// Step 3: Verify both repos are now queryable
 
 	// repo: "ruby-monolith" should now return results
-	results, total = store.QueryAdvanced(facts.QueryOpts{Repo: "ruby-monolith"})
+	results, total := store.QueryAdvanced(facts.QueryOpts{Repo: "ruby-monolith"})
 	if total != 3 {
 		t.Errorf("repo=ruby-monolith: total=%d, want 3", total)
 	}
@@ -771,19 +771,19 @@ func TestScenario_FirstRepoNoAppendThenAppend(t *testing.T) {
 	}
 
 	// repo: "go-service" should return results
-	results, total = store.QueryAdvanced(facts.QueryOpts{Repo: "go-service"})
+	_, total = store.QueryAdvanced(facts.QueryOpts{Repo: "go-service"})
 	if total != 1 {
 		t.Errorf("repo=go-service: total=%d, want 1", total)
 	}
 
 	// file_prefix: "ruby-monolith" should work (files are now ruby-monolith/lib/...)
-	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "ruby-monolith/"})
+	_, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "ruby-monolith/"})
 	if total != 3 {
 		t.Errorf("file_prefix=ruby-monolith/: total=%d, want 3", total)
 	}
 
 	// file_prefix: "go-service" should work
-	results, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "go-service/"})
+	_, total = store.QueryAdvanced(facts.QueryOpts{FilePrefix: "go-service/"})
 	if total != 1 {
 		t.Errorf("file_prefix=go-service/: total=%d, want 1", total)
 	}
@@ -815,8 +815,6 @@ func TestScenario_FirstRepoNoAppendThenAppend(t *testing.T) {
 	if !strings.Contains(output, "CoreLogger") {
 		t.Errorf("explore output should contain CoreLogger, got:\n%s", output)
 	}
-
-	_ = results // avoid unused
 }
 
 // --- exploreModuleSubstring tests ---

@@ -20,14 +20,8 @@ type scopedQuery struct {
 	Term       string   // the remaining bare substring search term
 }
 
-// factKinds and symbolKinds classify a kind: value so it can be routed to the
-// right filter. Fact kinds map to QueryOpts.Kinds; symbol kinds additionally
-// constrain Props["symbol_kind"] (which QueryOpts has no dedicated field for).
-var factKinds = map[string]bool{
-	facts.KindModule: true, facts.KindSymbol: true, facts.KindRoute: true,
-	facts.KindStorage: true, facts.KindDependency: true, facts.KindService: true,
-}
-
+// symbolKinds classifies a kind: value that additionally constrains
+// Props["symbol_kind"] (which QueryOpts has no dedicated field for).
 var symbolKinds = map[string]bool{
 	facts.SymbolFunc: true, facts.SymbolMethod: true, facts.SymbolStruct: true,
 	facts.SymbolInterface: true, facts.SymbolType: true, facts.SymbolClass: true,

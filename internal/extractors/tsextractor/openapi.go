@@ -100,8 +100,8 @@ func extractOpenAPITypescriptFacts(src []byte, relFile string) []facts.Fact {
 			continue
 		}
 
-		switch {
-		case depth == 1:
+		switch depth {
+		case 1:
 			// Scan for the start of a path entry: '/some/path': {
 			if m := pathKeyRe.FindStringSubmatch(line); m != nil {
 				currentPath = m[1]
@@ -111,7 +111,7 @@ func extractOpenAPITypescriptFacts(src []byte, relFile string) []facts.Fact {
 				inPathsBlock = false // exited the paths block
 			}
 
-		case depth == 2:
+		case 2:
 			// Inside a path entry — look for available HTTP method declarations.
 			if currentPath != "" {
 				if m := methodAvailRe.FindStringSubmatch(line); m != nil {

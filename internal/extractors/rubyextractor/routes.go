@@ -4,14 +4,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
-
-// symbolListRe extracts symbol names from a string like ":index, :show, :create".
-var symbolListRe = regexp.MustCompile(`:(\w+)`)
 
 // extractAllRoutes finds and parses all Rails route files in the repository.
 func extractAllRoutes(repoPath string, files []string) []facts.Fact {
@@ -105,15 +101,6 @@ func restfulActions(only, except map[string]bool) []restAction {
 		return filterActions(all, except, false)
 	}
 	return all
-}
-
-// parseSymbolList extracts symbol names from a string like ":index, :show, :create".
-func parseSymbolList(s string) map[string]bool {
-	result := make(map[string]bool)
-	for _, m := range symbolListRe.FindAllStringSubmatch(s, -1) {
-		result[m[1]] = true
-	}
-	return result
 }
 
 // filterActions returns actions filtered by an allow or deny list.

@@ -2119,7 +2119,7 @@ func (s *Server) exploreDirectory(store *facts.Store, focus string, sb *strings.
 	}
 
 	if len(symbols) > 0 {
-		sb.WriteString(fmt.Sprintf("## Key Symbols (showing up to 30)\n\n"))
+		sb.WriteString("## Key Symbols (showing up to 30)\n\n")
 		limit := len(symbols)
 		if limit > 30 {
 			limit = 30

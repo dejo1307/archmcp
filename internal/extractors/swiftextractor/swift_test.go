@@ -23,7 +23,7 @@ func extractFromString(t *testing.T, src string, isiOS bool) []facts.Fact {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return extractFile(f, "pkg/test.swift", isiOS)
 }
 

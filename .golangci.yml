@@ -1,7 +1,5 @@
-# golangci-lint v2 config. Minimal, high-signal linter set to start. CI runs
-# with only-new-issues=true, so the existing backlog (run `golangci-lint run`
-# locally to see it) is grandfathered and only PR-introduced findings gate the
-# build. Broaden the enabled list and chip away at the baseline over time.
+# golangci-lint v2 config. High-signal linter set; the repo baseline is clean,
+# so CI gates the whole tree (see .github/workflows/ci.yml).
 version: "2"
 
 linters:
@@ -12,3 +10,24 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+  settings:
+    staticcheck:
+      # "all" minus the checks golangci-lint disables by default (ST1000/3/16/20/21/22),
+      # minus QF1012: it rewrites the readable `sb.WriteString(fmt.Sprintf(...))` idiom
+      # to `fmt.Fprintf(&sb, ...)` repo-wide for no real benefit. Every bug-class (SA*)
+      # and simplification (S1*) check stays on.
+      checks:
+        - "all"
+        - "-ST1000"
+        - "-ST1003"
+        - "-ST1016"
+        - "-ST1020"
+        - "-ST1021"
+        - "-ST1022"
+        - "-QF1012"
+
+issues:
+  # Show every finding (defaults cap duplicates at 3, which hides repeated
+  # issues like multiple unchecked f.Close calls).
+  max-issues-per-linter: 0
+  max-same-issues: 0

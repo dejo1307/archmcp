@@ -274,7 +274,9 @@ func (e *TSExtractor) extractVueScriptBlock(block *vueScriptBlock, relFile strin
 
 	parser := sitter.NewParser()
 	defer parser.Close()
-	parser.SetLanguage(sitter.NewLanguage(lang))
+	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
+		return nil
+	}
 
 	tree := parser.Parse(block.Content, nil)
 	defer tree.Close()

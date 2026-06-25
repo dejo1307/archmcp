@@ -209,7 +209,9 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 
 	parser := sitter.NewParser()
 	defer parser.Close()
-	parser.SetLanguage(sitter.NewLanguage(lang))
+	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
+		return result
+	}
 
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
@@ -1364,16 +1366,8 @@ func (w *tsBodyWalker) walkCallbackSubtree(n, cb *sitter.Node) {
 	}
 }
 
-// collectCalls walks a function/method body subtree and returns deduplicated
-// RelCalls relations for each resolvable call expression. className, when
-// non-empty, enables resolution of `this.method()` to "<dir>.<className>.<method>".
-func collectCalls(node *sitter.Node, src []byte, dir, className string, importMap map[string]string) []facts.Relation {
-	w := &tsBodyWalker{src: src, dir: dir, className: className, importMap: importMap, seen: make(map[string]bool)}
-	w.walk(node)
-	return w.rels
-}
-
-// collectCallsWithMetrics is collectCalls plus per-function complexity metrics,
+// collectCallsWithMetrics walks a function/method body subtree and returns
+// deduplicated RelCalls relations plus per-function complexity metrics,
 // used for function/method/arrow facts. selfName/selfShort enable direct-recursion
 // detection.
 func collectCallsWithMetrics(node *sitter.Node, src []byte, dir, className string, importMap map[string]string, selfName, selfShort string) ([]facts.Relation, *tsBodyMetrics) {

@@ -3,7 +3,6 @@ package javaextractor
 import (
 	"path/filepath"
 	"strings"
-	"unicode"
 
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -510,14 +509,10 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 		line := int(node.StartPosition().Row) + 1
 		switch {
 		case rs.isFeignClient:
-			for _, rf := range feignClientFacts(rs.basePath, rs.feignHint, annotations, w.relFile, line, w.dir) {
-				w.out = append(w.out, rf)
-			}
+			w.out = append(w.out, feignClientFacts(rs.basePath, rs.feignHint, annotations, w.relFile, line, w.dir)...)
 		case rs.isController:
-			for _, rf := range springRouteFacts(rs.basePath, annotations, w.relFile,
-				line, w.dir, w.canonicalName(w.qualify(name))) {
-				w.out = append(w.out, rf)
-			}
+			w.out = append(w.out, springRouteFacts(rs.basePath, annotations, w.relFile,
+				line, w.dir, w.canonicalName(w.qualify(name)))...)
 		}
 	}
 
@@ -1060,13 +1055,6 @@ var javaLangTypes = map[string]bool{
 	"StringBuilder": true, "StringBuffer": true, "Void": true, "Override": true,
 	"Deprecated": true, "SuppressWarnings": true, "FunctionalInterface": true,
 	"AutoCloseable": true, "Cloneable": true, "ClassLoader": true, "Process": true,
-}
-
-func isCapitalized(s string) bool {
-	if s == "" {
-		return false
-	}
-	return unicode.IsUpper([]rune(s)[0])
 }
 
 func findChildByKind(node *sitter.Node, kind string) *sitter.Node {

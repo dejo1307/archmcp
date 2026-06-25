@@ -368,7 +368,7 @@ func kotlinFileSourceRoot(repoPath, relFile string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		m := packageRe.FindStringSubmatch(scanner.Text())

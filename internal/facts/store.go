@@ -666,7 +666,7 @@ func (s *Store) WriteJSONLFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	bw := bufio.NewWriter(f)
 	if err := s.WriteJSONL(bw); err != nil {
 		return err
@@ -699,7 +699,7 @@ func (s *Store) ReadJSONLFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return s.ReadJSONL(f)
 }
 

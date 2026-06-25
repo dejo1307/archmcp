@@ -353,9 +353,7 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 			}
 			// DRF @api_view(['GET','POST']).
 			if m := apiViewRe.FindStringSubmatch(text); m != nil {
-				for _, meth := range httpMethodWordRe.FindAllString(m[1], -1) {
-					pendingApiViewMethods = append(pendingApiViewMethods, meth)
-				}
+				pendingApiViewMethods = append(pendingApiViewMethods, httpMethodWordRe.FindAllString(m[1], -1)...)
 				continue
 			}
 			// Generic decorator name capture.

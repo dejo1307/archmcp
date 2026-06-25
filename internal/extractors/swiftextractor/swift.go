@@ -260,7 +260,7 @@ func extractTypeReferences(absFile string) []string {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	seen := make(map[string]bool)
 	var refs []string

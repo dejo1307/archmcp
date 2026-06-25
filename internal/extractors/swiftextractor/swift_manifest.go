@@ -310,7 +310,7 @@ func lastNamedChildExcept(node, except *sitter.Node) *sitter.Node {
 	var last *sitter.Node
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.IsNamed() && !(c.StartByte() == except.StartByte() && c.EndByte() == except.EndByte()) {
+		if c.IsNamed() && (c.StartByte() != except.StartByte() || c.EndByte() != except.EndByte()) {
 			last = c
 		}
 	}

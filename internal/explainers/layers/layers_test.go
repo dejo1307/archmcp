@@ -158,8 +158,10 @@ func TestDetectPatterns_Hexagonal(t *testing.T) {
 	}
 
 	// 4/4 modules classified, 4/7 layers matched
-	// confidence = (4/4)*0.6 + (4/7)*0.4 ≈ 0.828
-	expectedConf := (4.0/4.0)*0.6 + (4.0/7.0)*0.4
+	// confidence = (classified/total)*0.6 + (matched/total)*0.4 ≈ 0.828
+	classified, totalModules := 4.0, 4.0
+	matched, totalLayers := 4.0, 7.0
+	expectedConf := (classified/totalModules)*0.6 + (matched/totalLayers)*0.4
 	if math.Abs(hexPattern.Confidence-expectedConf) > 0.01 {
 		t.Errorf("confidence = %f, want ≈ %f", hexPattern.Confidence, expectedConf)
 	}

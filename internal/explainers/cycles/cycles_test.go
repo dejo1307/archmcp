@@ -10,13 +10,6 @@ import (
 
 // --- helpers ---
 
-func sortedSCC(scc []string) []string {
-	s := make([]string, len(scc))
-	copy(s, scc)
-	sort.Strings(s)
-	return s
-}
-
 func makeStore(modules []string, deps map[string][]string) *facts.Store {
 	s := facts.NewStore()
 	for _, m := range modules {

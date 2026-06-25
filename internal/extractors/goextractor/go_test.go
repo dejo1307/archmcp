@@ -637,7 +637,9 @@ func TestDetect(t *testing.T) {
 
 	// With go.mod: should detect
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	detected, err := ext.Detect(dir)
 	if err != nil {
 		t.Fatalf("Detect: %v", err)

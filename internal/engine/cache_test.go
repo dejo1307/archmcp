@@ -67,7 +67,9 @@ func TestComputeExtractorKeys_ChangesWhenSharedConfigChanges(t *testing.T) {
 
 func TestComputeExtractorKeys_StableWhenNothingChanges(t *testing.T) {
 	h := map[string]string{"a.py": "h1", "b.ts": "h2", "go.mod": "h3"}
-	if keysFor(t, h)["py"] != keysFor(t, h)["py"] {
+	first := keysFor(t, h)["py"]
+	second := keysFor(t, h)["py"]
+	if first != second {
 		t.Error("keys must be a deterministic function of the inputs")
 	}
 }

@@ -292,7 +292,7 @@ func (w *astWalker) handleClassDeclaration(node *sitter.Node) {
 	keyword := "class"
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() == "interface" || (c.IsNamed() == false && nodeText(c, w.src) == "interface") {
+		if c.Kind() == "interface" || (!c.IsNamed() && nodeText(c, w.src) == "interface") {
 			keyword = "interface"
 			break
 		}

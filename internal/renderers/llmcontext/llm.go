@@ -72,8 +72,7 @@ func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapsho
 				cutpoint = 0
 			}
 			sb.WriteString(sec.content[:cutpoint])
-			sb.WriteString(fmt.Sprintf("\n\n---\n*[Truncated in: %s]*\n", sec.name))
-			remaining = 0
+			fmt.Fprintf(&sb, "\n\n---\n*[Truncated in: %s]*\n", sec.name)
 			break
 		} else {
 			// List omitted sections
@@ -83,7 +82,7 @@ func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapsho
 					omitted = append(omitted, s.name)
 				}
 			}
-			sb.WriteString(fmt.Sprintf("\n\n---\n*[Omitted: %s]*\n", strings.Join(omitted, ", ")))
+			fmt.Fprintf(&sb, "\n\n---\n*[Omitted: %s]*\n", strings.Join(omitted, ", "))
 			break
 		}
 	}
@@ -136,8 +135,8 @@ func (r *LLMContextRenderer) renderRepoMap(snapshot *facts.Snapshot) string {
 		if l, ok := mod.Props["language"].(string); ok {
 			lang = l
 		}
-		sb.WriteString(fmt.Sprintf("| `%s` | %s | %d | %d |\n",
-			mod.Name, lang, symbolCounts[mod.Name], exportedCounts[mod.Name]))
+		fmt.Fprintf(&sb, "| `%s` | %s | %d | %d |\n",
+			mod.Name, lang, symbolCounts[mod.Name], exportedCounts[mod.Name])
 	}
 	sb.WriteString("\n")
 	return sb.String()
@@ -150,13 +149,13 @@ func (r *LLMContextRenderer) renderArchPattern(snapshot *facts.Snapshot) string 
 	// Find architecture insights
 	for _, insight := range snapshot.Insights {
 		if strings.HasPrefix(insight.Title, "Architecture pattern:") {
-			sb.WriteString(fmt.Sprintf("**%s** (confidence: %.0f%%)\n\n", insight.Title, insight.Confidence*100))
+			fmt.Fprintf(&sb, "**%s** (confidence: %.0f%%)\n\n", insight.Title, insight.Confidence*100)
 			sb.WriteString(insight.Description + "\n\n")
 
 			if len(insight.Evidence) > 0 {
 				sb.WriteString("Layer mapping:\n")
 				for _, ev := range insight.Evidence {
-					sb.WriteString(fmt.Sprintf("- %s\n", ev.Detail))
+					fmt.Fprintf(&sb, "- %s\n", ev.Detail)
 				}
 				sb.WriteString("\n")
 			}
@@ -208,7 +207,7 @@ func (r *LLMContextRenderer) renderCrossRepo(snapshot *facts.Snapshot) string {
 			}
 		}
 		via := strings.Join(propStrSlice(e, "via"), "+")
-		sb.WriteString(fmt.Sprintf("| `%s` | `%s` | %s | %s |\n", consumer, provider, via, crossRepoDetail(e)))
+		fmt.Fprintf(&sb, "| `%s` | `%s` | %s | %s |\n", consumer, provider, via, crossRepoDetail(e))
 	}
 	sb.WriteString("\n")
 	return sb.String()
@@ -313,7 +312,7 @@ func (r *LLMContextRenderer) renderRoutes(snapshot *facts.Snapshot) string {
 	for _, route := range routes {
 		method, _ := route.Props["method"].(string)
 		routeType, _ := route.Props["type"].(string)
-		sb.WriteString(fmt.Sprintf("| %s | `%s` | `%s` | %s |\n", method, route.Name, route.File, routeType))
+		fmt.Fprintf(&sb, "| %s | `%s` | `%s` | %s |\n", method, route.Name, route.File, routeType)
 	}
 	sb.WriteString("\n")
 	return sb.String()
@@ -337,8 +336,8 @@ func (r *LLMContextRenderer) renderStorage(snapshot *facts.Snapshot) string {
 	for _, s := range storage {
 		storageKind, _ := s.Props["storage_kind"].(string)
 		operation, _ := s.Props["operation"].(string)
-		sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | `%s` |\n",
-			s.Name, storageKind, operation, s.File))
+		fmt.Fprintf(&sb, "| `%s` | %s | %s | `%s` |\n",
+			s.Name, storageKind, operation, s.File)
 	}
 	sb.WriteString("\n")
 	return sb.String()
@@ -461,7 +460,7 @@ func (r *LLMContextRenderer) renderCriticalModules(snapshot *facts.Snapshot) str
 		} else if s.Score >= 5 {
 			criticality = "medium"
 		}
-		sb.WriteString(fmt.Sprintf("| `%s` | %d | %d | %s |\n", s.Name, s.FanIn, s.FanOut, criticality))
+		fmt.Fprintf(&sb, "| `%s` | %d | %d | %s |\n", s.Name, s.FanIn, s.FanOut, criticality)
 	}
 	sb.WriteString("\n")
 	return sb.String()
@@ -563,9 +562,9 @@ func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string
 func (r *LLMContextRenderer) renderMeta(snapshot *facts.Snapshot) string {
 	var sb strings.Builder
 	sb.WriteString("---\n\n")
-	sb.WriteString(fmt.Sprintf("*Generated at %s in %s. %d facts, %d insights.*\n",
+	fmt.Fprintf(&sb, "*Generated at %s in %s. %d facts, %d insights.*\n",
 		snapshot.Meta.GeneratedAt, snapshot.Meta.Duration,
-		snapshot.Meta.FactCount, snapshot.Meta.InsightCount))
+		snapshot.Meta.FactCount, snapshot.Meta.InsightCount)
 	return sb.String()
 }
 

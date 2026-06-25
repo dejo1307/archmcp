@@ -135,10 +135,6 @@ func TestResolveImports_StdlibAndExternal(t *testing.T) {
 		if source(f) != wantSource[i] {
 			t.Errorf("fact %d (%s) source = %q, want %q", i, importTarget(f), source(f), wantSource[i])
 		}
-		// Targets must be left untouched for non-internal imports.
-		if importTarget(f) != ff[i].Relations[0].Target {
-			// (always true since we read the same slice, but assert intent)
-		}
 	}
 	if importTarget(ff[0]) != "os" {
 		t.Errorf("stdlib import target should be unchanged, got %q", importTarget(ff[0]))
