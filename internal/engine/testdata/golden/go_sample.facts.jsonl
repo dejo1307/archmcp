@@ -1,0 +1,10 @@
+{"kind":"dependency","name":". -\u003e example.com/gosample/pkg/a","file":"main.go","line":4,"repo":"go_sample","props":{"language":"go","source":"internal"},"relations":[{"kind":"imports","target":"pkg/a"}]}
+{"kind":"dependency","name":". -\u003e example.com/gosample/pkg/b","file":"main.go","line":5,"repo":"go_sample","props":{"language":"go","source":"internal"},"relations":[{"kind":"imports","target":"pkg/b"}]}
+{"kind":"dependency","name":"pkg/a -\u003e example.com/gosample/pkg/b","file":"pkg/a/a.go","line":3,"repo":"go_sample","props":{"language":"go","source":"internal"},"relations":[{"kind":"imports","target":"pkg/b"}]}
+{"kind":"dependency","name":"pkg/b -\u003e example.com/gosample/pkg/a","file":"pkg/b/b.go","line":3,"repo":"go_sample","props":{"language":"go","source":"internal"},"relations":[{"kind":"imports","target":"pkg/a"}]}
+{"kind":"module","name":".","file":".","repo":"go_sample","props":{"language":"go","modulePath":"example.com/gosample","package":"main"}}
+{"kind":"module","name":"pkg/a","file":"pkg/a","repo":"go_sample","props":{"language":"go","package":"a"}}
+{"kind":"module","name":"pkg/b","file":"pkg/b","repo":"go_sample","props":{"language":"go","package":"b"}}
+{"kind":"symbol","name":"..main","file":"main.go","line":10,"repo":"go_sample","props":{"cyclomatic":1,"exported":false,"language":"go","symbol_kind":"function"},"relations":[{"kind":"calls","target":"pkg/a.Alpha"},{"kind":"calls","target":"pkg/b.Beta"},{"kind":"declares","target":"."}]}
+{"kind":"symbol","name":"pkg/a.Alpha","file":"pkg/a/a.go","line":7,"repo":"go_sample","props":{"cyclomatic":1,"exported":true,"language":"go","symbol_kind":"function"},"relations":[{"kind":"calls","target":"pkg/b.Beta"},{"kind":"declares","target":"pkg/a"}]}
+{"kind":"symbol","name":"pkg/b.Beta","file":"pkg/b/b.go","line":6,"repo":"go_sample","props":{"cyclomatic":1,"exported":true,"language":"go","symbol_kind":"function"},"relations":[{"kind":"calls","target":"pkg/a.Alpha"},{"kind":"declares","target":"pkg/b"}]}

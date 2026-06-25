@@ -1,0 +1,14 @@
+openapi: 3.0.0
+info:
+  title: Billing Client
+  version: 1.0.0
+paths:
+  /invoices:
+    get:
+      operationId: listInvoices
+      summary: List invoices from the billing service
+      tags:
+        - billing
+      responses:
+        "200":
+          description: OK

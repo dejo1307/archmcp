@@ -1,0 +1,14 @@
+openapi: 3.0.0
+info:
+  title: Widgets Consumer (repoB calling repoA)
+  version: 1.0.0
+paths:
+  /widgets:
+    get:
+      operationId: fetchWidgets
+      summary: repoB calls repoA's GET /widgets
+      tags:
+        - widgets
+      responses:
+        "200":
+          description: OK

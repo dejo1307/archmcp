@@ -14,11 +14,62 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.11"
+          go-version-file: go.mod
           cache: true
 
-      - name: Run tests
-        run: go test -race -count=1 ./...
+      - name: Run tests with coverage
+        run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Coverage summary
+        run: |
+          echo '### Coverage' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  # Guards Enola's core promise: snapshotting a fixture repo twice yields an
+  # identical fact graph, and the committed goldens still match. Fast and
+  # CGO-light, so it runs as its own gate independent of the full test matrix.
+  determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Golden + determinism
+        run: go test -count=1 -run 'TestGolden|TestDeterminism' ./internal/engine/...
+
+  # Non-blocking for now: surfaces findings without gating merges while the
+  # existing backlog is unknown. Tighten (drop continue-on-error, broaden the
+  # linter set in .golangci.yml) once the baseline is clean.
+  lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
 
   vuln:
     runs-on: ubuntu-latest
@@ -28,7 +79,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.11"
+          go-version-file: go.mod
           cache: true
 
       - name: Install govulncheck
