@@ -199,6 +199,8 @@ Working across several repos? Generate the first, then add the rest with append 
 
 > "If I change the auth service, which other services are impacted?"
 
+> "Which of my backend's endpoints aren't called by any of the client apps? (Cleanup candidates — but check for callers outside these repos first.)"
+
 **Regenerate after major changes** so the snapshot stays current. Refreshes are fast: enola caches each language's facts and re-parses a language only when one of its files (or a shared config like `package.json`) actually changed, reusing the rest.
 
 ---

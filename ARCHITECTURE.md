@@ -149,6 +149,7 @@ Explainers turn raw facts into architectural observations. Each insight carries 
 - **Layers** ([`internal/explainers/layers`](internal/explainers/layers/layers.go)) — recognizes common architectural shapes by matching module paths against known patterns: **hexagonal** (application / port / adapter / domain / …), **Next.js** (pages / components / hooks / lib / api / …), and **Go-standard** (cmd / internal / pkg / api). Confidence is computed from how much of the codebase matches. It also flags **layer violations** — an inner layer importing an outer one — as lower-confidence heuristic warnings.
 - **Cross-repo** ([`internal/explainers/crossrepo`](internal/explainers/crossrepo/crossrepo.go)) — summarizes the cross-repo edges found by the linker. Returns nothing for a single-repo snapshot.
 - **Coverage** ([`internal/explainers/coverage`](internal/explainers/coverage/coverage.go)) — turns the per-service `edge_coverage` counts the linker records into **coverage-gap** insights: a service with no resolved outbound edges but unresolved outbound call sites is flagged as a blind spot ("appears isolated but…"), distinct from one that is genuinely a leaf. Distinguishes absence of edges from a gap in coverage. Returns nothing for a single-repo snapshot. Surfaced programmatically by the `coverage_report` tool.
+- **Unused-routes** ([`internal/explainers/unusedroutes`](internal/explainers/unusedroutes/unusedroutes.go)) — the **server-side inverse** of the cross-repo HTTP linker: it rolls up the `route` facts that *no loaded client calls* (tagged `unmatched_by_clients` during linking — see [Finding unused endpoints](#finding-unused-endpoints)) into one candidate-cleanup insight per service. Deliberately conservative: it only considers repos that actually serve a cross-repo client (an HTTP *provider* — never a frontend's own page routes), skips low-signal generic paths (`/health`, single-segment), and biases toward false negatives. Each insight carries the mandatory caveat that candidates are unused *by the loaded clients only* — consumers outside the snapshot (admin scripts, cron, webhooks, third-party clients, deep links) don't appear, so verify before deleting. Confidence `0.6` (a candidate to review, not a verdict). Returns nothing for a single-repo snapshot.
 - **God-class** ([`internal/explainers/godclass`](internal/explainers/godclass/godclass.go)) — flags symbols with an outlier **fan-in** (depended upon by far more symbols than average), computed from the graph's reverse adjacency list. High fan-in concentrates change risk.
 - **Hotspots** ([`internal/explainers/hotspots`](internal/explainers/hotspots/hotspots.go)) — flags call-graph **pinch points** (symbols with both high fan-in and high fan-out, scored `fanIn × fanOut`). A cheap degree-centrality proxy for betweenness — chokepoints most call chains pass through.
 - **Dependency-depth** ([`internal/explainers/depth`](internal/explainers/depth/depth.go)) — flags modules whose **longest transitive import chain** is unusually long (cycle-safe longest-path over the module graph). Deep modules are slow to grasp and widen rebuild/retest impact.
@@ -318,6 +319,18 @@ These become real, queryable facts:
 
 Because they're ordinary graph nodes and edges, the traversal tools become cross-repo aware with no extra steps — `traverse`, `find_path`, and `impact_analysis` all reach across repo boundaries. The cross-repo dependencies also appear as a **Cross-Repo Dependencies** section in `llm_context.md`, so an agent reading the snapshot sees them without running a tool.
 
+### Finding unused endpoints
+
+The same client/server route matching that draws cross-repo edges also answers its inverse: **which server routes does no loaded client call?** After linking, every server `route` a client matched is left untouched; every one that *no* client resolved to — by the identical normalized path + method join — is tagged `unmatched_by_clients: true` on the route fact. List the candidates directly, no new tool required:
+
+```
+query_facts(kind=route, prop=unmatched_by_clients, prop_value=true, repo="<service>")
+```
+
+This is the candidate set for dead-endpoint cleanup, computed deterministically rather than grepped-and-guessed — the matching reuses the linker's exact path normalization (so a backend's `/api/settings/x` correctly counts as called by a client's base-relative `settings/x`), and it discriminates by method, so a read endpoint that clients hit stays clean while the `POST`/`PUT`/`DELETE` on the same path can still be flagged. Two guards keep it honest: only repos that actually serve a cross-repo client are considered (a frontend's own page routes are never flagged), and matching errs toward *use* — any path+method hit, at any confidence, counts — so the set is biased toward false negatives.
+
+The flag means "unused by the clients in **this snapshot**" — not "dead." A consumer you didn't load (an admin script, a cron job, a webhook, a third-party caller, a mobile deep link) won't appear, so treat the list as candidates to verify, not delete on sight. The `unmatched_by_clients` flag is computed by the engine during linking and is **always** present on the facts; the `unused-routes` explainer (above) additionally rolls it up into one insight per service, with that caveat attached, and only that rolled-up insight depends on the explainer being enabled.
+
 > **Config note:** the `crossrepo` explainer (which adds a cross-repo entry to `insights.json`) must be listed under `explainers:` in your config — the bundled configs already include it. The `service` nodes, graph edges, traversal, and the `llm_context.md` section work regardless of explainer config; only the `insights.json` entry depends on it.
 
 ---
@@ -354,6 +367,8 @@ explainers:
   - cycles
   - layers
   - crossrepo
+  - coverage
+  - unused-routes
   - god-class
   - hotspots
   - dependency-depth
@@ -373,7 +388,7 @@ The bundled [`mcp-arch.yaml`](mcp-arch.yaml) ships a much fuller `ignore` list (
 | `repo` | Repository root path | `"."` |
 | `ignore` | Glob patterns for files/dirs to skip | vendor, node_modules, .git, tests, build dirs, docs, config data, … |
 | `extractors` | Enabled extractors | `["cpp", "go", "java", "kotlin", "openapi", "python", "typescript", "swift", "ruby"]` |
-| `explainers` | Enabled explainers | `["cycles", "layers", "crossrepo", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"]` |
+| `explainers` | Enabled explainers | `["cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"]` |
 | `renderers` | Enabled renderers | `["llm_context"]` |
 | `output.dir` | Output directory for artifacts | `".enola"` |
 | `output.max_context_tokens` | Token budget for `llm_context.md` | `16000` |

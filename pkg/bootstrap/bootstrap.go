@@ -19,6 +19,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/hotspots"
 	"github.com/enola-labs/enola/internal/explainers/layers"
 	"github.com/enola-labs/enola/internal/explainers/surface"
+	"github.com/enola-labs/enola/internal/explainers/unusedroutes"
 	"github.com/enola-labs/enola/internal/extractors/cppextractor"
 	"github.com/enola-labs/enola/internal/extractors/goextractor"
 	"github.com/enola-labs/enola/internal/extractors/javaextractor"
@@ -180,6 +181,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExplainer(layers.New())
 	eng.RegisterExplainer(crossrepoexp.New())
 	eng.RegisterExplainer(coverage.New())
+	eng.RegisterExplainer(unusedroutes.New())
 	eng.RegisterExplainer(godclass.New())
 	eng.RegisterExplainer(hotspots.New())
 	eng.RegisterExplainer(depth.New())

@@ -579,6 +579,19 @@ func (s *Store) RemoveWhere(pred func(Fact) bool) int {
 	return removed
 }
 
+// UpdateWhere applies mutate to a pointer to every stored fact, letting callers
+// modify fields or Props in place under the store lock. It does NOT touch the
+// kind/file/name/repo indexes or the graph, so it is intended only for property
+// tweaks that change none of those indexed fields; callers that change indexed
+// fields must rebuild via RemoveWhere/Add instead.
+func (s *Store) UpdateWhere(mutate func(*Fact)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.facts {
+		mutate(&s.facts[i])
+	}
+}
+
 // Modules returns all module facts.
 func (s *Store) Modules() []Fact {
 	return s.ByKind(KindModule)

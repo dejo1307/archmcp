@@ -69,7 +69,7 @@ func Default() *Config {
 			"**/.gradle/**",
 		},
 		Extractors: []string{"cpp", "go", "java", "kotlin", "openapi", "python", "typescript", "swift", "ruby"},
-		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},
+		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
 			Dir:              ".enola",

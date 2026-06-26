@@ -80,6 +80,7 @@ explainers:
   - layers
   - crossrepo
   - coverage
+  - unused-routes
   - god-class
   - hotspots
   - dependency-depth

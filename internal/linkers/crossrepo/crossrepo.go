@@ -306,6 +306,118 @@ func serviceHint(f facts.Fact) string {
 	return ""
 }
 
+// --- server-side inverse: routes no loaded client calls ---
+
+// RouteIdentity returns the stable identity key of a route fact — its repo, HTTP
+// method (normalized the same way the matcher normalizes), and path (the fact
+// Name). The keys in the set returned by UnmatchedServerRouteKeys use this exact
+// form, so a caller can flag the matching route facts without re-deriving any
+// path or method normalization of its own.
+func RouteIdentity(f facts.Fact) string {
+	return routeIdentityKey(f.Repo, normalizeMethod(propString(f, "method")), f.Name)
+}
+
+func routeIdentityKey(repo, method, path string) string {
+	return repo + "\x00" + method + "\x00" + path
+}
+
+// UnmatchedServerRouteKeys returns the identities (see RouteIdentity) of server
+// routes that no loaded client route resolves to — endpoints unused by every
+// client in the snapshot. It reuses the cross-repo HTTP linker's exact server
+// index and suffix/method matching, so a route flagged here is precisely one the
+// linker found no caller for; only the verdict differs from linkHTTP.
+//
+// Matching is deliberately generous: a server route counts as used on any
+// suffix+method hit, regardless of match confidence or which repo the caller is
+// in. This biases the unused set toward false negatives — it will never flag a
+// route that shows any sign of use, which is the safe direction when the output
+// may drive endpoint removal. Returns nil for single-repo snapshots: with no
+// other repo loaded there are no clients for a route to be unused by.
+func UnmatchedServerRouteKeys(all []facts.Fact) map[string]bool {
+	if len(repoLabelLookup(all)) < 2 {
+		return nil
+	}
+
+	// Index server routes by normalized path-suffix + method, exactly as linkHTTP
+	// does, while recording every distinct server route identity so the un-hit
+	// ones can be reported afterwards.
+	server := map[string][]routeRef{}
+	identities := map[string]bool{}
+	for _, f := range all {
+		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) == "client" {
+			continue
+		}
+		method := normalizeMethod(propString(f, "method"))
+		if method == "" {
+			continue
+		}
+		// Skip low-signal generic paths (/health, /status, single-segment routes):
+		// the matcher refuses to link these (a client call to one is dropped by the
+		// same isGenericPath filter below), so we cannot reliably tell whether a
+		// client uses them — and infra / non-client callers commonly do. Excluding
+		// them from the candidate set keeps the unused verdict to routes we can
+		// actually reason about, never flagging a generic endpoint that may be in use.
+		if isGenericPath(normalizePath(f.Name)) {
+			continue
+		}
+		identities[routeIdentityKey(f.Repo, method, f.Name)] = true
+		for _, p := range serverPaths(f) {
+			ref := routeRef{repo: f.Repo, method: method, path: f.Name, fullPath: p}
+			for _, suf := range pathSuffixes(p) {
+				server[routeKey(suf, method)] = append(server[routeKey(suf, method)], ref)
+			}
+		}
+	}
+
+	// Mark every server route any client resolves to (by suffix + method) as used,
+	// and record which repos actually serve a cross-repo client (HTTP providers).
+	matched := map[string]bool{}
+	providerRepos := map[string]bool{}
+	for _, f := range all {
+		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) != "client" {
+			continue
+		}
+		method := normalizeMethod(propString(f, "method"))
+		if method == "" {
+			continue
+		}
+		np := normalizePath(f.Name)
+		if isGenericPath(np) {
+			continue
+		}
+		matches, _ := lookupClientMatches(server, canonicalLeadingSlash(np), method)
+		for _, m := range matches {
+			matched[routeIdentityKey(m.repo, m.method, m.path)] = true
+			if m.repo != f.Repo {
+				providerRepos[m.repo] = true
+			}
+		}
+	}
+
+	// Only a repo that serves at least one cross-repo client is an HTTP provider
+	// for which "unused by clients" is meaningful. A pure consumer or leaf repo (a
+	// frontend's own page routes, a mobile app) has no clients among the loaded
+	// repos, so flagging its routes would be vacuous noise — skip it, the same way
+	// a single-repo snapshot is skipped, applied per repo.
+	unmatched := map[string]bool{}
+	for id := range identities {
+		if matched[id] || !providerRepos[repoFromIdentity(id)] {
+			continue
+		}
+		unmatched[id] = true
+	}
+	return unmatched
+}
+
+// repoFromIdentity extracts the repo label from a route identity key (see
+// routeIdentityKey, which prefixes the repo before the first NUL separator).
+func repoFromIdentity(id string) string {
+	if i := strings.IndexByte(id, '\x00'); i >= 0 {
+		return id[:i]
+	}
+	return id
+}
+
 // --- signal (B): import / shared-lib references ---
 
 func linkImports(all []facts.Fact, normToLabel map[string]string, edges map[string]*edge) {

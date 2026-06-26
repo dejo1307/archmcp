@@ -677,3 +677,86 @@ func TestComputeLinks_TargetHintResolvesProvider(t *testing.T) {
 		t.Error("should not link to svc-other")
 	}
 }
+
+// --- server-side inverse: routes unused by loaded clients ---
+
+func hasRouteKey(keys map[string]bool, repo, method, path string) bool {
+	return keys[routeIdentityKey(repo, method, path)]
+}
+
+func TestUnmatchedServerRouteKeys_BasicSetDifference(t *testing.T) {
+	in := []facts.Fact{
+		// golf-ui calls one of golf's two routes.
+		clientRoute("golf-ui", "/api/items/{id}", "GET", nil),
+		serverRoute("golf", "/api/items/{id}", "GET"),     // called → matched
+		serverRoute("golf", "/api/secret/cleanup", "POST"), // no caller → unmatched
+	}
+	keys := UnmatchedServerRouteKeys(in)
+
+	if hasRouteKey(keys, "golf", "GET", "/api/items/{id}") {
+		t.Errorf("route called by a client must not be flagged unused; keys=%v", keys)
+	}
+	if !hasRouteKey(keys, "golf", "POST", "/api/secret/cleanup") {
+		t.Errorf("route with no caller must be flagged unused; keys=%v", keys)
+	}
+	if len(keys) != 1 {
+		t.Errorf("expected exactly 1 unmatched route, got %d: %v", len(keys), keys)
+	}
+}
+
+// The false-positive guard: a client calling with a different leading prefix than
+// the server serves (golf-ui "/api/settings/x" vs golf "settings/x", and the
+// reverse) must still count as matched — exactly the normalization linkHTTP does.
+func TestUnmatchedServerRouteKeys_PrefixDifferenceIsMatched(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("golf-ui", "/api/settings/feedback", "POST", nil),
+		clientRoute("ios", "settings/ai-coach/insight", "POST", nil), // base-relative
+		serverRoute("golf", "/api/settings/feedback", "POST"),
+		serverRoute("golf", "/api/settings/ai-coach/insight", "POST"),
+	}
+	keys := UnmatchedServerRouteKeys(in)
+	if len(keys) != 0 {
+		t.Errorf("prefix/base-relative client calls should match their server routes; "+
+			"none should be flagged unused, got %v", keys)
+	}
+}
+
+// A pure-consumer repo (a frontend serving its own page routes while only calling
+// another repo's API) is not an HTTP provider, so its own uncalled server routes
+// must NOT be flagged — only the provider's (golf's) uncalled routes are.
+func TestUnmatchedServerRouteKeys_ConsumerOwnRoutesNotFlagged(t *testing.T) {
+	in := []facts.Fact{
+		// golf-ui calls golf's API (making golf a provider) and serves its own page.
+		clientRoute("golf-ui", "/api/items/{id}", "GET", nil),
+		serverRoute("golf-ui", "/dashboard/settings", "GET"), // golf-ui's own page, no caller
+		serverRoute("golf", "/api/items/{id}", "GET"),         // called by golf-ui
+		serverRoute("golf", "/api/secret/cleanup", "POST"),    // no caller
+	}
+	keys := UnmatchedServerRouteKeys(in)
+	if hasRouteKey(keys, "golf-ui", "GET", "/dashboard/settings") {
+		t.Errorf("a pure-consumer repo's own routes must not be flagged; keys=%v", keys)
+	}
+	if !hasRouteKey(keys, "golf", "POST", "/api/secret/cleanup") {
+		t.Errorf("the provider's uncalled route must still be flagged; keys=%v", keys)
+	}
+	if len(keys) != 1 {
+		t.Errorf("expected exactly 1 unmatched route (golf only), got %d: %v", len(keys), keys)
+	}
+}
+
+func TestUnmatchedServerRouteKeys_SingleRepoReturnsNil(t *testing.T) {
+	in := []facts.Fact{
+		serverRoute("golf", "/api/items/{id}", "GET"),
+		serverRoute("golf", "/api/secret/cleanup", "POST"),
+	}
+	if keys := UnmatchedServerRouteKeys(in); keys != nil {
+		t.Errorf("single-repo snapshot has no clients to be unused by; want nil, got %v", keys)
+	}
+}
+
+func TestRouteIdentityMatchesKeyHelper(t *testing.T) {
+	f := serverRoute("golf", "/api/items/{id}", "get") // lowercase method
+	if got, want := RouteIdentity(f), routeIdentityKey("golf", "GET", "/api/items/{id}"); got != want {
+		t.Errorf("RouteIdentity normalized mismatch: got %q want %q", got, want)
+	}
+}

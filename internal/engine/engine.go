@@ -237,6 +237,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	// synthetic facts are dropped first) so it stays idempotent across appends.
 	tStage = time.Now()
 	e.linkCrossRepo()
+	e.flagUnmatchedRoutes()
 	tLink = time.Since(tStage)
 
 	// 3c. Build graph index for traversal queries
@@ -328,6 +329,43 @@ func (e *Engine) linkCrossRepo() {
 		}
 	}
 	log.Printf("[engine] cross-repo links: %d service nodes, %d dependency edges", services, edges)
+}
+
+// flagUnmatchedRoutes marks each server route fact that no loaded client route
+// resolves to with an "unmatched_by_clients" prop, and clears the prop on every
+// other route, so the flag is recomputed idempotently on each (re-)link. The
+// signal is only meaningful with 2+ repos loaded; for a single-repo snapshot the
+// key set is empty and this pass simply clears any stale flags. Routes carrying
+// the prop are the candidates the unused-routes explainer summarizes and that
+// query_facts(kind=route, prop=unmatched_by_clients, prop_value=true) returns.
+func (e *Engine) flagUnmatchedRoutes() {
+	keys := crossrepo.UnmatchedServerRouteKeys(e.store.All())
+	flagged := 0
+	e.store.UpdateWhere(func(f *facts.Fact) {
+		if f.Kind != facts.KindRoute {
+			return
+		}
+		// A client-role route is a call site, never a served endpoint; never flag
+		// it, even if it shares an identity with an unused server route.
+		if f.Props != nil && f.Props["role"] == "client" {
+			delete(f.Props, "unmatched_by_clients")
+			return
+		}
+		if keys[crossrepo.RouteIdentity(*f)] {
+			if f.Props == nil {
+				f.Props = map[string]any{}
+			}
+			f.Props["unmatched_by_clients"] = true
+			flagged++
+			return
+		}
+		if f.Props != nil {
+			delete(f.Props, "unmatched_by_clients")
+		}
+	})
+	if flagged > 0 {
+		log.Printf("[engine] flagged %d server route(s) unused by loaded clients", flagged)
+	}
 }
 
 // walkRepo collects all files in the repo, applying ignore patterns.
