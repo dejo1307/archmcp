@@ -55,6 +55,7 @@ const (
 // Insight represents an architectural insight produced by an explainer.
 type Insight struct {
 	Title       string     `json:"title"`
+	Source      string     `json:"source,omitempty"` // Name of the explainer that produced it (e.g. "unused-routes"). Set centrally by the engine.
 	Description string     `json:"description"`
 	Confidence  float64    `json:"confidence"` // 0.0 - 1.0
 	Evidence    []Evidence `json:"evidence"`

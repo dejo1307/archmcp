@@ -143,7 +143,7 @@ Three plugin roles drive the middle of the pipeline — **extractors** (source �
 
 ## Insights (explainers)
 
-Explainers turn raw facts into architectural observations. Each insight carries a **confidence** score: `1.0` means it's a structural fact, below `1.0` means it's a heuristic.
+Explainers turn raw facts into architectural observations. Each insight carries a **confidence** score: `1.0` means it's a structural fact, below `1.0` means it's a heuristic. Every insight is also tagged with the explainer that produced it (`Insight.Source`), and the whole set is retrievable through the **`query_insights`** tool — filter by `explainer`, `repo`, or `min_confidence` — so an agent fetches a finding directly instead of re-deriving it from raw facts or scraping it out of `explore depth=2` / `.enola/insights.json`.
 
 - **Cycles** ([`internal/explainers/cycles`](internal/explainers/cycles/cycles.go)) — finds cyclic module dependencies using **Tarjan's strongly-connected-components algorithm**. A cycle either exists in the import graph or it doesn't, so these land at confidence `1.0`, with every module in the cycle listed as evidence.
 - **Layers** ([`internal/explainers/layers`](internal/explainers/layers/layers.go)) — recognizes common architectural shapes by matching module paths against known patterns: **hexagonal** (application / port / adapter / domain / …), **Next.js** (pages / components / hooks / lib / api / …), and **Go-standard** (cmd / internal / pkg / api). Confidence is computed from how much of the codebase matches. It also flags **layer violations** — an inner layer importing an outer one — as lower-confidence heuristic warnings.
@@ -195,7 +195,7 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 
 ## The tools
 
-enola is a stdio [MCP](https://modelcontextprotocol.io/) server. It exposes **seven tools** and no MCP resources — everything flows through tool calls. The tools defined in [`internal/server/server.go`](internal/server/server.go) are listed below, each leading with the question it answers.
+enola is a stdio [MCP](https://modelcontextprotocol.io/) server. It exposes **nine tools** and no MCP resources — everything flows through tool calls. The tools defined in [`internal/server/server.go`](internal/server/server.go) are listed below, each leading with the question it answers.
 
 > Most read tools share a **token-cost ladder** via `output_mode`: `summary` (smallest, aggregated counts) → `compact` (markdown, grouped) → `full` (raw JSON, can be large). Start with `summary` and escalate only when you need node-level detail. Most also accept `max_tokens` to hard-cap a response.
 
@@ -236,6 +236,22 @@ Precision filtering over the fact store: every route, every interface, every ext
 | `include_related` | Inline full fact data for each relation target. |
 | `output_mode` | `full` (default) → `compact` → `names` → `summary`. |
 | `max_tokens` | Optional hard cap. |
+
+The `summary` mode also surfaces a `## Flags` section tallying notable boolean props present in the result set (currently `unmatched_by_clients`), so sizing a route query reveals the dead-route signal — and the exact follow-up query — without already knowing the prop name.
+
+### `query_insights` — "what did the analysis find?"
+
+Returns the architectural findings the explainers computed during `generate_snapshot` — the first-class way to ask "which routes are unused?", "where are the cycles?", "which modules are god-classes?" instead of re-deriving them from raw facts. Each insight carries a title, the explainer that produced it ([`Insight.Source`](internal/facts/model.go)), a description, a confidence (`1.0` = structural fact, below = heuristic candidate), evidence (files/symbols/routes), and suggested actions. All explainers populate insights, but route/cross-repo findings (`unused-routes`, `crossrepo`, `coverage`) only appear for multi-repo (append-mode) snapshots.
+
+| Parameter | Description |
+|-----------|-------------|
+| `explainer` | Filter to one explainer: `unused-routes`, `cycles`, `layers`, `crossrepo`, `coverage`, `god-class`, `hotspots`, `dependency-depth`, `exported-surface`, `complexity-outliers`. Empty = all. |
+| `repo` | Best-effort filter to insights about one repo label (substring match over title + evidence files). |
+| `min_confidence` | Only return insights at or above this confidence (0.0–1.0). |
+| `output_mode` | `summary` (default, one row per insight) → `compact` (adds description, evidence sample, actions) → `full` (complete JSON). |
+| `max_tokens` | Optional hard cap. |
+
+`query_insights(explainer="unused-routes")` returns the per-service dead-route candidates directly, with the out-of-snapshot caveat and suggested actions attached — see [Finding unused endpoints](#finding-unused-endpoints).
 
 ### `show_symbol` — "show me the actual code"
 
@@ -294,6 +310,15 @@ What makes it precise:
 - **Accurate totals.** `max_nodes` caps what's *shown*, not what's *counted* — the reported total dependent count reflects the true reachable set within `max_depth`.
 - **Cross-repo aware.** In multi-repo mode it reports which other repos contain a dependent.
 
+### `coverage_report` — "which cross-repo edges did enola resolve, and which did it miss?"
+
+Per-service edge-coverage report, so you can tell a genuinely isolated service from one whose outbound edges enola simply couldn't resolve. For each `service` node it shows resolved outbound dependencies and, per edge type (currently `http_client`), how many call sites were detected, resolved to a loaded service, and left unresolved — then classifies the service as `connected`, `coverage_gap` (no resolved edges but unresolved call sites detected — likely *not* isolated), or `isolated` (a genuine leaf). Use it before concluding a service stands alone. Multi-repo only; single-repo snapshots have no service nodes. Surfaces the `coverage` explainer's underlying `edge_coverage` counts.
+
+| Parameter | Description |
+|-----------|-------------|
+| `repo` | Optional: limit the report to one service (repo label). Default: all services. |
+| `output_mode` | `summary` (default) returns a markdown table; `full` returns JSON. |
+
 ---
 
 ## Cross-repo: the graph of graphs
@@ -321,11 +346,21 @@ Because they're ordinary graph nodes and edges, the traversal tools become cross
 
 ### Finding unused endpoints
 
-The same client/server route matching that draws cross-repo edges also answers its inverse: **which server routes does no loaded client call?** After linking, every server `route` a client matched is left untouched; every one that *no* client resolved to — by the identical normalized path + method join — is tagged `unmatched_by_clients: true` on the route fact. List the candidates directly, no new tool required:
+The same client/server route matching that draws cross-repo edges also answers its inverse: **which server routes does no loaded client call?** After linking, every server `route` a client matched is left untouched; every one that *no* client resolved to — by the identical normalized path + method join — is tagged `unmatched_by_clients: true` on the route fact.
+
+The direct way to get the candidate list is the `unused-routes` finding:
+
+```
+query_insights(explainer="unused-routes")
+```
+
+which returns the per-service rollup with the out-of-snapshot caveat and suggested actions attached. To work with the raw facts instead — to filter, page, or post-process them — query the flag yourself:
 
 ```
 query_facts(kind=route, prop=unmatched_by_clients, prop_value=true, repo="<service>")
 ```
+
+(`query_facts(kind=route, output_mode=summary)` also reports the `unmatched_by_clients` count under a `## Flags` heading, so the signal is visible while sizing a route query.)
 
 This is the candidate set for dead-endpoint cleanup, computed deterministically rather than grepped-and-guessed — the matching reuses the linker's exact path normalization (so a backend's `/api/settings/x` correctly counts as called by a client's base-relative `settings/x`), and it discriminates by method, so a read endpoint that clients hit stays clean while the `POST`/`PUT`/`DELETE` on the same path can still be flagged. Two guards keep it honest: only repos that actually serve a cross-repo client are considered (a frontend's own page routes are never flagged), and matching errs toward *use* — any path+method hit, at any confidence, counts — so the set is biased toward false negatives.
 

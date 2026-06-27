@@ -40,7 +40,7 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 		Name:    "enola",
 		Version: Version,
 	}, &mcp.ServerOptions{
-		Instructions: "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, and OpenAPI.",
+		Instructions: "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, and OpenAPI.",
 	})
 
 	s.mcp = mcpServer
@@ -85,7 +85,7 @@ type queryFactsArgs struct {
 	File      string `json:"file,omitempty" jsonschema:"Filter by file path"`
 	Name      string `json:"name,omitempty" jsonschema:"Filter by name using substring match"`
 	Relation  string `json:"relation,omitempty" jsonschema:"Filter by relation kind: declares, imports, calls, implements, or depends_on"`
-	Prop      string `json:"prop,omitempty" jsonschema:"Filter by property name (e.g. source, symbol_kind, exported, framework, storage_kind)"`
+	Prop      string `json:"prop,omitempty" jsonschema:"Filter by property name (e.g. source, symbol_kind, exported, framework, storage_kind, role, method, unmatched_by_clients). output_mode=summary surfaces notable boolean flags (like unmatched_by_clients) present in the result set."`
 	PropValue string `json:"prop_value,omitempty" jsonschema:"Filter by property value (requires prop to be set)"`
 
 	// Batch filters — OR within dimension, AND across dimensions
@@ -148,16 +148,27 @@ func renderNamesOnly(results []facts.Fact, total int) string {
 // top files — so the caller can size a result set before fetching the facts
 // themselves. The breakdown is computed over the returned sample (results); when
 // total exceeds the sample it is annotated as approximate.
+// notableBoolProps are high-signal boolean fact properties surfaced in the
+// query_facts summary so a caller sizing a result set discovers actionable
+// flags (e.g. dead routes) without already knowing the prop name exists.
+var notableBoolProps = []string{"unmatched_by_clients"}
+
 func renderQuerySummary(results []facts.Fact, total int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Found **%d** matching facts.\n\n", total)
 
 	byKind := map[string]int{}
 	byFile := map[string]int{}
+	flagCounts := map[string]int{}
 	for _, f := range results {
 		byKind[f.Kind]++
 		if f.File != "" {
 			byFile[f.File]++
+		}
+		for _, p := range notableBoolProps {
+			if f.Props != nil && f.Props[p] == true {
+				flagCounts[p]++
+			}
 		}
 	}
 
@@ -165,6 +176,13 @@ func renderQuerySummary(results []facts.Fact, total int) string {
 		sb.WriteString("## By kind\n\n")
 		for _, k := range topCounts(byKind, len(byKind)) {
 			fmt.Fprintf(&sb, "- %s: %d\n", k, byKind[k])
+		}
+		sb.WriteString("\n")
+	}
+	if len(flagCounts) > 0 {
+		sb.WriteString("## Flags\n\n")
+		for _, p := range topCounts(flagCounts, len(flagCounts)) {
+			fmt.Fprintf(&sb, "- %s=true: %d — list with query_facts(prop=%q, prop_value=true); see the summarized finding via query_insights\n", p, flagCounts[p], p)
 		}
 		sb.WriteString("\n")
 	}
@@ -179,6 +197,141 @@ func renderQuerySummary(results []facts.Fact, total int) string {
 		fmt.Fprintf(&sb, "_Breakdown computed over a sample of %d of %d matches; counts are approximate. Re-run with filters to narrow, or output_mode=compact/names to list facts._\n", len(results), total)
 	}
 	return sb.String()
+}
+
+// filterInsights returns the insights matching all of the supplied filters.
+// explainer is matched case-insensitively against Insight.Source; repo is a
+// best-effort substring match over the title and evidence files (insights have
+// no structured repo field); minConfidence keeps insights at or above the bar.
+func filterInsights(insights []facts.Insight, explainer, repo string, minConfidence float64) []facts.Insight {
+	repoLC := strings.ToLower(strings.TrimSpace(repo))
+	var out []facts.Insight
+	for _, in := range insights {
+		if explainer != "" && !strings.EqualFold(in.Source, strings.TrimSpace(explainer)) {
+			continue
+		}
+		if in.Confidence < minConfidence {
+			continue
+		}
+		if repoLC != "" && !insightMentionsRepo(in, repoLC) {
+			continue
+		}
+		out = append(out, in)
+	}
+	return out
+}
+
+// insightMentionsRepo reports whether an insight appears to be about repo (given
+// lowercased). It checks the title (repo-scoped explainers name the repo there,
+// e.g. "... route(s) in golf have no caller ...") and the evidence files, which
+// are repo-prefixed in multi-repo snapshots.
+func insightMentionsRepo(in facts.Insight, repoLC string) bool {
+	if strings.Contains(strings.ToLower(in.Title), repoLC) {
+		return true
+	}
+	for _, ev := range in.Evidence {
+		if strings.Contains(strings.ToLower(ev.File), repoLC) || strings.Contains(strings.ToLower(ev.Fact), repoLC) {
+			return true
+		}
+	}
+	return false
+}
+
+// renderInsightsSummary lists one row per insight (explainer, confidence, title)
+// with a by-explainer tally — the cheapest way to size and triage findings.
+func renderInsightsSummary(insights []facts.Insight) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Found **%d** insight(s).\n\n", len(insights))
+
+	bySource := map[string]int{}
+	for _, in := range insights {
+		bySource[insightSource(in)]++
+	}
+	if len(bySource) > 0 {
+		sb.WriteString("## By explainer\n\n")
+		for _, s := range topCounts(bySource, len(bySource)) {
+			fmt.Fprintf(&sb, "- %s: %d\n", s, bySource[s])
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("## Insights\n\n")
+	sb.WriteString("| Explainer | Confidence | Title |\n|---|---|---|\n")
+	for _, in := range insights {
+		fmt.Fprintf(&sb, "| %s | %.2f | %s |\n", insightSource(in), in.Confidence, oneLine(in.Title))
+	}
+	sb.WriteString("\n_Use output_mode='compact' for descriptions, evidence, and suggested actions, or 'full' for complete JSON._\n")
+	return sb.String()
+}
+
+// renderInsightsCompact renders each insight with its description, an evidence
+// sample (capped), and suggested actions.
+func renderInsightsCompact(insights []facts.Insight) string {
+	const evidenceSample = 10
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Found **%d** insight(s).\n\n", len(insights))
+	for i, in := range insights {
+		fmt.Fprintf(&sb, "### %d. %s\n", i+1, in.Title)
+		fmt.Fprintf(&sb, "- explainer: %s · confidence: %.2f\n", insightSource(in), in.Confidence)
+		if in.Description != "" {
+			fmt.Fprintf(&sb, "- %s\n", in.Description)
+		}
+		if len(in.Evidence) > 0 {
+			fmt.Fprintf(&sb, "- evidence (%d):\n", len(in.Evidence))
+			shown := len(in.Evidence)
+			if shown > evidenceSample {
+				shown = evidenceSample
+			}
+			for _, ev := range in.Evidence[:shown] {
+				fmt.Fprintf(&sb, "    - %s\n", formatEvidence(ev))
+			}
+			if len(in.Evidence) > shown {
+				fmt.Fprintf(&sb, "    - … and %d more (output_mode='full' for all)\n", len(in.Evidence)-shown)
+			}
+		}
+		if len(in.Actions) > 0 {
+			sb.WriteString("- suggested actions:\n")
+			for _, a := range in.Actions {
+				fmt.Fprintf(&sb, "    - %s\n", a)
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// insightSource returns the producing explainer name, or a placeholder when unset.
+func insightSource(in facts.Insight) string {
+	if in.Source == "" {
+		return "—"
+	}
+	return in.Source
+}
+
+// formatEvidence joins an evidence record's non-empty fields into one line.
+func formatEvidence(ev facts.Evidence) string {
+	var parts []string
+	for _, p := range []string{ev.Fact, ev.Symbol, ev.File} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	s := strings.Join(parts, " ")
+	if ev.Detail != "" {
+		if s != "" {
+			s += " — " + ev.Detail
+		} else {
+			s = ev.Detail
+		}
+	}
+	return s
+}
+
+// oneLine collapses newlines and escapes pipes so a string is safe inside a
+// single markdown table cell.
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "|", "\\|")
 }
 
 // registerTools adds MCP tools for snapshot generation and fact querying.
@@ -239,7 +392,7 @@ func (s *Server) registerTools() {
 				"- Duration: %s\n"+
 				"- Extractors: %v\n"+
 				"- Explainers: %v\n\n"+
-				"Use query_facts or explore to inspect the extracted architecture.",
+				"Fetch the computed findings with query_insights (e.g. query_insights(explainer='unused-routes') for HTTP routes no loaded client calls); use query_facts or explore to inspect the raw facts.",
 			snapshot.Meta.RepoPath,
 			snapshot.Meta.FactCount,
 			snapshot.Meta.InsightCount,
@@ -834,6 +987,52 @@ func (s *Server) registerTools() {
 		}
 		return textResult(renderCoverageReport(report)), nil, nil
 	})
+
+	// Tool: query_insights
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "query_insights",
+		Description: "Return the architectural findings (insights) that explainers computed during generate_snapshot — the first-class answer to questions like \"which routes are unused?\", \"where are the dependency cycles?\", or \"which modules are god-classes?\". " +
+			"Each insight carries a title, the explainer that produced it, a description, a confidence (0-1; lower = candidate to verify, not a verdict), evidence (files/symbols/routes), and suggested actions. " +
+			"Filter by explainer= — one of: unused-routes (dead/uncalled HTTP routes), cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers; repo= (best-effort substring match over each insight's title and evidence); and min_confidence=. " +
+			"output_mode ladder: 'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, an evidence sample, and suggested actions) → 'full' (complete JSON incl. all evidence and actions). Pass max_tokens to hard-cap output. " +
+			"All explainers populate insights, but route/cross-repo findings (unused-routes, crossrepo, coverage) only appear for multi-repo (append-mode) snapshots of a backend plus its clients. " +
+			"Prefer this over hand-diffing query_facts results: e.g. query_insights(explainer=\"unused-routes\") returns the per-repo dead-route candidates directly.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args queryInsightsArgs) (*mcp.CallToolResult, any, error) {
+		if s.toolCallback != nil {
+			s.toolCallback("query_insights")
+		}
+		snap := s.eng.Snapshot()
+		if snap == nil {
+			return errorResult("No snapshot available. Run generate_snapshot first."), nil, nil
+		}
+
+		matched := filterInsights(snap.Insights, args.Explainer, args.Repo, args.MinConfidence)
+		if len(matched) == 0 {
+			if len(snap.Insights) == 0 {
+				return textResult("No insights were produced for this snapshot."), nil, nil
+			}
+			return textResult(fmt.Sprintf(
+				"No insights matched (explainer=%q, repo=%q, min_confidence=%.2f). The snapshot has %d insight(s) from these explainers: %v. Call query_insights without filters to list them.",
+				args.Explainer, args.Repo, args.MinConfidence, len(snap.Insights), snap.Meta.Explainers)), nil, nil
+		}
+
+		switch resolveOutputMode(args.OutputMode, modeSummary) {
+		case modeFull:
+			return jsonResultCapped(matched, args.MaxTokens)
+		case modeCompact:
+			return textResult(capTokens(renderInsightsCompact(matched), args.MaxTokens, false)), nil, nil
+		default:
+			return textResult(capTokens(renderInsightsSummary(matched), args.MaxTokens, false)), nil, nil
+		}
+	})
+}
+
+type queryInsightsArgs struct {
+	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: unused-routes, cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers. Empty = all."`
+	Repo          string  `json:"repo,omitempty" jsonschema:"Best-effort filter to insights about this repo label (substring match over each insight's title and evidence files). Empty = all repos."`
+	MinConfidence float64 `json:"min_confidence,omitempty" jsonschema:"Only return insights with confidence >= this (0.0-1.0). Default 0 (all). Unused-routes is emitted at 0.6 as a review candidate."`
+	OutputMode    string  `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, evidence sample, actions) → 'full' (complete JSON)."`
+	MaxTokens     int     `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens). Default: no cap."`
 }
 
 type coverageReportArgs struct {

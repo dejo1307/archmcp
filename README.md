@@ -84,17 +84,19 @@ For the full mental model and internals, see **[ARCHITECTURE.md](ARCHITECTURE.md
 
 ## The tools (and how they work together)
 
-The workflow is simple: **generate the snapshot once, then ask.** These aren't text lookups — each tool *computes over the graph*: `traverse` walks reachability, `find_path` finds the shortest chain between two points, `impact_analysis` takes the transitive reverse closure. After the snapshot, your agent has seven tools on top of the graph:
+The workflow is simple: **generate the snapshot once, then ask.** These aren't text lookups — each tool *computes over the graph*: `traverse` walks reachability, `find_path` finds the shortest chain between two points, `impact_analysis` takes the transitive reverse closure. After the snapshot, your agent has nine tools on top of the graph:
 
 | Tool | The question it answers |
 |------|-------------------------|
 | `generate_snapshot` | "Snapshot this repo." Build or refresh the graph. Run it first; use `append` to add more repos. |
 | `explore` | "What's in this module/file/symbol, and what touches it?" A guided tour. |
 | `query_facts` | "List exactly these." Every route, every interface, every external dependency. |
+| `query_insights` | "What did the analysis find?" Fetch the computed findings — unused routes, cycles, god-classes — instead of re-deriving them. |
 | `show_symbol` | "Show me the code." Jump straight to a symbol's source. |
 | `traverse` | "What does X depend on?" / "What depends on X?" Walk the graph. |
 | `find_path` | "How does A reach B?" The call or dependency chain between two points. |
 | **`impact_analysis`** | **"If I change X, what breaks?"** The blast radius of a change. |
+| `coverage_report` | "Which cross-repo edges did enola resolve vs. miss?" Tell a genuine leaf service from a coverage gap. |
 
 **`impact_analysis` is the one to know.** Before a refactor, it computes the full set of code that transitively depends on what you're about to change — grouped by how many hops away it is, and aware of cross-repo dependencies. Instead of your agent *guessing* what a change might affect (and missing things), it gets the exact dependent set. That's determinism turned into a concrete payoff: safer changes, planned in the right order, the first time.
 
@@ -199,7 +201,7 @@ Working across several repos? Generate the first, then add the rest with append 
 
 > "If I change the auth service, which other services are impacted?"
 
-> "Which of my backend's endpoints aren't called by any of the client apps? (Cleanup candidates — but check for callers outside these repos first.)"
+> "Which of my backend's endpoints aren't called by any of the client apps? (Ask via `query_insights(explainer='unused-routes')` — cleanup candidates, but check for callers outside these repos first.)"
 
 **Regenerate after major changes** so the snapshot stays current. Refreshes are fast: enola caches each language's facts and re-parses a language only when one of its files (or a shared config like `package.json`) actually changed, reusing the rest.
 

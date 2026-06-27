@@ -527,6 +527,13 @@ func (e *Engine) runExplainers(ctx context.Context) ([]facts.Insight, []string, 
 			continue
 		}
 
+		// Tag each insight with its producing explainer so clients can fetch and
+		// filter findings by source (e.g. query_insights(explainer="unused-routes"))
+		// without every explainer having to set the field itself.
+		for i := range insights {
+			insights[i].Source = exp.Name()
+		}
+
 		allInsights = append(allInsights, insights...)
 		usedNames = append(usedNames, exp.Name())
 		log.Printf("[engine] explainer %s: produced %d insights", exp.Name(), len(insights))
