@@ -737,7 +737,7 @@ func detectNextJSAt(dir string) bool {
 
 func isTypeScriptFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".ts" || ext == ".tsx" || ext == ".vue"
+	return ext == ".ts" || ext == ".tsx" || ext == ".vue" || ext == ".js" || ext == ".jsx"
 }
 
 // OwnsFile implements plugin.FileOwner for incremental caching.

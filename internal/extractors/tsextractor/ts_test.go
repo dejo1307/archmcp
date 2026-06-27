@@ -651,7 +651,9 @@ func TestIsTypeScriptFile(t *testing.T) {
 	}{
 		{"src/app.ts", true},
 		{"src/app.tsx", true},
-		{"src/app.js", false},
+		{"src/app.js", true},
+		{"src/app.jsx", true},
+		{"src/app.vue", true},
 		{"src/app.go", false},
 	}
 	for _, tt := range tests {
