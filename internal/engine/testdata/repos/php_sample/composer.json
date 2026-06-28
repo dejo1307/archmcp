@@ -1,0 +1,5 @@
+{
+  "name": "acme/sample-plugin",
+  "description": "Minimal WordPress-flavored PHP fixture for enola golden tests.",
+  "type": "wordpress-plugin"
+}

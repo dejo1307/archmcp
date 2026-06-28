@@ -71,6 +71,7 @@ extractors:
   - java
   - kotlin
   - openapi
+  - php
   - python
   - typescript
   - swift

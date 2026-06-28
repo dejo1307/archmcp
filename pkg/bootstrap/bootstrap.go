@@ -25,6 +25,7 @@ import (
 	"github.com/enola-labs/enola/internal/extractors/javaextractor"
 	"github.com/enola-labs/enola/internal/extractors/kotlinextractor"
 	"github.com/enola-labs/enola/internal/extractors/openapiextractor"
+	"github.com/enola-labs/enola/internal/extractors/phpextractor"
 	"github.com/enola-labs/enola/internal/extractors/pythonextractor"
 	"github.com/enola-labs/enola/internal/extractors/rubyextractor"
 	"github.com/enola-labs/enola/internal/extractors/swiftextractor"
@@ -171,6 +172,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExtractor(javaextractor.New())
 	eng.RegisterExtractor(kotlinextractor.New())
 	eng.RegisterExtractor(openapiextractor.New())
+	eng.RegisterExtractor(phpextractor.New())
 	eng.RegisterExtractor(pythonextractor.New())
 	eng.RegisterExtractor(tsextractor.New())
 	eng.RegisterExtractor(swiftextractor.New())

@@ -12,6 +12,7 @@
 #   - swift      (detection: Package.swift, .xcodeproj, or .xcworkspace)
 #   - ruby       (detection: Gemfile)
 #   - cpp        (detection: .cpp/.hpp/... or CMakeLists.txt/Makefile + header)
+#   - php        (detection: composer.json, WordPress markers, or any .php source)
 
 repo: "."
 ignore:
@@ -92,6 +93,7 @@ extractors:
   - typescript
   - swift
   - ruby
+  - php
 explainers:
   - cycles
   - layers

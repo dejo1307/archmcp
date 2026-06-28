@@ -1,0 +1,50 @@
+# enola configuration for a PHP project (plain PHP, Composer, or WordPress).
+#
+# Detection: The PHP extractor activates when a composer.json, a WordPress
+#            bootstrap file (wp-load.php / wp-settings.php / wp-config.php), or any
+#            .php source (within 3 directory levels) is present.
+# Features:  Classes, interfaces, traits, enums (and cases), functions, methods,
+#            class constants and properties (namespace-qualified "Ns\Class::member"
+#            naming; global symbols keep their bare name). Inheritance and trait-use
+#            (implements edges), a call graph (calls / instantiations), `use` import
+#            dependencies resolved into internal module-coupling edges, and per-
+#            function complexity. On WordPress repos, hooks become routes:
+#            add_action / add_filter (with their callback), do_action / apply_filters,
+#            and register_rest_route.
+
+repo: "."
+ignore:
+  # VCS and tooling
+  - ".git/**"
+  - ".enola/**"
+  # Composer / package dependencies
+  - "vendor/**"
+  - "**/vendor/**"
+  - "node_modules/**"
+  - "**/node_modules/**"
+  # WordPress uploads and caches (data, not code)
+  - "wp-content/uploads/**"
+  - "wp-content/cache/**"
+  - "**/cache/**"
+  # Build / minified assets
+  - "**/*.min.js"
+  - "**/*.min.css"
+  - "build/**"
+  - "dist/**"
+  # Tests and fixtures (uncomment to exclude)
+  # - "tests/**"
+  # - "**/*Test.php"
+  # Documentation / config / data
+  - "**/*.md"
+extractors:
+  - php
+explainers:
+  - cycles
+  - layers
+  - crossrepo
+  - coverage
+renderers:
+  - llm_context
+output:
+  dir: ".enola"
+  max_context_tokens: 16000

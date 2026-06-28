@@ -46,6 +46,7 @@ var fixtures = []fixture{
 	{name: "go_sample", subRepos: []string{"."}},
 	{name: "ts_sample", subRepos: []string{"."}},
 	{name: "python_sample", subRepos: []string{"."}},
+	{name: "php_sample", subRepos: []string{"."}},
 	{name: "openapi_sample", subRepos: []string{"."}},
 	{name: "multirepo", subRepos: []string{"repoA", "repoB"}},
 }
