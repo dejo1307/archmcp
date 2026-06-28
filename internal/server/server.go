@@ -201,10 +201,12 @@ func renderQuerySummary(results []facts.Fact, total int) string {
 }
 
 // filterInsights returns the insights matching all of the supplied filters.
-// explainer is matched case-insensitively against Insight.Source; repo is a
-// best-effort substring match over the title and evidence files (insights have
-// no structured repo field); minConfidence keeps insights at or above the bar.
-func filterInsights(insights []facts.Insight, explainer, repo string, minConfidence float64) []facts.Insight {
+// explainer is matched case-insensitively against Insight.Source; repo matches
+// the repo-prefix path segment of each insight's evidence files (insights have
+// no structured repo field) — see insightBelongsToRepo; minConfidence keeps
+// insights at or above the bar. multiRepo reports whether the snapshot spans
+// more than one repo, which selects strict vs. legacy repo matching.
+func filterInsights(insights []facts.Insight, explainer, repo string, minConfidence float64, multiRepo bool) []facts.Insight {
 	repoLC := strings.ToLower(strings.TrimSpace(repo))
 	var out []facts.Insight
 	for _, in := range insights {
@@ -214,7 +216,7 @@ func filterInsights(insights []facts.Insight, explainer, repo string, minConfide
 		if in.Confidence < minConfidence {
 			continue
 		}
-		if repoLC != "" && !insightMentionsRepo(in, repoLC) {
+		if repoLC != "" && !insightBelongsToRepo(in, repoLC, multiRepo) {
 			continue
 		}
 		out = append(out, in)
@@ -222,16 +224,38 @@ func filterInsights(insights []facts.Insight, explainer, repo string, minConfide
 	return out
 }
 
-// insightMentionsRepo reports whether an insight appears to be about repo (given
-// lowercased). It checks the title (repo-scoped explainers name the repo there,
-// e.g. "... route(s) in golf have no caller ...") and the evidence files, which
-// are repo-prefixed in multi-repo snapshots.
-func insightMentionsRepo(in facts.Insight, repoLC string) bool {
+// pathInRepo reports whether a repo-prefixed evidence path (e.g.
+// "golf/internal/x.go") belongs to repo (given lowercased). Matching is on the
+// first path segment, so "golf" does not match "golf-ui/..." or
+// "my-golf-journal-*".
+func pathInRepo(path, repoLC string) bool {
+	p := strings.ToLower(strings.TrimSpace(path))
+	return p == repoLC || strings.HasPrefix(p, repoLC+"/")
+}
+
+// insightBelongsToRepo reports whether an insight is about repo (given
+// lowercased). In multi-repo snapshots evidence paths are repo-prefixed, so we
+// match the path-segment of each evidence File/Fact exactly. The title
+// substring match is dropped there because titles aren't reliably repo-qualified
+// and over-match shared tokens (e.g. "golf" in "golf-ui"). Single-repo snapshots
+// don't prefix evidence paths, so there we keep the legacy substring heuristic —
+// it can't leak across repos because there are no siblings.
+func insightBelongsToRepo(in facts.Insight, repoLC string, multiRepo bool) bool {
+	for _, ev := range in.Evidence {
+		if pathInRepo(ev.File, repoLC) || pathInRepo(ev.Fact, repoLC) {
+			return true
+		}
+	}
+	if multiRepo {
+		return false
+	}
+	// Single-repo legacy fallback (unchanged behavior).
 	if strings.Contains(strings.ToLower(in.Title), repoLC) {
 		return true
 	}
 	for _, ev := range in.Evidence {
-		if strings.Contains(strings.ToLower(ev.File), repoLC) || strings.Contains(strings.ToLower(ev.Fact), repoLC) {
+		if strings.Contains(strings.ToLower(ev.File), repoLC) ||
+			strings.Contains(strings.ToLower(ev.Fact), repoLC) {
 			return true
 		}
 	}
@@ -994,7 +1018,7 @@ func (s *Server) registerTools() {
 		Name: "query_insights",
 		Description: "Return the architectural findings (insights) that explainers computed during generate_snapshot — the first-class answer to questions like \"which routes are unused?\", \"where are the dependency cycles?\", or \"which modules are god-classes?\". " +
 			"Each insight carries a title, the explainer that produced it, a description, a confidence (0-1; lower = candidate to verify, not a verdict), evidence (files/symbols/routes), and suggested actions. " +
-			"Filter by explainer= — one of: unused-routes (dead/uncalled HTTP routes), cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers; repo= (best-effort substring match over each insight's title and evidence); and min_confidence=. " +
+			"Filter by explainer= — one of: unused-routes (dead/uncalled HTTP routes), cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers; repo= (in multi-repo snapshots, matches the repo-prefix path segment of each insight's evidence — e.g. \"golf\" matches golf/... but not golf-ui/...; single-repo snapshots fall back to a substring match); and min_confidence=. " +
 			"output_mode ladder: 'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, an evidence sample, and suggested actions) → 'full' (complete JSON incl. all evidence and actions). Pass max_tokens to hard-cap output. " +
 			"All explainers populate insights, but route/cross-repo findings (unused-routes, crossrepo, coverage) only appear for multi-repo (append-mode) snapshots of a backend plus its clients. " +
 			"Prefer this over hand-diffing query_facts results: e.g. query_insights(explainer=\"unused-routes\") returns the per-repo dead-route candidates directly.",
@@ -1007,7 +1031,13 @@ func (s *Server) registerTools() {
 			return errorResult("No snapshot available. Run generate_snapshot first."), nil, nil
 		}
 
-		matched := filterInsights(snap.Insights, args.Explainer, args.Repo, args.MinConfidence)
+		repos := map[string]struct{}{}
+		for _, f := range snap.Facts {
+			if f.Repo != "" {
+				repos[strings.ToLower(f.Repo)] = struct{}{}
+			}
+		}
+		matched := filterInsights(snap.Insights, args.Explainer, args.Repo, args.MinConfidence, len(repos) > 1)
 		if len(matched) == 0 {
 			if len(snap.Insights) == 0 {
 				return textResult("No insights were produced for this snapshot."), nil, nil
@@ -1030,7 +1060,7 @@ func (s *Server) registerTools() {
 
 type queryInsightsArgs struct {
 	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: unused-routes, cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers. Empty = all."`
-	Repo          string  `json:"repo,omitempty" jsonschema:"Best-effort filter to insights about this repo label (substring match over each insight's title and evidence files). Empty = all repos."`
+	Repo          string  `json:"repo,omitempty" jsonschema:"Filter to insights about this repo label. In multi-repo snapshots this matches the repo-prefix path segment of each insight's evidence files (so 'golf' matches golf/... but not golf-ui/...); single-repo snapshots fall back to a substring match. Empty = all repos."`
 	MinConfidence float64 `json:"min_confidence,omitempty" jsonschema:"Only return insights with confidence >= this (0.0-1.0). Default 0 (all). Unused-routes is emitted at 0.6 as a review candidate."`
 	OutputMode    string  `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, evidence sample, actions) → 'full' (complete JSON)."`
 	MaxTokens     int     `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens). Default: no cap."`
