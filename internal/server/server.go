@@ -14,6 +14,7 @@ import (
 	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/pkg/mcputil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -2469,66 +2470,31 @@ func (s *Server) expandFilePrefix(prefix string) []string {
 	return expanded
 }
 
-func errorResult(msg string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: msg},
-		},
-		IsError: true,
-	}
-}
+// The MCP result builders and the output-mode/token-cap helpers live in
+// pkg/mcputil so out-of-module tools (enola-enterprise) share one implementation.
+// These file-local names forward to it, keeping the server's many call sites
+// unchanged.
 
-// jsonResult marshals v as indented JSON into a tool result, returning an error
-// result if marshaling fails.
-func jsonResult(v any) (*mcp.CallToolResult, any, error) {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to marshal results: %v", err)), nil, nil
-	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: string(data)},
-		},
-	}, nil, nil
-}
+func errorResult(msg string) *mcp.CallToolResult { return mcputil.ErrorResult(msg) }
 
-// textResult returns markdown/plain text as a (non-error) tool result.
-func textResult(s string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: s}},
-	}
-}
+func jsonResult(v any) (*mcp.CallToolResult, any, error) { return mcputil.JSONResult(v) }
 
-// jsonResultCapped marshals v as indented JSON and applies a max_tokens cap.
-// Truncating JSON breaks its validity, so the cap notice says so explicitly.
+func textResult(s string) *mcp.CallToolResult { return mcputil.TextResult(s) }
+
 func jsonResultCapped(v any, maxTokens int) (*mcp.CallToolResult, any, error) {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to marshal results: %v", err)), nil, nil
-	}
-	return textResult(capTokens(string(data), maxTokens, true)), nil, nil
+	return mcputil.JSONResultCapped(v, maxTokens)
 }
 
-// Output mode names shared across the tools. Every tool that can vary its
-// verbosity accepts a subset of these so the LLM caller has one mental model:
-// summary (smallest) → compact → full (largest). "names" is query_facts-only.
+// Output mode names shared across the tools. summary (smallest) → compact → full
+// (largest); "names" is query_facts-only and stays local.
 const (
-	modeSummary = "summary"
-	modeCompact = "compact"
-	modeFull    = "full"
+	modeSummary = mcputil.ModeSummary
+	modeCompact = mcputil.ModeCompact
+	modeFull    = mcputil.ModeFull
 	modeNames   = "names"
 )
 
-// resolveOutputMode normalises a caller-supplied output_mode, falling back to
-// def when empty. Unknown values are returned lowercased so the per-tool switch
-// can decide how to treat them (generally: fall through to def).
-func resolveOutputMode(mode, def string) string {
-	m := strings.ToLower(strings.TrimSpace(mode))
-	if m == "" {
-		return def
-	}
-	return m
-}
+func resolveOutputMode(mode, def string) string { return mcputil.ResolveOutputMode(mode, def) }
 
 // wantsFullOutput reports whether the caller asked for the raw JSON graph rather
 // than a markdown summary.
@@ -2541,35 +2507,8 @@ func wantsSummary(mode string) bool {
 	return strings.EqualFold(mode, modeSummary)
 }
 
-// approxTokensPerChar is the rough characters-per-token ratio used to translate a
-// max_tokens budget into a character budget. English/code text averages ~4 chars
-// per token; this is an estimate, not an exact count.
-const approxTokensPerChar = 4
-
-// capTokens truncates s to roughly maxTokens tokens (~chars/4), cutting on a line
-// boundary and appending a notice that tells the caller how to narrow. A value of
-// maxTokens <= 0 disables the cap. isJSON marks output whose structure would be
-// broken by truncation (full mode), so the notice makes that explicit.
 func capTokens(s string, maxTokens int, isJSON bool) string {
-	if maxTokens <= 0 {
-		return s
-	}
-	limit := maxTokens * approxTokensPerChar
-	if len(s) <= limit {
-		return s
-	}
-	cut := s[:limit]
-	// Prefer cutting on the last newline so we don't truncate mid-line.
-	if nl := strings.LastIndexByte(cut, '\n'); nl > 0 {
-		cut = cut[:nl]
-	}
-	notice := fmt.Sprintf("\n\n[truncated: output exceeded max_tokens=%d. "+
-		"Re-run with output_mode=summary, tighter filters, or a lower max_depth/max_nodes/limit.]", maxTokens)
-	if isJSON {
-		notice = fmt.Sprintf("\n\n[truncated: JSON output exceeded max_tokens=%d and is no longer valid JSON. "+
-			"Re-run with output_mode=summary/compact, or raise max_tokens / narrow the query.]", maxTokens)
-	}
-	return cut + notice
+	return mcputil.CapTokens(s, maxTokens, isJSON)
 }
 
 // moduleOf returns a node's owning module: its file directory when a file is
