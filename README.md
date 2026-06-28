@@ -37,7 +37,7 @@ Cursor (add to `mcp.json`):
 
 Done. Your agent now has a precise structural map of your code. For configuration options, multi-repo setup, and what to ask next, see [Quick start](#quick-start) below.
 
-**Supported languages:** Go · JavaScript · TypeScript · Python · Java · Kotlin · Swift · Ruby · C++ · PHP · Vue · Svelte · OpenAPI — with framework awareness (Next.js, Nuxt, SvelteKit, FastAPI, Django, Spring, Rails, SwiftUI, Jetpack Compose, WordPress, …)
+**Supported languages:** Go · JavaScript · TypeScript · Python · Java · Kotlin · Swift · Ruby · C++ · PHP · Vue · Svelte · OpenAPI — with framework awareness (Next.js, Nuxt, SvelteKit, FastAPI, Django, Spring, Rails, Laravel, Symfony, SwiftUI, Jetpack Compose, WordPress, …)
 
 ---
 
@@ -222,7 +222,7 @@ Working across several repos? Generate the first, then add the rest with append 
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
 | Ruby       | `Gemfile` (Rails / ActiveRecord / Packwerk aware) |
 | C++        | `.cpp`/`.hpp`/… source or `CMakeLists.txt`/`Makefile` + header (header/source method merging, namespaces, templates) |
-| PHP        | `composer.json`, WordPress markers, or any `.php` source (WordPress hook/route aware) |
+| PHP        | `composer.json`, WordPress markers, or any `.php` source (WordPress / Laravel / Symfony route + outbound HTTP-client aware) |
 | OpenAPI    | any spec with an `openapi:` / `swagger:` key |
 
 Framework- and platform-specific detection for each language is described in **[ARCHITECTURE.md → Supported languages](ARCHITECTURE.md#supported-languages)**.

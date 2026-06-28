@@ -1,0 +1,9 @@
+{
+  "name": "acme/storefront",
+  "description": "Plain PHP consumer calling the billing service via Guzzle (cross-repo fixture).",
+  "type": "project",
+  "require": {
+    "php": "^8.2",
+    "guzzlehttp/guzzle": "^7.0"
+  }
+}

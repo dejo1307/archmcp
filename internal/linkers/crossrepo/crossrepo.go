@@ -250,7 +250,7 @@ func pickProvider(client facts.Fact, matches []routeRef) (string, bool) {
 // HTTP-client extractors, as opposed to generated OpenAPI client specs.
 var handWrittenClientSources = map[string]bool{
 	"ts-http-client": true, "retrofit": true, "urlsession": true,
-	"ruby-http-client": true, "go-http-client": true,
+	"ruby-http-client": true, "go-http-client": true, "php-http-client": true,
 }
 
 // httpVia returns the via label for an HTTP edge derived from a client route:

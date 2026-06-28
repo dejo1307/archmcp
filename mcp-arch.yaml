@@ -65,6 +65,13 @@ ignore:
   - "log/**"
   - "public/assets/**"
   - "public/packs/**"
+  # PHP tests (PHPUnit / Pest / Codeception). Excluded so test request
+  # simulations (e.g. Symfony WebTestCase `$client->request(...)`) are not
+  # indexed as production routes/clients, and the fact graph stays focused.
+  - "tests/**"
+  - "**/*Test.php"
+  - "**/*TestCase.php"
+  - "**/*Cest.php"
 extractors:
   - cpp
   - go

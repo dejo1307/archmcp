@@ -1,0 +1,9 @@
+health_check:
+    path: /health
+    controller: App\Controller\HealthController::check
+    methods: [GET]
+
+legacy_redirect:
+    path: /old/home
+    controller: App\Controller\RedirectController::home
+    methods: GET|HEAD

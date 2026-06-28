@@ -2,9 +2,12 @@
 // the tree-sitter PHP grammar, in line with the other language extractors. It
 // emits symbols (classes, interfaces, traits, enums, functions, methods,
 // constants), `use` import dependencies, a call / instantiation graph, inheritance
-// edges, and per-function cyclomatic complexity. When the repository is detected as
-// WordPress, hook registrations and hook points (add_action / add_filter /
-// do_action / apply_filters / register_rest_route) are emitted as route facts.
+// edges, and per-function cyclomatic complexity. Outbound HTTP-client calls (Guzzle,
+// the Laravel Http facade, Symfony HttpClient, cURL, file_get_contents) become
+// client-role route facts. Framework awareness adds server-route facts: WordPress
+// hooks (add_action / add_filter / do_action / apply_filters / register_rest_route),
+// Laravel's Route:: DSL (verbs, match/any, resource expansion, group prefixes), and
+// Symfony routes from #[Route] attributes / @Route annotations and YAML/XML config.
 package phpextractor
 
 import (
@@ -103,7 +106,8 @@ func detectWordPress(repoPath string) bool {
 
 // Extract parses PHP files and emits architectural facts.
 func (e *PHPExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
-	isWordPress := detectWordPress(repoPath)
+	fw := detectPHPFramework(repoPath)
+	isWordPress := fw == frameworkWordPress
 
 	var phpFiles []string
 	for _, relFile := range files {
@@ -121,11 +125,19 @@ func (e *PHPExtractor) Extract(ctx context.Context, repoPath string, files []str
 			return nil
 		}
 		// extractFileAST emits symbols, use-imports, inheritance, calls, and
-		// complexity. extractHooks adds WordPress hook routes (a no-op for
-		// non-WordPress repos when isWordPress is false).
+		// complexity. extractPHPHTTPClientFacts adds outbound HTTP-client routes
+		// (framework-independent). The framework switch adds server routes.
 		ff := extractFileAST(src, relFile)
-		if isWordPress {
+		ff = append(ff, extractPHPHTTPClientFacts(src, relFile)...)
+		switch fw {
+		case frameworkWordPress:
 			ff = append(ff, extractHooks(src, relFile)...)
+		case frameworkLaravel:
+			if isLaravelRouteFile(relFile) {
+				ff = append(ff, extractLaravelRoutes(src, relFile)...)
+			}
+		case frameworkSymfony:
+			ff = append(ff, extractSymfonyRoutes(src, relFile)...)
 		}
 		return ff
 	})
@@ -137,11 +149,18 @@ func (e *PHPExtractor) Extract(ctx context.Context, repoPath string, files []str
 		modules[filepath.Dir(phpFiles[i])] = true
 	}
 
+	// Symfony YAML/XML route config lives outside the PHP source tree and is
+	// discovered directly on disk (it is commonly hidden by a **/*.yaml ignore),
+	// so it is parsed once per repo rather than per PHP file.
+	if fw == frameworkSymfony {
+		allFacts = append(allFacts, extractSymfonyConfigRoutes(repoPath)...)
+	}
+
 	// Emit one module fact per directory containing PHP files.
 	for dir := range modules {
 		props := map[string]any{"language": "php"}
-		if isWordPress {
-			props["framework"] = "wordpress"
+		if fw != frameworkPlain {
+			props["framework"] = string(fw)
 		}
 		allFacts = append(allFacts, facts.Fact{
 			Kind:  facts.KindModule,

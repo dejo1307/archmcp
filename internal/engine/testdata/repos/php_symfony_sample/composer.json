@@ -1,0 +1,10 @@
+{
+  "name": "acme/symfony-sample",
+  "description": "Minimal Symfony PHP fixture for enola golden tests.",
+  "type": "project",
+  "require": {
+    "php": "^8.2",
+    "symfony/framework-bundle": "^7.0",
+    "symfony/http-client": "^7.0"
+  }
+}

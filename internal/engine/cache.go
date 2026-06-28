@@ -18,7 +18,8 @@ import (
 // v2: Swift URLSession extractor precision (file-URL exclusion, interpolation fix).
 // v3: Python route facts use method/role/bare-path Name (was http_method, verb-in-name).
 // v4: Java HTTP client detection (RestTemplate call sites + @FeignClient interfaces).
-const cacheVersion = "v4"
+// v5: PHP HTTP client detection + Laravel/Symfony route DSLs (attributes, YAML/XML config).
+const cacheVersion = "v5"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -47,8 +47,11 @@ var fixtures = []fixture{
 	{name: "ts_sample", subRepos: []string{"."}},
 	{name: "python_sample", subRepos: []string{"."}},
 	{name: "php_sample", subRepos: []string{"."}},
+	{name: "php_laravel_sample", subRepos: []string{"."}},
+	{name: "php_symfony_sample", subRepos: []string{"."}},
 	{name: "openapi_sample", subRepos: []string{"."}},
 	{name: "multirepo", subRepos: []string{"repoA", "repoB"}},
+	{name: "php_multirepo", subRepos: []string{"provider", "consumer"}},
 }
 
 func TestGolden(t *testing.T) {

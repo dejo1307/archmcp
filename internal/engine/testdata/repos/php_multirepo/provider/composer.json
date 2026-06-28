@@ -1,0 +1,9 @@
+{
+  "name": "acme/billing-service",
+  "description": "Laravel provider serving billing routes (cross-repo fixture).",
+  "type": "project",
+  "require": {
+    "php": "^8.2",
+    "laravel/framework": "^11.0"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "acme/laravel-sample",
+  "description": "Minimal Laravel PHP fixture for enola golden tests.",
+  "type": "project",
+  "require": {
+    "php": "^8.2",
+    "laravel/framework": "^11.0"
+  }
+}
