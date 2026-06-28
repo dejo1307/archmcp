@@ -107,21 +107,44 @@ A snapshot is produced by a fixed, deterministic pipeline ([`internal/engine/eng
 Repository
    │
    ▼
-File Walker ──▶ Extractors ──▶ Fact Store ──▶ Cross-Repo Linker ──▶ Graph Index
- (apply        (Go, Java,      (indexed by     (only with 2+         (bidirectional)
-  ignore        Kotlin, Python, kind / file /    repos loaded)             │
-  globs)        TS, Swift,      name / repo)                               ▼
-                Ruby, C++, PHP, OpenAPI)                              Explainers
-                                                                  (cycles, layers,
-                                                                     crossrepo)
-                                                                          │
-                                                                          ▼
-                                                                      Renderer
-                                                                  (llm_context.md)
-                                                                          │
-                                                                          ▼
-                                                                      Artifacts
-                                                                     (.enola/)
+┌──────────────────┐  apply ignore globs (a few extractors also scan
+│   File Walker    │  config-format files directly — see Supported languages)
+└──────────────────┘
+   │
+   ▼
+┌──────────────────┐  Go · Java · Kotlin · JS/TS · Vue · Svelte · Python ·
+│   Extractors     │  Swift · Ruby · C++ · PHP · OpenAPI   (source → facts)
+└──────────────────┘
+   │
+   ▼
+┌──────────────────┐
+│   Fact Store     │  indexed by kind / file / name / repo
+└──────────────────┘
+   │
+   ▼
+┌──────────────────┐
+│ Cross-Repo Linker│  only with 2+ repos loaded
+└──────────────────┘
+   │
+   ▼
+┌──────────────────┐
+│   Graph Index    │  bidirectional (+ synthetic edges)
+└──────────────────┘
+   │
+   ▼
+┌──────────────────┐  cycles · layers · crossrepo · coverage · unused-routes ·
+│   Explainers     │  god-class · hotspots · dependency-depth ·
+└──────────────────┘  exported-surface · complexity-outliers   (facts → insights)
+   │
+   ▼
+┌──────────────────┐
+│    Renderer      │  llm_context.md   (snapshot → artifacts)
+└──────────────────┘
+   │
+   ▼
+┌──────────────────┐
+│    Artifacts     │  .enola/
+└──────────────────┘
 ```
 
 Stage by stage:
