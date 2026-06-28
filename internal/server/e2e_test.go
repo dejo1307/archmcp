@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -46,14 +47,31 @@ type session struct {
 // and returns a connected client session plus a fresh temp copy of go_sample.
 func startInMemory(t *testing.T) *session {
 	t.Helper()
-	ctx := context.Background()
+	eng, cfg := newTestEngine(t)
+	s := connect(t, eng, cfg)
+	s.repo = copyTree(t, filepath.Join("..", "engine", "testdata", "repos", "go_sample"), t.TempDir())
+	return s
+}
 
+// newTestEngine builds a bootstrap engine with all OSS plugins and a config that
+// falls back to defaults (no config file on disk).
+func newTestEngine(t *testing.T) (*bootstrap.Engine, *config.Config) {
+	t.Helper()
 	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{
 		ConfigPath: filepath.Join(t.TempDir(), "no-such-config.yaml"),
 	})
 	if err != nil {
 		t.Fatalf("bootstrap.NewEngine: %v", err)
 	}
+	return eng, cfg
+}
+
+// connect wires the given engine into an MCP server over an in-memory transport
+// and returns a connected client session.
+func connect(t *testing.T, eng *bootstrap.Engine, cfg *config.Config) *session {
+	t.Helper()
+	ctx := context.Background()
+
 	srv, err := bootstrap.NewServer(eng, cfg)
 	if err != nil {
 		t.Fatalf("bootstrap.NewServer: %v", err)
@@ -70,8 +88,7 @@ func startInMemory(t *testing.T) *session {
 	}
 	t.Cleanup(func() { _ = cs.Close() })
 
-	repo := copyTree(t, filepath.Join("..", "engine", "testdata", "repos", "go_sample"), t.TempDir())
-	return &session{cs: cs, repo: repo}
+	return &session{cs: cs}
 }
 
 // call invokes a tool and fails the test on transport error (a transport error
@@ -266,6 +283,88 @@ func TestE2E_RequiredArgValidation(t *testing.T) {
 				t.Errorf("%s with missing required arg should be an error; got:\n%s", c.tool, text(res))
 			}
 		})
+	}
+}
+
+// writeSnapshotToDisk indexes repo with a throwaway engine and writes its
+// artifacts (including .enola/facts.jsonl) to disk, simulating a workspace that
+// already has a prior snapshot on disk for AutoLoadSnapshot to pick up.
+func writeSnapshotToDisk(t *testing.T, repo string) {
+	t.Helper()
+	eng, _ := newTestEngine(t)
+	if _, err := eng.GenerateSnapshot(context.Background(), repo, false); err != nil {
+		t.Fatalf("prep GenerateSnapshot(%s): %v", repo, err)
+	}
+	if err := eng.WriteArtifacts(repo); err != nil {
+		t.Fatalf("prep WriteArtifacts(%s): %v", repo, err)
+	}
+}
+
+// TestE2E_AutoLoadedSnapshotResetOnFreshGenerate is a regression test for the
+// bug where a snapshot auto-loaded at startup caused the first
+// generate_snapshot(append=false) to silently switch to append mode, carrying
+// the auto-loaded repo forward as a stale service node. A non-append call must
+// discard the auto-loaded state and index only the requested repo.
+func TestE2E_AutoLoadedSnapshotResetOnFreshGenerate(t *testing.T) {
+	// repoA: a fixture whose snapshot we pre-write to disk so AutoLoadSnapshot
+	// picks it up at startup. ts_sample gives a distinct repo label from repoB.
+	repoA := copyTree(t, filepath.Join("..", "engine", "testdata", "repos", "ts_sample"), t.TempDir())
+	writeSnapshotToDisk(t, repoA)
+
+	// Build an engine pointed at repoA and auto-load its snapshot, exactly as the
+	// server does on startup in a pre-populated workspace.
+	eng, cfg := newTestEngine(t)
+	cfg.Repo = repoA
+	bootstrap.AutoLoadSnapshot(eng, cfg)
+	if eng.Store().Count() == 0 {
+		t.Fatalf("expected AutoLoadSnapshot to populate the store from %s", repoA)
+	}
+	s := connect(t, eng, cfg)
+
+	// First generate_snapshot, for a DIFFERENT repo, with no append. It must reset.
+	repoB := copyTree(t, filepath.Join("..", "engine", "testdata", "repos", "go_sample"), t.TempDir())
+	res := s.call(t, "generate_snapshot", map[string]any{"repo_path": repoB})
+	if res.IsError {
+		t.Fatalf("generate_snapshot(repoB) errored: %s", text(res))
+	}
+	if out := text(res); strings.Contains(out, "Multi-repo mode active") || strings.Contains(out, "auto-enabled") {
+		t.Errorf("non-append generate_snapshot over auto-loaded state must not enter append mode; got:\n%s", out)
+	}
+
+	// coverage_report must report no service nodes (single-repo) — the stale
+	// repoA service must be gone.
+	if cov := text(s.call(t, "coverage_report", map[string]any{})); !strings.Contains(cov, "No service nodes") {
+		t.Errorf("expected no service nodes after fresh single-repo snapshot; got:\n%s", cov)
+	}
+
+	// repoA's facts must have been discarded entirely.
+	repoALabel := filepath.Base(repoA)
+	if q := text(s.call(t, "query_facts", map[string]any{"kind": "service"})); strings.Contains(q, repoALabel) {
+		t.Errorf("expected repoA (%s) to be discarded, but it still appears as a service node; got:\n%s", repoALabel, q)
+	}
+}
+
+// TestE2E_MultiRepoAppendStillAccumulates guards against the session-flag gate
+// over-resetting: a genuine multi-repo flow (first snapshot resets, then
+// append=true) must still accumulate both repos as service nodes.
+func TestE2E_MultiRepoAppendStillAccumulates(t *testing.T) {
+	s := startInMemory(t)
+	s.snapshot(t) // go_sample, first snapshot (no append): resets, marks session
+
+	repoB := copyTree(t, filepath.Join("..", "engine", "testdata", "repos", "ts_sample"), t.TempDir())
+	res := s.call(t, "generate_snapshot", map[string]any{"repo_path": repoB, "append": true})
+	if res.IsError {
+		t.Fatalf("append generate_snapshot errored: %s", text(res))
+	}
+	if !strings.Contains(text(res), "Multi-repo mode active") {
+		t.Errorf("append=true should report multi-repo mode; got:\n%s", text(res))
+	}
+
+	cov := text(s.call(t, "coverage_report", map[string]any{}))
+	for _, label := range []string{"go_sample", "ts_sample"} {
+		if !strings.Contains(cov, label) {
+			t.Errorf("coverage_report should list service %q after append; got:\n%s", label, cov)
+		}
 	}
 }
 

@@ -28,6 +28,12 @@ type Server struct {
 	cfg          *config.Config
 	startTime    time.Time
 	toolCallback func(string)
+
+	// snapshotsGenerated records whether generate_snapshot has run at least once
+	// in this session. It distinguishes a user-driven multi-repo session from a
+	// store that was merely pre-populated by AutoLoadSnapshot at startup, so the
+	// auto-append heuristic never fires on top of auto-loaded-only state.
+	snapshotsGenerated bool
 }
 
 // New creates a new MCP server wired to the given engine.
@@ -384,11 +390,14 @@ func (s *Server) registerTools() {
 			return errorResult(fmt.Sprintf("invalid repo path: %v", err)), nil, nil
 		}
 
-		// Auto-enable append mode when switching to a different repo
-		// while facts from another repo are already loaded.
+		// Auto-enable append mode when switching to a different repo while facts
+		// from another repo are already loaded — but only once this session has
+		// explicitly generated a snapshot. A store pre-populated solely by
+		// AutoLoadSnapshot must not trigger append: an explicit/default
+		// append=false resets and discards the auto-loaded state.
 		appendMode := args.Append
 		autoAppended := false
-		if !appendMode && s.eng.Store().Count() > 0 && s.eng.Snapshot() != nil {
+		if !appendMode && s.snapshotsGenerated && s.eng.Store().Count() > 0 && s.eng.Snapshot() != nil {
 			prevRepo := s.eng.Snapshot().Meta.RepoPath
 			if prevRepo != "" && prevRepo != absRepo {
 				appendMode = true
@@ -397,10 +406,19 @@ func (s *Server) registerTools() {
 			}
 		}
 
+		// A fresh (non-append) snapshot that discards an auto-loaded store is
+		// silent otherwise; log it so the reset is visible.
+		if !appendMode && !s.snapshotsGenerated && s.eng.Store().Count() > 0 && s.eng.Snapshot() != nil {
+			if prevRepo := s.eng.Snapshot().Meta.RepoPath; prevRepo != "" && prevRepo != absRepo {
+				log.Printf("[server] discarding auto-loaded snapshot from %s; generating fresh single-repo snapshot for %s", prevRepo, absRepo)
+			}
+		}
+
 		snapshot, err := s.eng.GenerateSnapshot(ctx, absRepo, appendMode)
 		if err != nil {
 			return errorResult(fmt.Sprintf("snapshot generation failed: %v", err)), nil, nil
 		}
+		s.snapshotsGenerated = true
 
 		// Write artifacts to disk
 		if err := s.eng.WriteArtifacts(absRepo); err != nil {
