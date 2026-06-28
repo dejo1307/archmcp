@@ -37,7 +37,7 @@ Cursor (add to `mcp.json`):
 
 Done. Your agent now has a precise structural map of your code. For configuration options, multi-repo setup, and what to ask next, see [Quick start](#quick-start) below.
 
-**Supported languages:** Go · TypeScript · Python · Java · Kotlin · Swift · Ruby · C++ · Vue · OpenAPI — with framework awareness (Next.js, FastAPI, Django, Spring, Rails, SwiftUI, Jetpack Compose, …)
+**Supported languages:** Go · JavaScript · TypeScript · Python · Java · Kotlin · Swift · Ruby · C++ · Vue · Svelte · OpenAPI — with framework awareness (Next.js, Nuxt, SvelteKit, FastAPI, Django, Spring, Rails, SwiftUI, Jetpack Compose, …)
 
 ---
 
@@ -213,8 +213,10 @@ Working across several repos? Generate the first, then add the rest with append 
 |------------|-------------|
 | Go         | `go.mod` |
 | Java       | `pom.xml` (Maven) or `.java` sources (Spring routes / JPA / Lombok DI / Dubbo SPI aware) |
+| JavaScript | `tsconfig.json` / `package.json` with TypeScript (parsed by the TypeScript extractor) |
 | TypeScript | `tsconfig.json` / `package.json` with TypeScript (Next.js & monorepo aware) |
 | Vue        | `package.json` with `vue` dependency (Nuxt / Vue Router / Composition API aware) |
+| Svelte     | `package.json` with `svelte` dependency (SvelteKit routing / `$lib` alias aware) |
 | Python     | `pyproject.toml`, `requirements.txt`, `setup.py`, … (FastAPI / Django / SQLAlchemy aware) |
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
