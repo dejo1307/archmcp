@@ -7,6 +7,7 @@ import (
 
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
+	c "github.com/tree-sitter/tree-sitter-c/bindings/go"
 	cpp "github.com/tree-sitter/tree-sitter-cpp/bindings/go"
 )
 
@@ -22,10 +23,20 @@ import (
 // Call-graph / inheritance / instantiation edge targets are emitted as bare names
 // here (e.g. "Msg::Error", "GEntity") and canonicalised to "<dir>.<...>" by the
 // post-pass in Extract, which holds the project-wide type index.
-func extractFileAST(src []byte, relFile string) []facts.Fact {
+//
+// lang selects the tree-sitter grammar ("c" -> tree-sitter-c, otherwise
+// tree-sitter-cpp) and is emitted as the per-fact "language" prop. The two
+// grammars share node-type names for every kind the walker reads; the C++-only
+// kinds (class_specifier, namespace_definition, template_declaration,
+// qualified_identifier, alias_declaration) simply never appear in C trees.
+func extractFileAST(src []byte, relFile, lang string) []facts.Fact {
 	parser := sitter.NewParser()
 	defer parser.Close()
-	if err := parser.SetLanguage(sitter.NewLanguage(cpp.Language())); err != nil {
+	grammar := cpp.Language()
+	if lang == langC {
+		grammar = c.Language()
+	}
+	if err := parser.SetLanguage(sitter.NewLanguage(grammar)); err != nil {
 		return nil
 	}
 	tree := parser.Parse(src, nil)
@@ -38,6 +49,7 @@ func extractFileAST(src []byte, relFile string) []facts.Fact {
 		src:         src,
 		relFile:     relFile,
 		dir:         filepath.Dir(relFile),
+		lang:        lang,
 		fileMethods: buildFileMethodIndex(tree.RootNode(), src),
 	}
 	w.walkDeclList(tree.RootNode())
@@ -94,6 +106,9 @@ type astWalker struct {
 	src     []byte
 	relFile string
 	dir     string
+	// lang is "c" or "cpp" — emitted as the per-fact "language" prop and used to
+	// apply C-only semantics (e.g. static => file-private).
+	lang string
 
 	out []facts.Fact
 
@@ -385,7 +400,7 @@ func (w *astWalker) handleClassLike(node *sitter.Node, kind string) {
 		Props: map[string]any{
 			"symbol_kind": kind,
 			"exported":    true, // C++ has no file-private types; visibility is via access specifiers
-			"language":    "cpp",
+			"language":    w.lang,
 		},
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	}
@@ -456,7 +471,7 @@ func (w *astWalker) handleEnum(node *sitter.Node) {
 		Props: map[string]any{
 			"symbol_kind": facts.SymbolEnum,
 			"exported":    true,
-			"language":    "cpp",
+			"language":    w.lang,
 		},
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	}
@@ -521,7 +536,7 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 		Props: map[string]any{
 			"symbol_kind": sk,
 			"exported":    true,
-			"language":    "cpp",
+			"language":    w.lang,
 			"has_body":    true,
 		},
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
@@ -598,7 +613,7 @@ func (w *astWalker) handleFieldDeclaration(node *sitter.Node) {
 			Props: map[string]any{
 				"symbol_kind": facts.SymbolMethod,
 				"exported":    true,
-				"language":    "cpp",
+				"language":    w.lang,
 				"receiver":    w.enclosingTypeReceiver(),
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
@@ -630,7 +645,7 @@ func (w *astWalker) handleFieldDeclaration(node *sitter.Node) {
 			Props: map[string]any{
 				"symbol_kind": kind,
 				"exported":    true,
-				"language":    "cpp",
+				"language":    w.lang,
 				"receiver":    w.enclosingTypeReceiver(),
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
@@ -678,6 +693,14 @@ func (w *astWalker) handleDeclaration(node *sitter.Node) {
 			w.handleEnum(t)
 		}
 	}
+	// A file-scope object declaration with an initializer (e.g. a kernel ops table
+	// `static const struct file_operations f = { .read = foo };` or a function
+	// pointer `int (*fp)(void) = bar;`) is a variable definition, not a function
+	// prototype — emit the variable and record any function-pointer references in
+	// its initializer so the pointed-to functions are not mis-reported as dead.
+	if w.handleVarInitializers(node) {
+		return
+	}
 	// Free-function prototype: declarator is (or wraps) a function_declarator whose
 	// own declarator is a plain identifier or a qualified_identifier.
 	fdecl := findFunctionDeclarator(node.ChildByFieldName("declarator"))
@@ -721,7 +744,7 @@ func (w *astWalker) handleDeclaration(node *sitter.Node) {
 		Props: map[string]any{
 			"symbol_kind": sk,
 			"exported":    true,
-			"language":    "cpp",
+			"language":    w.lang,
 		},
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	}
@@ -730,6 +753,142 @@ func (w *astWalker) handleDeclaration(node *sitter.Node) {
 	}
 	w.applyFuncQualifiers(&f, node, fdecl)
 	w.out = append(w.out, f)
+}
+
+// handleVarInitializers emits a SymbolVariable/SymbolConstant for each file-scope
+// object declarator that has an initializer, and walks that initializer for
+// function-pointer references. It returns true when the declaration is an
+// initialized object definition, so the caller skips the function-prototype path
+// (a function is never initialized). This is what surfaces kernel-style ops
+// tables — `static const struct file_operations f = { .read = proc_reg_read }` —
+// so the pointed-to functions get an inbound edge and aren't reported as dead.
+func (w *astWalker) handleVarInitializers(node *sitter.Node) bool {
+	constVar := strings.Contains(declTypePrefix(node, w.src), "const")
+	handled := false
+	for i := uint(0); i < node.ChildCount(); i++ {
+		if node.FieldNameForChild(uint32(i)) != "declarator" {
+			continue
+		}
+		decl := node.Child(i)
+		if decl.Kind() != "init_declarator" {
+			continue
+		}
+		value := decl.ChildByFieldName("value")
+		if value == nil {
+			continue
+		}
+		handled = true
+		leaf := declaratorLeafName(decl.ChildByFieldName("declarator"), w.src)
+		if leaf == "" {
+			continue
+		}
+		kind := facts.SymbolVariable
+		if constVar {
+			kind = facts.SymbolConstant
+		}
+		w.out = append(w.out, facts.Fact{
+			Kind: facts.KindSymbol,
+			Name: w.factName(leaf),
+			File: w.relFile,
+			Line: int(node.StartPosition().Row) + 1,
+			Props: map[string]any{
+				"symbol_kind": kind,
+				"exported":    true,
+				"language":    w.lang,
+			},
+			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
+		})
+		w.pushOwner(len(w.out) - 1)
+		w.walkInitializerRefs(value)
+		w.popOwner()
+	}
+	return handled
+}
+
+// walkInitializerRefs scans a variable's initializer subtree for identifiers that
+// name a function used as a pointer (struct `.field = func`, `&func`, a bare func
+// in a positional/array initializer, or a nested initializer_list) and attaches a
+// provisional func-pointer edge to the current owner. The `.field` designators,
+// literals, and macro-shaped constants are skipped (see emitFuncPtrRef).
+func (w *astWalker) walkInitializerRefs(node *sitter.Node) {
+	if node == nil {
+		return
+	}
+	switch node.Kind() {
+	case "identifier":
+		w.emitFuncPtrRef(nodeText(node, w.src))
+		return
+	case "pointer_expression": // &func / *func
+		w.walkInitializerRefs(node.ChildByFieldName("argument"))
+		return
+	case "initializer_pair":
+		// Recurse only into the value — never the ".field" / "[i]" designator.
+		w.walkInitializerRefs(node.ChildByFieldName("value"))
+		return
+	case "field_designator", "subscript_designator", "field_identifier",
+		"number_literal", "char_literal", "string_literal", "concatenated_string":
+		return // not a function reference
+	}
+	for i := uint(0); i < node.ChildCount(); i++ {
+		w.walkInitializerRefs(node.Child(i))
+	}
+}
+
+// emitArgRefs scans the DIRECT arguments of a call for bare function names used as
+// function pointers — `register(foo)`, `request_irq(irq, &handler, ...)` — and
+// attaches a provisional func-pointer edge for each. Only top-level `identifier`
+// and `&identifier` arguments are considered; complex argument expressions
+// (`x->field`, `a + b`, nested calls) are left to the normal call walk, so we do
+// not over-emit on ordinary data arguments.
+func (w *astWalker) emitArgRefs(args *sitter.Node) {
+	if args == nil {
+		return
+	}
+	for i := uint(0); i < args.ChildCount(); i++ {
+		a := args.Child(i)
+		if !a.IsNamed() {
+			continue
+		}
+		switch a.Kind() {
+		case "identifier":
+			w.emitFuncPtrRef(nodeText(a, w.src))
+		case "pointer_expression": // &func
+			if inner := a.ChildByFieldName("argument"); inner != nil && inner.Kind() == "identifier" {
+				w.emitFuncPtrRef(nodeText(inner, w.src))
+			}
+		}
+	}
+}
+
+// emitFuncPtrRef attaches a PROVISIONAL func-pointer reference (relFuncPtrCandidate)
+// for an identifier used as a function pointer — in an initializer value or a call
+// argument. It suppresses builtins (via resolveCall) and UPPER_SNAKE macro/constant
+// names. The edge is only kept (and rewritten to RelCalls) by resolveFuncPtrRefs in
+// Extract when the target's short name is an actual function in the snapshot, so
+// ordinary data identifiers never produce a spurious reference.
+func (w *astWalker) emitFuncPtrRef(name string) {
+	if name == "" || isAllCapsConst(name) {
+		return
+	}
+	if target := w.resolveCall(name); target != "" {
+		w.addOwnerEdge(relFuncPtrCandidate, target)
+	}
+}
+
+// isAllCapsConst reports whether s is an UPPER_SNAKE macro/constant name, which by
+// C/C++ convention is never a function used as a pointer.
+func isAllCapsConst(s string) bool {
+	hasLetter := false
+	for _, r := range s {
+		switch {
+		case unicode.IsUpper(r):
+			hasLetter = true
+		case unicode.IsDigit(r) || r == '_':
+		default:
+			return false
+		}
+	}
+	return hasLetter
 }
 
 func (w *astWalker) handleTypedef(node *sitter.Node) {
@@ -761,7 +920,7 @@ func (w *astWalker) emitTypeAlias(name string, node *sitter.Node) {
 		Props: map[string]any{
 			"symbol_kind": facts.SymbolType,
 			"exported":    true,
-			"language":    "cpp",
+			"language":    w.lang,
 		},
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
@@ -786,7 +945,7 @@ func (w *astWalker) handleInclude(node *sitter.Node) {
 		File: w.relFile,
 		Line: int(node.StartPosition().Row) + 1,
 		Props: map[string]any{
-			"language": "cpp",
+			"language": w.lang,
 			"include":  inc,
 			"source":   "internal",
 		},
@@ -800,6 +959,12 @@ func (w *astWalker) applyFuncQualifiers(f *facts.Fact, node, fdecl *sitter.Node)
 	header := w.signatureText(node)
 	if strings.Contains(header, "static") {
 		f.Props["static"] = true
+		// In C a `static` function has internal linkage — it is file-private, not
+		// externally visible. (C++ keeps exported=true: file scope there is rare and
+		// visibility is expressed via access specifiers / anonymous namespaces.)
+		if w.lang == langC {
+			f.Props["exported"] = false
+		}
 	}
 	if strings.Contains(header, "virtual") {
 		f.Props["virtual"] = true
@@ -915,6 +1080,11 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 // handleCall emits the call-graph edge for a call_expression and feeds the current
 // function's complexity metrics (recursion + calls_in_loop).
 func (w *astWalker) handleCall(node *sitter.Node) {
+	// Functions passed as arguments (callbacks) are references too:
+	// register(foo), request_irq(irq, &handler, ...). Resolved against the
+	// project function index in Extract so non-function args are dropped.
+	w.emitArgRefs(node.ChildByFieldName("arguments"))
+
 	callee := node.ChildByFieldName("function")
 	name, kind, root := calleeInfo(callee, w.src)
 	switch {
@@ -1097,8 +1267,17 @@ func declaratorLeafName(node *sitter.Node, src []byte) string {
 			}
 			return strings.Join(append(scopes, leaf), "::")
 		case "function_declarator", "pointer_declarator", "reference_declarator",
-			"array_declarator", "parenthesized_declarator", "init_declarator":
+			"array_declarator", "init_declarator":
 			node = node.ChildByFieldName("declarator")
+		case "parenthesized_declarator":
+			// A function-pointer declarator nests the name in an unnamed-field
+			// child, e.g. "(*g_cb)(void)" → parenthesized_declarator → pointer_
+			// declarator → identifier. Fall back to the first named child.
+			if d := node.ChildByFieldName("declarator"); d != nil {
+				node = d
+			} else {
+				node = firstNamedChild(node)
+			}
 		default:
 			node = firstNamedChild(node)
 		}

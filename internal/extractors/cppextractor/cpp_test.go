@@ -107,7 +107,8 @@ func TestDetect(t *testing.T) {
 		{"cpp source", map[string]string{"main.cpp": "int main(){}"}, true},
 		{"hpp header only", map[string]string{"foo.hpp": "class Foo{};"}, true},
 		{"cmake plus header", map[string]string{"CMakeLists.txt": "project(x)", "foo.h": "int x;"}, true},
-		{"c only with makefile", map[string]string{"Makefile": "all:", "foo.c": "int x;"}, false},
+		{"c source", map[string]string{"main.c": "int main(){}"}, true},                          // pure C is now handled
+		{"c only with makefile", map[string]string{"Makefile": "all:", "foo.c": "int x;"}, true}, // .c is decisive
 		{"plain header only", map[string]string{"foo.h": "int x;"}, false},
 	}
 	for _, c := range cases {
@@ -330,6 +331,40 @@ class IntBox : public Box<int> {};
 }
 
 // --- Includes ---
+
+// TestCppFunctionPointerInitializer mirrors the C ops-table case under the C++
+// grammar (shared node kinds): a struct with function-pointer members initialized
+// with function names yields RelCalls edges from the variable.
+func TestCppFunctionPointerInitializer(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/ops.cpp": `
+static int reader() { return 0; }
+static int writer() { return 0; }
+static const struct ops_t ops = {
+	.read = reader,
+	.write = writer,
+};
+`,
+	})
+	ops := mustFact(t, ff, "src.ops")
+	if !hasRelation(ops, facts.RelCalls, "src.reader") || !hasRelation(ops, facts.RelCalls, "src.writer") {
+		t.Errorf("ops should reference reader and writer, got %+v", ops.Relations)
+	}
+}
+
+// TestCppCallbackArgReference mirrors the callback-arg rescue under the C++ grammar.
+func TestCppCallbackArgReference(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/reg.cpp": `
+static int onEvent() { return 0; }
+static int setup() { return subscribe(onEvent); }
+`,
+	})
+	setup := mustFact(t, ff, "src.setup")
+	if !hasRelation(setup, facts.RelCalls, "src.onEvent") {
+		t.Errorf("setup should reference onEvent passed as a callback arg, got %+v", setup.Relations)
+	}
+}
 
 func TestIncludes(t *testing.T) {
 	ff := extractProject(t, map[string]string{

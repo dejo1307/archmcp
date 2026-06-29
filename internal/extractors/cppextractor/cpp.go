@@ -11,8 +11,26 @@ import (
 	"github.com/enola-labs/enola/internal/parallel"
 )
 
-// CppExtractor extracts architectural facts from C++ source code using
-// tree-sitter AST parsing (see cpp_ast.go for the walker implementation).
+// Language identifiers emitted as the per-fact "language" prop. This extractor is
+// a C/C++ family extractor: .c (and C-context .h) files are parsed with the
+// tree-sitter-c grammar, while .cpp/.cc/... (and C++-context .h) use tree-sitter-cpp.
+const (
+	langC   = "c"
+	langCpp = "cpp"
+)
+
+// relFuncPtrCandidate is an internal, provisional relation kind for an identifier
+// used as a function pointer (in an initializer value or a call argument). It is
+// resolved by resolveFuncPtrRefs in Extract — rewritten to facts.RelCalls when the
+// target names a real function in the snapshot, otherwise dropped — so it never
+// appears in emitted facts.
+const relFuncPtrCandidate = "func_ptr_candidate"
+
+// CppExtractor extracts architectural facts from C and C++ source code using
+// tree-sitter AST parsing (see cpp_ast.go for the walker implementation). It owns
+// both languages: a per-file grammar choice (see parsedLanguage) routes .c files
+// to tree-sitter-c and .cpp/... to tree-sitter-cpp, and every fact carries a
+// "language" prop ("c" or "cpp") so the two are distinguishable downstream.
 type CppExtractor struct{}
 
 // New creates a new CppExtractor.
@@ -24,13 +42,15 @@ func (e *CppExtractor) Name() string {
 	return "cpp"
 }
 
-// Detect returns true if the repository looks like a C++ project.
+// Detect returns true if the repository looks like a C or C++ project.
 //
-// An unambiguous C++ source extension (.cpp/.cc/.cxx/.hpp/...) is decisive. A
-// build file (CMakeLists.txt/Makefile/meson.build/*.vcxproj) plus any header is
-// also accepted. A bare .h/.c alone is NOT a signal — that would false-positive on
-// pure-C projects.
+// The extractor handles both languages, so a pure-C source (.c) or an
+// unambiguous C++ source extension (.cpp/.cc/.cxx/.hpp/...) is decisive. A build
+// file (CMakeLists.txt/Makefile/meson.build/*.vcxproj) plus any header is also
+// accepted. A bare .h alone is NOT a signal — that would false-positive on repos
+// that merely vendor a header.
 func (e *CppExtractor) Detect(repoPath string) (bool, error) {
+	hasCSource := false
 	hasCppSource := false
 	hasBuildFile := false
 	hasHeader := false
@@ -41,6 +61,8 @@ func (e *CppExtractor) Detect(repoPath string) (bool, error) {
 		}
 		name := filepath.Base(path)
 		switch {
+		case isCFile(name):
+			hasCSource = true
 		case isUnambiguousCppExt(name):
 			hasCppSource = true
 		case isHeaderExt(name):
@@ -51,7 +73,7 @@ func (e *CppExtractor) Detect(repoPath string) (bool, error) {
 		}
 	})
 
-	return hasCppSource || (hasBuildFile && hasHeader), nil
+	return hasCSource || hasCppSource || (hasBuildFile && hasHeader), nil
 }
 
 // Extract parses C++ files with tree-sitter and emits architectural facts.
@@ -69,17 +91,25 @@ func (e *CppExtractor) Detect(repoPath string) (bool, error) {
 func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
 	var allFacts []facts.Fact
 
-	hFilesAreCpp := repoHasUnambiguousCpp(files)
+	// Per-directory grammar attribution for bare .h headers: a header is C++ only
+	// when its own directory subtree contains C++ sources. This localises a handful
+	// of stray .cpp files (e.g. tools/ in a kernel tree) instead of flipping every
+	// .h in the repo to the C++ grammar.
+	hdrLang := buildHeaderLangIndex(files)
 
 	modules := make(map[string]bool)
+	dirLang := make(map[string]string)     // dir -> module language ("c"/"cpp")
 	typeIndex := make(map[string]string)   // simple type name -> dir
 	headerIndex := make(map[string]string) // header/source basename -> dir
+	funcNames := make(map[string]bool)     // short names of all functions/methods
 
 	// Pass 1: AST extraction (parallel) + indices (rebuilt in file order).
 	var cppFiles []string
+	langByFile := make(map[string]string) // rel path -> "c"/"cpp"
 	for _, relFile := range files {
-		if isCppFile(relFile, hFilesAreCpp) {
+		if lang := parsedLanguage(relFile, hdrLang); lang != "" {
 			cppFiles = append(cppFiles, relFile)
+			langByFile[relFile] = lang
 		}
 	}
 
@@ -92,7 +122,7 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 			log.Printf("[cpp-extractor] error reading %s: %v", relFile, err)
 			return nil
 		}
-		return extractFileAST(src, relFile)
+		return extractFileAST(src, relFile, langByFile[relFile])
 	})
 
 	for i, fileFacts := range perFileFacts {
@@ -102,6 +132,13 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 		dir := filepath.Dir(relFile)
 		modules[dir] = true
 		headerIndex[filepath.Base(relFile)] = dir
+		// A directory mixing C and C++ sources is treated as a C++ module; a
+		// C-only directory stays "c".
+		if langByFile[relFile] == langCpp {
+			dirLang[dir] = langCpp
+		} else if dirLang[dir] == "" {
+			dirLang[dir] = langC
+		}
 
 		// Index declared types so edge targets resolve.
 		for _, fact := range fileFacts {
@@ -114,9 +151,18 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 				if simple := lastScopeComponent(fact.Name); simple != "" {
 					typeIndex[simple] = dir
 				}
+			case facts.SymbolFunc, facts.SymbolMethod:
+				if simple := lastScopeComponent(fact.Name); simple != "" {
+					funcNames[simple] = true
+				}
 			}
 		}
 	}
+
+	// Resolve provisional func-pointer references (initializer values and call
+	// arguments): keep only those that name a real function, rewriting them to
+	// call edges; drop the rest so ordinary data identifiers create no edge.
+	resolveFuncPtrRefs(allFacts, funcNames)
 
 	// Merge header method declarations with source definitions.
 	allFacts = dedupeSymbols(allFacts)
@@ -129,12 +175,16 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 
 	// Emit module facts per directory.
 	for dir := range modules {
+		lang := dirLang[dir]
+		if lang == "" {
+			lang = langC
+		}
 		allFacts = append(allFacts, facts.Fact{
 			Kind: facts.KindModule,
 			Name: dir,
 			File: dir,
 			Props: map[string]any{
-				"language": "cpp",
+				"language": lang,
 			},
 		})
 	}
@@ -146,6 +196,42 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 // importantly a class's header method prototype and its out-of-line source
 // definition. The definition (has_body=true) is authoritative for File/Line and
 // carries the call-graph relations; props and relations are unioned.
+// resolveFuncPtrRefs finalizes the provisional relFuncPtrCandidate edges emitted
+// for identifiers used as function pointers (initializer values, call arguments).
+// An edge is kept — rewritten to facts.RelCalls — only when its target's short
+// name is an actual function/method in the snapshot; otherwise it is dropped, so a
+// data identifier that merely shares a name space with nothing real adds no edge.
+// Duplicates of an edge already present on the fact are collapsed.
+func resolveFuncPtrRefs(allFacts []facts.Fact, funcNames map[string]bool) {
+	for i := range allFacts {
+		rels := allFacts[i].Relations
+		if len(rels) == 0 {
+			continue
+		}
+		seen := make(map[string]bool, len(rels))
+		for _, r := range rels {
+			if r.Kind != relFuncPtrCandidate {
+				seen[r.Kind+"\x00"+r.Target] = true
+			}
+		}
+		out := rels[:0]
+		for _, r := range rels {
+			if r.Kind == relFuncPtrCandidate {
+				if !funcNames[lastScopeComponent(r.Target)] {
+					continue // not a real function — drop the provisional edge
+				}
+				r.Kind = facts.RelCalls
+				if seen[r.Kind+"\x00"+r.Target] {
+					continue // already a real call edge to the same target
+				}
+				seen[r.Kind+"\x00"+r.Target] = true
+			}
+			out = append(out, r)
+		}
+		allFacts[i].Relations = out
+	}
+}
+
 func dedupeSymbols(in []facts.Fact) []facts.Fact {
 	byName := make(map[string]int)
 	out := make([]facts.Fact, 0, len(in))
@@ -319,47 +405,80 @@ func isHeaderExt(name string) bool {
 	return false
 }
 
-// isCFile reports whether a filename is a pure-C source (.c), which the C++
-// extractor skips.
+// isCFile reports whether a filename is a pure-C source (.c).
 func isCFile(name string) bool {
 	return strings.ToLower(filepath.Ext(name)) == ".c"
 }
 
-// isCppFile reports whether the extractor should parse a file. Bare .h files are
-// parsed only when the repo contains unambiguous C++ sources (hFilesAreCpp).
-func isCppFile(path string, hFilesAreCpp bool) bool {
+// parsedLanguage reports which grammar should parse a file, or "" if the file is
+// not a C/C++ source the extractor handles. hdrLang maps a directory to the
+// language attributed to its bare .h headers (see buildHeaderLangIndex).
+func parsedLanguage(path string, hdrLang map[string]string) string {
 	if isCFile(path) {
-		return false
+		return langC
 	}
 	if isUnambiguousCppExt(path) {
-		return true
+		return langCpp
 	}
 	if strings.ToLower(filepath.Ext(path)) == ".h" {
-		return hFilesAreCpp
+		if l := hdrLang[filepath.Dir(path)]; l != "" {
+			return l
+		}
+		return langC // default: bare .h with no nearby C++ sources is C
 	}
-	return false
+	return ""
 }
 
-// OwnsFile implements plugin.FileOwner for incremental caching. It owns a
-// superset of what isCppFile parses (bare .h files are always claimed, since the
-// repo-wide hFilesAreCpp decision is not available per-file); over-claiming only
-// narrows what counts as shared config and never under-invalidates the cache.
+// buildHeaderLangIndex attributes a language to the bare .h headers in each
+// directory. A header is C++ only when its own directory subtree contains
+// unambiguous C++ sources; otherwise it is C. This localises stray C++ files
+// (e.g. a few tools/*.cpp in an otherwise pure-C kernel tree) to their own
+// subtrees instead of flipping every .h in the repo to the C++ grammar.
+//
+// The returned map holds langCpp for directories whose subtree contains C++
+// sources; directories absent from the map default to langC at lookup time.
+func buildHeaderLangIndex(files []string) map[string]string {
+	// Directories that directly contain an unambiguous C++ source.
+	cppDirs := make(map[string]bool)
+	for _, f := range files {
+		if isUnambiguousCppExt(f) {
+			cppDirs[filepath.Dir(f)] = true
+		}
+	}
+	// A header's directory is C++ if it, or any ancestor directory, directly
+	// contains C++ sources (covers a src/ tree with headers in subdirs).
+	hdrLang := make(map[string]string)
+	for _, f := range files {
+		if strings.ToLower(filepath.Ext(f)) != ".h" {
+			continue
+		}
+		dir := filepath.Dir(f)
+		if _, done := hdrLang[dir]; done {
+			continue
+		}
+		for d := dir; ; d = filepath.Dir(d) {
+			if cppDirs[d] {
+				hdrLang[dir] = langCpp
+				break
+			}
+			if d == "." || d == "/" || d == filepath.Dir(d) {
+				break
+			}
+		}
+	}
+	return hdrLang
+}
+
+// OwnsFile implements plugin.FileOwner for incremental caching. It owns every
+// file the extractor may parse — C and C++ sources plus bare .h headers (the
+// per-directory header-language decision is not available per-file, so .h is
+// always claimed). Over-claiming only narrows what counts as shared config and
+// never under-invalidates the cache.
 func (e *CppExtractor) OwnsFile(relFile string) bool {
-	if isUnambiguousCppExt(relFile) {
+	if isUnambiguousCppExt(relFile) || isCFile(relFile) {
 		return true
 	}
 	return strings.ToLower(filepath.Ext(relFile)) == ".h"
-}
-
-// repoHasUnambiguousCpp reports whether any file in the list has a C++-only
-// source extension (used to decide whether bare .h files are C++).
-func repoHasUnambiguousCpp(files []string) bool {
-	for _, f := range files {
-		if isUnambiguousCppExt(f) {
-			return true
-		}
-	}
-	return false
 }
 
 // walkShallow invokes fn for each entry up to maxDepth directory levels below

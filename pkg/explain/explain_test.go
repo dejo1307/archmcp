@@ -85,6 +85,48 @@ func computeFixture(t *testing.T) *Report {
 	return Compute(eng)
 }
 
+func TestCompute_Languages(t *testing.T) {
+	eng := newTestEngine(t)
+	// Modules in three languages, with c dominant (mirrors a kernel-like repo
+	// parsed by the "cpp" extractor but mostly written in C).
+	eng.Store().Add(
+		facts.Fact{Kind: facts.KindModule, Name: "kernel", File: "kernel", Props: map[string]any{"language": "c"}},
+		facts.Fact{Kind: facts.KindModule, Name: "fs", File: "fs", Props: map[string]any{"language": "c"}},
+		facts.Fact{Kind: facts.KindModule, Name: "mm", File: "mm", Props: map[string]any{"language": "c"}},
+		facts.Fact{Kind: facts.KindModule, Name: "scripts/kconfig", File: "scripts/kconfig", Props: map[string]any{"language": "cpp"}},
+		facts.Fact{Kind: facts.KindModule, Name: "tools/perf", File: "tools/perf", Props: map[string]any{"language": "python"}},
+	)
+	eng.Store().BuildGraph()
+	// Extractor name "cpp" must NOT be what surfaces as the language.
+	eng.SetSnapshot(&facts.Snapshot{Meta: facts.SnapshotMeta{Extractors: []string{"cpp", "python"}}})
+
+	r := Compute(eng)
+	want := []string{"c", "cpp", "python"} // prevalence order: 3×c, 1×cpp, 1×python (ties alphabetical)
+	if len(r.Languages) != len(want) {
+		t.Fatalf("Languages = %v, want %v", r.Languages, want)
+	}
+	for i := range want {
+		if r.Languages[i] != want[i] {
+			t.Fatalf("Languages = %v, want %v", r.Languages, want)
+		}
+	}
+	if out := r.Render(); !strings.Contains(out, "Languages:") || !strings.Contains(out, "c, cpp, python") {
+		t.Errorf("Render() should show real languages, got:\n%s", out)
+	}
+}
+
+// TestCompute_LanguagesFallback verifies that when no module carries a language
+// prop (a pre-language snapshot), the render falls back to the extractor names.
+func TestCompute_LanguagesFallback(t *testing.T) {
+	r := computeFixture(t) // fixture modules carry no language prop; Extractors=["go"]
+	if len(r.Languages) != 0 {
+		t.Errorf("Languages should be empty without language props, got %v", r.Languages)
+	}
+	if out := r.Render(); !strings.Contains(out, "Languages:           go") {
+		t.Errorf("Render() should fall back to extractor name 'go', got:\n%s", out)
+	}
+}
+
 func TestCompute_KindCounts(t *testing.T) {
 	r := computeFixture(t)
 

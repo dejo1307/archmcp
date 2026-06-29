@@ -28,8 +28,14 @@ func (r *Report) Render() string {
 	if r.Duration != "" {
 		kv(&b, "Analysis time", r.Duration)
 	}
-	if len(r.Extractors) > 0 {
-		kv(&b, "Languages", strings.Join(r.Extractors, ", "))
+	// Prefer actual source languages (from per-fact language props); fall back to
+	// extractor names for pre-language snapshots whose facts lack the prop.
+	langs := r.Languages
+	if len(langs) == 0 {
+		langs = r.Extractors
+	}
+	if len(langs) > 0 {
+		kv(&b, "Languages", strings.Join(langs, ", "))
 	}
 	kv(&b, "Total facts", fmt.Sprintf("%d", r.TotalFacts))
 	b.WriteString("\n")

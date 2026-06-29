@@ -80,7 +80,11 @@ type Report struct {
 	GeneratedAt string   `json:"generated_at,omitempty"`
 	Duration    string   `json:"duration,omitempty"`
 	Extractors  []string `json:"extractors,omitempty"`
-	TotalFacts  int      `json:"total_facts"`
+	// Languages are the actual source languages present, most-prevalent first
+	// (derived from the per-fact "language" prop, not the extractor names — the
+	// C/C++ extractor is named "cpp" but a repo may be entirely C).
+	Languages  []string `json:"languages,omitempty"`
+	TotalFacts int      `json:"total_facts"`
 
 	KindCounts  []LabelCount `json:"kind_counts"`  // module/symbol/route/storage/dependency/service
 	SymbolKinds []LabelCount `json:"symbol_kinds"` // function/method/struct/…
@@ -129,6 +133,7 @@ func Compute(eng *bootstrap.Engine) *Report {
 		r.Duration = snap.Meta.Duration
 		r.Extractors = snap.Meta.Extractors
 	}
+	r.Languages = languagesByPrevalence(store)
 
 	// Architectural-kind tallies, in the canonical order from ARCHITECTURE.md.
 	for _, k := range []string{
@@ -238,6 +243,35 @@ func Compute(eng *bootstrap.Engine) *Report {
 
 	computeHotspots(store, r)
 	return r
+}
+
+// languagesByPrevalence returns the distinct source languages present across
+// module facts, most-common first (ties broken alphabetically for determinism).
+// It reads the per-fact "language" prop rather than the extractor names, so a
+// repo parsed by the "cpp" extractor but written entirely in C reports "c".
+// Returns nil when no module carries a language (e.g. a pre-language snapshot),
+// letting the renderer fall back to the extractor list.
+func languagesByPrevalence(store *facts.Store) []string {
+	counts := map[string]int{}
+	for _, f := range store.ByKind(facts.KindModule) {
+		if l, _ := f.Props["language"].(string); l != "" {
+			counts[l]++
+		}
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	langs := make([]string, 0, len(counts))
+	for l := range counts {
+		langs = append(langs, l)
+	}
+	sort.Slice(langs, func(i, j int) bool {
+		if counts[langs[i]] != counts[langs[j]] {
+			return counts[langs[i]] > counts[langs[j]]
+		}
+		return langs[i] < langs[j]
+	})
+	return langs
 }
 
 // topPerGroup caps how many offenders each code-health group lists in the report.
