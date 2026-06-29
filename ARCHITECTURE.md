@@ -344,6 +344,35 @@ Per-service edge-coverage report, so you can tell a genuinely isolated service f
 
 ---
 
+### `set_baseline` — "remember the architecture as it is now"
+
+Pins the current snapshot as a diff baseline by copying the snapshot artifacts (`facts.jsonl`, `insights.json`, `snapshot.meta.json`) into `.enola/baseline/`. Call it once at the start of a task, after the first `generate_snapshot`. The pinned baseline **survives subsequent `generate_snapshot` runs**, so it stays valid across several rounds of edits — unlike the auto-rotated `.enola/previous/`, which only ever holds the immediately-preceding run. Takes no parameters.
+
+### `diff_snapshot` — "what did my change actually do?"
+
+Computes the architectural **delta** between a baseline snapshot and the current one. This is the verification counterpart to `impact_analysis`: where impact analysis *plans* a change, diff_snapshot *confirms* it, replacing "re-read the files to check what got built" with a deterministic answer.
+
+It is a **delta, not a linter**: it judges the current snapshot against the codebase's own prior state, not an external ideal, and reports only what *changed* —
+
+- **findings that newly appeared** (regressions introduced — a new cycle, layer violation, god-class, unused route, …) and **findings that were resolved**, each carrying through its original confidence and caveats untouched;
+- **new and removed coupling edges** (the architecturally interesting structural change);
+- **added / removed** modules, symbols, routes, storage; and props-level **changed** facts (line-only shifts are ignored, so an edit above a symbol doesn't churn the diff).
+
+Because the baseline is the project's own prior snapshot, a pattern that was present *before and after* (e.g. an API-first route with no loaded consumer) produces no delta — the diff is structurally immune to that false-signal class. Findings are identified by explainer + cited entities (not by their volatile title/metric text), so a god-class whose fan-in merely ticked up is not reported as resolve+new. `Compute` is pure and deterministic: identical inputs render byte-identically.
+
+The typical loop is `generate_snapshot → set_baseline → edit → generate_snapshot → diff_snapshot`.
+
+| Parameter | Description |
+|-----------|-------------|
+| `baseline` | What to compare against: `pinned` (default — the `set_baseline` snapshot), `previous` (the immediately-preceding run, auto-rotated into `.enola/previous/`), or an explicit path to a directory holding `facts.jsonl`. |
+| `focus` | Optional: narrow the report to entries referencing a module/file/symbol (substring), to verify just what you touched. |
+| `output_mode` | `summary` (default — headline regressions/improvements + structural tally) → `compact` (adds finding descriptions, evidence, and the changed edges/facts) → `full` (complete JSON). |
+| `max_tokens` | Optional hard cap on output size. |
+
+The engine lives in [`internal/diff`](internal/diff/diff.go) (pure `Compute` + deterministic renderers) and is re-exported for out-of-module use via [`pkg/diff`](pkg/diff/diff.go); baseline persistence and the on-disk loader live in [`internal/engine/baseline.go`](internal/engine/baseline.go).
+
+---
+
 ## Cross-repo: the graph of graphs
 
 enola can analyze multiple repositories together. Use `append` mode to incrementally build a combined fact store, then query across all of them.
@@ -512,6 +541,8 @@ After `generate_snapshot`, these are written to the output directory (default `.
 | `facts.jsonl` | Every extracted fact, one JSON object per line |
 | `insights.json` | Architectural insights with confidence scores |
 | `snapshot.meta.json` | Metadata including per-file content hashes for incremental updates |
+| `previous/` | The immediately-preceding snapshot, auto-rotated on each write — the `baseline='previous'` source for `diff_snapshot` |
+| `baseline/` | A snapshot pinned by `set_baseline`, preserved across re-snapshots — the default `diff_snapshot` baseline |
 
 `llm_context.md` is the human- and agent-readable digest. It's prioritized and truncated to the configured token budget, and includes (as space allows): a repository map of modules, the detected architecture pattern, cross-repo dependencies, entry points, routes, storage, dependency rules, the most critical modules (by fan-in/fan-out), risk zones (cycles and layer violations), and an architecture-aware "how to add a feature" guide.
 

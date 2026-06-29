@@ -88,6 +88,22 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	return e.eng.WriteArtifacts(repoPath)
 }
 
+// SetBaseline pins the current on-disk snapshot as the diff baseline.
+func (e *Engine) SetBaseline(repoPath string) error {
+	return e.eng.SetBaseline(repoPath)
+}
+
+// OutputDir returns the absolute .enola output directory for repoPath.
+func (e *Engine) OutputDir(repoPath string) string {
+	return e.eng.OutputDir(repoPath)
+}
+
+// LoadSnapshotDir reads a persisted snapshot (facts.jsonl + insights.json +
+// snapshot.meta.json) from dir into an in-memory Snapshot for diffing.
+func LoadSnapshotDir(dir string) (*facts.Snapshot, error) {
+	return engine.LoadSnapshotDir(dir)
+}
+
 // GetArtifact returns the content of a named artifact.
 func (e *Engine) GetArtifact(name string) ([]byte, error) {
 	return e.eng.GetArtifact(name)

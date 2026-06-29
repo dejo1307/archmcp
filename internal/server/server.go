@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/pkg/mcputil"
@@ -47,7 +48,7 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 		Name:    "enola",
 		Version: Version,
 	}, &mcp.ServerOptions{
-		Instructions: "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, and OpenAPI.",
+		Instructions: "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). To verify what a change did to the architecture, pin a baseline before editing and diff after: generate_snapshot → set_baseline → make changes → generate_snapshot → diff_snapshot. diff_snapshot is delta-only (it reports just what changed — new/resolved findings, new coupling, added/removed symbols — never pre-existing state), so prefer it over re-reading files to confirm a change. Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, and OpenAPI.",
 	})
 
 	s.mcp = mcpServer
@@ -374,6 +375,8 @@ func (s *Server) registerTools() {
 			"Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, and OpenAPI. " +
 			"Produces facts of kind: module, symbol, route, storage, dependency, service. " +
 			"Run this first before any other tool. Re-run after code changes. " +
+			"To VERIFY a change you are about to make, call set_baseline right after this first snapshot (BEFORE editing); " +
+			"then after editing, re-run generate_snapshot and call diff_snapshot to see exactly what the change did to the architecture. " +
 			"In multi-repo mode, call with append=true for each additional repo after the first; " +
 			"enola auto-enables append when it detects you have switched to a different repo.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args generateSnapshotArgs) (*mcp.CallToolResult, any, error) {
@@ -470,6 +473,12 @@ func (s *Server) registerTools() {
 					"query_facts(kind=\"service\") or query_facts(prop=\"type\", prop_value=\"cross_repo\").",
 				len(services), len(crossEdges), repoLabel,
 			)
+		} else {
+			// Single-repo edit-verify loop guidance, tailored to whether a baseline
+			// is already pinned: nudge set_baseline before the agent edits, then
+			// diff_snapshot once a baseline exists. Skipped in multi-repo mode where
+			// the baseline concept is per-first-repo and would only add noise.
+			summary += s.loopHint(absRepo)
 		}
 
 		return &mcp.CallToolResult{
@@ -1074,6 +1083,129 @@ func (s *Server) registerTools() {
 			return textResult(capTokens(renderInsightsSummary(matched), args.MaxTokens, false)), nil, nil
 		}
 	})
+
+	// Tool: set_baseline
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "set_baseline",
+		Description: "Pin the current snapshot as the baseline for diff_snapshot. " +
+			"Call this once at the START of a task (after generate_snapshot), make your changes, " +
+			"re-run generate_snapshot, then call diff_snapshot to see exactly what the change did to the architecture. " +
+			"The pinned baseline survives repeated generate_snapshot runs, so it stays valid across several edit rounds — " +
+			"unlike the auto-rotated 'previous' snapshot, which only ever holds the immediately-preceding run.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args setBaselineArgs) (*mcp.CallToolResult, any, error) {
+		if s.toolCallback != nil {
+			s.toolCallback("set_baseline")
+		}
+		repoPath := s.currentRepoPath()
+		if repoPath == "" {
+			return errorResult("No snapshot available. Run generate_snapshot first, then set_baseline."), nil, nil
+		}
+		if err := s.eng.SetBaseline(repoPath); err != nil {
+			return errorResult(fmt.Sprintf("could not set baseline: %v", err)), nil, nil
+		}
+		return textResult(
+			"Baseline pinned from the current snapshot.\n\n" +
+				"Now make your changes, re-run generate_snapshot, then call diff_snapshot to see what changed " +
+				"(new findings, new coupling, added/removed symbols). The baseline persists across re-snapshots until you pin a new one."), nil, nil
+	})
+
+	// Tool: diff_snapshot
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "diff_snapshot",
+		Description: "Show what changed in the architecture between a baseline snapshot and the current one — " +
+			"the deterministic \"what did my change actually do?\" answer that replaces re-reading files. " +
+			"This is a DELTA, not a linter: it reports only what CHANGED (findings that newly appeared or were resolved, " +
+			"new/removed coupling edges, added/removed symbols/modules/routes) and stays silent about pre-existing state, " +
+			"so a pattern that was already there before and after never fires. " +
+			"baseline= selects what to compare against: 'pinned' (DEFAULT — the snapshot you froze with set_baseline), " +
+			"'previous' (the immediately-preceding generate_snapshot run, rotated automatically), or an explicit path to a directory holding facts.jsonl. " +
+			"Typical loop: generate_snapshot → set_baseline → edit → generate_snapshot → diff_snapshot. " +
+			"focus= narrows the report to entries referencing a module/file/symbol (use it to verify just what you touched). " +
+			"output_mode ladder: 'summary' (DEFAULT — headline regressions/improvements + structural tally) → 'compact' (adds finding descriptions, evidence, and the changed edges/facts) → 'full' (complete JSON). " +
+			"New findings carry their original confidence and caveats; confidence < 1.0 is a candidate to verify, not a verdict.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args diffSnapshotArgs) (*mcp.CallToolResult, any, error) {
+		if s.toolCallback != nil {
+			s.toolCallback("diff_snapshot")
+		}
+		snap := s.eng.Snapshot()
+		if snap == nil || s.eng.Store().Count() == 0 {
+			return errorResult("No snapshot available. Run generate_snapshot first."), nil, nil
+		}
+		repoPath := s.currentRepoPath()
+
+		// Current = the live engine state (what the agent just generated). Build it
+		// from the store so it works even when the snapshot was auto-loaded.
+		current := &facts.Snapshot{Meta: snap.Meta, Facts: s.eng.Store().All(), Insights: snap.Insights}
+
+		// Resolve the baseline directory from the selector.
+		outDir := s.eng.OutputDir(repoPath)
+		sel := strings.TrimSpace(args.Baseline)
+		var baseDir string
+		switch strings.ToLower(sel) {
+		case "", "pinned":
+			baseDir = filepath.Join(outDir, engine.BaselineSubdir)
+		case "previous":
+			baseDir = filepath.Join(outDir, engine.PreviousSubdir)
+		default:
+			baseDir = sel // explicit path to a dir holding facts.jsonl
+		}
+
+		baseline, err := engine.LoadSnapshotDir(baseDir)
+		if err != nil {
+			switch strings.ToLower(sel) {
+			case "", "pinned":
+				return errorResult("No pinned baseline found. Call set_baseline after your first generate_snapshot, " +
+					"then make changes, re-run generate_snapshot, and diff_snapshot again. " +
+					"(Or pass baseline='previous' to compare against the immediately-preceding snapshot.)"), nil, nil
+			case "previous":
+				return errorResult("No previous snapshot yet — generate_snapshot must have run at least twice. " +
+					"(Or use set_baseline + baseline='pinned' for a stable task baseline.)"), nil, nil
+			default:
+				return errorResult(fmt.Sprintf("could not load baseline from %q: %v", sel, err)), nil, nil
+			}
+		}
+
+		d := diff.Compute(baseline, current)
+		if args.Focus != "" {
+			d = d.Focused(s.normalizeToRelative(args.Focus))
+		}
+
+		switch resolveOutputMode(args.OutputMode, modeSummary) {
+		case modeFull:
+			return jsonResultCapped(d, args.MaxTokens)
+		case modeCompact:
+			return textResult(capTokens(d.RenderCompact(), args.MaxTokens, false)), nil, nil
+		default:
+			return textResult(capTokens(d.RenderSummary(), args.MaxTokens, false)), nil, nil
+		}
+	})
+}
+
+// loopHint returns the next-step guidance appended to a single-repo
+// generate_snapshot summary. It is context-aware: before any baseline is pinned
+// it points the agent at set_baseline (so it pins BEFORE editing); once a baseline
+// exists it points at diff_snapshot (to see what changed). This makes the
+// edit-verify loop self-guiding without the agent having to know it up front.
+func (s *Server) loopHint(absRepo string) string {
+	baselineFacts := filepath.Join(s.eng.OutputDir(absRepo), engine.BaselineSubdir, "facts.jsonl")
+	if _, err := os.Stat(baselineFacts); err == nil {
+		return "\n\n**Verify your change:** a baseline is pinned — call diff_snapshot to see exactly what changed since set_baseline " +
+			"(new/resolved findings, new coupling, added/removed symbols). Re-pin from here with set_baseline if you're starting a new change."
+	}
+	return "\n\n**About to change code?** Call set_baseline now to freeze this snapshot as the baseline, then after editing re-run " +
+		"generate_snapshot and diff_snapshot to see exactly what your change did — no need to re-read files to confirm it."
+}
+
+// currentRepoPath returns the absolute repo path of the live snapshot, falling
+// back to the configured repo. Empty only when neither is available.
+func (s *Server) currentRepoPath() string {
+	if snap := s.eng.Snapshot(); snap != nil && snap.Meta.RepoPath != "" {
+		return snap.Meta.RepoPath
+	}
+	if abs, err := filepath.Abs(s.cfg.Repo); err == nil {
+		return abs
+	}
+	return ""
 }
 
 type queryInsightsArgs struct {
@@ -1082,6 +1214,16 @@ type queryInsightsArgs struct {
 	MinConfidence float64 `json:"min_confidence,omitempty" jsonschema:"Only return insights with confidence >= this (0.0-1.0). Default 0 (all). Unused-routes is emitted at 0.6 as a review candidate."`
 	OutputMode    string  `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, evidence sample, actions) → 'full' (complete JSON)."`
 	MaxTokens     int     `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens). Default: no cap."`
+}
+
+// setBaselineArgs has no parameters: set_baseline always pins the current snapshot.
+type setBaselineArgs struct{}
+
+type diffSnapshotArgs struct {
+	Baseline   string `json:"baseline,omitempty" jsonschema:"What to compare against: 'pinned' (DEFAULT — the snapshot frozen by set_baseline), 'previous' (the immediately-preceding generate_snapshot run, rotated automatically), or an explicit path to a directory containing facts.jsonl."`
+	Focus      string `json:"focus,omitempty" jsonschema:"Optional: narrow the diff to entries referencing this module, file, or symbol (substring match). Use it to verify only the area you changed."`
+	OutputMode string `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — headline regressions/improvements + structural tally) → 'compact' (adds finding descriptions, evidence, changed edges/facts) → 'full' (complete JSON)."`
+	MaxTokens  int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens). Default: no cap."`
 }
 
 type coverageReportArgs struct {

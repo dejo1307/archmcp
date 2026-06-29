@@ -84,7 +84,7 @@ For the full mental model and internals, see **[ARCHITECTURE.md](ARCHITECTURE.md
 
 ## The tools (and how they work together)
 
-The workflow is simple: **generate the snapshot once, then ask.** These aren't text lookups — each tool *computes over the graph*: `traverse` walks reachability, `find_path` finds the shortest chain between two points, `impact_analysis` takes the transitive reverse closure. After the snapshot, your agent has nine tools on top of the graph:
+The workflow is simple: **generate the snapshot once, then ask.** These aren't text lookups — each tool *computes over the graph*: `traverse` walks reachability, `find_path` finds the shortest chain between two points, `impact_analysis` takes the transitive reverse closure. After the snapshot, your agent has these tools on top of the graph:
 
 | Tool | The question it answers |
 |------|-------------------------|
@@ -97,8 +97,12 @@ The workflow is simple: **generate the snapshot once, then ask.** These aren't t
 | `find_path` | "How does A reach B?" The call or dependency chain between two points. |
 | **`impact_analysis`** | **"If I change X, what breaks?"** The blast radius of a change. |
 | `coverage_report` | "Which cross-repo edges did enola resolve vs. miss?" Tell a genuine leaf service from a coverage gap. |
+| `set_baseline` | "Remember the architecture as it is now." Pin a baseline before you start editing. |
+| **`diff_snapshot`** | **"What did my change actually do?"** The architectural delta vs. the baseline — new findings, new coupling, added/removed symbols. |
 
 **`impact_analysis` is the one to know.** Before a refactor, it computes the full set of code that transitively depends on what you're about to change — grouped by how many hops away it is, and aware of cross-repo dependencies. Instead of your agent *guessing* what a change might affect (and missing things), it gets the exact dependent set. That's determinism turned into a concrete payoff: safer changes, planned in the right order, the first time.
+
+**`diff_snapshot` closes the loop on the edit itself.** Where `impact_analysis` plans a change, `diff_snapshot` verifies it: pin a baseline (`set_baseline`), make your edits, re-snapshot, and ask what changed. It's a **delta, not a linter** — it reports only what *moved* (findings that newly appeared or were resolved, new/removed coupling, added/removed symbols) and stays silent about pre-existing state, so a pattern that was already there before *and* after never fires. Instead of re-reading files to confirm the agent built what it claimed, you get a deterministic answer: `generate_snapshot → set_baseline → edit → generate_snapshot → diff_snapshot`.
 
 See **[ARCHITECTURE.md](ARCHITECTURE.md)** for every tool's full parameters.
 

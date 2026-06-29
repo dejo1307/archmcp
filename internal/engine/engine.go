@@ -577,6 +577,13 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
 
+	// Rotate the prior snapshot into previous/ before overwriting, so diff_snapshot
+	// can compare against the immediately-preceding run with no explicit pin. The
+	// pinned baseline/ (SetBaseline) is left untouched here.
+	if err := rotatePrevious(outDir); err != nil {
+		log.Printf("[engine] warning: could not rotate previous snapshot: %v", err)
+	}
+
 	// Write renderer artifacts (e.g. llm_context.md)
 	for _, a := range e.snapshot.Artifacts {
 		path := filepath.Join(outDir, a.Name)
