@@ -16,6 +16,7 @@ package diff
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -58,9 +59,18 @@ type SnapshotDiff struct {
 	// Findings delta (the ratchet core). FindingsNew are regressions introduced
 	// by the change; FindingsResolved are issues the change cleared. Each carries
 	// through its original Confidence and Description (caveats intact) untouched —
-	// the diff manufactures no verdicts.
+	// the diff manufactures no verdicts. Only findings with a STRUCTURAL CAUSE in
+	// this change (an evidence entity that was added/removed/changed) land here.
 	FindingsNew      []facts.Insight `json:"findings_new,omitempty"`
 	FindingsResolved []facts.Insight `json:"findings_resolved,omitempty"`
+
+	// Incidental finding shifts: findings that appeared or cleared with NO
+	// structural cause in this change — a moving statistical threshold (mean+2σ) or
+	// a re-ranked top-N list whose membership shifted because some OTHER finding
+	// left the window. These are surfaced separately so they don't masquerade as
+	// regressions/improvements the change actually caused.
+	FindingsNewIncidental      []facts.Insight `json:"findings_new_incidental,omitempty"`
+	FindingsResolvedIncidental []facts.Insight `json:"findings_resolved_incidental,omitempty"`
 }
 
 // Compute returns the delta from baseline to current. A nil snapshot is treated
@@ -125,14 +135,32 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 	for _, in := range snapInsights(current) {
 		curFind[findingKey(in)] = in
 	}
+
+	// A finding only counts as a real regression/improvement if this change
+	// structurally touched something it cites — otherwise its appearance/clearance
+	// is incidental (a moving mean+2σ threshold, or a top-N list re-ranking after
+	// some other finding left the window). touched is the set of names the change
+	// added/removed/altered, including edge endpoints (so a finding that flips
+	// because a NEW caller changed a symbol's fan-in is still counted as real).
+	touched := d.touchedNames()
 	for k, in := range curFind {
-		if _, ok := baseFind[k]; !ok {
+		if _, ok := baseFind[k]; ok {
+			continue
+		}
+		if findingHasStructuralCause(in, touched) {
 			d.FindingsNew = append(d.FindingsNew, in)
+		} else {
+			d.FindingsNewIncidental = append(d.FindingsNewIncidental, in)
 		}
 	}
 	for k, in := range baseFind {
-		if _, ok := curFind[k]; !ok {
+		if _, ok := curFind[k]; ok {
+			continue
+		}
+		if findingHasStructuralCause(in, touched) {
 			d.FindingsResolved = append(d.FindingsResolved, in)
+		} else {
+			d.FindingsResolvedIncidental = append(d.FindingsResolvedIncidental, in)
 		}
 	}
 
@@ -140,11 +168,63 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 	return d
 }
 
+// touchedNames is the set of entity names this change structurally affected:
+// added/removed/changed facts plus the endpoints of added/removed edges. A
+// finding is attributed to the change when one of its evidence entities is in
+// this set.
+func (d *SnapshotDiff) touchedNames() map[string]struct{} {
+	m := make(map[string]struct{})
+	add := func(n string) {
+		if n != "" {
+			m[n] = struct{}{}
+		}
+	}
+	for _, f := range d.FactsAdded {
+		add(f.Name)
+	}
+	for _, f := range d.FactsRemoved {
+		add(f.Name)
+	}
+	for _, c := range d.FactsChanged {
+		add(c.After.Name)
+	}
+	for _, e := range d.EdgesAdded {
+		add(e.Source)
+		add(e.Target)
+	}
+	for _, e := range d.EdgesRemoved {
+		add(e.Source)
+		add(e.Target)
+	}
+	return m
+}
+
+// findingHasStructuralCause reports whether any entity the finding cites was
+// structurally touched by this change. Evidence-less findings can't be attributed,
+// so they default to real (never silently hidden).
+func findingHasStructuralCause(in facts.Insight, touched map[string]struct{}) bool {
+	if len(in.Evidence) == 0 {
+		return true
+	}
+	for _, ev := range in.Evidence {
+		for _, e := range []string{ev.Fact, ev.Symbol, ev.File} {
+			if e == "" {
+				continue
+			}
+			if _, ok := touched[e]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Empty reports whether the diff contains no changes of any kind.
 func (d *SnapshotDiff) Empty() bool {
 	return len(d.FactsAdded) == 0 && len(d.FactsRemoved) == 0 && len(d.FactsChanged) == 0 &&
 		len(d.EdgesAdded) == 0 && len(d.EdgesRemoved) == 0 &&
-		len(d.FindingsNew) == 0 && len(d.FindingsResolved) == 0
+		len(d.FindingsNew) == 0 && len(d.FindingsResolved) == 0 &&
+		len(d.FindingsNewIncidental) == 0 && len(d.FindingsResolvedIncidental) == 0
 }
 
 // Focused returns a copy of the diff narrowed to entries that reference focus
@@ -195,6 +275,16 @@ func (d *SnapshotDiff) Focused(focus string) *SnapshotDiff {
 	for _, in := range d.FindingsResolved {
 		if insightMatches(in, focus) {
 			out.FindingsResolved = append(out.FindingsResolved, in)
+		}
+	}
+	for _, in := range d.FindingsNewIncidental {
+		if insightMatches(in, focus) {
+			out.FindingsNewIncidental = append(out.FindingsNewIncidental, in)
+		}
+	}
+	for _, in := range d.FindingsResolvedIncidental {
+		if insightMatches(in, focus) {
+			out.FindingsResolvedIncidental = append(out.FindingsResolvedIncidental, in)
 		}
 	}
 	return out
@@ -249,23 +339,46 @@ func edgeKey(e Edge) string {
 	return e.Repo + "\x00" + e.Source + "\x00" + e.Kind + "\x00" + e.Target
 }
 
-// findingKey identifies an insight by its explainer plus the sorted set of
-// entities it cites (evidence Fact/Symbol/File). Title and Detail are excluded
-// because they often embed volatile metrics (e.g. "fan-in: 13"); keying on the
-// entities keeps a finding stable across runs so only a finding about a NEW entity
-// counts as new. Evidence-less insights fall back to their title.
+// titleNumber matches the volatile metrics embedded in finding titles (counts,
+// ratios, percentages) so they can be stripped for a stable identity.
+var titleNumber = regexp.MustCompile(`[0-9]+(\.[0-9]+)?`)
+
+// normalizeTitle removes the volatile numbers from a finding title, leaving the
+// stable subject. "Large public surface: x/y exports 67 of 67 symbols (100%)"
+// and the same line with different counts collapse to one identity.
+func normalizeTitle(s string) string {
+	return titleNumber.ReplaceAllString(s, "#")
+}
+
+// findingKey identifies an insight so a finding stays the SAME finding across
+// snapshots even as its metrics drift or a ranked list re-orders.
+//
+// Most explainers name their subject (module/symbol/repo/pattern) in the title
+// and vary only by counts, so the number-normalized title is the stable identity.
+// This is what stops whole-codebase "summary" findings (e.g. the layers pattern,
+// whose evidence enumerates every module) from churning resolve+introduce on any
+// edit. Cycles are the exception: their title carries only a member count, so two
+// distinct cycles would collide — they are keyed on their sorted member modules
+// (the evidence), which is also what makes a cycle stay identified as long as its
+// membership holds.
 func findingKey(in facts.Insight) string {
+	if in.Source == "cycles" {
+		return in.Source + "\x00" + sortedEvidenceEntities(in)
+	}
+	return in.Source + "\x00" + normalizeTitle(in.Title)
+}
+
+// sortedEvidenceEntities joins a finding's cited entities (Fact/Symbol/File) in
+// sorted order — a stable identity for set-defined findings like cycles.
+func sortedEvidenceEntities(in facts.Insight) string {
 	var ents []string
 	for _, ev := range in.Evidence {
 		if e := firstNonEmpty(ev.Fact, ev.Symbol, ev.File); e != "" {
 			ents = append(ents, e)
 		}
 	}
-	if len(ents) == 0 {
-		return in.Source + "\x00" + in.Title
-	}
 	sort.Strings(ents)
-	return in.Source + "\x00" + strings.Join(ents, "\x1f")
+	return strings.Join(ents, "\x1f")
 }
 
 // --- helpers ---
@@ -361,6 +474,12 @@ func (d *SnapshotDiff) sortAll() {
 	sort.Slice(d.FindingsNew, func(i, j int) bool { return findingKey(d.FindingsNew[i]) < findingKey(d.FindingsNew[j]) })
 	sort.Slice(d.FindingsResolved, func(i, j int) bool {
 		return findingKey(d.FindingsResolved[i]) < findingKey(d.FindingsResolved[j])
+	})
+	sort.Slice(d.FindingsNewIncidental, func(i, j int) bool {
+		return findingKey(d.FindingsNewIncidental[i]) < findingKey(d.FindingsNewIncidental[j])
+	})
+	sort.Slice(d.FindingsResolvedIncidental, func(i, j int) bool {
+		return findingKey(d.FindingsResolvedIncidental[i]) < findingKey(d.FindingsResolvedIncidental[j])
 	})
 }
 

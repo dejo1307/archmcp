@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -84,8 +85,10 @@ func TestCompute_PropsChangeIsAChange(t *testing.T) {
 }
 
 func TestCompute_NewFinding(t *testing.T) {
-	base := snap(nil, nil)
-	cur := snap(nil, []facts.Insight{cycleInsight("a", "b")})
+	// A new cycle comes with the structural edges that created it, so its members
+	// are in the change's touched set and it is a real regression.
+	base := snap([]facts.Fact{mod("a", "a.go"), mod("b", "b.go")}, nil)
+	cur := snap([]facts.Fact{mod("a", "a.go", "b"), mod("b", "b.go", "a")}, []facts.Insight{cycleInsight("a", "b")})
 
 	d := Compute(base, cur)
 	if len(d.FindingsNew) != 1 {
@@ -129,12 +132,67 @@ func TestCompute_FindingStableAcrossVolatileTitle(t *testing.T) {
 }
 
 func TestCompute_ResolvedFinding(t *testing.T) {
-	base := snap(nil, []facts.Insight{cycleInsight("a", "b")})
-	cur := snap(nil, nil)
+	// Breaking the cycle removes the b→a edge, so the cycle members are touched and
+	// the cleared finding is a real improvement.
+	base := snap([]facts.Fact{mod("a", "a.go", "b"), mod("b", "b.go", "a")}, []facts.Insight{cycleInsight("a", "b")})
+	cur := snap([]facts.Fact{mod("a", "a.go", "b"), mod("b", "b.go")}, nil)
 
 	d := Compute(base, cur)
 	if len(d.FindingsResolved) != 1 {
 		t.Fatalf("expected 1 resolved finding, got %+v", d.FindingsResolved)
+	}
+}
+
+// TestCompute_RankWindowFindingIsIncidental is the regression guard for the false
+// positives found dogfooding: a finding about an UNCHANGED subject — e.g. a module
+// that rose into a top-N list only because a worse one was removed — must be
+// classified incidental, not a real regression. The genuinely-removed subject's
+// finding still resolves as a real improvement.
+func TestCompute_RankWindowFindingIsIncidental(t *testing.T) {
+	surf := func(module, sym string) facts.Insight {
+		return facts.Insight{Source: "exported-surface", Confidence: 0.6,
+			Title:    "Large public surface: " + module + " exports 67 of 67 symbols (100%)",
+			Evidence: []facts.Evidence{{Symbol: sym, Detail: "exported"}}}
+	}
+	base := snap(
+		[]facts.Fact{sym("app/golf_rule.Svc", "app/golf_rule/svc.go", 1), sym("db/messaging.Repo", "db/messaging/repo.go", 1)},
+		[]facts.Insight{surf("app/golf_rule", "app/golf_rule.Svc")}, // only golf_rule reported (messaging below the line)
+	)
+	cur := snap(
+		[]facts.Fact{sym("db/messaging.Repo", "db/messaging/repo.go", 1)}, // golf_rule removed; messaging unchanged
+		[]facts.Insight{surf("db/messaging", "db/messaging.Repo")},        // messaging rose into the window
+	)
+
+	d := Compute(base, cur)
+	if len(d.FindingsNew) != 0 {
+		t.Fatalf("unchanged module rising into top-N must be incidental, got real: %+v", d.FindingsNew)
+	}
+	if len(d.FindingsNewIncidental) != 1 {
+		t.Fatalf("expected 1 incidental new finding (messaging), got %+v", d.FindingsNewIncidental)
+	}
+	if len(d.FindingsResolved) != 1 {
+		t.Fatalf("expected golf_rule (actually removed) as 1 real improvement, got %+v", d.FindingsResolved)
+	}
+}
+
+// TestCompute_SummaryFindingDoesNotChurn guards the layers/summary case: a finding
+// whose evidence enumerates the whole codebase keeps its identity when modules
+// change, so it never churns resolve+introduce.
+func TestCompute_SummaryFindingDoesNotChurn(t *testing.T) {
+	layers := func(mods ...string) facts.Insight {
+		in := facts.Insight{Source: "layers", Confidence: 0.89,
+			Title: fmt.Sprintf("Architecture pattern: go-standard (%d modules)", len(mods))}
+		for _, m := range mods {
+			in.Evidence = append(in.Evidence, facts.Evidence{Fact: m})
+		}
+		return in
+	}
+	base := snap(nil, []facts.Insight{layers("a", "b", "c", "d")})
+	cur := snap(nil, []facts.Insight{layers("a", "b", "c")})
+
+	d := Compute(base, cur)
+	if !d.Empty() {
+		t.Fatalf("summary finding churned on a module-count change: %+v", d)
 	}
 }
 

@@ -40,6 +40,7 @@ func (d *SnapshotDiff) RenderSummary() string {
 		sb.WriteString("\n")
 	}
 
+	d.writeIncidentalShifts(&sb)
 	d.writeStructuralSummary(&sb)
 	return sb.String()
 }
@@ -88,6 +89,7 @@ func (d *SnapshotDiff) RenderCompact() string {
 		sb.WriteString("\n")
 	}
 
+	d.writeIncidentalShifts(&sb)
 	d.writeStructuralSummary(&sb)
 
 	// New coupling is the architecturally interesting structural change, so list
@@ -113,6 +115,27 @@ func (d *SnapshotDiff) RenderCompact() string {
 	}
 
 	return sb.String()
+}
+
+// writeIncidentalShifts lists findings that appeared or cleared without a
+// structural cause in this change (a moving statistical threshold, or a top-N list
+// re-ranking after some other finding left the window). They are surfaced so
+// nothing is hidden, but kept out of the regression/improvement headline so they
+// don't read as something the change caused.
+func (d *SnapshotDiff) writeIncidentalShifts(sb *strings.Builder) {
+	total := len(d.FindingsNewIncidental) + len(d.FindingsResolvedIncidental)
+	if total == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "## Incidental finding shifts (%d)\n\n", total)
+	sb.WriteString("_Appeared or cleared with no structural cause in this change — a moving statistical threshold or a re-ranked top-N list. Likely NOT caused by this change; verify only if relevant._\n\n")
+	for _, in := range d.FindingsNewIncidental {
+		fmt.Fprintf(sb, "- appeared · [%s] %s\n", insightSource(in), oneLine(in.Title))
+	}
+	for _, in := range d.FindingsResolvedIncidental {
+		fmt.Fprintf(sb, "- cleared · [%s] %s\n", insightSource(in), oneLine(in.Title))
+	}
+	sb.WriteString("\n")
 }
 
 func (d *SnapshotDiff) writeProvenance(sb *strings.Builder) {

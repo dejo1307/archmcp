@@ -358,7 +358,12 @@ It is a **delta, not a linter**: it judges the current snapshot against the code
 - **new and removed coupling edges** (the architecturally interesting structural change);
 - **added / removed** modules, symbols, routes, storage; and props-level **changed** facts (line-only shifts are ignored, so an edit above a symbol doesn't churn the diff).
 
-Because the baseline is the project's own prior snapshot, a pattern that was present *before and after* (e.g. an API-first route with no loaded consumer) produces no delta — the diff is structurally immune to that false-signal class. Findings are identified by explainer + cited entities (not by their volatile title/metric text), so a god-class whose fan-in merely ticked up is not reported as resolve+new. `Compute` is pure and deterministic: identical inputs render byte-identically.
+Because the baseline is the project's own prior snapshot, a pattern that was present *before and after* (e.g. an API-first route with no loaded consumer) produces no delta — the diff is structurally immune to that false-signal class. `Compute` is pure and deterministic: identical inputs render byte-identically.
+
+Two refinements keep the finding delta honest, both learned from dogfooding on a real backend:
+
+- **Stable finding identity.** A finding is keyed by its explainer plus its number-normalized title (the stable subject), so a god-class whose fan-in merely ticked up — or a whole-codebase summary finding like the `layers` pattern, whose evidence enumerates every module — does not churn as resolve+introduce on an unrelated edit. Cycles are the exception: their title carries only a member count, so they are keyed on their sorted member modules.
+- **Structural-cause classification.** A new/resolved finding is reported as a real **regression introduced** / **improvement** only when the change actually touched one of the entities it cites (a fact added/removed/changed, or an edge endpoint — so a finding that flips because a *new caller* changed a symbol's fan-in still counts). Findings that appear or clear with no structural cause — a moving `mean+2σ` threshold, or a top-N list re-ranking after a worse offender left the window — are routed to a separate **incidental finding shifts** section so they never masquerade as something the change caused.
 
 The typical loop is `generate_snapshot → set_baseline → edit → generate_snapshot → diff_snapshot`.
 
