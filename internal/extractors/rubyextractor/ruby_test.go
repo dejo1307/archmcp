@@ -252,6 +252,135 @@ end
 	}
 }
 
+// TestExtractFile_BareConstantReferences checks that a constant used as a value
+// (registered, passed as an argument, matched in case/when, in an array) is
+// recorded as a RelCalls edge so the referenced class/module is not mis-reported
+// as dead code. scope_resolution paths are recorded whole.
+func TestExtractFile_BareConstantReferences(t *testing.T) {
+	src := `class Registry
+  def wire
+    register(MyJob)
+    handlers = [FooHandler, BarHandler]
+    klass = Chat::Message
+    case obj
+    when SomeError
+      retry
+    end
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/registry.rb", false, true)
+	meth, ok := symbolsByName(result)["Registry#wire"]
+	if !ok {
+		t.Fatal("missing method Registry#wire")
+	}
+	for _, want := range []string{"MyJob", "FooHandler", "BarHandler", "Chat::Message", "SomeError"} {
+		if !hasCall(meth, want) {
+			t.Errorf("missing bare-constant RelCalls -> %s; relations = %v", want, meth.Relations)
+		}
+	}
+	// The bare constant target carries no ".", so it is not a coupling-graph
+	// "Recv.method" form — guard that we did not accidentally emit one.
+	if hasCall(meth, "MyJob.register") {
+		t.Errorf("bare constant must not become a Recv.method target; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_ConstantReceiverCallStillQualified checks that the bare-constant
+// capture does not regress the qualified-call form: a Const.method call must still
+// produce the "Const.method" edge (for coupling), now alongside a bare "Const" one.
+func TestExtractFile_ConstantReceiverCallStillQualified(t *testing.T) {
+	src := `class Builder
+  def run(ids)
+    Items::Facade.fetch(ids)
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/builder.rb", false, true)
+	meth := symbolsByName(result)["Builder#run"]
+	if !hasCall(meth, "Items::Facade.fetch") {
+		t.Errorf("qualified call edge lost; relations = %v", meth.Relations)
+	}
+	if !hasCall(meth, "Items::Facade") {
+		t.Errorf("missing bare-receiver constant edge; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_BuiltinConstantsSkipped checks that bare references to Ruby
+// core/stdlib constants are not emitted as call edges (they inflate fan-in on
+// monkey-patch reopenings), while application constants still are.
+func TestExtractFile_BuiltinConstantsSkipped(t *testing.T) {
+	src := `class Worker
+  def run
+    Array.new
+    x = [String, Time]
+    enqueue(MyJob)
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/worker.rb", false, true)
+	meth := symbolsByName(result)["Worker#run"]
+	for _, skip := range []string{"Array", "String", "Time"} {
+		if hasCall(meth, skip) {
+			t.Errorf("builtin constant %s must not be emitted as a call edge; relations = %v", skip, meth.Relations)
+		}
+	}
+	if !hasCall(meth, "MyJob") {
+		t.Errorf("application constant MyJob should still be recorded; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_SerializerAttributeFold checks that a serializer's attribute and
+// association DSL folds the backing methods (and the include_<name>? predicate) in
+// as references on the serializer class, so they are not mis-reported as dead.
+func TestExtractFile_SerializerAttributeFold(t *testing.T) {
+	src := `class PostSerializer < ApplicationSerializer
+  attributes :cooked, :score
+  has_one :user
+  def cooked
+    object.cooked
+  end
+  def include_score?
+    scope.admin?
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/serializers/post_serializer.rb", true, true)
+	cls, ok := symbolsByName(result)["PostSerializer"]
+	if !ok {
+		t.Fatal("missing class PostSerializer")
+	}
+	for _, want := range []string{"cooked", "include_cooked?", "score", "include_score?", "user", "include_user?"} {
+		if !hasCall(cls, want) {
+			t.Errorf("missing serializer DSL fold RelCalls -> %s; relations = %v", want, cls.Relations)
+		}
+	}
+}
+
+// TestExtractFile_NonSerializerHasManyUnaffected guards that has_many on a model
+// (not a serializer) still produces an association dependency fact and is NOT
+// short-circuited by the serializer fold.
+func TestExtractFile_NonSerializerHasManyUnaffected(t *testing.T) {
+	src := `class User < ApplicationRecord
+  has_many :posts
+end
+`
+	result := extractFileAST([]byte(src), "app/models/user.rb", true, true)
+	var sawAssoc bool
+	for _, f := range result {
+		if f.Kind == facts.KindDependency {
+			for _, r := range f.Relations {
+				if r.Kind == facts.RelDependsOn && r.Target == "Post" {
+					sawAssoc = true
+				}
+			}
+		}
+	}
+	if !sawAssoc {
+		t.Error("model has_many :posts should still emit a depends_on association fact (serializer fold must not swallow it)")
+	}
+}
+
 func TestExtractFile_BareCallSkipsLocalsAndKeywords(t *testing.T) {
 	src := `class A
   def b

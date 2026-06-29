@@ -36,12 +36,13 @@ func extractFileAST(src []byte, relFile string, isRails, exportedByPackwerk bool
 
 // rubyScope tracks a class/module/eigenclass nesting level.
 type rubyScope struct {
-	name       string // simple (last) name; "" for an eigenclass (class << self)
-	kind       string // "class", "module", or "eigenclass"
-	visibility string // "public" | "private" | "protected"
-	moduleFunc bool   // module_function active: subsequent defs are class methods
-	isModel    bool   // ActiveRecord model: associations/scopes/table_name apply
-	symFactIdx int    // index into w.out of this scope's class/module symbol fact, or -1
+	name         string // simple (last) name; "" for an eigenclass (class << self)
+	kind         string // "class", "module", or "eigenclass"
+	visibility   string // "public" | "private" | "protected"
+	moduleFunc   bool   // module_function active: subsequent defs are class methods
+	isModel      bool   // ActiveRecord model: associations/scopes/table_name apply
+	isSerializer bool   // ActiveModel::Serializer: attributes/associations back methods
+	symFactIdx   int    // index into w.out of this scope's class/module symbol fact, or -1
 }
 
 type rubyWalker struct {
@@ -344,7 +345,8 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 		})
 	}
 
-	w.push(rubyScope{name: name, kind: "class", visibility: "public", isModel: isModel, symFactIdx: clsIdx})
+	w.push(rubyScope{name: name, kind: "class", visibility: "public", isModel: isModel,
+		isSerializer: isSerializerBase(superclass), symFactIdx: clsIdx})
 	w.walkBody(node.ChildByFieldName("body"))
 	w.pop()
 }
@@ -430,14 +432,17 @@ func (w *rubyWalker) handleMethod(node *sitter.Node, isClassMethod bool) {
 // RelCalls edges to the owner fact. It does not descend into nested
 // method/class/module definitions — those receive their own owner.
 //
-// Three reference shapes are captured: (1) qualified calls via callTarget
+// Four reference shapes are captured: (1) qualified calls via callTarget
 // ("Const.method", "var.method"); (2) bare calls with a method name but no
 // receiver ("render :x", "helper(arg)") → the bare method name; (3) lone
 // identifiers in expression position ("current_user") that are not known locals
-// → the bare name. (2) and (3) are why Ruby methods invoked without a receiver
-// (the common Rails case) are now recorded as referenced. Bare targets carry no
-// "." and never resolve to a constant, so the package-metrics coupling graph
-// (which keys off constant receivers) is unaffected.
+// → the bare name; (4) bare constant references ("MyJob", "Chat::Message") used
+// as values → the constant name. (2) and (3) are why Ruby methods invoked without
+// a receiver (the common Rails case) are recorded as referenced; (4) is why a
+// class/module used only as a value (registered, passed as an argument, matched in
+// case/when) is. Bare targets — from (2), (3) and (4) — carry no ".", so
+// constFromCall ignores them and the package-metrics coupling graph (which keys
+// off "Recv.method" constant receivers) is unaffected.
 func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals map[string]bool) {
 	if node == nil {
 		return
@@ -538,6 +543,22 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 			w.recordCallMetrics(name)
 		}
 		return
+	case "constant", "scope_resolution":
+		// A bare constant reference in expression position — an argument
+		// (register(MyJob)), array/hash element, case/when or rescue clause,
+		// assignment RHS, or a lone `Foo` value. It is NOT a `Const.method` call
+		// (that is captured as the receiver via callTarget above) and NOT a
+		// definition name (handleClass/handleModule consume those), so without this
+		// a class/module used only as a value looks unreferenced and is mis-reported
+		// as dead. Record it as a use of that constant. The target carries no ".",
+		// so constFromCall ignores it and the package-metrics coupling graph is
+		// unaffected; it is not a method invocation, so perf metrics are untouched.
+		// scope_resolution is recorded whole (e.g. "Chat::Message") and not
+		// descended into, so the qualified path is matched rather than its segments.
+		if name := stripLeadingColons(rubyText(node, w.src)); name != "" && !rubyBuiltinConsts[name] {
+			w.addCall(ownerIdx, seen, name)
+		}
+		return
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
 		w.walkForCalls(node.Child(i), ownerIdx, seen, locals)
@@ -585,6 +606,43 @@ var rubyCallbackDSL = map[string]bool{
 	"after_commit": true, "after_rollback": true, "after_initialize": true,
 	"after_find": true, "after_touch": true,
 	"validate": true,
+}
+
+// rubySerializerDSL are ActiveModel::Serializer class-body methods whose symbol
+// arguments name attributes/associations. Each declared name is backed by an
+// optional same-named method (and an `include_<name>?` predicate) that the
+// serializer framework invokes — never an explicit Ruby call — so they are folded
+// in as references (see handleBodyCall). Applied only inside a serializer class.
+var rubySerializerDSL = map[string]bool{
+	"attributes": true, "attribute": true,
+	"has_one": true, "has_many": true, "belongs_to": true, "has_and_belongs_to_many": true,
+}
+
+// rubyBuiltinConsts are Ruby core and common stdlib constants. A bare reference to
+// one is real, but emitting a call edge to it inflates fan-in on monkey-patch
+// reopenings (Discourse's freedom_patches `class Array`/`String`/`Time`), turning
+// uninteresting core classes into spurious god-class / hotspot findings while
+// never being a useful dead-code lead. They are skipped when recording bare
+// constant references. Namespaced constants (Foo::Array) are unaffected.
+var rubyBuiltinConsts = map[string]bool{
+	"Object": true, "BasicObject": true, "Module": true, "Class": true, "Method": true,
+	"UnboundMethod": true, "Proc": true, "Binding": true, "Data": true,
+	"Array": true, "Hash": true, "String": true, "Symbol": true, "Set": true,
+	"Integer": true, "Float": true, "Numeric": true, "Rational": true, "Complex": true,
+	"Range": true, "Regexp": true, "MatchData": true, "Struct": true, "Enumerator": true,
+	"TrueClass": true, "FalseClass": true, "NilClass": true,
+	"Time": true, "Date": true, "DateTime": true,
+	"Comparable": true, "Enumerable": true, "Kernel": true, "Math": true,
+	"IO": true, "File": true, "Dir": true, "FileUtils": true, "Pathname": true,
+	"StringIO": true, "Tempfile": true,
+	"Thread": true, "Mutex": true, "ConditionVariable": true, "Queue": true,
+	"SizedQueue": true, "Fiber": true, "ThreadGroup": true,
+	"Exception": true, "StandardError": true, "RuntimeError": true, "ArgumentError": true,
+	"TypeError": true, "NameError": true, "NoMethodError": true, "IndexError": true,
+	"KeyError": true, "RangeError": true, "IOError": true, "NotImplementedError": true,
+	"StopIteration": true, "ZeroDivisionError": true, "FrozenError": true,
+	"Marshal": true, "ObjectSpace": true, "GC": true, "Process": true, "Signal": true,
+	"Encoding": true, "Random": true, "SecureRandom": true, "Mutex_m": true,
 }
 
 // rubyNonCalls are bare identifiers that must not be treated as method-call
@@ -764,6 +822,22 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 			for _, name := range symbolArgs(args, w.src) {
 				w.addCallToFact(cur.symFactIdx, name)
 			}
+		}
+		return
+	}
+
+	// ActiveModel::Serializer attribute/association DSL: `attributes :a, :b`,
+	// `attribute :c`, `has_one :user`, `has_many :posts`. Each declared name is
+	// backed by a same-named method the serializer framework calls (when defined),
+	// plus an optional `include_<name>?` predicate it calls to decide inclusion —
+	// neither is an explicit Ruby call, so the backing methods look dead. Fold both
+	// forms in as references on the enclosing serializer class. Gated on isSerializer
+	// so the shared has_one/has_many/belongs_to names still reach the ActiveRecord
+	// association handling below for models.
+	if cur := w.cur(); cur != nil && cur.isSerializer && cur.symFactIdx >= 0 && rubySerializerDSL[method] {
+		for _, name := range symbolArgs(args, w.src) {
+			w.addCallToFact(cur.symFactIdx, name)
+			w.addCallToFact(cur.symFactIdx, "include_"+name+"?")
 		}
 		return
 	}
