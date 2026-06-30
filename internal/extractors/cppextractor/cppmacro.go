@@ -275,7 +275,7 @@ func expandTokens(toks []token, table macroTable, hide map[string]bool, depth in
 		for j < len(toks) && toks[j].kind == tkSpace {
 			j++
 		}
-		if j >= len(toks) || !(toks[j].kind == tkPunct && toks[j].text == "(") {
+		if j >= len(toks) || toks[j].kind != tkPunct || toks[j].text != "(" {
 			out = append(out, t)
 			i++
 			continue
