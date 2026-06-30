@@ -55,6 +55,9 @@ func extractFileAST(src []byte, relFile, lang string, macros macroTable) []facts
 		macros:         macros,
 	}
 	w.walkDeclList(tree.RootNode())
+	// Recover callbacks from macro-opened struct initializers (machine_desc), which
+	// tree-sitter can't parse and scatters as `.field = fn` assignment debris.
+	w.salvageMacroStructAssigns(tree.RootNode())
 	return w.out
 }
 
@@ -973,6 +976,43 @@ func (w *astWalker) expandMacroDeclaration(typ, declarator *sitter.Node) bool {
 	w.emitExpandedMacroRefs(nodeText(typ, w.src), args)
 	w.popOwner()
 	return true
+}
+
+// salvageMacroStructAssigns recovers function-pointer references from a
+// macro-opened struct initializer — `DT_MACHINE_START(...) .init_machine = fn, ...
+// MACHINE_END`. The hidden opening brace makes tree-sitter fail to parse the block;
+// depending on the surrounding code it renders the `.field = fn` lines as a chain
+// of `assignment_expression`s with a `field_expression` left side, scattered under
+// an ERROR node, a bare top-level expression, or a neighbouring declaration. Rather
+// than chase every recovery shape, walk the whole tree (skipping function bodies,
+// whose assignments walkForCalls already handles) and capture the RHS of every
+// `<field> = fn` assignment on the module owner. resolveFuncPtrRefs keeps only the
+// real functions, so this is generic (no hard-coded macro names) and safe.
+func (w *astWalker) salvageMacroStructAssigns(root *sitter.Node) {
+	var assigns []*sitter.Node
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil || n.Kind() == "function_definition" {
+			return
+		}
+		if n.Kind() == "assignment_expression" {
+			if l := n.ChildByFieldName("left"); l != nil && l.Kind() == "field_expression" {
+				assigns = append(assigns, n)
+			}
+		}
+		for i := uint(0); i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	if len(assigns) == 0 {
+		return
+	}
+	w.pushOwner(w.moduleOwner())
+	for _, a := range assigns {
+		w.emitAssignFuncPtrRef(a)
+	}
+	w.popOwner()
 }
 
 // handleMacroBodyCalls scans a #define replacement list (preproc_def /

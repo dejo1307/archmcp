@@ -571,6 +571,40 @@ static int use(void) { return NE_PTR(3) + ARRAY_SIZE(buf); }
 	}
 }
 
+// TestCMachineDescErrorRegion covers the ARM machine_desc pattern: a struct opened
+// by a macro (DT_MACHINE_START) and closed by another (MACHINE_END), whose
+// `.field = fn` lines tree-sitter renders as a file-scope ERROR node. The callbacks
+// must be recovered.
+func TestCMachineDescErrorRegion(t *testing.T) {
+	// Two blocks after a declaration + a call-valued `.smp` field — the shape that
+	// makes tree-sitter recover the blocks as bare assignment_expression /
+	// field_expression fragments rather than one clean ERROR node.
+	ff := extractProject(t, map[string]string{
+		"src/board.c": `
+static void omap_reserve(void) {}
+static void omap_generic_init(void) {}
+static void omap2xxx_restart(void) {}
+static void mvebu_dt_init(void) {}
+static const char *const compat[] = { "x", 0 };
+DT_MACHINE_START(OMAP242X_DT, "Generic OMAP2420")
+	.smp		= smp_ops(omap_smp_ops),
+	.reserve	= omap_reserve,
+	.init_machine	= omap_generic_init,
+	.restart	= omap2xxx_restart,
+MACHINE_END
+DT_MACHINE_START(OMAP243X_DT, "Generic OMAP2430")
+	.init_machine	= mvebu_dt_init,
+MACHINE_END
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	for _, fn := range []string{"src.omap_reserve", "src.omap_generic_init", "src.omap2xxx_restart", "src.mvebu_dt_init"} {
+		if !hasRelation(mod, facts.RelCalls, fn) {
+			t.Errorf("machine_desc callback %s should be referenced, got %+v", fn, mod.Relations)
+		}
+	}
+}
+
 // TestCArgRefNonFunctionDropped guards the funcNames filter: an argument identifier
 // that does not name a real function must NOT produce a RelCalls edge (otherwise a
 // data argument could spuriously mark a same-named function as used).
