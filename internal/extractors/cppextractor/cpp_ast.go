@@ -46,11 +46,12 @@ func extractFileAST(src []byte, relFile, lang string) []facts.Fact {
 	defer tree.Close()
 
 	w := &astWalker{
-		src:         src,
-		relFile:     relFile,
-		dir:         filepath.Dir(relFile),
-		lang:        lang,
-		fileMethods: buildFileMethodIndex(tree.RootNode(), src),
+		src:            src,
+		relFile:        relFile,
+		dir:            filepath.Dir(relFile),
+		lang:           lang,
+		fileMethods:    buildFileMethodIndex(tree.RootNode(), src),
+		moduleOwnerIdx: -1,
 	}
 	w.walkDeclList(tree.RootNode())
 	return w.out
@@ -128,6 +129,12 @@ type astWalker struct {
 	// fileMethods maps a simple class name to the set of its method names declared
 	// anywhere in this file, so out-of-line method bodies can resolve sibling calls.
 	fileMethods map[string]map[string]bool
+
+	// moduleOwnerIdx is the index in out of a lazily-emitted KindModule fact that
+	// hosts file-scope macro-call references (module_init(foo), EXPORT_SYMBOL(foo)).
+	// -1 until first needed. Extract folds its relations into the canonical per-dir
+	// module fact.
+	moduleOwnerIdx int
 
 	// Per-function complexity state, set up by handleFunctionDefinition around
 	// walkForCalls and saved/restored across the re-entrant body walk. metrics is
@@ -336,6 +343,13 @@ func (w *astWalker) walkDecl(node *sitter.Node) {
 	case "linkage_specification":
 		// extern "C" { ... } — recurse into the wrapped body.
 		w.walkDeclList(findChildByKind(node, "declaration_list"))
+	case "expression_statement":
+		// A bare `call_expression;` at file/namespace scope is illegal C/C++ — it is
+		// always a registration macro the preprocessor would expand (module_init(foo),
+		// fs_initcall(foo), EXPORT_SYMBOL(foo), DEVICE_ATTR(name, mode, show, store)).
+		// Macros are not expanded, so the function-name arguments would otherwise be
+		// invisible and the referenced entry points mis-reported as dead.
+		w.handleFileScopeMacroCall(node)
 	case "preproc_if", "preproc_ifdef", "preproc_else", "preproc_elif",
 		"preproc_elifdef":
 		// Descend through #if/#ifdef guards: declarations inside them are direct
@@ -832,6 +846,44 @@ func (w *astWalker) walkInitializerRefs(node *sitter.Node) {
 	for i := uint(0); i < node.ChildCount(); i++ {
 		w.walkInitializerRefs(node.Child(i))
 	}
+}
+
+// moduleOwner lazily emits the directory's module fact and returns its index in
+// out, giving file-scope references (registration-macro arguments) an owner to
+// hang edges on — addOwnerEdge drops edges when there is no owner, and file-scope
+// code has no enclosing symbol. Extract folds this fact's relations into the
+// canonical per-dir module fact.
+func (w *astWalker) moduleOwner() int {
+	if w.moduleOwnerIdx >= 0 {
+		return w.moduleOwnerIdx
+	}
+	w.out = append(w.out, facts.Fact{
+		Kind:  facts.KindModule,
+		Name:  w.dir,
+		File:  w.dir,
+		Props: map[string]any{"language": w.lang},
+	})
+	w.moduleOwnerIdx = len(w.out) - 1
+	return w.moduleOwnerIdx
+}
+
+// handleFileScopeMacroCall records provisional func-pointer references for the
+// bare identifier / &identifier arguments of a file-scope macro invocation, hung
+// off the module owner. resolveFuncPtrRefs later keeps only the arguments whose
+// short name is a real function, so non-function arguments (a DEVICE_ATTR name, a
+// mode literal) add no edge.
+func (w *astWalker) handleFileScopeMacroCall(node *sitter.Node) {
+	call := findChildByKind(node, "call_expression")
+	if call == nil {
+		return
+	}
+	args := call.ChildByFieldName("arguments")
+	if args == nil {
+		return
+	}
+	w.pushOwner(w.moduleOwner())
+	w.emitArgRefs(args)
+	w.popOwner()
 }
 
 // emitArgRefs scans the DIRECT arguments of a call for bare function names used as

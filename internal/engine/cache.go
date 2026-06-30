@@ -21,7 +21,8 @@ import (
 // v5: PHP HTTP client detection + Laravel/Symfony route DSLs (attributes, YAML/XML config).
 // v6: Ruby bare-constant references emitted as RelCalls edges (dead-code precision).
 // v7: Ruby skips builtin-constant edges (god-class noise) + serializer attribute/include_ folding.
-const cacheVersion = "v7"
+// v8: C/C++ file-scope registration-macro args (module_init/EXPORT_SYMBOL/DEVICE_ATTR) emitted as module-fact call edges.
+const cacheVersion = "v8"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

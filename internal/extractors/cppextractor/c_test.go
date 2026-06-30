@@ -223,6 +223,79 @@ static int setup(void) { return request_irq(1, &handler, 0); }
 	}
 }
 
+// TestCRegistrationMacro covers the dominant kernel false-positive source: a
+// function registered only through a file-scope macro invocation (module_init,
+// *_initcall, EXPORT_SYMBOL, *_driver). Macros are not expanded, so the
+// function-name argument must instead surface as a call edge on the module fact,
+// otherwise the entry point is mis-reported as dead.
+func TestCRegistrationMacro(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/mem.c": `
+static int chr_dev_init(void) { return 0; }
+static int read_mem(void) { return 0; }
+fs_initcall(chr_dev_init);
+EXPORT_SYMBOL(read_mem);
+`,
+	})
+	mod := mustFact(t, ff, "src") // the directory's module fact
+	if mod.Kind != facts.KindModule {
+		t.Fatalf("expected module fact for dir src, got kind %q", mod.Kind)
+	}
+	if !hasRelation(mod, facts.RelCalls, "src.chr_dev_init") {
+		t.Errorf("module should reference chr_dev_init via fs_initcall, got %+v", mod.Relations)
+	}
+	if !hasRelation(mod, facts.RelCalls, "src.read_mem") {
+		t.Errorf("module should reference read_mem via EXPORT_SYMBOL, got %+v", mod.Relations)
+	}
+	// The macro name itself must not be emitted as a junk function symbol.
+	if _, ok := findFact(ff, "src.fs_initcall"); ok {
+		t.Errorf("macro name fs_initcall must not become a function symbol")
+	}
+	if _, ok := findFact(ff, "src.EXPORT_SYMBOL"); ok {
+		t.Errorf("macro name EXPORT_SYMBOL must not become a function symbol")
+	}
+}
+
+// TestCRegistrationMacroMultiArg covers DEVICE_ATTR-style macros that mix
+// non-function args (a name, a mode literal) with function-name args (show/store):
+// only the real functions become edges.
+func TestCRegistrationMacroMultiArg(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/attr.c": `
+static int show_fn(void) { return 0; }
+static int store_fn(void) { return 0; }
+DEVICE_ATTR(name, 0644, show_fn, store_fn);
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	if !hasRelation(mod, facts.RelCalls, "src.show_fn") || !hasRelation(mod, facts.RelCalls, "src.store_fn") {
+		t.Errorf("module should reference show_fn and store_fn, got %+v", mod.Relations)
+	}
+	if hasRelation(mod, facts.RelCalls, "src.name") {
+		t.Errorf("non-function arg `name` must not become a call edge, got %+v", mod.Relations)
+	}
+}
+
+// TestCFileScopeMacroNoFalseModuleEdges guards the funcNames filter at module
+// scope: a macro argument that does not name a real function adds no edge, and a
+// file with no registration macros gets no spurious module call edges.
+func TestCFileScopeMacroNoFalseModuleEdges(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/p.c": `
+static int real(void) { return 0; }
+SOME_MACRO(not_a_function);
+module_init(real);
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	if !hasRelation(mod, facts.RelCalls, "src.real") {
+		t.Errorf("module should reference real via module_init, got %+v", mod.Relations)
+	}
+	if hasRelation(mod, facts.RelCalls, "src.not_a_function") {
+		t.Errorf("non-function macro arg must not become a module call edge, got %+v", mod.Relations)
+	}
+}
+
 // TestCArgRefNonFunctionDropped guards the funcNames filter: an argument identifier
 // that does not name a real function must NOT produce a RelCalls edge (otherwise a
 // data argument could spuriously mark a same-named function as used).
