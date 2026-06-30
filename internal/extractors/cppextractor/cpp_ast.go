@@ -350,6 +350,12 @@ func (w *astWalker) walkDecl(node *sitter.Node) {
 		// Macros are not expanded, so the function-name arguments would otherwise be
 		// invisible and the referenced entry points mis-reported as dead.
 		w.handleFileScopeMacroCall(node)
+	case "preproc_def", "preproc_function_def":
+		// A function called inside a #define body (e.g. `#define ____cmpxchg(...) (
+		// size == 2 ? ____cmpxchg_u16(p,o,n) : ...)`) is invisible to the AST — the
+		// replacement list is opaque preproc_arg text — so the called function looks
+		// dead. Scan that text for call-position identifiers and record them.
+		w.handleMacroBodyCalls(node)
 	case "preproc_if", "preproc_ifdef", "preproc_else", "preproc_elif",
 		"preproc_elifdef":
 		// Descend through #if/#ifdef guards: declarations inside them are direct
@@ -705,6 +711,14 @@ func (w *astWalker) handleDeclaration(node *sitter.Node) {
 			w.handleClassLike(t, facts.SymbolStruct)
 		case "enum_specifier":
 			w.handleEnum(t)
+		case "macro_type_specifier":
+			// `static DEFINE_SIMPLE_DEV_PM_OPS(name, suspend, resume);` — a qualifier
+			// (static/const) makes tree-sitter parse a registration macro as a
+			// declaration whose "type" is a macro_type_specifier, with the macro args
+			// as type_identifier nodes. Record the function-name args as uses so the
+			// PM/driver callbacks are not mis-reported as dead (the bare
+			// expression_statement form is handled by handleFileScopeMacroCall).
+			w.handleMacroTypeSpecifier(t)
 		}
 	}
 	// A file-scope object declaration with an initializer (e.g. a kernel ops table
@@ -865,6 +879,133 @@ func (w *astWalker) moduleOwner() int {
 	})
 	w.moduleOwnerIdx = len(w.out) - 1
 	return w.moduleOwnerIdx
+}
+
+// handleMacroTypeSpecifier records the function-name arguments of a registration
+// macro that a leading qualifier turned into a declaration (e.g.
+// `static DEFINE_SIMPLE_DEV_PM_OPS(name, suspend, resume);`). tree-sitter renders
+// the macro args as type_identifier nodes under the macro_type_specifier; the
+// macro name itself is a plain identifier (the `.name` field), so collecting
+// type_identifier leaves yields just the args. resolveFuncPtrRefs keeps only the
+// ones that are real functions (the suspend/resume callbacks), dropping the ops
+// table name and other non-functions.
+func (w *astWalker) handleMacroTypeSpecifier(node *sitter.Node) {
+	w.pushOwner(w.moduleOwner())
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		// Args land as type_identifier or (across a line break, under an ERROR node)
+		// plain identifier. The macro name is also an identifier but is UPPER_SNAKE,
+		// so emitFuncPtrRef suppresses it; non-function args are dropped by funcNames.
+		if k := n.Kind(); k == "type_identifier" || k == "identifier" {
+			w.emitFuncPtrRef(nodeText(n, w.src))
+			return
+		}
+		for i := uint(0); i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(node)
+	w.popOwner()
+}
+
+// handleMacroBodyCalls scans a #define replacement list (preproc_def /
+// preproc_function_def) for identifiers used as functions — in call position
+// (`IDENT(`) or value position (`= IDENT` / `.field = IDENT` / `= &IDENT`) — and
+// records each as a provisional func-pointer reference on the module owner.
+// tree-sitter keeps the replacement list as one opaque preproc_arg token, so both
+// calls inside a macro body (the size-dispatched `____cmpxchg_u16(...)` in an arch
+// cmpxchg header) and ops tables defined via a macro (`#define F7188X_GPIO_BANK(..)
+// { .set = f7188x_gpio_set, ... }`) are otherwise invisible. resolveFuncPtrRefs
+// keeps only the names that are real functions, so macro params, constants, field
+// names, and other macros add no edge.
+func (w *astWalker) handleMacroBodyCalls(node *sitter.Node) {
+	val := node.ChildByFieldName("value")
+	if val == nil || val.Kind() != "preproc_arg" {
+		return
+	}
+	body := w.src[val.StartByte():val.EndByte()]
+	w.pushOwner(w.moduleOwner())
+	for _, name := range macroFuncRefIdents(body) {
+		w.emitFuncPtrRef(name)
+	}
+	w.popOwner()
+}
+
+// macroFuncRefIdents returns the identifiers in src that are used as a function:
+// in call position (immediately followed, modulo whitespace, by '(') or in value
+// position (immediately preceded by a plain `=`, optionally through one `&`). The
+// latter catches function pointers assigned in designated initializers inside a
+// macro body (`.set = fn`). Comparison/compound operators (`==`, `!=`, `+=`, …)
+// are not treated as assignment.
+func macroFuncRefIdents(src []byte) []string {
+	var out []string
+	i := 0
+	n := len(src)
+	for i < n {
+		if isIdentStart(src[i]) {
+			start := i
+			for i < n && isIdentPart(src[i]) {
+				i++
+			}
+			if followedByCallParen(src, i) || precededByAssign(src, start) {
+				out = append(out, string(src[start:i]))
+			}
+			continue
+		}
+		i++
+	}
+	return out
+}
+
+func isMacroSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\\'
+}
+
+// followedByCallParen reports whether the first non-space byte at or after pos is
+// '(' — i.e. the identifier ending at pos is in call position.
+func followedByCallParen(src []byte, pos int) bool {
+	j := pos
+	for j < len(src) && isMacroSpace(src[j]) {
+		j++
+	}
+	return j < len(src) && src[j] == '('
+}
+
+// precededByAssign reports whether the identifier starting at pos is the value of
+// a plain `=` assignment — `= ident`, `.field = ident`, or `= &ident` — and not the
+// operand of a comparison/compound operator (`==`, `!=`, `<=`, `>=`, `+=`, …).
+func precededByAssign(src []byte, pos int) bool {
+	k := pos - 1
+	for k >= 0 && isMacroSpace(src[k]) {
+		k--
+	}
+	if k >= 0 && src[k] == '&' { // address-of: = &fn
+		k--
+		for k >= 0 && isMacroSpace(src[k]) {
+			k--
+		}
+	}
+	if k < 0 || src[k] != '=' {
+		return false
+	}
+	if k-1 >= 0 {
+		switch src[k-1] { // reject ==, !=, <=, >=, +=, -=, *=, /=, %=, &=, |=, ^=, ~=
+		case '=', '!', '<', '>', '+', '-', '*', '/', '%', '&', '|', '^', '~':
+			return false
+		}
+	}
+	return true
+}
+
+func isIdentStart(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func isIdentPart(b byte) bool {
+	return isIdentStart(b) || (b >= '0' && b <= '9')
 }
 
 // handleFileScopeMacroCall records provisional func-pointer references for the
@@ -1122,10 +1263,45 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 				return
 			}
 		}
+	case "assignment_expression":
+		// `obj->cb = func;` / `obj.cb = func;` / `p = &func;` — wiring a function
+		// into a struct callback field (kernel gpio_chip/irq_chip/pmu_ops probes) or
+		// a function-pointer variable. The RHS function is a use; without this it
+		// looks dead. Non-function RHS is dropped by resolveFuncPtrRefs.
+		w.emitAssignFuncPtrRef(node)
+	case "compound_literal_expression":
+		// An in-body designated initializer — `cfg = (struct regmap_config){ .lock =
+		// fn, ... };` — wires callbacks like a file-scope ops table but inside a
+		// function. Reuse the initializer walk (handles .field = fn, &fn, nesting);
+		// the enclosing function is the owner.
+		w.walkInitializerRefs(node)
 	}
 
 	for i := uint(0); i < node.ChildCount(); i++ {
 		w.walkForCalls(node.Child(i))
+	}
+}
+
+// emitAssignFuncPtrRef records a provisional func-pointer reference for the RHS of
+// a plain `=` assignment whose value is a bare function name or `&func` — the
+// callback-wiring pattern `obj->field = func`. Compound assignments (`+=`) and
+// complex RHS expressions are left alone; the funcNames filter in
+// resolveFuncPtrRefs drops any RHS that is not a real function.
+func (w *astWalker) emitAssignFuncPtrRef(node *sitter.Node) {
+	if op := node.ChildByFieldName("operator"); op == nil || nodeText(op, w.src) != "=" {
+		return
+	}
+	rhs := node.ChildByFieldName("right")
+	if rhs == nil {
+		return
+	}
+	switch rhs.Kind() {
+	case "identifier":
+		w.emitFuncPtrRef(nodeText(rhs, w.src))
+	case "pointer_expression": // &func
+		if inner := rhs.ChildByFieldName("argument"); inner != nil && inner.Kind() == "identifier" {
+			w.emitFuncPtrRef(nodeText(inner, w.src))
+		}
 	}
 }
 
