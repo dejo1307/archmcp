@@ -725,6 +725,15 @@ func (w *astWalker) handleDeclaration(node *sitter.Node) {
 			// PM/driver callbacks are not mis-reported as dead (the bare
 			// expression_statement form is handled by handleFileScopeMacroCall).
 			w.handleMacroTypeSpecifier(t)
+		case "type_identifier":
+			// `static DEVICE_ATTR_RO(name);` — the single-arg form parses as a plain
+			// declaration whose type is the macro name (a type_identifier) and whose
+			// declarator wraps the arg (parenthesized_declarator). When the "type" is
+			// actually a known function-like macro, expand it to recover its pasted
+			// callbacks (name##_show / _store), then stop (it's not a real prototype).
+			if w.expandMacroDeclaration(t, node.ChildByFieldName("declarator")) {
+				return
+			}
 		}
 	}
 	// A file-scope object declaration with an initializer (e.g. a kernel ops table
@@ -928,6 +937,44 @@ func (w *astWalker) handleMacroTypeSpecifier(node *sitter.Node) {
 	w.popOwner()
 }
 
+// expandMacroDeclaration handles `static DEVICE_ATTR_RO(name);` — a declaration
+// whose type_identifier is actually a known function-like macro and whose
+// declarator is the macro-call argument list (a parenthesized or function
+// declarator, not a plain variable name). It expands the macro to record the
+// callbacks it wires. Returns true when handled, so the caller skips the normal
+// prototype/variable path.
+func (w *astWalker) expandMacroDeclaration(typ, declarator *sitter.Node) bool {
+	if typ == nil || declarator == nil {
+		return false
+	}
+	def, ok := w.macros[nodeText(typ, w.src)]
+	if !ok || def.params == nil { // must be a known function-like macro
+		return false
+	}
+	if k := declarator.Kind(); k != "parenthesized_declarator" && k != "function_declarator" {
+		return false // a plain `static MacroTyped var;` is not a macro invocation
+	}
+	var args []string
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		if k := n.Kind(); k == "identifier" || k == "type_identifier" {
+			args = append(args, nodeText(n, w.src))
+			return
+		}
+		for i := uint(0); i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(declarator)
+	w.pushOwner(w.moduleOwner())
+	w.emitExpandedMacroRefs(nodeText(typ, w.src), args)
+	w.popOwner()
+	return true
+}
+
 // handleMacroBodyCalls scans a #define replacement list (preproc_def /
 // preproc_function_def) for identifiers used as functions — in call position
 // (`IDENT(`) or value position (`= IDENT` / `.field = IDENT` / `= &IDENT`) — and
@@ -1072,7 +1119,11 @@ func (w *astWalker) emitExpandedMacroRefs(name string, args []string) {
 	if toks == nil {
 		return
 	}
-	for _, ref := range macroFuncRefIdents([]byte(tokensText(toks))) {
+	// Scan every identifier in the expanded text: a referenced function may appear
+	// in any position (a designated-init value, a call, or a call argument like
+	// single_open(file, name_show, ...) from DEFINE_SHOW_ATTRIBUTE). funcNames drops
+	// the non-functions.
+	for _, ref := range allIdents([]byte(tokensText(toks))) {
 		w.emitFuncPtrRef(ref)
 	}
 }
@@ -1376,7 +1427,16 @@ func (w *astWalker) handleCall(node *sitter.Node) {
 		}
 	case kind == calleePlain:
 		if isTypeName(name) {
-			if !cppBuiltinTypes[name] {
+			if w.lang == langC {
+				// C has no constructors: a capitalized callee is either a function
+				// (e.g. an ALL-CAPS `static inline` like NE_PTR/STNIC_READ) or a
+				// value-macro (ARRAY_SIZE, BIT). Emit a provisional func-pointer edge
+				// so resolveFuncPtrRefs keeps it only when the name is a real
+				// function; value-macros are dropped. (C++ keeps instantiation.)
+				if target := w.resolveCall(name); target != "" {
+					w.addOwnerEdge(relFuncPtrCandidate, target)
+				}
+			} else if !cppBuiltinTypes[name] {
 				w.addOwnerEdge(facts.RelInstantiates, name)
 			}
 		} else if target := w.resolveCall(name); target != "" {

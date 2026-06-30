@@ -104,6 +104,27 @@ func lex(src string) []token {
 	return out
 }
 
+// allIdents returns every identifier in src. Used on fully-expanded macro text,
+// where any identifier may name a referenced function (including a function passed
+// as a call argument, e.g. single_open(file, name_show, ...) from
+// DEFINE_SHOW_ATTRIBUTE). The funcNames filter in resolveFuncPtrRefs drops every
+// non-function (types, field names, other macros), so over-collecting is safe.
+func allIdents(src []byte) []string {
+	var out []string
+	for i, n := 0, len(src); i < n; {
+		if isIdentStart(src[i]) {
+			s := i
+			for i < n && isIdentPart(src[i]) {
+				i++
+			}
+			out = append(out, string(src[s:i]))
+		} else {
+			i++
+		}
+	}
+	return out
+}
+
 func tokensText(toks []token) string {
 	var b strings.Builder
 	for _, t := range toks {

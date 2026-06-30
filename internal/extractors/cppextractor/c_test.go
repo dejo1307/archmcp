@@ -513,6 +513,64 @@ DEV_ATTR_RO(temp);
 	}
 }
 
+// TestCStaticSingleArgAttr covers the `static DEVICE_ATTR_RO(name);` single-arg
+// form (parses as a plain declaration, not a macro_type_specifier): the pasted
+// _show/_store callbacks must still be recovered via expansion.
+func TestCStaticSingleArgAttr(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"inc/sysfs.h": `
+#define __ATTR_RO(_name) { .attr = { .name = #_name }, .show = _name##_show }
+#define DEVICE_ATTR_RO(_name) static struct device_attribute dev_attr_##_name = __ATTR_RO(_name)
+`,
+		"src/d.c": `
+static int cfam_id_show(void) { return 0; }
+static DEVICE_ATTR_RO(cfam_id);
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	if !hasRelation(mod, facts.RelCalls, "src.cfam_id_show") {
+		t.Errorf("static DEVICE_ATTR_RO(cfam_id) should reference cfam_id_show, got %+v", mod.Relations)
+	}
+}
+
+// TestCDefineShowAttribute covers a function-defining macro whose referenced
+// callback is passed as a CALL ARGUMENT (single_open(file, name_show, ...)); the
+// all-identifier scan of the expansion must capture it.
+func TestCDefineShowAttribute(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/dbg.c": `
+static int component_list_show(void) { return 0; }
+#define DEFINE_SHOW_ATTRIBUTE(__name) \
+static int __name##_open(void) { return single_open(__name##_show); } \
+static const struct file_operations __name##_fops = { .open = __name##_open }
+DEFINE_SHOW_ATTRIBUTE(component_list);
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	if !hasRelation(mod, facts.RelCalls, "src.component_list_show") {
+		t.Errorf("DEFINE_SHOW_ATTRIBUTE should reference component_list_show (call arg), got %+v", mod.Relations)
+	}
+}
+
+// TestCCapitalizedStaticInlineCall: a real ALL-CAPS/Camel `static inline` function
+// called normally in C must be tracked (not mis-routed as a type instantiation and
+// dropped). A capitalized value-macro that is not a function must add no edge.
+func TestCCapitalizedStaticInlineCall(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/n.c": `
+static inline int NE_PTR(int x) { return x; }
+static int use(void) { return NE_PTR(3) + ARRAY_SIZE(buf); }
+`,
+	})
+	use := mustFact(t, ff, "src.use")
+	if !hasRelation(use, facts.RelCalls, "src.NE_PTR") {
+		t.Errorf("use should reference the capitalized static inline NE_PTR, got %+v", use.Relations)
+	}
+	if hasRelation(use, facts.RelCalls, "src.ARRAY_SIZE") || hasRelation(use, facts.RelInstantiates, "ARRAY_SIZE") {
+		t.Errorf("a capitalized value-macro (ARRAY_SIZE) must not become an edge, got %+v", use.Relations)
+	}
+}
+
 // TestCArgRefNonFunctionDropped guards the funcNames filter: an argument identifier
 // that does not name a real function must NOT produce a RelCalls edge (otherwise a
 // data argument could spuriously mark a same-named function as used).
