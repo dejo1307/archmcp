@@ -29,7 +29,7 @@ import (
 // grammars share node-type names for every kind the walker reads; the C++-only
 // kinds (class_specifier, namespace_definition, template_declaration,
 // qualified_identifier, alias_declaration) simply never appear in C trees.
-func extractFileAST(src []byte, relFile, lang string) []facts.Fact {
+func extractFileAST(src []byte, relFile, lang string, macros macroTable) []facts.Fact {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	grammar := cpp.Language()
@@ -52,6 +52,7 @@ func extractFileAST(src []byte, relFile, lang string) []facts.Fact {
 		lang:           lang,
 		fileMethods:    buildFileMethodIndex(tree.RootNode(), src),
 		moduleOwnerIdx: -1,
+		macros:         macros,
 	}
 	w.walkDeclList(tree.RootNode())
 	return w.out
@@ -135,6 +136,11 @@ type astWalker struct {
 	// -1 until first needed. Extract folds its relations into the canonical per-dir
 	// module fact.
 	moduleOwnerIdx int
+
+	// macros is the project-wide #define table, used to expand file-scope macro
+	// invocations (CONFIGFS_ATTR, DEVICE_ATTR_RO, …) and recover the token-pasted
+	// callbacks they reference.
+	macros macroTable
 
 	// Per-function complexity state, set up by handleFunctionDefinition around
 	// walkForCalls and saved/restored across the re-entrant body walk. metrics is
@@ -890,17 +896,23 @@ func (w *astWalker) moduleOwner() int {
 // ones that are real functions (the suspend/resume callbacks), dropping the ops
 // table name and other non-functions.
 func (w *astWalker) handleMacroTypeSpecifier(node *sitter.Node) {
+	nameNode := node.ChildByFieldName("name")
 	w.pushOwner(w.moduleOwner())
+	var args []string
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
 		if n == nil {
 			return
 		}
+		if nameNode != nil && n.StartByte() == nameNode.StartByte() && n.EndByte() == nameNode.EndByte() {
+			return // the macro name itself, not an argument
+		}
 		// Args land as type_identifier or (across a line break, under an ERROR node)
-		// plain identifier. The macro name is also an identifier but is UPPER_SNAKE,
-		// so emitFuncPtrRef suppresses it; non-function args are dropped by funcNames.
+		// plain identifier. Non-function args are dropped by funcNames.
 		if k := n.Kind(); k == "type_identifier" || k == "identifier" {
-			w.emitFuncPtrRef(nodeText(n, w.src))
+			txt := nodeText(n, w.src)
+			w.emitFuncPtrRef(txt)
+			args = append(args, txt)
 			return
 		}
 		for i := uint(0); i < n.ChildCount(); i++ {
@@ -908,6 +920,11 @@ func (w *astWalker) handleMacroTypeSpecifier(node *sitter.Node) {
 		}
 	}
 	walk(node)
+	// Also expand the macro itself (e.g. a PM-ops macro that wires .suspend = fn),
+	// in case its callbacks are pasted rather than passed through directly.
+	if nameNode != nil {
+		w.emitExpandedMacroRefs(nodeText(nameNode, w.src), args)
+	}
 	w.popOwner()
 }
 
@@ -1024,7 +1041,40 @@ func (w *astWalker) handleFileScopeMacroCall(node *sitter.Node) {
 	}
 	w.pushOwner(w.moduleOwner())
 	w.emitArgRefs(args)
+	if fn := call.ChildByFieldName("function"); fn != nil && fn.Kind() == "identifier" {
+		w.emitExpandedMacroRefs(nodeText(fn, w.src), argTexts(args, w.src))
+	}
 	w.popOwner()
+}
+
+// argTexts returns the source text of each named (top-level) argument of an
+// argument_list — used to feed a macro invocation's args to the expander.
+func argTexts(args *sitter.Node, src []byte) []string {
+	var out []string
+	for i := uint(0); i < args.ChildCount(); i++ {
+		if a := args.Child(i); a.IsNamed() {
+			out = append(out, nodeText(a, src))
+		}
+	}
+	return out
+}
+
+// emitExpandedMacroRefs expands the macro invocation name(argTexts...) using the
+// project #define table and records the function references in its expansion —
+// recovering token-pasted callbacks like CONFIGFS_ATTR(pfx, name) -> .show =
+// pfx##name##_show. No-op when the macro is unknown or object-like. Must be called
+// with an owner pushed; resolveFuncPtrRefs drops any non-function name.
+func (w *astWalker) emitExpandedMacroRefs(name string, args []string) {
+	if w.macros == nil {
+		return
+	}
+	toks := expandCall(name, args, w.macros)
+	if toks == nil {
+		return
+	}
+	for _, ref := range macroFuncRefIdents([]byte(tokensText(toks))) {
+		w.emitFuncPtrRef(ref)
+	}
 }
 
 // emitArgRefs scans the DIRECT arguments of a call for bare function names used as

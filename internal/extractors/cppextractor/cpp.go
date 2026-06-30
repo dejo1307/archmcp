@@ -114,6 +114,26 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 		}
 	}
 
+	// Pre-pass: build a project-wide #define table (parallel scan), so a file-scope
+	// macro invocation (CONFIGFS_ATTR, DEVICE_ATTR_RO, …) can be expanded using the
+	// definition that lives in a header, recovering the token-pasted callbacks it
+	// references. Merged in file order for deterministic last-write-wins.
+	perFileMacros := parallel.MapFiles(ctx, cppFiles, func(relFile string) macroTable {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			return nil
+		}
+		t := macroTable{}
+		collectMacros(src, t)
+		return t
+	})
+	macros := macroTable{}
+	for _, t := range perFileMacros {
+		for name, def := range t {
+			macros[name] = def
+		}
+	}
+
 	// extractFileAST is pure; parse in parallel. The type/header indices below are
 	// then rebuilt by iterating the per-file results in file order, so they (and
 	// their last-write-wins on duplicate names) are identical to a serial run.
@@ -123,7 +143,7 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 			log.Printf("[cpp-extractor] error reading %s: %v", relFile, err)
 			return nil
 		}
-		return extractFileAST(src, relFile, langByFile[relFile])
+		return extractFileAST(src, relFile, langByFile[relFile], macros)
 	})
 
 	for i, fileFacts := range perFileFacts {

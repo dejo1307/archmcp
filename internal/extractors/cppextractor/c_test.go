@@ -472,6 +472,47 @@ static int real(void) { return 0; }
 	}
 }
 
+// TestCMacroExpansionTokenPaste is the end-to-end token-paste rescue: a configfs-
+// style attribute macro defined in one file and invoked in another must have its
+// preprocessor-synthesized .show/.store callbacks recorded as used, so they are
+// not reported as dead. Exercises the project-wide #define pre-pass + expansion.
+func TestCMacroExpansionTokenPaste(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"inc/attr.h": `
+#define ATTR_PERM(_pfx, _name, _perm) static struct configfs_attribute _pfx##attr_##_name = { .ca_name = __stringify(_name), .ca_mode = _perm, .show = _pfx##_name##_show, .store = _pfx##_name##_store, }
+#define ATTR(_pfx, _name) ATTR_PERM(_pfx, _name, 0644)
+`,
+		"src/d.c": `
+static int cfg_label_show(void) { return 0; }
+static int cfg_label_store(void) { return 0; }
+ATTR(cfg_, label);
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	if !hasRelation(mod, facts.RelCalls, "src.cfg_label_show") || !hasRelation(mod, facts.RelCalls, "src.cfg_label_store") {
+		t.Errorf("macro expansion should reference cfg_label_show/store, got %+v", mod.Relations)
+	}
+}
+
+// TestCMacroExpansionRO covers the single-callback DEVICE_ATTR_RO shape and the
+// funcNames guard: the pasted struct-variable name must not become an edge.
+func TestCMacroExpansionRO(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/s.c": `
+static int temp_show(void) { return 0; }
+#define DEV_ATTR_RO(_name) static struct da dev_attr_##_name = { .show = _name##_show }
+DEV_ATTR_RO(temp);
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	if !hasRelation(mod, facts.RelCalls, "src.temp_show") {
+		t.Errorf("DEV_ATTR_RO should reference temp_show, got %+v", mod.Relations)
+	}
+	if hasRelation(mod, facts.RelCalls, "src.dev_attr_temp") {
+		t.Errorf("pasted struct name dev_attr_temp must not be a call edge, got %+v", mod.Relations)
+	}
+}
+
 // TestCArgRefNonFunctionDropped guards the funcNames filter: an argument identifier
 // that does not name a real function must NOT produce a RelCalls edge (otherwise a
 // data argument could spuriously mark a same-named function as used).
