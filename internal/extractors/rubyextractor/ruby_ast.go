@@ -555,6 +555,19 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 	switch node.Kind() {
 	case "method", "singleton_method", "class", "module", "singleton_class":
 		return
+	case "super":
+		// `super` invokes the same-named method in an ancestor (superclass or mixin),
+		// so it references that base method. Only meaningful inside a method body
+		// (metrics != nil), where selfShort is the enclosing method's bare name.
+		// Recurse afterwards to capture any calls in `super(args)`.
+		if w.metrics != nil && w.selfShort != "" {
+			w.addCall(ownerIdx, seen, w.selfShort)
+			w.recordCallMetrics(w.selfShort)
+		}
+		for i := uint(0); i < node.ChildCount(); i++ {
+			w.walkForCalls(node.Child(i), ownerIdx, seen, locals)
+		}
+		return
 	case "while", "until", "for", "while_modifier", "until_modifier":
 		// Syntactic loops: everything in the body runs per iteration.
 		if w.metrics != nil {
@@ -573,11 +586,32 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 	case "call":
 		method := node.ChildByFieldName("method")
 		recv := node.ChildByFieldName("receiver")
+		// Dynamic dispatch by LITERAL name — `obj.try(:foo)`, `send(:bar)`,
+		// `respond_to?(:baz)` — names the target method exactly, so record it as a
+		// call. Safe-nav `&.try` still exposes the `method` child. Distinct from an
+		// interpolated symbol (`:"report_#{x}"`), which is only a prefix hint.
+		if method != nil && rubyDispatchers[rubyText(method, w.src)] {
+			if nm := dispatchSymbolArg(node.ChildByFieldName("arguments"), w.src); nm != "" {
+				w.addCall(ownerIdx, seen, nm)
+				w.recordCallMetrics(nm)
+			}
+		}
 		if target := w.callTarget(node); target != "" {
 			w.addCall(ownerIdx, seen, target)
 			w.recordCallMetrics(target)
 		} else if recv == nil && method != nil && method.Kind() == "identifier" {
 			if name := rubyText(method, w.src); !rubyNonCalls[name] {
+				w.addCall(ownerIdx, seen, name)
+				w.recordCallMetrics(name)
+			}
+		} else if recv != nil && recv.Kind() == "call" && method != nil && method.Kind() == "identifier" {
+			// A no-arg method call on a chained receiver — ActiveRecord scope /
+			// class-method chains (`Model.scope1.scope2.final`, `assoc.class_method`,
+			// `x.class.method`). callTarget suppresses these (no args), but the terminal
+			// method is a real reference. Bare target (no ".") -> no coupling impact.
+			// Skip common attribute/enumerable reads so a dead method sharing a name
+			// with `.name`/`.count`/`.first` isn't hidden.
+			if name := rubyText(method, w.src); !rubyNonCalls[name] && !rubyCheapMethods[name] {
 				w.addCall(ownerIdx, seen, name)
 				w.recordCallMetrics(name)
 			}
@@ -690,6 +724,56 @@ func dynamicSymbolPrefix(node *sitter.Node, src []byte) string {
 		return p
 	}
 	return ""
+}
+
+// rubyDispatchers are methods that invoke (or reference) another method named by
+// their first argument: `obj.try(:foo)`, `send(:bar)`, `respond_to?(:baz)`,
+// `method(:qux)`. When that argument is a LITERAL symbol/string the target method
+// is statically known, so it is recorded as a call.
+var rubyDispatchers = map[string]bool{
+	"send": true, "public_send": true, "__send__": true,
+	"try": true, "try!": true, "respond_to?": true,
+	"method": true, "public_method": true,
+}
+
+// dispatchSymbolArg returns the method name named by the first argument of a
+// dispatcher call (`:foo` -> "foo", "foo" -> "foo"), or "" when the first argument
+// is not a literal symbol / static string (e.g. a variable or interpolated value).
+func dispatchSymbolArg(args *sitter.Node, src []byte) string {
+	if args == nil {
+		return ""
+	}
+	for i := uint(0); i < args.ChildCount(); i++ {
+		c := args.Child(i)
+		if !c.IsNamed() {
+			continue
+		}
+		switch c.Kind() {
+		case "simple_symbol":
+			return strings.TrimPrefix(rubyText(c, src), ":")
+		case "string":
+			// Static string only (no interpolation): the literal is the method name.
+			for j := uint(0); j < c.ChildCount(); j++ {
+				if c.Child(j).Kind() == "interpolation" {
+					return ""
+				}
+			}
+			return stringLiteralContent(c, src)
+		}
+		return "" // first positional arg is something else — not a literal name
+	}
+	return ""
+}
+
+// stringLiteralContent returns the concatenated string_content of a string node.
+func stringLiteralContent(node *sitter.Node, src []byte) string {
+	var b strings.Builder
+	for i := uint(0); i < node.ChildCount(); i++ {
+		if node.Child(i).Kind() == "string_content" {
+			b.WriteString(rubyText(node.Child(i), src))
+		}
+	}
+	return b.String()
 }
 
 // extractTestRefsAST parses a test/spec file and returns a single

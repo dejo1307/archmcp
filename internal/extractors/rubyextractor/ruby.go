@@ -156,9 +156,15 @@ func detectRailsProject(repoPath string) bool {
 	return false
 }
 
-// isRubyFile returns true if the file has a .rb extension.
+// isRubyFile returns true if the file is Ruby source: a .rb/.rake file or a
+// Rakefile. Rake tasks are Ruby and call into app code (e.g. from lib/tasks/),
+// so indexing them lets those calls resolve (dead-code precision).
 func isRubyFile(path string) bool {
-	return strings.HasSuffix(strings.ToLower(path), ".rb")
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".rb") || strings.HasSuffix(lower, ".rake") {
+		return true
+	}
+	return filepath.Base(path) == "Rakefile"
 }
 
 // OwnsFile implements plugin.FileOwner for incremental caching.

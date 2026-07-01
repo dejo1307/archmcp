@@ -1190,3 +1190,106 @@ end
 		t.Errorf("expected no dynamic_send_prefixes, got %v", got)
 	}
 }
+
+// TestExtractFile_SuperReferencesAncestor checks that a `super` call records a
+// reference to the same-named ancestor method (the base an override delegates to).
+func TestExtractFile_SuperReferencesAncestor(t *testing.T) {
+	src := `module EE
+  module IssuesFinder
+    def negatable_params
+      @negatable_params ||= super + [:weight]
+    end
+  end
+end
+`
+	result := extractFileAST([]byte(src), "ee/app/finders/ee/issues_finder.rb", true, true)
+	meth := symbolsByName(result)["EE::IssuesFinder#negatable_params"]
+	if !hasCall(meth, "negatable_params") {
+		t.Errorf("super should record a call to the same-named ancestor method; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_LiteralSymbolDispatch checks that a literal-symbol argument to a
+// dispatcher (try/send/respond_to?) records a call to the named method, while a
+// non-dispatcher method with a symbol arg (e.g. validates :name) does not.
+func TestExtractFile_LiteralSymbolDispatch(t *testing.T) {
+	src := `class BaseField
+  def complexity(resolver)
+    ext = resolver&.try(:calculate_ext_conn_complexity)
+    v = @resolver_class.send(:requires_argument?)
+    validates :name
+    [ext, v]
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/graphql/types/base_field.rb", true, true)
+	meth := symbolsByName(result)["BaseField#complexity"]
+	for _, want := range []string{"calculate_ext_conn_complexity", "requires_argument?"} {
+		if !hasCall(meth, want) {
+			t.Errorf("dispatcher literal-symbol arg should record RelCalls -> %s; relations = %v", want, meth.Relations)
+		}
+	}
+	// `validates :name` is a DSL, not a dispatcher — `name` must not be a call here.
+	if hasCall(meth, "name") {
+		t.Errorf("non-dispatcher symbol arg must not be recorded as a call; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_ChainedNoArgCall checks that a no-arg method call at the end of
+// a chain (ActiveRecord scope / class-method chains) is captured, while common
+// attribute/enumerable reads and single-level reads are not.
+func TestExtractFile_ChainedNoArgCall(t *testing.T) {
+	src := `class Worker
+  def run
+    DeployToken.active.with_owners.ordered_for_keyset_pagination
+    merge_request.merge_request_closing_issues.preload_issue
+    group_link.class.access_options
+    user.name
+    list.map.first
+    a.b.count
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/workers/worker.rb", true, true)
+	meth := symbolsByName(result)["Worker#run"]
+	for _, want := range []string{"ordered_for_keyset_pagination", "preload_issue", "access_options"} {
+		if !hasCall(meth, want) {
+			t.Errorf("chained no-arg call should record RelCalls -> %s; relations = %v", want, meth.Relations)
+		}
+	}
+	// Cheap chained reads (name/first/class are in rubyCheapMethods) and the
+	// single-level read (user.name — var receiver) must NOT be recorded.
+	for _, skip := range []string{"name", "first", "class"} {
+		if hasCall(meth, skip) {
+			t.Errorf("attribute/enumerable/single-level read %q must not be recorded as a chained call; relations = %v", skip, meth.Relations)
+		}
+	}
+}
+
+// TestIsRubyFile_Rake checks that .rake files and Rakefile are treated as Ruby.
+func TestIsRubyFile_Rake(t *testing.T) {
+	for _, p := range []string{"lib/tasks/gitlab/graphql_introspection.rake", "Rakefile"} {
+		if !isRubyFile(p) {
+			t.Errorf("isRubyFile(%q) = false, want true", p)
+		}
+	}
+	if isRubyFile("app/models/foo.py") {
+		t.Error("isRubyFile should be false for non-Ruby files")
+	}
+}
+
+// TestExtractFile_RakeTaskCallCaptured checks a top-level call in a .rake file is
+// recorded on the file-scope fact (so its target is not mis-reported as dead).
+func TestExtractFile_RakeTaskCallCaptured(t *testing.T) {
+	src := `namespace :gitlab do
+  task introspection: :environment do
+    puts CachedIntrospectionQuery.query_string_no_deprecated
+  end
+end
+`
+	result := extractFileAST([]byte(src), "lib/tasks/gitlab/graphql_introspection.rake", true, true)
+	fr, ok := fileRefFact(result)
+	if !ok || !hasCall(fr, "CachedIntrospectionQuery.query_string_no_deprecated") {
+		t.Errorf("rake task call should be captured on the file-ref fact; result = %v", result)
+	}
+}
