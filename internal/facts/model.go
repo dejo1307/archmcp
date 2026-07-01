@@ -25,6 +25,20 @@ const (
 	KindStorage    = "storage"
 	KindDependency = "dependency"
 	KindService    = "service" // A whole repository, represented as a node in the cross-repo "graph of graphs".
+	// KindTestRef is a reference-only fact emitted from a test/spec file. It carries
+	// solely RelCalls relations naming the production symbols the test exercises
+	// (Name/File are the test file path). Test files are excluded from normal
+	// indexing, so their symbols never become facts; this kind lets the dead-code
+	// detector still see that a production symbol is referenced by a test, without
+	// any other explainer (which key off symbol/module/route facts) being affected.
+	KindTestRef = "test_ref"
+	// KindFileRef is a reference-only fact holding call edges made in file-scope
+	// (top-level) code — fixtures, initializers, and plugin registration blocks —
+	// that have no enclosing symbol to attach to. Like KindTestRef it carries solely
+	// RelCalls relations (Name/File are the source file path) and is consumed only by
+	// the dead-code detector, so top-level references mark a production symbol used
+	// without perturbing the coupling graph or any other explainer.
+	KindFileRef = "file_ref"
 )
 
 // Relation kind constants.

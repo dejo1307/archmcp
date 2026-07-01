@@ -28,6 +28,19 @@ type FileOwner interface {
 	OwnsFile(relFile string) bool
 }
 
+// TestRefExtractor is an optional interface an Extractor may implement to parse
+// test/spec files for their outbound references into production code only. The
+// engine calls it with the test files (matched by config.TestGlobs) that the
+// extractor owns. Implementations must emit ONLY reference facts (facts.KindTestRef
+// carrying RelCalls relations) and no symbol/module/route facts, so test code
+// never becomes a dead-code candidate and no other explainer is affected.
+// Extractors that do not implement it are simply skipped for test-ref extraction.
+type TestRefExtractor interface {
+	// ExtractTestRefs parses the given repo-relative test files and returns
+	// reference-only facts (facts.KindTestRef).
+	ExtractTestRefs(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error)
+}
+
 // Explainer analyzes facts and produces architectural insights.
 type Explainer interface {
 	// Name returns the explainer identifier (e.g. "cycles", "layers").

@@ -29,6 +29,8 @@ const (
 	KindStorage    = internal.KindStorage
 	KindDependency = internal.KindDependency
 	KindService    = internal.KindService
+	KindTestRef    = internal.KindTestRef
+	KindFileRef    = internal.KindFileRef
 )
 
 // Relation kind constants.

@@ -31,7 +31,9 @@ import (
 // v15: C/C++ salvage function-pointer refs from file-scope ERROR regions (macro-opened structs like MACHINE_START/DT_MACHINE_START ... MACHINE_END).
 // v16: extend that salvage to file-scope assignment_expression/field_expression fragments (machine_desc blocks parse that way when surrounded by other code).
 // v17: full-tree salvage of `.field = fn` macro-struct debris (machine_desc) regardless of where tree-sitter scatters it (skips function bodies).
-const cacheVersion = "v17"
+// v18: Ruby records custom class-body macro names + resolves self/self.class receivers as call edges (dead-code precision). KindTestRef facts index outbound refs from spec/test files.
+// v19: Ruby captures call edges outside method bodies — class/module-body qualified & argument-position calls attach to the class fact; top-level/file-scope calls (fixtures, after_initialize blocks) attach to a new KindFileRef fact folded by the orphan collector.
+const cacheVersion = "v19"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -29,9 +29,35 @@ func extractFileAST(src []byte, relFile string, isRails, exportedByPackwerk bool
 		dir:                filepath.Dir(relFile),
 		isRails:            isRails,
 		exportedByPackwerk: exportedByPackwerk,
+		fileRefIdx:         -1,
 	}
 	w.walkBody(tree.RootNode())
+	// Drop the file-scope reference fact if no top-level call resolved to a target,
+	// so empty facts never reach the store.
+	if w.fileRefIdx >= 0 && len(w.out[w.fileRefIdx].Relations) == 0 {
+		w.out = append(w.out[:w.fileRefIdx], w.out[w.fileRefIdx+1:]...)
+	}
 	return w.out
+}
+
+// bodyCallOwner returns the index of the fact that class/module-body and
+// top-level call edges should attach to: the enclosing class/module symbol fact
+// when inside a type scope, otherwise (top level, or an eigenclass body whose
+// symFactIdx is -1) a lazily-created file-scope reference fact (facts.KindFileRef).
+func (w *rubyWalker) bodyCallOwner() int {
+	if s := w.cur(); s != nil && s.symFactIdx >= 0 {
+		return s.symFactIdx
+	}
+	if w.fileRefIdx < 0 {
+		w.out = append(w.out, facts.Fact{
+			Kind:  facts.KindFileRef,
+			Name:  w.relFile,
+			File:  w.relFile,
+			Props: map[string]any{"language": "ruby"},
+		})
+		w.fileRefIdx = len(w.out) - 1
+	}
+	return w.fileRefIdx
 }
 
 // rubyScope tracks a class/module/eigenclass nesting level.
@@ -54,6 +80,10 @@ type rubyWalker struct {
 
 	out        []facts.Fact
 	scopeStack []rubyScope
+
+	// fileRefIdx is the index into out of the lazily-created file-scope reference
+	// fact (facts.KindFileRef) that holds top-level call edges; -1 until first used.
+	fileRefIdx int
 
 	// Per-method complexity state, set up by handleMethod around walkForCalls.
 	// metrics is nil outside a method body walk. loopDepth is the current loop
@@ -216,6 +246,17 @@ func (w *rubyWalker) walkStatement(node *sitter.Node) {
 		w.handleAssignment(node)
 	case "call":
 		w.handleBodyCall(node)
+		// Capture executable call edges made in class/module bodies and at top level
+		// (macro arguments like `requires_login *show_methods`, qualified
+		// `Const.method` calls in fixtures/initializers, and calls inside top-level
+		// blocks like `after_initialize do register_x ... end`). walkForCalls resolves
+		// them and returns at nested method/class/module nodes, so nested defs keep
+		// their own handling below. Attributed to the enclosing class/module fact, or
+		// to the file-scope reference fact at top level. Metrics stay off (w.metrics
+		// is nil here), and addCall dedups against Fix A's macro-name edge.
+		if owner := w.bodyCallOwner(); owner >= 0 {
+			w.walkForCalls(node, owner, map[string]bool{}, nil)
+		}
 		// Descend into a trailing do/brace block so declarations inside
 		// included/class_methods/concerning/configure blocks are captured (the
 		// former line-based scanner was block-agnostic).
@@ -565,6 +606,85 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 	}
 }
 
+// extractTestRefsAST parses a test/spec file and returns a single
+// facts.KindTestRef fact whose RelCalls relations name the production symbols the
+// test references. It reuses the production call-target conventions (callTarget +
+// bare receiver-less calls + bare constants) but descends through every scope —
+// a test file has no meaningful symbol surface of its own, and its references
+// live inside describe/context/it blocks and example methods. Local-variable
+// tracking is deliberately omitted (unlike walkForCalls): over-emitting a
+// reference can only ever keep a production symbol alive, never falsely flag one
+// dead, matching the orphan detector's conservative bias. Returns nil when the
+// file references nothing.
+func extractTestRefsAST(src []byte, relFile string) []facts.Fact {
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(sitter.NewLanguage(ruby.Language())); err != nil {
+		return nil
+	}
+	tree := parser.Parse(src, nil)
+	defer tree.Close()
+
+	w := &rubyWalker{src: src, relFile: relFile, dir: filepath.Dir(relFile), fileRefIdx: -1}
+	seen := make(map[string]bool)
+	var rels []facts.Relation
+	add := func(target string) {
+		if target == "" || seen[target] {
+			return
+		}
+		seen[target] = true
+		rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: target})
+	}
+	w.walkTestRefs(tree.RootNode(), add)
+	if len(rels) == 0 {
+		return nil
+	}
+	return []facts.Fact{{
+		Kind:      facts.KindTestRef,
+		Name:      relFile,
+		File:      relFile,
+		Props:     map[string]any{"language": "ruby"},
+		Relations: rels,
+	}}
+}
+
+// walkTestRefs recurses through ALL named nodes of a test file, emitting a
+// RelCalls target for each qualified call, bare receiver-less call, and bare
+// constant — the same conventions as walkForCalls, minus the loop/complexity
+// metrics and the class/module/method early-returns (a spec's references live
+// inside those bodies).
+func (w *rubyWalker) walkTestRefs(node *sitter.Node, add func(string)) {
+	if node == nil || !node.IsNamed() {
+		return
+	}
+	switch node.Kind() {
+	case "call":
+		method := node.ChildByFieldName("method")
+		recv := node.ChildByFieldName("receiver")
+		if target := w.callTarget(node); target != "" {
+			add(target)
+		} else if recv == nil && method != nil && method.Kind() == "identifier" {
+			if name := rubyText(method, w.src); !rubyNonCalls[name] {
+				add(name)
+			}
+		}
+	case "identifier":
+		// A bare identifier: an arg-less method call or a local read. Emit unless a
+		// keyword/builtin; matching is conservative so over-emitting is safe.
+		if name := rubyText(node, w.src); name != "" && !rubyNonCalls[name] {
+			add(name)
+		}
+	case "constant", "scope_resolution":
+		if name := stripLeadingColons(rubyText(node, w.src)); name != "" && !rubyBuiltinConsts[name] {
+			add(name)
+		}
+		return // recorded whole; do not descend into scope_resolution segments
+	}
+	for i := uint(0); i < node.ChildCount(); i++ {
+		w.walkTestRefs(node.Child(i), add)
+	}
+}
+
 // addCall appends a deduplicated RelCalls edge to the owner fact.
 func (w *rubyWalker) addCall(ownerIdx int, seen map[string]bool, target string) {
 	if target == "" || seen[target] {
@@ -731,11 +851,30 @@ func (w *rubyWalker) callTarget(node *sitter.Node) string {
 	switch recv.Kind() {
 	case "constant", "scope_resolution":
 		return rubyText(recv, w.src) + "." + methodName
+	case "self":
+		// `self.foo` / `self.save!` — same-object dispatch. Emit the bare method
+		// name so the method is recorded as used (dead-code precision). Bare target
+		// (no "."), short-name matched, ignored by the coupling graph. `self.class`
+		// as a receiver-only expression emits nothing here; the OUTER call (handled
+		// in `case "call":` below) emits the real method.
+		if methodName == "class" {
+			return ""
+		}
+		return methodName
 	case "identifier":
 		if node.ChildByFieldName("arguments") != nil {
 			return rubyText(recv, w.src) + "." + methodName
 		}
 	case "call":
+		// `self.class.perform_when_readonly?`: the inner call is `self.class`
+		// (receiver kind "self", method "class"). Emit the OUTER method name, bare.
+		// No args-gate: the receiver is provably the class, so the name is provably
+		// a method (unlike a lowercase-variable attribute read).
+		if innerRecv := recv.ChildByFieldName("receiver"); innerRecv != nil && innerRecv.Kind() == "self" {
+			if innerMethod := recv.ChildByFieldName("method"); innerMethod != nil && rubyText(innerMethod, w.src) == "class" {
+				return methodName
+			}
+		}
 		// Chained call, e.g. Rails.logger.info(x): use the inner call's method
 		// name as a pseudo-receiver when it is a lowercase identifier.
 		inner := recv.ChildByFieldName("method")
@@ -812,6 +951,13 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 	}
 	method := rubyText(node.ChildByFieldName("method"), w.src)
 	args := node.ChildByFieldName("arguments")
+
+	// Note: the macro NAME itself (`requires_login`, `cluster_concurrency`) is
+	// recorded as a use of the enclosing class by the walkForCalls pass that
+	// walkStatement now runs over every body-level call — so it is not repeated
+	// here (that would emit a duplicate RelCalls edge). This function only folds in
+	// the DSL's *symbol arguments* (callback/serializer method names), which
+	// walkForCalls does not special-case.
 
 	// Rails callback/validation DSL references methods by symbol literal
 	// (`before_action :authenticate_user!`, `validate :check`). Record each as a

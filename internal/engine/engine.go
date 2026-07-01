@@ -23,6 +23,7 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo"
 	"github.com/enola-labs/enola/internal/renderers"
+	"github.com/enola-labs/enola/pkg/plugin"
 )
 
 // Engine orchestrates the snapshot generation pipeline.
@@ -184,12 +185,12 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 	// 1. Walk repository and collect files
 	tStage := time.Now()
-	files, err := e.walkRepo(absRepo)
+	files, testFiles, err := e.walkRepo(absRepo)
 	if err != nil {
 		return nil, fmt.Errorf("walking repo: %w", err)
 	}
 	tWalk = time.Since(tStage)
-	log.Printf("[engine] found %d files in %s", len(files), absRepo)
+	log.Printf("[engine] found %d files (%d test files) in %s", len(files), len(testFiles), absRepo)
 
 	// 2. Compute file hashes (for snapshot metadata)
 	tStage = time.Now()
@@ -218,6 +219,11 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			}
 		}
 	}
+	// Reference-only extraction over test/spec files. Runs every snapshot (not
+	// cached with the main extractors) and adds only KindTestRef facts, so a
+	// production symbol exercised solely by a test is not mis-reported as dead.
+	e.runTestRefExtractors(ctx, absRepo, testFiles)
+
 	tExtract = time.Since(tStage)
 	newCount := e.store.Count()
 	log.Printf("[engine] extracted %d facts using %d extractors", newCount, len(usedExtractors))
@@ -388,10 +394,12 @@ func (e *Engine) flagUnmatchedRoutes() {
 	}
 }
 
-// walkRepo collects all files in the repo, applying ignore patterns.
-func (e *Engine) walkRepo(repoPath string) ([]string, error) {
-	var files []string
-	err := filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
+// walkRepo collects all files in the repo, applying ignore patterns. It returns
+// the indexable source files plus, separately, the test/spec files matched by
+// TestGlobs — those are excluded from normal indexing but collected for
+// reference-only extraction (see runTestRefExtractors).
+func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, err error) {
+	err = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -406,6 +414,12 @@ func (e *Engine) walkRepo(repoPath string) ([]string, error) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			// An ignored FILE that is a test/spec is not indexed as production
+			// source, but is collected for reference-only extraction so a
+			// production symbol exercised only by a test does not look dead.
+			if e.matchesTestGlob(relPath) {
+				testFiles = append(testFiles, relPath)
+			}
 			return nil
 		}
 
@@ -414,7 +428,49 @@ func (e *Engine) walkRepo(repoPath string) ([]string, error) {
 		}
 		return nil
 	})
-	return files, err
+	return files, testFiles, err
+}
+
+// matchesTestGlob reports whether a repo-relative path matches any TestGlob.
+func (e *Engine) matchesTestGlob(relPath string) bool {
+	return matchAnyGlob(filepath.ToSlash(relPath), e.cfg.TestGlobs)
+}
+
+// matchAnyGlob reports whether a forward-slash path matches any of the patterns,
+// mirroring the "**/<name>/**", trailing-"/**", and "**/<glob>" handling of
+// isIgnored so test-glob matching stays consistent with ignore matching.
+func matchAnyGlob(relPath string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if strings.HasPrefix(pattern, "**/") && strings.HasSuffix(pattern, "/**") {
+			seg := strings.TrimSuffix(strings.TrimPrefix(pattern, "**/"), "/**")
+			if seg != "" && !strings.Contains(seg, "/") {
+				for _, part := range strings.Split(relPath, "/") {
+					if part == seg {
+						return true
+					}
+				}
+			}
+		}
+		if strings.HasSuffix(pattern, "/**") {
+			dirPrefix := strings.TrimSuffix(pattern, "/**")
+			if relPath == dirPrefix || strings.HasPrefix(relPath, dirPrefix+"/") {
+				return true
+			}
+		}
+		if m, err := filepath.Match(pattern, relPath); err == nil && m {
+			return true
+		}
+		if strings.HasPrefix(pattern, "**/") {
+			sub := strings.TrimPrefix(pattern, "**/")
+			if m, err := filepath.Match(sub, filepath.Base(relPath)); err == nil && m {
+				return true
+			}
+			if m, err := filepath.Match(sub, relPath); err == nil && m {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isIgnored checks whether a path matches any ignore pattern.
@@ -528,6 +584,47 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 	}
 
 	return usedNames, nil
+}
+
+// runTestRefExtractors runs reference-only extraction over the test/spec files
+// for every enabled, detected extractor that implements plugin.TestRefExtractor.
+// It scopes each extractor to the test files it owns and adds the resulting
+// KindTestRef facts to the store. Errors are logged, not fatal.
+func (e *Engine) runTestRefExtractors(ctx context.Context, repoPath string, testFiles []string) {
+	if len(testFiles) == 0 {
+		return
+	}
+	for _, ext := range e.extractors.All() {
+		if !e.cfg.IsExtractorEnabled(ext.Name()) {
+			continue
+		}
+		tr, ok := ext.(plugin.TestRefExtractor)
+		if !ok {
+			continue
+		}
+		if detected, err := ext.Detect(repoPath); err != nil || !detected {
+			continue
+		}
+		owned := testFiles
+		if fo, ok := ext.(plugin.FileOwner); ok {
+			owned = owned[:0:0]
+			for _, f := range testFiles {
+				if fo.OwnsFile(f) {
+					owned = append(owned, f)
+				}
+			}
+		}
+		if len(owned) == 0 {
+			continue
+		}
+		refFacts, err := tr.ExtractTestRefs(ctx, repoPath, owned)
+		if err != nil {
+			log.Printf("[engine] extractor %s test-ref error: %v", ext.Name(), err)
+			continue
+		}
+		e.store.Add(refFacts...)
+		log.Printf("[engine] extractor %s: emitted %d test-ref facts from %d files", ext.Name(), len(refFacts), len(owned))
+	}
 }
 
 // runExplainers runs all enabled explainers.

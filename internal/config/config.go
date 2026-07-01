@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Repo       string       `yaml:"repo"`
 	Ignore     []string     `yaml:"ignore"`
+	TestGlobs  []string     `yaml:"test_globs"`
 	Extractors []string     `yaml:"extractors"`
 	Explainers []string     `yaml:"explainers"`
 	Renderers  []string     `yaml:"renderers"`
@@ -68,6 +69,12 @@ func Default() *Config {
 			"**/Pods/**",
 			"**/.gradle/**",
 		},
+		// TestGlobs identify test/spec files. They stay ignored for normal indexing
+		// (still listed in Ignore above) — production architecture facts must not
+		// include test symbols — but the engine collects them separately for
+		// reference-only extraction so the dead-code detector can see that a
+		// production symbol is exercised by a test and not mis-report it as dead.
+		TestGlobs:  []string{"**/*_spec.rb", "**/*_test.rb"},
 		Extractors: []string{"cpp", "go", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},
 		Renderers:  []string{"llm_context"},
