@@ -1293,3 +1293,47 @@ end
 		t.Errorf("rake task call should be captured on the file-ref fact; result = %v", result)
 	}
 }
+
+// TestExtractFile_DefaultParamCall checks a call in a method's default parameter
+// value is recorded (previously only the body was walked).
+func TestExtractFile_DefaultParamCall(t *testing.T) {
+	src := `class BuildTraceChunk
+  def unsafe_persist_data!(new_store = self.class.persistable_store)
+    new_store.to_s
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/models/ci/build_trace_chunk.rb", true, true)
+	meth := symbolsByName(result)["BuildTraceChunk#unsafe_persist_data!"]
+	if !hasCall(meth, "persistable_store") {
+		t.Errorf("default-parameter call should be recorded; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_PredicateBangSingleLevelCall checks that predicate/bang calls on
+// a plain variable receiver are recorded (they are unambiguous method calls), while
+// plain attribute reads and cheap predicates are not.
+func TestExtractFile_PredicateBangSingleLevelCall(t *testing.T) {
+	src := `class BlobHelper
+  def show(viewer, record)
+    x = viewer.rich?
+    record.save!
+    y = viewer.present?
+    z = viewer.blob
+    [x, y, z]
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/helpers/blob_helper.rb", true, true)
+	meth := symbolsByName(result)["BlobHelper#show"]
+	for _, want := range []string{"rich?", "save!"} {
+		if !hasCall(meth, want) {
+			t.Errorf("single-level predicate/bang call should be recorded -> %s; relations = %v", want, meth.Relations)
+		}
+	}
+	for _, skip := range []string{"present?", "blob"} {
+		if hasCall(meth, skip) {
+			t.Errorf("cheap predicate / plain attribute read %q must not be recorded; relations = %v", skip, meth.Relations)
+		}
+	}
+}

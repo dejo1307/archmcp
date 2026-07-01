@@ -493,6 +493,10 @@ func (w *rubyWalker) handleMethod(node *sitter.Node, isClassMethod bool) {
 	// updates the emitted fact.
 	seen := make(map[string]bool)
 	locals := collectLocals(node, w.src)
+	// Default parameter values (`def f(x = self.class.foo)`) contain real call
+	// references. Walk them with metrics off (params are not the body, so they must
+	// not affect the complexity score); seen is shared so body calls still dedup.
+	w.walkForCalls(node.ChildByFieldName("parameters"), ownerIdx, seen, locals)
 	w.metrics = &rubyBodyMetrics{}
 	w.loopDepth = 0
 	w.selfName = fullName
@@ -604,23 +608,28 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 				w.addCall(ownerIdx, seen, name)
 				w.recordCallMetrics(name)
 			}
-		} else if recv != nil && recv.Kind() == "call" && method != nil && method.Kind() == "identifier" {
-			// A no-arg method call on a chained receiver — ActiveRecord scope /
-			// class-method chains (`Model.scope1.scope2.final`, `assoc.class_method`,
-			// `x.class.method`). callTarget suppresses these (no args), but the terminal
-			// method is a real reference. Bare target (no ".") -> no coupling impact.
-			// Skip common attribute/enumerable reads so a dead method sharing a name
-			// with `.name`/`.count`/`.first` isn't hidden.
-			if name := rubyText(method, w.src); !rubyNonCalls[name] && !rubyCheapMethods[name] {
+		} else if recv != nil && method != nil && method.Kind() == "identifier" {
+			// A no-arg call on a receiver that callTarget suppressed. Bare target
+			// (no ".") -> no coupling impact. Skip keywords and common
+			// attribute/enumerable reads so a dead method sharing a name with
+			// `.name`/`.count`/`.first` isn't hidden.
+			name := rubyText(method, w.src)
+			switch {
+			case rubyNonCalls[name] || rubyCheapMethods[name]:
+				// keyword / cheap attribute-or-enumerable read — ignore
+			case recv.Kind() == "call" || strings.HasSuffix(name, "?") || strings.HasSuffix(name, "!"):
+				// Chained receiver (ActiveRecord scope / class-method chains
+				// `Model.scope1.scope2.final`, `assoc.class_method`, `x.class.method`),
+				// OR a predicate/bang call on ANY receiver (`viewer.rich?`, `x.save!`) —
+				// unambiguously a method call, since an attribute read never ends in
+				// `?`/`!`. Record the bare method name as a reference.
 				w.addCall(ownerIdx, seen, name)
 				w.recordCallMetrics(name)
-			}
-		} else if w.loopDepth > 0 && recv != nil && method != nil && method.Kind() == "identifier" {
-			// A no-arg instance call inside a loop that callTarget suppressed (e.g.
-			// the association read `u.posts` or a `record.reload`). It is not a graph
-			// edge, but its method name feeds the perf metric so the enterprise
-			// analyzer can flag lazy-loaded association / per-iteration I/O (N+1).
-			if name := rubyText(method, w.src); !rubyNonCalls[name] && !rubyCheapMethods[name] {
+			case w.loopDepth > 0:
+				// A no-arg single-level read inside a loop (the association read
+				// `u.posts` or `record.reload`). It is not a graph edge, but its method
+				// name feeds the perf metric so the enterprise analyzer can flag
+				// lazy-loaded association / per-iteration I/O (N+1).
 				w.recordInLoopCall(name)
 			}
 		}

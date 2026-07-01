@@ -37,7 +37,8 @@ import (
 // v21: Ruby records the static prefix of interpolated symbols (`:"report_#{type}"` -> "report_") as a KindFileRef prop, so the dead-code detector treats dynamically dispatched (public_send/send) same-prefix methods as used.
 // v22: Ruby records `super` as a call to the same-named ancestor method, and literal-symbol dispatch args (`obj.try(:foo)`, `send(:bar)`, `respond_to?(:baz)`) as calls to the named method.
 // v23: Ruby captures no-arg calls on a chained receiver (ActiveRecord scope/class-method chains `Model.scope.final`, `assoc.class_method`, `x.class.method`; cheap attribute reads skipped) and indexes .rake/Rakefile files.
-const cacheVersion = "v23"
+// v24: Ruby walks method default-parameter values for calls (`def f(x = self.class.foo)`) and records single-level predicate/bang calls (`viewer.rich?`, `x.save!`) which — unlike plain attribute reads — are unambiguously method invocations.
+const cacheVersion = "v24"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
