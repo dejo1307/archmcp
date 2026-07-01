@@ -1136,3 +1136,57 @@ end
 		}
 	}
 }
+
+// fileRefPrefixes returns the dynamic_send_prefixes prop of the KindFileRef fact.
+func fileRefPrefixes(result []facts.Fact) []string {
+	for _, f := range result {
+		if f.Kind == facts.KindFileRef {
+			if raw, ok := f.Props["dynamic_send_prefixes"].([]string); ok {
+				return raw
+			}
+		}
+	}
+	return nil
+}
+
+// TestExtractFile_InterpolatedSymbolPrefix checks that an interpolated symbol
+// (`:"report_#{type}"`) — the mark of dynamic dispatch by computed name — records
+// its static prefix on the file-scope fact.
+func TestExtractFile_InterpolatedSymbolPrefix(t *testing.T) {
+	src := `class IncomingLinksReport
+  def self.find(type)
+    report_method = :"report_#{type}"
+    public_send(report_method, type)
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/models/incoming_links_report.rb", true, true)
+	got := fileRefPrefixes(result)
+	found := false
+	for _, p := range got {
+		if p == "report_" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected dynamic_send_prefixes to contain %q; got %v", "report_", got)
+	}
+}
+
+// TestExtractFile_NoPrefixFromStaticSymbolOrString checks the heuristic does NOT
+// fire for static symbols, too-short prefixes, or interpolated STRINGS (i18n keys).
+func TestExtractFile_NoPrefixFromStaticSymbolOrString(t *testing.T) {
+	src := `class Thing
+  def go(type)
+    a = :report_foo                 # static symbol, no interpolation
+    b = :"m#{type}"                 # prefix too short / no underscore
+    c = I18n.t("reports.#{type}.x") # interpolated STRING, not a symbol
+    [a, b, c]
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/models/thing.rb", true, true)
+	if got := fileRefPrefixes(result); len(got) != 0 {
+		t.Errorf("expected no dynamic_send_prefixes, got %v", got)
+	}
+}

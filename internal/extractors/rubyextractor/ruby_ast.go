@@ -2,12 +2,24 @@ package rubyextractor
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	ruby "github.com/tree-sitter/tree-sitter-ruby/bindings/go"
 )
+
+// sortedKeys returns the keys of a set in deterministic (sorted) order — used to
+// emit stable prop values into facts.
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // extractFileAST parses a Ruby file with tree-sitter and emits architectural
 // facts. It replaces the former line-based regex scanner: every symbol, import,
@@ -40,22 +52,24 @@ func extractFileAST(src []byte, relFile string, isRails, exportedByPackwerk bool
 	if owner := w.bodyCallOwner(); owner >= 0 {
 		w.walkForCalls(root, owner, map[string]bool{}, nil)
 	}
-	// Drop the file-scope reference fact if no top-level call resolved to a target,
-	// so empty facts never reach the store.
-	if w.fileRefIdx >= 0 && len(w.out[w.fileRefIdx].Relations) == 0 {
+	// Attach any dynamic-dispatch prefixes discovered anywhere in the file to the
+	// file-scope fact so the collector can mark same-prefix methods as used.
+	if len(w.dynamicPrefixes) > 0 {
+		idx := w.ensureFileRefFact()
+		w.out[idx].Props["dynamic_send_prefixes"] = sortedKeys(w.dynamicPrefixes)
+	}
+	// Drop the file-scope reference fact if it carries neither call edges nor
+	// dynamic-dispatch prefixes, so empty facts never reach the store.
+	if w.fileRefIdx >= 0 && len(w.out[w.fileRefIdx].Relations) == 0 &&
+		w.out[w.fileRefIdx].Props["dynamic_send_prefixes"] == nil {
 		w.out = append(w.out[:w.fileRefIdx], w.out[w.fileRefIdx+1:]...)
 	}
 	return w.out
 }
 
-// bodyCallOwner returns the index of the fact that class/module-body and
-// top-level call edges should attach to: the enclosing class/module symbol fact
-// when inside a type scope, otherwise (top level, or an eigenclass body whose
-// symFactIdx is -1) a lazily-created file-scope reference fact (facts.KindFileRef).
-func (w *rubyWalker) bodyCallOwner() int {
-	if s := w.cur(); s != nil && s.symFactIdx >= 0 {
-		return s.symFactIdx
-	}
+// ensureFileRefFact returns the index of this file's lazily-created file-scope
+// reference fact (facts.KindFileRef), creating it on first use.
+func (w *rubyWalker) ensureFileRefFact() int {
 	if w.fileRefIdx < 0 {
 		w.out = append(w.out, facts.Fact{
 			Kind:  facts.KindFileRef,
@@ -66,6 +80,17 @@ func (w *rubyWalker) bodyCallOwner() int {
 		w.fileRefIdx = len(w.out) - 1
 	}
 	return w.fileRefIdx
+}
+
+// bodyCallOwner returns the index of the fact that class/module-body and
+// top-level call edges should attach to: the enclosing class/module symbol fact
+// when inside a type scope, otherwise (top level, or an eigenclass body whose
+// symFactIdx is -1) the lazily-created file-scope reference fact.
+func (w *rubyWalker) bodyCallOwner() int {
+	if s := w.cur(); s != nil && s.symFactIdx >= 0 {
+		return s.symFactIdx
+	}
+	return w.ensureFileRefFact()
 }
 
 // rubyScope tracks a class/module/eigenclass nesting level.
@@ -92,6 +117,12 @@ type rubyWalker struct {
 	// fileRefIdx is the index into out of the lazily-created file-scope reference
 	// fact (facts.KindFileRef) that holds top-level call edges; -1 until first used.
 	fileRefIdx int
+
+	// dynamicPrefixes accumulates the static prefixes of interpolated symbols
+	// (`:"report_#{type}"` -> "report_") seen anywhere in the file. They mark
+	// dynamic dispatch (public_send/send by computed name), letting the dead-code
+	// detector treat same-prefix methods as used. File-global; nil until first hit.
+	dynamicPrefixes map[string]bool
 
 	// Per-method complexity state, set up by handleMethod around walkForCalls.
 	// metrics is nil outside a method body walk. loopDepth is the current loop
@@ -614,10 +645,51 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 			w.addCall(ownerIdx, seen, name)
 		}
 		return
+	case "delimited_symbol":
+		// An interpolated symbol `:"report_#{type}"` — the literal name of a method
+		// dispatched dynamically (public_send/send by computed name), which is not a
+		// resolvable call edge. Record its static prefix so the dead-code detector can
+		// treat same-prefix methods as used. Fall through to recurse: the interpolation
+		// (`#{...}`) may itself contain real calls.
+		if p := dynamicSymbolPrefix(node, w.src); p != "" {
+			if w.dynamicPrefixes == nil {
+				w.dynamicPrefixes = map[string]bool{}
+			}
+			w.dynamicPrefixes[p] = true
+		}
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
 		w.walkForCalls(node.Child(i), ownerIdx, seen, locals)
 	}
+}
+
+// dynamicSymbolPrefix returns the static literal prefix of an interpolated symbol
+// node (`:"report_#{type}"` -> "report_"), or "" when the node is not an
+// interpolated symbol or the prefix is not specific enough to be a useful dispatch
+// hint. The prefix is the string_content preceding the FIRST interpolation; it
+// qualifies only when at least one interpolation is present and the prefix is >= 4
+// chars ending in "_" (a word boundary), so generic 1-2 char stems don't over-match.
+func dynamicSymbolPrefix(node *sitter.Node, src []byte) string {
+	var prefix strings.Builder
+	sawInterp := false
+	for i := uint(0); i < node.ChildCount(); i++ {
+		c := node.Child(i)
+		switch c.Kind() {
+		case "interpolation":
+			sawInterp = true
+			i = node.ChildCount() // stop at the first interpolation
+		case "string_content":
+			prefix.WriteString(rubyText(c, src))
+		}
+	}
+	if !sawInterp {
+		return ""
+	}
+	p := prefix.String()
+	if len(p) >= 4 && strings.HasSuffix(p, "_") {
+		return p
+	}
+	return ""
 }
 
 // extractTestRefsAST parses a test/spec file and returns a single
