@@ -617,12 +617,17 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 			switch {
 			case rubyNonCalls[name] || rubyCheapMethods[name]:
 				// keyword / cheap attribute-or-enumerable read — ignore
-			case recv.Kind() == "call" || strings.HasSuffix(name, "?") || strings.HasSuffix(name, "!"):
+			case recv.Kind() == "call" || strings.HasSuffix(name, "?") || strings.HasSuffix(name, "!") ||
+				(recv.Kind() == "identifier" && strings.Contains(name, "_")):
 				// Chained receiver (ActiveRecord scope / class-method chains
 				// `Model.scope1.scope2.final`, `assoc.class_method`, `x.class.method`),
-				// OR a predicate/bang call on ANY receiver (`viewer.rich?`, `x.save!`) —
-				// unambiguously a method call, since an attribute read never ends in
-				// `?`/`!`. Record the bare method name as a reference.
+				// a predicate/bang call on ANY receiver (`viewer.rich?`, `x.save!`), OR a
+				// call on an identifier receiver (a local relation var OR a bare method)
+				// whose name is scope/class-method-like (has `_`) — e.g.
+				// `items.preload_relations`, `some_relation.pluck_job_id`. All are
+				// unambiguously method calls (an attribute read never ends in `?`/`!`,
+				// and a snake_case multi-word name is a scope/class-method, not a plain
+				// attribute). Single-word reads (`user.email`, `x.name`) stay out.
 				w.addCall(ownerIdx, seen, name)
 				w.recordCallMetrics(name)
 			case w.loopDepth > 0:
@@ -1143,6 +1148,20 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 	// RelCalls edge on the enclosing class/module so callback-only methods are
 	// not mis-reported as dead code.
 	if rubyCallbackDSL[method] {
+		if cur := w.cur(); cur != nil && cur.symFactIdx >= 0 {
+			for _, name := range symbolArgs(args, w.src) {
+				w.addCallToFact(cur.symFactIdx, name)
+			}
+		}
+		return
+	}
+
+	// `delegate :a, :b, ..., to: X` generates methods that call each named method on
+	// the target — a real reference. Fold the delegated method names in as calls on
+	// the enclosing class so they are not mis-reported as dead. The `to:`/`prefix:`
+	// keyword args are `pair` nodes, so symbolArgs (direct simple_symbol children
+	// only) skips them.
+	if method == "delegate" {
 		if cur := w.cur(); cur != nil && cur.symFactIdx >= 0 {
 			for _, name := range symbolArgs(args, w.src) {
 				w.addCallToFact(cur.symFactIdx, name)

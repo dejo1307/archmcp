@@ -1337,3 +1337,71 @@ end
 		}
 	}
 }
+
+// TestExtractFile_DelegateFold checks that `delegate :a, :b, ..., to: :class`
+// records the delegated method names as calls on the enclosing class, while the
+// `to:` keyword value is not recorded.
+func TestExtractFile_DelegateFold(t *testing.T) {
+	src := `class BlobViewer
+  delegate :rich?, :simple?, :loading_partial_path, to: :class
+end
+`
+	result := extractFileAST([]byte(src), "app/models/blob_viewer/base.rb", true, true)
+	cls := symbolsByName(result)["BlobViewer"]
+	for _, want := range []string{"rich?", "simple?", "loading_partial_path"} {
+		if !hasCall(cls, want) {
+			t.Errorf("delegate should record RelCalls -> %s; relations = %v", want, cls.Relations)
+		}
+	}
+	for _, skip := range []string{"to", "class"} {
+		if hasCall(cls, skip) {
+			t.Errorf("delegate keyword %q must not be recorded; relations = %v", skip, cls.Relations)
+		}
+	}
+}
+
+// TestExtractFile_BareMethodChainCall checks that a scope/class-method call on a
+// bare-method (non-local identifier) receiver is captured when the name is
+// scope-like (has `_`), while single-word attribute reads and local receivers are not.
+func TestExtractFile_BareMethodChainCall(t *testing.T) {
+	src := `class Service
+  def run
+    ordered_relation_scope.pluck_job_id.uniq
+    current_user.email
+    rel = base_scope
+    rel.pluck_something
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/service.rb", true, true)
+	meth := symbolsByName(result)["Service#run"]
+	// Non-local bare method receiver AND local relation-variable receiver both record
+	// their underscored scope-like calls.
+	for _, want := range []string{"pluck_job_id", "pluck_something"} {
+		if !hasCall(meth, want) {
+			t.Errorf("scope-like call should record %s; relations = %v", want, meth.Relations)
+		}
+	}
+	// current_user.email: single-word (no underscore) -> not recorded.
+	if hasCall(meth, "email") {
+		t.Errorf("single-word attribute read email must not be recorded; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_LocalRelationScopeCall checks the exact GitLab shape: a scope
+// method invoked on a local variable holding an AR relation.
+func TestExtractFile_LocalRelationScopeCall(t *testing.T) {
+	src := `class FeatureFlagsFinder
+  def execute(preload: true)
+    items = feature_flags
+    items = items.preload_relations if preload
+    items.ordered
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/finders/feature_flags_finder.rb", true, true)
+	meth := symbolsByName(result)["FeatureFlagsFinder#execute"]
+	if !hasCall(meth, "preload_relations") {
+		t.Errorf("scope call on a local relation var should record preload_relations; relations = %v", meth.Relations)
+	}
+}

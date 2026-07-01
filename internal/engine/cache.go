@@ -38,7 +38,9 @@ import (
 // v22: Ruby records `super` as a call to the same-named ancestor method, and literal-symbol dispatch args (`obj.try(:foo)`, `send(:bar)`, `respond_to?(:baz)`) as calls to the named method.
 // v23: Ruby captures no-arg calls on a chained receiver (ActiveRecord scope/class-method chains `Model.scope.final`, `assoc.class_method`, `x.class.method`; cheap attribute reads skipped) and indexes .rake/Rakefile files.
 // v24: Ruby walks method default-parameter values for calls (`def f(x = self.class.foo)`) and records single-level predicate/bang calls (`viewer.rich?`, `x.save!`) which — unlike plain attribute reads — are unambiguously method invocations.
-const cacheVersion = "v24"
+// v25: Ruby folds `delegate :a, :b, ..., to: X` method names as calls, and records calls on a bare-method (non-local identifier) receiver when the method name is scope-like (`some_relation.pluck_job_id`).
+// v26: Ruby records scope-like (underscored) method calls on ANY identifier receiver, including local relation variables (`items = ...; items.preload_relations`).
+const cacheVersion = "v26"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
