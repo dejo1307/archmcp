@@ -31,7 +31,15 @@ func extractFileAST(src []byte, relFile string, isRails, exportedByPackwerk bool
 		exportedByPackwerk: exportedByPackwerk,
 		fileRefIdx:         -1,
 	}
-	w.walkBody(tree.RootNode())
+	root := tree.RootNode()
+	w.walkBody(root)
+	// Capture executable calls made at file scope (top-level assignment RHS,
+	// conditionals, fixture `Badge.foo(...)`, plugin `after_initialize` blocks) on
+	// the file-scope ref fact. walkForCalls returns at nested defs/classes, which
+	// get their own pass.
+	if owner := w.bodyCallOwner(); owner >= 0 {
+		w.walkForCalls(root, owner, map[string]bool{}, nil)
+	}
 	// Drop the file-scope reference fact if no top-level call resolved to a target,
 	// so empty facts never reach the store.
 	if w.fileRefIdx >= 0 && len(w.out[w.fileRefIdx].Relations) == 0 {
@@ -246,20 +254,12 @@ func (w *rubyWalker) walkStatement(node *sitter.Node) {
 		w.handleAssignment(node)
 	case "call":
 		w.handleBodyCall(node)
-		// Capture executable call edges made in class/module bodies and at top level
-		// (macro arguments like `requires_login *show_methods`, qualified
-		// `Const.method` calls in fixtures/initializers, and calls inside top-level
-		// blocks like `after_initialize do register_x ... end`). walkForCalls resolves
-		// them and returns at nested method/class/module nodes, so nested defs keep
-		// their own handling below. Attributed to the enclosing class/module fact, or
-		// to the file-scope reference fact at top level. Metrics stay off (w.metrics
-		// is nil here), and addCall dedups against Fix A's macro-name edge.
-		if owner := w.bodyCallOwner(); owner >= 0 {
-			w.walkForCalls(node, owner, map[string]bool{}, nil)
-		}
-		// Descend into a trailing do/brace block so declarations inside
-		// included/class_methods/concerning/configure blocks are captured (the
-		// former line-based scanner was block-agnostic).
+		// Executable call EDGES in this statement (macro args, qualified
+		// `Const.method` calls, calls inside blocks) are captured by the per-scope
+		// walkForCalls pass run in handleClass/handleModule/extractFileAST — not here
+		// — so assignments and every other statement kind are covered uniformly.
+		// This case still descends into a trailing do/brace block to capture nested
+		// DECLARATIONS (def/class/const inside included/class_methods/concerning blocks).
 		if body := blockBody(node); body != nil {
 			w.walkBody(body)
 		}
@@ -329,8 +329,11 @@ func (w *rubyWalker) handleModule(node *sitter.Node) {
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
 
-	w.push(rubyScope{name: name, kind: "module", visibility: "public", symFactIdx: len(w.out) - 1})
+	modIdx := len(w.out) - 1
+	w.push(rubyScope{name: name, kind: "module", visibility: "public", symFactIdx: modIdx})
 	w.walkBody(body)
+	// Capture executable calls made directly in the module body (see handleClass).
+	w.walkForCalls(body, modIdx, map[string]bool{}, nil)
 	w.pop()
 }
 
@@ -388,7 +391,12 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 
 	w.push(rubyScope{name: name, kind: "class", visibility: "public", isModel: isModel,
 		isSerializer: isSerializerBase(superclass), symFactIdx: clsIdx})
-	w.walkBody(node.ChildByFieldName("body"))
+	body := node.ChildByFieldName("body")
+	w.walkBody(body)
+	// Capture executable calls made directly in the class body (assignment RHS,
+	// conditionals, hash/Proc literals, macro args) as uses of this class.
+	// walkForCalls returns at nested defs/classes, which get their own pass.
+	w.walkForCalls(body, clsIdx, map[string]bool{}, nil)
 	w.pop()
 }
 
@@ -396,7 +404,13 @@ func (w *rubyWalker) handleSingletonClass(node *sitter.Node) {
 	// class << self — methods inside become class (singleton) methods. The
 	// eigenclass entry carries no name and does not affect qualification.
 	w.push(rubyScope{name: "", kind: "eigenclass", visibility: "public", symFactIdx: -1})
-	w.walkBody(node.ChildByFieldName("body"))
+	body := node.ChildByFieldName("body")
+	w.walkBody(body)
+	// The eigenclass has no symbol fact (symFactIdx -1); attribute any executable
+	// calls in its body to the file-scope ref fact via bodyCallOwner.
+	if owner := w.bodyCallOwner(); owner >= 0 {
+		w.walkForCalls(body, owner, map[string]bool{}, nil)
+	}
 	w.pop()
 }
 

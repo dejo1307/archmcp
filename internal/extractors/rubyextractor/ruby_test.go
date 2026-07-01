@@ -1074,3 +1074,65 @@ end
 		t.Errorf("missing file-ref RelCalls -> CategoryList.register_included_association; relations = %v", fr.Relations)
 	}
 }
+
+// TestExtractFile_TopLevelAssignmentRHS checks that a call on the RHS of a
+// top-level assignment (a Rails initializer pattern) is captured on the file-ref
+// fact — previously dropped because handleAssignment never walked the value.
+func TestExtractFile_TopLevelAssignmentRHS(t *testing.T) {
+	src := `if Rails.configuration.multisite
+  assets_hostnames = GlobalSetting.cdn_hostnames
+end
+`
+	result := extractFileAST([]byte(src), "config/initializers/200-first_middlewares.rb", true, true)
+	fr, ok := fileRefFact(result)
+	if !ok {
+		t.Fatal("missing KindFileRef fact for a top-level assignment RHS call")
+	}
+	if !hasCall(fr, "GlobalSetting.cdn_hostnames") {
+		t.Errorf("missing file-ref RelCalls -> GlobalSetting.cdn_hostnames; relations = %v", fr.Relations)
+	}
+	for _, f := range result {
+		if f.Kind == facts.KindSymbol && hasCall(f, "GlobalSetting.cdn_hostnames") {
+			t.Errorf("top-level assignment RHS call must not attach to a symbol fact; fact = %v", f)
+		}
+	}
+}
+
+// TestExtractFile_TopLevelSetterAssignmentRHS checks a call on the RHS of a
+// top-level setter-assignment inside an if/else is captured.
+func TestExtractFile_TopLevelSetterAssignmentRHS(t *testing.T) {
+	src := `if Rails.env.test?
+  MessageBus.configure(backend: :memory)
+else
+  MessageBus.redis_config = GlobalSetting.message_bus_redis_config
+end
+`
+	result := extractFileAST([]byte(src), "config/initializers/004-message_bus.rb", true, true)
+	fr, ok := fileRefFact(result)
+	if !ok {
+		t.Fatal("missing KindFileRef fact")
+	}
+	if !hasCall(fr, "GlobalSetting.message_bus_redis_config") {
+		t.Errorf("missing file-ref RelCalls -> GlobalSetting.message_bus_redis_config; relations = %v", fr.Relations)
+	}
+}
+
+// TestExtractFile_ClassBodyConstAssignmentProc checks that calls inside a Proc in
+// a class-body constant assignment (Discourse's TYPE_FILTERS pattern) are captured
+// on the class fact.
+func TestExtractFile_ClassBodyConstAssignmentProc(t *testing.T) {
+	src := `class GroupsController < ApplicationController
+  TYPE_FILTERS = {
+    my: Proc.new { |groups, user| Group.member_of(groups, user) },
+    owner: Proc.new { |groups, user| Group.owner_of(groups, user) },
+  }
+end
+`
+	result := extractFileAST([]byte(src), "app/controllers/groups_controller.rb", true, true)
+	cls := symbolsByName(result)["GroupsController"]
+	for _, want := range []string{"Group.owner_of", "Group.member_of"} {
+		if !hasCall(cls, want) {
+			t.Errorf("missing class-body const-assignment Proc RelCalls -> %s; relations = %v", want, cls.Relations)
+		}
+	}
+}
