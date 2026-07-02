@@ -41,10 +41,11 @@ func extractFileASTWithDir(src []byte, relFile string, isiOS bool, dir string) [
 	defer tree.Close()
 
 	w := &astWalker{
-		src:     src,
-		relFile: relFile,
-		dir:     dir,
-		isiOS:   isiOS,
+		src:        src,
+		relFile:    relFile,
+		dir:        dir,
+		isiOS:      isiOS,
+		fileRefIdx: -1,
 	}
 	w.walkSourceFile(tree.RootNode())
 	return w.out
@@ -81,6 +82,13 @@ type astWalker struct {
 	loopDepth int
 	selfName  string
 	selfShort string
+
+	// fileRefIdx is the index into out of this file's lazily-created file-scope
+	// reference fact (facts.KindFileRef), or -1 before one is created. It owns the
+	// call edges from top-level statements (bare `foo()` calls, `let x = foo()`
+	// initializers) that have no enclosing symbol — e.g. #!/usr/bin/swift build
+	// scripts that invoke their own top-level functions. Mirrors the Ruby extractor.
+	fileRefIdx int
 }
 
 // swiftBodyMetrics accumulates per-function complexity signals during the single
@@ -199,6 +207,25 @@ func (w *astWalker) addOwnerEdge(kind, target string) {
 	w.out[idx].Relations = append(w.out[idx].Relations, facts.Relation{Kind: kind, Target: target})
 }
 
+// addTentativeMethodCall emits a RelCalls edge to the bare method short name for a
+// member call whose receiver type is unknown at walk time (extraction is
+// parallel-per-file, so the project-wide method set is not yet available). The
+// serial resolveMethodCalls post-pass then rewrites it to a qualified
+// dir.Type.method target when the name maps to exactly one project method, keeps
+// it bare when the name is ambiguous (still short-name matched by dead-code
+// detection), and drops it when no project method matches (a stdlib/framework call
+// like .map()/.dismissAnimated()). Known stdlib/iterator/cheap names and
+// capitalized names (nested-type constructors) are skipped up front to cut noise.
+func (w *astWalker) addTentativeMethodCall(name string) {
+	if name == "" || isCapitalized(name) {
+		return
+	}
+	if swiftBuiltins[name] || swiftIterators[name] || swiftCheapMethods[name] {
+		return
+	}
+	w.addOwnerEdge(facts.RelCalls, name)
+}
+
 func (w *astWalker) walkSourceFile(root *sitter.Node) {
 	if root == nil {
 		return
@@ -220,6 +247,69 @@ func (w *astWalker) walkSourceFile(root *sitter.Node) {
 			w.handleTypeAlias(child)
 		}
 	}
+	w.walkFileScopeCalls(root)
+}
+
+// fileScopeDecls are the top-level child kinds whose call edges are already
+// captured under their own owner (function/class/protocol bodies) or that carry no
+// calls (import/typealias). walkFileScopeCalls skips them and captures calls from
+// every other top-level statement against the file-scope reference fact.
+var fileScopeDecls = map[string]bool{
+	"import_declaration":    true,
+	"class_declaration":     true,
+	"protocol_declaration":  true,
+	"function_declaration":  true,
+	"typealias_declaration": true,
+}
+
+// walkFileScopeCalls captures calls made by top-level statements — bare `foo()`
+// calls and `let x = foo()` initializers that have no enclosing symbol — attaching
+// them to a lazily-created facts.KindFileRef fact so the dead-code detector treats
+// the callees as used. The file-ref fact is dropped again if it accrued no edges.
+func (w *astWalker) walkFileScopeCalls(root *sitter.Node) {
+	// Most Swift files contain only top-level declarations; skip the file-ref
+	// machinery entirely unless there is a genuine top-level statement.
+	hasStmt := false
+	for i := uint(0); i < uint(root.ChildCount()); i++ {
+		if !fileScopeDecls[root.Child(i).Kind()] {
+			hasStmt = true
+			break
+		}
+	}
+	if !hasStmt {
+		return
+	}
+
+	w.pushOwner(w.ensureFileRefFact())
+	for i := uint(0); i < uint(root.ChildCount()); i++ {
+		child := root.Child(i)
+		if fileScopeDecls[child.Kind()] {
+			continue
+		}
+		w.walkForCalls(child)
+	}
+	w.popOwner()
+
+	// Drop the file-ref fact if none of the statements produced a call edge.
+	if w.fileRefIdx >= 0 && len(w.out[w.fileRefIdx].Relations) == 0 {
+		w.out = append(w.out[:w.fileRefIdx], w.out[w.fileRefIdx+1:]...)
+		w.fileRefIdx = -1
+	}
+}
+
+// ensureFileRefFact returns the index of this file's lazily-created file-scope
+// reference fact (facts.KindFileRef), creating it on first use.
+func (w *astWalker) ensureFileRefFact() int {
+	if w.fileRefIdx < 0 {
+		w.out = append(w.out, facts.Fact{
+			Kind:  facts.KindFileRef,
+			Name:  w.relFile,
+			File:  w.relFile,
+			Props: map[string]any{"language": "swift"},
+		})
+		w.fileRefIdx = len(w.out) - 1
+	}
+	return w.fileRefIdx
 }
 
 func (w *astWalker) handleImport(node *sitter.Node) {
@@ -449,13 +539,23 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	body := findChildByKind(node, "function_body")
 	header := headerText(node, body, w.src)
 
+	// A function declared inside a type is a method (dispatch/reflection usage is
+	// not edge-tracked), so it must be classified SymbolMethod — not SymbolFunc —
+	// or the dead-code detector mislabels it high-confidence "safest to remove".
+	// This matches the Python/Java extractors. Free functions stay SymbolFunc.
+	enclosing := w.enclosingType()
+	symbolKind := facts.SymbolFunc
+	if enclosing != "" {
+		symbolKind = facts.SymbolMethod
+	}
+
 	f := facts.Fact{
 		Kind: facts.KindSymbol,
 		Name: w.dir + "." + w.qualify(name),
 		File: w.relFile,
 		Line: int(node.StartPosition().Row) + 1,
 		Props: map[string]any{
-			"symbol_kind": facts.SymbolFunc,
+			"symbol_kind": symbolKind,
 			"exported":    !isPrivateAccess(modifierText),
 			"language":    "swift",
 		},
@@ -463,8 +563,8 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 			{Kind: facts.RelDeclares, Target: w.dir},
 		},
 	}
-	if t := w.enclosingType(); t != "" {
-		f.Props["receiver"] = t
+	if enclosing != "" {
+		f.Props["receiver"] = enclosing
 	}
 	if strings.Contains(header, " async") {
 		f.Props["async"] = true
@@ -539,9 +639,22 @@ func (w *astWalker) handleProperty(node *sitter.Node) {
 			{Kind: facts.RelDeclares, Target: w.dir},
 		},
 	})
-	// A property initializer may construct types (let x = Foo()); attribute those
-	// to the enclosing type owner.
-	w.walkForCalls(node)
+	// A property initializer or computed-getter body may call/construct
+	// (`let x = Foo()`, `var y: T { return helper() }`). Inside a type body the
+	// enclosing type is already the owner and captures these edges. But an
+	// `extension` pushes NO owner (handleExtension), so at extension scope
+	// currentOwner() == -1 and the edges would be dropped — a helper called only
+	// from an extension property then looked dead. Only in that ownerless case do we
+	// push the property itself as owner, keeping class-property attribution (and the
+	// coupling graph) unchanged.
+	if w.currentOwner() < 0 {
+		ownerIdx := len(w.out) - 1
+		w.pushOwner(ownerIdx)
+		w.walkForCalls(node)
+		w.popOwner()
+	} else {
+		w.walkForCalls(node)
+	}
 }
 
 // handlePropertyInjection emits DI edges from the enclosing type for a property
@@ -684,7 +797,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	if kind == "call_expression" {
 		var iterClosure *sitter.Node
 		if callee := firstNamedChild(node); callee != nil {
-			name, isNav, root := calleeInfo(callee, w.src)
+			name, isNav, root, directSelf := calleeInfo(callee, w.src)
 			switch {
 			case name == "":
 				// unresolved
@@ -697,25 +810,40 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 					w.addOwnerEdge(facts.RelCalls, target)
 					w.recordCallMetrics(target)
 				}
-			case isNav && (root == "self" || root == "Self"):
+			case directSelf && w.enclosingType() != "":
+				// self.foo() / self?.foo(): a member of the enclosing type. When
+				// declared in the current body, emit the resolved dir.Type.method
+				// edge. Otherwise (a member declared in another extension of the
+				// same type, or an inherited/framework method) emit a tentative
+				// bare edge for the serial post-pass to resolve or drop — this is
+				// what recovers the coordinator "[weak self] switch { self?.x() }"
+				// routing calls that the old currentMethods gate silently dropped.
 				if w.currentMethods()[name] {
 					t := w.dir + "." + w.enclosingType() + "." + name
 					w.addOwnerEdge(facts.RelCalls, t)
 					w.recordCallMetrics(t)
+				} else {
+					w.addTentativeMethodCall(name)
 				}
 			case isNav && isCapitalized(root) && !isSystemType(root):
-				// e.g. AppComposition.shared.makeRepo() — depend on the root type.
+				// e.g. AppComposition.shared.makeRepo() — depend on the root type,
+				// and also credit the invoked method by short name (post-pass).
 				w.addOwnerEdge(facts.RelCalls, root)
 				w.recordCallMetrics(root)
-			case isNav && w.loopDepth > 0 && !swiftCheapMethods[name]:
-				// Method call on a lowercase receiver inside a loop (ctx.fetch(),
-				// repo.save()). No graph edge today, but its name feeds the perf
-				// metric so the enterprise analyzer can flag per-iteration I/O.
-				tgt := name
-				if root != "" {
-					tgt = root + "." + name
+				w.addTentativeMethodCall(name)
+			case isNav:
+				// Member call on a lowercase / property-chain receiver
+				// (coordinator?.show(), delegate?.tap(), self.prop.foo()). Emit a
+				// tentative bare short-name edge, resolved or dropped in the
+				// post-pass. Preserve the existing in-loop perf metric.
+				w.addTentativeMethodCall(name)
+				if w.loopDepth > 0 && !swiftCheapMethods[name] {
+					tgt := name
+					if root != "" {
+						tgt = root + "." + name
+					}
+					w.recordInLoopCall(tgt)
 				}
-				w.recordInLoopCall(tgt)
 			}
 			// An iterator method with a trailing closure (items.map { … }) is a
 			// loop: its closure body runs per element, but the receiver/arguments
@@ -741,9 +869,65 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		}
 	}
 
+	// Custom operator usage (`a <- b`, prefix `<>x`): the operator token names a
+	// project-declared `func <op>(…)`. Emit a tentative edge so the operator overload
+	// is not seen as dead (resolved/dropped in the serial post-pass). Standard-token
+	// operators (+, +=, ^, ==, …) are intentionally NOT tracked — their overloads
+	// share tokens with builtin arithmetic, so edges would flood every arithmetic
+	// site and inflate the operator's fan-in.
+	if op := customOperatorToken(node, w.src); op != "" {
+		w.addOwnerEdge(facts.RelCalls, op)
+	}
+
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		w.walkForCalls(node.Child(i))
 	}
+}
+
+// swiftStandardOperators are Swift stdlib operators that the tree-sitter scanner
+// nonetheless emits as `custom_operator` tokens (e.g. multi-char `<=`, `>=`, `??`,
+// `..<`). Overloads of these share tokens with builtin uses, so tracking their
+// usage would flood every arithmetic/comparison site and inflate the operator's
+// fan-in — they are excluded so only genuinely user-defined operators (`<-`, `~>`,
+// `|>`, …) get usage edges. Their overloads stay covered by the confidence
+// downgrade in the dead-code detector.
+var swiftStandardOperators = map[string]bool{
+	"=": true, "+": true, "-": true, "*": true, "/": true, "%": true,
+	"==": true, "!=": true, "===": true, "!==": true,
+	"<": true, ">": true, "<=": true, ">=": true,
+	"&&": true, "||": true, "!": true, "??": true, "~=": true,
+	"&": true, "|": true, "^": true, "~": true, "<<": true, ">>": true,
+	"+=": true, "-=": true, "*=": true, "/=": true, "%=": true,
+	"&=": true, "|=": true, "^=": true, "<<=": true, ">>=": true,
+	"&+": true, "&-": true, "&*": true, "&<<": true, "&>>": true,
+	"...": true, "..<": true, "?": true,
+}
+
+// customOperatorToken returns the operator token text when node is an operator
+// expression whose operator is a user-defined `custom_operator` (e.g. `<-`), else
+// "". Standard-token operators — both those with dedicated grammar nodes (`+` via
+// additive_expression) and stdlib multi-char operators the scanner emits as
+// `custom_operator` (`<=`, `>=`, `??`, …, see swiftStandardOperators) — are excluded,
+// because their overloads are indistinguishable from builtin uses and would flood.
+func customOperatorToken(node *sitter.Node, src []byte) string {
+	var opField string
+	switch node.Kind() {
+	case "infix_expression":
+		opField = "op"
+	case "prefix_expression":
+		opField = "operation"
+	default:
+		return ""
+	}
+	op := node.ChildByFieldName(opField)
+	if op == nil || op.Kind() != "custom_operator" {
+		return ""
+	}
+	text := nodeText(op, src)
+	if swiftStandardOperators[text] {
+		return ""
+	}
+	return text
 }
 
 // trailingClosure returns a call's closure argument (lambda_literal) — a trailing
@@ -825,6 +1009,9 @@ var swiftBuiltins = map[string]bool{
 	"stride": true, "sequence": true, "repeatElement": true,
 	"withUnsafePointer": true, "withExtendedLifetime": true, "withAnimation": true,
 	"isKnownUniquelyReferenced": true, "numericCast": true,
+	// `defer { … }` parses as a call to an identifier named "defer" with a trailing
+	// closure; suppress it so it does not become a phantom `calls -> …defer` edge.
+	"defer": true,
 }
 
 // --- node helpers ---
@@ -1022,12 +1209,16 @@ func headerText(node, body *sitter.Node, src []byte) string {
 }
 
 // calleeInfo inspects a call_expression's callee and returns the called simple
-// name, whether it was a navigation (a.b.foo()) call, and the leftmost receiver
-// identifier ("self" for self-calls; the root type/var name otherwise).
-func calleeInfo(callee *sitter.Node, src []byte) (name string, isNav bool, root string) {
+// name, whether it was a navigation (a.b.foo()) call, the leftmost receiver
+// identifier ("self" for self-calls; the root type/var name otherwise), and
+// whether the DIRECT receiver is self ("self.foo()"/"self?.foo()" — but NOT the
+// property-chain "self.prop.foo()", whose direct receiver is a navigation node).
+// The optional-chaining "?." is folded into the navigation token by the grammar's
+// external scanner, so "self?.foo()" parses identically to "self.foo()".
+func calleeInfo(callee *sitter.Node, src []byte) (name string, isNav bool, root string, directSelf bool) {
 	switch callee.Kind() {
 	case "simple_identifier", "identifier":
-		return nodeText(callee, src), false, ""
+		return nodeText(callee, src), false, "", false
 	case "navigation_expression":
 		suffix := callee.ChildByFieldName("suffix")
 		if suffix == nil {
@@ -1039,9 +1230,14 @@ func calleeInfo(callee *sitter.Node, src []byte) (name string, isNav bool, root 
 			}
 		}
 		root = navigationRoot(callee, src)
-		return name, true, root
+		if tgt := callee.ChildByFieldName("target"); tgt != nil {
+			if tgt.Kind() == "self_expression" || nodeText(tgt, src) == "Self" {
+				directSelf = true
+			}
+		}
+		return name, true, root, directSelf
 	}
-	return "", false, ""
+	return "", false, "", false
 }
 
 // navigationRoot drills to the leftmost receiver of a (possibly nested)
@@ -1069,6 +1265,17 @@ func isCapitalized(s string) bool {
 		return false
 	}
 	return unicode.IsUpper([]rune(s)[0])
+}
+
+// isOperatorToken reports whether s is a Swift operator name (e.g. "+", "<-", "^=")
+// rather than an identifier — i.e. its first rune is neither a letter nor an
+// underscore. Used to index operator overloads so custom-operator usage edges bind.
+func isOperatorToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	r := []rune(s)[0]
+	return !unicode.IsLetter(r) && r != '_'
 }
 
 // isTypeName reports whether s looks like a simple Swift type name (an uppercase

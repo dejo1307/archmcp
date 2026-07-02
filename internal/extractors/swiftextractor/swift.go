@@ -73,8 +73,10 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 	isiOS := detectiOSProject(repoPath)
 
 	modules := make(map[string]bool)
-	typeIndex := make(map[string]string) // simple type name -> module identity
-	dirToFile := make(map[string]string) // module identity -> a representative source file
+	typeIndex := make(map[string]string)     // simple type name -> module identity
+	methodIndex := make(map[string][]string) // method short name -> qualified dir.Type.method names
+	funcIndex := make(map[string][]string)   // top-level function short name -> qualified dir.func names
+	dirToFile := make(map[string]string)     // module identity -> a representative source file
 	var swiftFiles []string
 	var manifestFiles []string // Package.swift manifests, parsed after the walk
 
@@ -151,10 +153,34 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 				continue
 			}
 			sk, _ := fact.Props["symbol_kind"].(string)
-			if sk == facts.SymbolStruct || sk == facts.SymbolClass || sk == facts.SymbolInterface {
+			switch sk {
+			case facts.SymbolStruct, facts.SymbolClass, facts.SymbolInterface:
 				if simpleName := lastDotComponent(fact.Name); simpleName != "" {
 					typeIndex[simpleName] = dir
 				}
+			case facts.SymbolMethod:
+				// Index methods by short name so the resolveMethodCalls post-pass can
+				// bind tentative member-call edges (self?.x(), coordinator?.y()) to a
+				// concrete method — or drop them when no project method matches.
+				if short := lastDotComponent(fact.Name); short != "" {
+					methodIndex[short] = append(methodIndex[short], fact.Name)
+				}
+			case facts.SymbolFunc:
+				short := lastDotComponent(fact.Name)
+				if short == "" {
+					break
+				}
+				// Operator overloads (func +, func <-, …) go in methodIndex so
+				// custom-operator usage edges bind.
+				if isOperatorToken(short) {
+					methodIndex[short] = append(methodIndex[short], fact.Name)
+				}
+				// All top-level functions also go in funcIndex — the fallback used by
+				// resolveMethodCalls when a member call's receiver type failed to parse
+				// and its methods were flattened to top-level functions. Kept separate
+				// from methodIndex so a genuine method call is only rescued by a
+				// top-level function when no real method of that name exists.
+				funcIndex[short] = append(funcIndex[short], fact.Name)
 			}
 		}
 	}
@@ -182,6 +208,11 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 	// Canonicalise bare edge targets to "<dir>.<Type>" so reverse traversal
 	// (impact_analysis) connects dependents to their targets.
 	canonicalizeTargets(allFacts, typeIndex)
+
+	// Bind the walker's tentative bare-short-name member-call edges to concrete
+	// project methods (or drop stdlib/framework calls). Runs after
+	// canonicalizeTargets so type-target rewrites are already settled.
+	resolveMethodCalls(allFacts, methodIndex, funcIndex)
 
 	// Emit XcodeGen target module facts + declared inter-target dependency edges.
 	allFacts = append(allFacts, emitXcodeGenFacts(resolver, xp, spmRoots, dirToFile)...)
@@ -282,6 +313,53 @@ func canonicalizeTargets(allFacts []facts.Fact, typeIndex map[string]string) {
 				}
 			}
 		}
+	}
+}
+
+// resolveMethodCalls binds the walker's tentative bare-short-name RelCalls edges
+// (member calls whose receiver type was unknown at walk time — self?.x() to a
+// method in another extension, coordinator?.y(), delegate?.tap()) against the
+// project-wide method index. A tentative edge is a RelCalls target with no "." and
+// a non-capitalized head; every resolved edge the walker emits directly is either
+// dir-qualified or a capitalized type, so this shape is unambiguous. Unique match
+// -> rewrite to the qualified dir.Type.method name (a resolved graph edge, good for
+// impact_analysis); ambiguous -> keep the bare name (still short-name matched by
+// the dead-code detector, which is all that clears the false positive); no match
+// -> drop the edge (a stdlib/framework call such as .map()/.dismissAnimated()).
+//
+// funcIndex (top-level function short name -> qualified names) is a fallback used
+// only when methodIndex has no entry: when a type fails to parse (tree-sitter error
+// recovery flattens its body to top level), its methods are emitted as top-level
+// functions, so a member call on such a type has no method to bind to. Falling back
+// to the function index recovers those edges. The precision cost — a member call
+// whose short name coincides with an unrelated top-level free function resolves to
+// it — is a false negative (a missed dead-code lead), the safe direction, and
+// top-level free functions are rare in Swift.
+func resolveMethodCalls(allFacts []facts.Fact, methodIndex, funcIndex map[string][]string) {
+	for i := range allFacts {
+		rels := allFacts[i].Relations
+		if len(rels) == 0 {
+			continue
+		}
+		out := rels[:0]
+		for _, r := range rels {
+			if r.Kind == facts.RelCalls && r.Target != "" &&
+				!strings.Contains(r.Target, ".") && !isCapitalized(r.Target) {
+				cands := methodIndex[r.Target]
+				if len(cands) == 0 {
+					cands = funcIndex[r.Target] // fallback: flattened/top-level function
+				}
+				switch len(cands) {
+				case 0:
+					continue // drop: no project method or function by this name
+				case 1:
+					r.Target = cands[0]
+					// default (>1): keep the bare ambiguous name
+				}
+			}
+			out = append(out, r)
+		}
+		allFacts[i].Relations = out
 	}
 }
 

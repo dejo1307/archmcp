@@ -53,6 +53,8 @@ func TestDumpNodeKinds(t *testing.T) {
 		"injectProp": "final class C { @Injected var repo: UserRepository }",
 		"call":       "func go() { let vm = HomeViewModel(); vm.refresh(); AppComposition.shared.makeRepo() }",
 		"typealias":  "typealias ID = String",
+		"selfopt":    "func go() { self?.foo(); self.bar(); coordinator?.showX(); delegate?.tap() }",
+		"routing":    "func start() { vm.handler = { [weak self] in switch $0 { case .x: self?.doX() } } }",
 	}
 	parser := sitter.NewParser()
 	defer parser.Close()
