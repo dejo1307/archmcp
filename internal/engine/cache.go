@@ -44,7 +44,12 @@ import (
 // v28: Ruby records method calls on a `klass`/`clazz`/`klazz` (or @klass) receiver as class-method dispatch (`klass.inline`), regardless of the method name.
 // v29: Ruby extends the interpolated-prefix dispatch heuristic to strings (`"present_#{idx}"`), not just symbols, so send()-by-computed-string-name marks same-prefix methods used.
 // v30: interpolated-string prefixes are now gated on dispatcher-proximity (committed only when the enclosing scope also calls send/public_send/…), so cache/Redis-key strings (`"fetch_#{id}"`) no longer hide genuine orphans; interpolated symbols remain unconditional.
-const cacheVersion = "v30"
+// v31: Ruby block parameters (`each do |user| … end`) are now treated as locals, so a bare block var whose name matches an association no longer records a spurious in-loop call (N+1 false positive); and find_in_batches/in_batches are no longer counted as element loops (their block yields a batch, so the inner .each/.map is the real per-element loop) — fixing O(n²) mislabels of single-pass batch scans.
+// v32: Ruby no longer flags `super` (climbs the inheritance chain, terminates) or a same-named call on an explicit non-self receiver (SimpleDelegator/decorator, `@delegate.render`/`new.call`) as self-recursion — both set recursive_self spuriously, the dominant recursion false positive.
+// v33: Ruby recursion is now gated to same-object self dispatch — `self.class.foo` (instance method calling its sibling class method) and `obj.try(:foo)` (dispatch to a different object) no longer set recursive_self; receiverless calls, `self.foo`, and `Const.foo` matching the method's own full name still do.
+// v34: Ruby constant-bounded iterators (`6.times`, `[…].each`, `%w[…]`, ALL-CAPS `CONST.each`) no longer add scaling loop_depth — they run a fixed number of times, so they no longer inflate a genuine O(n) into a false O(n²)/O(n³).
+// v35: constant-bounded-loop detection now unwraps trailing size-preserving chain methods (`[a,b].compact.all?`, `%w[…].map.each`), so a bounded literal/constant behind `.compact`/`.uniq`/`.map`/… is still recognized as bounded.
+const cacheVersion = "v35"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

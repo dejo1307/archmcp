@@ -158,6 +158,14 @@ type rubyBodyMetrics struct {
 // File.open, …) run their block once and are deliberately not treated as loops.
 // Aggregate-or-iterate methods (count/sum/find/all?…) are safe to include
 // because a block is required before any of these counts as a loop.
+//
+// find_in_batches / in_batches are deliberately excluded: their block runs once
+// per *batch* (an array), so the real per-element loop is the inner .each/.map
+// over that batch. Counting the batch block as a loop as well double-counts and
+// mislabels a single O(n) pass as O(n²). (find_each yields individual elements
+// and is a genuine per-element loop, so it stays.) Both names remain in the
+// enterprise expensiveMethods gate, so a batch scan nested inside another loop is
+// still flagged by name — only the spurious extra depth is dropped.
 var rubyIterators = map[string]bool{
 	"each": true, "each_with_index": true, "each_with_object": true,
 	"each_pair": true, "each_key": true, "each_value": true,
@@ -167,7 +175,7 @@ var rubyIterators = map[string]bool{
 	"flat_map": true, "select": true, "select!": true, "filter": true,
 	"filter_map": true, "reject": true, "reject!": true,
 	"detect": true, "find": true, "find_all": true, "find_index": true,
-	"find_each": true, "find_in_batches": true, "in_batches": true,
+	"find_each": true,
 	"reduce": true, "inject": true, "min_by": true, "max_by": true,
 	"sort_by": true, "group_by": true, "partition": true, "chunk_while": true,
 	"zip": true, "cycle": true, "times": true, "upto": true, "downto": true,
@@ -183,6 +191,21 @@ func (w *rubyWalker) recordCallMetrics(target string) {
 	}
 	if target == w.selfShort || target == w.selfName || target == "self."+w.selfShort {
 		w.metrics.recursive = true
+	}
+	w.recordInLoopCall(target)
+}
+
+// recordSelfAwareMetrics records a call target's metrics but only counts it as
+// recursion when the call dispatches to the SAME object as the enclosing method —
+// a receiverless call or a plain `self.foo`. An explicit receiver (`x.foo`,
+// `self.class.foo`, `obj.try(:foo)`) targets a different object or a sibling
+// class/instance method, so it feeds the in-loop N+1 signal but never the recursion
+// flag. (A `Const.foo` that resolves to this exact method is handled by the caller
+// via a selfName match before reaching here.)
+func (w *rubyWalker) recordSelfAwareMetrics(target string, recv *sitter.Node) {
+	if recv == nil || recv.Kind() == "self" {
+		w.recordCallMetrics(target)
+		return
 	}
 	w.recordInLoopCall(target)
 }
@@ -562,6 +585,58 @@ func isVarReceiver(kind string) bool {
 	return false
 }
 
+// constantBoundReceiver reports whether an iterator's receiver is provably bounded by
+// a compile-time constant, so the loop runs a fixed number of times regardless of the
+// method's input (O(1) in n): an integer literal (`6.times`), a collection literal
+// (`[…].each`, `{…}.each`, `%w[…]`, `%i[…]`), or an ALL-CAPS data constant
+// (`STOP_CHARS.any?`). Mixed-case constants (classes like `User`) are excluded — a
+// `.each` on a class/relation is not a bounded literal.
+func constantBoundReceiver(recv *sitter.Node, src []byte) bool {
+	if recv == nil {
+		return false
+	}
+	switch recv.Kind() {
+	case "integer", "array", "hash", "string_array", "symbol_array":
+		return true
+	case "constant":
+		return isScreamingSnake(rubyText(recv, src))
+	case "call":
+		// A trailing size-preserving/reducing chain method keeps a bounded base
+		// bounded: `[a,b].compact.all?`, `%w[x y].map { … }.each`. Unwrap it and
+		// re-check the inner receiver. Size-expanding ops (product/cycle/flat_map)
+		// are excluded, so this never turns an unbounded source into "bounded".
+		if m := recv.ChildByFieldName("method"); m != nil && chainPreservesBound[rubyText(m, src)] {
+			return constantBoundReceiver(recv.ChildByFieldName("receiver"), src)
+		}
+	}
+	return false
+}
+
+// chainPreservesBound are Enumerable methods that never grow a collection beyond its
+// input size, so a bounded literal/constant piped through them stays bounded.
+var chainPreservesBound = map[string]bool{
+	"compact": true, "uniq": true, "flatten": true, "sort": true, "sort_by": true,
+	"reverse": true, "to_a": true, "dup": true, "freeze": true,
+	"map": true, "collect": true, "select": true, "filter": true, "reject": true,
+	"first": true, "take": true,
+}
+
+// isScreamingSnake reports whether s is a SCREAMING_SNAKE_CASE data constant — only
+// uppercase letters, digits, and underscores, with at least one letter.
+func isScreamingSnake(s string) bool {
+	hasLetter := false
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return hasLetter
+}
+
 // walkScopeForCalls runs walkForCalls over one scope (a class/module body or the
 // top-level program) with the per-scope interpolated-string-prefix gate: it resets
 // the tentative state, walks, then commits any pending string prefixes iff the scope
@@ -637,10 +712,13 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 		// `super` invokes the same-named method in an ancestor (superclass or mixin),
 		// so it references that base method. Only meaningful inside a method body
 		// (metrics != nil), where selfShort is the enclosing method's bare name.
-		// Recurse afterwards to capture any calls in `super(args)`.
+		// Record the call edge (dead-code marks the ancestor method used) but NOT the
+		// complexity metrics: `super` climbs the inheritance chain and terminates —
+		// it is not self-recursion, and treating it as such was the dominant recursion
+		// false positive (every override with a `super` call). Recurse afterwards to
+		// capture any calls in `super(args)`.
 		if w.metrics != nil && w.selfShort != "" {
 			w.addCall(ownerIdx, seen, w.selfShort)
-			w.recordCallMetrics(w.selfShort)
 		}
 		for i := uint(0); i < node.ChildCount(); i++ {
 			w.walkForCalls(node.Child(i), ownerIdx, seen, locals)
@@ -672,12 +750,25 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 			w.sawDispatcher = true // gates tentative interpolated-string prefixes
 			if nm := dispatchSymbolArg(node.ChildByFieldName("arguments"), w.src); nm != "" {
 				w.addCall(ownerIdx, seen, nm)
-				w.recordCallMetrics(nm)
+				// `obj.try(:foo)` dispatches to a DIFFERENT object; only a
+				// receiverless/self dispatch (`send(:foo)`, `self.try(:foo)`) can recurse.
+				w.recordSelfAwareMetrics(nm, recv)
 			}
 		}
 		if target := w.callTarget(node); target != "" {
 			w.addCall(ownerIdx, seen, target)
-			w.recordCallMetrics(target)
+			// Recursion only for a same-object self dispatch. callTarget returns a bare
+			// method name for both plain `self.foo` (recv kind "self" — genuine
+			// recursion) and `self.class.foo` (recv kind "call" — the instance method
+			// calling its sibling CLASS method, NOT recursion), so the target string
+			// alone can't tell them apart; gate on the receiver. An explicit
+			// `Const.foo` that resolves to this exact method (selfName) is real
+			// class-method self-recursion and is preserved.
+			if target == w.selfName {
+				w.recordCallMetrics(target)
+			} else {
+				w.recordSelfAwareMetrics(target, recv)
+			}
 		} else if recv == nil && method != nil && method.Kind() == "identifier" {
 			if name := rubyText(method, w.src); !rubyNonCalls[name] {
 				w.addCall(ownerIdx, seen, name)
@@ -705,8 +796,15 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 				// unambiguously method calls (an attribute read never ends in `?`/`!`,
 				// and a snake_case multi-word name is a scope/class-method, not a plain
 				// attribute). Single-word reads (`user.email`, `x.name`) stay out.
+				//
+				// Record the call edge and (if in a loop) the in-loop N+1 signal, but
+				// NOT recursion: this branch always has an explicit, non-self receiver
+				// (self-receiver calls resolve via callTarget above), so a call whose
+				// name matches the enclosing method is a same-named call on a DIFFERENT
+				// object — the SimpleDelegator/decorator pattern (`@delegate.render`,
+				// `new.call`), not self-recursion.
 				w.addCall(ownerIdx, seen, name)
-				w.recordCallMetrics(name)
+				w.recordInLoopCall(name)
 			case w.loopDepth > 0:
 				// A no-arg single-level read inside a loop (the association read
 				// `u.posts` or `record.reload`). It is not a graph edge, but its method
@@ -721,10 +819,15 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 		// the Python comprehension handling).
 		block := node.ChildByFieldName("block")
 		isIter := block != nil && method != nil && rubyIterators[rubyText(method, w.src)]
+		// A constant-bounded iterator (`6.times`, `[…].each`, `STOP_CHARS.any?`) runs a
+		// fixed number of times regardless of the method's input, so it still counts as
+		// a loop (cyclomatic) but must not add scaling loop DEPTH — otherwise a literal
+		// or constant inner/outer loop inflates a genuine O(n) into a false O(n²)/O(n³).
+		bounded := isIter && constantBoundReceiver(recv, w.src)
 		if isIter && w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
-			if w.loopDepth+1 > w.metrics.loopDepth {
+			if !bounded && w.loopDepth+1 > w.metrics.loopDepth {
 				w.metrics.loopDepth = w.loopDepth + 1
 			}
 		}
@@ -737,6 +840,13 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 				continue
 			}
 			if isIter && c.StartByte() == block.StartByte() && c.EndByte() == block.EndByte() {
+				if bounded {
+					// Fixed iteration count: walk the block at the SAME depth so any
+					// inner scaling loop or per-iteration I/O is measured against the
+					// real input, not multiplied by a constant.
+					w.walkForCalls(c, ownerIdx, seen, locals)
+					continue
+				}
 				w.loopDepth++
 				w.walkForCalls(c, ownerIdx, seen, locals)
 				w.loopDepth--
@@ -1034,8 +1144,36 @@ func collectLocals(method *sitter.Node, src []byte) map[string]bool {
 	if params := method.ChildByFieldName("parameters"); params != nil {
 		collectIdentifiers(params, src, locals)
 	}
-	collectAssignTargets(method.ChildByFieldName("body"), src, locals)
+	body := method.ChildByFieldName("body")
+	collectAssignTargets(body, src, locals)
+	// Block parameters (`things.each do |user| … end`, `{ |k, v| … }`) are locals
+	// too — and, being the most common identifiers inside loops, are the main
+	// source of false N+1 findings when their name coincides with an ActiveRecord
+	// association (`user`, `hood_message`, …). collectLocals is method-wide, so a
+	// block var here shadows a same-named bare method call elsewhere in the method;
+	// that over-approximation is safe (it only suppresses over-emission) and matches
+	// how assignment targets are already collected.
+	collectBlockParams(body, src, locals)
 	return locals
+}
+
+// collectBlockParams adds every block-parameter identifier in a subtree to out.
+// The parameters field of a block/do_block is a block_parameters node whose
+// identifiers (including those nested in destructured/splat/keyword params) name
+// the block's locals; collectIdentifiers gathers them all.
+func collectBlockParams(node *sitter.Node, src []byte, out map[string]bool) {
+	if node == nil {
+		return
+	}
+	switch node.Kind() {
+	case "block", "do_block":
+		if params := node.ChildByFieldName("parameters"); params != nil {
+			collectIdentifiers(params, src, out)
+		}
+	}
+	for i := uint(0); i < node.ChildCount(); i++ {
+		collectBlockParams(node.Child(i), src, out)
+	}
 }
 
 // collectIdentifiers adds every identifier name in a subtree to out.
