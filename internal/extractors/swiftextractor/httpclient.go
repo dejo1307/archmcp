@@ -48,6 +48,13 @@ var nonAPIExtensions = map[string]bool{
 // (no /api prefix); the cross-repo linker's suffix matching reconciles that
 // against the backend's full path.
 func extractURLSessionFacts(src []byte, relFile string) []facts.Fact {
+	return extractURLSessionFactsWithDir(src, relFile, filepath.ToSlash(filepath.Dir(relFile)))
+}
+
+// extractURLSessionFactsWithDir is extractURLSessionFacts with an explicit module
+// identity dir, so route facts declare into the file's resolved target module
+// rather than its leaf directory.
+func extractURLSessionFactsWithDir(src []byte, relFile, dir string) []facts.Fact {
 	// File-level gate: appendingPathComponent is also how Swift builds local file
 	// URLs. Only treat it as a network call in files that actually use URLSession /
 	// URLRequest, which excludes file-I/O and build-tooling sources outright.
@@ -56,7 +63,6 @@ func extractURLSessionFacts(src []byte, relFile string) []facts.Fact {
 	}
 
 	lines := strings.Split(string(src), "\n")
-	dir := filepath.ToSlash(filepath.Dir(relFile))
 	api := swiftAPIHint(relFile)
 
 	var out []facts.Fact

@@ -21,6 +21,14 @@ import (
 // and canonicalised to "<dir>.<Type>" by the post-pass in Extract, which has the
 // project-wide type index needed to resolve them.
 func extractFileAST(src []byte, relFile string, isiOS bool) []facts.Fact {
+	return extractFileASTWithDir(src, relFile, isiOS, filepath.Dir(relFile))
+}
+
+// extractFileASTWithDir is extractFileAST with an explicit module identity dir.
+// Extract passes the file's resolved target module (from moduleResolver) so
+// symbols are named "<targetDir>.<Type>" and declare into the target module
+// rather than the file's leaf directory.
+func extractFileASTWithDir(src []byte, relFile string, isiOS bool, dir string) []facts.Fact {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(swift.Language())); err != nil {
@@ -35,7 +43,7 @@ func extractFileAST(src []byte, relFile string, isiOS bool) []facts.Fact {
 	w := &astWalker{
 		src:     src,
 		relFile: relFile,
-		dir:     filepath.Dir(relFile),
+		dir:     dir,
 		isiOS:   isiOS,
 	}
 	w.walkSourceFile(tree.RootNode())

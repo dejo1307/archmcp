@@ -17,7 +17,9 @@ import (
 // their Sources directory, so this pass maps a bare import name to that dir and
 // classifies the rest as stdlib (Apple system frameworks) or external.
 func resolveImports(allFacts []facts.Fact) {
-	// SPM target name -> module dir, from the manifest-derived module facts.
+	// Module name -> module dir, keyed by the target's importable name. Swift
+	// `import X` names an SPM target (spm_target) or an XcodeGen framework target
+	// (xcode_target); both map back to the module's Sources directory.
 	spmDir := make(map[string]string)
 	for i := range allFacts {
 		f := &allFacts[i]
@@ -25,6 +27,9 @@ func resolveImports(allFacts []facts.Fact) {
 			continue
 		}
 		if name, ok := f.Props["spm_target"].(string); ok && name != "" {
+			spmDir[name] = f.Name
+		}
+		if name, ok := f.Props["xcode_target"].(string); ok && name != "" {
 			spmDir[name] = f.Name
 		}
 	}

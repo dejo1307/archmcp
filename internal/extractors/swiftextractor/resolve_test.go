@@ -68,6 +68,40 @@ func TestResolveImports_SwiftBareNames(t *testing.T) {
 	}
 }
 
+func TestResolveImports_XcodeTargetNames(t *testing.T) {
+	// A bare `import <XcodeGenTarget>` must resolve to that target's module dir,
+	// mirroring SPM target resolution.
+	ff := []facts.Fact{
+		{Kind: facts.KindModule, Name: "Sources/Core",
+			Props: map[string]any{"language": "swift", "xcode_target": "Core"}},
+		{Kind: facts.KindModule, Name: "Sources/Chat",
+			Props: map[string]any{"language": "swift", "xcode_target": "Chat"}},
+		importDep("Sources/Chat/Chat.swift", "Core"),  // internal XcodeGen target
+		importDep("Sources/Chat/Chat.swift", "UIKit"), // system framework
+	}
+	resolveImports(ff)
+
+	for _, f := range ff {
+		if f.Kind != facts.KindDependency {
+			continue
+		}
+		raw := f.Name[len("Sources/Chat/Chat.swift -> "):]
+		switch raw {
+		case "Core":
+			if got := importTargetOf(f); got != "Sources/Core" {
+				t.Errorf("import Core target = %q, want Sources/Core", got)
+			}
+			if got := sourceOf(f); got != "internal" {
+				t.Errorf("import Core source = %q, want internal", got)
+			}
+		case "UIKit":
+			if got := sourceOf(f); got != "stdlib" {
+				t.Errorf("import UIKit source = %q, want stdlib", got)
+			}
+		}
+	}
+}
+
 func TestResolveImports_SwiftPathTargetsKept(t *testing.T) {
 	// A target that is already a path (from the manifest or type-reference pass)
 	// must be left intact and marked internal.

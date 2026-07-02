@@ -141,6 +141,63 @@ func parsePackageManifest(src []byte, manifestRel string, dirToFile map[string]s
 	return out
 }
 
+// manifestTargetRoots parses a Package.swift and returns a map of SPM target
+// name -> module directory (repo-relative, slash), without emitting facts. It is
+// used to seed the module resolver before the AST walk so package source files
+// declare into their SPM target module (e.g. LocalPackages/X/Sources/X) rather
+// than their leaf directory. Returns nil when the manifest has no parseable
+// Package(...) call.
+func manifestTargetRoots(src []byte, manifestRel string) map[string]string {
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(sitter.NewLanguage(swift.Language())); err != nil {
+		return nil
+	}
+	tree := parser.Parse(src, nil)
+	if tree == nil {
+		return nil
+	}
+	defer tree.Close()
+
+	pkgCall := findPackageCall(tree.RootNode(), src)
+	if pkgCall == nil {
+		return nil
+	}
+	args := callValueArguments(pkgCall)
+	if args == nil {
+		return nil
+	}
+
+	pkgDir := filepath.ToSlash(filepath.Dir(manifestRel))
+	roots := map[string]string{}
+	if targetsArr := argValue(args, "targets", src); targetsArr != nil {
+		for _, elem := range arrayElements(targetsArr) {
+			if elem.Kind() != "call_expression" {
+				continue
+			}
+			switch memberCallName(elem, src) {
+			case "target", "executableTarget", "testTarget", "macro", "plugin", "systemLibrary", "binaryTarget":
+			default:
+				continue
+			}
+			tArgs := callValueArguments(elem)
+			if tArgs == nil {
+				continue
+			}
+			name := argString(tArgs, "name", src)
+			if name == "" {
+				continue
+			}
+			dir := pkgDir + "/Sources/" + name
+			if p := argString(tArgs, "path", src); p != "" {
+				dir = filepath.ToSlash(filepath.Join(pkgDir, p))
+			}
+			roots[name] = dir
+		}
+	}
+	return roots
+}
+
 // parseManifestDeps reads a target's `dependencies:` array. Each element is a
 // bare string ("Foo"), a `.product(name:package:)` (external), or a
 // `.target(name:)`/`.byName(name:)` (internal-by-name).

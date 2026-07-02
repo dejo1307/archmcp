@@ -50,7 +50,9 @@ import (
 // v34: Ruby constant-bounded iterators (`6.times`, `[…].each`, `%w[…]`, ALL-CAPS `CONST.each`) no longer add scaling loop_depth — they run a fixed number of times, so they no longer inflate a genuine O(n) into a false O(n²)/O(n³).
 // v35: constant-bounded-loop detection now unwraps trailing size-preserving chain methods (`[a,b].compact.all?`, `%w[…].map.each`), so a bounded literal/constant behind `.compact`/`.uniq`/`.map`/… is still recognized as bounded.
 // v36: Ruby module symbols now carry an `abstract` bool prop — true for mixins (modules that define instance methods) and ActiveSupport::Concerns, false for namespace/utility modules — so package-metrics abstractness (A) no longer counts Rails namespaces as abstractions. Bare-constant coupling resolution is also namespace-aware now.
-const cacheVersion = "v36"
+// v37: Swift resolves modules at the SPM/XcodeGen *target* level instead of by leaf directory — it parses project.yml (and its include: files) so each product target's files form one module (Sources/<Name>), and routes SPM package sources into their target module; symbol names, module facts, and inter-target dependency edges all change accordingly.
+// v38: Swift XcodeGen targets sharing one primary source root (e.g. the app plus its SwiftUI-preview and unit-test host targets) now collapse to a single module — the first target by sorted name owns the identity, shadow targets emit no duplicate module fact.
+const cacheVersion = "v38"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

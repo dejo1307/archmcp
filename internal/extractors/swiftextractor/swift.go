@@ -73,8 +73,8 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 	isiOS := detectiOSProject(repoPath)
 
 	modules := make(map[string]bool)
-	typeIndex := make(map[string]string) // simple type name -> module (directory)
-	dirToFile := make(map[string]string) // module dir -> a representative source file
+	typeIndex := make(map[string]string) // simple type name -> module identity
+	dirToFile := make(map[string]string) // module identity -> a representative source file
 	var swiftFiles []string
 	var manifestFiles []string // Package.swift manifests, parsed after the walk
 
@@ -92,24 +92,54 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		swiftFiles = append(swiftFiles, relFile)
 	}
 
+	// Resolve modules at the target level. Parse the XcodeGen project.yml and the
+	// SPM manifest target roots up-front, then build a resolver mapping each file
+	// to its owning target module. Both signals are additive: when neither covers
+	// a file, moduleForFile falls back to the file's leaf directory, preserving
+	// behaviour for loose Swift projects.
+	xp, xerr := parseXcodeGenProject(repoPath, projectManifestName)
+	if xerr != nil {
+		log.Printf("[swift-extractor] project.yml parse error: %v", xerr)
+	}
+	spmRoots := map[string]string{}
+	for _, relFile := range manifestFiles {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			continue
+		}
+		for name, dir := range manifestTargetRoots(src, relFile) {
+			spmRoots[name] = dir
+		}
+	}
+	resolver := buildModuleResolver(xp, spmRoots)
+	moduleForFile := func(relFile string) string {
+		if id, ok := resolver.moduleFor(relFile); ok {
+			return id
+		}
+		return filepath.Dir(relFile)
+	}
+
 	// extractFileAST/extractURLSessionFacts are pure; parse the source files in
 	// parallel. The indices below are rebuilt by iterating the per-file results in
 	// file order, so modules, dirToFile and typeIndex match a serial run exactly.
+	// moduleForFile is pure and order-independent, so the identity a file resolves
+	// to is the same in the parallel walk and the serial fold below.
 	perFileFacts := parallel.MapFiles(ctx, swiftFiles, func(relFile string) []facts.Fact {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[swift-extractor] error reading %s: %v", relFile, err)
 			return nil
 		}
-		ff := extractFileAST(src, relFile, isiOS)
-		return append(ff, extractURLSessionFacts(src, relFile)...)
+		dir := moduleForFile(relFile)
+		ff := extractFileASTWithDir(src, relFile, isiOS, dir)
+		return append(ff, extractURLSessionFactsWithDir(src, relFile, dir)...)
 	})
 
 	for i, fileFacts := range perFileFacts {
 		relFile := swiftFiles[i]
 		allFacts = append(allFacts, fileFacts...)
 
-		dir := filepath.Dir(relFile)
+		dir := moduleForFile(relFile)
 		modules[dir] = true
 		if _, ok := dirToFile[dir]; !ok {
 			dirToFile[dir] = relFile
@@ -153,9 +183,13 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 	// (impact_analysis) connects dependents to their targets.
 	canonicalizeTargets(allFacts, typeIndex)
 
-	// Emit module facts for directories not already described by a manifest target.
+	// Emit XcodeGen target module facts + declared inter-target dependency edges.
+	allFacts = append(allFacts, emitXcodeGenFacts(resolver, xp, spmRoots, dirToFile)...)
+
+	// Emit module facts for leaf directories not already described by an XcodeGen
+	// or SPM target identity (files that fell back to leaf-directory grouping).
 	for dir := range modules {
-		if manifestModules[dir] {
+		if manifestModules[dir] || resolver.identities[dir] {
 			continue
 		}
 		allFacts = append(allFacts, facts.Fact{
@@ -169,8 +203,22 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 	}
 
 	// Pass 2: resolve type references to discover cross-module dependencies.
+	// Seed the seen-set with the declared (manifest/XcodeGen) edges so a used edge
+	// that is also declared isn't emitted twice (which would double coupling
+	// counts). Declared-dependency facts anchor File inside the source module dir,
+	// so slashDir(File) recovers the source identity.
 	type edge struct{ from, to string }
 	seenEdges := make(map[edge]bool)
+	for _, f := range allFacts {
+		if f.Kind != facts.KindDependency {
+			continue
+		}
+		for _, r := range f.Relations {
+			if r.Kind == facts.RelImports {
+				seenEdges[edge{slashDir(f.File), r.Target}] = true
+			}
+		}
+	}
 
 	for _, relFile := range swiftFiles {
 		select {
@@ -179,7 +227,7 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		default:
 		}
 
-		sourceModule := filepath.Dir(relFile)
+		sourceModule := moduleForFile(relFile)
 		absFile := filepath.Join(repoPath, relFile)
 		refs := extractTypeReferences(absFile)
 
@@ -197,7 +245,7 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 			allFacts = append(allFacts, facts.Fact{
 				Kind: facts.KindDependency,
 				Name: sourceModule + " -> " + targetModule,
-				File: relFile,
+				File: moduleAnchorFile(sourceModule, dirToFile),
 				Props: map[string]any{
 					"language": "swift",
 					"internal": true,
@@ -209,8 +257,8 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		}
 	}
 
-	// Resolve bare `import X` targets to SPM module dirs and classify
-	// stdlib/external, now that all module facts (incl. SPM targets) exist.
+	// Resolve bare `import X` targets to SPM/XcodeGen target module dirs and
+	// classify stdlib/external, now that all module facts exist.
 	resolveImports(allFacts)
 
 	return allFacts, nil
