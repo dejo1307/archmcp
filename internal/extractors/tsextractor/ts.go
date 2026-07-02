@@ -90,7 +90,8 @@ func searchTSRoot(dir string, depth, maxDepth int) (string, bool) {
 	return "", false
 }
 
-// hasTSMarkers returns true if the directory looks like a TypeScript project root.
+// hasTSMarkers returns true if the directory looks like a project root this
+// extractor should handle (TypeScript, or a JS framework it also parses).
 func hasTSMarkers(dir string) bool {
 	// tsconfig.json (standard) or tsconfig.base.json (Nx monorepo)
 	for _, name := range []string{"tsconfig.json", "tsconfig.base.json"} {
@@ -99,20 +100,9 @@ func hasTSMarkers(dir string) bool {
 		}
 	}
 
-	// package.json with a typescript dependency
-	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
-	if err != nil {
-		return false
-	}
-	var pkg map[string]any
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return false
-	}
-	for _, key := range []string{"dependencies", "devDependencies"} {
-		if deps, ok := pkg[key].(map[string]any); ok {
-			if _, ok := deps["typescript"]; ok {
-				return true
-			}
+	for _, pkg := range []string{"typescript", "vue", "react", "svelte", "next", "nuxt"} {
+		if hasPkgDependency(dir, pkg) {
+			return true
 		}
 	}
 	return false
@@ -128,8 +118,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	isNuxt := detectNuxt(repoPath)
 	isSvelteKit := detectSvelteKit(repoPath)
 
-	// Parse tsconfig.json for path alias mappings (e.g., "@/*" → "src/*"),
-	// one alias root per package for monorepos.
+	// Parse tsconfig.json path aliases, one root per package for monorepos.
 	aliasRoots := collectTSAliasRoots(repoPath)
 
 	// SvelteKit maps $lib → src/lib by convention.
@@ -292,13 +281,8 @@ func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile stri
 	for i := range root.ChildCount() {
 		child := root.Child(i)
 
-		// import_statement always carries its source as a "string" child.
-		// export_statement only carries a "source" field when it has a `from`
-		// clause — i.e. it's a re-export (`export * from "x"`, `export { A }
-		// from "x"`, `export type { A } from "x"`) rather than a local
-		// declaration/value export. Barrel files consist entirely of the
-		// latter and previously emitted zero facts, making anything only
-		// reachable through them look unused.
+		// export_statement only has a "source" field for re-exports
+		// (export * from / export { X } from), not local declarations.
 		var source *sitter.Node
 		isReexport := false
 		switch child.Kind() {
@@ -333,10 +317,10 @@ func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile stri
 		}
 
 		result = append(result, facts.Fact{
-			Kind: facts.KindDependency,
-			Name: dir + " -> " + resolved,
-			File: relFile,
-			Line: int(child.StartPosition().Row) + 1,
+			Kind:  facts.KindDependency,
+			Name:  dir + " -> " + resolved,
+			File:  relFile,
+			Line:  int(child.StartPosition().Row) + 1,
 			Props: props,
 			Relations: []facts.Relation{
 				{Kind: facts.RelImports, Target: resolved},
@@ -992,24 +976,16 @@ func nodeText(node *sitter.Node, src []byte) string {
 	return string(src[node.StartByte():node.EndByte()])
 }
 
-// tsAliasRoot pairs a directory (relative to repoPath, forward-slash form,
-// "" = repo root) with the path-alias map declared by the tsconfig.json /
-// tsconfig.base.json that governs that directory. Replacement values in
-// `aliases` are already qualified with `dir` as a prefix, so resolveImportPath
-// can use them exactly as it always has — it never needs to know about roots.
+// tsAliasRoot is a directory (repoPath-relative, "" = root) and the alias
+// map its tsconfig declares, already qualified with dir as a prefix.
 type tsAliasRoot struct {
 	dir     string
 	aliases map[string]string
 }
 
-// collectTSAliasRoots finds every directory in the repo whose tsconfig.json
-// (or tsconfig.base.json) declares at least one compilerOptions.paths alias.
-// Monorepos (Nx, pnpm workspaces, Turborepo, ...) commonly have one tsconfig
-// per package, each with its own aliases, plus a paths-less root/base config
-// shared for compiler settings only — so unlike findTSRoot/searchTSRoot
-// (which stop at the first TS-marker directory, for project *detection*),
-// this walks the full subtree and collects every alias-bearing directory, so
-// sibling packages are all discovered rather than just the first one found.
+// collectTSAliasRoots finds every directory whose tsconfig.json (or
+// tsconfig.base.json) declares path aliases — unlike findTSRoot, which stops
+// at the first match, this covers monorepos with one tsconfig per package.
 func collectTSAliasRoots(repoPath string) []tsAliasRoot {
 	maxDepth := 2
 	if isDeepNestedProject(repoPath) {
@@ -1028,12 +1004,8 @@ func walkTSAliasRoots(repoPath, dir string, depth, maxDepth int, out *[]tsAliasR
 		}
 		rel = filepath.ToSlash(rel)
 
-		// Qualify each replacement with this root's directory so the resolved
-		// import path ends up relative to repoPath, not relative to the
-		// tsconfig's own directory. Plain string concatenation (not
-		// filepath.Join/Clean) is deliberate: replacement values carry a
-		// trailing slash that resolveImportPath's `replacement + rest`
-		// concatenation depends on, and Join would strip it.
+		// Concatenation, not filepath.Join, to preserve the trailing slash
+		// resolveImportPath's `replacement + rest` depends on.
 		qualified := make(map[string]string, len(aliases))
 		for prefix, replacement := range aliases {
 			if rel != "" {
@@ -1069,11 +1041,8 @@ func aliasesAtDir(dir string) (map[string]string, bool) {
 	return nil, false
 }
 
-// aliasesForDir returns the alias map of whichever tsAliasRoot is the
-// longest matching ancestor-or-equal prefix of `dir` (a repoPath-relative,
-// forward-slash directory) — i.e. "which package's tsconfig governs this
-// file". Returns nil if no root matches; ranging over a nil map is a no-op,
-// so callers need no separate nil-check.
+// aliasesForDir returns the alias map of the root whose dir is the longest
+// matching ancestor-or-equal prefix of dir, or nil if none match.
 func aliasesForDir(roots []tsAliasRoot, dir string) map[string]string {
 	dir = filepath.ToSlash(dir)
 	var best *tsAliasRoot
@@ -1094,11 +1063,8 @@ func aliasesForDir(roots []tsAliasRoot, dir string) map[string]string {
 	return best.aliases
 }
 
-// withSvelteKitLibDefault ensures every alias root defines the SvelteKit
-// "$lib/" convention (→ "<root>/src/lib/") unless that root's own tsconfig
-// already defines "$lib/". If no alias roots were found at all (the common
-// case: a paths-less tsconfig.json), synthesizes a repo-root entry so the
-// convention still applies.
+// withSvelteKitLibDefault adds the "$lib/" -> "<root>/src/lib/" convention
+// to every root that doesn't already define it.
 func withSvelteKitLibDefault(roots []tsAliasRoot) []tsAliasRoot {
 	if len(roots) == 0 {
 		roots = []tsAliasRoot{{dir: "", aliases: map[string]string{}}}
@@ -1116,11 +1082,9 @@ func withSvelteKitLibDefault(roots []tsAliasRoot) []tsAliasRoot {
 	return roots
 }
 
-// tryParseTSConfigAliases reads a single tsconfig.json and extracts path
-// alias mappings. For example "@/*": ["./src/*"] maps prefix "@/" to
-// replacement "src/". ok is false both when the file doesn't exist/parse and
-// when it parses but declares no usable paths — either way, callers should
-// keep searching rather than treating this as "found, but empty".
+// tryParseTSConfigAliases reads path alias mappings from a tsconfig.json,
+// e.g. "@/*": ["./src/*"] maps prefix "@/" to replacement "src/". ok is
+// false if the file is missing/invalid or declares no usable paths.
 func tryParseTSConfigAliases(tsconfigPath string) (map[string]string, bool) {
 	data, err := os.ReadFile(tsconfigPath)
 	if err != nil {

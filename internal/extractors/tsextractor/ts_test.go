@@ -173,6 +173,28 @@ func TestDetectRoute_NonRoute(t *testing.T) {
 	}
 }
 
+func TestHasTSMarkers_PlainJSFramework(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"dependencies":{"vue":"^2.0.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !hasTSMarkers(dir) {
+		t.Error("expected a plain-JS Vue project (no tsconfig, no typescript dep) to be detected")
+	}
+}
+
+func TestHasTSMarkers_PlainJSNoFramework(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"dependencies":{"express":"^4.0.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if hasTSMarkers(dir) {
+		t.Error("expected a plain JS project with no recognized framework to stay undetected")
+	}
+}
+
 // --- Full extraction tests ---
 
 func TestExtract_FunctionDeclaration(t *testing.T) {
