@@ -65,30 +65,60 @@ func TestBuildConstIndex_QualifiedAndBare(t *testing.T) {
 	}
 	ix := buildConstIndex(ff)
 
-	if got := ix.resolve("Orders::Order"); got != "app/models/orders" {
+	if got := ix.resolve("Orders::Order", "app/x"); got != "app/models/orders" {
 		t.Errorf("qualified resolve = %q, want app/models/orders", got)
 	}
-	if got := ix.resolve("Order"); got != "app/models/orders" {
+	if got := ix.resolve("Order", "app/x"); got != "app/models/orders" {
 		t.Errorf("bare resolve = %q, want app/models/orders", got)
 	}
-	if got := ix.resolve("::Order"); got != "app/models/orders" {
+	if got := ix.resolve("::Order", "app/x"); got != "app/models/orders" {
 		t.Errorf("leading-colon resolve = %q, want app/models/orders", got)
 	}
-	if got := ix.resolve("Nonexistent"); got != "" {
+	if got := ix.resolve("Nonexistent", "app/x"); got != "" {
 		t.Errorf("unknown resolve = %q, want empty", got)
 	}
 }
 
-func TestConstIndex_BareAmbiguityDeterministic(t *testing.T) {
+// TestConstIndex_BareCollisionDeterministic covers the qualified-map collision
+// path: two symbols with the SAME bare name resolve deterministically to the
+// shortest declaring dir (unchanged by the namespace-aware bare disambiguation,
+// which only applies to the bare fallback below).
+func TestConstIndex_BareCollisionDeterministic(t *testing.T) {
 	ff := []facts.Fact{
 		symFact("Item", "engines/foo/app/models", facts.SymbolClass),
 		symFact("Item", "app/models", facts.SymbolClass),
 	}
 	for run := 0; run < 3; run++ {
 		ix := buildConstIndex(ff)
-		if got := ix.resolve("Item"); got != "app/models" {
-			t.Fatalf("run %d: ambiguous bare resolve = %q, want shortest dir app/models", run, got)
+		if got := ix.resolve("Item", "lib/tasks"); got != "app/models" {
+			t.Fatalf("run %d: collision resolve = %q, want shortest dir app/models", run, got)
 		}
+	}
+}
+
+// TestConstIndex_BareAmbiguityNamespaceAware covers the bare fallback: a short
+// reference to classes declared with COLLIDING namespaced names is resolved to
+// the candidate in the referrer's own namespace, and dropped when genuinely
+// ambiguous.
+func TestConstIndex_BareAmbiguityNamespaceAware(t *testing.T) {
+	ff := []facts.Fact{
+		symFact("Foo::Item", "engines/foo/app/models", facts.SymbolClass),
+		symFact("App::Item", "app/models", facts.SymbolClass),
+	}
+	ix := buildConstIndex(ff)
+
+	// A referrer inside the engine namespace resolves to the engine's Item.
+	if got := ix.resolve("Item", "engines/foo/app/services"); got != "engines/foo/app/models" {
+		t.Errorf("engine-referrer resolve = %q, want engines/foo/app/models", got)
+	}
+	// A referrer in the top-level app namespace resolves to the app's Item.
+	if got := ix.resolve("Item", "app/controllers"); got != "app/models" {
+		t.Errorf("app-referrer resolve = %q, want app/models", got)
+	}
+	// A referrer sharing no namespace with either candidate is genuinely
+	// ambiguous — drop the edge rather than guess an arbitrary declarer.
+	if got := ix.resolve("Item", "lib/tasks"); got != "" {
+		t.Errorf("ambiguous resolve = %q, want empty (dropped)", got)
 	}
 }
 

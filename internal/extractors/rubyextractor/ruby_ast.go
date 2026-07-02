@@ -101,7 +101,11 @@ type rubyScope struct {
 	moduleFunc   bool   // module_function active: subsequent defs are class methods
 	isModel      bool   // ActiveRecord model: associations/scopes/table_name apply
 	isSerializer bool   // ActiveModel::Serializer: attributes/associations back methods
-	symFactIdx   int    // index into w.out of this scope's class/module symbol fact, or -1
+	// hasInstanceMethod records that this scope directly defined a `def foo`
+	// (instance, not `def self.x`) method. For a module this signals a mixin
+	// (meant to be included), which makes the module abstract for package metrics.
+	hasInstanceMethod bool
+	symFactIdx        int // index into w.out of this scope's class/module symbol fact, or -1
 }
 
 type rubyWalker struct {
@@ -375,9 +379,15 @@ func (w *rubyWalker) handleModule(node *sitter.Node) {
 		"symbol_kind": facts.SymbolInterface,
 		"exported":    w.exportedByPackwerk,
 		"language":    "ruby",
+		// Package-metrics abstractness: a Ruby module is only "abstract" when it is
+		// a mixin (defines instance methods or is an ActiveSupport::Concern). Most
+		// Rails modules are pure namespaces (`module Api; class Foo`), so default to
+		// concrete and promote to abstract below once the body is known.
+		"abstract": false,
 	}
 	if bodyHasConcern(body, w.src) {
 		props["concern"] = true
+		props["abstract"] = true // Concern = behavior mixed into includers
 	}
 	if w.isRails {
 		props["framework"] = "rails"
@@ -396,6 +406,12 @@ func (w *rubyWalker) handleModule(node *sitter.Node) {
 	w.walkBody(body)
 	// Capture executable calls made directly in the module body (see handleClass).
 	w.walkScopeForCalls(body, modIdx, map[string]bool{}, nil)
+	// A module that defined instance methods during the walk is a mixin → abstract.
+	// props is shared by reference with the fact appended above, so this updates it
+	// in place (same mechanism handleMethod uses for cyclomatic).
+	if s := w.cur(); s != nil && s.hasInstanceMethod {
+		props["abstract"] = true
+	}
 	w.pop()
 }
 
@@ -482,6 +498,16 @@ func (w *rubyWalker) handleMethod(node *sitter.Node, isClassMethod bool) {
 	name := rubyText(node.ChildByFieldName("name"), w.src)
 	if name == "" {
 		return
+	}
+
+	// An instance method (`def foo`, not `def self.x`) directly in a module body
+	// marks that module as a mixin — behavior meant to be included into another
+	// type — which makes it abstract for package metrics. Fetch the scope fresh:
+	// push() can reallocate scopeStack, so a cached pointer would be stale.
+	if !isClassMethod {
+		if s := w.cur(); s != nil && s.kind == "module" {
+			s.hasInstanceMethod = true
+		}
 	}
 
 	scope := w.scopeQual()

@@ -42,10 +42,10 @@ func resolveImports(allFacts []facts.Fact, isRails bool) []facts.Fact {
 			for _, rel := range f.Relations {
 				switch rel.Kind {
 				case facts.RelImplements: // inheritance
-					add(src, ix.resolve(rel.Target))
+					add(src, ix.resolve(rel.Target, src))
 				case facts.RelCalls:
 					if c := constFromCall(rel.Target); c != "" {
-						add(src, ix.resolve(c))
+						add(src, ix.resolve(c, src))
 					}
 				}
 			}
@@ -55,14 +55,14 @@ func resolveImports(allFacts []facts.Fact, isRails bool) []facts.Fact {
 				rel := &f.Relations[j]
 				switch rel.Kind {
 				case facts.RelImplements: // include/extend/prepend mixins
-					if dst := ix.resolve(rel.Target); dst != "" {
+					if dst := ix.resolve(rel.Target, src); dst != "" {
 						add(src, dst)
 						setSource(f, "internal")
 					} else {
 						setSource(f, "external")
 					}
 				case facts.RelDependsOn: // ActiveRecord associations
-					if dst := ix.resolve(rel.Target); dst != "" {
+					if dst := ix.resolve(rel.Target, src); dst != "" {
 						add(src, dst)
 						setSource(f, "internal")
 					} else {
@@ -127,8 +127,10 @@ func buildConstIndex(allFacts []facts.Fact) *constIndex {
 	return ix
 }
 
-// resolve returns the declaring module dir of a constant reference, or "".
-func (ix *constIndex) resolve(ref string) string {
+// resolve returns the declaring module dir of a constant reference, or "". src is
+// the referring symbol's dir, used to disambiguate bare-name collisions: Ruby
+// constant lookup is lexical, so a declarer in the referrer's own namespace wins.
+func (ix *constIndex) resolve(ref, src string) string {
 	ref = stripLeadingColons(ref)
 	if ref == "" {
 		return ""
@@ -136,10 +138,44 @@ func (ix *constIndex) resolve(ref string) string {
 	if dir, ok := ix.qualified[ref]; ok {
 		return dir
 	}
-	if dirs := ix.bare[lastSegment(ref)]; len(dirs) > 0 {
-		return dirs[0] // pre-sorted: shortest dir, then lexicographic
+	dirs := ix.bare[lastSegment(ref)]
+	switch len(dirs) {
+	case 0:
+		return ""
+	case 1:
+		return dirs[0]
 	}
-	return ""
+	// Ambiguous bare name (several declarers of the same simple name). Prefer the
+	// candidate sharing the longest leading path with the referrer's dir. If the
+	// best match is not strictly better than the runner-up, or no candidate shares
+	// any namespace with the referrer, the reference is genuinely ambiguous — drop
+	// it rather than fabricate an edge to an arbitrary (shortest-dir) declarer.
+	best, bestScore := "", 0
+	tie := false
+	for _, d := range dirs {
+		s := commonPrefixSegments(src, d)
+		switch {
+		case s > bestScore:
+			best, bestScore, tie = d, s, false
+		case s == bestScore:
+			tie = true
+		}
+	}
+	if bestScore == 0 || tie {
+		return ""
+	}
+	return best
+}
+
+// commonPrefixSegments counts the equal leading '/'-separated path segments of a
+// and b (e.g. "app/models/x" vs "app/models/y" → 2, "app/x" vs "lib/y" → 0).
+func commonPrefixSegments(a, b string) int {
+	as, bs := strings.Split(a, "/"), strings.Split(b, "/")
+	n := 0
+	for n < len(as) && n < len(bs) && as[n] == bs[n] {
+		n++
+	}
+	return n
 }
 
 // classifyRequire resolves a require/require_relative dependency fact: relative

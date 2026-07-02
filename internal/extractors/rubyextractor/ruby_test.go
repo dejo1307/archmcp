@@ -599,6 +599,10 @@ end
 	if c, _ := mod.Props["concern"].(bool); !c {
 		t.Errorf("Trackable should be flagged concern:true; props = %v", mod.Props)
 	}
+	// A Concern is a mixin → abstract for package metrics.
+	if ab, _ := mod.Props["abstract"].(bool); !ab {
+		t.Errorf("Concern Trackable should be abstract:true; props = %v", mod.Props)
+	}
 	// extend ActiveSupport::Concern must not be emitted as a mixin dependency.
 	for _, f := range result {
 		if f.Kind == facts.KindDependency {
@@ -608,6 +612,64 @@ end
 				}
 			}
 		}
+	}
+}
+
+// moduleAbstract returns the `abstract` prop of the named module symbol.
+func moduleAbstract(t *testing.T, result []facts.Fact, name string) bool {
+	t.Helper()
+	mod, ok := symbolsByName(result)[name]
+	if !ok {
+		t.Fatalf("module %q not found among symbols", name)
+	}
+	ab, _ := mod.Props["abstract"].(bool)
+	return ab
+}
+
+func TestAST_ModuleAbstractness(t *testing.T) {
+	// A namespace module (only nested class/module defs) is concrete.
+	nsResult := extractFileAST([]byte("module Api\n  module V2\n    class Foo\n    end\n  end\nend\n"),
+		"app/controllers/api/v2/foo.rb", true, false)
+	if moduleAbstract(t, nsResult, "Api") {
+		t.Error("namespace module Api should be abstract:false")
+	}
+	if moduleAbstract(t, nsResult, "Api::V2") {
+		t.Error("namespace module Api::V2 should be abstract:false")
+	}
+
+	// A mixin module (defines an instance method) is abstract.
+	mixinResult := extractFileAST([]byte("module Greetable\n  def greet\n    \"hi\"\n  end\nend\n"),
+		"app/models/concerns/greetable.rb", true, false)
+	if !moduleAbstract(t, mixinResult, "Greetable") {
+		t.Error("mixin module Greetable should be abstract:true")
+	}
+
+	// A utility module with only class methods (`def self.x`) is concrete.
+	utilResult := extractFileAST([]byte("module PhoneUtils\n  def self.format(n)\n    n\n  end\nend\n"),
+		"lib/phone_utils.rb", false, false)
+	if moduleAbstract(t, utilResult, "PhoneUtils") {
+		t.Error("class-method-only module PhoneUtils should be abstract:false")
+	}
+
+	// module_function makes subsequent defs class methods → still concrete.
+	mfResult := extractFileAST([]byte("module M\n  module_function\n  def helper\n    1\n  end\nend\n"),
+		"lib/m.rb", false, false)
+	if moduleAbstract(t, mfResult, "M") {
+		t.Error("module_function module M should be abstract:false")
+	}
+
+	// A mixed module (nested class AND an instance method) is abstract — the
+	// instance method wins.
+	mixedResult := extractFileAST([]byte("module M\n  class Inner\n  end\n  def instance_m\n    1\n  end\nend\n"),
+		"app/services/m.rb", false, false)
+	if !moduleAbstract(t, mixedResult, "M") {
+		t.Error("mixed module M with an instance method should be abstract:true")
+	}
+
+	// An empty module is a pure namespace → concrete.
+	emptyResult := extractFileAST([]byte("module Empty\nend\n"), "lib/empty.rb", false, false)
+	if moduleAbstract(t, emptyResult, "Empty") {
+		t.Error("empty module Empty should be abstract:false")
 	}
 }
 
