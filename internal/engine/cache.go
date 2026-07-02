@@ -40,7 +40,11 @@ import (
 // v24: Ruby walks method default-parameter values for calls (`def f(x = self.class.foo)`) and records single-level predicate/bang calls (`viewer.rich?`, `x.save!`) which — unlike plain attribute reads — are unambiguously method invocations.
 // v25: Ruby folds `delegate :a, :b, ..., to: X` method names as calls, and records calls on a bare-method (non-local identifier) receiver when the method name is scope-like (`some_relation.pluck_job_id`).
 // v26: Ruby records scope-like (underscored) method calls on ANY identifier receiver, including local relation variables (`items = ...; items.preload_relations`).
-const cacheVersion = "v26"
+// v27: Ruby resolves underscored calls on @ivar/@@cvar/$gvar receivers (`@klass.bo_search_fields`) and indexes view templates (ERB/Slim/HAML) for embedded Ruby calls (helpers/class methods), emitting KindFileRef references.
+// v28: Ruby records method calls on a `klass`/`clazz`/`klazz` (or @klass) receiver as class-method dispatch (`klass.inline`), regardless of the method name.
+// v29: Ruby extends the interpolated-prefix dispatch heuristic to strings (`"present_#{idx}"`), not just symbols, so send()-by-computed-string-name marks same-prefix methods used.
+// v30: interpolated-string prefixes are now gated on dispatcher-proximity (committed only when the enclosing scope also calls send/public_send/…), so cache/Redis-key strings (`"fetch_#{id}"`) no longer hide genuine orphans; interpolated symbols remain unconditional.
+const cacheVersion = "v30"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

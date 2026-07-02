@@ -103,6 +103,27 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 		allFacts = append(allFacts, routeFacts...)
 	}
 
+	// Extract Ruby calls embedded in view templates (ERB/Slim/HAML) so helpers and
+	// class methods invoked only from views are not mis-reported as dead. Emits
+	// reference-only KindFileRef facts (no symbols); parsed in parallel.
+	var tmplFiles []string
+	for _, relFile := range files {
+		if isTemplateFile(relFile) {
+			tmplFiles = append(tmplFiles, relFile)
+		}
+	}
+	tmplFacts := parallel.MapFiles(ctx, tmplFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			log.Printf("[ruby-extractor] error reading template %s: %v", relFile, err)
+			return nil
+		}
+		return extractTemplateRefs(src, relFile)
+	})
+	for _, ff := range tmplFacts {
+		allFacts = append(allFacts, ff...)
+	}
+
 	// Resolve constant references (inheritance, mixins, associations, calls),
 	// require_relative paths, and Packwerk dependencies into internal module
 	// coupling edges. Without this, Ruby imports never match module Names

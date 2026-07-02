@@ -1405,3 +1405,117 @@ end
 		t.Errorf("scope call on a local relation var should record preload_relations; relations = %v", meth.Relations)
 	}
 }
+
+// TestExtractFile_IvarUnderscoredCall checks that an underscored method call on an
+// instance/class variable receiver (`@klass.bo_search_fields`) is recorded, while a
+// single-word read on an ivar (`@user.name`) is not.
+func TestExtractFile_IvarUnderscoredCall(t *testing.T) {
+	src := `class BoSearchService
+  def search
+    @klass.bo_search_fields
+    @@config.some_setting
+    @user.name
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/bo_search_service.rb", true, true)
+	meth := symbolsByName(result)["BoSearchService#search"]
+	for _, want := range []string{"bo_search_fields", "some_setting"} {
+		if !hasCall(meth, want) {
+			t.Errorf("underscored call on ivar/cvar receiver should record %s; relations = %v", want, meth.Relations)
+		}
+	}
+	if hasCall(meth, "name") {
+		t.Errorf("single-word read @user.name must not be recorded; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_KlassReceiverDispatch checks that a method call on a klass-named
+// receiver (the Ruby idiom for a Class var) is recorded as a class-method dispatch
+// regardless of the method name, while cheap reads are not.
+func TestExtractFile_KlassReceiverDispatch(t *testing.T) {
+	src := `class Dispatcher
+  def run
+    registry.each do |klass|
+      klass.inline
+      klass.name
+    end
+    @klass.trigger_now
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/dispatcher.rb", true, true)
+	meth := symbolsByName(result)["Dispatcher#run"]
+	for _, want := range []string{"inline", "trigger_now"} {
+		if !hasCall(meth, want) {
+			t.Errorf("klass-receiver dispatch should record %s; relations = %v", want, meth.Relations)
+		}
+	}
+	if hasCall(meth, "name") {
+		t.Errorf("cheap klass.name must not be recorded; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_InterpolatedStringPrefix checks that an interpolated string used
+// as a computed dispatch name records its prefix, while i18n-key and message strings
+// (`.`/space endings) do not.
+func TestExtractFile_InterpolatedStringPrefix(t *testing.T) {
+	src := `class ComposeResults
+  def handle(hit)
+    model_to_present = "present_#{hit['_index'].singularize}"
+    title = "reports.#{hit['type']}.title"
+    msg = "Hello #{hit['name']}"
+    SearchPresenter.send(model_to_present, hit)
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/es/compose_results.rb", true, true)
+	got := fileRefPrefixes(result)
+	has := func(p string) bool {
+		for _, x := range got {
+			if x == p {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("present_") {
+		t.Errorf("expected dynamic_send_prefixes to contain present_ (method dispatches); got %v", got)
+	}
+	if has("reports.") || has("Hello ") {
+		t.Errorf("i18n/message string prefixes must be gated out; got %v", got)
+	}
+}
+
+// TestExtractFile_StringPrefixGatedOnDispatcher checks that an interpolated-string
+// prefix is NOT recorded when the enclosing scope invokes no dispatcher (so cache/key
+// strings like `"fetch_#{id}"` don't hide genuine orphans), while an interpolated
+// SYMBOL is still recorded unconditionally.
+func TestExtractFile_StringPrefixGatedOnDispatcher(t *testing.T) {
+	src := `class Keys
+  def cache_key(id)
+    "fetch_#{id}"
+  end
+  def dispatch_by_symbol(type)
+    m = :"report_#{type}"
+    public_send(m)
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/keys.rb", true, true)
+	got := fileRefPrefixes(result)
+	has := func(p string) bool {
+		for _, x := range got {
+			if x == p {
+				return true
+			}
+		}
+		return false
+	}
+	if has("fetch_") {
+		t.Errorf("string prefix in a non-dispatching method must NOT be recorded; got %v", got)
+	}
+	if !has("report_") {
+		t.Errorf("interpolated symbol prefix should be recorded unconditionally; got %v", got)
+	}
+}
