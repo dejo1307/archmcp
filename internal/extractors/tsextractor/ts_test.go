@@ -268,6 +268,9 @@ import React from 'react'
 		for _, r := range d.Relations {
 			if r.Target == "src/utils" {
 				hasUtils = true
+				if d.Props["reexport"] == true {
+					t.Error("plain import should not be tagged reexport")
+				}
 			}
 			if r.Target == "react" {
 				hasReact = true
@@ -279,6 +282,106 @@ import React from 'react'
 	}
 	if !hasReact {
 		t.Error("expected import for react")
+	}
+}
+
+func TestExtract_Monorepo_NestedTSConfigAlias(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"tsconfig.json":                 `{}`,
+		"app/ui/tsconfig.json":          `{"compilerOptions":{"paths":{"~/*":["./src/*"]}}}`,
+		"app/ui/src/pages/Home.tsx":     `import { Foo } from '~/components/Foo'`,
+		"app/ui/src/components/Foo.tsx": `export function Foo() { return null }`,
+	}, false)
+
+	deps := findFactsByKind(ff, facts.KindDependency)
+	var found *facts.Fact
+	for i := range deps {
+		if hasRelation(deps[i], facts.RelImports, "app/ui/src/components/Foo") {
+			found = &deps[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("expected ~/components/Foo to resolve to app/ui/src/components/Foo")
+	}
+	if found.Props["source"] != "internal" {
+		t.Errorf("source = %v, want internal (paths-less root tsconfig should not short-circuit nested package alias discovery)", found.Props["source"])
+	}
+}
+
+func TestExtract_Monorepo_SiblingPackagesSameAliasDifferentTarget(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"tsconfig.json":                `{}`,
+		"packages/app-a/tsconfig.json": `{"compilerOptions":{"paths":{"~/*":["./src/*"]}}}`,
+		"packages/app-a/src/index.ts":  `import { X } from '~/foo'`,
+		"packages/app-a/src/foo.ts":    `export const X = 1`,
+		"packages/app-b/tsconfig.json": `{"compilerOptions":{"paths":{"~/*":["./lib/*"]}}}`,
+		"packages/app-b/index.ts":      `import { Y } from '~/foo'`,
+		"packages/app-b/lib/foo.ts":    `export const Y = 2`,
+	}, false)
+
+	deps := findFactsByKind(ff, facts.KindDependency)
+	wantA, wantB := false, false
+	for _, d := range deps {
+		if hasRelation(d, facts.RelImports, "packages/app-a/src/foo") {
+			wantA = true
+		}
+		if hasRelation(d, facts.RelImports, "packages/app-b/lib/foo") {
+			wantB = true
+		}
+		// Neither package's ~/foo should ever resolve against the other's mapping.
+		if hasRelation(d, facts.RelImports, "packages/app-b/src/foo") ||
+			hasRelation(d, facts.RelImports, "packages/app-a/lib/foo") {
+			t.Errorf("alias resolved against the wrong package's tsconfig: %+v", d)
+		}
+	}
+	if !wantA {
+		t.Error("expected app-a's ~/foo to resolve to packages/app-a/src/foo")
+	}
+	if !wantB {
+		t.Error("expected app-b's ~/foo to resolve to packages/app-b/lib/foo")
+	}
+}
+
+func TestExtract_BarrelReexports(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/index.ts": `
+export * from './client'
+export { HomePage } from './HomePage'
+export type { Config } from './types'
+export * from 'some-external-lib'
+`,
+		"src/client.ts":    `export function makeClient() {}`,
+		"src/HomePage.tsx": `export function HomePage() { return null }`,
+		"src/types.ts":     `export type Config = { url: string }`,
+	}, false)
+
+	deps := findFactsByKind(ff, facts.KindDependency)
+
+	cases := []struct {
+		target     string
+		wantSource string
+	}{
+		{"src/client", "internal"},
+		{"src/HomePage", "internal"},
+		{"src/types", "internal"},
+		{"some-external-lib", "external"},
+	}
+	for _, tc := range cases {
+		var found *facts.Fact
+		for i := range deps {
+			if hasRelation(deps[i], facts.RelImports, tc.target) {
+				found = &deps[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("expected a Dependency fact re-exporting %s", tc.target)
+		}
+		if found.Props["source"] != tc.wantSource {
+			t.Errorf("%s: source = %v, want %s", tc.target, found.Props["source"], tc.wantSource)
+		}
+		if found.Props["reexport"] != true {
+			t.Errorf("%s: reexport = %v, want true", tc.target, found.Props["reexport"])
+		}
 	}
 }
 
