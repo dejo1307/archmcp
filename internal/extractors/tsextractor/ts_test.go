@@ -787,3 +787,219 @@ func TestIsTypeScriptFile(t *testing.T) {
 		}
 	}
 }
+
+// --- File-scope reference pass (KindFileRef) ---
+
+// fileRefTargets returns the RelCalls targets of the KindFileRef fact emitted for the
+// given source file, or nil if none was emitted.
+func fileRefTargets(ff []facts.Fact, file string) []string {
+	for _, f := range ff {
+		if f.Kind == facts.KindFileRef && f.File == file {
+			var out []string
+			for _, r := range f.Relations {
+				if r.Kind == facts.RelCalls {
+					out = append(out, r.Target)
+				}
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+func hasTarget(targets []string, want string) bool {
+	for _, t := range targets {
+		if t == want {
+			return true
+		}
+	}
+	return false
+}
+
+// A component rendered only in JSX (never called) must still produce a usage
+// reference, or the dead-code detector flags every React component as dead.
+func TestExtract_FileRef_JSXComponentUsage(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/App.tsx":    `import Header from './Header'` + "\n" + `export default function App() { return <Header />; }`,
+		"src/Header.tsx": `export default function Header() { return null; }`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/App.tsx")
+	if !hasTarget(targets, "src.Header") {
+		t.Errorf("App.tsx file_ref should reference src.Header via JSX; got %v", targets)
+	}
+	// The referenced component must exist as a symbol with the matching short name.
+	if _, ok := findFact(ff, "src.Header"); !ok {
+		t.Fatal("expected symbol fact src.Header")
+	}
+}
+
+// A default-imported page referenced only as a value in a top-level route table
+// (react-router-manager style) must be marked used.
+func TestExtract_FileRef_RouteConfigIdentifier(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/routes.jsx": `import EventCalendar from './event_calendar'` + "\n" +
+			`export default [{ path: '/calendar', component: EventCalendar }]`,
+		"src/event_calendar/index.jsx": `export default function EventCalendar() { return null; }`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/routes.jsx")
+	// Folder-index resolution binds the reference to the exact declaring dir.
+	if !hasTarget(targets, "src/event_calendar.EventCalendar") {
+		t.Errorf("routes.jsx file_ref should reference the routed component at its folder dir; got %v", targets)
+	}
+	if _, ok := findFact(ff, "src/event_calendar.EventCalendar"); !ok {
+		t.Fatal("expected symbol fact src/event_calendar.EventCalendar")
+	}
+}
+
+// A namespace import used via member access (utils.foo) marks the member used.
+func TestExtract_FileRef_NamespaceMember(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/config.ts": `import * as helpers from './helpers'` + "\n" +
+			`export const value = helpers.compute()`,
+		"src/helpers.ts": `export function compute() { return 1; }`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/config.ts")
+	if !hasTarget(targets, "src.compute") {
+		t.Errorf("config.ts file_ref should reference src.compute via namespace member; got %v", targets)
+	}
+}
+
+// CommonJS require() bindings used at file scope mark the required symbol used.
+func TestExtract_FileRef_RequireBinding(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"server/index.js": `const { registerRoutes } = require('./routes')` + "\n" +
+			`registerRoutes()`,
+		"server/routes.js": `function registerRoutes() {}` + "\n" + `module.exports = { registerRoutes }`,
+	}, false)
+
+	targets := fileRefTargets(ff, "server/index.js")
+	if !hasTarget(targets, "server.registerRoutes") {
+		t.Errorf("index.js file_ref should reference server.registerRoutes via require; got %v", targets)
+	}
+}
+
+// require() and dynamic import() must produce module dependency edges so CommonJS and
+// code-split trees are not invisible to the import graph.
+func TestExtract_DynamicAndRequireDependencyEdges(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/loader.ts": `export async function load() {` + "\n" +
+			`  const mod = await import('./heavy');` + "\n" +
+			`  const cfg = require('./cfg');` + "\n" +
+			`  return mod;` + "\n" + `}`,
+		"src/heavy.ts": `export function heavy() {}`,
+		"src/cfg.ts":   `export const cfg = {}`,
+	}, false)
+
+	deps := findFactsByKind(ff, facts.KindDependency)
+	wantTargets := []string{"src/heavy", "src/cfg"}
+	for _, want := range wantTargets {
+		found := false
+		for i := range deps {
+			if hasRelation(deps[i], facts.RelImports, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected a dependency edge importing %s (require/dynamic import)", want)
+		}
+	}
+}
+
+// A same-module function used only at module scope — called at the top level or
+// passed as a value to an HOC (connect(mapStateToProps)) — is invisible to the
+// per-function call walk. The file-ref pass must still record it, or it is falsely
+// reported dead.
+func TestExtract_FileRef_SameModuleUsePositions(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"client/index.jsx": `function startSession() {}` + "\n" +
+			`function mapStateToProps() {}` + "\n" +
+			`startSession()` + "\n" +
+			`export default connect(mapStateToProps)(App)`,
+	}, false)
+
+	targets := fileRefTargets(ff, "client/index.jsx")
+	for _, want := range []string{"client.startSession", "client.mapStateToProps", "client.App"} {
+		if !hasTarget(targets, want) {
+			t.Errorf("index.jsx file_ref should reference %s (module-scope call / HOC arg); got %v", want, targets)
+		}
+	}
+}
+
+// The pervasive `export default connect(...)(Foo)` HOC pattern: the anonymous default
+// export of a folder index is named "<Folder>Index" by fileSymbolName, but consumers
+// import it as the component's own name. A default import must reference that
+// default-export symbol, or the wrapper is falsely reported dead.
+func TestExtract_FileRef_FolderIndexAnonymousDefault(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/app.jsx": `import FeedItem from './feed_item'` + "\n" +
+			`export default function App() { return <FeedItem />; }`,
+		"src/feed_item/index.jsx": `function FeedItem() { return null; }` + "\n" +
+			`export default connect(mapStateToProps)(FeedItem);`,
+	}, false)
+
+	// The anonymous connect() wrapper is named FeedItemIndex by fileSymbolName.
+	if _, ok := findFact(ff, "src/feed_item.FeedItemIndex"); !ok {
+		t.Fatal("expected default-export wrapper symbol src/feed_item.FeedItemIndex")
+	}
+	targets := fileRefTargets(ff, "src/app.jsx")
+	if !hasTarget(targets, "src/feed_item.FeedItemIndex") {
+		t.Errorf("app.jsx must reference the module's default export (the wrapper); got %v", targets)
+	}
+	// The inner component is still referenced too (via JSX), at its folder dir.
+	if !hasTarget(targets, "src/feed_item.FeedItem") {
+		t.Errorf("app.jsx should also reference the inner component; got %v", targets)
+	}
+}
+
+// A named import through a folder index resolves to the exact declaring dir (not the
+// folder's parent), so the reference matches the declared symbol by full name.
+func TestExtract_FileRef_FolderIndexNamedImport(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/consumer.ts": `import { helper } from './lib'` + "\n" +
+			`export const x = helper()`,
+		"src/lib/index.ts": `export function helper() { return 1; }`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/consumer.ts")
+	if !hasTarget(targets, "src/lib.helper") {
+		t.Errorf("consumer.ts should reference src/lib.helper at the folder dir; got %v", targets)
+	}
+}
+
+// `export { default as X } from './folder'` re-exports the folder's default export;
+// the literal "default" is resolved to the folder-index default name.
+func TestExtract_FileRef_ReexportDefault(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/barrel.jsx": `export { default as FeedItem } from './feed_item'`,
+		"src/feed_item/index.jsx": `function FeedItem() { return null; }` + "\n" +
+			`export default connect(x)(FeedItem);`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/barrel.jsx")
+	if !hasTarget(targets, "src/feed_item.FeedItemIndex") {
+		t.Errorf("barrel should reference the re-exported default (FeedItemIndex); got %v", targets)
+	}
+}
+
+// A class method referenced only as an event-handler value (onClick={this.handleClick})
+// is never called by name, so React binds it as a prop — it must still be recorded as
+// used via the `this.<member>` reference, or it is falsely reported dead.
+func TestExtract_ThisMemberReference_EventHandler(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/widget.tsx": `export class Widget {
+  handleClick() { return 1; }
+  render() { return <button onClick={this.handleClick} />; }
+}`,
+	}, false)
+
+	render, ok := findFact(ff, "src.Widget.render")
+	if !ok {
+		t.Fatal("expected method fact src.Widget.render")
+	}
+	if !hasRelation(render, facts.RelCalls, "src.Widget.handleClick") {
+		t.Errorf("render should reference this.handleClick (event handler value); relations: %v", render.Relations)
+	}
+}

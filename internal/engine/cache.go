@@ -100,7 +100,24 @@ import (
 // (Java & Kotlin); a Dagger @Component interface is no longer mislabeled a Spring component
 // (disambiguated by interface-vs-class). Lets package-metrics exclude DI wiring from
 // abstractness/type counts (a Dagger component package was falsely "useless").
-const cacheVersion = "v60"
+// v61: TS/JS extractor now emits file-scope reference facts (KindFileRef) for JSX
+// component rendering (<Foo/>), imported-identifier values (route configs like
+// `{ component: Foo }`), namespace member access (`ns.foo`), require()-bound names,
+// and `export … from` re-exports — plus require()/dynamic-import() dependency edges.
+// Fixes massive dead-code false positives on React/CommonJS codebases, where a
+// component used only via JSX or a route table previously had no incoming edge.
+// v62: the TS/JS file-scope reference pass now also records same-module use
+// positions — a bare call callee and identifier call arguments — so a function used
+// only at module scope (`startSession()` at file top level) or passed as a value to
+// an HOC (`connect(mapStateToProps)`) is no longer falsely reported dead.
+// v63: a default import now also references the target module's default-export symbol
+// (resolved via the known-files set + fileSymbolName), so an anonymous folder-index
+// default like `export default connect(...)(X)` — named "<Folder>Index" — is no longer
+// falsely reported dead when imported by the component's own name.
+// v64: a `this.<member>` reference inside a class method now records a use of that
+// member, so a React class-component event handler bound as a prop value
+// (onClick={this.handleClick}) — never called by name — is no longer falsely dead.
+const cacheVersion = "v64"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
