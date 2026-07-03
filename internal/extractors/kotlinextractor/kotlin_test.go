@@ -70,3 +70,41 @@ func TestDetectSourceRoot_AllTestsFallback(t *testing.T) {
 		t.Errorf("detectKotlinSourceRoot = %q, want app/src/test/java/ (fallback when only tests)", got)
 	}
 }
+
+// TestDetectBasePackage_GroovyAndKotlinDSL is the regression guard for the
+// cross-module import false-orphan bug: the namespace must be read from BOTH a
+// Groovy `app/build.gradle` (single quotes, no `=`) and a Kotlin-DSL
+// `app/build.gradle.kts` (double quotes). A double-quote-only regex left the base
+// package empty on Groovy projects, so every in-repo import resolved as external
+// and bare calls to imported top-level functions emitted no call edge.
+func TestDetectBasePackage_GroovyAndKotlinDSL(t *testing.T) {
+	t.Run("groovy single-quote", func(t *testing.T) {
+		repo, _ := writeKotlinRepo(t, map[string]string{
+			"app/build.gradle": "android {\n    namespace 'com.example.app'\n}\n",
+		})
+		if got := detectKotlinBasePackage(repo); got != "com.example.app" {
+			t.Errorf("detectKotlinBasePackage = %q, want com.example.app (Groovy single-quote)", got)
+		}
+	})
+	t.Run("kotlin-dsl double-quote", func(t *testing.T) {
+		repo, _ := writeKotlinRepo(t, map[string]string{
+			"app/build.gradle.kts": "android {\n    namespace = \"com.example.app\"\n}\n",
+		})
+		if got := detectKotlinBasePackage(repo); got != "com.example.app" {
+			t.Errorf("detectKotlinBasePackage = %q, want com.example.app (Kotlin-DSL)", got)
+		}
+	})
+}
+
+// TestResolveKotlinImport_InternalVsExternal checks that an in-repo import
+// (matching the base package) resolves as internal so its bare-call edge is
+// emitted, while a third-party import stays external.
+func TestResolveKotlinImport_InternalVsExternal(t *testing.T) {
+	const root, base = "app/src/main/java/", "com.example.app"
+	if _, ext := resolveKotlinImport("com.example.app.ui.common.setMargin", root, base); ext {
+		t.Error("in-repo import should resolve as internal (external=false)")
+	}
+	if _, ext := resolveKotlinImport("retrofit2.Retrofit", root, base); !ext {
+		t.Error("third-party import should stay external (external=true)")
+	}
+}

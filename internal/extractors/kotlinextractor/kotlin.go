@@ -403,7 +403,11 @@ func detectKotlinBasePackage(repoPath string) string {
 		filepath.Join(repoPath, "build.gradle.kts"),
 		filepath.Join(repoPath, "build.gradle"),
 	}
-	nsRe := regexp.MustCompile(`namespace\s*=?\s*"([^"]+)"`)
+	// Match both Kotlin-DSL (`namespace = "x"`) and Groovy (`namespace 'x'`)
+	// build scripts — Groovy uses single quotes and omits the `=`, so a
+	// double-quote-only pattern silently fails on `.gradle` files, leaving the base
+	// package empty and making every in-repo import resolve as external.
+	nsRe := regexp.MustCompile(`namespace\s*=?\s*['"]([^'"]+)['"]`)
 	for _, path := range candidates {
 		data, err := os.ReadFile(path)
 		if err != nil {

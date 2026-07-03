@@ -373,9 +373,11 @@ fun caller() {
 	}
 }
 
-func TestAST_MethodCallOnReceiver_NoEdge(t *testing.T) {
-	// A method call on a receiver (navigation expression) is left unresolved
-	// because the receiver type is unknown without type information.
+func TestAST_MethodCallOnReceiver_EmitsShortNameEdge(t *testing.T) {
+	// A method call on a receiver (navigation expression) can't be resolved to a
+	// canonical fact name without type information, but the short-name-matching
+	// dead-code detector still needs the reference — so we emit a RelCalls edge to
+	// the bare member name so the target member isn't mis-reported as an orphan.
 	ff := extractAST(t, `
 package pkg
 class Foo {
@@ -388,10 +390,159 @@ class Foo {
 	if !ok {
 		t.Fatal("expected fact for pkg.Foo.run")
 	}
-	for _, r := range run.Relations {
-		if r.Kind == facts.RelCalls {
-			t.Errorf("unexpected RelCalls edge for navigation call: %+v", r)
+	if !hasRelation(run, facts.RelCalls, "save") {
+		t.Errorf("expected short-name RelCalls → save for repository.save(), got %+v", run.Relations)
+	}
+}
+
+func TestAST_PropertyAccessOnReceiver_EmitsShortNameEdge(t *testing.T) {
+	// Property/field access (not a call) also references its member by short name;
+	// this rescues overridden properties (e.g. `override val uniqueId`) that are only
+	// ever read polymorphically as `slot.uniqueId`.
+	ff := extractAST(t, `
+package pkg
+class Foo {
+    fun run() {
+        val id = slot.uniqueId
+    }
+}
+`, false)
+	run, ok := findFact(ff, "pkg.Foo.run")
+	if !ok {
+		t.Fatal("expected fact for pkg.Foo.run")
+	}
+	if !hasRelation(run, facts.RelCalls, "uniqueId") {
+		t.Errorf("expected short-name RelCalls → uniqueId for slot.uniqueId, got %+v", run.Relations)
+	}
+}
+
+func TestAST_CallsOutsideFunctionBody(t *testing.T) {
+	// Calls that live outside a function body must still be credited so their
+	// targets aren't mis-reported as orphans: (1) supertype constructor-delegation
+	// arguments on a class and an object, and (2) function default-parameter values.
+	ff := extractAST(t, `
+package pkg
+data class NpeId(val id: String) : Enrichment(npeEntity(id))
+object Single : Base(makeThing())
+fun withDefault(x: List<Int> = scoreMessages()) {}
+fun npeEntity(id: String) = 1
+fun makeThing() = 2
+fun scoreMessages() = listOf(1)
+`, false)
+	cases := []struct{ owner, target string }{
+		{"pkg.NpeId", "pkg.npeEntity"},       // class delegation arg
+		{"pkg.Single", "pkg.makeThing"},      // object delegation arg
+		{"pkg.withDefault", "pkg.scoreMessages"}, // function default-param value
+	}
+	for _, c := range cases {
+		f, ok := findFact(ff, c.owner)
+		if !ok {
+			t.Errorf("expected fact for %s", c.owner)
+			continue
 		}
+		if !hasRelation(f, facts.RelCalls, c.target) {
+			t.Errorf("%s: expected RelCalls → %s, got %+v", c.owner, c.target, f.Relations)
+		}
+	}
+}
+
+func TestAST_CallableReference(t *testing.T) {
+	// A function used only via a callable reference (`::foo`) must still be credited
+	// so it isn't mis-reported as an orphan.
+	ff := extractAST(t, `
+package pkg
+fun caller() {
+    register(onClick = ::doNothing)
+    listOf(1).map(::helper)
+}
+fun doNothing() {}
+fun helper(x: Int) = x
+`, false)
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	for _, target := range []string{"doNothing", "helper"} {
+		if !hasRelation(c, facts.RelCalls, target) {
+			t.Errorf("expected short-name RelCalls → %s for ::%s, got %+v", target, target, c.Relations)
+		}
+	}
+}
+
+func TestAST_MemberFunctionIsMethodKind(t *testing.T) {
+	// A `fun` inside a class/object is a method (parity with Go/Java), so the orphan
+	// detector grades it low confidence, not the high-confidence bucket reserved for
+	// plain functions. A top-level `fun` stays a function.
+	ff := extractAST(t, `
+package pkg
+class Service {
+    fun handle() {}
+}
+fun topLevel() {}
+`, false)
+	m, ok := findFact(ff, "pkg.Service.handle")
+	if !ok {
+		t.Fatal("expected fact for pkg.Service.handle")
+	}
+	if m.Props["symbol_kind"] != facts.SymbolMethod {
+		t.Errorf("member fun symbol_kind = %v, want method", m.Props["symbol_kind"])
+	}
+	if m.Props["receiver"] != "Service" {
+		t.Errorf("member fun receiver = %v, want Service", m.Props["receiver"])
+	}
+	f, ok := findFact(ff, "pkg.topLevel")
+	if !ok {
+		t.Fatal("expected fact for pkg.topLevel")
+	}
+	if f.Props["symbol_kind"] != facts.SymbolFunc {
+		t.Errorf("top-level fun symbol_kind = %v, want function", f.Props["symbol_kind"])
+	}
+}
+
+func TestAST_OverrideAndDIProviderProps(t *testing.T) {
+	// override → framework/interface entry point; @Provides/@Binds → DI provider.
+	// Both are dispatched by the runtime/container and must be tagged so the orphan
+	// detector treats them as entry points rather than dead code.
+	ff := extractAST(t, `
+package pkg
+class MyView : BaseView() {
+    override fun onCreate() {}
+}
+class MyModule {
+    @Provides
+    fun provideThing(): Thing = Thing()
+    @Binds
+    fun bindOther(impl: OtherImpl): Other = impl
+    fun plain() {}
+}
+`, false)
+	oc, ok := findFact(ff, "pkg.MyView.onCreate")
+	if !ok {
+		t.Fatal("expected fact for pkg.MyView.onCreate")
+	}
+	if oc.Props["override"] != true {
+		t.Errorf("override fun should carry override=true, got %+v", oc.Props)
+	}
+	prov, ok := findFact(ff, "pkg.MyModule.provideThing")
+	if !ok {
+		t.Fatal("expected fact for pkg.MyModule.provideThing")
+	}
+	if prov.Props["di_provider"] != true {
+		t.Errorf("@Provides fun should carry di_provider=true, got %+v", prov.Props)
+	}
+	binds, ok := findFact(ff, "pkg.MyModule.bindOther")
+	if !ok {
+		t.Fatal("expected fact for pkg.MyModule.bindOther")
+	}
+	if binds.Props["di_provider"] != true {
+		t.Errorf("@Binds fun should carry di_provider=true, got %+v", binds.Props)
+	}
+	plain, ok := findFact(ff, "pkg.MyModule.plain")
+	if !ok {
+		t.Fatal("expected fact for pkg.MyModule.plain")
+	}
+	if plain.Props["override"] == true || plain.Props["di_provider"] == true {
+		t.Errorf("plain fun should carry neither override nor di_provider, got %+v", plain.Props)
 	}
 }
 

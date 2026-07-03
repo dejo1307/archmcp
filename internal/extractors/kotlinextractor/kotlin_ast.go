@@ -383,9 +383,14 @@ func (w *astWalker) handleClassDeclaration(node *sitter.Node) {
 		w.walkForCalls(body)
 	}
 
-	// Also walk the delegation_specifiers — a `: Base(arg)` call in the supertype
-	// list is a construction the class participates in. (Implements edge is already
-	// emitted; we don't double-count instantiates here.)
+	// Also walk the delegation_specifiers — a `: Base(npeEntity(id))` supertype clause
+	// can contain calls in its constructor arguments that would otherwise be missed.
+	// The base type is a constructor_invocation (not a call_expression), so walking
+	// here credits the argument calls without double-counting the base type, which is
+	// already recorded as an implements edge.
+	if ds := findChildByKind(node, "delegation_specifiers"); ds != nil {
+		w.walkForCalls(ds)
+	}
 
 	w.popType()
 	w.popOwner()
@@ -439,6 +444,12 @@ func (w *astWalker) handleObjectDeclaration(node *sitter.Node) {
 	if body != nil {
 		w.walkForCalls(body)
 	}
+	// Walk supertype constructor arguments (`object Foo : Base(bar())`), as in
+	// handleClassDeclaration — the base type stays an implements edge, its argument
+	// calls are credited here.
+	if ds := findChildByKind(node, "delegation_specifiers"); ds != nil {
+		w.walkForCalls(ds)
+	}
 	w.popType()
 	w.popOwner()
 }
@@ -459,13 +470,24 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 	}
 	exported := !privateOrInternalRe.MatchString(modifierText)
 
+	// A `fun` declared inside a class/object is a method, not a free function
+	// (parity with the Go/Java extractors, which set SymbolMethod for members).
+	// This keeps member functions out of the high-confidence orphan bucket, which
+	// is reserved for plain functions whose incoming calls are reliably tracked as
+	// edges — member functions are reached via receiver dispatch, overrides, and
+	// reflection, which are not.
+	symbolKind := facts.SymbolFunc
+	if len(w.typeStack) > 0 {
+		symbolKind = facts.SymbolMethod
+	}
+
 	f := facts.Fact{
 		Kind: facts.KindSymbol,
 		Name: w.dir + "." + w.qualify(name),
 		File: w.relFile,
 		Line: int(node.StartPosition().Row) + 1,
 		Props: map[string]any{
-			"symbol_kind": facts.SymbolFunc,
+			"symbol_kind": symbolKind,
 			"exported":    exported,
 			"language":    "kotlin",
 		},
@@ -477,6 +499,18 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 	// receiver (parity with Go/TypeScript method facts).
 	if len(w.typeStack) > 0 {
 		f.Props["receiver"] = w.typeStack[len(w.typeStack)-1]
+	}
+	// An `override` is dispatched polymorphically — Android/framework lifecycle
+	// callbacks (onCreate, onBind, …) and interface implementations are invoked
+	// through the supertype, never by the override's own literal name, so it must
+	// not be reported as an orphan.
+	if strings.Contains(modifierText, "override") {
+		f.Props["override"] = true
+	}
+	// Dagger/Hilt @Provides / @Binds methods are invoked reflectively by the DI
+	// container, never by name.
+	if containsAnnotation(annotations, "Provides") || containsAnnotation(annotations, "Binds") {
+		f.Props["di_provider"] = true
 	}
 	if strings.Contains(modifierText, "suspend") {
 		f.Props["suspend"] = true
@@ -501,6 +535,14 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 	w.selfShort = name
 	if body := findChildByKind(node, "function_body"); body != nil {
 		w.walkForCalls(body)
+	}
+	// Default parameter values (`fun f(x: T = helper())`) live outside the function
+	// body, but their calls run when the function is invoked without that argument —
+	// walk them under this function as owner so the referenced helper isn't
+	// mis-reported as unused. (Class-constructor param defaults are already walked in
+	// handleClassParameters.)
+	if params := findChildByKind(node, "function_value_parameters"); params != nil {
+		w.walkForCalls(params)
 	}
 	m := w.metrics
 	props := w.out[ownerIdx].Props
@@ -773,6 +815,48 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 				}
 			}
 			return
+		}
+	}
+
+	// A navigation expression (`recv.member` — a method call `recv.method()` or a
+	// property/field access `recv.uniqueId`) references its trailing member by short
+	// name. The receiver's static type is unknown without a type system, so we cannot
+	// resolve it to a canonical fact name — but the orphan detector matches references
+	// by short name, so emitting the bare member name is enough to mark the target
+	// member used. This covers the dominant Kotlin/Android call form (viewModel.load(),
+	// repo.getUser()) and property access (slot.uniqueId), none of which produced a
+	// usage edge before, which is why live members were reported as orphans.
+	if kind == "navigation_expression" {
+		if owner := w.currentOwner(); owner != nil {
+			if member, _ := calleeName(node, w.src); member != "" {
+				owner.Relations = append(owner.Relations, facts.Relation{
+					Kind:   facts.RelCalls,
+					Target: member,
+				})
+			}
+		}
+	}
+
+	// A callable reference (`::foo`, `Type::foo`) uses the referenced function by
+	// short name without calling it directly — capture it so a function referenced
+	// only as a method reference (e.g. `onClick = ::doNothing`, `.map(::helper)`) is
+	// not mis-reported as an orphan. The trailing identifier is the callable name.
+	if kind == "callable_reference" {
+		if owner := w.currentOwner(); owner != nil {
+			var last *sitter.Node
+			for i := uint(0); i < uint(node.ChildCount()); i++ {
+				if c := node.Child(i); c.IsNamed() {
+					last = c
+				}
+			}
+			if last != nil {
+				if name := nodeText(last, w.src); name != "" {
+					owner.Relations = append(owner.Relations, facts.Relation{
+						Kind:   facts.RelCalls,
+						Target: name,
+					})
+				}
+			}
 		}
 	}
 
