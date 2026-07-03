@@ -253,10 +253,10 @@ func TestExtract_XcodeGenTargetModules(t *testing.T) {
 // TestTargetPriorityAndRoles guards the priority tiers (product > test > other)
 // and the role classification helpers.
 func TestTargetPriorityAndRoles(t *testing.T) {
-	if !(targetPriority("application") > targetPriority("app-extension") &&
-		targetPriority("app-extension") > targetPriority("framework") &&
-		targetPriority("framework") > targetPriority("bundle.unit-test") &&
-		targetPriority("bundle.unit-test") > targetPriority("aggregate")) {
+	if targetPriority("application") <= targetPriority("app-extension") ||
+		targetPriority("app-extension") <= targetPriority("framework") ||
+		targetPriority("framework") <= targetPriority("bundle.unit-test") ||
+		targetPriority("bundle.unit-test") <= targetPriority("aggregate") {
 		t.Errorf("priority ordering wrong: app=%d ext=%d fw=%d test=%d other=%d",
 			targetPriority("application"), targetPriority("app-extension"),
 			targetPriority("framework"), targetPriority("bundle.unit-test"),
@@ -279,12 +279,12 @@ func TestTargetPriorityAndRoles(t *testing.T) {
 		}
 	}
 	rolePath := map[string]string{
-		"Tests/Core/Account": facts.ModuleRoleTest,
-		"MyLib/Test":                facts.ModuleRoleTest,
-		"Scripts/Localizations":     facts.ModuleRoleTooling,
-		"fastlane":                  facts.ModuleRoleTooling,
-		"ci_scripts":                facts.ModuleRoleTooling,
-		"Sources/Core":              facts.ModuleRoleUnknown,
+		"Tests/Core/Account":    facts.ModuleRoleTest,
+		"MyLib/Test":            facts.ModuleRoleTest,
+		"Scripts/Localizations": facts.ModuleRoleTooling,
+		"fastlane":              facts.ModuleRoleTooling,
+		"ci_scripts":            facts.ModuleRoleTooling,
+		"Sources/Core":          facts.ModuleRoleUnknown,
 	}
 	for p, want := range rolePath {
 		if got := facts.ModuleRoleForPath(p); got != want {
