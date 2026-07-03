@@ -956,7 +956,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 				// ambiguous operator (map/flatMap/filter/…) is an RxJava / Flow stream
 				// transform, not a collection loop, so it must not add a loop level.
 				if w.metrics != nil && kotlinIterators[name] &&
-					!(w.reactiveContext && kotlinReactiveOps[name]) {
+					(!w.reactiveContext || !kotlinReactiveOps[name]) {
 					iterLambda = findChildByKind(node, "annotated_lambda")
 				}
 			}
