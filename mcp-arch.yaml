@@ -16,6 +16,10 @@ ignore:
   - "out/**"
   - ".vercel/**"
   - ".turbo/**"
+  # Minified / bundled JS (also detected heuristically by the extractor; kept in
+  # sync with config.Default() in internal/config/config.go)
+  - "**/*.min.js"
+  - "**/*.bundle.js"
   # Documentation
   - "**/*.md"
   - "**/*.mdx"

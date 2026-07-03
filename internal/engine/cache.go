@@ -117,7 +117,16 @@ import (
 // v64: a `this.<member>` reference inside a class method now records a use of that
 // member, so a React class-component event handler bound as a prop value
 // (onClick={this.handleClick}) — never called by name — is no longer falsely dead.
-const cacheVersion = "v64"
+// v65: the TypeScript extractor now skips minified/bundled files (any line longer
+// than ~2000 chars), so checked-in vendor bundles emit no facts — invalidates
+// caches that still hold the obfuscated symbols.
+// v66: the TypeScript extractor now emits io_direct (body calls a network/file
+// primitive or a network-module import binding) and a transitively-propagated
+// performs_io prop, so cached TS facts must be re-extracted to carry them.
+// v67: tightened TS io_direct — only DEFAULT/NAMESPACE network-module imports are
+// I/O bindings (not named imports), and types/utils submodules are excluded, so pure
+// helpers (e.g. `resolved` from network/types) no longer mislabel callers.
+const cacheVersion = "v67"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

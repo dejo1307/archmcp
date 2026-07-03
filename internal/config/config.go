@@ -68,6 +68,12 @@ func Default() *Config {
 			"__pycache__/**",
 			"**/Pods/**",
 			"**/.gradle/**",
+			// Minified / bundled JS by name. The extractor also detects minified
+			// content heuristically (very long lines), but these globs cheaply skip
+			// the common named cases before a file is ever read. Keep in sync with
+			// the bundled mcp-arch.yaml ignore list.
+			"**/*.min.js",
+			"**/*.bundle.js",
 		},
 		// TestGlobs identify test/spec files. They stay ignored for normal indexing
 		// (still listed in Ignore above) — production architecture facts must not
