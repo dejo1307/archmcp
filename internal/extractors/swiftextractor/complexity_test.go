@@ -151,6 +151,180 @@ func TestSwComplexity_RecursiveSelf(t *testing.T) {
 	}
 }
 
+func TestSwComplexity_BoundedForRange(t *testing.T) {
+	for _, src := range []string{
+		"func run() {\n  for i in 0..<10 { use(i) }\n}",
+		"func run() {\n  for i in 1...5 { use(i) }\n}",
+	} {
+		ff := extractAST(t, src, false)
+		f, _ := findFact(ff, "pkg.run")
+		if _, present := f.Props["loop_depth"]; present {
+			t.Errorf("bounded range %q: loop_depth should be omitted, got %v", src, f.Props["loop_depth"])
+		}
+		if got := swIntProp(t, f, "loop_count"); got != 1 {
+			t.Errorf("bounded range %q: loop_count = %d, want 1 (still a loop for cyclomatic)", src, got)
+		}
+	}
+}
+
+func TestSwComplexity_UnboundedRangeEndpointStillScales(t *testing.T) {
+	// A variable endpoint (0..<items.count) scales with n — must keep loop_depth.
+	ff := extractAST(t, "func run() {\n  for i in 0..<items.count { use(i) }\n}", false)
+	f, _ := findFact(ff, "pkg.run")
+	if got := swIntProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1 (variable endpoint scales)", got)
+	}
+}
+
+func TestSwComplexity_StrideBounded(t *testing.T) {
+	ff := extractAST(t, "func run() {\n  for i in stride(from: 0, to: 10, by: 2) { use(i) }\n}", false)
+	f, _ := findFact(ff, "pkg.run")
+	if _, present := f.Props["loop_depth"]; present {
+		t.Errorf("literal-bound stride: loop_depth should be omitted, got %v", f.Props["loop_depth"])
+	}
+}
+
+func TestSwComplexity_StrideVariableBoundScales(t *testing.T) {
+	ff := extractAST(t, "func run() {\n  for i in stride(from: 0, to: n, by: 2) { use(i) }\n}", false)
+	f, _ := findFact(ff, "pkg.run")
+	if got := swIntProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1 (variable stride bound scales)", got)
+	}
+}
+
+func TestSwComplexity_LiteralArrayForEachBounded(t *testing.T) {
+	ff := extractAST(t, "func run() {\n  [a, b, c].forEach { use($0) }\n}", false)
+	f, _ := findFact(ff, "pkg.run")
+	if _, present := f.Props["loop_depth"]; present {
+		t.Errorf("literal-array forEach: loop_depth should be omitted, got %v", f.Props["loop_depth"])
+	}
+}
+
+func TestSwComplexity_ScreamingSnakeConstForEachBounded(t *testing.T) {
+	ff := extractAST(t, "func run() {\n  STOP_CHARS.forEach { use($0) }\n}", false)
+	f, _ := findFact(ff, "pkg.run")
+	if _, present := f.Props["loop_depth"]; present {
+		t.Errorf("ALL-CAPS constant forEach: loop_depth should be omitted, got %v", f.Props["loop_depth"])
+	}
+}
+
+func TestSwComplexity_BoundedOuterScalingInnerIsLinear(t *testing.T) {
+	// A bounded outer loop over a scaling inner loop is O(n), not O(n²): the inner
+	// loop must be measured against the real input, not multiplied by a constant.
+	ff := extractAST(t, "func run() {\n  for i in 0..<10 {\n    for x in items { use(x) }\n  }\n}", false)
+	f, _ := findFact(ff, "pkg.run")
+	if got := swIntProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1 (bounded outer × scaling inner is O(n))", got)
+	}
+}
+
+func TestSwComplexity_ComputedPropertyGetter(t *testing.T) {
+	ff := extractAST(t, "final class C {\n  var totals: Int {\n    for x in items { context.fetch(x) }\n    return 0\n  }\n}", false)
+	f, ok := findFact(ff, "pkg.C.totals")
+	if !ok {
+		t.Fatalf("missing pkg.C.totals; got %v", ff)
+	}
+	if got := swIntProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("computed getter loop_depth = %d, want 1", got)
+	}
+	if cil := swStrSlice(f, "calls_in_loop"); !swContains(cil, "context.fetch") {
+		t.Errorf("computed getter calls_in_loop = %v, want to contain context.fetch", cil)
+	}
+}
+
+func TestSwComplexity_DidSetObserver(t *testing.T) {
+	ff := extractAST(t, "final class C {\n  var n = 0 {\n    didSet { for x in items { context.fetch(x) } }\n  }\n}", false)
+	f, ok := findFact(ff, "pkg.C.n")
+	if !ok {
+		t.Fatalf("missing pkg.C.n; got %v", ff)
+	}
+	if cil := swStrSlice(f, "calls_in_loop"); !swContains(cil, "context.fetch") {
+		t.Errorf("didSet calls_in_loop = %v, want to contain context.fetch", cil)
+	}
+}
+
+func TestSwComplexity_StoredPropertyNoMetrics(t *testing.T) {
+	// A plain stored property with an initializer must NOT get a cyclomatic prop
+	// (avoids noise on every field).
+	ff := extractAST(t, "final class C {\n  var count = compute()\n}", false)
+	f, _ := findFact(ff, "pkg.C.count")
+	if _, present := f.Props["cyclomatic"]; present {
+		t.Errorf("stored property should have no cyclomatic prop, got %v", f.Props["cyclomatic"])
+	}
+}
+
+func TestSwComplexity_SubscriptOnSameNameLocalNotRecursion(t *testing.T) {
+	// `parameters["x"] = 1` inside `func parameters()` is a subscript on a local,
+	// not a self-call — must NOT be flagged recursive_self (nor emit a self call).
+	src := "func parameters() -> [String: Any] {\n" +
+		"  var parameters: [String: Any] = [:]\n" +
+		"  parameters[\"x\"] = 1\n" +
+		"  return parameters\n" +
+		"}"
+	ff := extractAST(t, src, false)
+	f, ok := findFact(ff, "pkg.parameters")
+	if !ok {
+		t.Fatalf("missing pkg.parameters; got %v", ff)
+	}
+	if v, _ := f.Props["recursive_self"].(bool); v {
+		t.Errorf("subscript on same-name local must not set recursive_self")
+	}
+	if hasRelation(f, facts.RelCalls, "pkg.parameters") {
+		t.Errorf("subscript on same-name local must not emit a self call edge")
+	}
+}
+
+func TestSwComplexity_SubscriptKeyCallStillCaptured(t *testing.T) {
+	// A call inside a subscript key (`cache[keyFor(id)]`) is still captured.
+	ff := extractAST(t, "func run() {\n  _ = cache[keyFor(id)]\n}", false)
+	f, _ := findFact(ff, "pkg.run")
+	if !hasRelation(f, facts.RelCalls, "pkg.keyFor") {
+		t.Errorf("call in subscript key should still emit a RelCalls edge; got %+v", f.Relations)
+	}
+}
+
+func TestSwComplexity_OverloadDelegationNotRecursion(t *testing.T) {
+	// `decode(key:)` calling stdlib `decode(_:forKey:)` shares the bare name but has
+	// different argument labels — it is NOT self-recursion.
+	src := "struct C {\n" +
+		"  func decode(key: String) -> Int { return decode(key, forKey: key) }\n" +
+		"}"
+	ff := extractAST(t, src, false)
+	f, _ := findFact(ff, "pkg.C.decode")
+	if v, _ := f.Props["recursive_self"].(bool); v {
+		t.Errorf("overload delegation (different labels) must not set recursive_self")
+	}
+}
+
+func TestSwComplexity_SuperCallNotRecursion(t *testing.T) {
+	// An override calling super.method() must not be flagged recursive.
+	src := "class C {\n" +
+		"  override func setSelected(_ selected: Bool, animated: Bool) {\n" +
+		"    super.setSelected(selected, animated: animated)\n" +
+		"  }\n" +
+		"}"
+	ff := extractAST(t, src, false)
+	f, _ := findFact(ff, "pkg.C.setSelected")
+	if v, _ := f.Props["recursive_self"].(bool); v {
+		t.Errorf("super.method() override must not set recursive_self")
+	}
+}
+
+func TestSwComplexity_GenuineRecursionMatchingLabels(t *testing.T) {
+	// A self-call whose labels match the parameters is genuine recursion.
+	src := "struct C {\n" +
+		"  func walk(from node: Node) -> Node {\n" +
+		"    if let p = node.parent { return walk(from: p) }\n" +
+		"    return node\n" +
+		"  }\n" +
+		"}"
+	ff := extractAST(t, src, false)
+	f, _ := findFact(ff, "pkg.C.walk")
+	if v, _ := f.Props["recursive_self"].(bool); !v {
+		t.Errorf("matching-label self-call should set recursive_self")
+	}
+}
+
 func TestSwComplexity_WhileLoop(t *testing.T) {
 	ff := extractAST(t, "func run() {\n  while ready() { step() }\n}", false)
 	f, _ := findFact(ff, "pkg.run")

@@ -214,6 +214,17 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 	// canonicalizeTargets so type-target rewrites are already settled.
 	resolveMethodCalls(allFacts, methodIndex, funcIndex)
 
+	// Resolve dangling inherited-method calls (a subclass calling a base-class or
+	// protocol-extension method) to the declaring ancestor's method fact, so class /
+	// protocol hierarchies are traversable. Runs before computePerformsIO so its
+	// closure follows the newly-resolved inheritance edges.
+	resolveInheritedCalls(allFacts)
+
+	// Propagate the walk-time io_direct flag up the call graph into a transitive
+	// performs_io prop, so callers of I/O methods are discoverable even when the
+	// call chain runs through ambiguous (kept-bare) member-call edges.
+	computePerformsIO(allFacts, methodIndex, funcIndex)
+
 	// Emit XcodeGen target module facts + declared inter-target dependency edges.
 	allFacts = append(allFacts, emitXcodeGenFacts(resolver, xp, spmRoots, dirToFile)...)
 
@@ -360,6 +371,204 @@ func resolveMethodCalls(allFacts []facts.Fact, methodIndex, funcIndex map[string
 			out = append(out, r)
 		}
 		allFacts[i].Relations = out
+	}
+}
+
+// resolveInheritedCalls rewrites a caller's DANGLING call-graph edges — a phantom
+// `dir.name` (a bare call to an inherited method, mis-shaped as a top-level function
+// by resolveCall) or a resolver-kept ambiguous bare name — to the qualified method
+// fact of the nearest ancestor (superclass or conformed protocol's extension) that
+// declares it. This makes class / protocol hierarchies traversable: a subclass method
+// calling an inherited base method now points at `dir.Base.method`.
+//
+// Conservative and additive: only targets that are NOT already a fact and whose short
+// name IS declared by an ancestor of the caller's type are rewritten; every resolved
+// edge (and thus dead-code short-name matching and coupling) is left untouched. The
+// extractor does not distinguish a superclass from a protocol in `implements`, and it
+// need not here — both put their methods in facts under `dir.Ancestor.method`, so the
+// ancestry walk treats them uniformly. Nearest-first BFS matches Swift override order.
+func resolveInheritedCalls(allFacts []facts.Fact) {
+	factNames := make(map[string]bool, len(allFacts))
+	typeSupers := make(map[string][]string)            // simple type -> supertype simple names
+	methodByType := make(map[string]map[string]string) // simple type -> (method short -> qualified name)
+
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
+		}
+		factNames[f.Name] = true
+		sk, _ := f.Props["symbol_kind"].(string)
+		switch sk {
+		case facts.SymbolClass, facts.SymbolStruct, facts.SymbolInterface:
+			simple := lastDotComponent(f.Name)
+			for _, r := range f.Relations {
+				if r.Kind == facts.RelImplements {
+					typeSupers[simple] = append(typeSupers[simple], r.Target)
+				}
+			}
+		case facts.SymbolMethod:
+			recv, _ := f.Props["receiver"].(string)
+			if recv == "" {
+				continue
+			}
+			t := lastDotComponent(recv)
+			if methodByType[t] == nil {
+				methodByType[t] = make(map[string]string)
+			}
+			// First declaration wins; overloads share a name and one target suffices.
+			if _, ok := methodByType[t][lastDotComponent(f.Name)]; !ok {
+				methodByType[t][lastDotComponent(f.Name)] = f.Name
+			}
+		}
+	}
+
+	// resolveInAncestry returns the qualified method fact for `short` declared by the
+	// nearest ancestor of `callerType` (inclusive), or "" if none declares it.
+	resolveInAncestry := func(callerType, short string) string {
+		visited := map[string]bool{}
+		queue := []string{callerType}
+		for len(queue) > 0 {
+			t := queue[0]
+			queue = queue[1:]
+			if visited[t] {
+				continue
+			}
+			visited[t] = true
+			if q, ok := methodByType[t][short]; ok {
+				return q
+			}
+			queue = append(queue, typeSupers[t]...)
+		}
+		return ""
+	}
+
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
+		}
+		if sk, _ := f.Props["symbol_kind"].(string); sk != facts.SymbolMethod {
+			continue
+		}
+		recv, _ := f.Props["receiver"].(string)
+		callerType := lastDotComponent(recv)
+		if callerType == "" || len(typeSupers[callerType]) == 0 {
+			continue // no supertypes → nothing to inherit; skip the common leaf case
+		}
+		for j := range f.Relations {
+			r := &f.Relations[j]
+			if r.Kind != facts.RelCalls || factNames[r.Target] {
+				continue // not a call, or already resolved to a real fact
+			}
+			if q := resolveInAncestry(callerType, lastDotComponent(r.Target)); q != "" && q != f.Name {
+				r.Target = q
+			}
+		}
+	}
+}
+
+// ioFanoutCap bounds how many candidate methods an ambiguous (kept-bare) call
+// target is expanded to during the performs_io closure. A small cap keeps the
+// derived flag from over-propagating along very common method names (a bare `save`
+// with dozens of candidates) while still crossing the narrow 2–3-way ambiguities
+// that legitimately reach the network layer (e.g. `dataModel.updateMembershipRequest`).
+const ioFanoutCap = 6
+
+// computePerformsIO derives a transitive `performs_io` prop over the resolved call
+// graph: a method performs I/O if its body directly invokes an I/O primitive
+// (the walk-time `io_direct` flag) or it transitively calls a method that does.
+//
+// Ambiguous call targets — which resolveMethodCalls leaves as a bare short name
+// because 2+ methods share it — are expanded through the methodIndex/funcIndex
+// candidate sets DURING this closure only, so the closure can cross them without
+// adding false edges to the shared call graph (dead-code / impact stay precise).
+// A bounded fixpoint (correct under call cycles) replaces a memoized DFS to avoid
+// the cycle-back-edge false negatives that a visiting-guard DFS would introduce.
+func computePerformsIO(allFacts []facts.Fact, methodIndex, funcIndex map[string][]string) {
+	// name -> indices of the method/func symbol facts with that name.
+	byName := make(map[string][]int)
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
+		}
+		if sk, _ := f.Props["symbol_kind"].(string); sk == facts.SymbolMethod || sk == facts.SymbolFunc {
+			byName[f.Name] = append(byName[f.Name], i)
+		}
+	}
+
+	// resolveTargets maps a call target to the candidate callee names to follow: the
+	// target itself when it names a known method/func, else its (capped) methodIndex/
+	// funcIndex candidates for the ambiguous bare case.
+	resolveTargets := func(target string) []string {
+		if _, ok := byName[target]; ok {
+			return []string{target}
+		}
+		cands := methodIndex[target]
+		if len(cands) == 0 {
+			cands = funcIndex[target]
+		}
+		if len(cands) == 0 || len(cands) > ioFanoutCap {
+			return nil
+		}
+		return cands
+	}
+
+	// Seed io[name] from the io_direct flag, and build name->callee-names adjacency.
+	io := make(map[string]bool, len(byName))
+	adj := make(map[string][]string, len(byName))
+	for name, idxs := range byName {
+		seen := make(map[string]bool)
+		for _, i := range idxs {
+			if b, _ := allFacts[i].Props["io_direct"].(bool); b {
+				io[name] = true
+			}
+			for _, r := range allFacts[i].Relations {
+				if r.Kind != facts.RelCalls {
+					continue
+				}
+				for _, c := range resolveTargets(r.Target) {
+					if c != name && !seen[c] {
+						seen[c] = true
+						adj[name] = append(adj[name], c)
+					}
+				}
+			}
+		}
+	}
+
+	// Fixpoint: a method performs I/O if any callee does. Iterate to stability.
+	for changed := true; changed; {
+		changed = false
+		for name, callees := range adj {
+			if io[name] {
+				continue
+			}
+			for _, c := range callees {
+				if io[c] {
+					io[name] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+
+	// Emit the prop on every fact whose name reaches I/O (covers all overloads of a
+	// name) and on any io_direct property/observer leaf not indexed above.
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
+		}
+		direct, _ := f.Props["io_direct"].(bool)
+		if io[f.Name] || direct {
+			if f.Props == nil {
+				f.Props = map[string]any{}
+			}
+			f.Props["performs_io"] = true
+		}
 	}
 }
 
