@@ -250,6 +250,34 @@ func TestExtract_ClassWithImplements(t *testing.T) {
 	}
 }
 
+func TestExtract_AbstractClass(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/service.ts": `
+export abstract class BaseService { abstract handle(): void }
+export class ConcreteService { handle() {} }
+`,
+	}, false)
+
+	abstractCls, ok := findFact(ff, "src.BaseService")
+	if !ok {
+		t.Fatal("expected fact for src.BaseService")
+	}
+	if abstractCls.Props["symbol_kind"] != facts.SymbolClass {
+		t.Errorf("BaseService symbol_kind = %v, want class", abstractCls.Props["symbol_kind"])
+	}
+	if ab, _ := abstractCls.Props["abstract"].(bool); !ab {
+		t.Errorf("BaseService abstract = %v, want true", abstractCls.Props["abstract"])
+	}
+
+	concreteCls, ok := findFact(ff, "src.ConcreteService")
+	if !ok {
+		t.Fatal("expected fact for src.ConcreteService")
+	}
+	if ab, ok := concreteCls.Props["abstract"].(bool); ok && ab {
+		t.Errorf("ConcreteService abstract = %v, want unset/false", concreteCls.Props["abstract"])
+	}
+}
+
 func TestExtract_InterfaceAndTypeAlias(t *testing.T) {
 	ff := extractAll(t, map[string]string{
 		"src/types.ts": `

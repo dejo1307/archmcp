@@ -490,6 +490,13 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 			},
 		}
 
+		// A TS `abstract class` is an abstraction (has unimplemented members and
+		// cannot be instantiated) — tag it so package-metrics counts it toward
+		// abstractness, matching Java/Kotlin/Python. Plain classes stay concrete.
+		if node.Kind() == "abstract_class_declaration" {
+			f.Props["abstract"] = true
+		}
+
 		// Check for implements clause (nested under class_heritage)
 		for j := range node.ChildCount() {
 			c := node.Child(j)

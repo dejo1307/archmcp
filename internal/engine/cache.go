@@ -126,7 +126,10 @@ import (
 // v67: tightened TS io_direct — only DEFAULT/NAMESPACE network-module imports are
 // I/O bindings (not named imports), and types/utils submodules are excluded, so pure
 // helpers (e.g. `resolved` from network/types) no longer mislabel callers.
-const cacheVersion = "v67"
+// v68: the TypeScript extractor now sets abstract:true on `abstract class`
+// declarations (was previously indistinguishable from a concrete class), so
+// package-metrics abstractness for TS must re-extract to pick up the flag.
+const cacheVersion = "v68"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
