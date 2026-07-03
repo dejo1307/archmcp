@@ -91,10 +91,23 @@ const (
 func ModuleRoleForPath(dir string) string {
 	for _, seg := range strings.Split(filepath.ToSlash(dir), "/") {
 		switch seg {
-		case "Tests", "Test", "tests", "test", "spec", "specs":
+		case "Tests", "Test", "tests", "test", "spec", "specs",
+			"androidTest", "androidUnitTest", "testFixtures":
 			return ModuleRoleTest
 		case "Scripts", "scripts", "fastlane", "ci_scripts", "bin":
 			return ModuleRoleTooling
+		}
+		// Sub-token match for compound module names (Gradle modules whose purpose
+		// is test automation but that compile as a `src/main` source set, e.g.
+		// "release-tests", "ui-test-utils", "test-lab"). Split the segment on
+		// '-'/'_' and match a token EXACTLY equal to a test word, so genuine
+		// single-token names ("latest", "contest", the "abtest" feature) never
+		// misfire — they have no separator and stay a single token.
+		for _, tok := range strings.FieldsFunc(seg, func(r rune) bool { return r == '-' || r == '_' }) {
+			switch tok {
+			case "test", "tests", "spec", "specs":
+				return ModuleRoleTest
+			}
 		}
 	}
 	return ModuleRoleUnknown

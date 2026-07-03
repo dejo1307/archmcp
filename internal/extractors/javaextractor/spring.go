@@ -115,6 +115,21 @@ func findAnnotation(anns []javaAnnotation, name string) *javaAnnotation {
 // classifyComponent tags a type symbol fact with framework/component props for
 // Spring stereotypes and Dubbo SPI. It mutates f.Props in place.
 func classifyComponent(f *facts.Fact, name string, annotations []javaAnnotation, supertypes []string) {
+	// Dagger/Hilt DI infrastructure. Dagger @Component/@Subcomponent are declared
+	// on INTERFACES, whereas Spring stereotypes are always concrete classes — so a
+	// @Component on an interface is Dagger, not Spring. This disambiguates the
+	// simple-name collision between dagger.Component and springframework…Component
+	// (annotations are matched by simple name) and keeps DI wiring out of the
+	// domain-architecture metrics. @Module classes are DI wiring regardless of kind.
+	if hasAnnotation(annotations, "Module") {
+		f.Props["di_module"] = true
+	}
+	if f.Props["symbol_kind"] == facts.SymbolInterface &&
+		(hasAnnotation(annotations, "Component") || hasAnnotation(annotations, "Subcomponent")) {
+		f.Props["di_component"] = true
+		return // do NOT fall through to the Spring stereotype switch (avoids mislabel)
+	}
+
 	switch {
 	case hasAnnotation(annotations, "RestController"):
 		f.Props["framework"] = "spring"

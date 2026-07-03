@@ -15,7 +15,7 @@ import (
 // declaration / import / Room-storage fact is preserved, and new RelInstantiates /
 // RelInjects relations are attached to symbol facts when call sites or @Inject
 // constructor parameters are observed.
-func extractFileAST(src []byte, relFile string, isAndroid bool, sourceRoot, basePackage string) []facts.Fact {
+func extractFileAST(src []byte, relFile string, isAndroid bool, sourceRoot, basePackage string, packageIndex map[string]string) []facts.Fact {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(kotlin.Language())); err != nil {
@@ -29,12 +29,13 @@ func extractFileAST(src []byte, relFile string, isAndroid bool, sourceRoot, base
 	dir := filepath.Dir(relFile)
 
 	w := &astWalker{
-		src:         src,
-		relFile:     relFile,
-		dir:         dir,
-		isAndroid:   isAndroid,
-		sourceRoot:  sourceRoot,
-		basePackage: basePackage,
+		src:          src,
+		relFile:      relFile,
+		dir:          dir,
+		isAndroid:    isAndroid,
+		sourceRoot:   sourceRoot,
+		basePackage:  basePackage,
+		packageIndex: packageIndex,
 	}
 	w.walkSourceFile(root)
 	return w.out
@@ -47,6 +48,10 @@ type astWalker struct {
 	isAndroid   bool
 	sourceRoot  string
 	basePackage string
+	// packageIndex maps a declared package FQN to its real directory (built across
+	// all modules and both .kt/.java files); used to resolve internal imports to
+	// the correct module in multi-module projects. See resolveKotlinImport.
+	packageIndex map[string]string
 
 	// out is the accumulating fact list.
 	out []facts.Fact
@@ -303,7 +308,7 @@ func (w *astWalker) handleImport(node *sitter.Node) {
 		return
 	}
 	importPath := nodeText(qid, w.src)
-	resolved, isExternal := resolveKotlinImport(importPath, w.sourceRoot, w.basePackage)
+	resolved, isExternal := resolveKotlinImport(importPath, w.packageIndex, w.sourceRoot, w.basePackage)
 	importSource := "internal"
 	if isExternal {
 		importSource = "external"
@@ -406,6 +411,12 @@ func (w *astWalker) handleClassDeclaration(node *sitter.Node) {
 	}
 	if strings.Contains(modifierText, "sealed") {
 		f.Props["sealed"] = true
+		// A sealed class/interface is non-instantiable — its subclasses are the
+		// concrete types — so it is an abstraction in Martin's sense. Mark it
+		// abstract so package-metrics abstractness (A) counts it, matching how
+		// interfaces and `abstract` classes are treated. (For a sealed interface
+		// this is redundant with symbol_kind=interface but harmless.)
+		f.Props["abstract"] = true
 	}
 	if strings.Contains(modifierText, "enum") {
 		f.Props["enum"] = true

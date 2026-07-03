@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/jvmsrc"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -72,7 +73,12 @@ func (e *JavaExtractor) Extract(ctx context.Context, repoPath string, files []st
 		modules[filepath.Dir(javaFiles[i])] = true
 	}
 
-	canonicalizeTargets(allFacts)
+	// Cross-language package index (.kt AND .java) so a Java import of a Kotlin
+	// type resolves to the module that declares it, instead of being dropped as
+	// external. Java→Java imports still resolve via the in-facts FQN index below;
+	// this only fills the cross-language gap.
+	packageIndex := jvmsrc.BuildPackageIndex(repoPath, files)
+	canonicalizeTargets(allFacts, packageIndex)
 	resolveTableConstants(allFacts)
 
 	for dir := range modules {
@@ -81,7 +87,8 @@ func (e *JavaExtractor) Extract(ctx context.Context, repoPath string, files []st
 			Name: dir,
 			File: dir,
 			Props: map[string]any{
-				"language": "java",
+				"language":           "java",
+				facts.PropModuleRole: jvmsrc.ModuleRole(dir),
 			},
 		})
 	}
@@ -97,10 +104,16 @@ func (e *JavaExtractor) Extract(ctx context.Context, repoPath string, files []st
 //   - import dependency facts whose target FQN resolves to a declared type — or whose
 //     value names a known source package — are marked source="internal" and pointed at
 //     the owning module dir.
-func canonicalizeTargets(allFacts []facts.Fact) {
+func canonicalizeTargets(allFacts []facts.Fact, crossLangIndex map[string]string) {
 	typeIndex := make(map[string]string) // FQN -> "<dir>.<Type>" canonical name
 	typeDir := make(map[string]string)   // FQN -> dir
 	packageDir := make(map[string]string)
+	// Seed with cross-language packages (e.g. Kotlin modules) so a Java import of
+	// a package we didn't index from .java files still resolves. Java-declared
+	// packages below take precedence (they overwrite these entries).
+	for pkg, dir := range crossLangIndex {
+		packageDir[pkg] = dir
+	}
 	for _, f := range allFacts {
 		if f.Kind != facts.KindSymbol {
 			continue
@@ -239,6 +252,13 @@ func isJavaFile(path string) bool {
 
 // OwnsFile implements plugin.FileOwner for incremental caching.
 func (e *JavaExtractor) OwnsFile(relFile string) bool { return isJavaFile(relFile) }
+
+// AffectsKey implements plugin.KeyDependent: a .kt file's package declaration
+// feeds the cross-language package index used to resolve Java imports of Kotlin
+// types, so a change to any Kotlin source must invalidate the Java extractor's cache.
+func (e *JavaExtractor) AffectsKey(relFile string) bool {
+	return strings.HasSuffix(strings.ToLower(relFile), ".kt")
+}
 
 // containsJavaSource reports whether any .java file exists under root within
 // maxDepth directory levels. It returns on the first match and skips hidden and

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/jvmsrc"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -54,6 +55,12 @@ func (e *KotlinExtractor) Extract(ctx context.Context, repoPath string, files []
 	isAndroid := detectAndroidProject(repoPath)
 	sourceRoot := detectKotlinSourceRoot(repoPath, files)
 	basePackage := detectKotlinBasePackage(repoPath)
+	// Multi-module resolution: map every declared package (across .kt AND .java
+	// files) to its real directory so cross-module imports resolve to the module
+	// that actually holds the package, instead of collapsing onto the single most
+	// common source root. sourceRoot is retained only as a graceful fallback for
+	// internal imports whose package we somehow did not index.
+	packageIndex := jvmsrc.BuildPackageIndex(repoPath, files)
 
 	var kotlinFiles []string
 	for _, relFile := range files {
@@ -70,7 +77,7 @@ func (e *KotlinExtractor) Extract(ctx context.Context, repoPath string, files []
 			log.Printf("[kotlin-extractor] error reading %s: %v", relFile, err)
 			return nil
 		}
-		ff := extractFileAST(src, relFile, isAndroid, sourceRoot, basePackage)
+		ff := extractFileAST(src, relFile, isAndroid, sourceRoot, basePackage, packageIndex)
 		return append(ff, extractRetrofitFacts(src, relFile)...)
 	})
 
@@ -86,7 +93,8 @@ func (e *KotlinExtractor) Extract(ctx context.Context, repoPath string, files []
 			Name: dir,
 			File: dir,
 			Props: map[string]any{
-				"language": "kotlin",
+				"language":           "kotlin",
+				facts.PropModuleRole: jvmsrc.ModuleRole(dir),
 			},
 		})
 	}
@@ -113,6 +121,13 @@ func isKotlinFile(path string) bool {
 
 // OwnsFile implements plugin.FileOwner for incremental caching.
 func (e *KotlinExtractor) OwnsFile(relFile string) bool { return isKotlinFile(relFile) }
+
+// AffectsKey implements plugin.KeyDependent: a .java file's package declaration
+// feeds the cross-language package index used to resolve Kotlin imports, so a
+// change to any Java source must invalidate the Kotlin extractor's cache.
+func (e *KotlinExtractor) AffectsKey(relFile string) bool {
+	return strings.HasSuffix(strings.ToLower(relFile), ".java")
+}
 
 // --- Android & framework detection helpers (called by the AST walker) ---
 
@@ -155,8 +170,15 @@ func addAndroidProps(f *facts.Fact, name string, annotations []string, supertype
 		}
 		return
 	}
+	if containsAnnotation(annotations, "Component") || containsAnnotation(annotations, "Subcomponent") {
+		// Dagger/Hilt DI component interface — infrastructure, not domain code.
+		f.Props["di_component"] = true
+		f.Props["framework"] = "android"
+		return
+	}
 	if containsAnnotation(annotations, "Module") {
 		f.Props["android_component"] = "di_module"
+		f.Props["di_module"] = true
 		f.Props["framework"] = "android"
 		return
 	}
@@ -424,7 +446,18 @@ func detectKotlinBasePackage(repoPath string) string {
 // (matching the project's base package) become filesystem-relative paths so
 // the graph can connect them to module facts; everything else is treated as
 // an external dependency.
-func resolveKotlinImport(importPath, sourceRoot, basePackage string) (string, bool) {
+//
+// Resolution is package-index first: an import is mapped to the directory that
+// actually declares its package (across all modules and both .kt/.java files),
+// so cross-module imports in a multi-module Gradle project land on the right
+// module rather than collapsing onto the single most common source root. Only
+// when the package is not in the index do we fall back to the base-package +
+// single-source-root heuristic, so behaviour degrades gracefully instead of
+// dropping an otherwise-internal edge.
+func resolveKotlinImport(importPath string, packageIndex map[string]string, sourceRoot, basePackage string) (string, bool) {
+	if resolved, ok := jvmsrc.ResolveImport(importPath, packageIndex); ok {
+		return resolved, false
+	}
 	if basePackage != "" && sourceRoot != "" && strings.HasPrefix(importPath, basePackage+".") {
 		asPath := strings.ReplaceAll(importPath, ".", "/")
 		return filepath.ToSlash(filepath.Clean(sourceRoot + asPath)), false

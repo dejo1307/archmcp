@@ -101,10 +101,10 @@ func TestDetectBasePackage_GroovyAndKotlinDSL(t *testing.T) {
 // emitted, while a third-party import stays external.
 func TestResolveKotlinImport_InternalVsExternal(t *testing.T) {
 	const root, base = "app/src/main/java/", "com.example.app"
-	if _, ext := resolveKotlinImport("com.example.app.ui.common.setMargin", root, base); ext {
+	if _, ext := resolveKotlinImport("com.example.app.ui.common.setMargin", nil, root, base); ext {
 		t.Error("in-repo import should resolve as internal (external=false)")
 	}
-	if _, ext := resolveKotlinImport("retrofit2.Retrofit", root, base); !ext {
+	if _, ext := resolveKotlinImport("retrofit2.Retrofit", nil, root, base); !ext {
 		t.Error("third-party import should stay external (external=true)")
 	}
 }

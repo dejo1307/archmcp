@@ -8,7 +8,7 @@ import (
 
 func extractAST(t *testing.T, src string, isAndroid bool) []facts.Fact {
 	t.Helper()
-	return extractFileAST([]byte(src), "pkg/test.kt", isAndroid, "", "")
+	return extractFileAST([]byte(src), "pkg/test.kt", isAndroid, "", "", nil)
 }
 
 func findFact(ff []facts.Fact, name string) (facts.Fact, bool) {
@@ -40,6 +40,36 @@ func hasRelation(f facts.Fact, relKind, target string) bool {
 }
 
 // --- Parity with the legacy regex extractor (covers TestExtract_* cases) ---
+
+// TestAST_DaggerDI tags Dagger/Hilt DI infrastructure: a @Module class gets
+// di_module, a @Subcomponent interface gets di_component.
+func TestAST_DaggerDI(t *testing.T) {
+	ff := extractAST(t, `
+package pkg
+import dagger.Module
+import dagger.Subcomponent
+@Module
+class NetModule
+@Subcomponent
+interface FeatureComponent
+`, true) // isAndroid — DI detection runs in addAndroidProps
+
+	mod, ok := findFact(ff, "pkg.NetModule")
+	if !ok {
+		t.Fatal("expected fact pkg.NetModule")
+	}
+	if mod.Props["di_module"] != true {
+		t.Errorf("NetModule should have di_module=true, got %v", mod.Props)
+	}
+
+	comp, ok := findFact(ff, "pkg.FeatureComponent")
+	if !ok {
+		t.Fatal("expected fact pkg.FeatureComponent")
+	}
+	if comp.Props["di_component"] != true {
+		t.Errorf("FeatureComponent should have di_component=true, got %v", comp.Props)
+	}
+}
 
 func TestAST_DataClass(t *testing.T) {
 	ff := extractAST(t, `
@@ -340,7 +370,7 @@ fun caller() {
 }
 `
 	// sourceRoot carries a trailing slash in real layouts (e.g. "app/src/main/kotlin/").
-	ff := extractFileAST([]byte(src), "src/com/example/app/caller.kt", false, "src/", "com.example")
+	ff := extractFileAST([]byte(src), "src/com/example/app/caller.kt", false, "src/", "com.example", nil)
 	caller, ok := findFact(ff, "src/com/example/app.caller")
 	if !ok {
 		t.Fatal("expected fact for src/com/example/app.caller")
@@ -360,7 +390,7 @@ fun caller() {
     runBlocking()
 }
 `
-	ff := extractFileAST([]byte(src), "com/example/app/caller.kt", false, "", "com.example")
+	ff := extractFileAST([]byte(src), "com/example/app/caller.kt", false, "", "com.example", nil)
 	caller, ok := findFact(ff, "com/example/app.caller")
 	if !ok {
 		t.Fatal("expected fact for com/example/app.caller")
@@ -430,8 +460,8 @@ fun makeThing() = 2
 fun scoreMessages() = listOf(1)
 `, false)
 	cases := []struct{ owner, target string }{
-		{"pkg.NpeId", "pkg.npeEntity"},       // class delegation arg
-		{"pkg.Single", "pkg.makeThing"},      // object delegation arg
+		{"pkg.NpeId", "pkg.npeEntity"},           // class delegation arg
+		{"pkg.Single", "pkg.makeThing"},          // object delegation arg
 		{"pkg.withDefault", "pkg.scoreMessages"}, // function default-param value
 	}
 	for _, c := range cases {

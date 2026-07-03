@@ -71,7 +71,36 @@ import (
 // v55: Kotlin captures callable references (`::foo`, `Type::foo`, e.g. `onClick = ::doNothing`, `.map(::helper)`) as short-name RelCalls edges. A function referenced only as a method reference (never called directly) was previously mis-reported as a high-confidence orphan.
 // v56: Kotlin/Java perf-fact precision — (1) recursion (`recursive_self`) is now argument-count aware: a call sharing the enclosing function's name is only flagged recursion when its arg count matches the parameter count, so a call to a same-named overload (`updateItem(x)` → `updateItem(i, x)`, `onChangeStarted(2)` override → `onChangeStarted(3)`) is no longer read as self-recursion — the dominant Kotlin/Android recursion false positive (Conductor `onChange*` lifecycle). (2) Kotlin RxJava/coroutine-Flow chains no longer inflate loop_depth: in a reactive function (reactive return type Single/Observable/Maybe/Flowable/Completable/Flow, or body reactive operators subscribeOn/observeOn/applySchedulers/andThen/.subscribe/flowOn/.collect/…), the ambiguous operators (map/flatMap/filter/fold/reduce/onEach) are stream transforms, not per-element collection loops, so a `Single.flatMap { … .map { } }` is no longer a false O(n²)/O(n³). Fixes the analyze_performance false positives on this RxJava-heavy codebase.
 // v57: Kotlin/Java recursion also clears the arity-matched case where an `override` delegates to a same-name, same-arity overload declared in a parent (invisible here): a body that calls `super.<self>()` marks the sibling `<self>(…)` call as delegation, not recursion (fixes the residual Conductor `onChangeEnded` false positives). And Kotlin methods now carry `io_direct`/`performs_io` when annotated as a Retrofit endpoint (@GET/@POST/@PUT/@DELETE/@PATCH/@HEAD/@OPTIONS/@HTTP) or a Room DAO op (@Query/@Insert/@Update/@Upsert/@Delete/@RawQuery) — a precise per-method I/O identity that lets analyze_performance flag a per-iteration call to a real network/DB method as a genuine N+1 (ranked high) without relying on the cross-language keyword guess.
-const cacheVersion = "v57"
+// v58: Kotlin/Java multi-module import resolution — imports are now resolved via a
+// cross-language declared-package→directory index (built from every non-test .kt AND
+// .java file) instead of assuming a single global source root. In a multi-module
+// Gradle project where several modules root packages at the same prefix (app/, api/,
+// business/ all under de.foo.*), the old Kotlin resolver mapped every internal import
+// under the single most common source root (the app module), collapsing all
+// cross-module afferent coupling onto the app package (bogus Ca god-package) and
+// starving library modules of Ca (falsely "useless" in package-metrics). Now an
+// import resolves to the module that actually declares the package. The Java extractor
+// seeds its FQN resolver with the same cross-language index so Java→Kotlin imports no
+// longer drop. Kotlin & Java module facts now carry `module_role` (test for
+// src/test & src/androidTest, else production) so package-metrics excludes test source
+// sets; and Kotlin `sealed` classes are marked `abstract` so abstractness (A) counts
+// them (they are non-instantiable), fixing inflated Distance / false "rigid" findings.
+// v59: the package index now prefers a main source set (…/src/main/…) over a Gradle
+// build-variant source set (src/debug, src/release, src/staging) when both declare the
+// same package. An Android app's src/main and src/debug both declare the root
+// application package; the v58 lexicographic tie-break wrongly mapped it to src/debug
+// ('d' < 'm'), misrouting the whole app's afferent coupling onto the debug variant
+// (a bogus Ca god-package). Imports of the root package now resolve to the main module.
+// v60: package-metrics precision — (1) module_role now sub-token-matches compound test
+// module names (split each path segment on -/_ and match an exact `test`/`tests` token),
+// so Gradle test-automation modules that compile as src/main (release-tests, ui-test-utils,
+// test-lab) are classified test rather than leaking into the production population, without
+// misfiring on latest/contest/abtest. (2) Dagger/Hilt DI infrastructure is now tagged:
+// @Component/@Subcomponent interfaces get `di_component`, @Module classes get `di_module`
+// (Java & Kotlin); a Dagger @Component interface is no longer mislabeled a Spring component
+// (disambiguated by interface-vs-class). Lets package-metrics exclude DI wiring from
+// abstractness/type counts (a Dagger component package was falsely "useless").
+const cacheVersion = "v60"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
@@ -175,14 +204,26 @@ func computeExtractorKeys(all []extractors.Extractor, files []string, hashes map
 	}
 
 	// Partition files: per-owner owned lists + the shared (un-owned) remainder.
+	// keyFiles is owned ∪ AffectsKey — the full set whose contents feed the key,
+	// so a cross-language file that a KeyDependent extractor reads (but does not
+	// own) still invalidates its cache. Ownership (and thus the shared remainder)
+	// is decided purely by OwnsFile; AffectsKey only widens the key, never the
+	// ownership partition.
 	owned := map[string][]string{}
+	keyFiles := map[string][]string{}
 	var shared []string
 	for _, f := range files {
 		ownedByAny := false
 		for name, fo := range owners {
-			if fo.OwnsFile(f) {
+			owns := fo.OwnsFile(f)
+			if owns {
 				owned[name] = append(owned[name], f)
 				ownedByAny = true
+			}
+			if owns {
+				keyFiles[name] = append(keyFiles[name], f)
+			} else if kd, ok := fo.(plugin.KeyDependent); ok && kd.AffectsKey(f) {
+				keyFiles[name] = append(keyFiles[name], f)
 			}
 		}
 		if !ownedByAny {
@@ -195,7 +236,7 @@ func computeExtractorKeys(all []extractors.Extractor, files []string, hashes map
 	for name := range owners {
 		h := sha256.New()
 		h.Write([]byte(cacheVersion + "\x00" + name + "\x00" + sharedHash + "\x00"))
-		h.Write([]byte(hashFileSet(owned[name], hashes)))
+		h.Write([]byte(hashFileSet(keyFiles[name], hashes)))
 		keys[name] = hex.EncodeToString(h.Sum(nil))
 	}
 	return keys

@@ -6,6 +6,69 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 )
 
+// TestDagger_DIvsSpringComponent verifies Dagger DI infrastructure is tagged and
+// disambiguated from Spring: a @Component INTERFACE is Dagger (di_component, NOT
+// framework=spring), a @Module class gets di_module, while a Spring @Component on a
+// concrete CLASS still classifies as a Spring component.
+func TestDagger_DIvsSpringComponent(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"di/AppComponent.java": `package di;
+import dagger.Component;
+@Component
+public interface AppComponent {
+    void inject(Object o);
+}
+`,
+		"di/NetModule.java": `package di;
+import dagger.Module;
+@Module
+public class NetModule {
+}
+`,
+		"web/UserService.java": `package web;
+import org.springframework.stereotype.Component;
+@Component
+public class UserService {
+}
+`,
+	})
+
+	sym := func(name string) facts.Fact {
+		t.Helper()
+		for _, f := range ff {
+			if f.Kind == facts.KindSymbol && f.Name == name {
+				return f
+			}
+		}
+		t.Fatalf("symbol %q not found in %v", name, names(ff))
+		return facts.Fact{}
+	}
+
+	comp := sym("di.AppComponent")
+	if comp.Props["di_component"] != true {
+		t.Errorf("AppComponent should have di_component=true, got %v", comp.Props)
+	}
+	if comp.Props["framework"] == "spring" {
+		t.Errorf("Dagger @Component interface must NOT be labeled framework=spring, got %v", comp.Props)
+	}
+	if comp.Props["symbol_kind"] != facts.SymbolInterface {
+		t.Errorf("AppComponent symbol_kind = %v, want interface", comp.Props["symbol_kind"])
+	}
+
+	mod := sym("di.NetModule")
+	if mod.Props["di_module"] != true {
+		t.Errorf("NetModule should have di_module=true, got %v", mod.Props)
+	}
+
+	svc := sym("web.UserService")
+	if svc.Props["framework"] != "spring" || svc.Props["component"] != "component" {
+		t.Errorf("Spring @Component class should stay a spring component, got %v", svc.Props)
+	}
+	if svc.Props["di_component"] == true {
+		t.Errorf("Spring @Component class must NOT be tagged di_component, got %v", svc.Props)
+	}
+}
+
 func TestSpring_Routes(t *testing.T) {
 	ff := extractAll(t, map[string]string{
 		"web/EdqsController.java": `package web;
