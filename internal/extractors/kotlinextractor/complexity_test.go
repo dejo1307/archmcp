@@ -158,3 +158,107 @@ func TestKtComplexity_WhileLoop(t *testing.T) {
 		t.Errorf("calls_in_loop = %v, want to contain pkg.step", cil)
 	}
 }
+
+func TestKtComplexity_OverloadDelegationNotRecursion(t *testing.T) {
+	// The 1-arg updateItem delegates to the 2-arg overload inside a loop. It shares the
+	// name but not the arity, so it must NOT be flagged as self-recursion (the Conductor
+	// onChangeStarted / BaseNeighbourListAdapter.updateItem false positive).
+	src := "class Adapter {\n" +
+		"  fun updateItem(x: Int) {\n    for (i in 0 until 3) { updateItem(i, x) }\n  }\n" +
+		"  fun updateItem(i: Int, x: Int) { }\n" +
+		"}"
+	ff := extractAST(t, src, false)
+	f, ok := findFact(ff, "pkg.Adapter.updateItem")
+	if !ok {
+		t.Fatalf("missing pkg.Adapter.updateItem; got %v", ff)
+	}
+	if v, _ := f.Props["recursive_self"].(bool); v {
+		t.Errorf("overload delegation (updateItem(x) -> updateItem(i,x)) must not be recursive_self")
+	}
+}
+
+func TestKtComplexity_GenuineRecursionStillArityMatched(t *testing.T) {
+	// A same-arity self-call is still recursion (arity check must not suppress real cases).
+	ff := extractAST(t, "fun walk(n: Node) {\n  n.children.forEach { walk(it) }\n}", false)
+	f, _ := findFact(ff, "pkg.walk")
+	if v, _ := f.Props["recursive_self"].(bool); !v {
+		t.Errorf("same-arity self-call should still be recursive_self")
+	}
+}
+
+func TestKtComplexity_ReactiveChainNotLoop(t *testing.T) {
+	// An RxJava Single.flatMap { … .map { } } chain runs once per emission, not per
+	// element — its map/flatMap must NOT inflate loop_depth (the getInvitableNeighbours
+	// O(n³) false positive).
+	src := "fun getInvitable(): Single<List<Int>> {\n" +
+		"  return service.get()\n" +
+		"    .flatMap { g -> service.more().map { toList(it) } }\n" +
+		"    .applySchedulers()\n" +
+		"}"
+	ff := extractAST(t, src, false)
+	f, _ := findFact(ff, "pkg.getInvitable")
+	if _, present := f.Props["loop_depth"]; present {
+		t.Errorf("reactive flatMap/map chain must not set loop_depth; got %v", f.Props["loop_depth"])
+	}
+}
+
+func TestKtComplexity_CollectionMapStillLoop(t *testing.T) {
+	// Control: in a NON-reactive function, .map with a lambda is still a collection loop.
+	ff := extractAST(t, "fun r() {\n  items.map { use(it) }\n}", false)
+	f, _ := findFact(ff, "pkg.r")
+	if got := kIntProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("collection map loop_depth = %d, want 1", got)
+	}
+}
+
+func TestKtComplexity_SuperDelegationNotRecursion(t *testing.T) {
+	// A Conductor-style override that calls super.onChangeEnded() and then delegates to
+	// a same-arity same-name overload (declared in a parent, invisible here) must NOT be
+	// flagged as self-recursion.
+	src := "class C {\n" +
+		"  override fun onChangeEnded(handler: H, type: T) {\n" +
+		"    super.onChangeEnded(handler, type)\n" +
+		"    onChangeEnded(appBarVisibility, type)\n" +
+		"  }\n" +
+		"}"
+	ff := extractAST(t, src, false)
+	f, ok := findFact(ff, "pkg.C.onChangeEnded")
+	if !ok {
+		t.Fatalf("missing pkg.C.onChangeEnded; got %v", ff)
+	}
+	if v, _ := f.Props["recursive_self"].(bool); v {
+		t.Errorf("override calling super.<self> + a same-name overload must not be recursive_self")
+	}
+}
+
+func TestKtComplexity_RetrofitMethodPerformsIO(t *testing.T) {
+	// A Retrofit endpoint method is a direct I/O leaf → performs_io.
+	src := "interface Api {\n  @GET(\"users\")\n  suspend fun getUsers(): List<User>\n}"
+	ff := extractAST(t, src, false)
+	f, ok := findFact(ff, "pkg.Api.getUsers")
+	if !ok {
+		t.Fatalf("missing pkg.Api.getUsers; got %v", ff)
+	}
+	if v, _ := f.Props["performs_io"].(bool); !v {
+		t.Errorf("Retrofit @GET method should be performs_io; props=%v", f.Props)
+	}
+}
+
+func TestKtComplexity_RoomDaoMethodPerformsIO(t *testing.T) {
+	// A Room @Insert DAO method is a direct I/O leaf → performs_io.
+	src := "interface Dao {\n  @Insert\n  fun insertAll(items: List<Item>)\n}"
+	ff := extractAST(t, src, false)
+	f, _ := findFact(ff, "pkg.Dao.insertAll")
+	if v, _ := f.Props["performs_io"].(bool); !v {
+		t.Errorf("Room @Insert method should be performs_io; props=%v", f.Props)
+	}
+}
+
+func TestKtComplexity_PlainMethodNotPerformsIO(t *testing.T) {
+	// A method with no I/O annotation must NOT be performs_io.
+	ff := extractAST(t, "fun helper(x: Int): Int {\n  return x + 1\n}", false)
+	f, _ := findFact(ff, "pkg.helper")
+	if _, present := f.Props["performs_io"]; present {
+		t.Errorf("plain function must not carry performs_io")
+	}
+}

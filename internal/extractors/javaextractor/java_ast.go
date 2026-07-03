@@ -80,6 +80,10 @@ type astWalker struct {
 	loopDepth int
 	selfName  string
 	selfShort string
+	// selfParams is the enclosing method's declared parameter count. A resolved
+	// self-call is only genuine recursion when its argument count matches — otherwise
+	// it is a call to a same-named overload, not recursion.
+	selfParams int
 }
 
 // javaBodyMetrics accumulates per-method complexity signals during the single
@@ -88,9 +92,10 @@ type javaBodyMetrics struct {
 	loopDepth   int             // max loop nesting depth
 	loopCount   int             // number of loop constructs (syntactic + stream lambdas)
 	decisions   int             // decision points (cyclomatic = 1 + decisions)
-	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
-	inLoopSeen  map[string]bool // dedup set for callsInLoop
-	recursive   bool            // body directly calls the enclosing method
+	callsInLoop  []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen   map[string]bool // dedup set for callsInLoop
+	recursive    bool            // body directly calls the enclosing method
+	sawSuperSelf bool            // body calls super.<enclosingName>() (override delegation)
 }
 
 // javaIterators are Stream/Collection methods whose lambda argument runs once per
@@ -119,14 +124,51 @@ var javaCheapMethods = map[string]bool{
 
 // recordCallMetrics notes a resolved call target against the current method's
 // complexity metrics: flags direct recursion and records calls made inside loops.
-func (w *astWalker) recordCallMetrics(target string) {
+// argCount is the invocation's argument count; recursion is flagged only when it
+// matches the enclosing method's parameter count, so a call to a same-named overload
+// is not mistaken for self-recursion.
+func (w *astWalker) recordCallMetrics(target string, argCount int) {
 	if w.metrics == nil || target == "" {
 		return
 	}
-	if target == w.selfName || target == w.selfShort {
+	if (target == w.selfName || target == w.selfShort) && argCount == w.selfParams {
 		w.metrics.recursive = true
 	}
 	w.recordInLoop(target)
+}
+
+// javaArgCount returns the number of arguments of a method_invocation node.
+func javaArgCount(node *sitter.Node) int {
+	args := node.ChildByFieldName("arguments")
+	if args == nil {
+		return 0
+	}
+	n := 0
+	for i := uint(0); i < uint(args.ChildCount()); i++ {
+		if args.Child(i).IsNamed() {
+			n++
+		}
+	}
+	return n
+}
+
+// javaParamCount returns the declared parameter count of a method declaration node.
+func javaParamCount(node *sitter.Node) int {
+	params := node.ChildByFieldName("parameters")
+	if params == nil {
+		params = findChildByKind(node, "formal_parameters")
+	}
+	if params == nil {
+		return 0
+	}
+	n := 0
+	for i := uint(0); i < uint(params.ChildCount()); i++ {
+		switch params.Child(i).Kind() {
+		case "formal_parameter", "spread_parameter":
+			n++
+		}
+	}
+	return n
 }
 
 // recordInLoop adds a target to calls_in_loop (deduped) when inside a loop, without
@@ -525,10 +567,12 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 	// may be invalidated if the body walk grows w.out).
 	savedMetrics, savedDepth := w.metrics, w.loopDepth
 	savedName, savedShort := w.selfName, w.selfShort
+	savedParams := w.selfParams
 	w.metrics = &javaBodyMetrics{}
 	w.loopDepth = 0
 	w.selfName = f.Name
 	w.selfShort = name
+	w.selfParams = javaParamCount(node)
 	if body := node.ChildByFieldName("body"); body != nil {
 		w.walkForCalls(body)
 	}
@@ -544,11 +588,14 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 	if len(m.callsInLoop) > 0 {
 		props["calls_in_loop"] = m.callsInLoop
 	}
-	if m.recursive {
+	// A body that calls super.<self>() is an override delegating to a same-named
+	// overload, not genuine recursion — clear the arity-matched self-call flag.
+	if m.recursive && !m.sawSuperSelf {
 		props["recursive_self"] = true
 	}
 	w.metrics, w.loopDepth = savedMetrics, savedDepth
 	w.selfName, w.selfShort = savedName, savedShort
+	w.selfParams = savedParams
 	w.popOwner()
 }
 
@@ -807,6 +854,11 @@ func (w *astWalker) handleInvocation(node *sitter.Node) {
 	// own methods. Calls on other receivers are left unresolved (the receiver's
 	// type is not tracked), matching the Kotlin extractor's conservative model.
 	isThis := obj != nil && nodeText(obj, w.src) == "this"
+	if obj != nil && w.metrics != nil && name == w.selfShort && nodeText(obj, w.src) == "super" {
+		// super.<self>() — an override delegating to its supertype. Note it so an
+		// arity-matched bare <self>(…) call is read as overload delegation, not recursion.
+		w.metrics.sawSuperSelf = true
+	}
 	if obj == nil || isThis {
 		if methods := w.currentMethods(); methods[name] {
 			target := w.dir + "." + w.enclosingType() + "." + name
@@ -814,7 +866,7 @@ func (w *astWalker) handleInvocation(node *sitter.Node) {
 				Kind:   facts.RelCalls,
 				Target: target,
 			})
-			w.recordCallMetrics(target)
+			w.recordCallMetrics(target, javaArgCount(node))
 		}
 	} else if w.metrics != nil && w.loopDepth > 0 && !javaCheapMethods[name] {
 		// Method call on a non-this receiver inside a loop (repo.findById(), …). No

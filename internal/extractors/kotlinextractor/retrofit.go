@@ -15,6 +15,32 @@ import (
 //	@POST("auth/login")
 var retrofitAnnotation = regexp.MustCompile(`@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*\(\s*"([^"]*)"`)
 
+// ioDirectAnnotations are method-level annotations that mark a function as a direct
+// network / DB I/O operation: Retrofit HTTP endpoints and Room DAO operations. A
+// method carrying one performs a real round-trip, so a per-iteration call to it is a
+// genuine N+1 — the annotation is a precise I/O identity, unlike a keyword guess.
+var ioDirectAnnotations = map[string]bool{
+	// Retrofit / HTTP
+	"GET": true, "POST": true, "PUT": true, "DELETE": true,
+	"PATCH": true, "HEAD": true, "OPTIONS": true, "HTTP": true,
+	// Room DAO operations (@RawQuery/@Transaction run SQL too)
+	"Query": true, "Insert": true, "Update": true, "Upsert": true,
+	"RawQuery": true,
+}
+
+// kotlinIODirectFromAnnotations reports whether a method's annotation simple-names
+// include a Retrofit endpoint or Room DAO operation. `@Delete` is matched here too:
+// on a DAO method it is a SQL delete. (The names come from annotationNames, which
+// yields simple names, so this cannot collide with a same-named type.)
+func kotlinIODirectFromAnnotations(annotations []string) bool {
+	for _, a := range annotations {
+		if ioDirectAnnotations[a] || a == "Delete" {
+			return true
+		}
+	}
+	return false
+}
+
 // extractRetrofitFacts emits a client-route fact for every Retrofit endpoint
 // annotation in a Kotlin source file. These represent outbound HTTP calls the
 // app makes, so the cross-repo linker can match them (by method + path suffix)

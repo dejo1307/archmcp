@@ -79,6 +79,15 @@ type astWalker struct {
 	loopDepth int
 	selfName  string
 	selfShort string
+	// selfParams is the enclosing function's declared parameter count. A resolved
+	// self-call is only genuine recursion when its argument count matches — otherwise
+	// it is delegation to a same-named overload (updateItem(x) → updateItem(i, x)).
+	selfParams int
+	// reactiveContext is true when the enclosing function is an RxJava / coroutine
+	// Flow chain, so the ambiguous operators (map/flatMap/filter/…) are reactive
+	// stream transforms — NOT per-element collection loops — and must not inflate
+	// loop_depth.
+	reactiveContext bool
 }
 
 // kotlinBodyMetrics accumulates per-function complexity signals during the single
@@ -90,6 +99,11 @@ type kotlinBodyMetrics struct {
 	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
 	inLoopSeen  map[string]bool // dedup set for callsInLoop
 	recursive   bool            // body directly calls the enclosing function
+	// sawSuperSelf is set when the body calls super.<enclosingName>(). Such a method
+	// is a framework/override that also makes a bare <enclosingName>(...) call to a
+	// DIFFERENT same-named overload (a real self-call would be infinite recursion), so
+	// its arity-matched bare self-call is delegation, not recursion — clear it.
+	sawSuperSelf bool
 }
 
 // kotlinIterators are higher-order methods whose lambda runs once per element —
@@ -123,13 +137,79 @@ var kotlinCheapMethods = map[string]bool{
 	"plus": true, "joinToString": true, "indexOf": true, "hashCode": true, "equals": true,
 }
 
+// kotlinReactiveOps are the iterator names that are ALSO RxJava / coroutine-Flow
+// stream operators. In a reactive function (see reactiveContext) their lambda runs
+// per emission of a stream, not per element of an in-memory collection, so they must
+// not be counted as loops — that was the largest source of false O(n²)/O(n³) findings
+// on this RxJava-heavy codebase (a `Single.flatMap { … .map { } }` is not nested
+// iteration). Collection-only iterators (forEach, groupBy, sortedBy, …) are absent
+// here and stay loops even in a reactive function.
+var kotlinReactiveOps = map[string]bool{
+	"map": true, "mapNotNull": true, "flatMap": true,
+	"filter": true, "filterNot": true, "fold": true, "reduce": true, "onEach": true,
+}
+
+// kotlinReactiveMarkers are RxJava / Flow operators that appear (as source text) only
+// in reactive chains, never in plain collection code — their presence in a function
+// body identifies it as a reactive context. Matched as substrings of the body source.
+var kotlinReactiveMarkers = []string{
+	"subscribeOn", "observeOn", "applySchedulers", "andThen", "blockingGet",
+	"flatMapCompletable", "flatMapSingle", "flatMapObservable", "flatMapMaybe",
+	"doOnSuccess", "doAfterSuccess", "doOnNext", "doOnError", "doOnComplete",
+	".subscribe(", "toSingle", "toObservable", "toFlowable", "toMaybe",
+	"flowOn", ".collect(", ".collectLatest(", "stateIn", "shareIn", "launchIn", "asFlow",
+}
+
+// reactiveReturnTypes are the reactive stream types a function returns when its whole
+// body is a reactive chain — a high-confidence signal independent of body markers.
+var reactiveReturnTypes = []string{
+	"Single<", "Observable<", "Maybe<", "Flowable<", "Completable", "Flow<",
+	"Single ", "Completable ", // trailing forms before a where/newline
+}
+
+// detectReactiveContext reports whether a function body is an RxJava / Flow chain,
+// from its declared return type or the reactive operators used in its body.
+func detectReactiveContext(returnType, bodyText string) bool {
+	for _, rt := range reactiveReturnTypes {
+		if strings.HasPrefix(returnType, rt) || returnType == strings.TrimRight(rt, "< ") {
+			return true
+		}
+	}
+	for _, m := range kotlinReactiveMarkers {
+		if strings.Contains(bodyText, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// kotlinCallArgCount returns the number of value arguments of a call_expression node,
+// used to distinguish a genuine self-recursive call from a same-named-overload call.
+func kotlinCallArgCount(callExpr *sitter.Node) int {
+	args := findChildByKind(callExpr, "value_arguments")
+	if args == nil {
+		return 0
+	}
+	n := 0
+	for i := uint(0); i < uint(args.ChildCount()); i++ {
+		if args.Child(i).Kind() == "value_argument" {
+			n++
+		}
+	}
+	return n
+}
+
 // recordCallMetrics notes a resolved call target against the current function's
 // complexity metrics: flags direct recursion and records calls made inside loops.
-func (w *astWalker) recordCallMetrics(target string) {
+// argCount is the call's value-argument count; recursion is flagged only when it
+// matches the enclosing function's parameter count, so a call to a same-named overload
+// (updateItem(neighbour) → updateItem(i, neighbour)) is not mistaken for self-recursion.
+func (w *astWalker) recordCallMetrics(target string, argCount int) {
 	if w.metrics == nil || target == "" {
 		return
 	}
-	if target == w.selfShort || target == w.selfName || target == "this."+w.selfShort {
+	if (target == w.selfShort || target == w.selfName || target == "this."+w.selfShort) &&
+		argCount == w.selfParams {
 		w.metrics.recursive = true
 	}
 	w.recordInLoopCall(target)
@@ -519,6 +599,15 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 		f.Props["android_component"] = "composable"
 		f.Props["framework"] = "android"
 	}
+	// Direct I/O leaf: a Retrofit endpoint (@GET/@POST/…) or a Room DAO operation
+	// (@Query/@Insert/@Update/@Delete/…) is a real network/DB round-trip. Marking it
+	// performs_io lets analyze_performance flag a per-iteration call to it as a genuine
+	// N+1 (and rank it high) via the method's real I/O identity — a precise signal that
+	// does not depend on the cross-language keyword guess.
+	if kotlinIODirectFromAnnotations(annotations) {
+		f.Props["io_direct"] = true
+		f.Props["performs_io"] = true
+	}
 
 	w.out = append(w.out, f)
 	ownerIdx := len(w.out) - 1
@@ -529,11 +618,19 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 	// (the pointer may be invalidated if the body walk grows w.out).
 	savedMetrics, savedDepth := w.metrics, w.loopDepth
 	savedName, savedShort := w.selfName, w.selfShort
+	savedParams, savedReactive := w.selfParams, w.reactiveContext
 	w.metrics = &kotlinBodyMetrics{}
 	w.loopDepth = 0
 	w.selfName = f.Name
 	w.selfShort = name
-	if body := findChildByKind(node, "function_body"); body != nil {
+	w.selfParams = kotlinParamCount(node)
+	body := findChildByKind(node, "function_body")
+	bodyText := ""
+	if body != nil {
+		bodyText = nodeText(body, w.src)
+	}
+	w.reactiveContext = detectReactiveContext(kotlinReturnType(node, w.src), bodyText)
+	if body != nil {
 		w.walkForCalls(body)
 	}
 	// Default parameter values (`fun f(x: T = helper())`) live outside the function
@@ -556,12 +653,52 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 	if len(m.callsInLoop) > 0 {
 		props["calls_in_loop"] = m.callsInLoop
 	}
-	if m.recursive {
+	// A body that calls super.<self>() is a framework override delegating to a
+	// same-named overload, not genuine recursion — the arity-matched bare self-call is
+	// delegation (a true self-call would be infinite recursion). Clear the flag.
+	if m.recursive && !m.sawSuperSelf {
 		props["recursive_self"] = true
 	}
 	w.metrics, w.loopDepth = savedMetrics, savedDepth
 	w.selfName, w.selfShort = savedName, savedShort
+	w.selfParams, w.reactiveContext = savedParams, savedReactive
 	w.popOwner()
+}
+
+// kotlinParamCount returns the declared parameter count of a function_declaration.
+func kotlinParamCount(node *sitter.Node) int {
+	params := findChildByKind(node, "function_value_parameters")
+	if params == nil {
+		return 0
+	}
+	n := 0
+	for i := uint(0); i < uint(params.ChildCount()); i++ {
+		if params.Child(i).Kind() == "parameter" {
+			n++
+		}
+	}
+	return n
+}
+
+// kotlinReturnType returns the source text of a function's declared return type, or ""
+// when it has none. The return type is the named child that sits after the value
+// parameters and before the function body (a user_type, nullable_type, etc.).
+func kotlinReturnType(node *sitter.Node, src []byte) string {
+	seenParams := false
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		c := node.Child(i)
+		switch c.Kind() {
+		case "function_value_parameters":
+			seenParams = true
+		case "function_body", "modifiers", "type_parameters", "type_constraints":
+			// not a return type
+		default:
+			if seenParams && c.IsNamed() {
+				return nodeText(c, src)
+			}
+		}
+	}
+	return ""
 }
 
 func (w *astWalker) handlePropertyDeclaration(node *sitter.Node) {
@@ -747,6 +884,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 
 	if kind == "call_expression" {
 		var iterLambda *sitter.Node
+		argCount := kotlinCallArgCount(node)
 		// First named child is the callee expression.
 		if callee := firstNamedChild(node); callee != nil {
 			if name, isNav := calleeName(callee, w.src); name != "" {
@@ -766,7 +904,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 								Kind:   facts.RelCalls,
 								Target: target,
 							})
-							w.recordCallMetrics(target)
+							w.recordCallMetrics(target, argCount)
 						}
 					case navReceiverIsThis(callee, w.src):
 						// `this.method()` resolves to a sibling method of the
@@ -778,7 +916,16 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 								Kind:   facts.RelCalls,
 								Target: t,
 							})
-							w.recordCallMetrics(t)
+							w.recordCallMetrics(t, argCount)
+						}
+					case navReceiverIsSuper(callee, w.src):
+						// `super.<self>()` — an override delegating to its supertype. Note
+						// it so an arity-matched bare `<self>(…)` call elsewhere in the body
+						// is read as delegation to a same-named overload (invisible parent
+						// method), not self-recursion. (No call edge: the receiver type is
+						// the supertype, resolved elsewhere.)
+						if w.metrics != nil && name == w.selfShort {
+							w.metrics.sawSuperSelf = true
 						}
 					case w.loopDepth > 0 && isNav && !kotlinCheapMethods[name]:
 						// Method call on a non-this receiver inside a loop (dao.insert,
@@ -794,9 +941,11 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 					}
 				}
 				// An iterator method with a trailing lambda (items.map { … }) is a
-				// loop: its lambda body runs per element, but the receiver/arguments
-				// run once.
-				if w.metrics != nil && kotlinIterators[name] {
+				// loop: its lambda body runs per element. But in a reactive function an
+				// ambiguous operator (map/flatMap/filter/…) is an RxJava / Flow stream
+				// transform, not a collection loop, so it must not add a loop level.
+				if w.metrics != nil && kotlinIterators[name] &&
+					!(w.reactiveContext && kotlinReactiveOps[name]) {
 					iterLambda = findChildByKind(node, "annotated_lambda")
 				}
 			}
@@ -1032,6 +1181,16 @@ func navReceiverIsThis(callee *sitter.Node, src []byte) bool {
 	}
 	first := firstNamedChild(callee)
 	return first != nil && nodeText(first, src) == "this"
+}
+
+// navReceiverIsSuper reports whether a navigation-expression callee's receiver is
+// `super` (a `super.method()` call).
+func navReceiverIsSuper(callee *sitter.Node, src []byte) bool {
+	if callee.Kind() != "navigation_expression" {
+		return false
+	}
+	first := firstNamedChild(callee)
+	return first != nil && nodeText(first, src) == "super"
 }
 
 func isCapitalized(s string) bool {
