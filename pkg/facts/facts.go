@@ -57,3 +57,19 @@ const (
 	SymbolConstant  = internal.SymbolConstant
 	SymbolEnum      = internal.SymbolEnum
 )
+
+// Module role property key + values, re-exported for out-of-module consumers
+// (e.g. the enterprise package-metrics tool) that classify the production
+// population.
+const (
+	PropModuleRole       = internal.PropModuleRole
+	ModuleRoleProduction = internal.ModuleRoleProduction
+	ModuleRoleTest       = internal.ModuleRoleTest
+	ModuleRoleTooling    = internal.ModuleRoleTooling
+	ModuleRoleUnknown    = internal.ModuleRoleUnknown
+)
+
+// ModuleRoleForPath classifies a module directory by its path segments (test /
+// tooling / unknown). Re-exported so consumers share one source of truth with the
+// extractors instead of re-implementing the heuristic.
+func ModuleRoleForPath(dir string) string { return internal.ModuleRoleForPath(dir) }

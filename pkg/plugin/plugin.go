@@ -28,6 +28,22 @@ type FileOwner interface {
 	OwnsFile(relFile string) bool
 }
 
+// KeyDependent is an optional interface a FileOwner Extractor may implement to
+// widen its incremental-cache key beyond the files it parses. The engine folds
+// any file for which AffectsKey returns true into the extractor's cache key, so a
+// change to a file that influences the extractor's output — without being one it
+// owns — still invalidates its cache. The JVM extractors use this: their
+// multi-module import resolution reads the package declarations of the OTHER JVM
+// language's files (Kotlin resolves against .java packages and vice versa), so a
+// cross-language package change must re-run the extractor.
+type KeyDependent interface {
+	// AffectsKey reports whether the given repo-relative file influences this
+	// extractor's output even though OwnsFile returns false for it. It must be a
+	// pure function of the path; a superset is safe (over-inclusion only reduces
+	// cache reuse, never soundness).
+	AffectsKey(relFile string) bool
+}
+
 // TestRefExtractor is an optional interface an Extractor may implement to parse
 // test/spec files for their outbound references into production code only. The
 // engine calls it with the test files (matched by config.TestGlobs) that the
