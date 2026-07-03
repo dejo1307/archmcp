@@ -239,7 +239,8 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 			Name: dir,
 			File: dir,
 			Props: map[string]any{
-				"language": "swift",
+				"language":    "swift",
+				"module_role": facts.ModuleRoleForPath(dir),
 			},
 		})
 	}

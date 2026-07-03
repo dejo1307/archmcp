@@ -160,6 +160,7 @@ func parsePackwerk(repoPath string) *packwerkInfo {
 			"language":             "ruby",
 			"framework":            "rails",
 			"packwerk":             true,
+			"module_role":          facts.ModuleRoleProduction,
 			"enforce_dependencies": pkgCfg.EnforceDependencies,
 			"enforce_privacy":      pkgCfg.EnforcePrivacy,
 		}

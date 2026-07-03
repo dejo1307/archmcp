@@ -1,5 +1,10 @@
 package facts
 
+import (
+	"path/filepath"
+	"strings"
+)
+
 // Fact represents a language-agnostic architectural fact extracted from source code.
 type Fact struct {
 	Kind      string         `json:"kind"`                // e.g. "module", "symbol", "route", "storage", "dependency"
@@ -65,6 +70,35 @@ const (
 	SymbolConstant  = "constant"
 	SymbolEnum      = "enum"
 )
+
+// Module role property values classify a module fact as production code vs.
+// non-production (test bundles, build tooling) so downstream analyses (package
+// metrics, coverage, insights) can measure the production architecture. Extractors
+// set the PropModuleRole prop; consumers treat an absent value as included.
+const (
+	PropModuleRole       = "module_role"
+	ModuleRoleProduction = "production"
+	ModuleRoleTest       = "test"
+	ModuleRoleTooling    = "tooling"
+	ModuleRoleUnknown    = "unknown"
+)
+
+// ModuleRoleForPath classifies a module by its directory path segments, for use
+// when the extractor has no more authoritative signal (e.g. a leaf-directory
+// fallback module covered by no declared target/package): a test-directory segment
+// → test, a build-tooling segment → tooling, otherwise unknown. Segment names cover
+// the common conventions across languages (Swift Tests/, Ruby spec//bin/, fastlane).
+func ModuleRoleForPath(dir string) string {
+	for _, seg := range strings.Split(filepath.ToSlash(dir), "/") {
+		switch seg {
+		case "Tests", "Test", "tests", "test", "spec", "specs":
+			return ModuleRoleTest
+		case "Scripts", "scripts", "fastlane", "ci_scripts", "bin":
+			return ModuleRoleTooling
+		}
+	}
+	return ModuleRoleUnknown
+}
 
 // Insight represents an architectural insight produced by an explainer.
 type Insight struct {

@@ -250,6 +250,116 @@ func TestExtract_XcodeGenTargetModules(t *testing.T) {
 	}
 }
 
+// TestTargetPriorityAndRoles guards the priority tiers (product > test > other)
+// and the role classification helpers.
+func TestTargetPriorityAndRoles(t *testing.T) {
+	if !(targetPriority("application") > targetPriority("app-extension") &&
+		targetPriority("app-extension") > targetPriority("framework") &&
+		targetPriority("framework") > targetPriority("bundle.unit-test") &&
+		targetPriority("bundle.unit-test") > targetPriority("aggregate")) {
+		t.Errorf("priority ordering wrong: app=%d ext=%d fw=%d test=%d other=%d",
+			targetPriority("application"), targetPriority("app-extension"),
+			targetPriority("framework"), targetPriority("bundle.unit-test"),
+			targetPriority("aggregate"))
+	}
+	if targetPriority("bundle.unit-test") == 0 || targetPriority("bundle.ui-testing") == 0 {
+		t.Error("test bundles must be modeled (priority > 0)")
+	}
+	roleType := map[string]string{
+		"application":       facts.ModuleRoleProduction,
+		"framework":         facts.ModuleRoleProduction,
+		"app-extension":     facts.ModuleRoleProduction,
+		"bundle.unit-test":  facts.ModuleRoleTest,
+		"bundle.ui-testing": facts.ModuleRoleTest,
+		"aggregate":         facts.ModuleRoleTooling,
+	}
+	for typ, want := range roleType {
+		if got := moduleRoleForXcodeType(typ); got != want {
+			t.Errorf("moduleRoleForXcodeType(%q) = %q, want %q", typ, got, want)
+		}
+	}
+	rolePath := map[string]string{
+		"Tests/Core/Account": facts.ModuleRoleTest,
+		"MyLib/Test":                facts.ModuleRoleTest,
+		"Scripts/Localizations":     facts.ModuleRoleTooling,
+		"fastlane":                  facts.ModuleRoleTooling,
+		"ci_scripts":                facts.ModuleRoleTooling,
+		"Sources/Core":              facts.ModuleRoleUnknown,
+	}
+	for p, want := range rolePath {
+		if got := facts.ModuleRoleForPath(p); got != want {
+			t.Errorf("facts.ModuleRoleForPath(%q) = %q, want %q", p, got, want)
+		}
+	}
+}
+
+// TestExtract_TestBundleCollapsesAndTagsRole verifies that a bundle.unit-test
+// target's files collapse into ONE module tagged module_role=test (not exploded
+// into per-leaf-directory modules), that framework modules are tagged
+// production, and that an uncovered tooling directory falls back to a leaf module
+// tagged tooling.
+func TestExtract_TestBundleCollapsesAndTagsRole(t *testing.T) {
+	repo := t.TempDir()
+	mustWrite(t, repo, "project.yml", `
+name: app
+targets:
+  Core:
+    type: framework
+    sources:
+      - Sources/Core
+  CoreTests:
+    type: bundle.unit-test
+    sources:
+      - Tests/Core
+    dependencies:
+      - target: Core
+`)
+	files := []string{}
+	add := func(rel, content string) {
+		mustWrite(t, repo, rel, content)
+		files = append(files, rel)
+	}
+	add("Sources/Core/Core.swift", "public struct CoreEntry {}\n")
+	add("Tests/Core/Account/AccountTests.swift", "import Core\nstruct AccountTests {}\n")
+	add("Tests/Core/Feed/VOs/FeedVOTests.swift", "import Core\nstruct FeedVOTests {}\n")
+	add("Scripts/gen.swift", "struct Gen {}\n")
+
+	ff, err := New().Extract(context.Background(), repo, files)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	modules := map[string]facts.Fact{}
+	for _, f := range ff {
+		if f.Kind == facts.KindModule {
+			modules[f.Name] = f
+		}
+	}
+
+	// The two nested test directories collapse into the single Tests/Core module.
+	tc, ok := modules["Tests/Core"]
+	if !ok {
+		t.Fatalf("missing collapsed module Tests/Core; modules: %v", keysOf(modules))
+	}
+	if tc.Props["module_role"] != facts.ModuleRoleTest {
+		t.Errorf("Tests/Core module_role = %v, want test", tc.Props["module_role"])
+	}
+	for _, leaked := range []string{"Tests/Core/Account", "Tests/Core/Feed/VOs", "Tests/Core/Feed"} {
+		if _, bad := modules[leaked]; bad {
+			t.Errorf("test leaf %q leaked as its own module (should collapse into Tests/Core)", leaked)
+		}
+	}
+	// Production framework tagged production.
+	if core := modules["Sources/Core"]; core.Props["module_role"] != facts.ModuleRoleProduction {
+		t.Errorf("Sources/Core module_role = %v, want production", core.Props["module_role"])
+	}
+	// Uncovered tooling dir → leaf-fallback module tagged tooling.
+	if s, ok := modules["Scripts"]; !ok {
+		t.Errorf("missing leaf-fallback module Scripts; modules: %v", keysOf(modules))
+	} else if s.Props["module_role"] != facts.ModuleRoleTooling {
+		t.Errorf("Scripts module_role = %v, want tooling", s.Props["module_role"])
+	}
+}
+
 func keysOf(m map[string]facts.Fact) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

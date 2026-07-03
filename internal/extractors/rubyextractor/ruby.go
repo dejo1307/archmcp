@@ -84,7 +84,8 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 			continue
 		}
 		props := map[string]any{
-			"language": "ruby",
+			"language":    "ruby",
+			"module_role": facts.ModuleRoleForPath(dir),
 		}
 		if isRails {
 			props["framework"] = "rails"

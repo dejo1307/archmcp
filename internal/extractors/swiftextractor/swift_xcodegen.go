@@ -250,19 +250,39 @@ type moduleResolver struct {
 	targetIdentity map[string]string
 }
 
-// targetPriority ranks product target types so that, on the rare overlap, an app
-// or extension outranks a plain framework. Non-product targets return 0 and are
-// not modeled.
+// targetPriority ranks target types so that, on the rare overlap, an app or
+// extension outranks a plain framework, and any product target outranks a test
+// bundle. Test bundles are modeled (priority 1) so their files collapse into one
+// module per bundle rather than exploding into per-leaf-directory modules; they
+// are tagged module_role=test (see moduleRoleForXcodeType) so downstream analyses
+// can exclude them. Everything else (aggregate targets, preview hosts — which
+// already collapse via a shared source root) returns 0 and is not modeled.
 func targetPriority(targetType string) int {
 	switch targetType {
 	case "application":
-		return 3
+		return 4
 	case "app-extension":
-		return 2
+		return 3
 	case "framework":
+		return 2
+	case "bundle.unit-test", "bundle.ui-testing":
 		return 1
 	default:
-		return 0 // test bundles, preview hosts, aggregate/other: not modeled
+		return 0
+	}
+}
+
+// moduleRoleForXcodeType maps an XcodeGen target type to a normalized module role
+// (facts.ModuleRole*). Leaf-directory-fallback modules instead use
+// facts.ModuleRoleForPath; SPM targets classify by target vs testTarget.
+func moduleRoleForXcodeType(targetType string) string {
+	switch targetType {
+	case "application", "framework", "app-extension":
+		return facts.ModuleRoleProduction
+	case "bundle.unit-test", "bundle.ui-testing":
+		return facts.ModuleRoleTest
+	default:
+		return facts.ModuleRoleTooling
 	}
 }
 
@@ -342,7 +362,7 @@ func buildModuleResolver(xp *xcodeProject, spmRoots map[string]string) *moduleRe
 	for _, name := range spmNames {
 		dir := spmRoots[name]
 		r.identities[dir] = true
-		r.entries = append(r.entries, moduleEntry{prefix: dir, identity: dir, priority: 1})
+		r.entries = append(r.entries, moduleEntry{prefix: dir, identity: dir, priority: 2})
 	}
 
 	return r
@@ -475,6 +495,7 @@ func emitXcodeGenFacts(r *moduleResolver, xp *xcodeProject, spmRoots map[string]
 				"language":     "swift",
 				"xcode_target": name,
 				"xcode_type":   xp.targets[name].Type,
+				"module_role":  moduleRoleForXcodeType(xp.targets[name].Type),
 			},
 		})
 	}
