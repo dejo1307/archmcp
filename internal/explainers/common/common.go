@@ -67,12 +67,26 @@ func ResolveRelativeImport(sourceModule, target string) string {
 // store: module name -> list of internal modules it imports. External imports
 // are dropped and relative imports are normalized. Every declared module is
 // present as a key (with a possibly-empty edge list).
+//
+// Test-role modules (test bundles / spec trees, tagged module_role=test) are
+// excluded as both nodes and edge endpoints: they are not part of the production
+// architecture, and a test target normally imports the very module it exercises,
+// which would otherwise drag test bundles into cycle, layer-violation, and
+// depth findings (the classic "the cycle chain mixes Tests/ and Sources/"
+// artifact). This mirrors package-metrics, which already filters non-production
+// roles. Modules with an absent or non-test role are kept (consumers treat an
+// absent role as included).
 func BuildModuleGraph(store *facts.Store) map[string][]string {
 	graph := make(map[string][]string)
 
 	modules := store.ByKind(facts.KindModule)
 	moduleNames := make(map[string]bool)
+	testModules := make(map[string]bool)
 	for _, m := range modules {
+		if role, _ := m.Props[facts.PropModuleRole].(string); role == facts.ModuleRoleTest {
+			testModules[m.Name] = true
+			continue
+		}
 		moduleNames[m.Name] = true
 		if _, ok := graph[m.Name]; !ok {
 			graph[m.Name] = nil
@@ -82,6 +96,9 @@ func BuildModuleGraph(store *facts.Store) map[string][]string {
 	deps := store.ByKind(facts.KindDependency)
 	for _, dep := range deps {
 		sourceModule := FileDir(dep.File)
+		if testModules[sourceModule] {
+			continue // edge out of a test bundle — not production architecture
+		}
 
 		for _, rel := range dep.Relations {
 			if rel.Kind != facts.RelImports {

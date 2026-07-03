@@ -74,6 +74,7 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 
 	modules := make(map[string]bool)
 	typeIndex := make(map[string]string)     // simple type name -> module identity
+	typeAmbiguous := make(map[string]bool)   // simple type name -> defined in >1 module
 	methodIndex := make(map[string][]string) // method short name -> qualified dir.Type.method names
 	funcIndex := make(map[string][]string)   // top-level function short name -> qualified dir.func names
 	dirToFile := make(map[string]string)     // module identity -> a representative source file
@@ -156,6 +157,16 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 			switch sk {
 			case facts.SymbolStruct, facts.SymbolClass, facts.SymbolInterface:
 				if simpleName := lastDotComponent(fact.Name); simpleName != "" {
+					// A bare type name is not unique across modules: Swift namespaces
+					// nested types by their enclosing type/module, so short names like
+					// Event/State/Style/Coordinator recur in many targets. Track which
+					// names are defined in >1 module so the cross-module reference pass
+					// can refuse to fabricate an edge from an ambiguous name (which
+					// would otherwise resolve to one arbitrary owning module and create
+					// a false — often cyclic — dependency).
+					if prev, ok := typeIndex[simpleName]; ok && prev != dir {
+						typeAmbiguous[simpleName] = true
+					}
 					typeIndex[simpleName] = dir
 				}
 			case facts.SymbolMethod:
@@ -270,11 +281,33 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		default:
 		}
 
+		// When the file belongs to a resolved SPM/XcodeGen target, its module-level
+		// dependencies are already captured completely and unambiguously by its
+		// `import X` statements (resolveImports) plus the declared target graph
+		// (emitXcodeGenFacts) — Swift requires an explicit import to use another
+		// module's type, so those edges are a superset of every real cross-module
+		// use. The type-reference inference below adds nothing correct there and,
+		// because it resolves bare short names through a collision-prone index, is
+		// the sole source of impossible back-edges (e.g. a Foundation-level target
+		// "importing" a feature target) that SPM's acyclic-target guarantee forbids.
+		// Skip it for target-resolved files; keep it only for loose Swift projects
+		// where a file falls back to leaf-directory grouping and has no target graph.
+		if _, resolved := resolver.moduleFor(relFile); resolved {
+			continue
+		}
+
 		sourceModule := moduleForFile(relFile)
 		absFile := filepath.Join(repoPath, relFile)
 		refs := extractTypeReferences(absFile)
 
 		for _, typeName := range refs {
+			// An ambiguous short name (defined in >1 module) cannot be resolved to a
+			// single owning module by name alone; emitting an edge to the arbitrary
+			// index winner fabricates a false dependency. Skip it — the real edge, if
+			// any, is still recovered from the file's import statements.
+			if typeAmbiguous[typeName] {
+				continue
+			}
 			targetModule, ok := typeIndex[typeName]
 			if !ok || targetModule == sourceModule {
 				continue
