@@ -122,6 +122,12 @@ func TestNormalizePath(t *testing.T) {
 		"/api/items":              "/api/items",
 		"/":                       "/",
 		"/users/{uid}/pets/{pid}": "/users/{}/pets/{}",
+		// Response-format suffix stripped from the final segment (Rails ".:format").
+		"/v2/devices/{id}.json": "/v2/devices/{}",
+		"/v2/bookmarks.json":    "/v2/bookmarks",
+		"/v2/report.xml":        "/v2/report",
+		// A version-like or genuinely dotted segment is not a format suffix.
+		"/api/v2.5/items": "/api/v2.5/items",
 	}
 	for in, want := range cases {
 		if got := normalizePath(in); got != want {
@@ -223,6 +229,19 @@ func TestComputeLinks_HTTPNextjsDynamicSegment(t *testing.T) {
 	}
 	if !hasServiceEdge(ComputeLinks(in), "svc-alpha", "svc-beta") {
 		t.Errorf("Next.js [id] server segment did not match client {} placeholder")
+	}
+}
+
+// TestComputeLinks_HTTPFormatSuffixMatch checks that a client calling a
+// ".json"-suffixed path (Retrofit/redux-tools/URLSession idiom) resolves to the
+// backend route served without the format suffix.
+func TestComputeLinks_HTTPFormatSuffixMatch(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("android", "v2/devices/{id}.json", "DELETE", nil),
+		serverRoute("golf", "/devices/:id", "DELETE"),
+	}
+	if !hasServiceEdge(ComputeLinks(in), "android", "golf") {
+		t.Errorf("client .json path did not match server route without the suffix")
 	}
 }
 
@@ -353,6 +372,47 @@ func TestComputeLinks_ImportRelativeAndSelfIgnored(t *testing.T) {
 	}
 	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
 		t.Errorf("relative/self imports produced edges: %+v", edges)
+	}
+}
+
+// TestComputeLinks_ImportIntraRepoNamespaceSkipped guards the reverse-DNS false
+// positive: a consumer's own file whose path embeds another repo's short label as
+// an interior namespace segment (e.g. "de/backend/app/..." in an app whose top-level
+// source dir is "app", vs a backend repo "backend") must NOT fabricate an import
+// edge, while a genuine deep cross-repo path still links.
+func TestComputeLinks_ImportIntraRepoNamespaceSkipped(t *testing.T) {
+	in := []facts.Fact{
+		// consumer "mobile" declares a top-level "app" source dir and imports its own
+		// file whose path contains the interior segment "backend".
+		module("mobile", "app/src/main/java/de/backend/app/ui"),
+		importDep("mobile", "app/src/main/java/de/backend/app/ui/Screen"),
+		// a real backend repo happens to be labeled "backend".
+		serverRoute("backend", "/api/items/{id}", "GET"),
+		// a genuine deep cross-repo import still resolves (leading seg not a mobile dir).
+		importDep("mobile", "github.com/x/go-auth/adapters"),
+		module("go-auth", "adapters"),
+	}
+	out := ComputeLinks(in)
+	if findEdge(out, "mobile", "backend") != nil {
+		t.Errorf("intra-repo namespace path must not link to a same-named repo; got edge to backend")
+	}
+	if findEdge(out, "mobile", "go-auth") == nil {
+		t.Errorf("a genuine deep cross-repo import should still resolve to go-auth")
+	}
+}
+
+// TestComputeLinks_ImportSelfNamedTargetSkipped covers an app whose own module is
+// named the same short token as a backend repo (e.g. a mobile app target "acme"
+// alongside a backend repo also labeled "acme"): importing it is intra-repo, not a
+// call to the backend.
+func TestComputeLinks_ImportSelfNamedTargetSkipped(t *testing.T) {
+	in := []facts.Fact{
+		module("app-ios", "acme"), // the app's own target module
+		importDep("app-ios", "acme"),
+		serverRoute("acme", "/api/items/{id}", "GET"),
+	}
+	if findEdge(ComputeLinks(in), "app-ios", "acme") != nil {
+		t.Errorf("importing the app's own same-named module must not link to the backend repo")
 	}
 }
 
@@ -561,6 +621,70 @@ func TestComputeLinks_SharedSymbolsNonTypesIgnored(t *testing.T) {
 	}
 	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
 		t.Errorf("shared non-type symbols should not link: %+v", edges)
+	}
+}
+
+func typeSymLang(repo, name, kind, lang string) facts.Fact {
+	f := typeSym(repo, name, kind)
+	f.Props["language"] = lang
+	return f
+}
+
+// TestComputeLinks_SharedSymbolsCrossLanguageUnqualifiedSkipped covers the parallel-
+// app false positive: two apps in different languages declaring the same plain
+// domain type names (e.g. Kotlin and Swift both defining LoginViewModel/FeedItem/
+// AccountViewModel) are modeling the same product, not sharing code — no link.
+func TestComputeLinks_SharedSymbolsCrossLanguageUnqualifiedSkipped(t *testing.T) {
+	in := []facts.Fact{
+		module("android", "app"),
+		typeSymLang("android", "app.LoginViewModel", facts.SymbolClass, "kotlin"),
+		typeSymLang("android", "app.FeedItem", facts.SymbolClass, "kotlin"),
+		typeSymLang("android", "app.AccountViewModel", facts.SymbolClass, "kotlin"),
+		module("ios", "Sources"),
+		typeSymLang("ios", "Sources.LoginViewModel", facts.SymbolClass, "swift"),
+		typeSymLang("ios", "Sources.FeedItem", facts.SymbolClass, "swift"),
+		typeSymLang("ios", "Sources.AccountViewModel", facts.SymbolClass, "swift"),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("unqualified domain types shared across languages must not link: %+v", edges)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsSameLanguageUnqualifiedLinks confirms the fix does
+// not over-reach: enough unqualified types shared between SAME-language repos still
+// link (genuine copied source).
+func TestComputeLinks_SharedSymbolsSameLanguageUnqualifiedLinks(t *testing.T) {
+	in := []facts.Fact{
+		module("svc-a", "core"),
+		typeSymLang("svc-a", "core.WidgetRegistry", facts.SymbolClass, "go"),
+		typeSymLang("svc-a", "core.PaymentLedger", facts.SymbolClass, "go"),
+		typeSymLang("svc-a", "core.RetryPolicy", facts.SymbolClass, "go"),
+		module("svc-b", "lib"),
+		typeSymLang("svc-b", "lib.WidgetRegistry", facts.SymbolClass, "go"),
+		typeSymLang("svc-b", "lib.PaymentLedger", facts.SymbolClass, "go"),
+		typeSymLang("svc-b", "lib.RetryPolicy", facts.SymbolClass, "go"),
+	}
+	if findEdge(ComputeLinks(in), "svc-a", "svc-b") == nil {
+		t.Errorf("same-language repos sharing distinctive types should still link")
+	}
+}
+
+// TestComputeLinks_SharedSymbolsQualifiedCrossLanguageLinks confirms a namespace-
+// qualified identity (the vendored/shared-source signal) links regardless of the
+// per-repo dominant language.
+func TestComputeLinks_SharedSymbolsQualifiedCrossLanguageLinks(t *testing.T) {
+	in := []facts.Fact{
+		module("repo-a", "src"),
+		typeSymLang("repo-a", "src.onelab::clientA", facts.SymbolClass, "cpp"),
+		typeSymLang("repo-a", "src.onelab::clientB", facts.SymbolClass, "cpp"),
+		typeSymLang("repo-a", "src.onelab::clientC", facts.SymbolClass, "cpp"),
+		module("repo-b", "vendor"),
+		typeSymLang("repo-b", "vendor.onelab::clientA", facts.SymbolClass, "c"),
+		typeSymLang("repo-b", "vendor.onelab::clientB", facts.SymbolClass, "c"),
+		typeSymLang("repo-b", "vendor.onelab::clientC", facts.SymbolClass, "c"),
+	}
+	if findEdge(ComputeLinks(in), "repo-a", "repo-b") == nil {
+		t.Errorf("qualified shared identities should link even across languages")
 	}
 }
 

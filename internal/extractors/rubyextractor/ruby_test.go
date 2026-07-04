@@ -774,6 +774,63 @@ end
 	}
 }
 
+// TestRoutes_DrawPrefixSeeding verifies that (1) a top-level routes.rb reports the
+// prefix each draw(:pkg) is scoped under, and (2) parsing a delegated file seeded
+// with that prefix yields fully-qualified routes that a client call can match.
+func TestRoutes_DrawPrefixSeeding(t *testing.T) {
+	main := `Rails.application.routes.draw do
+  scope '/api', defaults: { format: 'json' } do
+    namespace(:core) do
+      namespace(:v3) do
+        draw(:api_core_v3_routes)
+      end
+    end
+    namespace(:v2) do
+      draw(:api_v2_routes)
+    end
+  end
+  draw(:admin_routes)
+end
+`
+	_, draws := parseRouteFile([]byte(main), "config/routes.rb", "")
+	if draws["api_core_v3_routes"] != "/api/core/v3" {
+		t.Errorf("api_core_v3_routes prefix = %q, want /api/core/v3", draws["api_core_v3_routes"])
+	}
+	if draws["api_v2_routes"] != "/api/v2" {
+		t.Errorf("api_v2_routes prefix = %q, want /api/v2", draws["api_v2_routes"])
+	}
+	if draws["admin_routes"] != "" {
+		t.Errorf("admin_routes prefix = %q, want empty", draws["admin_routes"])
+	}
+
+	// A delegated file parsed with the learned prefix produces qualified routes,
+	// including single-segment collections lifted above the 2-segment match floor.
+	sub := `resources :devices, only: [:destroy]
+resources :interactions, only: [:index]
+namespace :event do
+  resources :posts, only: [:create]
+end
+`
+	ff, _ := parseRouteFile([]byte(sub), "config/routes/api_v2_routes.rb", draws["api_v2_routes"])
+	names := map[string]bool{}
+	for _, f := range ff {
+		names[f.Name] = true
+	}
+	for _, want := range []string{"/api/v2/devices/:id", "/api/v2/interactions", "/api/v2/event/posts"} {
+		if !names[want] {
+			t.Errorf("missing seeded route %q; got %v", want, keys2(names))
+		}
+	}
+}
+
+func keys2(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestRoutes_VerbWithHandler(t *testing.T) {
 	src := `Rails.application.routes.draw do
   root to: "home#index"

@@ -122,6 +122,14 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		return filepath.Dir(relFile)
 	}
 
+	// The repo-wide default urlPrefixComponent (e.g. "v2") that endpoint types
+	// inherit when they declare no prefix of their own. Only iOS uses the endpoint
+	// idiom, so the scan is gated on isiOS to avoid a wasted read pass elsewhere.
+	var defaultURLPrefix string
+	if isiOS {
+		defaultURLPrefix = detectDefaultURLPrefix(repoPath, files)
+	}
+
 	// extractFileAST/extractURLSessionFacts are pure; parse the source files in
 	// parallel. The indices below are rebuilt by iterating the per-file results in
 	// file order, so modules, dirToFile and typeIndex match a serial run exactly.
@@ -135,7 +143,8 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		}
 		dir := moduleForFile(relFile)
 		ff := extractFileASTWithDir(src, relFile, isiOS, dir)
-		return append(ff, extractURLSessionFactsWithDir(src, relFile, dir)...)
+		ff = append(ff, extractURLSessionFactsWithDir(src, relFile, dir)...)
+		return append(ff, extractEndpointFacts(src, relFile, dir, defaultURLPrefix)...)
 	})
 
 	for i, fileFacts := range perFileFacts {

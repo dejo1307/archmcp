@@ -250,7 +250,8 @@ func pickProvider(client facts.Fact, matches []routeRef) (string, bool) {
 // HTTP-client extractors, as opposed to generated OpenAPI client specs.
 var handWrittenClientSources = map[string]bool{
 	"ts-http-client": true, "retrofit": true, "urlsession": true,
-	"ruby-http-client": true, "go-http-client": true, "php-http-client": true,
+	"swift-endpoint": true, "ruby-http-client": true, "go-http-client": true,
+	"php-http-client": true,
 }
 
 // httpVia returns the via label for an HTTP edge derived from a client route:
@@ -421,6 +422,7 @@ func repoFromIdentity(id string) string {
 // --- signal (B): import / shared-lib references ---
 
 func linkImports(all []facts.Fact, normToLabel map[string]string, edges map[string]*edge) {
+	ownDirs := repoTopDirs(all)
 	for _, f := range all {
 		if f.Repo == "" || f.Kind == facts.KindService {
 			continue
@@ -429,7 +431,7 @@ func linkImports(all []facts.Fact, normToLabel map[string]string, edges map[stri
 			if rel.Kind != facts.RelImports && rel.Kind != facts.RelDependsOn {
 				continue
 			}
-			provider := importProvider(rel.Target, f.Repo, normToLabel)
+			provider := importProvider(rel.Target, f.Repo, normToLabel, ownDirs[f.Repo])
 			if provider == "" {
 				continue
 			}
@@ -446,11 +448,22 @@ func linkImports(all []facts.Fact, normToLabel map[string]string, edges map[stri
 // importProvider maps an import target to another loaded repo, or "" if none.
 // It checks candidate identifiers from the target (the @scope, then each leading
 // path segment) against the normalized repo labels, skipping self-matches.
-func importProvider(target, consumer string, normToLabel map[string]string) string {
+//
+// ownDirs is the consumer repo's own top-level source directories. A target rooted
+// at one of them is an intra-repo file/module reference whose interior path
+// segments may coincide with another repo's short label (e.g. a "com/acme/app/…"
+// package path vs a backend repo labeled "acme"), so it is skipped before any
+// candidate matching — this is what keeps a repo's own files from fabricating a
+// cross-repo edge, while still allowing genuine deep import paths (e.g. a Go
+// "github.com/org/repo/pkg", whose leading "github.com" is not a source dir).
+func importProvider(target, consumer string, normToLabel map[string]string, ownDirs map[string]bool) string {
 	target = strings.TrimSpace(target)
 	// Skip relative / absolute filesystem imports — they are intra-repo.
 	if target == "" || strings.HasPrefix(target, ".") || strings.HasPrefix(target, "/") {
 		return ""
+	}
+	if head := leadingSegment(target); head != "" && ownDirs[normalizeLabel(head)] {
+		return "" // intra-repo self-reference, not a cross-repo dependency
 	}
 	for _, cand := range importCandidates(target) {
 		if label, ok := normToLabel[normalizeLabel(cand)]; ok && label != consumer {
@@ -458,6 +471,39 @@ func importProvider(target, consumer string, normToLabel map[string]string) stri
 		}
 	}
 	return ""
+}
+
+// leadingSegment returns the first non-empty path segment of an import target or
+// module name, ignoring a leading "@" scope marker (so "@app-web/lib" -> "app-web",
+// "com/acme/app" -> "com", "acme" -> "acme").
+func leadingSegment(target string) string {
+	for _, p := range strings.Split(strings.TrimPrefix(target, "@"), "/") {
+		if p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// repoTopDirs returns, per repo, the set of normalized leading path segments of
+// its module names — the repo's own top-level source roots. importProvider uses it
+// to recognize an import target as an intra-repo reference.
+func repoTopDirs(all []facts.Fact) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, f := range all {
+		if f.Kind != facts.KindModule || f.Repo == "" {
+			continue
+		}
+		head := leadingSegment(f.Name)
+		if head == "" {
+			continue
+		}
+		if out[f.Repo] == nil {
+			out[f.Repo] = map[string]bool{}
+		}
+		out[f.Repo][normalizeLabel(head)] = true
+	}
+	return out
 }
 
 // importCandidates extracts the identifier tokens an import target may name a
@@ -501,6 +547,7 @@ var genericTypeNames = map[string]bool{
 // dependency), so qualifying pairs get a bidirectional pair of edges.
 func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 	repoModules := moduleNamesByRepo(all)
+	repoLang := primaryLanguageByRepo(all)
 
 	// identity -> set of repos that declare a type with that identity.
 	idToRepos := map[string]map[string]bool{}
@@ -518,13 +565,21 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 		idToRepos[id][f.Repo] = true
 	}
 
-	// For each identity shared by 2+ repos, record it against every repo pair.
+	// For each identity shared by 2+ repos, record it against every repo pair — but
+	// only when the shared identity is a trustworthy coupling signal for that pair.
+	// A namespace-qualified identity (contains "::"/".", the mark of vendored/shared
+	// source) always counts, language-independent. A bare unqualified name counts
+	// only between same-language repos: two apps written in different languages
+	// sharing a plain domain type name (e.g. Kotlin and Swift both declaring
+	// "LoginViewModel") is parallel modeling of the same product, not shared code,
+	// and must not fabricate a dependency.
 	// pairShared["a\x00b"] (a<b) -> set of shared identities.
 	pairShared := map[string]map[string]bool{}
 	for id, repos := range idToRepos {
 		if len(repos) < 2 {
 			continue
 		}
+		qualified := isQualifiedIdentity(id)
 		rs := make([]string, 0, len(repos))
 		for r := range repos {
 			rs = append(rs, r)
@@ -532,6 +587,9 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 		sort.Strings(rs)
 		for i := 0; i < len(rs); i++ {
 			for j := i + 1; j < len(rs); j++ {
+				if !qualified && repoLang[rs[i]] != repoLang[rs[j]] {
+					continue
+				}
 				key := rs[i] + "\x00" + rs[j]
 				if pairShared[key] == nil {
 					pairShared[key] = map[string]bool{}
@@ -612,13 +670,53 @@ func isDistinctiveIdentity(id string) bool {
 	if id == "" {
 		return false
 	}
-	if strings.Contains(id, "::") || strings.Contains(id, ".") {
+	if isQualifiedIdentity(id) {
 		return true
 	}
 	if len(id) < 5 {
 		return false
 	}
 	return !genericTypeNames[strings.ToLower(id)]
+}
+
+// isQualifiedIdentity reports whether a type identity is namespace-qualified
+// (contains "::" or "."). A qualified identity shared across repos is a strong
+// vendored/shared-source signal, independent of language; an unqualified one is a
+// bare type name that two repos may coincidentally share.
+func isQualifiedIdentity(id string) bool {
+	return strings.Contains(id, "::") || strings.Contains(id, ".")
+}
+
+// primaryLanguageByRepo returns each repo's dominant source language (the most
+// common `language` prop across its facts), or "" when unknown. Used to gate
+// unqualified shared-symbol links to same-language repo pairs, so two apps in
+// different languages sharing a plain domain type name are not linked.
+func primaryLanguageByRepo(all []facts.Fact) map[string]string {
+	counts := map[string]map[string]int{}
+	for _, f := range all {
+		if f.Repo == "" {
+			continue
+		}
+		lang := propString(f, "language")
+		if lang == "" {
+			continue
+		}
+		if counts[f.Repo] == nil {
+			counts[f.Repo] = map[string]int{}
+		}
+		counts[f.Repo][lang]++
+	}
+	out := map[string]string{}
+	for repo, langs := range counts {
+		best, bestN := "", -1
+		for l, n := range langs {
+			if n > bestN || (n == bestN && l < best) {
+				best, bestN = l, n
+			}
+		}
+		out[repo] = best
+	}
+	return out
 }
 
 // --- materialization ---
@@ -761,7 +859,9 @@ func propString(f facts.Fact, key string) string {
 func normalizeMethod(m string) string {
 	m = strings.ToUpper(strings.TrimSpace(m))
 	switch m {
-	case "", "USE", "ALL", "MIDDLEWARE":
+	case "", "USE", "ALL", "MIDDLEWARE", "DRAW":
+		// DRAW is a Rails route-delegation placeholder (config/routes.rb draw(:pkg)),
+		// not a real HTTP method — inert for matching and unused-route flagging.
 		return ""
 	}
 	return m
@@ -769,9 +869,28 @@ func normalizeMethod(m string) string {
 
 func routeKey(normPath, method string) string { return normPath + "|" + method }
 
-// normalizePath trims a trailing slash and collapses path parameters in any
+// formatExtensions are response-format suffixes a client may append to a path
+// (Rails renders these as an optional ".:format" that never appears in the route
+// path) — so they must be stripped before comparing a client call to a server route.
+var formatExtensions = []string{".json", ".xml"}
+
+// stripFormatExtension removes a trailing response-format extension from a single
+// path segment: "orders.json" -> "orders", "{id}.json" -> "{id}" (so the later
+// {}-collapse still fires). Only the known format suffixes are stripped, so a
+// version-like segment ("v2.5") or a real dotted name is left intact.
+func stripFormatExtension(seg string) string {
+	for _, ext := range formatExtensions {
+		if len(seg) > len(ext) && strings.HasSuffix(seg, ext) {
+			return seg[:len(seg)-len(ext)]
+		}
+	}
+	return seg
+}
+
+// normalizePath trims a trailing slash, strips a trailing response-format extension
+// (.json/.xml) from the final segment, and collapses path parameters in any
 // framework syntax ({id}, :id, <id>) to a single "{}" placeholder, so a client
-// path matches the server path it calls regardless of param naming.
+// path matches the server path it calls regardless of param naming or format suffix.
 func normalizePath(p string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
@@ -781,6 +900,12 @@ func normalizePath(p string) string {
 		p = strings.TrimRight(p, "/")
 	}
 	segs := strings.Split(p, "/")
+	// Strip a format extension from the final segment before param collapse, so a
+	// client call "/devices/{id}.json" normalizes to the same "/devices/{}" the
+	// server route "/devices/:id" produces.
+	if n := len(segs); n > 0 {
+		segs[n-1] = stripFormatExtension(segs[n-1])
+	}
 	for i, s := range segs {
 		switch {
 		case strings.HasPrefix(s, ":"):
