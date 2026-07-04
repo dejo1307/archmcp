@@ -142,9 +142,15 @@ func (d *SnapshotDiff) writeProvenance(sb *strings.Builder) {
 	if d.BaselineGeneratedAt != "" || d.CurrentGeneratedAt != "" {
 		fmt.Fprintf(sb, "_Baseline %s → current %s._\n\n", orDash(d.BaselineGeneratedAt), orDash(d.CurrentGeneratedAt))
 	}
-	// A baseline taken on a different repo makes the delta meaningless; flag it.
-	if d.BaselineRepo != "" && d.CurrentRepo != "" && d.BaselineRepo != d.CurrentRepo {
-		fmt.Fprintf(sb, "> ⚠️ Baseline repo (%s) differs from current (%s); this diff is not meaningful.\n\n", d.BaselineRepo, d.CurrentRepo)
+	// Comparability warnings appear ABOVE the delta: a mismatched baseline (different
+	// repo, extractor set, enola version, or ignore globs) makes the numbers below
+	// misleading, so the reader must see the caveat first.
+	if !d.Comparability.Comparable() {
+		sb.WriteString("> ⚠️ **Comparability warnings** — read before trusting the delta:\n")
+		for _, w := range d.Comparability.Warnings {
+			fmt.Fprintf(sb, ">  - %s\n", w)
+		}
+		sb.WriteString("\n")
 	}
 }
 

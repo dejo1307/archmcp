@@ -39,6 +39,13 @@ func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapsho
 	// Sections ordered by priority (most important first)
 	sections := []section{
 		{"Repository Map", r.renderRepoMap(snapshot)},
+		// Extraction Quality is a compact trust-preface: it states how complete this
+		// extraction was (thin extraction, parse errors, coverage gaps) BEFORE the
+		// reader relies on the map below. It sits high on purpose — it is small, and
+		// it is the in-loop signal an agent uses to spot when enola's own coverage is
+		// the problem, so it must survive the token budget rather than being the first
+		// thing truncated on a large repo.
+		{"Extraction Quality", r.renderExtractionQuality(snapshot)},
 		{"Architecture Pattern", r.renderArchPattern(snapshot)},
 		{"Cross-Repo Dependencies", r.renderCrossRepo(snapshot)},
 		{"Entry Points", r.renderEntryPoints(snapshot)},
@@ -553,6 +560,42 @@ func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string
 		sb.WriteString("3. Keep dependencies flowing in one direction\n")
 		sb.WriteString("4. Add appropriate exports for cross-module usage\n")
 		sb.WriteString("5. Wire the feature in the entry point\n")
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// renderExtractionQuality surfaces how complete the extraction was, so an agent
+// reading the snapshot can SEE thin extraction (a bad ignore glob, a failing
+// extractor, unresolved cross-repo edges) without calling snapshot_receipt — the
+// in-loop signal for improving enola's own coverage. It emphasizes genuine
+// signals (parse errors, coverage gaps) and stays quiet when extraction is clean.
+func (r *LLMContextRenderer) renderExtractionQuality(snapshot *facts.Snapshot) string {
+	m := snapshot.Meta
+	// Nothing meaningful to report on an old/auto-loaded snapshot with no receipt.
+	if m.FilesSeen == 0 && m.ParseErrors == 0 && m.Coverage == nil {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Extraction Quality\n\n")
+	fmt.Fprintf(&sb, "- Files parsed: **%d** / %d seen (%d skipped by ignore globs)\n",
+		m.FilesParsed, m.FilesSeen, m.FilesSkipped)
+
+	if m.ParseErrors > 0 {
+		fmt.Fprintf(&sb, "- ⚠️ Parse errors: **%d** — some sources failed to extract; the graph may be missing symbols here\n", m.ParseErrors)
+	} else {
+		sb.WriteString("- Parse errors: 0\n")
+	}
+
+	if m.Coverage != nil && m.Coverage.CoverageGaps > 0 {
+		fmt.Fprintf(&sb, "- ⚠️ Cross-repo coverage gaps: **%d** service(s), %d unresolved outbound edge(s) — some links could not be resolved to a loaded repo\n",
+			m.Coverage.CoverageGaps, m.Coverage.UnresolvedEdges)
+	}
+
+	if m.ParseErrors > 0 || (m.Coverage != nil && m.Coverage.CoverageGaps > 0) {
+		sb.WriteString("\n_These are extraction limits, not code defects — verify against source, and consider whether an extractor, detection, or ignore glob needs improving._\n")
 	}
 
 	sb.WriteString("\n")

@@ -15,12 +15,10 @@ import (
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/mcputil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-// Version is set at build time via -ldflags.
-var Version = "dev"
 
 // Server wraps the MCP server and connects it to the snapshot engine.
 type Server struct {
@@ -46,7 +44,7 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 
 	mcpServer := mcp.NewServer(&mcp.Implementation{
 		Name:    "enola",
-		Version: Version,
+		Version: version.Version,
 	}, &mcp.ServerOptions{
 		Instructions: "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). To verify what a change did to the architecture, pin a baseline before editing and diff after: generate_snapshot → set_baseline → make changes → generate_snapshot → diff_snapshot. diff_snapshot is delta-only (it reports just what changed — new/resolved findings, new coupling, added/removed symbols — never pre-existing state), so prefer it over re-reading files to confirm a change. Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, and OpenAPI.",
 	})
@@ -1177,6 +1175,152 @@ func (s *Server) registerTools() {
 			return textResult(capTokens(d.RenderSummary(), args.MaxTokens, false)), nil, nil
 		}
 	})
+
+	// Tool: snapshot_receipt
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "snapshot_receipt",
+		Description: "Show the receipt for the current snapshot — a compact manifest that proves WHAT the deterministic graph was generated over, " +
+			"and how complete the extraction was. Fields: enola version, git ref + dirty-tree status, snapshot_id (a content fingerprint, stable across reruns on identical inputs), " +
+			"the extractor/explainer sets actually used, the ignore-glob hash, SHA-256 hashes of the output artifacts, and extraction-quality metrics " +
+			"(files seen vs parsed vs skipped, parse-error count, and cross-repo coverage gaps / unresolved edges). " +
+			"Read it before trusting an impact_analysis or a diff, and to spot thin extraction (a missing detection, a bad ignore glob, a failing extractor). " +
+			"output_mode: 'summary' (DEFAULT — the headline provenance + quality metrics) → 'full' (complete JSON receipt).",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args snapshotReceiptArgs) (*mcp.CallToolResult, any, error) {
+		if s.toolCallback != nil {
+			s.toolCallback("snapshot_receipt")
+		}
+		snap := s.eng.Snapshot()
+		if snap == nil || s.eng.Store().Count() == 0 {
+			return errorResult("No snapshot available. Run generate_snapshot first."), nil, nil
+		}
+		receipt := snap.Meta.Receipt()
+		if resolveOutputMode(args.OutputMode, modeSummary) == modeFull {
+			return jsonResultCapped(receipt, args.MaxTokens)
+		}
+		return textResult(capTokens(renderReceipt(receipt), args.MaxTokens, false)), nil, nil
+	})
+
+	// Tool: compare_receipts
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "compare_receipts",
+		Description: "Compare the current snapshot's receipt against a baseline's, BEFORE trusting a diff between them. " +
+			"Returns (1) a comparability verdict — whether the two were generated over equivalent inputs (same repo, enola version, extractor set, ignore globs); " +
+			"a mismatch means a diff_snapshot between them would report spurious churn — and (2) metric deltas (files parsed, parse errors, coverage gaps, unresolved edges, fact/insight counts), " +
+			"flagging extraction-quality REGRESSIONS (enola's own extraction got thinner). Use it as the gate before diff_snapshot, or poll it to drive improvements to enola's coverage. " +
+			"baseline= selects what to compare against: 'pinned' (DEFAULT — set_baseline snapshot), 'previous' (the immediately-preceding run), or an explicit path to a directory holding receipt.json/snapshot.meta.json. " +
+			"output_mode: 'summary' (DEFAULT — markdown) → 'full' (complete JSON).",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args compareReceiptsArgs) (*mcp.CallToolResult, any, error) {
+		if s.toolCallback != nil {
+			s.toolCallback("compare_receipts")
+		}
+		snap := s.eng.Snapshot()
+		if snap == nil || s.eng.Store().Count() == 0 {
+			return errorResult("No snapshot available. Run generate_snapshot first."), nil, nil
+		}
+		baseDir := s.resolveBaselineDir(s.currentRepoPath(), args.Baseline)
+		baseline, err := engine.LoadSnapshotDir(baseDir)
+		if err != nil {
+			sel := strings.ToLower(strings.TrimSpace(args.Baseline))
+			switch sel {
+			case "", "pinned":
+				return errorResult("No pinned baseline found. Call set_baseline after your first generate_snapshot, then compare_receipts again. (Or pass baseline='previous'.)"), nil, nil
+			case "previous":
+				return errorResult("No previous snapshot yet — generate_snapshot must have run at least twice."), nil, nil
+			default:
+				return errorResult(fmt.Sprintf("could not load baseline from %q: %v", args.Baseline, err)), nil, nil
+			}
+		}
+		rc := diff.CompareReceipts(baseline.Meta, snap.Meta)
+		if resolveOutputMode(args.OutputMode, modeSummary) == modeFull {
+			return jsonResultCapped(rc, args.MaxTokens)
+		}
+		return textResult(capTokens(rc.Render(), args.MaxTokens, false)), nil, nil
+	})
+}
+
+// resolveBaselineDir maps a baseline selector ('pinned'/”/'previous'/explicit
+// path) to the on-disk directory holding that snapshot's artifacts — the same
+// resolution diff_snapshot uses, shared so compare_receipts stays consistent.
+func (s *Server) resolveBaselineDir(repoPath, selector string) string {
+	outDir := s.eng.OutputDir(repoPath)
+	switch strings.ToLower(strings.TrimSpace(selector)) {
+	case "", "pinned":
+		return filepath.Join(outDir, engine.BaselineSubdir)
+	case "previous":
+		return filepath.Join(outDir, engine.PreviousSubdir)
+	default:
+		return selector // explicit path to a dir holding facts.jsonl / receipt.json
+	}
+}
+
+// renderReceipt produces the compact markdown summary for the snapshot_receipt
+// tool: provenance first, then the extraction-quality metrics that flag thin
+// extraction.
+func renderReceipt(r facts.Receipt) string {
+	var sb strings.Builder
+	sb.WriteString("# Snapshot receipt\n\n")
+
+	sb.WriteString("## Provenance\n\n")
+	fmt.Fprintf(&sb, "- **Snapshot ID:** `%s`\n", orDashStr(r.SnapshotID))
+	fmt.Fprintf(&sb, "- **enola version:** %s\n", orDashStr(r.EnolaVersion))
+	fmt.Fprintf(&sb, "- **Generated:** %s (%s)\n", orDashStr(r.GeneratedAt), r.Duration)
+	fmt.Fprintf(&sb, "- **Repository:** %s\n", orDashStr(r.RepoPath))
+	if r.Git != nil {
+		dirty := "clean"
+		if r.Git.Dirty {
+			dirty = "**dirty (uncommitted changes)**"
+		}
+		fmt.Fprintf(&sb, "- **Git:** %s @ `%s` — %s\n", orDashStr(r.Git.Ref), shortSHA(r.Git.Commit), dirty)
+	} else {
+		sb.WriteString("- **Git:** not a git repository\n")
+	}
+	fmt.Fprintf(&sb, "- **Extractors:** %s\n", strings.Join(r.Extractors, ", "))
+	if r.ConfigHash != "" {
+		fmt.Fprintf(&sb, "- **Config hash:** `%s`\n", r.ConfigHash)
+	}
+	fmt.Fprintf(&sb, "- **Facts:** %d · **Insights:** %d\n\n", r.FactCount, r.InsightCount)
+
+	q := r.Quality
+	sb.WriteString("## Extraction quality\n\n")
+	fmt.Fprintf(&sb, "- **Files:** %d parsed / %d seen · %d skipped by ignore globs\n", q.FilesParsed, q.FilesSeen, q.FilesSkipped)
+	fmt.Fprintf(&sb, "- **Parse errors:** %d\n", q.ParseErrors)
+	fmt.Fprintf(&sb, "- **Heuristic insights:** %d of %d (confidence < 1.0; the rest are structural facts)\n", q.HeuristicInsights, r.InsightCount)
+	if q.Coverage != nil {
+		fmt.Fprintf(&sb, "- **Cross-repo coverage:** %d service(s), %d coverage gap(s), %d unresolved edge(s)\n",
+			q.Coverage.ServicesTotal, q.Coverage.CoverageGaps, q.Coverage.UnresolvedEdges)
+	}
+	if len(q.ParseErrorSample) > 0 {
+		sb.WriteString("\n**Parse-error sample:**\n")
+		for _, pe := range q.ParseErrorSample {
+			fmt.Fprintf(&sb, "- [%s] %s%s\n", pe.Extractor, oneLine(pe.Msg), fileSuffix(pe.File))
+		}
+	}
+	sb.WriteString("\n_Use output_mode='full' for the complete JSON receipt (output hashes, skipped-path sample, per-metric detail)._\n")
+	return sb.String()
+}
+
+// orDashStr returns s, or an em dash when empty, for receipt rendering.
+func orDashStr(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
+}
+
+// shortSHA truncates a git commit SHA to its first 12 chars for display.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// fileSuffix renders a " (file)" suffix when a parse error names a file.
+func fileSuffix(file string) string {
+	if file == "" {
+		return ""
+	}
+	return " (" + file + ")"
 }
 
 // loopHint returns the next-step guidance appended to a single-repo
@@ -1227,6 +1371,17 @@ type diffSnapshotArgs struct {
 type coverageReportArgs struct {
 	Repo       string `json:"repo,omitempty" jsonschema:"Optional: limit the report to one service (repo label). Default: all services."`
 	OutputMode string `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT) returns a markdown table; 'full' returns JSON."`
+}
+
+type snapshotReceiptArgs struct {
+	OutputMode string `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — headline provenance + extraction-quality metrics) → 'full' (complete JSON receipt)."`
+	MaxTokens  int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens). Default: no cap."`
+}
+
+type compareReceiptsArgs struct {
+	Baseline   string `json:"baseline,omitempty" jsonschema:"What to compare the current receipt against: 'pinned' (DEFAULT — the snapshot frozen by set_baseline), 'previous' (the immediately-preceding generate_snapshot run), or an explicit path to a directory containing receipt.json / snapshot.meta.json."`
+	OutputMode string `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — markdown: comparability verdict, metric deltas, quality regressions) → 'full' (complete JSON)."`
+	MaxTokens  int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens). Default: no cap."`
 }
 
 // edgeCoverage is one edge type's detected-vs-resolved tally for a service.

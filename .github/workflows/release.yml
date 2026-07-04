@@ -72,7 +72,7 @@ jobs:
             EXT=".exe"
           fi
           go build \
-            -ldflags "-s -w -X github.com/enola-labs/enola/internal/server.Version=${{ steps.version.outputs.version }}" \
+            -ldflags "-s -w -X github.com/enola-labs/enola/internal/version.Version=${{ steps.version.outputs.version }}" \
             -o "${BINARY}${EXT}" \
             ./cmd/enola
 

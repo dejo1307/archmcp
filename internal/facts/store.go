@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -97,6 +98,26 @@ func (s *Store) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.facts)
+}
+
+// CountFilesWithFacts returns how many of the given walked files produced at
+// least one fact, applying prefix to each path first (the repo-label prefix used
+// in append mode; "" in single-repo mode). This is the intersection of "files
+// enumerated by the walker" with "files present in the graph", so it is a true
+// parsing-coverage numerator that never exceeds the seen count — unlike a raw
+// count of distinct fact file-keys, which also includes module/directory keys and
+// config files scanned outside the walker.
+func (s *Store) CountFilesWithFacts(files []string, prefix string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, f := range files {
+		key := prefix + filepath.ToSlash(f)
+		if idxs, ok := s.byFile[key]; ok && len(idxs) > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // ByKind returns all facts of the given kind.

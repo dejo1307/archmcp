@@ -23,6 +23,7 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo"
 	"github.com/enola-labs/enola/internal/renderers"
+	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -185,12 +186,12 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 	// 1. Walk repository and collect files
 	tStage := time.Now()
-	files, testFiles, err := e.walkRepo(absRepo)
+	files, testFiles, skips, err := e.walkRepo(absRepo)
 	if err != nil {
 		return nil, fmt.Errorf("walking repo: %w", err)
 	}
 	tWalk = time.Since(tStage)
-	log.Printf("[engine] found %d files (%d test files) in %s", len(files), len(testFiles), absRepo)
+	log.Printf("[engine] found %d files (%d test files, %d skipped) in %s", len(files), len(testFiles), skips.count, absRepo)
 
 	// 2. Compute file hashes (for snapshot metadata)
 	tStage = time.Now()
@@ -205,7 +206,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		cache = loadExtractorCache(cachePath)
 	}
 	preCount := e.store.Count()
-	usedExtractors, err := e.runExtractors(ctx, absRepo, files, currentHashes, cache)
+	usedExtractors, parseErrs, err := e.runExtractors(ctx, absRepo, files, currentHashes, cache)
 	if err != nil {
 		return nil, fmt.Errorf("extraction: %w", err)
 	}
@@ -273,8 +274,26 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		})
 	}
 
-	// 6. Build snapshot
+	// 6. Build snapshot.
+	//
+	// Receipt fields: the snapshot ID is a content fingerprint over the same
+	// byte-stable serialization that becomes facts.jsonl, so it is stable across
+	// reruns on identical inputs and keys snapshot equivalence. The extraction
+	// -quality fields (files seen/parsed/skipped, parse errors, coverage) let a
+	// consumer judge how complete this extraction was before trusting it.
 	duration := time.Since(start)
+	ignoreGlobHash := computeIgnoreGlobHash(e.cfg)
+	configHash := computeConfigHash(e.cfg)
+	// In append mode this run's facts were path-prefixed with the repo label, so
+	// match the walked files against that same prefix to count parsing coverage.
+	parsedPrefix := ""
+	if appendMode {
+		parsedPrefix = repoLabel + "/"
+	}
+	var factsBuf bytes.Buffer
+	if err := e.store.WriteJSONL(&factsBuf); err != nil {
+		return nil, fmt.Errorf("serializing facts for snapshot id: %w", err)
+	}
 	snapshot := &facts.Snapshot{
 		Meta: facts.SnapshotMeta{
 			RepoPath:     absRepo,
@@ -286,6 +305,21 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			FileHashes:   fileHashes,
 			FactCount:    e.store.Count(),
 			InsightCount: len(allInsights),
+
+			EnolaVersion: version.Version,
+			SnapshotID:   computeSnapshotID(factsBuf.Bytes(), version.Version, configHash),
+			Git:          gitInfo(absRepo),
+			ConfigHash:   configHash,
+
+			FilesSeen:         len(files),
+			FilesParsed:       e.store.CountFilesWithFacts(files, parsedPrefix),
+			FilesSkipped:      skips.count,
+			SkippedSample:     skips.sample,
+			IgnoreGlobHash:    ignoreGlobHash,
+			ParseErrors:       len(parseErrs),
+			ParseErrorSample:  capParseErrors(parseErrs),
+			HeuristicInsights: countHeuristicInsights(allInsights),
+			Coverage:          coverageSummary(e.store),
 		},
 		// FactsRef aliases the store's slice rather than copying it: this snapshot
 		// is the live one (e.snapshot) and its Facts are only ever read (renderers,
@@ -394,11 +428,23 @@ func (e *Engine) flagUnmatchedRoutes() {
 	}
 }
 
+// walkSkips is a lightweight tally of files dropped by the ignore globs, kept so
+// a snapshot receipt can report how much of the tree was excluded (and a sample
+// of what) without retaining every skipped path.
+type walkSkips struct {
+	count  int
+	sample []string
+}
+
+// skippedSampleCap bounds the number of skipped paths retained for the receipt.
+const skippedSampleCap = 20
+
 // walkRepo collects all files in the repo, applying ignore patterns. It returns
-// the indexable source files plus, separately, the test/spec files matched by
-// TestGlobs — those are excluded from normal indexing but collected for
-// reference-only extraction (see runTestRefExtractors).
-func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, err error) {
+// the indexable source files, separately the test/spec files matched by
+// TestGlobs (excluded from normal indexing but collected for reference-only
+// extraction — see runTestRefExtractors), and a tally of ignored files for the
+// snapshot receipt.
+func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips walkSkips, err error) {
 	err = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -420,6 +466,10 @@ func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, err error
 			if e.matchesTestGlob(relPath) {
 				testFiles = append(testFiles, relPath)
 			}
+			skips.count++
+			if len(skips.sample) < skippedSampleCap {
+				skips.sample = append(skips.sample, filepath.ToSlash(relPath))
+			}
 			return nil
 		}
 
@@ -428,7 +478,7 @@ func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, err error
 		}
 		return nil
 	})
-	return files, testFiles, err
+	return files, testFiles, skips, err
 }
 
 // matchesTestGlob reports whether a repo-relative path matches any TestGlob.
@@ -528,8 +578,9 @@ func (e *Engine) isIgnored(relPath string, isDir bool) bool {
 // runExtractors detects applicable extractors and runs them. When cache is
 // non-nil, extractors implementing plugin.FileOwner have their facts reused
 // whenever the files they depend on are unchanged since the last snapshot.
-func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []string, hashes map[string]string, cache *extractorCache) ([]string, error) {
+func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []string, hashes map[string]string, cache *extractorCache) ([]string, []facts.ParseError, error) {
 	var usedNames []string
+	var parseErrs []facts.ParseError
 
 	var keys map[string]string
 	if cache != nil {
@@ -544,6 +595,7 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 		detected, err := ext.Detect(repoPath)
 		if err != nil {
 			log.Printf("[engine] extractor %s detect error: %v", ext.Name(), err)
+			parseErrs = append(parseErrs, facts.ParseError{Extractor: ext.Name(), Msg: "detect: " + err.Error()})
 			continue
 		}
 		if !detected {
@@ -568,6 +620,7 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 		extracted, err := ext.Extract(ctx, repoPath, files)
 		if err != nil {
 			log.Printf("[engine] extractor %s error: %v", ext.Name(), err)
+			parseErrs = append(parseErrs, facts.ParseError{Extractor: ext.Name(), Msg: err.Error()})
 			continue
 		}
 
@@ -583,7 +636,7 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 		log.Printf("[engine] extractor %s: emitted %d facts in %s", ext.Name(), len(extracted), time.Since(tExt).Round(time.Millisecond))
 	}
 
-	return usedNames, nil
+	return usedNames, parseErrs, nil
 }
 
 // runTestRefExtractors runs reference-only extraction over the test/spec files
@@ -701,20 +754,31 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 		log.Printf("[engine] warning: could not rotate previous snapshot: %v", err)
 	}
 
+	// Hash every written artifact so the receipt records the exact output bytes
+	// (the verifiable counterpart to the per-input-file FileHashes). meta.json and
+	// receipt.json themselves are not hashed — they carry these hashes.
+	outputHashes := make(map[string]string)
+
 	// Write renderer artifacts (e.g. llm_context.md)
 	for _, a := range e.snapshot.Artifacts {
 		path := filepath.Join(outDir, a.Name)
 		if err := os.WriteFile(path, a.Content, 0o644); err != nil {
 			return fmt.Errorf("writing %s: %w", a.Name, err)
 		}
+		outputHashes[a.Name] = hashBytes(a.Content)
 		log.Printf("[engine] wrote %s (%d bytes)", path, len(a.Content))
 	}
 
-	// Write facts.jsonl
+	// Write facts.jsonl (serialize to a buffer first so we can hash the exact bytes)
+	var factsBuf bytes.Buffer
+	if err := e.store.WriteJSONL(&factsBuf); err != nil {
+		return fmt.Errorf("serializing facts.jsonl: %w", err)
+	}
 	factsPath := filepath.Join(outDir, "facts.jsonl")
-	if err := e.store.WriteJSONLFile(factsPath); err != nil {
+	if err := os.WriteFile(factsPath, factsBuf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("writing facts.jsonl: %w", err)
 	}
+	outputHashes["facts.jsonl"] = hashBytes(factsBuf.Bytes())
 	log.Printf("[engine] wrote %s", factsPath)
 
 	// Write insights.json
@@ -726,9 +790,13 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	if err := os.WriteFile(insightsPath, insightsJSON, 0o644); err != nil {
 		return fmt.Errorf("writing insights.json: %w", err)
 	}
+	outputHashes["insights.json"] = hashBytes(insightsJSON)
 	log.Printf("[engine] wrote %s (%d bytes)", insightsPath, len(insightsJSON))
 
-	// Write snapshot.meta.json
+	// Record the output hashes on the snapshot meta before serializing it.
+	e.snapshot.Meta.OutputHashes = outputHashes
+
+	// Write snapshot.meta.json (the internal superset, incl. per-file hashes)
 	metaJSON, err := json.MarshalIndent(e.snapshot.Meta, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling meta: %w", err)
@@ -739,7 +807,24 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	}
 	log.Printf("[engine] wrote %s (%d bytes)", metaPath, len(metaJSON))
 
+	// Write receipt.json (the compact provenance + quality manifest)
+	receiptJSON, err := json.MarshalIndent(e.snapshot.Meta.Receipt(), "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling receipt: %w", err)
+	}
+	receiptPath := filepath.Join(outDir, "receipt.json")
+	if err := os.WriteFile(receiptPath, receiptJSON, 0o644); err != nil {
+		return fmt.Errorf("writing receipt.json: %w", err)
+	}
+	log.Printf("[engine] wrote %s (%d bytes)", receiptPath, len(receiptJSON))
+
 	return nil
+}
+
+// hashBytes returns the "sha256:"-prefixed digest of b, used for output-artifact
+// digests in the receipt (matching every other receipt hash's notation).
+func hashBytes(b []byte) string {
+	return sha256Prefixed(b)
 }
 
 // GetArtifact returns the content of a named artifact, or the generated JSONL/JSON files.
@@ -759,6 +844,8 @@ func (e *Engine) GetArtifact(name string) ([]byte, error) {
 		return json.MarshalIndent(e.snapshot.Insights, "", "  ")
 	case "snapshot.meta.json":
 		return json.MarshalIndent(e.snapshot.Meta, "", "  ")
+	case "receipt.json":
+		return json.MarshalIndent(e.snapshot.Meta.Receipt(), "", "  ")
 	default:
 		for _, a := range e.snapshot.Artifacts {
 			if a.Name == name {

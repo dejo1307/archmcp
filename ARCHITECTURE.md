@@ -218,7 +218,7 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 
 ## The tools
 
-enola is a stdio [MCP](https://modelcontextprotocol.io/) server. It exposes **nine tools** and no MCP resources — everything flows through tool calls. The tools defined in [`internal/server/server.go`](internal/server/server.go) are listed below, each leading with the question it answers.
+enola is a stdio [MCP](https://modelcontextprotocol.io/) server. It exposes **thirteen tools** and no MCP resources — everything flows through tool calls. The tools defined in [`internal/server/server.go`](internal/server/server.go) are listed below, each leading with the question it answers.
 
 > Most read tools share a **token-cost ladder** via `output_mode`: `summary` (smallest, aggregated counts) → `compact` (markdown, grouped) → `full` (raw JSON, can be large). Start with `summary` and escalate only when you need node-level detail. Most also accept `max_tokens` to hard-cap a response.
 
@@ -374,7 +374,28 @@ The typical loop is `generate_snapshot → set_baseline → edit → generate_sn
 | `output_mode` | `summary` (default — headline regressions/improvements + structural tally) → `compact` (adds finding descriptions, evidence, and the changed edges/facts) → `full` (complete JSON). |
 | `max_tokens` | Optional hard cap on output size. |
 
-The engine lives in [`internal/diff`](internal/diff/diff.go) (pure `Compute` + deterministic renderers) and is re-exported for out-of-module use via [`pkg/diff`](pkg/diff/diff.go); baseline persistence and the on-disk loader live in [`internal/engine/baseline.go`](internal/engine/baseline.go).
+The engine lives in [`internal/diff`](internal/diff/diff.go) (pure `Compute` + deterministic renderers) and is re-exported for out-of-module use via [`pkg/diff`](pkg/diff/diff.go); baseline persistence and the on-disk loader live in [`internal/engine/baseline.go`](internal/engine/baseline.go). `diff_snapshot` also runs the **comparability guard** (`diff.CompareMeta`): it reads the receipt fields on both snapshots' metadata and warns, above the delta, when they were not generated over equivalent inputs.
+
+---
+
+### `snapshot_receipt` — "what was this graph generated over, and how complete is it?"
+
+Returns the receipt for the current snapshot (see [The snapshot receipt](#the-snapshot-receipt)): provenance (enola version, git ref + dirty status, content-fingerprint snapshot ID, extractor/explainer sets, ignore-glob hash, output-artifact hashes) and extraction-quality metrics (files seen/parsed/skipped, parse errors, coverage gaps). Read it before trusting an `impact_analysis` or a `diff`, and to spot thin extraction.
+
+| Parameter | Description |
+|-----------|-------------|
+| `output_mode` | `summary` (default — headline provenance + quality metrics) → `full` (complete JSON receipt). |
+| `max_tokens` | Optional hard cap. |
+
+### `compare_receipts` — "are these two snapshots even comparable?"
+
+Compares the current snapshot's receipt against a baseline's *before* you trust a diff between them. Returns a **comparability verdict** (same repo / enola version / extractor set / ignore globs?) and the **metric deltas** (files parsed, parse errors, coverage gaps, unresolved edges, fact/insight counts), flagging extraction-quality **regressions** — the signal that enola's own extraction got thinner. Use it as the gate before `diff_snapshot`, or poll it to drive improvements to enola's coverage.
+
+| Parameter | Description |
+|-----------|-------------|
+| `baseline` | What to compare against: `pinned` (default), `previous`, or an explicit path to a directory holding `receipt.json` / `snapshot.meta.json`. |
+| `output_mode` | `summary` (default — markdown) → `full` (complete JSON). |
+| `max_tokens` | Optional hard cap. |
 
 ---
 
@@ -545,9 +566,36 @@ After `generate_snapshot`, these are written to the output directory (default `.
 | `llm_context.md` | Compact, token-budgeted architecture summary for an agent to read directly |
 | `facts.jsonl` | Every extracted fact, one JSON object per line |
 | `insights.json` | Architectural insights with confidence scores |
-| `snapshot.meta.json` | Metadata including per-file content hashes for incremental updates |
+| `snapshot.meta.json` | Metadata including per-file content hashes for incremental updates, plus the full receipt fields |
+| `receipt.json` | The **snapshot receipt** — a compact manifest of what the graph was generated over (enola version, git ref + dirty status, a content-fingerprint snapshot ID, the extractor/explainer sets, ignore-glob hash, output-artifact hashes) and extraction-quality metrics (files seen/parsed/skipped, parse errors, coverage gaps). Read it via the `snapshot_receipt` tool. |
 | `previous/` | The immediately-preceding snapshot, auto-rotated on each write — the `baseline='previous'` source for `diff_snapshot` |
 | `baseline/` | A snapshot pinned by `set_baseline`, preserved across re-snapshots — the default `diff_snapshot` baseline |
+
+### The snapshot receipt
+
+`receipt.json` (and the same fields inside `snapshot.meta.json`) exists to answer *"what was this graph deterministic over, and how complete is it?"* — the trust question before an agent relies on an `impact_analysis` or a `diff_snapshot`. It serves two consumers:
+
+- **Provenance / audit.** enola version, git ref + dirty-tree status, the extractor/explainer sets actually used, a **config hash** (over the effective extractors/explainers/renderers/globs/output settings) and its narrower `ignore_glob_hash`, per-artifact output hashes, and a **snapshot ID** that is a *content fingerprint* (SHA-256 over the byte-stable fact serialization plus the version and config hash), not a random UUID — so re-running on identical inputs yields the same ID and it can key equivalence. Every hash value carries a `sha256:` prefix.
+- **The improvement loop.** Extraction-quality metrics — files seen vs. parsed vs. skipped, a parse-error count and sample, the count of heuristic (confidence < 1.0) insights, and the cross-repo coverage-gap / unresolved-edge rollup — give a machine-readable signal a consumer (a human, a `diff_snapshot`, or an agent improving enola itself) can poll to detect *thin extraction* (a missing detection, a bad ignore glob, a failing extractor) and turn it into targeted work. The same metrics appear as an **Extraction Quality** section in `llm_context.md`, so an agent reading the snapshot sees thin extraction without a tool call.
+
+Because the receipt fields live in `snapshot.meta.json`, they ride into every pinned/`previous` baseline, and `diff_snapshot` reads them to add a **comparability guard**: it warns (above the delta) when the baseline and current snapshots were *not* generated over equivalent inputs — a different repo, enola version, extractor set, or ignore-glob set — since a diff across a mismatched extractor set would report every one of that language's facts as spurious churn. `compare_receipts` surfaces the same verdict plus the metric deltas directly.
+
+#### Relation to the issue #60 proposal
+
+The receipt is a **functional superset** of the manifest proposed in [issue #60](https://github.com/enola-labs/enola/issues/60) — every data point the proposal asked for is present — but it keeps a flatter, richer shape rather than the proposal's exact grouping. The mapping:
+
+| Issue #60 field | enola field | Note |
+|---|---|---|
+| `repo.path_label` | `repo_path` | |
+| `repo.git_ref` / `repo.dirty` | `git.ref` + `git.commit` / `git.dirty` | ref and commit kept separate |
+| `enola.version` | `enola_version` | |
+| `enola.config_hash` | `config_hash` | superset of `ignore_glob_hash`, also present |
+| `enola.enabled_extractors` | `extractors` | the *used* set (a subset of enabled) |
+| `input_scope.*` | `quality.files_seen/parsed`, `quality.skipped_sample`, `ignore_glob_hash` | grouped under `quality`, not a separate `input_scope` |
+| `quality.parse_errors` / `heuristic_insights` | `quality.parse_errors` / `quality.heuristic_insights` | |
+| `quality.unresolved_edges` / `coverage_gaps` | `quality.coverage.*` | multi-repo only |
+| `outputs.facts_hash` / `llm_context_hash` | `output_hashes["facts.jsonl"]` / `["llm_context.md"]` | a map, so new artifacts extend it |
+| `outputs.graph_hash` | — (≡ `facts.jsonl`) | enola has no separate persisted graph artifact; `facts.jsonl` *is* the graph (facts + edges), so its hash covers it |
 
 `llm_context.md` is the human- and agent-readable digest. It's prioritized and truncated to the configured token budget, and includes (as space allows): a repository map of modules, the detected architecture pattern, cross-repo dependencies, entry points, routes, storage, dependency rules, the most critical modules (by fan-in/fan-out), risk zones (cycles and layer violations), and an architecture-aware "how to add a feature" guide.
 
@@ -559,6 +607,8 @@ Two properties hold the whole design together:
 
 - **No model in the loop.** Extraction and analysis never call an LLM. The graph is a function of your source code and the configured plugins — reproducible across runs and machines. The LLM enters only *downstream*, as the consumer of the snapshot.
 - **Incremental by content hash.** `snapshot.meta.json` records a SHA-256 for every file. On a re-run, only files whose hash changed are re-parsed, so refreshing a snapshot on a large repo is fast.
+
+The receipt's **snapshot ID** is the determinism guarantee made explicit and checkable: it is a `sha256:` fingerprint over the byte-stable fact serialization (plus the enola version and the effective-config hash), *not* a random UUID — so two runs on the same commit with the same config produce byte-identical IDs. That is what lets `compare_receipts` treat a matching ID as "provably the same graph over the same inputs."
 
 Together these mean the architectural map an agent relies on is both *trustworthy* (it reflects the code, not a guess) and *cheap to keep current* (regenerate after changes without re-scanning everything).
 

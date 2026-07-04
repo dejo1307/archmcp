@@ -146,7 +146,12 @@ type Snapshot struct {
 	Artifacts []Artifact   `json:"artifacts"`
 }
 
-// SnapshotMeta contains metadata about a snapshot generation run.
+// SnapshotMeta contains metadata about a snapshot generation run. Beyond the
+// core provenance fields (repo, time, plugin sets, per-file hashes) it carries
+// the "snapshot receipt" fields — a compact, machine-readable record of what the
+// deterministic graph was generated over, plus extraction-quality metrics that
+// let a consumer (a human, a diff, or an agent improving enola itself) judge how
+// complete the extraction was before trusting it.
 type SnapshotMeta struct {
 	RepoPath     string     `json:"repo_path"`
 	GeneratedAt  string     `json:"generated_at"`
@@ -157,6 +162,24 @@ type SnapshotMeta struct {
 	FileHashes   []FileHash `json:"file_hashes,omitempty"`
 	FactCount    int        `json:"fact_count"`
 	InsightCount int        `json:"insight_count"`
+
+	// Receipt / provenance fields. Hash values carry a "sha256:" prefix.
+	EnolaVersion string   `json:"enola_version,omitempty"` // build version that produced this snapshot
+	SnapshotID   string   `json:"snapshot_id,omitempty"`   // content fingerprint (see engine.computeSnapshotID); stable across reruns on the same inputs
+	Git          *GitInfo `json:"git,omitempty"`           // repo VCS state, nil when not a git repo
+	ConfigHash   string   `json:"config_hash,omitempty"`   // hash of the effective config (extractors, explainers, renderers, globs, output) — a superset of IgnoreGlobHash
+
+	// Extraction-quality fields (the loop signal).
+	FilesSeen         int               `json:"files_seen,omitempty"`         // source files the walker enumerated (excludes ignored)
+	FilesParsed       int               `json:"files_parsed,omitempty"`       // distinct files that produced at least one fact
+	FilesSkipped      int               `json:"files_skipped,omitempty"`      // paths dropped by ignore globs
+	SkippedSample     []string          `json:"skipped_sample,omitempty"`     // a capped sample of skipped paths
+	IgnoreGlobHash    string            `json:"ignore_glob_hash,omitempty"`   // hash of the sorted ignore+test globs
+	ParseErrors       int               `json:"parse_errors,omitempty"`       // count of extractor detect/parse failures (non-fatal)
+	ParseErrorSample  []ParseError      `json:"parse_error_sample,omitempty"` // a capped sample of those failures
+	HeuristicInsights int               `json:"heuristic_insights,omitempty"` // count of insights with confidence < 1.0 (heuristics, vs. structural facts)
+	Coverage          *CoverageSummary  `json:"coverage,omitempty"`           // cross-repo edge-coverage rollup, nil in single-repo mode
+	OutputHashes      map[string]string `json:"output_hashes,omitempty"`      // artifact name -> "sha256:"-prefixed hash of its written bytes
 }
 
 // FileHash tracks a file's content hash for incremental updates.
@@ -164,4 +187,98 @@ type FileHash struct {
 	Path    string `json:"path"`
 	Hash    string `json:"hash"`
 	ModTime string `json:"mod_time"`
+}
+
+// GitInfo records the VCS state of the repository at snapshot time, so a receipt
+// pins the graph to an exact commit and flags an uncommitted (dirty) tree.
+type GitInfo struct {
+	Ref    string `json:"ref,omitempty"`    // branch or symbolic ref (e.g. "main")
+	Commit string `json:"commit,omitempty"` // full commit SHA of HEAD
+	Dirty  bool   `json:"dirty"`            // true when the working tree has uncommitted changes
+}
+
+// ParseError records a non-fatal extraction failure — an extractor that could
+// not detect or parse its inputs. These are counted rather than swallowed so a
+// receipt can surface thin extraction.
+type ParseError struct {
+	Extractor string `json:"extractor"`
+	File      string `json:"file,omitempty"` // set when the failure is attributable to a specific file
+	Msg       string `json:"msg"`
+}
+
+// CoverageSummary is a snapshot-level rollup of the cross-repo edge coverage the
+// linker records per service, so a receipt reflects unresolved outbound edges
+// without the consumer running coverage_report.
+type CoverageSummary struct {
+	ServicesTotal   int `json:"services_total"`
+	CoverageGaps    int `json:"coverage_gaps"`    // services with unresolved outbound call sites
+	UnresolvedEdges int `json:"unresolved_edges"` // total detected-but-unresolved outbound edges
+}
+
+// Receipt is the compact, machine-readable manifest written to receipt.json — a
+// projection of SnapshotMeta that proves what the deterministic graph was
+// generated over (version, git, id, plugin sets, ignore-glob hash, output
+// hashes) and carries the extraction-quality metrics a consumer or an agent
+// improving enola can act on. It deliberately omits the large per-file FileHashes
+// list that lives in snapshot.meta.json (the internal superset).
+type Receipt struct {
+	SnapshotID     string            `json:"snapshot_id"`
+	EnolaVersion   string            `json:"enola_version"`
+	GeneratedAt    string            `json:"generated_at"`
+	Duration       string            `json:"duration"`
+	RepoPath       string            `json:"repo_path"`
+	Git            *GitInfo          `json:"git,omitempty"`
+	Extractors     []string          `json:"extractors"`
+	Explainers     []string          `json:"explainers"`
+	Renderers      []string          `json:"renderers,omitempty"`
+	ConfigHash     string            `json:"config_hash,omitempty"`
+	IgnoreGlobHash string            `json:"ignore_glob_hash,omitempty"`
+	OutputHashes   map[string]string `json:"output_hashes,omitempty"`
+
+	FactCount    int            `json:"fact_count"`
+	InsightCount int            `json:"insight_count"`
+	Quality      ReceiptQuality `json:"quality"`
+}
+
+// ReceiptQuality groups the extraction-completeness metrics — the loop signal a
+// consumer polls to detect thin extraction.
+type ReceiptQuality struct {
+	FilesSeen         int              `json:"files_seen"`
+	FilesParsed       int              `json:"files_parsed"`
+	FilesSkipped      int              `json:"files_skipped"`
+	SkippedSample     []string         `json:"skipped_sample,omitempty"`
+	ParseErrors       int              `json:"parse_errors"`
+	ParseErrorSample  []ParseError     `json:"parse_error_sample,omitempty"`
+	HeuristicInsights int              `json:"heuristic_insights"`
+	Coverage          *CoverageSummary `json:"coverage,omitempty"`
+}
+
+// Receipt projects a SnapshotMeta into the compact receipt manifest.
+func (m SnapshotMeta) Receipt() Receipt {
+	return Receipt{
+		SnapshotID:     m.SnapshotID,
+		EnolaVersion:   m.EnolaVersion,
+		GeneratedAt:    m.GeneratedAt,
+		Duration:       m.Duration,
+		RepoPath:       m.RepoPath,
+		Git:            m.Git,
+		Extractors:     m.Extractors,
+		Explainers:     m.Explainers,
+		Renderers:      m.Renderers,
+		ConfigHash:     m.ConfigHash,
+		IgnoreGlobHash: m.IgnoreGlobHash,
+		OutputHashes:   m.OutputHashes,
+		FactCount:      m.FactCount,
+		InsightCount:   m.InsightCount,
+		Quality: ReceiptQuality{
+			FilesSeen:         m.FilesSeen,
+			FilesParsed:       m.FilesParsed,
+			FilesSkipped:      m.FilesSkipped,
+			SkippedSample:     m.SkippedSample,
+			ParseErrors:       m.ParseErrors,
+			ParseErrorSample:  m.ParseErrorSample,
+			HeuristicInsights: m.HeuristicInsights,
+			Coverage:          m.Coverage,
+		},
+	}
 }

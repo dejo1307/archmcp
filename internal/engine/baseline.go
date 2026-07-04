@@ -19,8 +19,10 @@ const (
 	BaselineSubdir = "baseline"
 )
 
-// snapshotArtifactFiles are the on-disk files that constitute a persisted snapshot.
-var snapshotArtifactFiles = []string{"facts.jsonl", "insights.json", "snapshot.meta.json"}
+// snapshotArtifactFiles are the on-disk files that constitute a persisted
+// snapshot. receipt.json rides along so a pinned/previous baseline carries its
+// provenance + quality receipt, which compare_receipts diffs against the current.
+var snapshotArtifactFiles = []string{"facts.jsonl", "insights.json", "snapshot.meta.json", "receipt.json"}
 
 // OutputDir returns the absolute .enola output directory for repoPath.
 func (e *Engine) OutputDir(repoPath string) string {

@@ -1,0 +1,188 @@
+package engine
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os/exec"
+	"sort"
+	"strings"
+
+	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/facts"
+)
+
+// parseErrorSampleCap bounds the number of parse errors retained on the receipt.
+const parseErrorSampleCap = 20
+
+// hashPrefix is prepended to every hash value surfaced in the receipt
+// (snapshot_id, config/glob hashes, output hashes), matching the notation issue
+// #60 requested and making the algorithm self-describing.
+const hashPrefix = "sha256:"
+
+// sha256Prefixed returns the "sha256:"-prefixed hex digest of b — the canonical
+// form for every hash value the receipt exposes.
+func sha256Prefixed(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hashPrefix + hex.EncodeToString(sum[:])
+}
+
+// computeIgnoreGlobHash returns a stable hash over the sorted ignore and test
+// globs, so a receipt reveals when the exclusion set changed between two runs —
+// the difference that would otherwise silently shift what got parsed.
+func computeIgnoreGlobHash(cfg *config.Config) string {
+	globs := make([]string, 0, len(cfg.Ignore)+len(cfg.TestGlobs))
+	globs = append(globs, cfg.Ignore...)
+	globs = append(globs, cfg.TestGlobs...)
+	sort.Strings(globs)
+	var sb strings.Builder
+	for _, g := range globs {
+		sb.WriteString(g)
+		sb.WriteByte('\n')
+	}
+	return sha256Prefixed([]byte(sb.String()))
+}
+
+// computeConfigHash returns a stable hash over the effective configuration that
+// governs a snapshot — the enabled extractors, explainers, renderers, the ignore
+// and test globs, and the output settings. It is a superset of the ignore-glob
+// hash: two snapshots with the same config_hash were produced under identical
+// analysis settings, so a differing config_hash explains churn that is a config
+// change rather than a code change. Each list is sorted so ordering never affects
+// the hash.
+func computeConfigHash(cfg *config.Config) string {
+	var sb strings.Builder
+	writeSortedSection := func(label string, vals []string) {
+		sb.WriteString(label)
+		sb.WriteByte(':')
+		cp := append([]string(nil), vals...)
+		sort.Strings(cp)
+		for _, v := range cp {
+			sb.WriteByte('\n')
+			sb.WriteString(v)
+		}
+		sb.WriteByte('\n')
+	}
+	writeSortedSection("extractors", cfg.Extractors)
+	writeSortedSection("explainers", cfg.Explainers)
+	writeSortedSection("renderers", cfg.Renderers)
+	writeSortedSection("ignore", cfg.Ignore)
+	writeSortedSection("test_globs", cfg.TestGlobs)
+	fmt.Fprintf(&sb, "output_dir:%s\nmax_context_tokens:%d\nincremental:%t\n",
+		cfg.Output.Dir, cfg.Output.MaxContextTokens, cfg.IncrementalEnabled())
+	return sha256Prefixed([]byte(sb.String()))
+}
+
+// gitInfo captures the repository's VCS state. It returns nil when repoPath is
+// not a git working tree or git is unavailable, so a non-git or sandboxed run
+// degrades to no git section rather than erroring.
+func gitInfo(repoPath string) *facts.GitInfo {
+	commit, err := runGit(repoPath, "rev-parse", "HEAD")
+	if err != nil || commit == "" {
+		return nil
+	}
+	info := &facts.GitInfo{Commit: commit}
+	if ref, err := runGit(repoPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		info.Ref = ref
+	}
+	// --porcelain prints one line per changed/untracked path; any output => dirty.
+	if status, err := runGit(repoPath, "status", "--porcelain"); err == nil && strings.TrimSpace(status) != "" {
+		info.Dirty = true
+	}
+	return info
+}
+
+// runGit runs a git subcommand in repoPath and returns its trimmed stdout.
+func runGit(repoPath string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", repoPath}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// coverageSummary rolls up the per-service edge_coverage counts the cross-repo
+// linker records into a single snapshot-level summary. It returns nil for a
+// single-repo snapshot (no service nodes), matching the coverage explainer.
+func coverageSummary(store *facts.Store) *facts.CoverageSummary {
+	services := store.ByKind(facts.KindService)
+	if len(services) == 0 {
+		return nil
+	}
+	sum := &facts.CoverageSummary{ServicesTotal: len(services)}
+	for _, svc := range services {
+		unresolved := readUnresolved(svc)
+		if unresolved > 0 {
+			sum.CoverageGaps++
+			sum.UnresolvedEdges += unresolved
+		}
+	}
+	return sum
+}
+
+// readUnresolved sums the unresolved outbound edge count across a service node's
+// edge_coverage entries, tolerating both the in-memory shape and the float64
+// shape that survives a facts.jsonl JSON round-trip (mirrors coverage.readCoverage).
+func readUnresolved(svc facts.Fact) int {
+	if svc.Props == nil {
+		return 0
+	}
+	var raw []map[string]any
+	switch v := svc.Props["edge_coverage"].(type) {
+	case []map[string]any:
+		raw = v
+	case []any:
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				raw = append(raw, m)
+			}
+		}
+	default:
+		return 0
+	}
+	total := 0
+	for _, m := range raw {
+		switch n := m["unresolved"].(type) {
+		case int:
+			total += n
+		case float64:
+			total += int(n)
+		}
+	}
+	return total
+}
+
+// computeSnapshotID returns a stable content fingerprint of "what the graph was
+// deterministic over": the byte-stable fact serialization plus the version and
+// the effective-config hash that gate what was parsed. It is deliberately NOT
+// random — rerunning on the same inputs yields the same ID, so it can key
+// equivalence. The result carries the "sha256:" prefix like every receipt hash.
+func computeSnapshotID(factsJSONL []byte, enolaVersion, configHash string) string {
+	h := sha256.New()
+	h.Write(factsJSONL)
+	h.Write([]byte(enolaVersion))
+	h.Write([]byte(configHash))
+	return hashPrefix + hex.EncodeToString(h.Sum(nil))
+}
+
+// capParseErrors trims a parse-error slice to the sample cap for the receipt.
+func capParseErrors(errs []facts.ParseError) []facts.ParseError {
+	if len(errs) <= parseErrorSampleCap {
+		return errs
+	}
+	return errs[:parseErrorSampleCap]
+}
+
+// countHeuristicInsights returns how many insights are heuristics (confidence
+// below 1.0) rather than structural facts (confidence 1.0). A high heuristic
+// share is a signal about how much of the analysis is candidate-grade vs. certain.
+func countHeuristicInsights(insights []facts.Insight) int {
+	n := 0
+	for _, in := range insights {
+		if in.Confidence < 1.0 {
+			n++
+		}
+	}
+	return n
+}

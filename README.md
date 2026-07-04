@@ -98,7 +98,9 @@ The workflow is simple: **generate the snapshot once, then ask.** These aren't t
 | **`impact_analysis`** | **"If I change X, what breaks?"** The blast radius of a change. |
 | `coverage_report` | "Which cross-repo edges did enola resolve vs. miss?" Tell a genuine leaf service from a coverage gap. |
 | `set_baseline` | "Remember the architecture as it is now." Pin a baseline before you start editing. |
-| **`diff_snapshot`** | **"What did my change actually do?"** The architectural delta vs. the baseline — new findings, new coupling, added/removed symbols. |
+| **`diff_snapshot`** | **"What did my change actually do?"** The architectural delta vs. the baseline — new findings, new coupling, added/removed symbols. Warns if the two snapshots aren't comparable. |
+| `snapshot_receipt` | "What was this graph generated over, and how complete is it?" Provenance (version, git ref + dirty, snapshot ID, output hashes) plus extraction-quality metrics. |
+| `compare_receipts` | "Are these two snapshots even comparable?" A comparability verdict + metric deltas — the gate before trusting a diff, and a signal for improving coverage. |
 
 **`impact_analysis` is the one to know.** Before a refactor, it computes the full set of code that transitively depends on what you're about to change — grouped by how many hops away it is, and aware of cross-repo dependencies. Instead of your agent *guessing* what a change might affect (and missing things), it gets the exact dependent set. That's determinism turned into a concrete payoff: safer changes, planned in the right order, the first time.
 
