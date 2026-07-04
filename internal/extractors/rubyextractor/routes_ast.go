@@ -119,8 +119,25 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		}
 		only := pairSymbols(args, "only", rw.src)
 		except := pairSymbols(args, "except", rw.src)
-		resourcePath := prefix + "/" + name
-		for _, a := range restfulActions(only, except) {
+		singular := method == "resource"
+
+		// A resource nested inside a *plural* `resources` block nests under the parent
+		// member (`/widgets/:widget_id/...`); the parent supplies that param via the
+		// enclosing scope's memberParam.
+		parentMember := ""
+		if len(stack) > 0 {
+			if p := stack[len(stack)-1].memberParam; p != "" {
+				parentMember = "/:" + p
+			}
+		}
+		segment := parentMember + "/" + name
+		resourcePath := prefix + segment
+
+		actions := restfulActions(only, except)
+		if singular {
+			actions = restfulActionsSingular(only, except)
+		}
+		for _, a := range actions {
 			rw.emit(resourcePath+a.suffix, line(call), map[string]any{
 				"method":    a.method,
 				"framework": "rails",
@@ -130,7 +147,12 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 			})
 		}
 		if body != nil {
-			rw.walk(body, append(stack, routeScope{pathPrefix: "/" + name}))
+			// A plural resource exposes a member id to its children; a singular one does not.
+			childMember := ""
+			if !singular {
+				childMember = singularize(name) + "_id"
+			}
+			rw.walk(body, append(stack, routeScope{pathPrefix: segment, memberParam: childMember}))
 		}
 
 	case "namespace":

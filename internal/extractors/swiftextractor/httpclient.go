@@ -524,3 +524,414 @@ func defaultPrefixLiteral(text string) string {
 	}
 	return ""
 }
+
+// --- call-site-driven endpoint idioms (cross-file resolution) ---
+//
+// Two endpoint idioms cannot be resolved from the type alone because part of the
+// request is supplied at each instantiation site. Both are resolved by indexing the
+// types by shape and reading the relevant init arguments at every call site.
+//
+// 1. Stored-method structs — path (and prefix) computed on the type, but `method` a
+//    STORED property set by the caller:
+//
+//	struct SomeEndpoint: EndpointProtocol {
+//	    var urlPrefixComponent: String { "core/v3" }
+//	    var urlPathComponent: String { "resource/\(id)/action" }
+//	    let method: HTTPMethod   // supplied at the call site, e.g. .post / .delete
+//	}
+//
+// 2. Request wrappers — the PATH itself is a stored, required property supplied at
+//    init; the prefix and a default verb live on the type:
+//
+//	struct SomeRequest: EndpointProtocol {
+//	    var urlPrefixComponent = "core/v3"
+//	    var urlPathComponent: String            // supplied at the call site
+//	    var method: HTTPMethod = .get           // default; overridable per call site
+//	}
+//	// SomeRequest(urlPathComponent: "resource/\(id)", method: .delete)
+//
+// extractEndpointFacts requires BOTH a computed path and a computed method, so it
+// skips both idioms; they are handled here.
+
+// swiftTypeDecl matches a struct/class/enum/actor declaration, capturing the type
+// name. Access modifiers and attributes preceding the keyword are tolerated because
+// the match anchors on the keyword itself.
+var swiftTypeDecl = regexp.MustCompile(`\b(?:struct|final\s+class|class|enum|actor)\s+(\w+)`)
+
+// swiftStoredMethod matches a STORED `method` property (`let/var method: <Type>`,
+// no computed `{ … }` body). Distinguishing a stored from a computed method is what
+// separates this pass from extractEndpointFacts, so the caller also confirms the
+// computed finder (swiftVarFinders["method"]) does NOT match the same body.
+var swiftStoredMethod = regexp.MustCompile(`\b(?:let|var)\s+method\s*:\s*[A-Za-z_][\w.<>]*`)
+
+// swiftConstructorCall matches a capitalized `TypeName(` call head, capturing the
+// type name. The trailing `(` is where the argument span begins.
+var swiftConstructorCall = regexp.MustCompile(`\b([A-Z]\w*)\s*\(`)
+
+// swiftVerbArg matches a direct enum-literal method initializer argument
+// (`method: .post` or `httpMethod: .put`), capturing the verb token. The leading-dot
+// anchor excludes dynamically-computed verbs (`method: cond ? .put : .post`), which
+// are out of scope.
+var swiftVerbArg = regexp.MustCompile(`\b(?:method|httpMethod)\s*:\s*\.([A-Za-z]+)`)
+
+// swiftPathArg matches a string-literal urlPathComponent initializer argument
+// (`urlPathComponent: "posts/\(id)"`), capturing the literal. Used for request-wrapper
+// endpoints where the path is supplied per call site.
+var swiftPathArg = regexp.MustCompile(`\burlPathComponent\s*:\s*"([^"]*)"`)
+
+// swiftStoredPathProp matches a STORED, required urlPathComponent property
+// (`var urlPathComponent: String` with no computed `{ … }` body and no `=` default) on
+// its own line — the marker of a request-wrapper type whose path is supplied at init.
+var swiftStoredPathProp = regexp.MustCompile(`(?m)^\s*(?:let|var)\s+urlPathComponent\s*:\s*String\s*(?://.*)?$`)
+
+// swiftStoredPrefix matches a stored urlPrefixComponent with a string-literal default
+// (`var urlPrefixComponent = "core/v3"`), capturing the literal. prefixResolver only
+// reads computed prefixes, so wrapper types (which store the prefix) need this.
+var swiftStoredPrefix = regexp.MustCompile(`\b(?:let|var)\s+urlPrefixComponent\b[^={\n]*=\s*"([^"]*)"`)
+
+// swiftStoredVerbDefault matches a stored method/httpMethod property with an
+// enum-literal default (`var method: HTTPMethod = .get`, `var httpMethod: HTTPMethod = .post`),
+// capturing the verb — a wrapper type's default verb when a call site omits it.
+var swiftStoredVerbDefault = regexp.MustCompile(`\b(?:method|httpMethod)\s*(?::[^=\n]*)?=\s*\.([A-Za-z]+)`)
+
+// storedEndpointDef is a stored-method endpoint type discovered in one file: its
+// simple type name, the resolved (prefix-joined) URL path, and where it lives.
+type storedEndpointDef struct {
+	typeName string
+	path     string
+	file     string
+	line     int
+	dir      string
+}
+
+// storedMethodEndpointDefs finds every stored-method endpoint type declared in a
+// single Swift source and resolves each one's URL path (prefix joined). It is pure
+// and per-file; the verbs are supplied later from call sites. A type qualifies when
+// its body has a single-value (non-switch) path property yielding a string literal
+// and a STORED (non-computed) `method` property.
+func storedMethodEndpointDefs(text, relFile, dir, defaultPrefix string) []storedEndpointDef {
+	var out []storedEndpointDef
+	for _, loc := range swiftTypeDecl.FindAllStringSubmatchIndex(text, -1) {
+		name := text[loc[2]:loc[3]]
+		// The type body starts at the first brace after the declaration head.
+		rel := strings.IndexByte(text[loc[1]:], '{')
+		if rel < 0 {
+			continue
+		}
+		body, ok := braceBody(text, loc[1]+rel)
+		if !ok {
+			continue
+		}
+		// A stored `method` (and not a computed one) is the shape gate.
+		if !swiftStoredMethod.MatchString(body) {
+			continue
+		}
+		if computed, _ := firstPropBody(body, []string{"method"}); computed != "" {
+			continue // computed method -> handled by extractEndpointFacts, not here
+		}
+		pathBody, _ := firstPropBody(body, swiftPathProps)
+		if pathBody == "" || containsSwitch(pathBody) {
+			continue // no single-value path property to resolve
+		}
+		path := cleanSwiftPath(firstQuoted(pathBody))
+		if path == "" || hasNonAPIExtension(path) {
+			continue
+		}
+		if prefix := prefixResolver(body, defaultPrefix)(""); prefix != "" {
+			path = joinURLPath(prefix, path)
+		}
+		out = append(out, storedEndpointDef{
+			typeName: name,
+			path:     path,
+			file:     relFile,
+			line:     1 + strings.Count(text[:loc[0]], "\n"),
+			dir:      dir,
+		})
+	}
+	return out
+}
+
+// endpointCallSite is one constructor call of a candidate endpoint type: the type
+// instantiated, the top-level `urlPathComponent:` literal (for wrapper types) and/or
+// `method:`/`httpMethod:` verb passed, and the call's location.
+type endpointCallSite struct {
+	typeName    string
+	pathArg     string // urlPathComponent: literal, if a top-level string literal
+	pathLiteral bool
+	verb        string // method:/httpMethod: enum-literal verb, if passed
+	file        string
+	line        int
+}
+
+// endpointCallSites scans a single Swift source for constructor calls, recording per
+// call the type name plus any top-level `urlPathComponent:` literal and
+// `method:`/`httpMethod:` verb argument. Only top-level arguments are read (via
+// depthAt), so an argument inside a nested call is attributed to that nested type.
+func endpointCallSites(text, relFile string) []endpointCallSite {
+	var out []endpointCallSite
+	for _, loc := range swiftConstructorCall.FindAllStringSubmatchIndex(text, -1) {
+		span, ok := parenBody(text, loc[1]-1) // loc[1]-1 is the '(' of the call head
+		if !ok {
+			continue
+		}
+		rec := endpointCallSite{
+			typeName: text[loc[2]:loc[3]],
+			file:     relFile,
+			line:     1 + strings.Count(text[:loc[0]], "\n"),
+		}
+		for _, m := range swiftPathArg.FindAllStringSubmatchIndex(span, -1) {
+			if depthAt(span[:m[0]]) != 0 {
+				continue
+			}
+			rec.pathArg, rec.pathLiteral = span[m[2]:m[3]], true
+			break
+		}
+		for _, m := range swiftVerbArg.FindAllStringSubmatchIndex(span, -1) {
+			if depthAt(span[:m[0]]) != 0 {
+				continue
+			}
+			rec.verb = span[m[2]:m[3]]
+			break
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+// wrapperDef is a request-wrapper endpoint type: the path is supplied at each call
+// site (a stored `urlPathComponent: String`), while the prefix and default verb live
+// on the type.
+type wrapperDef struct {
+	typeName    string
+	prefix      string
+	defaultVerb string // an uppercase HTTP verb (the call-site fallback)
+	dir         string
+}
+
+// wrapperEndpointDefs finds request-wrapper endpoint types declared in one Swift
+// source: a type whose body stores a required `urlPathComponent: String` (the path is
+// an init argument) together with an endpoint signal (a prefix or method/httpMethod
+// property). Pure and per-file; the paths and verbs come from call sites.
+func wrapperEndpointDefs(text, relFile, dir, defaultPrefix string) []wrapperDef {
+	var out []wrapperDef
+	for _, loc := range swiftTypeDecl.FindAllStringSubmatchIndex(text, -1) {
+		name := text[loc[2]:loc[3]]
+		rel := strings.IndexByte(text[loc[1]:], '{')
+		if rel < 0 {
+			continue
+		}
+		body, ok := braceBody(text, loc[1]+rel)
+		if !ok {
+			continue
+		}
+		if !swiftStoredPathProp.MatchString(body) {
+			continue // path is not supplied at init — not a wrapper
+		}
+		if !strings.Contains(body, "urlPrefixComponent") && !hasVerbSignal(text) {
+			continue // no endpoint signal — avoid grabbing an arbitrary type
+		}
+		out = append(out, wrapperDef{
+			typeName:    name,
+			prefix:      wrapperPrefix(body, defaultPrefix),
+			defaultVerb: wrapperDefaultVerb(text, body),
+			dir:         dir,
+		})
+	}
+	return out
+}
+
+// hasVerbSignal reports whether a source declares a method/httpMethod verb — a stored
+// default or a computed `method` property — used as an endpoint signal for wrappers.
+func hasVerbSignal(text string) bool {
+	if swiftStoredVerbDefault.MatchString(text) {
+		return true
+	}
+	mb, _ := firstPropBody(text, []string{"method"})
+	return mb != ""
+}
+
+// wrapperPrefix resolves a wrapper type's URL prefix: a stored literal default first
+// (prefixResolver reads only computed prefixes), else the computed/default resolution.
+func wrapperPrefix(body, defaultPrefix string) string {
+	if m := swiftStoredPrefix.FindStringSubmatch(body); m != nil {
+		return resolvePrefixValue(m[1])
+	}
+	return prefixResolver(body, defaultPrefix)("")
+}
+
+// wrapperDefaultVerb resolves a wrapper type's default verb: a stored
+// method/httpMethod default first, else a single-value computed `method` (e.g. one
+// fixed in the conformance extension), else GET.
+func wrapperDefaultVerb(fileText, body string) string {
+	if m := swiftStoredVerbDefault.FindStringSubmatch(body); m != nil {
+		if v := mapSwiftMethod(m[1]); v != "" {
+			return v
+		}
+	}
+	if mb, _ := firstPropBody(fileText, []string{"method"}); mb != "" && !containsSwitch(mb) {
+		if cm := swiftCaseDot.FindStringSubmatch(mb); cm != nil {
+			if v := mapSwiftMethod(cm[1]); v != "" {
+				return v
+			}
+		}
+	}
+	return "GET"
+}
+
+// parenBody returns the text between the '(' at open and its matching ')', ignoring
+// parentheses inside double-quoted string literals (so a ')' in a Swift string does
+// not close the span early). text[open] must be '('.
+func parenBody(text string, open int) (string, bool) {
+	depth, inStr := 0, false
+	for i := open; i < len(text); i++ {
+		c := text[i]
+		if inStr {
+			switch c {
+			case '\\':
+				i++ // skip the escaped character
+			case '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return text[open+1 : i], true
+			}
+		}
+	}
+	return "", false
+}
+
+// depthAt returns the net bracket nesting depth of s — how many (, [ or { are still
+// open at its end — ignoring brackets inside double-quoted string literals. Used to
+// keep call-site argument scanning at the top level of a single constructor call.
+func depthAt(s string) int {
+	depth, inStr := 0, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch c {
+			case '\\':
+				i++
+			case '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth
+}
+
+// extractCallSiteEndpointFacts resolves the two call-site-driven endpoint idioms
+// across a repository and emits client-route facts:
+//   - stored-method structs: the path lives on the type, the verb is read from each
+//     instantiation site's `method:` argument (route anchored at the definition).
+//   - request wrappers: the path is supplied at each call site's `urlPathComponent:`
+//     argument and the verb from `method:`/`httpMethod:` (or the type's default);
+//     each call site is a distinct route, anchored at the call site.
+//
+// A type with no discoverable (resolvable) call site emits nothing. The fact shape
+// matches extractEndpointFacts, so the cross-repo linker treats these identically.
+// Meant to run once per repo (iOS only).
+func extractCallSiteEndpointFacts(repoPath string, files []string, defaultPrefix string, moduleForFile func(string) string) []facts.Fact {
+	var storedDefs []storedEndpointDef
+	var wrappers []wrapperDef
+	var callSites []endpointCallSite
+
+	for _, relFile := range files {
+		if !isSwiftFile(relFile) || isSwiftTestFile(relFile) {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			continue
+		}
+		text := string(src)
+		dir := moduleForFile(relFile)
+		storedDefs = append(storedDefs, storedMethodEndpointDefs(text, relFile, dir, defaultPrefix)...)
+		wrappers = append(wrappers, wrapperEndpointDefs(text, relFile, dir, defaultPrefix)...)
+		callSites = append(callSites, endpointCallSites(text, relFile)...)
+	}
+
+	storedByType := map[string][]storedEndpointDef{}
+	for _, d := range storedDefs {
+		storedByType[d.typeName] = append(storedByType[d.typeName], d)
+	}
+	wrapperByType := map[string]wrapperDef{}
+	for _, d := range wrappers {
+		wrapperByType[d.typeName] = d
+	}
+
+	var out []facts.Fact
+	seen := map[string]bool{}
+	emit := func(dir, method, path, file string, line int) {
+		key := dir + "\x00" + method + "\x00" + path
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, facts.Fact{
+			Kind: facts.KindRoute,
+			Name: path,
+			File: file,
+			Line: line,
+			Props: map[string]any{
+				"role":      "client",
+				"method":    method,
+				"framework": "apiendpoint",
+				"language":  "swift",
+				"source":    "swift-endpoint",
+				"api":       swiftAPIHint(file),
+			},
+			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
+		})
+	}
+
+	for _, cs := range callSites {
+		if defs, ok := storedByType[cs.typeName]; ok {
+			// Path is on the type; the call site only supplies the verb.
+			method := mapSwiftMethod(cs.verb)
+			if method == "" {
+				continue
+			}
+			for _, d := range defs {
+				emit(d.dir, method, d.path, d.file, d.line)
+			}
+			continue
+		}
+		if d, ok := wrapperByType[cs.typeName]; ok {
+			// Path and verb come from the call site (verb falls back to the default).
+			if !cs.pathLiteral {
+				continue
+			}
+			path := cleanSwiftPath(cs.pathArg)
+			if path == "" || hasNonAPIExtension(path) {
+				continue
+			}
+			path = joinURLPath(d.prefix, path)
+			method := mapSwiftMethod(cs.verb)
+			if method == "" {
+				method = d.defaultVerb
+			}
+			emit(moduleForFile(cs.file), method, path, cs.file, cs.line)
+		}
+	}
+	return out
+}

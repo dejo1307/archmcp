@@ -1,8 +1,14 @@
 package swiftextractor
 
 import (
+	"path/filepath"
 	"testing"
 )
+
+// testModuleForFile is the module-identity resolver used by stored-method endpoint
+// tests: it maps a file to its leaf directory (the fallback the real resolver uses
+// for loose sources).
+func testModuleForFile(f string) string { return filepath.ToSlash(filepath.Dir(f)) }
 
 func TestExtractEndpointFacts(t *testing.T) {
 	// An endpoint-enum type (Moya TargetType-like idiom): path + prefix + method are
@@ -330,6 +336,293 @@ final class MediaAnalysisModal {
 	}
 	if ff[0].Name != "settings/visual-ai-coach/analyze" || ff[0].Props["method"] != "POST" {
 		t.Errorf("unexpected route: %+v", ff[0])
+	}
+}
+
+// --- stored-method endpoint structs (call-site verb resolution) ---
+
+// storedEndpointDefSource is a stored-method endpoint type: path + prefix are
+// computed, but `method` is a stored property set by the caller at init. Neutral
+// names throughout.
+const storedEndpointDefSource = `import Foundation
+
+struct WidgetActionEndpoint: APIEndpoint {
+   var urlPrefixComponent: String { "core/v3" }
+   var urlPathComponent: String { "widgets/\(id)/action" }
+   let id: String
+   let method: HTTPMethod
+}
+`
+
+// TestExtractStoredMethodEndpointFacts: a stored-method endpoint defined in one file
+// and instantiated with `.post` in another emits one client route with that verb.
+func TestExtractStoredMethodEndpointFacts(t *testing.T) {
+	dir := t.TempDir()
+	defFile := "Sources/Core/WidgetActionEndpoint.swift"
+	callFile := "Sources/Feature/WidgetService.swift"
+	mustWrite(t, dir, defFile, storedEndpointDefSource)
+	mustWrite(t, dir, callFile, `final class WidgetService {
+   func perform(id: String) {
+      let endpoint = WidgetActionEndpoint(id: id, method: .post)
+      client.send(endpoint)
+   }
+}
+`)
+
+	ff := extractCallSiteEndpointFacts(dir, []string{defFile, callFile}, "", testModuleForFile)
+	if len(ff) != 1 {
+		t.Fatalf("expected 1 client route, got %d: %+v", len(ff), ff)
+	}
+	f := ff[0]
+	if f.Name != "core/v3/widgets/{}/action" || f.Props["method"] != "POST" {
+		t.Errorf("route mismatch: name=%q method=%v", f.Name, f.Props["method"])
+	}
+	if f.Props["role"] != "client" || f.Props["source"] != "swift-endpoint" || f.Props["framework"] != "apiendpoint" {
+		t.Errorf("wrong props: %+v", f.Props)
+	}
+	if f.File != defFile {
+		t.Errorf("route should anchor at the type definition file, got %q", f.File)
+	}
+}
+
+// TestExtractStoredMethodEndpointFacts_MultipleVerbs: one type instantiated with two
+// different verbs yields two routes, one per verb.
+func TestExtractStoredMethodEndpointFacts_MultipleVerbs(t *testing.T) {
+	dir := t.TempDir()
+	defFile := "Sources/Core/WidgetActionEndpoint.swift"
+	callFile := "Sources/Feature/WidgetService.swift"
+	mustWrite(t, dir, defFile, storedEndpointDefSource)
+	mustWrite(t, dir, callFile, `final class WidgetService {
+   func create(id: String) { _ = WidgetActionEndpoint(id: id, method: .post) }
+   func remove(id: String) { _ = WidgetActionEndpoint(id: id, method: .delete) }
+}
+`)
+
+	got := map[string]bool{}
+	for _, f := range extractCallSiteEndpointFacts(dir, []string{defFile, callFile}, "", testModuleForFile) {
+		if f.Name != "core/v3/widgets/{}/action" {
+			t.Errorf("unexpected path: %q", f.Name)
+		}
+		got[f.Props["method"].(string)] = true
+	}
+	if !got["POST"] || !got["DELETE"] || len(got) != 2 {
+		t.Fatalf("want POST+DELETE, got %+v", got)
+	}
+}
+
+// TestExtractStoredMethodEndpointFacts_NoCallSite: a stored-method endpoint that is
+// never instantiated emits nothing (Approach A — the verb is unknowable).
+func TestExtractStoredMethodEndpointFacts_NoCallSite(t *testing.T) {
+	dir := t.TempDir()
+	defFile := "Sources/Core/WidgetActionEndpoint.swift"
+	mustWrite(t, dir, defFile, storedEndpointDefSource)
+
+	if ff := extractCallSiteEndpointFacts(dir, []string{defFile}, "", testModuleForFile); len(ff) != 0 {
+		t.Fatalf("expected no routes without a call site, got %d: %+v", len(ff), ff)
+	}
+}
+
+// TestExtractStoredMethodEndpointFacts_DefaultPrefix: a stored-method endpoint with
+// no prefix property inherits the repo-wide default prefix.
+func TestExtractStoredMethodEndpointFacts_DefaultPrefix(t *testing.T) {
+	dir := t.TempDir()
+	defFile := "Sources/Core/ItemEndpoint.swift"
+	callFile := "Sources/Feature/ItemService.swift"
+	mustWrite(t, dir, defFile, `struct ItemEndpoint: APIEndpoint {
+   var urlPathComponent: String { "items/\(id)" }
+   let id: String
+   let method: HTTPMethod
+}
+`)
+	mustWrite(t, dir, callFile, `func load(id: String) { _ = ItemEndpoint(id: id, method: .get) }
+`)
+
+	ff := extractCallSiteEndpointFacts(dir, []string{defFile, callFile}, "v2", testModuleForFile)
+	if len(ff) != 1 || ff[0].Name != "v2/items/{}" || ff[0].Props["method"] != "GET" {
+		t.Fatalf("default-prefix stored endpoint mismatch: %+v", ff)
+	}
+}
+
+// TestExtractStoredMethodEndpointFacts_NotEndpoints: a type with a stored `method`
+// but no path property, a computed-method endpoint (handled elsewhere), and an
+// unrelated constructor call all emit nothing from this pass.
+func TestExtractStoredMethodEndpointFacts_NotEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	f1 := "Sources/A.swift"
+	f2 := "Sources/B.swift"
+	f3 := "Sources/C.swift"
+	// Stored method but no path property -> not an endpoint.
+	mustWrite(t, dir, f1, `struct PlainModel { let method: HTTPMethod }
+`)
+	// Computed method -> owned by extractEndpointFacts, not this pass.
+	mustWrite(t, dir, f2, `struct ComputedEndpoint: APIEndpoint {
+   var urlPathComponent: String { "things" }
+   var method: HTTPMethod { .get }
+}
+`)
+	// An unrelated constructor passing a method: arg for a non-endpoint type.
+	mustWrite(t, dir, f3, `func go() {
+   _ = PlainModel(method: .post)
+   _ = ComputedEndpoint()
+}
+`)
+
+	if ff := extractCallSiteEndpointFacts(dir, []string{f1, f2, f3}, "", testModuleForFile); len(ff) != 0 {
+		t.Fatalf("expected no routes, got %d: %+v", len(ff), ff)
+	}
+}
+
+// TestEndpointCallSites: top-level `method:`/`httpMethod:` verbs and
+// `urlPathComponent:` literals are read; a ternary/computed verb is skipped, and a
+// nested call's args are attributed to the nested type, not the outer one.
+func TestEndpointCallSites(t *testing.T) {
+	src := `let a = FooEndpoint(id: x, method: .post)
+let b = BarEndpoint(method: isEdit ? .put : .patch)
+let c = OuterEndpoint(body: InnerEndpoint(method: .delete), method: .get)
+let d = WrapRequest(urlPathComponent: "posts/\(id)", httpMethod: .put)
+`
+	byType := map[string]endpointCallSite{}
+	for _, cs := range endpointCallSites(src, "X.swift") {
+		byType[cs.typeName] = cs
+	}
+	if cs := byType["FooEndpoint"]; cs.verb != "post" {
+		t.Errorf("FooEndpoint verb = %q, want post", cs.verb)
+	}
+	if cs := byType["BarEndpoint"]; cs.verb != "" {
+		t.Errorf("BarEndpoint ternary verb should be skipped, got %q", cs.verb)
+	}
+	if cs := byType["OuterEndpoint"]; cs.verb != "get" || cs.pathLiteral {
+		t.Errorf("OuterEndpoint = %+v, want verb get and no path", cs)
+	}
+	if cs := byType["InnerEndpoint"]; cs.verb != "delete" {
+		t.Errorf("InnerEndpoint verb = %q, want delete", cs.verb)
+	}
+	if cs := byType["WrapRequest"]; !cs.pathLiteral || cs.pathArg != `posts/\(id)` || cs.verb != "put" {
+		t.Errorf("WrapRequest = %+v, want path posts/\\(id) + verb put", cs)
+	}
+}
+
+// wrapperDefSource is a request-wrapper endpoint: the path is a stored, required
+// property supplied at each call site; prefix and default verb live on the type.
+const wrapperDefSource = `import Foundation
+
+extension API {
+   struct SimpleRequest {
+      var urlPrefixComponent = "core/v3"
+      var urlPathComponent: String
+      var requestParams: [String: Any] = [:]
+      var method: HTTPMethod = .get
+   }
+}
+
+extension API.SimpleRequest: APIEndpoint {}
+`
+
+// TestWrapperEndpoint_PathAndVerbFromCallSite: a wrapper's path comes from the call
+// site's urlPathComponent: literal; the verb from method: or the type default.
+func TestWrapperEndpoint_PathAndVerbFromCallSite(t *testing.T) {
+	dir := t.TempDir()
+	defFile := "Sources/Core/SimpleRequest.swift"
+	callFile := "Sources/Feature/Service.swift"
+	mustWrite(t, dir, defFile, wrapperDefSource)
+	mustWrite(t, dir, callFile, `func f(id: String) {
+   _ = API.SimpleRequest(urlPathComponent: "posts/\(id)", method: .delete)
+   _ = API.SimpleRequest(urlPathComponent: "items?limit=10")
+}
+`)
+
+	got := map[string]string{}
+	for _, f := range extractCallSiteEndpointFacts(dir, []string{defFile, callFile}, "", testModuleForFile) {
+		got[f.Name] = f.Props["method"].(string)
+		if f.File != callFile {
+			t.Errorf("wrapper route should anchor at the call site, got %q", f.File)
+		}
+	}
+	if got["core/v3/posts/{}"] != "DELETE" {
+		t.Errorf("explicit verb: want core/v3/posts/{} DELETE, got %+v", got)
+	}
+	if got["core/v3/items"] != "GET" { // query string stripped; default verb .get
+		t.Errorf("default verb + query strip: want core/v3/items GET, got %+v", got)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 routes, got %+v", got)
+	}
+}
+
+// TestWrapperEndpoint_HttpMethodArgAndComputedDefault covers the httpMethod: arg name
+// (with a stored default) and a verb fixed by a computed method in the conformance
+// extension.
+func TestWrapperEndpoint_HttpMethodArgAndComputedDefault(t *testing.T) {
+	dir := t.TempDir()
+	// httpMethod default .post, overridable via httpMethod: arg.
+	encFile := "Sources/Core/EncRequest.swift"
+	mustWrite(t, dir, encFile, `extension API {
+   struct EncRequest {
+      var urlPrefixComponent = "core/v3"
+      var urlPathComponent: String
+      var httpMethod: HTTPMethod = .post
+   }
+}
+extension API.EncRequest: APIEndpoint { public var method: HTTPMethod { httpMethod } }
+`)
+	// verb fixed by a computed method in the extension (no init verb).
+	putFile := "Sources/Core/PutOnly.swift"
+	mustWrite(t, dir, putFile, `extension API {
+   struct PutOnly {
+      var urlPrefixComponent = "core/v3"
+      var urlPathComponent: String
+   }
+}
+extension API.PutOnly: APIEndpoint { public var method: HTTPMethod { .put } }
+`)
+	callFile := "Sources/Feature/Svc.swift"
+	mustWrite(t, dir, callFile, `func f(id: String) {
+   _ = API.EncRequest(urlPathComponent: "a/\(id)")
+   _ = API.EncRequest(urlPathComponent: "b/\(id)", httpMethod: .put)
+   _ = API.PutOnly(urlPathComponent: "c/\(id)")
+}
+`)
+
+	got := map[string]string{}
+	for _, f := range extractCallSiteEndpointFacts(dir, []string{encFile, putFile, callFile}, "", testModuleForFile) {
+		got[f.Name] = f.Props["method"].(string)
+	}
+	if got["core/v3/a/{}"] != "POST" {
+		t.Errorf("EncRequest default: want core/v3/a/{} POST, got %+v", got)
+	}
+	if got["core/v3/b/{}"] != "PUT" {
+		t.Errorf("EncRequest httpMethod override: want core/v3/b/{} PUT, got %+v", got)
+	}
+	if got["core/v3/c/{}"] != "PUT" {
+		t.Errorf("PutOnly computed-fixed verb: want core/v3/c/{} PUT, got %+v", got)
+	}
+}
+
+// TestWrapperEndpoint_NonLiteralPathSkipped: a wrapper call site whose path is a
+// variable (not a literal) is unresolvable and emits nothing.
+func TestWrapperEndpoint_NonLiteralPathSkipped(t *testing.T) {
+	dir := t.TempDir()
+	defFile := "Sources/Core/SimpleRequest.swift"
+	callFile := "Sources/Feature/Service.swift"
+	mustWrite(t, dir, defFile, wrapperDefSource)
+	mustWrite(t, dir, callFile, `func f(path: String) {
+   _ = API.SimpleRequest(urlPathComponent: path, method: .get)
+}
+`)
+
+	if ff := extractCallSiteEndpointFacts(dir, []string{defFile, callFile}, "", testModuleForFile); len(ff) != 0 {
+		t.Fatalf("expected no routes for a variable path, got %d: %+v", len(ff), ff)
+	}
+}
+
+// TestParenBody_StringLiteral: a ')' inside a Swift string literal does not close
+// the argument span early.
+func TestParenBody_StringLiteral(t *testing.T) {
+	src := `Foo(label: "a )( b", method: .post)`
+	open := len("Foo")
+	body, ok := parenBody(src, open)
+	if !ok || body != `label: "a )( b", method: .post` {
+		t.Fatalf("parenBody = (%q, %v)", body, ok)
 	}
 }
 

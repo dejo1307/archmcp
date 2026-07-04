@@ -205,6 +205,15 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		}
 	}
 
+	// Some endpoint idioms supply part of the request (verb, or the path itself) at
+	// each instantiation site, so the per-file walk cannot resolve them. Index them
+	// repo-wide and read the missing init arguments from every call site. iOS-only,
+	// matching the endpoint idiom (and the defaultURLPrefix gate above).
+	if isiOS {
+		allFacts = append(allFacts,
+			extractCallSiteEndpointFacts(repoPath, files, defaultURLPrefix, moduleForFile)...)
+	}
+
 	// Parse Package.swift manifests: emit SPM target module facts + the inter-target
 	// dependency graph, and (by rerouting) keep the manifest's own `let package`
 	// binding and `import PackageDescription` out of the symbol/dependency facts.

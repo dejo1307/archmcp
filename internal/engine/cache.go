@@ -135,7 +135,14 @@ import (
 // v70: Swift endpoint extractor resolves the version prefix — repo-wide default
 // (protocol-extension urlPrefixComponent), single-value/switch-default overrides,
 // and version-constant interpolation — so prefix-less endpoints match backend routes.
-const cacheVersion = "v70"
+// v71: Swift endpoint extractor resolves stored-method endpoint structs (path/prefix
+// computed, `method` a stored property) by reading the HTTP verb from each
+// instantiation site's `method:` argument, emitting one client route per (path, verb).
+// v72: Swift extractor also resolves request-wrapper endpoints (path supplied at the
+// call site's `urlPathComponent:` arg, verb from `method:`/`httpMethod:` or a type
+// default); Ruby extractor fixes nested Rails resource paths — a singular `resource`
+// gets no `:id`, and children of a plural `resources` nest under `:<singular>_id`.
+const cacheVersion = "v72"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
