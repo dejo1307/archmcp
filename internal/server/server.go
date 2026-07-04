@@ -83,6 +83,7 @@ func (s *Server) MCPServer() *mcp.Server {
 type generateSnapshotArgs struct {
 	RepoPath string `json:"repo_path" jsonschema:"Path to the repository to analyze. Defaults to the configured repo path."`
 	Append   bool   `json:"append,omitempty" jsonschema:"If true, keep existing facts and add new ones with repo-prefixed file paths (for multi-repo analysis). Default false."`
+	Fresh    bool   `json:"fresh,omitempty" jsonschema:"Force a clean SINGLE-repo snapshot: reset the store (discard any previously loaded repos) and index only repo_path, bypassing the auto-append heuristic. Use when you've moved to a different project and do NOT want it merged into an existing multi-repo store. Mutually exclusive with append."`
 }
 
 // queryFactsArgs are the arguments for the query_facts tool.
@@ -376,7 +377,8 @@ func (s *Server) registerTools() {
 			"To VERIFY a change you are about to make, call set_baseline right after this first snapshot (BEFORE editing); " +
 			"then after editing, re-run generate_snapshot and call diff_snapshot to see exactly what the change did to the architecture. " +
 			"In multi-repo mode, call with append=true for each additional repo after the first; " +
-			"enola auto-enables append when it detects you have switched to a different repo.",
+			"enola auto-enables append when it detects you have switched to a different repo. " +
+			"If you have instead moved to a DIFFERENT project and want a clean single-repo snapshot (not merged into the current store), pass fresh=true to reset.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args generateSnapshotArgs) (*mcp.CallToolResult, any, error) {
 		if s.toolCallback != nil {
 			s.toolCallback("generate_snapshot")
@@ -391,18 +393,29 @@ func (s *Server) registerTools() {
 			return errorResult(fmt.Sprintf("invalid repo path: %v", err)), nil, nil
 		}
 
+		if args.Fresh && args.Append {
+			return errorResult("fresh and append are mutually exclusive: fresh forces a single-repo reset; append adds to the existing store. Pick one."), nil, nil
+		}
+
 		// Auto-enable append mode when switching to a different repo while facts
 		// from another repo are already loaded — but only once this session has
 		// explicitly generated a snapshot. A store pre-populated solely by
 		// AutoLoadSnapshot must not trigger append: an explicit/default
 		// append=false resets and discards the auto-loaded state.
+		//
+		// fresh=true is the explicit escape hatch: it suppresses this heuristic so
+		// the engine's non-append path clears the store and indexes only repo_path —
+		// the way to force a single-repo snapshot when you've switched projects and
+		// do NOT want the auto-append merge.
 		appendMode := args.Append
 		autoAppended := false
-		if !appendMode && s.snapshotsGenerated && s.eng.Store().Count() > 0 && s.eng.Snapshot() != nil {
+		autoAppendedFrom := ""
+		if !args.Fresh && !appendMode && s.snapshotsGenerated && s.eng.Store().Count() > 0 && s.eng.Snapshot() != nil {
 			prevRepo := s.eng.Snapshot().Meta.RepoPath
 			if prevRepo != "" && prevRepo != absRepo {
 				appendMode = true
 				autoAppended = true
+				autoAppendedFrom = prevRepo
 				log.Printf("[server] auto-enabled append mode: switching from %s to %s", prevRepo, absRepo)
 			}
 		}
@@ -477,6 +490,17 @@ func (s *Server) registerTools() {
 			// diff_snapshot once a baseline exists. Skipped in multi-repo mode where
 			// the baseline concept is per-first-repo and would only add noise.
 			summary += s.loopHint(absRepo)
+		}
+
+		// De-silence the auto-append: lead with a prominent, self-correcting warning
+		// so an agent that only meant a single-repo snapshot sees the merge and the
+		// exact remedy, rather than silently ending up with a polluted store.
+		if autoAppended {
+			summary = fmt.Sprintf(
+				"⚠️ **Auto-appended to the existing multi-repo store.** You snapshotted %q while %q was loaded, without append=true, so enola merged them into one store. "+
+					"If you meant a FRESH single-repo snapshot of %q, re-run with fresh=true.\n\n---\n\n",
+				filepath.Base(absRepo), filepath.Base(autoAppendedFrom), filepath.Base(absRepo),
+			) + summary
 		}
 
 		return &mcp.CallToolResult{

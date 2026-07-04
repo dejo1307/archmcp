@@ -209,6 +209,8 @@ Working across several repos? Generate the first, then add the rest with append 
 
 > "Which of my backend's endpoints aren't called by any of the client apps? (Ask via `query_insights(explainer='unused-routes')` — cleanup candidates, but check for callers outside these repos first.)"
 
+When you snapshot a *different* repo without `append`, enola assumes you're extending the set and auto-appends it — handy when you forgot `append` on repo #2. If you've actually **moved to another project** and want a clean single-repo snapshot instead, ask for a fresh one (`fresh=true`) so the old repos are discarded rather than merged in.
+
 **Regenerate after major changes** so the snapshot stays current. Refreshes are fast: enola caches each language's facts and re-parses a language only when one of its files (or a shared config like `package.json`) actually changed, reusing the rest.
 
 > **Very large repositories (e.g. the Linux kernel).** The first, cold index of a huge repo can take a minute or more and may exceed your MCP client's per-tool-call timeout, surfacing as `MCP error -32001: Request timed out`. The snapshot usually still finishes and is cached server-side — but to avoid the error, either:

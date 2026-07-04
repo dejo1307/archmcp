@@ -145,7 +145,7 @@ func (d *SnapshotDiff) writeProvenance(sb *strings.Builder) {
 	// Comparability warnings appear ABOVE the delta: a mismatched baseline (different
 	// repo, extractor set, enola version, or ignore globs) makes the numbers below
 	// misleading, so the reader must see the caveat first.
-	if !d.Comparability.Comparable() {
+	if len(d.Comparability.Warnings) > 0 {
 		sb.WriteString("> ⚠️ **Comparability warnings** — read before trusting the delta:\n")
 		for _, w := range d.Comparability.Warnings {
 			fmt.Fprintf(sb, ">  - %s\n", w)

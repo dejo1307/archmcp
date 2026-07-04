@@ -119,7 +119,7 @@ func (rc *ReceiptComparison) Render() string {
 		return sb.String()
 	}
 
-	if !rc.Comparability.Comparable() {
+	if len(rc.Comparability.Warnings) > 0 {
 		sb.WriteString("> ⚠️ **Not safely comparable** — differences below may reflect the mismatch, not real change:\n")
 		for _, w := range rc.Comparability.Warnings {
 			fmt.Fprintf(&sb, ">  - %s\n", w)

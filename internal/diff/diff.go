@@ -49,11 +49,13 @@ type FactChange struct {
 // here are surfaced ABOVE the delta so a mismatched comparison is flagged before
 // its (misleading) numbers are read.
 type Comparability struct {
-	Warnings []string `json:"warnings,omitempty"`
+	// Comparable is the explicit machine-readable verdict: true when no warnings
+	// were raised (the two snapshots were generated over equivalent inputs). It is
+	// always emitted so a JSON consumer reads the verdict directly rather than
+	// inferring it from an empty warnings list. Invariant: Comparable == (len(Warnings) == 0).
+	Comparable bool     `json:"comparable"`
+	Warnings   []string `json:"warnings,omitempty"`
 }
-
-// Comparable reports whether no comparability warnings were raised.
-func (c Comparability) Comparable() bool { return len(c.Warnings) == 0 }
 
 // SnapshotDiff is the delta between a baseline and a current snapshot.
 type SnapshotDiff struct {
@@ -105,6 +107,10 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 	}
 	if baseline != nil && current != nil {
 		d.Comparability = compareMeta(baseline.Meta, current.Meta)
+	} else {
+		// No baseline (or no current) to check against — the delta stands alone, so
+		// there is nothing it could be incomparable with.
+		d.Comparability = Comparability{Comparable: true}
 	}
 
 	baseFacts := snapFacts(baseline)
@@ -232,6 +238,7 @@ func compareMeta(base, cur facts.SnapshotMeta) Comparability {
 			"ignore globs differ between baseline and current — the set of files parsed changed, so some deltas may be exclusion changes rather than code changes")
 	}
 
+	c.Comparable = len(c.Warnings) == 0
 	return c
 }
 

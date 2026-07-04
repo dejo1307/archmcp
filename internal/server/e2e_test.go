@@ -368,6 +368,60 @@ func TestE2E_MultiRepoAppendStillAccumulates(t *testing.T) {
 	}
 }
 
+// TestE2E_FreshForcesSingleRepoOverAutoAppend covers the auto-append footgun:
+// once a multi-repo store is loaded, a plain generate_snapshot on a different repo
+// would auto-append (merging it in), but fresh=true must force a clean single-repo
+// reset instead. It also asserts fresh+append is rejected as contradictory.
+func TestE2E_FreshForcesSingleRepoOverAutoAppend(t *testing.T) {
+	s := startInMemory(t)
+	s.snapshot(t) // go_sample (s.repo): first snapshot resets, marks session
+
+	// Append a second repo → a genuine 2-repo store with service nodes.
+	repoB := copyTree(t, filepath.Join("..", "engine", "testdata", "repos", "ts_sample"), t.TempDir())
+	if res := s.call(t, "generate_snapshot", map[string]any{"repo_path": repoB, "append": true}); res.IsError {
+		t.Fatalf("append generate_snapshot errored: %s", text(res))
+	}
+
+	// A plain (no-flag) snapshot of a THIRD repo trips the auto-append heuristic —
+	// and must now say so loudly, pointing at the fresh=true remedy rather than
+	// silently merging.
+	repoC := copyTree(t, filepath.Join("..", "engine", "testdata", "repos", "python_sample"), t.TempDir())
+	warn := text(s.call(t, "generate_snapshot", map[string]any{"repo_path": repoC}))
+	if !strings.Contains(warn, "Auto-appended") || !strings.Contains(warn, "fresh=true") {
+		t.Errorf("a plain repo-switch snapshot must warn about the auto-append and name the fresh=true remedy; got:\n%s", warn)
+	}
+
+	// Re-snapshot it with fresh=true. This must suppress the auto-append and reset
+	// to a clean single-repo snapshot, discarding the accumulated repos.
+	res := s.call(t, "generate_snapshot", map[string]any{"repo_path": repoC, "fresh": true})
+	if res.IsError {
+		t.Fatalf("fresh generate_snapshot errored: %s", text(res))
+	}
+	out := text(res)
+	for _, banned := range []string{"Multi-repo mode active", "auto-enabled", "Auto-appended"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("fresh=true must force a single-repo snapshot, but summary contained %q; got:\n%s", banned, out)
+		}
+	}
+
+	// The prior repos must be gone: a single-repo snapshot has no service nodes.
+	if cov := text(s.call(t, "coverage_report", map[string]any{})); !strings.Contains(cov, "No service nodes") {
+		t.Errorf("expected no service nodes after fresh single-repo snapshot; got:\n%s", cov)
+	}
+	svc := text(s.call(t, "query_facts", map[string]any{"kind": "service"}))
+	for _, gone := range []string{"go_sample", "ts_sample"} {
+		if strings.Contains(svc, gone) {
+			t.Errorf("expected %q to be discarded by fresh=true, but it still appears; got:\n%s", gone, svc)
+		}
+	}
+
+	// fresh + append is contradictory and must be rejected, not silently resolved.
+	bad := s.call(t, "generate_snapshot", map[string]any{"repo_path": repoC, "fresh": true, "append": true})
+	if !bad.IsError || !strings.Contains(text(bad), "mutually exclusive") {
+		t.Errorf("fresh+append must error as mutually exclusive; got IsError=%v:\n%s", bad.IsError, text(bad))
+	}
+}
+
 func keys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

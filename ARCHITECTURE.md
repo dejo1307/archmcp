@@ -230,6 +230,9 @@ Parses a repo and builds the fact graph. **Run this first**; re-run after code c
 |-----------|-------------|
 | `repo_path` | Path to the repository. Defaults to the configured repo. |
 | `append` | If `true`, keep existing facts and add a new repo with repo-prefixed paths (for cross-repo analysis). enola auto-enables append when it detects you switched repos. Default `false`. |
+| `fresh` | If `true`, force a clean **single-repo** snapshot: reset the store (discard any loaded repos) and index only `repo_path`, bypassing the auto-append heuristic. Use it when you've moved to a *different* project and don't want it merged into the current multi-repo store. Mutually exclusive with `append`. Default `false`. |
+
+> **The auto-append escape hatch.** enola auto-enables append when a plain `generate_snapshot` targets a different repo than the one currently loaded — convenient when you forgot `append=true` on repo #2 of a multi-repo set, but a footgun if you actually switched projects (it silently merges the new repo into the existing store). The auto-append is announced loudly in the response with the remedy; pass `fresh=true` to force a single-repo reset instead.
 
 ### `explore` — "what's in here, and what touches it?"
 

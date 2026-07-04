@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -15,8 +16,20 @@ func TestCompareMeta(t *testing.T) {
 
 	t.Run("equivalent inputs produce no warnings", func(t *testing.T) {
 		cur := base
-		if c := CompareMeta(base, cur); !c.Comparable() {
+		if c := CompareMeta(base, cur); !c.Comparable {
 			t.Errorf("expected comparable, got warnings: %v", c.Warnings)
+		}
+	})
+
+	t.Run("comparable verdict is an explicit JSON field", func(t *testing.T) {
+		// The gap this fixes: a full-JSON consumer must read comparable:true
+		// directly, not infer it from an absent warnings list.
+		out, err := json.Marshal(CompareMeta(base, base))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), `"comparable":true`) {
+			t.Errorf(`clean verdict must marshal an explicit "comparable":true; got %s`, out)
 		}
 	})
 
@@ -48,7 +61,7 @@ func TestCompareMeta(t *testing.T) {
 	t.Run("different enola version is flagged", func(t *testing.T) {
 		cur := base
 		cur.EnolaVersion = "2.0"
-		if CompareMeta(base, cur).Comparable() {
+		if CompareMeta(base, cur).Comparable {
 			t.Error("expected a warning for differing enola versions")
 		}
 	})
@@ -57,7 +70,7 @@ func TestCompareMeta(t *testing.T) {
 		// An auto-loaded baseline carries only RepoPath.
 		autoLoaded := facts.SnapshotMeta{RepoPath: "/repo"}
 		c := CompareMeta(autoLoaded, base)
-		if c.Comparable() {
+		if c.Comparable {
 			t.Error("expected a not-verifiable note for an empty baseline")
 		}
 		if !strings.Contains(strings.Join(c.Warnings, " "), "predates snapshot receipts") {
