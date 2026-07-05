@@ -753,3 +753,44 @@ class Wrapper {
 		t.Errorf("expected RelInstantiates → Bar (last segment of qualified callee), got %+v", f.Relations)
 	}
 }
+
+// TestAST_QualifiedCallableReference covers the v55 qualified form (`Type::foo`),
+// which credits the short-named callee just like the bare `::foo` form, so a method
+// referenced only via a qualified reference isn't mis-reported as an orphan.
+func TestAST_QualifiedCallableReference(t *testing.T) {
+	ff := extractAST(t, `
+package pkg
+fun caller() {
+    listOf("a").map(String::length)
+    register(Mapper::convert)
+}
+fun convert() {}
+`, false)
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	for _, target := range []string{"length", "convert"} {
+		if !hasRelation(c, facts.RelCalls, target) {
+			t.Errorf("expected short-name RelCalls → %s for a qualified callable reference, got %+v", target, c.Relations)
+		}
+	}
+}
+
+// TestAST_SealedClassIsAbstract covers v58's sealed→abstract marker: a sealed class
+// is non-instantiable, so it must carry abstract=true so package-metrics abstractness
+// (A) counts it.
+func TestAST_SealedClassIsAbstract(t *testing.T) {
+	ff := extractAST(t, `
+package pkg
+sealed class Result {
+}
+`, false)
+	f, ok := findFact(ff, "pkg.Result")
+	if !ok {
+		t.Fatal("expected fact for pkg.Result")
+	}
+	if f.Props["abstract"] != true {
+		t.Errorf("sealed class abstract = %v, want true", f.Props["abstract"])
+	}
+}

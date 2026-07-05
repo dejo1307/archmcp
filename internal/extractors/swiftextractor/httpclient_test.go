@@ -639,3 +639,26 @@ func TestCollapseSwiftInterpolation(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractURLSessionFacts_TestSourcesSkipped covers the v69 test/fixture gate:
+// URLSession request-building under a Tests/ path (or a *Tests basename) is fixture
+// code, not a real endpoint, so it emits no client route — while the identical code
+// under a production path still does.
+func TestExtractURLSessionFacts_TestSourcesSkipped(t *testing.T) {
+	src := `import Foundation
+
+final class MockAPI {
+    func fetch() async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("users"))
+        request.httpMethod = "GET"
+        _ = try await send(request)
+    }
+}
+`
+	if ff := extractURLSessionFacts([]byte(src), "Tests/AppTests/MockAPITests.swift"); len(ff) != 0 {
+		t.Fatalf("expected no routes from a test source, got %d: %+v", len(ff), ff)
+	}
+	if ff := extractURLSessionFacts([]byte(src), "Sources/App/MockAPI.swift"); len(ff) != 1 {
+		t.Fatalf("expected 1 route from the same code under a production path, got %d: %+v", len(ff), ff)
+	}
+}

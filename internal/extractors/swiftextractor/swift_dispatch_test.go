@@ -483,3 +483,27 @@ func isStdOpTarget(target string) bool {
 	}
 	return false
 }
+
+// TestClassPropertyInitAttachesToType covers v43: a class/struct stored-property
+// initializer's call edge attaches to the enclosing TYPE (not the property) — the
+// mirror of the extension case (v42), which pushes the property as owner. This keeps
+// class-property attribution (and the coupling graph) unchanged.
+func TestClassPropertyInitAttachesToType(t *testing.T) {
+	ff := extractAST(t, `
+final class C {
+    var item = helper()
+}
+func helper() -> Int { 0 }
+`, false)
+
+	typ, ok := findFact(ff, "pkg.C")
+	if !ok {
+		t.Fatalf("expected pkg.C fact; facts=%v", factNames(ff))
+	}
+	if !hasRelation(typ, facts.RelCalls, "pkg.helper") {
+		t.Errorf("class property init should attach calls -> pkg.helper to the type; relations=%v", typ.Relations)
+	}
+	if prop, ok := findFact(ff, "pkg.C.item"); ok && hasRelation(prop, facts.RelCalls, "pkg.helper") {
+		t.Errorf("class property fact must NOT own the init call edge (v43); relations=%v", prop.Relations)
+	}
+}

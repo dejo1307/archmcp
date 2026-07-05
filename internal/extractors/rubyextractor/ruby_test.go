@@ -1723,3 +1723,46 @@ end
 		t.Errorf("interpolated symbol prefix should be recorded unconditionally; got %v", got)
 	}
 }
+
+// TestExtractFile_GvarUnderscoredCall covers the v27 $gvar receiver variant: an
+// underscored (scope/class-method-like) call on a global-variable receiver is a
+// method invocation and must be recorded, while a cheap single-word read is not.
+func TestExtractFile_GvarUnderscoredCall(t *testing.T) {
+	src := `class GlobalService
+  def run
+    $registry.bo_search_fields
+    $config.name
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/global_service.rb", true, true)
+	meth := symbolsByName(result)["GlobalService#run"]
+	if !hasCall(meth, "bo_search_fields") {
+		t.Errorf("underscored call on $gvar receiver should record bo_search_fields; relations = %v", meth.Relations)
+	}
+	if hasCall(meth, "name") {
+		t.Errorf("cheap $config.name must not be recorded; relations = %v", meth.Relations)
+	}
+}
+
+// TestExtractFile_ClazzKlazzReceiverDispatch covers the v28 clazz/klazz spellings
+// (alongside klass): a method call on a Class-object-named receiver is class-method
+// dispatch regardless of the method name.
+func TestExtractFile_ClazzKlazzReceiverDispatch(t *testing.T) {
+	src := `class Dispatcher
+  def run
+    registry.each do |clazz|
+      clazz.inline
+    end
+    klazz.trigger_now
+  end
+end
+`
+	result := extractFileAST([]byte(src), "app/services/dispatcher2.rb", true, true)
+	meth := symbolsByName(result)["Dispatcher#run"]
+	for _, want := range []string{"inline", "trigger_now"} {
+		if !hasCall(meth, want) {
+			t.Errorf("clazz/klazz-receiver dispatch should record %s; relations = %v", want, meth.Relations)
+		}
+	}
+}

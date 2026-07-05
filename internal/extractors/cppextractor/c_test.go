@@ -745,3 +745,58 @@ func TestHeaderLangAttribution(t *testing.T) {
 		t.Errorf("tools/x.cpp class W language = %v, want cpp", f.Props["language"])
 	}
 }
+
+// TestCMachineDescCleanErrorRegion covers v15: a single machine_desc block
+// (MACHINE_START ... MACHINE_END) alone at file scope, which tree-sitter recovers as
+// one clean ERROR node (as opposed to the scattered assignment/field_expression
+// fragments of v16). Its `.field = fn` callbacks must still be salvaged onto the
+// module fact.
+func TestCMachineDescCleanErrorRegion(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/board.c": `
+static void example_init(void) {}
+static void example_restart(void) {}
+MACHINE_START(EXAMPLE, "Example Board")
+	.init_machine = example_init,
+	.restart      = example_restart,
+MACHINE_END
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	for _, fn := range []string{"src.example_init", "src.example_restart"} {
+		if !hasRelation(mod, facts.RelCalls, fn) {
+			t.Errorf("machine_desc clean-ERROR-node callback %s should be salvaged onto the module, got %+v", fn, mod.Relations)
+		}
+	}
+}
+
+// TestCMachineDescSalvageSkipsFunctionBodies covers v17: the full-tree salvage of
+// `.field = fn` macro-struct debris must skip function bodies, so an in-body field
+// assignment stays attributed to its enclosing function and is NOT double-counted
+// onto the module fact.
+func TestCMachineDescSalvageSkipsFunctionBodies(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/board.c": `
+static void mach_init(void) {}
+static int probe_cb(void) { return 0; }
+static int probe(struct device *dev) {
+	dev->cb = probe_cb;
+	return 0;
+}
+DT_MACHINE_START(EX_DT, "Ex")
+	.init_machine = mach_init,
+MACHINE_END
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	if !hasRelation(mod, facts.RelCalls, "src.mach_init") {
+		t.Errorf("module should reference mach_init via machine_desc, got %+v", mod.Relations)
+	}
+	if hasRelation(mod, facts.RelCalls, "src.probe_cb") {
+		t.Errorf("in-body field assignment must NOT be attributed to the module (v17 skips function bodies), got %+v", mod.Relations)
+	}
+	p := mustFact(t, ff, "src.probe")
+	if !hasRelation(p, facts.RelCalls, "src.probe_cb") {
+		t.Errorf("probe should own the in-body probe_cb assignment, got %+v", p.Relations)
+	}
+}

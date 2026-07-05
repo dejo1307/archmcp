@@ -47,6 +47,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: cacheVersion coverage guard
+        run: go test -count=1 -run TestCacheVersionCoverage ./internal/cachecov/
+
       - name: Golden + determinism
         run: go test -count=1 -run 'TestGolden|TestDeterminism' ./internal/engine/...
 

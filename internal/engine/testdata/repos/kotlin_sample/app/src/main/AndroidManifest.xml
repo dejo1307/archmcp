@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Presence of this file makes detectAndroidProject() return true, which enables
+     Room storage facts and Dagger/Hilt di_component/di_module tagging. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="de.foo.app">
+    <application android:label="KotlinSample" />
+</manifest>

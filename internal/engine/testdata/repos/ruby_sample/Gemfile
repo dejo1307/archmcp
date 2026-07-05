@@ -1,0 +1,11 @@
+# frozen_string_literal: true
+
+# The Ruby extractor's Detect() requires a Gemfile at the repo root.
+source "https://rubygems.org"
+
+gem "rails", "~> 7.1"
+gem "activesupport"
+
+group :test do
+  gem "rspec-rails"
+end

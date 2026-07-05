@@ -1,0 +1,24 @@
+#!/bin/sh
+# Enola pre-push guard — runs the core-feature regression nets locally, before any
+# code reaches CI. Enable once per clone with:
+#
+#     git config core.hooksPath .githooks
+#
+# It runs two checks:
+#   1. cacheVersion coverage guard (fast, no CGO): fails if a `// vN:` changelog
+#      entry in internal/engine/cache.go has no registered test in
+#      internal/cachecov/coverage_test.go — i.e. an extractor behavior was bumped
+#      without a covering test.
+#   2. golden + determinism: the extractor fact graph for the fixture repos is
+#      byte-identical to the committed goldens and reproducible across runs.
+#
+# To skip in an emergency: `git push --no-verify` (CI still enforces both).
+set -e
+
+echo "pre-push: cacheVersion coverage guard…"
+go test -count=1 -run TestCacheVersionCoverage ./internal/cachecov/
+
+echo "pre-push: golden + determinism…"
+go test -count=1 -run 'TestGolden|TestDeterminism' ./internal/engine/...
+
+echo "pre-push: OK"

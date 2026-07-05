@@ -463,3 +463,38 @@ end
 		t.Errorf("calls_in_loop = %v, want to contain present", cil)
 	}
 }
+
+// TestRbComplexity_InBatchesNotElementLoop covers the v31 in_batches sibling of
+// find_in_batches: its block yields a batch, so the inner per-element loop is the
+// real O(n) pass — the pair scores loop_depth 1, not 2.
+func TestRbComplexity_InBatchesNotElementLoop(t *testing.T) {
+	src := `class Reindex
+  def run(model)
+    model.in_batches do |batch|
+      batch.each { |obj| present(obj) }
+    end
+  end
+end
+`
+	f := symbolsByName(extractFileAST([]byte(src), "app/reindex.rb", false, false))["Reindex#run"]
+	if got := rbIntProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1 (in_batches yields batches, not elements)", got)
+	}
+}
+
+// TestRbComplexity_ConstSelfClassMethodIsRecursion covers the v33 positive branch: a
+// class method calling itself by its own constant-qualified name (`ReportBuilder.build`
+// inside `def self.build`) is genuine class-method self-recursion and must set
+// recursive_self — unlike self.class.foo / obj.try(:foo), which are cleared.
+func TestRbComplexity_ConstSelfClassMethodIsRecursion(t *testing.T) {
+	src := `class ReportBuilder
+  def self.build(list)
+    ReportBuilder.build(list)
+  end
+end
+`
+	f := symbolsByName(extractFileAST([]byte(src), "app/report_builder.rb", false, false))["ReportBuilder.build"]
+	if v, ok := f.Props["recursive_self"].(bool); !ok || !v {
+		t.Errorf("recursive_self = %v, want true for Const.foo class-method self-recursion", f.Props["recursive_self"])
+	}
+}

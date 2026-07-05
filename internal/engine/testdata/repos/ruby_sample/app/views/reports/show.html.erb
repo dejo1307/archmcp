@@ -1,0 +1,13 @@
+<%# Item 4 (v27): embedded Ruby calls in a view template are captured as a %>
+<%# reference-only KindFileRef fact, so helpers/class methods invoked ONLY from %>
+<%# a view are not mis-reported as dead. This comment tag is ignored. %>
+<div class="report">
+  <%# ReportPresenter.render_summary is a class-method call -> recorded. %>
+  <%= ReportPresenter.render_summary(@report) %>
+
+  <% if current_user.can_view_reports? %>
+    <p>Visible</p>
+  <% end %>
+
+  <%# IgnoredHelper.never_recorded lives in a comment tag and must be skipped. %>
+</div>
