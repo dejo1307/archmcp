@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/explain"
 )
@@ -25,6 +26,9 @@ func main() {
 
 	for _, arg := range os.Args[1:] {
 		switch arg {
+		case "--version":
+			fmt.Fprintf(os.Stderr, "enola version %s\n", version.Version)
+			os.Exit(0)
 		case "--generate":
 			generateMode = true
 		case "--explain":
