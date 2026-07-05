@@ -22,6 +22,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/unusedroutes"
 	"github.com/enola-labs/enola/internal/extractors/cppextractor"
 	"github.com/enola-labs/enola/internal/extractors/goextractor"
+	"github.com/enola-labs/enola/internal/extractors/grpcextractor"
 	"github.com/enola-labs/enola/internal/extractors/javaextractor"
 	"github.com/enola-labs/enola/internal/extractors/kotlinextractor"
 	"github.com/enola-labs/enola/internal/extractors/openapiextractor"
@@ -185,6 +186,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	// Register all OSS extractors
 	eng.RegisterExtractor(cppextractor.New())
 	eng.RegisterExtractor(goextractor.New())
+	eng.RegisterExtractor(grpcextractor.New())
 	eng.RegisterExtractor(javaextractor.New())
 	eng.RegisterExtractor(kotlinextractor.New())
 	eng.RegisterExtractor(openapiextractor.New())

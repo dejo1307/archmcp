@@ -79,6 +79,7 @@ ignore:
 extractors:
   - cpp
   - go
+  - grpc
   - java
   - kotlin
   - openapi

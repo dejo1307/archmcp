@@ -139,6 +139,13 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 	}
 
+	// Repo-wide pre-pass: resolve generated gRPC-web client stubs (service FQN +
+	// RPC methods + client class) so per-file call-site detection can map a
+	// `client.method(...)` call to its "/pkg.Service/Method" route. Built before
+	// the parallel pass because a client's stub and its call sites usually live
+	// in different files.
+	grpcStubs := buildGRPCStubIndex(repoPath, tsFiles)
+
 	perFileFacts := parallel.MapFiles(ctx, tsFiles, func(relFile string) []facts.Fact {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
@@ -153,7 +160,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			return nil
 		}
 		aliases := aliasesForDir(aliasRoots, filepath.Dir(relFile))
-		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, aliases, knownFiles)
+		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, aliases, knownFiles, grpcStubs)
 	})
 
 	// Group files by directory for module detection. Files that produced no
@@ -204,7 +211,7 @@ type extractCtx struct {
 	knownFiles map[string]bool // repo-relative (slash) paths of all indexed TS/JS files
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit bool, aliases map[string]string, knownFiles map[string]bool) []facts.Fact {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit bool, aliases map[string]string, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
 	if isVueFile(relFile) {
 		return e.extractVueSFC(src, relFile, isNuxt, aliases)
 	}
@@ -222,6 +229,9 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 
 	// Hand-written fetch / makeRequest API calls are also client-role routes.
 	result = append(result, extractHTTPClientFacts(src, relFile)...)
+
+	// gRPC-web client call sites become client-role routes to "/pkg.Service/Method".
+	result = append(result, extractGRPCClientFacts(src, relFile, grpcStubs)...)
 
 	isTSX := strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx")
 	lang := typescript.LanguageTypescript()

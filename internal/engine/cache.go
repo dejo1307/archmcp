@@ -142,7 +142,12 @@ import (
 // call site's `urlPathComponent:` arg, verb from `method:`/`httpMethod:` or a type
 // default); Ruby extractor fixes nested Rails resource paths — a singular `resource`
 // gets no `:id`, and children of a plural `resources` nest under `:<singular>_id`.
-const cacheVersion = "v72"
+// v73: new gRPC extractor emits a server-role KindRoute per proto RPC (Name
+// "/pkg.Service/Method", method POST) plus service/rpc/message symbols; the TS
+// extractor detects gRPC-web client call sites as client-role routes
+// (source "ts-grpc-client"), so gRPC flows through the cross-repo linker and
+// unused-routes like HTTP.
+const cacheVersion = "v73"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

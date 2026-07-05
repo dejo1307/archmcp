@@ -81,7 +81,7 @@ func Default() *Config {
 		// reference-only extraction so the dead-code detector can see that a
 		// production symbol is exercised by a test and not mis-report it as dead.
 		TestGlobs:  []string{"**/*_spec.rb", "**/*_test.rb"},
-		Extractors: []string{"cpp", "go", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby"},
+		Extractors: []string{"cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{

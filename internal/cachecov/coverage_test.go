@@ -104,6 +104,7 @@ var versionCoverage = map[int][]string{
 	70: {"TestExtractEndpointFacts_DefaultPrefix"},                                          // Swift endpoint version-prefix
 	71: {"TestExtractStoredMethodEndpointFacts"},                                            // Swift stored-method endpoints
 	72: {"TestWrapperEndpoint_PathAndVerbFromCallSite", "TestRoutes_NestedSingularResource"},// Swift request-wrapper + Ruby nested resources
+	73: {"TestExtract_ServerRoutesPerRPC", "TestGRPCClient_OnlyCalledMethodsEmitted"},       // gRPC proto server routes + TS gRPC-web client routes
 }
 
 func TestCacheVersionCoverage(t *testing.T) {

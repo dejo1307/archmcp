@@ -251,13 +251,16 @@ func pickProvider(client facts.Fact, matches []routeRef) (string, bool) {
 var handWrittenClientSources = map[string]bool{
 	"ts-http-client": true, "retrofit": true, "urlsession": true,
 	"swift-endpoint": true, "ruby-http-client": true, "go-http-client": true,
-	"php-http-client": true,
+	"php-http-client": true, "ts-grpc-client": true,
 }
 
 // httpVia returns the via label for an HTTP edge derived from a client route:
-// "http-client" for a hand-written client call site, "http" for an OpenAPI
-// client spec (the default).
+// "grpc" for a gRPC call site, "http-client" for a hand-written HTTP client call
+// site, "http" for an OpenAPI client spec (the default).
 func httpVia(client facts.Fact) string {
+	if propString(client, "framework") == "grpc" {
+		return "grpc"
+	}
 	if handWrittenClientSources[propString(client, "source")] {
 		return "http-client"
 	}

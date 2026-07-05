@@ -37,7 +37,7 @@ Cursor (add to `mcp.json`):
 
 Done. Your agent now has a precise structural map of your code. For configuration options, multi-repo setup, and what to ask next, see [Quick start](#quick-start) below.
 
-**Supported languages:** Go · JavaScript · TypeScript · Python · Java · Kotlin · Swift · Ruby · C · C++ · PHP · Vue · Svelte · OpenAPI — with framework awareness (Next.js, Nuxt, SvelteKit, FastAPI, Django, Spring, Rails, Laravel, Symfony, SwiftUI, Jetpack Compose, WordPress, …)
+**Supported languages:** Go · JavaScript · TypeScript · Python · Java · Kotlin · Swift · Ruby · C · C++ · PHP · Vue · Svelte · OpenAPI · gRPC — with framework awareness (Next.js, Nuxt, SvelteKit, FastAPI, Django, Spring, Rails, Laravel, Symfony, SwiftUI, Jetpack Compose, WordPress, …)
 
 ---
 
@@ -236,6 +236,7 @@ When you snapshot a *different* repo without `append`, enola assumes you're exte
 | C / C++    | `.c`/`.h` (tree-sitter-c) or `.cpp`/`.hpp`/… (tree-sitter-cpp), or `CMakeLists.txt`/`Makefile` + header (per-fact `language`, header/source method merging, namespaces, templates) |
 | PHP        | `composer.json`, WordPress markers, or any `.php` source (WordPress / Laravel / Symfony route + outbound HTTP-client aware) |
 | OpenAPI    | any spec with an `openapi:` / `swagger:` key |
+| gRPC       | any `.proto` file (proto services → routes; TypeScript gRPC-web client calls detected) |
 
 Framework- and platform-specific detection for each language is described in **[ARCHITECTURE.md → Supported languages](ARCHITECTURE.md#supported-languages)**.
 
