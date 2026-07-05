@@ -43,6 +43,7 @@ const (
 	RelInstantiates = internal.RelInstantiates
 	RelInjects      = internal.RelInjects
 	RelHasMethod    = internal.RelHasMethod
+	RelHandledBy    = internal.RelHandledBy
 )
 
 // Symbol kind property values.

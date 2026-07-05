@@ -56,6 +56,7 @@ const (
 	RelInstantiates = "instantiates" // Source constructs an instance of target via a constructor call.
 	RelInjects      = "injects"      // Source declares target as a DI-injected constructor parameter.
 	RelHasMethod    = "has_method"   // Owner type (struct/interface/class) declares target as a method. Synthesized in NewGraph.
+	RelHandledBy    = "handled_by"   // A route/endpoint is served by target (e.g. a gRPC RPC route → its Go handler method). Added post-extraction.
 )
 
 // Symbol kind property values.

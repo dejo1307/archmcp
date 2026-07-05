@@ -19,7 +19,7 @@ type Graph struct {
 
 // Edge represents a directed relationship between two facts.
 type Edge struct {
-	RelKind string // "imports", "calls", "declares", "implements", "depends_on", "has_method"
+	RelKind string // "imports", "calls", "declares", "implements", "depends_on", "has_method", "handled_by"
 	Target  string // target fact name (forward) or source fact name (reverse)
 }
 
