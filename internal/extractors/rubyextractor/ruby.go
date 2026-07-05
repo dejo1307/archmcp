@@ -84,7 +84,7 @@ func hasRubyShebang(absPath string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	r := bufio.NewReader(io.LimitReader(f, 256))
 	line, err := r.ReadString('\n')
 	if err != nil && line == "" {
