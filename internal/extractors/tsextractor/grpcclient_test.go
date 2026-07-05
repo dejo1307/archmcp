@@ -201,6 +201,79 @@ async function submit(name: string) {
 	}
 }
 
+// Classic grpc-web generated client (protoc-gen-grpc-web, TypeScript import
+// style): the wire path lives in MethodDescriptor / rpcCall string literals.
+const genGRPCWebClient = `import * as grpcWeb from 'grpc-web';
+import * as users_pb from './users_pb';
+
+export class UserServiceClient {
+  client_: grpcWeb.AbstractClientBase;
+  hostname_: string;
+
+  constructor(hostname: string, credentials?: null, options?: null) {
+    this.client_ = new grpcWeb.GrpcWebClientBase(options || {});
+    this.hostname_ = hostname;
+  }
+
+  methodDescriptorGetUser = new grpcWeb.MethodDescriptor(
+    '/users.v1.UserService/GetUser',
+    grpcWeb.MethodType.UNARY,
+    users_pb.GetUserRequest,
+    users_pb.GetUserResponse,
+    (request: users_pb.GetUserRequest) => request.serializeBinary(),
+    users_pb.GetUserResponse.deserializeBinary);
+
+  getUser(request: users_pb.GetUserRequest, metadata: grpcWeb.Metadata | null) {
+    return this.client_.unaryCall(this.hostname_ + '/users.v1.UserService/GetUser', request, metadata, this.methodDescriptorGetUser);
+  }
+
+  methodDescriptorCreateUser = new grpcWeb.MethodDescriptor(
+    '/users.v1.UserService/CreateUser',
+    grpcWeb.MethodType.UNARY,
+    users_pb.CreateUserRequest,
+    users_pb.CreateUserResponse,
+    (request: users_pb.CreateUserRequest) => request.serializeBinary(),
+    users_pb.CreateUserResponse.deserializeBinary);
+
+  createUser(request: users_pb.CreateUserRequest, metadata: grpcWeb.Metadata | null) {
+    return this.client_.unaryCall(this.hostname_ + '/users.v1.UserService/CreateUser', request, metadata, this.methodDescriptorCreateUser);
+  }
+}
+`
+
+// TestGRPCWebClient covers the classic grpc-web client family.
+func TestGRPCWebClient(t *testing.T) {
+	app := `import { UserServiceClient } from "./gen/UsersServiceClientPb";
+import { CreateUserRequest } from "./gen/users_pb";
+
+const client = new UserServiceClient("http://localhost:8080");
+
+async function submit() {
+  const req = new CreateUserRequest();
+  return await client.createUser(req, null);
+}
+`
+	ff := extractAll(t, map[string]string{
+		"gen/UsersServiceClientPb.ts": genGRPCWebClient,
+		"app.ts":                      app,
+	}, false)
+
+	routes := grpcRoutes(ff)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 grpc-web client route, got %d: %+v", len(routes), routes)
+	}
+	create, ok := hasGRPCRoute(ff, "/users.v1.UserService/CreateUser")
+	if !ok {
+		t.Fatalf("missing grpc-web client route: %+v", routes)
+	}
+	if create.Props["role"] != "client" || create.Props["source"] != "ts-grpc-client" {
+		t.Errorf("props = %+v", create.Props)
+	}
+	if _, ok := hasGRPCRoute(ff, "/users.v1.UserService/GetUser"); ok {
+		t.Error("GetUser is uncalled but was emitted")
+	}
+}
+
 // createPromiseClient (connect-es v1 name) is recognized too.
 func TestConnectES_CreatePromiseClient(t *testing.T) {
 	app := `import { createPromiseClient } from "@connectrpc/connect";

@@ -157,12 +157,17 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *parsedPkg, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex) []facts.Fact {
 	var result []facts.Fact
 
+	// Package-scoped map of top-level `var x = NewXxxClient(...)` bindings, so a
+	// gRPC client held in a package var (declared in any file of the package)
+	// resolves at its call sites.
+	pkgVarClients := collectPackageVarClients(pp.parsedFiles, grpcStubs)
+
 	for _, relFile := range pp.relFiles {
 		f, ok := pp.fileMap[relFile]
 		if !ok {
 			continue
 		}
-		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames, grpcStubs)...)
+		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames, grpcStubs, pkgVarClients)...)
 	}
 
 	moduleFact := facts.Fact{
@@ -184,7 +189,7 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *par
 	return result
 }
 
-func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex) []facts.Fact {
+func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex, pkgVarClients map[string]string) []facts.Fact {
 	var result []facts.Fact
 
 	// Build per-file import alias map for call resolution.
@@ -238,7 +243,7 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 	result = append(result, extractHTTPClientFacts(fset, f, relFile, pkgDir)...)
 
 	// Extract outbound gRPC-client calls
-	result = append(result, extractGRPCClientFacts(fset, f, relFile, pkgDir, modulePath, fileImports, fieldTypes, grpcStubs)...)
+	result = append(result, extractGRPCClientFacts(fset, f, relFile, pkgDir, modulePath, fileImports, fieldTypes, pkgVarClients, grpcStubs)...)
 
 	// Extract storage patterns
 	result = append(result, extractStorage(fset, f, relFile, pkgDir)...)

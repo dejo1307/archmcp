@@ -156,7 +156,10 @@ import (
 // clients (via the field-type map) and connect-go (procedure-const paths); the
 // TypeScript extractor detects connect-es createClient/createPromiseClient(...)
 // call sites. Bump required because the TS extractor is a FileOwner (cached).
-const cacheVersion = "v75"
+// v76: classic grpc-web clients recognized (TS extractor derives service+methods
+// from MethodDescriptor/rpcCall path literals); Go extractor resolves gRPC
+// clients held in package-level vars. Bump required for the TS (FileOwner) change.
+const cacheVersion = "v76"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

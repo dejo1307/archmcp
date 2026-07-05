@@ -250,6 +250,37 @@ func (c *userServiceClient) CreateUser(ctx context.Context, req *connect.Request
 }
 `
 
+// A gRPC client held in a package-level var (declared in one file) resolves at a
+// call site in another file of the same package.
+func TestGoGRPCClient_PackageVar(t *testing.T) {
+	clientVar := `package app
+
+import usersv1 "testmod/gen/users/v1"
+
+var userClient = usersv1.NewUserServiceClient(nil)
+`
+	caller := `package app
+
+import (
+	"context"
+
+	usersv1 "testmod/gen/users/v1"
+)
+
+func Fetch(ctx context.Context) {
+	userClient.GetUser(ctx, &usersv1.GetUserRequest{})
+}
+`
+	ff := extractAll(t, map[string]string{
+		"gen/users/v1/users_grpc.pb.go": generatedGRPCStub,
+		"app/client.go":                 clientVar,
+		"app/handler.go":                caller,
+	})
+	if _, ok := clientRouteByPath(ff, "/users.v1.UserService/GetUser"); !ok {
+		t.Fatalf("package-level-var client call not detected: %+v", grpcClientRoutes(ff))
+	}
+}
+
 func TestGoGRPCClient_ConnectGo(t *testing.T) {
 	consumer := `package app
 

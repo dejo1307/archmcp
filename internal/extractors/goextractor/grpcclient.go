@@ -106,12 +106,54 @@ func looksLikeGoGRPCGenerated(f *ast.File) bool {
 	return false
 }
 
+// collectPackageVarClients maps a package-level variable name to the gRPC client
+// interface it is constructed from — e.g. `var userClient = usersv1.NewUserServiceClient(conn)`
+// yields "userClient" → "UserServiceClient". It scans every file's top-level var
+// declarations (extractGenDecl ignores value specs, and collectLocalTypes only
+// sees function bodies, so package vars are otherwise unresolved). Only vars
+// whose interface exists in the stub index are kept. Package-scoped, so a var
+// declared in one file resolves for calls in another file of the same package.
+func collectPackageVarClients(files []*ast.File, idx *goGRPCStubIndex) map[string]string {
+	if idx.empty() {
+		return nil
+	}
+	out := map[string]string{}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range vs.Names {
+					if i >= len(vs.Values) {
+						continue
+					}
+					if iface := clientCtorInterface(vs.Values[i]); iface != "" && idx.byClient[iface] != nil {
+						out[name.Name] = iface
+					}
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // extractGRPCClientFacts emits a client-role route for each gRPC client call site
 // in a file. It rebuilds the extractor's resolveCtx per function (exactly as
 // extractFunc does) so it can reuse resolveChain — which resolves a call
 // receiver whether it is a local variable, a struct field, or the method
 // receiver — then looks the resolved client interface up in the stub index.
-func extractGRPCClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fileImports, fieldTypes map[string]string, idx *goGRPCStubIndex) []facts.Fact {
+// pkgVarClients supplies package-level var receivers, which resolveChain cannot
+// resolve (they live in no function body).
+func extractGRPCClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fileImports, fieldTypes, pkgVarClients map[string]string, idx *goGRPCStubIndex) []facts.Fact {
 	if idx.empty() {
 		return nil
 	}
@@ -179,6 +221,15 @@ func extractGRPCClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir, m
 			sel, ok := call.Fun.(*ast.SelectorExpr)
 			if !ok {
 				return true
+			}
+			// Package-level var receiver: `userClient.M()` where userClient is a
+			// package-scoped client var (resolveChain can't resolve it — it lives
+			// in no function body).
+			if recv, ok := sel.X.(*ast.Ident); ok {
+				if iface := pkgVarClients[recv.Name]; iface != "" {
+					emit(iface, sel.Sel.Name, call.Pos())
+					return true
+				}
 			}
 			// Resolve the receiver's type via the extractor's chain resolution:
 			// handles `client.M()` (local var), `s.field.M()` (struct field), and

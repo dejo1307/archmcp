@@ -64,7 +64,10 @@ var (
 	// A binding of a variable to a gRPC client construction:
 	//   const userService = new UserServiceClient(transport)
 	//   private readonly client: UserServiceClient = new UserServiceClient(t)
-	reNewClientBinding = regexp.MustCompile(`(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*new\s+(\w+)\s*\(`)
+	//   const c = new proto.users.v1.UserServiceClient(host)  // commonjs grpc-web
+	// The optional `[\w.]+\.` prefix captures the last segment of a namespaced
+	// constructor.
+	reNewClientBinding = regexp.MustCompile(`(?:const|let|var)\s+(\w+)\s*(?::\s*\w+)?\s*=\s*new\s+(?:[\w.]+\.)?(\w+)\s*\(`)
 	// A typed field/param bound to a client class (constructor injection):
 	//   constructor(private users: UserServiceClient)
 	reTypedClientBinding = regexp.MustCompile(`(\w+)\s*:\s*(\w+Client)\b`)
@@ -77,6 +80,10 @@ var (
 	// connect-es client binding: const c = createClient(UserService, transport)
 	// (also createPromiseClient, the connect-es v1 name), optionally generic.
 	reConnectClientBinding = regexp.MustCompile(`(?:const|let|var)\s+(\w+)\s*=\s*create(?:Promise)?Client\s*(?:<[^>]*>)?\s*\(\s*(\w+)`)
+	// A gRPC full-method path as a quoted string literal, as it appears in classic
+	// grpc-web generated clients (MethodDescriptor / rpcCall). The service segment
+	// requires a dot so it never matches an incidental REST path like "/a/b".
+	reProcedureLiteral = regexp.MustCompile(`['"]/([A-Za-z_][\w.]*\.[A-Za-z_]\w*)/([A-Za-z_]\w*)['"]`)
 )
 
 // looksLikeGRPCStub reports whether a file's bytes carry any generated-gRPC
@@ -85,7 +92,12 @@ func looksLikeGRPCStub(src []byte) bool {
 	return bytes.Contains(src, []byte("@generated from protobuf")) ||
 		bytes.Contains(src, []byte("new ServiceType(")) ||
 		bytes.Contains(src, []byte("@protobuf-ts")) ||
-		(bytes.Contains(src, []byte("typeName:")) && bytes.Contains(src, []byte("MethodKind")))
+		(bytes.Contains(src, []byte("typeName:")) && bytes.Contains(src, []byte("MethodKind"))) ||
+		// classic grpc-web generated client (protoc-gen-grpc-web)
+		bytes.Contains(src, []byte("MethodDescriptor(")) ||
+		bytes.Contains(src, []byte(".rpcCall(")) ||
+		bytes.Contains(src, []byte("_grpc_web_pb")) ||
+		bytes.Contains(src, []byte("grpc-web"))
 }
 
 // buildGRPCStubIndex scans the TS files for generated gRPC client stubs and
@@ -159,6 +171,10 @@ func serviceFQN(text string) string {
 	if m := reTypeName.FindStringSubmatch(text); m != nil {
 		return m[1]
 	}
+	// grpc-web: no metadata markers — derive the service from a method-path literal.
+	if m := reProcedureLiteral.FindStringSubmatch(text); m != nil {
+		return m[1]
+	}
 	return ""
 }
 
@@ -190,6 +206,12 @@ func protoMethods(text string) []string {
 	if len(out) == 0 {
 		for _, mm := range reMethodName.FindAllStringSubmatch(text, -1) {
 			add(mm[1])
+		}
+	}
+	// grpc-web: derive method names from the method-path literals.
+	if len(out) == 0 {
+		for _, mm := range reProcedureLiteral.FindAllStringSubmatch(text, -1) {
+			add(mm[2])
 		}
 	}
 	return out
