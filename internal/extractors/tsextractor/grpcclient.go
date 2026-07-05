@@ -279,17 +279,15 @@ func extractGRPCClientFacts(src []byte, relFile string, idx *grpcStubIndex) []fa
 	}
 
 	for _, m := range reReceiverCall.FindAllSubmatchIndex(src, -1) {
-		recv := string(src[m[2]:m[3]])
-		method := string(src[m[4]:m[5]])
-		if svc := bound[recv]; svc != nil {
-			emit(svc, method, m[0])
+		// The string() conversions are inlined into the map lookups so the
+		// compiler elides the []byte→string allocation (staticcheck SA6001).
+		if svc := bound[string(src[m[2]:m[3]])]; svc != nil {
+			emit(svc, string(src[m[4]:m[5]]), m[0])
 		}
 	}
 	for _, m := range reInlineCall.FindAllSubmatchIndex(src, -1) {
-		cls := string(src[m[2]:m[3]])
-		method := string(src[m[4]:m[5]])
-		if svc := idx.byClass[cls]; svc != nil {
-			emit(svc, method, m[0])
+		if svc := idx.byClass[string(src[m[2]:m[3]])]; svc != nil {
+			emit(svc, string(src[m[4]:m[5]]), m[0])
 		}
 	}
 	return out
