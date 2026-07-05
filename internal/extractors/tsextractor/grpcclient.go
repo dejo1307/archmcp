@@ -35,13 +35,18 @@ type grpcService struct {
 	methods map[string]string // tsMethod -> ProtoMethod
 }
 
-// grpcStubIndex is the repo-wide map of generated gRPC client stubs, keyed by
-// the client class name (e.g. "UserServiceClient").
+// grpcStubIndex is the repo-wide map of generated gRPC client stubs. byClass is
+// keyed by the client class name (e.g. "UserServiceClient", @protobuf-ts /
+// grpc-web); byService is keyed by the exported service-definition const name
+// (e.g. "UserService", connect-es) that a consumer passes to createClient(...).
 type grpcStubIndex struct {
-	byClass map[string]*grpcService
+	byClass   map[string]*grpcService
+	byService map[string]*grpcService
 }
 
-func (idx *grpcStubIndex) empty() bool { return idx == nil || len(idx.byClass) == 0 }
+func (idx *grpcStubIndex) empty() bool {
+	return idx == nil || (len(idx.byClass) == 0 && len(idx.byService) == 0)
+}
 
 var (
 	// @protobuf-ts / connect-es doc comment: "@generated from protobuf service users.v1.UserService"
@@ -67,6 +72,11 @@ var (
 	reReceiverCall = regexp.MustCompile(`(\w+)\.(\w+)\s*\(`)
 	// An inline call on a freshly-constructed client: new UserServiceClient(t).createUser(
 	reInlineCall = regexp.MustCompile(`new\s+(\w+)\s*\([^;]*?\)\s*\.\s*(\w+)\s*\(`)
+	// connect-es service definition const: export const UserService = ...
+	reServiceConst = regexp.MustCompile(`export const (\w+)\b`)
+	// connect-es client binding: const c = createClient(UserService, transport)
+	// (also createPromiseClient, the connect-es v1 name), optionally generic.
+	reConnectClientBinding = regexp.MustCompile(`(?:const|let|var)\s+(\w+)\s*=\s*create(?:Promise)?Client\s*(?:<[^>]*>)?\s*\(\s*(\w+)`)
 )
 
 // looksLikeGRPCStub reports whether a file's bytes carry any generated-gRPC
@@ -83,7 +93,7 @@ func looksLikeGRPCStub(src []byte) bool {
 // itself (a cheap marker check skips non-stub files) because the index must be
 // complete before the per-file extraction pass runs.
 func buildGRPCStubIndex(repoPath string, tsFiles []string) *grpcStubIndex {
-	idx := &grpcStubIndex{byClass: map[string]*grpcService{}}
+	idx := &grpcStubIndex{byClass: map[string]*grpcService{}, byService: map[string]*grpcService{}}
 
 	for _, rel := range tsFiles {
 		src, err := os.ReadFile(filepath.Join(repoPath, rel))
@@ -118,9 +128,19 @@ func buildGRPCStubIndex(repoPath string, tsFiles []string) *grpcStubIndex {
 		if conv := lastSegment(fq) + "Client"; idx.byClass[conv] == nil {
 			idx.byClass[conv] = svc
 		}
+
+		// connect-es: a consumer passes the exported service-definition const to
+		// createClient(...), so associate each `export const X` in this stub file
+		// with its service. Also register the conventional "<ServiceName>" name.
+		for _, m := range reServiceConst.FindAllStringSubmatch(text, -1) {
+			idx.byService[m[1]] = svc
+		}
+		if conv := lastSegment(fq); idx.byService[conv] == nil {
+			idx.byService[conv] = svc
+		}
 	}
 
-	if len(idx.byClass) == 0 {
+	if idx.empty() {
 		return nil
 	}
 	return idx
@@ -163,6 +183,15 @@ func protoMethods(text string) []string {
 			}
 		}
 	}
+	// connect-es: the service definition is a plain object literal
+	// (`methods: { getUser: { name: "GetUser", ... } }`) rather than a
+	// `new ServiceType(...)` — fall back to any `name: "X"` in the (already
+	// gated) stub file.
+	if len(out) == 0 {
+		for _, mm := range reMethodName.FindAllStringSubmatch(text, -1) {
+			add(mm[1])
+		}
+	}
 	return out
 }
 
@@ -184,6 +213,12 @@ func extractGRPCClientFacts(src []byte, relFile string, idx *grpcStubIndex) []fa
 	}
 	for _, m := range reTypedClientBinding.FindAllStringSubmatch(text, -1) {
 		if svc := idx.byClass[m[2]]; svc != nil {
+			bound[m[1]] = svc
+		}
+	}
+	// connect-es: const c = createClient(UserService, transport)
+	for _, m := range reConnectClientBinding.FindAllStringSubmatch(text, -1) {
+		if svc := idx.byService[m[2]]; svc != nil {
 			bound[m[1]] = svc
 		}
 	}

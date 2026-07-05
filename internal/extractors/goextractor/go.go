@@ -238,7 +238,7 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 	result = append(result, extractHTTPClientFacts(fset, f, relFile, pkgDir)...)
 
 	// Extract outbound gRPC-client calls
-	result = append(result, extractGRPCClientFacts(fset, f, relFile, pkgDir, grpcStubs)...)
+	result = append(result, extractGRPCClientFacts(fset, f, relFile, pkgDir, modulePath, fileImports, fieldTypes, grpcStubs)...)
 
 	// Extract storage patterns
 	result = append(result, extractStorage(fset, f, relFile, pkgDir)...)

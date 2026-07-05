@@ -172,3 +172,112 @@ func NewUserServiceClient(x any) any { return nil }
 		t.Fatalf("expected 0 grpc client routes without a stub, got %d", got)
 	}
 }
+
+// A gRPC client held in a struct field and called via s.field.Method(...) is
+// resolved through the extractor's field-type map.
+func TestGoGRPCClient_StructFieldInjection(t *testing.T) {
+	consumer := `package app
+
+import (
+	"context"
+
+	usersv1 "testmod/gen/users/v1"
+)
+
+type Repo struct {
+	users usersv1.UserServiceClient
+}
+
+func (r *Repo) Create(ctx context.Context) {
+	r.users.CreateUser(ctx, &usersv1.CreateUserRequest{})
+}
+`
+	ff := extractAll(t, map[string]string{
+		"gen/users/v1/users_grpc.pb.go": generatedGRPCStub,
+		"app/repo.go":                   consumer,
+	})
+	if _, ok := clientRouteByPath(ff, "/users.v1.UserService/CreateUser"); !ok {
+		t.Fatalf("struct-field-injected client call not detected: %+v", grpcClientRoutes(ff))
+	}
+	if _, ok := clientRouteByPath(ff, "/users.v1.UserService/GetUser"); ok {
+		t.Error("GetUser is uncalled but was emitted")
+	}
+}
+
+// A connect-go client: the wire path lives in the generated `…Procedure`
+// consts, and the concrete methods call CallUnary (no path literal in the body).
+const generatedConnectGoStub = `package usersv1connect
+
+import (
+	context "context"
+
+	connect "connectrpc.com/connect"
+)
+
+const (
+	UserServiceGetUserProcedure    = "/users.v1.UserService/GetUser"
+	UserServiceCreateUserProcedure = "/users.v1.UserService/CreateUser"
+)
+
+type GetUserRequest struct{}
+type GetUserResponse struct{}
+type CreateUserRequest struct{}
+type CreateUserResponse struct{}
+
+type UserServiceClient interface {
+	GetUser(context.Context, *connect.Request[GetUserRequest]) (*connect.Response[GetUserResponse], error)
+	CreateUser(context.Context, *connect.Request[CreateUserRequest]) (*connect.Response[CreateUserResponse], error)
+}
+
+func NewUserServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) UserServiceClient {
+	return &userServiceClient{
+		getUser:    connect.NewClient[GetUserRequest, GetUserResponse](httpClient, baseURL+UserServiceGetUserProcedure, opts...),
+		createUser: connect.NewClient[CreateUserRequest, CreateUserResponse](httpClient, baseURL+UserServiceCreateUserProcedure, opts...),
+	}
+}
+
+type userServiceClient struct {
+	getUser    *connect.Client[GetUserRequest, GetUserResponse]
+	createUser *connect.Client[CreateUserRequest, CreateUserResponse]
+}
+
+func (c *userServiceClient) GetUser(ctx context.Context, req *connect.Request[GetUserRequest]) (*connect.Response[GetUserResponse], error) {
+	return c.getUser.CallUnary(ctx, req)
+}
+
+func (c *userServiceClient) CreateUser(ctx context.Context, req *connect.Request[CreateUserRequest]) (*connect.Response[CreateUserResponse], error) {
+	return c.createUser.CallUnary(ctx, req)
+}
+`
+
+func TestGoGRPCClient_ConnectGo(t *testing.T) {
+	consumer := `package app
+
+import (
+	"context"
+	"net/http"
+
+	connect "connectrpc.com/connect"
+	usersv1connect "testmod/gen/users/v1/usersv1connect"
+)
+
+func run(ctx context.Context) {
+	client := usersv1connect.NewUserServiceClient(http.DefaultClient, "http://localhost:8080")
+	client.CreateUser(ctx, connect.NewRequest(&usersv1connect.CreateUserRequest{}))
+}
+`
+	ff := extractAll(t, map[string]string{
+		"gen/users/v1/usersv1connect/users.connect.go": generatedConnectGoStub,
+		"app/app.go": consumer,
+	})
+	r, ok := clientRouteByPath(ff, "/users.v1.UserService/CreateUser")
+	if !ok {
+		t.Fatalf("connect-go client call not detected: %+v", grpcClientRoutes(ff))
+	}
+	if r.Props["source"] != "go-grpc-client" {
+		t.Errorf("source = %v", r.Props["source"])
+	}
+	if _, ok := clientRouteByPath(ff, "/users.v1.UserService/GetUser"); ok {
+		t.Error("GetUser is uncalled but was emitted")
+	}
+}

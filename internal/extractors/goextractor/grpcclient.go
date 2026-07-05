@@ -3,9 +3,9 @@ package goextractor
 import (
 	"go/ast"
 	"go/token"
+	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -14,18 +14,20 @@ import (
 //
 // A Go consumer of a gRPC service writes:
 //
-//	client := usersv1.NewUserServiceClient(conn)
+//	client := usersv1.NewUserServiceClient(conn)  // grpc-go
+//	c := usersv1connect.NewUserServiceClient(h, u) // connect-go
 //	resp, _ := client.GetUser(ctx, req)
 //
 // The call site carries no wire path; the authoritative "/pkg.Service/Method"
-// lives only as a string literal inside the *generated* concrete client method
-// (`c.cc.Invoke(ctx, "/users.v1.UserService/GetUser", …)` for unary, or
-// `.NewStream(ctx, …, "/pkg.Service/Method", …)` for streaming). So detection is
-// two-phase, mirroring the TypeScript detector (tsextractor/grpcclient.go):
-//   1. buildGoGRPCStubIndex scans the generated concrete clients repo-wide for
-//      (client interface, method) → path.
-//   2. extractGRPCClientFacts binds `NewXxxClient(...)` variables per file and
-//      emits a client-role route for each call to a known method.
+// lives only as a string literal in the *generated* code — inside the concrete
+// grpc-go client's `.Invoke`/`.NewStream` call, or as a connect-go
+// `…Procedure` const. So detection is two-phase:
+//   1. buildGoGRPCStubIndex scans generated files repo-wide for those path
+//      literals, keyed by the client interface name (<Service>Client).
+//   2. extractGRPCClientFacts resolves each call receiver's type via the Go
+//      extractor's own chain resolution (local vars, struct fields, and
+//      receivers all handled) and emits a client-role route when the resolved
+//      client interface + method are in the index.
 
 // goGRPCStub is one resolved gRPC client: its methods mapped to wire paths.
 type goGRPCStub struct {
@@ -33,44 +35,50 @@ type goGRPCStub struct {
 }
 
 // goGRPCStubIndex maps an exported client interface name (e.g. "UserServiceClient",
-// the type a consumer's NewUserServiceClient(...) binding yields) to its methods.
+// the type a consumer's NewUserServiceClient(...) binding resolves to) to its
+// methods.
 type goGRPCStubIndex struct {
 	byClient map[string]*goGRPCStub
 }
 
 func (idx *goGRPCStubIndex) empty() bool { return idx == nil || len(idx.byClient) == 0 }
 
-// buildGoGRPCStubIndex scans every parsed Go file for generated concrete gRPC
-// client methods and returns the interface→method→path index. It reads only the
-// already-parsed ASTs (no file re-reads). Returns nil when nothing is found.
+// grpcProcedurePath matches a gRPC full-method path "/pkg.Service/Method": two
+// slash-delimited segments, the service segment allowing the proto package dots.
+var grpcProcedurePath = regexp.MustCompile(`^/[A-Za-z_][A-Za-z0-9_.]*/[A-Za-z_][A-Za-z0-9_]*$`)
+
+// buildGoGRPCStubIndex scans every parsed Go file that imports grpc/connect for
+// procedure-path string literals and returns the client-interface→method→path
+// index. It reads only the already-parsed ASTs. Returns nil when nothing found.
+//
+// Keying by "<serviceShort>Client" (derived from the path) is exactly what a
+// consumer's NewXxxClient(...) binding resolves to for both protoc-gen-go-grpc
+// and protoc-gen-connect-go, so the same index serves both libraries.
 func buildGoGRPCStubIndex(files []*ast.File) *goGRPCStubIndex {
 	idx := &goGRPCStubIndex{byClient: map[string]*goGRPCStub{}}
 
 	for _, f := range files {
-		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || fn.Body == nil {
-				continue
+		if !looksLikeGoGRPCGenerated(f) {
+			continue
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
 			}
-			recv := receiverTypeName(fn.Recv.List[0].Type)
-			// protoc-gen-go-grpc names the concrete client "<service>Client"
-			// (unexported); the exported interface a consumer binds to is its
-			// upper-cased form.
-			if !strings.HasSuffix(recv, "Client") || isExportedName(recv) {
-				continue
+			s, err := strconv.Unquote(lit.Value)
+			if err != nil || !grpcProcedurePath.MatchString(s) {
+				return true
 			}
-			path := invokePathInBody(fn.Body)
-			if path == "" {
-				continue
-			}
-			iface := upperFirst(recv)
+			iface := afterLastDot(grpcServiceOf(s)) + "Client"
 			stub := idx.byClient[iface]
 			if stub == nil {
 				stub = &goGRPCStub{methods: map[string]string{}}
 				idx.byClient[iface] = stub
 			}
-			stub.methods[fn.Name.Name] = path
-		}
+			stub.methods[grpcMethodOf(s)] = s
+			return true
+		})
 	}
 
 	if len(idx.byClient) == 0 {
@@ -79,60 +87,34 @@ func buildGoGRPCStubIndex(files []*ast.File) *goGRPCStubIndex {
 	return idx
 }
 
-// invokePathInBody returns the first "/…"-prefixed string literal passed to a
-// `.Invoke(...)` or `.NewStream(...)` call in a function body — the gRPC full
-// method path — or "" if none is present.
-func invokePathInBody(body *ast.BlockStmt) string {
-	var path string
-	ast.Inspect(body, func(n ast.Node) bool {
-		if path != "" {
-			return false
+// looksLikeGoGRPCGenerated reports whether a file imports the gRPC or connect
+// runtime, gating the procedure-literal scan to generated stubs (and consumer
+// files, which harmlessly contain no procedure literals) rather than arbitrary
+// sources with incidental "/a/b" strings.
+func looksLikeGoGRPCGenerated(f *ast.File) bool {
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
 		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
+		if strings.HasPrefix(p, "google.golang.org/grpc") ||
+			strings.Contains(p, "connectrpc.com/connect") ||
+			strings.Contains(p, "bufbuild/connect-go") {
 			return true
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || (sel.Sel.Name != "Invoke" && sel.Sel.Name != "NewStream") {
-			return true
-		}
-		for _, arg := range call.Args {
-			if s := stringLit(arg); strings.HasPrefix(s, "/") {
-				path = s
-				return false
-			}
-		}
-		return true
-	})
-	return path
+	}
+	return false
 }
 
 // extractGRPCClientFacts emits a client-role route for each gRPC client call site
-// in a file, resolving receivers against the repo-wide stub index.
-func extractGRPCClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir string, idx *goGRPCStubIndex) []facts.Fact {
+// in a file. It rebuilds the extractor's resolveCtx per function (exactly as
+// extractFunc does) so it can reuse resolveChain — which resolves a call
+// receiver whether it is a local variable, a struct field, or the method
+// receiver — then looks the resolved client interface up in the stub index.
+func extractGRPCClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fileImports, fieldTypes map[string]string, idx *goGRPCStubIndex) []facts.Fact {
 	if idx.empty() {
 		return nil
 	}
-
-	// Bind local variables assigned from a NewXxxClient(...) constructor to the
-	// client interface name (file-wide, like the TS detector's `bound` map).
-	bound := map[string]string{} // var name → client interface (e.g. "UserServiceClient")
-	ast.Inspect(f, func(n ast.Node) bool {
-		assign, ok := n.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		for i, rhs := range assign.Rhs {
-			iface := clientCtorInterface(rhs)
-			if iface == "" || i >= len(assign.Lhs) {
-				continue
-			}
-			if id, ok := assign.Lhs[i].(*ast.Ident); ok && idx.byClient[iface] != nil {
-				bound[id.Name] = iface
-			}
-		}
-		return true
-	})
 
 	var out []facts.Fact
 	seen := map[string]bool{}
@@ -170,30 +152,56 @@ func extractGRPCClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir st
 		})
 	}
 
-	ast.Inspect(f, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
+		ctx := resolveCtx{
+			pkgDir:     pkgDir,
+			modulePath: modulePath,
+			imports:    fileImports,
+			fieldTypes: fieldTypes,
 		}
-		// recv.Method(...) on a bound client variable.
-		if recv, ok := sel.X.(*ast.Ident); ok {
-			if iface := bound[recv.Name]; iface != "" {
-				emit(iface, sel.Sel.Name, call.Pos())
-			}
-			return true
-		}
-		// Inline: pkg.NewXxxClient(conn).Method(...) or NewXxxClient(conn).Method(...).
-		if inner, ok := sel.X.(*ast.CallExpr); ok {
-			if iface := clientCtorInterface(inner); iface != "" {
-				emit(iface, sel.Sel.Name, call.Pos())
+		if fn.Recv != nil && len(fn.Recv.List) > 0 {
+			ctx.recvType = receiverTypeName(fn.Recv.List[0].Type)
+			if names := fn.Recv.List[0].Names; len(names) > 0 {
+				ctx.recvVar = names[0].Name
 			}
 		}
-		return true
-	})
+		ctx.localTypes = collectLocalTypes(fn.Body, ctx)
+
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			// Resolve the receiver's type via the extractor's chain resolution:
+			// handles `client.M()` (local var), `s.field.M()` (struct field), and
+			// `recv.M()` on the method receiver.
+			if chain := flattenSelector(call.Fun); len(chain) >= 2 {
+				method := chain[len(chain)-1]
+				resolved := resolveChain(chain, ctx)
+				iface := afterLastDot(strings.TrimSuffix(resolved, "."+method))
+				if stub := idx.byClient[iface]; stub != nil && stub.methods[method] != "" {
+					emit(iface, method, call.Pos())
+					return true
+				}
+			}
+			// Inline construction: pkg.NewXxxClient(conn).Method(...) — flattenSelector
+			// returns nil for a call-on-call, so handle it directly.
+			if inner, ok := sel.X.(*ast.CallExpr); ok {
+				if iface := clientCtorInterface(inner); iface != "" {
+					emit(iface, sel.Sel.Name, call.Pos())
+				}
+			}
+			return true
+		})
+	}
 	return out
 }
 
@@ -233,18 +241,6 @@ func receiverTypeName(expr ast.Expr) string {
 	return ""
 }
 
-func stringLit(expr ast.Expr) string {
-	lit, ok := expr.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
-		return ""
-	}
-	s, err := strconv.Unquote(lit.Value)
-	if err != nil {
-		return ""
-	}
-	return s
-}
-
 // grpcServiceOf returns "users.v1.UserService" from "/users.v1.UserService/GetUser".
 func grpcServiceOf(path string) string {
 	p := strings.TrimPrefix(path, "/")
@@ -262,18 +258,12 @@ func grpcMethodOf(path string) string {
 	return path
 }
 
-func upperFirst(s string) string {
-	if s == "" {
-		return s
+// afterLastDot returns the segment after the final '.', or the whole string if
+// none — "users.v1.UserService" → "UserService", "gen/users/v1.UserServiceClient"
+// → "UserServiceClient".
+func afterLastDot(s string) string {
+	if i := strings.LastIndex(s, "."); i >= 0 {
+		return s[i+1:]
 	}
-	r := []rune(s)
-	r[0] = unicode.ToUpper(r[0])
-	return string(r)
-}
-
-func isExportedName(s string) bool {
-	if s == "" {
-		return false
-	}
-	return unicode.IsUpper([]rune(s)[0])
+	return s
 }

@@ -106,6 +106,7 @@ var versionCoverage = map[int][]string{
 	72: {"TestWrapperEndpoint_PathAndVerbFromCallSite", "TestRoutes_NestedSingularResource"},// Swift request-wrapper + Ruby nested resources
 	73: {"TestExtract_ServerRoutesPerRPC", "TestGRPCClient_OnlyCalledMethodsEmitted"},       // gRPC proto server routes + TS gRPC-web client routes
 	74: {"TestGoGRPCClient_EmitsClientRoutes"},                                              // Go gRPC client call-site routes
+	75: {"TestConnectES_CreateClient", "TestGoGRPCClient_ConnectGo"},                        // connect-es + connect-go + struct-field-injected clients
 }
 
 func TestCacheVersionCoverage(t *testing.T) {

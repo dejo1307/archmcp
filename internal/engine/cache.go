@@ -152,7 +152,11 @@ import (
 // resolving the wire path from the generated concrete client's Invoke/NewStream
 // literal. Documentation-only bump — goextractor is not a FileOwner, so its
 // facts are never cached; recorded for changelog continuity.
-const cacheVersion = "v74"
+// v75: broadened gRPC client detection — Go now resolves struct-field-injected
+// clients (via the field-type map) and connect-go (procedure-const paths); the
+// TypeScript extractor detects connect-es createClient/createPromiseClient(...)
+// call sites. Bump required because the TS extractor is a FileOwner (cached).
+const cacheVersion = "v75"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
