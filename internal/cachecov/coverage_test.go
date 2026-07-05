@@ -21,7 +21,6 @@ package cachecov
 // tree-sitter), so it builds and runs in milliseconds.
 
 import (
-	"bufio"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -181,16 +180,14 @@ var (
 // version integers documented by `// vN:` lines in cache.go.
 func parseCacheVersions(t *testing.T, path string) (current int, changelog map[int]bool) {
 	t.Helper()
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("open cache.go: %v", err)
+		t.Fatalf("read cache.go: %v", err)
 	}
-	defer f.Close()
 
 	changelog = map[int]bool{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
 		if m := changelogLine.FindStringSubmatch(line); m != nil {
 			n, _ := strconv.Atoi(m[1])
 			changelog[n] = true
@@ -199,9 +196,6 @@ func parseCacheVersions(t *testing.T, path string) (current int, changelog map[i
 		if m := cacheVersionConst.FindStringSubmatch(line); m != nil {
 			current, _ = strconv.Atoi(m[1])
 		}
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scan cache.go: %v", err)
 	}
 	if current == 0 {
 		t.Fatal("could not find the cacheVersion constant in cache.go")
