@@ -108,6 +108,7 @@ var versionCoverage = map[int][]string{
 	74: {"TestGoGRPCClient_EmitsClientRoutes"},                                              // Go gRPC client call-site routes
 	75: {"TestConnectES_CreateClient", "TestGoGRPCClient_ConnectGo"},                        // connect-es + connect-go + struct-field-injected clients
 	76: {"TestGRPCWebClient", "TestGoGRPCClient_PackageVar"},                                // grpc-web clients + Go package-level-var clients
+	77: {"TestDetect_LooseRubyFileNoGemfile", "TestDetect_ExtensionlessRubyShebang"},        // Ruby Gemfile-less detection + extensionless shebang indexing
 }
 
 func TestCacheVersionCoverage(t *testing.T) {
