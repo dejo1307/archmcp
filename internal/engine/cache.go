@@ -159,7 +159,10 @@ import (
 // v76: classic grpc-web clients recognized (TS extractor derives service+methods
 // from MethodDescriptor/rpcCall path literals); Go extractor resolves gRPC
 // clients held in package-level vars. Bump required for the TS (FileOwner) change.
-const cacheVersion = "v76"
+// v77: Ruby extractor detects Gemfile-less repos via a loose .rb/shebang scan and
+// indexes extensionless Ruby executables. Bump so snapshots that cached an empty
+// (undetected) Ruby result re-extract instead of serving stale zero facts.
+const cacheVersion = "v77"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -1766,3 +1766,123 @@ end
 		}
 	}
 }
+
+// --- Detection: Gemfile-less repos and extensionless Ruby executables ---
+
+// writeFile creates a file (and parent dirs) under root with the given content.
+func writeFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	abs := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", abs, err)
+	}
+	if err := os.WriteFile(abs, []byte(content), 0o755); err != nil {
+		t.Fatalf("write %s: %v", abs, err)
+	}
+}
+
+func TestDetect_Gemfile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Gemfile", "source 'https://rubygems.org'\n")
+	ok, err := New().Detect(dir)
+	if err != nil || !ok {
+		t.Fatalf("Detect with Gemfile = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+func TestDetect_LooseRubyFileNoGemfile(t *testing.T) {
+	dir := t.TempDir()
+	// No Gemfile; a plain .rb source nested under scripts/lib (depth 2).
+	writeFile(t, dir, "scripts/lib/installer.rb", "class Installer\nend\n")
+	ok, err := New().Detect(dir)
+	if err != nil || !ok {
+		t.Fatalf("Detect with loose .rb = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+func TestDetect_ExtensionlessRubyShebang(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "scripts/new-intent", "#!/usr/bin/env ruby\nputs 'hi'\n")
+	ok, err := New().Detect(dir)
+	if err != nil || !ok {
+		t.Fatalf("Detect with extensionless ruby executable = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+func TestDetect_NoRubyOnlyBashShebang(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "scripts/deploy", "#!/bin/bash\necho hi\n")
+	writeFile(t, dir, "README.md", "# docs\n")
+	ok, err := New().Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect error: %v", err)
+	}
+	if ok {
+		t.Fatalf("Detect with only a bash executable = true, want false")
+	}
+}
+
+func TestDetect_LooseRubyBeyondMaxDepth(t *testing.T) {
+	dir := t.TempDir()
+	// depth 4 (a/b/c/d) is beyond the maxDepth-3 scan → not detected.
+	writeFile(t, dir, "a/b/c/d/deep.rb", "class Deep\nend\n")
+	ok, err := New().Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect error: %v", err)
+	}
+	if ok {
+		t.Fatalf("Detect with .rb beyond maxDepth = true, want false")
+	}
+}
+
+func TestIsRubySourceFile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "scripts/foo.rb", "class Foo\nend\n")
+	writeFile(t, dir, "scripts/new-intent", "#!/usr/bin/env ruby\nputs 1\n")
+	writeFile(t, dir, "scripts/deploy", "#!/bin/bash\necho hi\n")
+	writeFile(t, dir, "bin/plastic.js", "console.log('shim')\n")
+
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		{"scripts/foo.rb", true},        // extension match
+		{"scripts/new-intent", true},    // extensionless ruby shebang
+		{"scripts/deploy", false},       // extensionless bash shebang
+		{"bin/plastic.js", false},       // non-ruby extension
+		{"scripts/missing", false},      // extensionless, unreadable → false
+	}
+	for _, c := range cases {
+		if got := isRubySourceFile(dir, c.rel); got != c.want {
+			t.Errorf("isRubySourceFile(%q) = %v, want %v", c.rel, got, c.want)
+		}
+	}
+}
+
+func TestHasRubyShebang(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "ruby_env", "#!/usr/bin/env ruby\n")
+	writeFile(t, dir, "ruby_abs", "#!/usr/bin/ruby -w\n")
+	writeFile(t, dir, "bash", "#!/bin/bash\n")
+	writeFile(t, dir, "node", "#!/usr/bin/env node\n")
+	writeFile(t, dir, "noshebang", "puts 'hi'\n")
+
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"ruby_env", true},
+		{"ruby_abs", true},
+		{"bash", false},
+		{"node", false},
+		{"noshebang", false},
+	}
+	for _, c := range cases {
+		if got := hasRubyShebang(filepath.Join(dir, c.name)); got != c.want {
+			t.Errorf("hasRubyShebang(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if hasRubyShebang(filepath.Join(dir, "does-not-exist")) {
+		t.Errorf("hasRubyShebang(missing) = true, want false")
+	}
+}

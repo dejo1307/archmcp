@@ -1,7 +1,9 @@
 package rubyextractor
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -24,12 +26,85 @@ func (e *RubyExtractor) Name() string {
 	return "ruby"
 }
 
-// Detect returns true if the repository looks like a Ruby project (has a Gemfile).
+// Detect returns true if the repository looks like a Ruby project. A root
+// Gemfile is the fast path; failing that (many Ruby CLIs/plugins ship no
+// Gemfile), it falls back to a bounded scan for loose Ruby files — .rb/.rake
+// sources or extensionless executables with a Ruby shebang — mirroring the PHP
+// extractor's containsPHPFile fallback so Gemfile-less repos still get indexed.
 func (e *RubyExtractor) Detect(repoPath string) (bool, error) {
 	if _, err := os.Stat(filepath.Join(repoPath, "Gemfile")); err == nil {
 		return true, nil
 	}
-	return false, nil
+	return containsRubyFile(repoPath, 3), nil
+}
+
+// containsRubyFile reports whether a Ruby file exists within maxDepth directory
+// levels of root (0 = root only). Vendored and VCS directories are skipped.
+// A file counts as Ruby if isRubyFile matches its name (.rb/.rake/Rakefile) or,
+// for an extensionless file, it carries a Ruby shebang.
+func containsRubyFile(root string, maxDepth int) bool {
+	var found bool
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		if found || depth > maxDepth {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, ent := range entries {
+			if found {
+				return
+			}
+			name := ent.Name()
+			if ent.IsDir() {
+				if name == "vendor" || name == "node_modules" || strings.HasPrefix(name, ".") {
+					continue
+				}
+				walk(filepath.Join(dir, name), depth+1)
+				continue
+			}
+			if isRubyFile(name) || (filepath.Ext(name) == "" && hasRubyShebang(filepath.Join(dir, name))) {
+				found = true
+				return
+			}
+		}
+	}
+	walk(root, 0)
+	return found
+}
+
+// hasRubyShebang reports whether the file at absPath begins with a Ruby shebang
+// (e.g. "#!/usr/bin/env ruby"). Only the first line is read, so this is cheap
+// enough to run over extensionless files during discovery. Non-Ruby shebangs
+// (bash, node, …) and binary files return false.
+func hasRubyShebang(absPath string) bool {
+	f, err := os.Open(absPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	r := bufio.NewReader(io.LimitReader(f, 256))
+	line, err := r.ReadString('\n')
+	if err != nil && line == "" {
+		return false
+	}
+	line = strings.TrimSpace(line)
+	return strings.HasPrefix(line, "#!") && strings.Contains(line, "ruby")
+}
+
+// isRubySourceFile reports whether relFile should be parsed as Ruby: any file
+// isRubyFile matches by extension (no I/O), or an extensionless file carrying a
+// Ruby shebang. repoPath is needed to resolve the shebang read.
+func isRubySourceFile(repoPath, relFile string) bool {
+	if isRubyFile(relFile) {
+		return true
+	}
+	if filepath.Ext(relFile) == "" {
+		return hasRubyShebang(filepath.Join(repoPath, relFile))
+	}
+	return false
 }
 
 // Extract parses Ruby files and emits architectural facts.
@@ -46,7 +121,7 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 	// extractor, so they are excluded here.
 	var rbFiles []string
 	for _, relFile := range files {
-		if !isRubyFile(relFile) {
+		if !isRubySourceFile(repoPath, relFile) {
 			continue
 		}
 		if isRails && isRouteFile(relFile) {
@@ -144,7 +219,7 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 func (e *RubyExtractor) ExtractTestRefs(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
 	var rbFiles []string
 	for _, relFile := range files {
-		if isRubyFile(relFile) {
+		if isRubySourceFile(repoPath, relFile) {
 			rbFiles = append(rbFiles, relFile)
 		}
 	}
@@ -189,7 +264,12 @@ func isRubyFile(path string) bool {
 	return filepath.Base(path) == "Rakefile"
 }
 
-// OwnsFile implements plugin.FileOwner for incremental caching.
+// OwnsFile implements plugin.FileOwner for incremental caching. It is
+// extension-only (no repoPath is available to sniff shebangs), so extensionless
+// Ruby executables are not tracked for incremental cache invalidation; edits to
+// them won't invalidate the cache key on their own. This is acceptable — such
+// files are rare and the cacheVersion bump forces a full re-extract when the
+// extractor's behavior changes.
 func (e *RubyExtractor) OwnsFile(relFile string) bool { return isRubyFile(relFile) }
 
 // isPublicAPI checks if a file is within a packwerk package's app/public/ directory.
