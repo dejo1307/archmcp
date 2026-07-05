@@ -57,6 +57,7 @@ var fixtures = []fixture{
 	{name: "openapi_sample", subRepos: []string{"."}},
 	{name: "multirepo", subRepos: []string{"repoA", "repoB"}},
 	{name: "php_multirepo", subRepos: []string{"provider", "consumer"}},
+	{name: "go_grpc_multirepo", subRepos: []string{"server", "client"}},
 }
 
 func TestGolden(t *testing.T) {

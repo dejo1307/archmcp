@@ -128,6 +128,15 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 	}
 
+	// Pass 2b: build the gRPC client stub index (generated concrete clients →
+	// method wire paths) so consumer call sites in any package resolve to the
+	// "/pkg.Service/Method" they invoke.
+	var allParsed []*ast.File
+	for _, pp := range parsedPkgs {
+		allParsed = append(allParsed, pp.parsedFiles...)
+	}
+	grpcStubs := buildGoGRPCStubIndex(allParsed)
+
 	// Pass 3: extract facts per package using the global field types.
 	for pkgDir, pp := range parsedPkgs {
 		select {
@@ -138,14 +147,14 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		if pp.pkgName == "" {
 			continue
 		}
-		pkgFacts := e.extractPackage(fset, pkgDir, pp, modulePath, globalFieldTypes, pkgNames)
+		pkgFacts := e.extractPackage(fset, pkgDir, pp, modulePath, globalFieldTypes, pkgNames, grpcStubs)
 		allFacts = append(allFacts, pkgFacts...)
 	}
 
 	return allFacts, nil
 }
 
-func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *parsedPkg, modulePath string, fieldTypes map[string]string, pkgNames map[string]string) []facts.Fact {
+func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *parsedPkg, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex) []facts.Fact {
 	var result []facts.Fact
 
 	for _, relFile := range pp.relFiles {
@@ -153,7 +162,7 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *par
 		if !ok {
 			continue
 		}
-		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames)...)
+		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames, grpcStubs)...)
 	}
 
 	moduleFact := facts.Fact{
@@ -175,7 +184,7 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *par
 	return result
 }
 
-func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string) []facts.Fact {
+func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex) []facts.Fact {
 	var result []facts.Fact
 
 	// Build per-file import alias map for call resolution.
@@ -227,6 +236,9 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 
 	// Extract outbound HTTP-client calls
 	result = append(result, extractHTTPClientFacts(fset, f, relFile, pkgDir)...)
+
+	// Extract outbound gRPC-client calls
+	result = append(result, extractGRPCClientFacts(fset, f, relFile, pkgDir, grpcStubs)...)
 
 	// Extract storage patterns
 	result = append(result, extractStorage(fset, f, relFile, pkgDir)...)
