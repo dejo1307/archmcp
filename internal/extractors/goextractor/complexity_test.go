@@ -216,3 +216,30 @@ func tick()               {}
 		t.Errorf("infinite for{} scaling_loop_depth = %d, want 0", got)
 	}
 }
+
+func TestExtract_CallsInScalingLoop_BoundedExcluded(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"pkg/proc.go": `package pkg
+
+func Process(items []int) {
+	for _, c := range []string{"a", "b"} {
+		setup(c)
+	}
+	for _, x := range items {
+		consume(x)
+	}
+}
+
+func setup(c string) {}
+func consume(x int)   {}
+`,
+	})
+	f, _ := findFact(ff, "pkg.Process")
+	scaling := strSliceProp(f, "calls_in_scaling_loop")
+	if !containsStr(scaling, "pkg.consume") {
+		t.Errorf("calls_in_scaling_loop = %v, want consume (range over slice arg)", scaling)
+	}
+	if containsStr(scaling, "pkg.setup") {
+		t.Errorf("calls_in_scaling_loop = %v, must NOT contain setup (range over composite literal)", scaling)
+	}
+}

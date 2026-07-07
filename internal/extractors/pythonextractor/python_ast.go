@@ -96,14 +96,16 @@ type pyWalker struct {
 // pyBodyMetrics accumulates per-function complexity signals during the single
 // walkForCalls body traversal — mirrors the Go extractor's bodyMetrics.
 type pyBodyMetrics struct {
-	loopDepth        int             // max loop nesting depth
-	scalingLoopDepth int             // max nesting counting only unbounded (input-scaling) loops
-	loopCount        int             // number of loop/comprehension constructs
-	decisions        int             // decision points (cyclomatic = 1 + decisions)
-	callsInLoop      []string        // distinct call targets invoked at loop depth >= 1
-	inLoopSeen       map[string]bool // dedup set for callsInLoop
-	recursive        bool            // body directly calls the enclosing function
-	ioDirect         bool            // body directly invokes a network/file/DB I/O primitive
+	loopDepth          int             // max loop nesting depth
+	scalingLoopDepth   int             // max nesting counting only unbounded (input-scaling) loops
+	loopCount          int             // number of loop/comprehension constructs
+	decisions          int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop        []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen         map[string]bool // dedup set for callsInLoop
+	callsInScalingLoop []string        // distinct call targets invoked at scaling (unbounded) depth >= 1
+	inScalingSeen      map[string]bool // dedup set for callsInScalingLoop
+	recursive          bool            // body directly calls the enclosing function
+	ioDirect           bool            // body directly invokes a network/file/DB I/O primitive
 }
 
 // recordCallMetrics notes a resolved call target against the current function's
@@ -122,6 +124,18 @@ func (w *pyWalker) recordCallMetrics(target string) {
 		if !w.metrics.inLoopSeen[target] {
 			w.metrics.inLoopSeen[target] = true
 			w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
+		}
+	}
+	// A call inside an input-scaling loop is an N+1 candidate; a call only ever in a
+	// bounded loop (literal/constant/range(<const>)/while(true)) runs a fixed number of
+	// times and is not.
+	if w.scalingDepth > 0 {
+		if w.metrics.inScalingSeen == nil {
+			w.metrics.inScalingSeen = make(map[string]bool)
+		}
+		if !w.metrics.inScalingSeen[target] {
+			w.metrics.inScalingSeen[target] = true
+			w.metrics.callsInScalingLoop = append(w.metrics.callsInScalingLoop, target)
 		}
 	}
 }
@@ -786,6 +800,9 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		}
 		if len(w.metrics.callsInLoop) > 0 {
 			props["calls_in_loop"] = w.metrics.callsInLoop
+		}
+		if len(w.metrics.callsInScalingLoop) > 0 {
+			props["calls_in_scaling_loop"] = w.metrics.callsInScalingLoop
 		}
 		if w.metrics.recursive {
 			props["recursive_self"] = true

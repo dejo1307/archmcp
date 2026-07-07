@@ -326,6 +326,9 @@ func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile
 		if len(m.callsInLoop) > 0 {
 			symbolFact.Props["calls_in_loop"] = m.callsInLoop
 		}
+		if len(m.callsInScalingLoop) > 0 {
+			symbolFact.Props["calls_in_scaling_loop"] = m.callsInScalingLoop
+		}
 		if m.recursiveSelf {
 			symbolFact.Props["recursive_self"] = true
 		}
@@ -419,13 +422,14 @@ type resolveCtx struct {
 // bodyMetrics holds the call list and the per-function complexity signals
 // derived from a single walk of a function body.
 type bodyMetrics struct {
-	calls            []string // resolved call targets, deduped, in source order
-	callsInLoop      []string // subset of calls invoked at loop nesting depth >= 1
-	loopDepth        int      // max nesting depth of for/range loops
-	scalingLoopDepth int      // max nesting counting only unbounded (input-scaling) loops
-	loopCount        int      // total number of for/range loops
-	cyclomatic       int      // McCabe complexity (1 + decision points)
-	recursiveSelf    bool     // body directly calls the enclosing function
+	calls              []string // resolved call targets, deduped, in source order
+	callsInLoop        []string // subset of calls invoked at loop nesting depth >= 1
+	callsInScalingLoop []string // subset of calls invoked at scaling (unbounded) nesting depth >= 1
+	loopDepth          int      // max nesting depth of for/range loops
+	scalingLoopDepth   int      // max nesting counting only unbounded (input-scaling) loops
+	loopCount          int      // total number of for/range loops
+	cyclomatic         int      // McCabe complexity (1 + decision points)
+	recursiveSelf      bool     // body directly calls the enclosing function
 }
 
 // analyzeBody walks a function body once and extracts both the call edges
@@ -442,6 +446,7 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 	decisions := 0
 	seen := make(map[string]bool)
 	inLoopSeen := make(map[string]bool)
+	inScalingSeen := make(map[string]bool)
 	var loopEnds []token.Pos // end positions of enclosing loops
 	// scalingEnds tracks only the enclosing loops that scale with input (bounded loops —
 	// `for {}` event loops and `range` over a composite literal — are excluded), so
@@ -516,6 +521,12 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 			if len(loopEnds) > 0 && !inLoopSeen[resolved] {
 				inLoopSeen[resolved] = true
 				m.callsInLoop = append(m.callsInLoop, resolved)
+			}
+			// A call inside an input-scaling loop is an N+1 candidate; a call only ever in
+			// a bounded loop (`for {}` / range over a composite literal) is not.
+			if len(scalingEnds) > 0 && !inScalingSeen[resolved] {
+				inScalingSeen[resolved] = true
+				m.callsInScalingLoop = append(m.callsInScalingLoop, resolved)
 			}
 			if resolved == selfName {
 				m.recursiveSelf = true

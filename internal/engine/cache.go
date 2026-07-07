@@ -202,7 +202,12 @@ import (
 // extractors; the Python extractor also now emits io_direct/performs_io (transitive
 // DB/network/file I/O). Consumed by the enterprise performance analyzer to deflate the
 // O(n^k) tail and tighten call-in-loop precision; bump so cached snapshots re-extract.
-const cacheVersion = "v83"
+// v84: complexity signals gain calls_in_scaling_loop — the subset of calls_in_loop made
+// inside an input-scaling (unbounded) loop — emitted by the Python, TypeScript, and Go
+// extractors. Lets the performance analyzer treat a call in a bounded loop (literal /
+// range(<const>) / while(true)) as a fixed count, not an N+1; bump so cached snapshots
+// re-extract with the new signal.
+const cacheVersion = "v84"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

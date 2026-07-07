@@ -1661,14 +1661,16 @@ func resolveJSXTag(nameNode *sitter.Node, src []byte, dir string, internal, name
 // tsBodyMetrics accumulates per-function complexity signals during the single
 // body walk — mirrors the Go/Python/Ruby/Swift/Kotlin extractors.
 type tsBodyMetrics struct {
-	loopDepth        int             // max loop nesting depth
-	scalingLoopDepth int             // max nesting counting only unbounded (input-scaling) loops
-	loopCount        int             // number of loop constructs (syntactic + array-method callbacks)
-	decisions        int             // decision points (cyclomatic = 1 + decisions)
-	callsInLoop      []string        // distinct call targets invoked at loop depth >= 1
-	inLoopSeen       map[string]bool // dedup set for callsInLoop
-	recursive        bool            // body directly calls the enclosing function
-	ioDirect         bool            // body directly invokes a network/file I/O primitive
+	loopDepth          int             // max loop nesting depth
+	scalingLoopDepth   int             // max nesting counting only unbounded (input-scaling) loops
+	loopCount          int             // number of loop constructs (syntactic + array-method callbacks)
+	decisions          int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop        []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen         map[string]bool // dedup set for callsInLoop
+	callsInScalingLoop []string        // distinct call targets invoked at scaling (unbounded) depth >= 1
+	inScalingSeen      map[string]bool // dedup set for callsInScalingLoop
+	recursive          bool            // body directly calls the enclosing function
+	ioDirect           bool            // body directly invokes a network/file I/O primitive
 }
 
 // tsIterators are array/collection methods whose callback runs once per element —
@@ -1952,6 +1954,17 @@ func (w *tsBodyWalker) recordInLoop(target string) {
 		w.metrics.inLoopSeen[target] = true
 		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
 	}
+	// A call inside an input-scaling loop is an N+1 candidate; a call only ever in a
+	// bounded loop (literal-receiver iterator / while(true)) runs a fixed number of times.
+	if w.scalingDepth > 0 {
+		if w.metrics.inScalingSeen == nil {
+			w.metrics.inScalingSeen = make(map[string]bool)
+		}
+		if !w.metrics.inScalingSeen[target] {
+			w.metrics.inScalingSeen[target] = true
+			w.metrics.callsInScalingLoop = append(w.metrics.callsInScalingLoop, target)
+		}
+	}
 }
 
 func (w *tsBodyWalker) walk(n *sitter.Node) {
@@ -2167,6 +2180,9 @@ func applyTSMetrics(props map[string]any, m *tsBodyMetrics) {
 	}
 	if len(m.callsInLoop) > 0 {
 		props["calls_in_loop"] = m.callsInLoop
+	}
+	if len(m.callsInScalingLoop) > 0 {
+		props["calls_in_scaling_loop"] = m.callsInScalingLoop
 	}
 	if m.recursive {
 		props["recursive_self"] = true

@@ -307,3 +307,31 @@ func TestPyComputePerformsIO_Transitive(t *testing.T) {
 		t.Errorf("pure must not be flagged performs_io")
 	}
 }
+
+func TestPyComplexity_CallsInScalingLoop_BoundedExcluded(t *testing.T) {
+	src := `
+def process(items):
+    for c in (A, B):
+        setup(c)
+    for x in items:
+        consume(x)
+
+def setup(c):
+    pass
+
+def consume(x):
+    pass
+`
+	f := byName(astExtract(t, "svc.py", src, false))["svc.process"]
+	inLoop := cxStrSlice(f, "calls_in_loop")
+	if !cxContains(inLoop, "svc.setup") || !cxContains(inLoop, "svc.consume") {
+		t.Errorf("calls_in_loop = %v, want both setup and consume", inLoop)
+	}
+	scaling := cxStrSlice(f, "calls_in_scaling_loop")
+	if !cxContains(scaling, "svc.consume") {
+		t.Errorf("calls_in_scaling_loop = %v, want consume (unbounded loop)", scaling)
+	}
+	if cxContains(scaling, "svc.setup") {
+		t.Errorf("calls_in_scaling_loop = %v, must NOT contain setup (bounded literal-tuple loop)", scaling)
+	}
+}

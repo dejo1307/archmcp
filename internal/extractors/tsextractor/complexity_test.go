@@ -170,3 +170,18 @@ func TestTsComplexity_WhileLoop(t *testing.T) {
 		t.Errorf("calls_in_loop = %v, want to contain src.step", cil)
 	}
 }
+
+func TestTsComplexity_CallsInScalingLoop_BoundedExcluded(t *testing.T) {
+	f := tsExtractFunc(t, "export function r() {\n  for (const c of [1, 2]) { setup(c) }\n  for (const x of items) { consume(x) }\n}", "src.r")
+	inLoop := tsStrSlice(f, "calls_in_loop")
+	if !tsContains(inLoop, "src.setup") || !tsContains(inLoop, "src.consume") {
+		t.Errorf("calls_in_loop = %v, want both setup and consume", inLoop)
+	}
+	scaling := tsStrSlice(f, "calls_in_scaling_loop")
+	if !tsContains(scaling, "src.consume") {
+		t.Errorf("calls_in_scaling_loop = %v, want consume (unbounded for..of)", scaling)
+	}
+	if tsContains(scaling, "src.setup") {
+		t.Errorf("calls_in_scaling_loop = %v, must NOT contain setup (for..of over array literal)", scaling)
+	}
+}
