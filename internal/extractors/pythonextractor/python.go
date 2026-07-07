@@ -129,6 +129,16 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 	// Python imports never match module Names downstream.
 	resolveImports(allFacts, modules)
 
+	// Resolve the dotted call/instantiate targets emitted for absolute imports into
+	// canonical slash symbol names (dropping stdlib/third-party edges) now that the
+	// full file set is known. Without this, functions reached via absolute imports
+	// have no incoming edge and read as dead code.
+	fileModules := make(map[string]bool, len(pyFiles))
+	for _, f := range pyFiles {
+		fileModules[strings.TrimSuffix(f, ".py")] = true
+	}
+	resolveCallTargets(allFacts, fileModules)
+
 	for dir := range modules {
 		allFacts = append(allFacts, facts.Fact{
 			Kind: facts.KindModule,
@@ -219,6 +229,11 @@ func applyDecoratorProps(props map[string]any, decoratorName string) {
 		props["abstract"] = true
 	case "task":
 		props["task"] = true
+	case "command", "group":
+		// click/Typer CLI command or group (@cli.command, @app.group). The function
+		// is registered with and dispatched by the CLI framework, never called by
+		// name, so the dead-code detector treats it as an entry point.
+		props["cli_command"] = true
 	case "shared_task":
 		// shared_task is Celery-specific; bare @task is used by Airflow, Prefect, Luigi, etc.
 		props["task"] = true

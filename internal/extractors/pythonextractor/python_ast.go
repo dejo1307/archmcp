@@ -79,6 +79,12 @@ type pyWalker struct {
 	metrics   *pyBodyMetrics
 	loopDepth int
 	selfName  string
+
+	// fileRefs accumulates RelCalls edges made in file-scope (module-level) code
+	// and by decorators — references with no enclosing symbol owner. They are
+	// emitted as a single KindFileRef fact per file, which the dead-code detector
+	// folds in so top-level/decorator use marks a production symbol used.
+	fileRefs []facts.Relation
 }
 
 // pyBodyMetrics accumulates per-function complexity signals during the single
@@ -150,7 +156,105 @@ func (w *pyWalker) currentMethods() map[string]bool {
 // walkModule iterates the top-level statements of a module node.
 func (w *pyWalker) walkModule(root *sitter.Node) {
 	for i := uint(0); i < uint(root.ChildCount()); i++ {
-		w.walkStatement(root.Child(i))
+		child := root.Child(i)
+		w.walkStatement(child)
+		// Collect module-scope call edges (e.g. `app = cached_app(...)`), which have
+		// no enclosing symbol owner and are otherwise invisible to the dead-code
+		// detector. Nested class/function bodies are skipped — they own their calls.
+		w.walkTopLevelCalls(child)
+	}
+	if len(w.fileRefs) > 0 {
+		w.out = append(w.out, facts.Fact{
+			Kind:      facts.KindFileRef,
+			Name:      w.relFile,
+			File:      w.relFile,
+			Line:      1,
+			Props:     map[string]any{"language": "python"},
+			Relations: w.fileRefs,
+		})
+	}
+}
+
+// walkTopLevelCalls scans a module-level statement subtree for call sites,
+// recording each as a file-scope RelCalls edge. It descends through compound
+// statements (if/for/with/try blocks) but stops at nested class/function
+// definitions, whose calls are attributed to their own symbol owner, and at
+// import statements, which are not calls.
+func (w *pyWalker) walkTopLevelCalls(node *sitter.Node) {
+	if node == nil {
+		return
+	}
+	switch node.Kind() {
+	case "class_definition", "function_definition", "decorated_definition",
+		"import_statement", "import_from_statement":
+		return
+	case "call":
+		if fn := node.ChildByFieldName("function"); fn != nil {
+			w.emitFileRefCall(fn)
+		}
+		if args := node.ChildByFieldName("arguments"); args != nil {
+			w.fileRefs = append(w.fileRefs, w.argRefRelations(args)...)
+		}
+	}
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		w.walkTopLevelCalls(node.Child(i))
+	}
+}
+
+// emitFileRefCall resolves a module-level callee node and records a file-scope
+// reference. Mirrors emitCallEdge but without an owner, self/cls handling, or
+// complexity metrics (none apply at module scope). KindFileRef carries only
+// RelCalls, so capitalized constructors are folded in as calls too — short-name
+// matching downstream still marks the class used.
+func (w *pyWalker) emitFileRefCall(fn *sitter.Node) {
+	switch fn.Kind() {
+	case "identifier":
+		name := pyText(fn, w.src)
+		if pyBuiltins[name] {
+			return
+		}
+		if pyCapitalized(name) {
+			w.fileRefs = append(w.fileRefs, facts.Relation{Kind: facts.RelCalls, Target: name})
+			return
+		}
+		if target := w.resolveCall(name); target != "" {
+			w.fileRefs = append(w.fileRefs, facts.Relation{Kind: facts.RelCalls, Target: target})
+		}
+	case "attribute":
+		objNode := fn.ChildByFieldName("object")
+		attrNode := fn.ChildByFieldName("attribute")
+		if objNode == nil || attrNode == nil {
+			return
+		}
+		obj := pyText(objNode, w.src)
+		attr := pyText(attrNode, w.src)
+		if qualType := w.resolveVarType(obj); qualType != "" {
+			w.fileRefs = append(w.fileRefs, facts.Relation{Kind: facts.RelCalls, Target: qualType + "." + attr})
+		}
+	}
+}
+
+// emitDecoratorRef records a use of a decorator function so `@my_decorator`
+// (which never appears as a call node) marks the decorator used. The decorator
+// root is resolved via the import map (absolute imports) or same-module
+// fallback; unresolved builtins (`@property`, `@staticmethod`) are skipped.
+func (w *pyWalker) emitDecoratorRef(dec string) {
+	if dec == "" {
+		return
+	}
+	if i := strings.IndexByte(dec, '.'); i >= 0 {
+		root := dec[:i]
+		tail := dec[i+1:]
+		if qt := w.resolveVarType(root); qt != "" {
+			w.fileRefs = append(w.fileRefs, facts.Relation{Kind: facts.RelCalls, Target: qt + "." + tail})
+		}
+		return
+	}
+	if pyBuiltins[dec] {
+		return
+	}
+	if target := w.resolveCall(dec); target != "" {
+		w.fileRefs = append(w.fileRefs, facts.Relation{Kind: facts.RelCalls, Target: target})
 	}
 }
 
@@ -221,7 +325,10 @@ func (w *pyWalker) handleImport(node *sitter.Node) {
 					local = name
 				}
 			}
-			w.setImport(local, "")
+			// Record the dotted module path (e.g. "a.b.c") so attribute calls on the
+			// bound name emit an edge. resolveCallTargets (post-pass) rewrites internal
+			// targets to slash symbol names and drops genuinely-external ones.
+			w.setImport(local, name)
 		}
 	}
 }
@@ -293,8 +400,11 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 			}
 			w.setImport(localName, base+"."+importedName)
 		} else {
-			// External or ambiguous — suppress call edges to this name.
-			w.setImport(localName, "")
+			// Absolute import (e.g. `from airflow.models import DAG`): record the
+			// dotted module path so calls to this name emit an edge. resolveCallTargets
+			// (post-pass) rewrites internal targets to slash symbol names and drops
+			// genuinely-external ones. Relative imports are handled above.
+			w.setImport(localName, moduleName+"."+importedName)
 		}
 	}
 
@@ -327,6 +437,16 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 		switch c.Kind() {
 		case "decorator":
 			text := pyText(c, w.src)
+			// Walk decorator-call arguments for nested calls / value refs, e.g.
+			// @router.get(dependencies=[Depends(requires_access_asset(method="GET"))]).
+			// These expressions are evaluated at import time but live inside the
+			// signature node, so no other pass reaches them. Done before the route/
+			// apiview branches below (which `continue`) so it runs for every decorator.
+			if call := firstChildOfKind(c, "call"); call != nil {
+				if args := call.ChildByFieldName("arguments"); args != nil {
+					w.walkTopLevelCalls(args)
+				}
+			}
 			// FastAPI / Starlette route decorator.
 			if m := routeDecoratorRe.FindStringSubmatch(text); m != nil {
 				method := strings.ToUpper(m[2])
@@ -395,6 +515,12 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 		case "class_definition":
 			w.handleClass(c, decorators)
 		}
+	}
+
+	// Record decorator applications as file-scope uses so decorator helpers
+	// (`@provide_session`, custom decorators) are not flagged dead.
+	for _, dec := range decorators {
+		w.emitDecoratorRef(dec)
 	}
 }
 
@@ -585,6 +711,11 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 	w.out = append(w.out, f)
 	w.pushOwner(len(w.out) - 1)
 	if bodyNode := node.ChildByFieldName("body"); bodyNode != nil {
+		// Register function-local (lazy) imports before resolving calls, so a call
+		// through a name imported inside the body (a common circular-import
+		// workaround) resolves to an edge. Must run before collectParamTypes/
+		// collectLocalTypes so those see the local imports too.
+		w.registerBodyImports(bodyNode)
 		w.localTypes = collectParamTypes(node.ChildByFieldName("parameters"), w.src, w.importMap, w.module)
 		for k, v := range collectLocalTypes(bodyNode, w.src, w.importMap, w.module) {
 			w.localTypes[k] = v
@@ -613,7 +744,98 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		w.selfName = ""
 		w.localTypes = nil
 	}
+	// Walk parameter-default expressions (e.g. `body = Depends(parse_login_body)`)
+	// for call and value-reference edges. Metrics are already finalized/nil here, so
+	// this adds edges without perturbing complexity.
+	if params := node.ChildByFieldName("parameters"); params != nil {
+		w.walkForCalls(params)
+	}
 	w.popOwner()
+}
+
+// registerBodyImports scans a function body for import statements (including those
+// nested in if/try/with blocks — the common lazy-import pattern) and registers them
+// into importMap so calls through the imported names resolve. Nested function/class
+// bodies are skipped; each registers its own.
+func (w *pyWalker) registerBodyImports(node *sitter.Node) {
+	if node == nil {
+		return
+	}
+	switch node.Kind() {
+	case "function_definition", "class_definition", "decorated_definition":
+		return
+	case "import_statement":
+		w.handleImport(node)
+		return
+	case "import_from_statement":
+		w.handleFromImport(node)
+		return
+	}
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		w.registerBodyImports(node.Child(i))
+	}
+}
+
+// argRefRelations returns reference edges for functions/classes passed by name as
+// call arguments (positional or keyword value), e.g. Depends(get_user),
+// add_command(cmd), register(Handler). Only names that resolve to an internal
+// target emit an edge; builtins are skipped. This captures value-passed callables
+// that are never invoked at the call site and so have no callee edge.
+func (w *pyWalker) argRefRelations(args *sitter.Node) []facts.Relation {
+	var rels []facts.Relation
+	for i := uint(0); i < uint(args.ChildCount()); i++ {
+		c := args.Child(i)
+		var id *sitter.Node
+		switch c.Kind() {
+		case "identifier":
+			id = c
+		case "keyword_argument":
+			if v := c.ChildByFieldName("value"); v != nil && v.Kind() == "identifier" {
+				id = v
+			}
+		}
+		if id == nil {
+			continue
+		}
+		name := pyText(id, w.src)
+		if pyBuiltins[name] {
+			continue
+		}
+		if pyCapitalized(name) {
+			rels = append(rels, facts.Relation{Kind: facts.RelInstantiates, Target: name})
+			continue
+		}
+		if target := w.valueRefTarget(name); target != "" {
+			rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: target})
+		}
+	}
+	return rels
+}
+
+// valueRefTarget resolves a bare name used as a VALUE (a call argument, not a
+// callee) to an internal target. Unlike resolveCall it deliberately omits the
+// same-module bare fallback: a value-position name is usually a parameter or local
+// (e.g. get_user(user_id)), and crediting a same-module symbol of that name would
+// be wrong. Only imported names and same-class methods — which are unambiguously
+// real symbol references — resolve.
+func (w *pyWalker) valueRefTarget(name string) string {
+	if methods := w.currentMethods(); methods[name] {
+		return w.module + "." + w.enclosingType() + "." + name
+	}
+	if t, ok := w.importMap[name]; ok && t != "" {
+		return t
+	}
+	return ""
+}
+
+// firstChildOfKind returns the first direct child of node with the given kind.
+func firstChildOfKind(node *sitter.Node, kind string) *sitter.Node {
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		if c := node.Child(i); c.Kind() == kind {
+			return c
+		}
+	}
+	return nil
 }
 
 // handleExprStatement checks for SQLAlchemy __tablename__ assignments and
@@ -702,6 +924,13 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 	if kind == "call" {
 		if fn := node.ChildByFieldName("function"); fn != nil {
 			w.emitCallEdge(fn)
+		}
+		if args := node.ChildByFieldName("arguments"); args != nil {
+			if owner := w.currentOwner(); owner != nil {
+				owner.Relations = append(owner.Relations, w.argRefRelations(args)...)
+			} else {
+				w.fileRefs = append(w.fileRefs, w.argRefRelations(args)...)
+			}
 		}
 	}
 

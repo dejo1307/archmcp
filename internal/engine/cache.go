@@ -162,7 +162,21 @@ import (
 // v77: Ruby extractor detects Gemfile-less repos via a loose .rb/shebang scan and
 // indexes extensionless Ruby executables. Bump so snapshots that cached an empty
 // (undetected) Ruby result re-extract instead of serving stale zero facts.
-const cacheVersion = "v77"
+// v78: Python extractor now emits call edges for ABSOLUTE intra-project imports
+// (previously only relative imports resolved, so functions reached via
+// `from pkg.mod import fn` had no incoming edge and read as dead code). A post-pass
+// (resolveCallTargets) rewrites the dotted targets to canonical slash symbol names
+// and drops stdlib/third-party edges; the extractor also emits KindFileRef edges for
+// module-level (top-level) calls and records decorator applications as uses. Bump so
+// cached Python snapshots re-extract with the new edges.
+// v79: Python extractor tracks more reference mechanisms — function-local (lazy)
+// imports are registered so calls through them resolve; functions/classes passed by
+// name as call arguments (Depends(fn), add_command(cmd)) emit reference edges;
+// parameter-default and decorator-call-argument expressions are walked (FastAPI
+// Depends(...) in signatures and route-decorator dependencies); and click/Typer
+// @command/@group functions are tagged cli_command. Reduces Python dead-code false
+// positives; bump so cached snapshots re-extract.
+const cacheVersion = "v79"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -240,3 +240,108 @@ func keysOf(m map[string]bool) []string {
 	}
 	return out
 }
+
+// symCall builds a symbol fact with a single RelCalls relation to target.
+func symCall(file, name, target string) facts.Fact {
+	return facts.Fact{
+		Kind:      facts.KindSymbol,
+		Name:      name,
+		File:      file,
+		Props:     map[string]any{"language": "python", "symbol_kind": facts.SymbolFunc},
+		Relations: []facts.Relation{{Kind: facts.RelCalls, Target: target}},
+	}
+}
+
+// callTarget returns the first RelCalls target of a fact, or "" if none remain
+// (edge dropped).
+func callTarget(f facts.Fact) string {
+	for _, r := range f.Relations {
+		if r.Kind == facts.RelCalls {
+			return r.Target
+		}
+	}
+	return ""
+}
+
+func TestResolveCallTargets_AbsoluteInternal_RewritesToSlashSymbol(t *testing.T) {
+	fileModules := modSet(
+		"airflow-core/src/airflow/api/common/airflow_health",
+		"airflow-core/src/airflow/api_fastapi/core_api/routes/public/monitor",
+	)
+	ff := []facts.Fact{
+		symCall(
+			"airflow-core/src/airflow/api_fastapi/core_api/routes/public/monitor.py",
+			"airflow-core/src/airflow/api_fastapi/core_api/routes/public/monitor.get_health",
+			"airflow.api.common.airflow_health.get_airflow_health",
+		),
+	}
+	resolveCallTargets(ff, fileModules)
+	got := callTarget(ff[0])
+	want := "airflow-core/src/airflow/api/common/airflow_health.get_airflow_health"
+	if got != want {
+		t.Errorf("resolved call target = %q, want %q", got, want)
+	}
+}
+
+func TestResolveCallTargets_External_DropsEdge(t *testing.T) {
+	fileModules := modSet("airflow-core/src/airflow/models/dag")
+	ff := []facts.Fact{
+		symCall(
+			"airflow-core/src/airflow/models/dag.py",
+			"airflow-core/src/airflow/models/dag.make",
+			"sqlalchemy.select",
+		),
+	}
+	resolveCallTargets(ff, fileModules)
+	if got := callTarget(ff[0]); got != "" {
+		t.Errorf("external edge should be dropped, but target = %q", got)
+	}
+}
+
+func TestResolveCallTargets_Stdlib_DropsEdge(t *testing.T) {
+	fileModules := modSet("airflow-core/src/airflow/utils/helpers")
+	ff := []facts.Fact{
+		symCall(
+			"airflow-core/src/airflow/utils/helpers.py",
+			"airflow-core/src/airflow/utils/helpers.cwd",
+			"os.getcwd",
+		),
+	}
+	resolveCallTargets(ff, fileModules)
+	if got := callTarget(ff[0]); got != "" {
+		t.Errorf("stdlib edge should be dropped, but target = %q", got)
+	}
+}
+
+func TestResolveCallTargets_InternalReexport_KeepsDotted(t *testing.T) {
+	// "airflow.models" is a package dir (re-export via __init__), not an exact file
+	// module, so the dotted target is kept for short-name matching downstream.
+	fileModules := modSet("airflow-core/src/airflow/models/dag")
+	ff := []facts.Fact{
+		symCall(
+			"airflow-core/src/airflow/example.py",
+			"airflow-core/src/airflow/example.build",
+			"airflow.models.DAG",
+		),
+	}
+	resolveCallTargets(ff, fileModules)
+	if got := callTarget(ff[0]); got != "airflow.models.DAG" {
+		t.Errorf("internal re-export target = %q, want it kept as %q", got, "airflow.models.DAG")
+	}
+}
+
+func TestResolveCallTargets_AlreadyResolvedSlash_Untouched(t *testing.T) {
+	fileModules := modSet("airflow-core/src/airflow/configuration")
+	target := "airflow-core/src/airflow/configuration.get_airflow_home"
+	ff := []facts.Fact{
+		symCall(
+			"airflow-core/src/airflow/foo.py",
+			"airflow-core/src/airflow/foo.bar",
+			target,
+		),
+	}
+	resolveCallTargets(ff, fileModules)
+	if got := callTarget(ff[0]); got != target {
+		t.Errorf("already-resolved slash target should be untouched, got %q", got)
+	}
+}

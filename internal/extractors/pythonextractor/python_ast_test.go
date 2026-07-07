@@ -617,3 +617,215 @@ class ConcreteImpl(MyInterface):
 		t.Error("ConcreteImpl: expected isAbstract=false")
 	}
 }
+
+// firstOfKind returns the first fact of the given kind, or a zero fact.
+func firstOfKind(ff []facts.Fact, kind string) (facts.Fact, bool) {
+	for _, f := range ff {
+		if f.Kind == kind {
+			return f, true
+		}
+	}
+	return facts.Fact{}, false
+}
+
+// --- Absolute-import call-edge emission (pre-resolution dotted targets) ---
+
+func TestAST_AbsoluteImportEmitsCallEdge(t *testing.T) {
+	src := `
+from airflow.api.common.airflow_health import get_airflow_health
+
+def get_health():
+    return get_airflow_health()
+`
+	result := astExtract(t, "monitor.py", src, false)
+	idx := byName(result)
+	fn, ok := idx["monitor.get_health"]
+	if !ok {
+		t.Fatalf("missing monitor.get_health; keys: %v", keys(idx))
+	}
+	calls := relsByKind(fn, facts.RelCalls)
+	want := "airflow.api.common.airflow_health.get_airflow_health"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("get_health: RelCalls = %v, want a call to %q (absolute import must emit an edge)", calls, want)
+	}
+}
+
+func TestAST_TopLevelCallEmitsFileRef(t *testing.T) {
+	src := `
+from airflow.api_fastapi.app import cached_app
+
+app = cached_app(apps="all")
+`
+	result := astExtract(t, "main.py", src, false)
+	fr, ok := firstOfKind(result, facts.KindFileRef)
+	if !ok {
+		t.Fatal("expected a KindFileRef fact for the module-level cached_app() call, got none")
+	}
+	calls := relsByKind(fr, facts.RelCalls)
+	want := "airflow.api_fastapi.app.cached_app"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("file_ref: RelCalls = %v, want %q", calls, want)
+	}
+}
+
+func TestAST_DecoratorEmitsRef(t *testing.T) {
+	src := `
+from airflow.utils.session import provide_session
+
+@provide_session
+def do_work(session=None):
+    pass
+`
+	result := astExtract(t, "svc.py", src, false)
+	fr, ok := firstOfKind(result, facts.KindFileRef)
+	if !ok {
+		t.Fatal("expected a KindFileRef fact for the @provide_session decorator, got none")
+	}
+	calls := relsByKind(fr, facts.RelCalls)
+	want := "airflow.utils.session.provide_session"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("file_ref: RelCalls = %v, want a decorator use of %q", calls, want)
+	}
+}
+
+// --- Pass 2: lazy imports, value-refs, param defaults, decorator args ---
+
+func TestAST_LazyImportInsideFunctionResolves(t *testing.T) {
+	src := `
+def load():
+    from airflow import plugins_manager
+    return plugins_manager.get_priority_weight_strategy_plugins()
+`
+	result := astExtract(t, "svc.py", src, false)
+	fn := byName(result)["svc.load"]
+	calls := relsByKind(fn, facts.RelCalls)
+	want := "airflow.plugins_manager.get_priority_weight_strategy_plugins"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("load: RelCalls = %v, want a call to %q via the function-local import", calls, want)
+	}
+}
+
+func TestAST_CallArgumentValueRefEmitsEdge(t *testing.T) {
+	src := `
+from airflow.auth.utils import parse_login_body
+
+def register():
+    return Depends(parse_login_body)
+`
+	result := astExtract(t, "svc.py", src, false)
+	fn := byName(result)["svc.register"]
+	calls := relsByKind(fn, facts.RelCalls)
+	want := "airflow.auth.utils.parse_login_body"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("register: RelCalls = %v, want a value-ref edge to %q", calls, want)
+	}
+}
+
+func TestAST_ParameterDefaultCallEmitsEdge(t *testing.T) {
+	src := `
+from airflow.auth.utils import parse_login_body
+
+def handler(body = Depends(parse_login_body)):
+    pass
+`
+	result := astExtract(t, "svc.py", src, false)
+	fn := byName(result)["svc.handler"]
+	calls := relsByKind(fn, facts.RelCalls)
+	want := "airflow.auth.utils.parse_login_body"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("handler: RelCalls (incl. param defaults) = %v, want %q", calls, want)
+	}
+}
+
+func TestAST_DecoratorArgumentCallEmitsFileRef(t *testing.T) {
+	src := `
+from airflow.security import requires_access_asset
+
+@router.get("/x", dependencies=[Depends(requires_access_asset(method="GET"))])
+def endpoint():
+    pass
+`
+	result := astExtract(t, "routes.py", src, false)
+	fr, ok := firstOfKind(result, facts.KindFileRef)
+	if !ok {
+		t.Fatal("expected a KindFileRef fact for the decorator-argument call, got none")
+	}
+	calls := relsByKind(fr, facts.RelCalls)
+	want := "airflow.security.requires_access_asset"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("file_ref: RelCalls = %v, want the decorator-arg factory call %q", calls, want)
+	}
+}
+
+func TestAST_ClickCommandTagged(t *testing.T) {
+	src := `
+import click
+
+@click.command()
+def build():
+    pass
+
+@click.group()
+def cli():
+    pass
+
+def plain():
+    pass
+`
+	result := astExtract(t, "commands.py", src, false)
+	idx := byName(result)
+	for _, name := range []string{"commands.build", "commands.cli"} {
+		fn, ok := idx[name]
+		if !ok {
+			t.Fatalf("missing %q; keys: %v", name, keys(idx))
+		}
+		if fn.Props["cli_command"] != true {
+			t.Errorf("%s: cli_command = %v, want true", name, fn.Props["cli_command"])
+		}
+	}
+	if idx["commands.plain"].Props["cli_command"] == true {
+		t.Error("commands.plain: cli_command should be unset for a non-click function")
+	}
+}

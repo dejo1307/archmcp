@@ -109,6 +109,8 @@ var versionCoverage = map[int][]string{
 	75: {"TestConnectES_CreateClient", "TestGoGRPCClient_ConnectGo"},                        // connect-es + connect-go + struct-field-injected clients
 	76: {"TestGRPCWebClient", "TestGoGRPCClient_PackageVar"},                                // grpc-web clients + Go package-level-var clients
 	77: {"TestDetect_LooseRubyFileNoGemfile", "TestDetect_ExtensionlessRubyShebang"},        // Ruby Gemfile-less detection + extensionless shebang indexing
+	78: {"TestAST_AbsoluteImportEmitsCallEdge", "TestResolveCallTargets_AbsoluteInternal_RewritesToSlashSymbol", "TestResolveCallTargets_External_DropsEdge", "TestAST_TopLevelCallEmitsFileRef", "TestAST_DecoratorEmitsRef"}, // Python absolute-import call edges + top-level/decorator refs
+	79: {"TestAST_LazyImportInsideFunctionResolves", "TestAST_CallArgumentValueRefEmitsEdge", "TestAST_ParameterDefaultCallEmitsEdge", "TestAST_DecoratorArgumentCallEmitsFileRef", "TestAST_ClickCommandTagged"}, // Python lazy imports, value-ref args, param defaults, decorator args, click tagging
 }
 
 func TestCacheVersionCoverage(t *testing.T) {

@@ -60,6 +60,79 @@ func resolveImports(allFacts []facts.Fact, modules map[string]bool) {
 	}
 }
 
+// resolveCallTargets rewrites, in place, the dotted call/instantiate targets that
+// the walker emits for absolute imports (e.g. "airflow.models.dag.DAG") into the
+// canonical slash symbol name ("airflow-core/src/airflow/models/dag.DAG"), and
+// drops targets that resolve to stdlib/third-party code.
+//
+// Absolute intra-project imports are recorded by the walker as raw dotted paths so
+// a call edge is emitted at all (relative imports already resolve at walk time).
+// This pass — which needs the full file/module set, known only after every file is
+// parsed — turns those dotted targets into exact symbol names where possible so the
+// dead-code detector and the graph both see the reference. A target whose first
+// segment names no internal directory (numpy, sqlalchemy) or a stdlib module is
+// external: its edge is removed to avoid short-name collisions that would hide real
+// dead code. Same-module and relative targets (already slash paths) are untouched.
+func resolveCallTargets(allFacts []facts.Fact, fileModules map[string]bool) {
+	fileIdx := buildSuffixIndex(fileModules)
+	topPkgs := topLevelSegments(fileModules)
+
+	for i := range allFacts {
+		f := &allFacts[i]
+		switch f.Kind {
+		case facts.KindSymbol, facts.KindFileRef, facts.KindTestRef:
+		default:
+			continue
+		}
+		if len(f.Relations) == 0 {
+			continue
+		}
+		importerDir := fileDir(f.File)
+		out := f.Relations[:0]
+		for _, rel := range f.Relations {
+			if (rel.Kind == facts.RelCalls || rel.Kind == facts.RelInstantiates) && isDottedCallTarget(rel.Target) {
+				resolved, keep := resolveDottedTarget(rel.Target, fileIdx, topPkgs, importerDir)
+				if !keep {
+					continue // external/stdlib → drop the edge
+				}
+				rel.Target = resolved
+			}
+			out = append(out, rel)
+		}
+		f.Relations = out
+	}
+}
+
+// isDottedCallTarget reports whether a call target is an unresolved dotted path
+// (e.g. "a.b.c") rather than an already-resolved slash symbol name
+// ("dir/mod.sym") or a bare short name ("Foo").
+func isDottedCallTarget(t string) bool {
+	return strings.IndexByte(t, '.') >= 0 && strings.IndexByte(t, '/') < 0
+}
+
+// resolveDottedTarget maps a dotted call target ("a.b.c.sym") to a canonical slash
+// symbol name when its module prefix resolves to an internal file, keeps it dotted
+// when the prefix is internal but not an exact file (a package re-export), and
+// reports keep=false when the prefix is stdlib/third-party (drop the edge).
+func resolveDottedTarget(dotted string, fileIdx suffixIndex, topPkgs map[string]bool, importerDir string) (string, bool) {
+	li := strings.LastIndexByte(dotted, '.')
+	if li <= 0 {
+		return dotted, true
+	}
+	modulePrefix := dotted[:li]
+	symbol := dotted[li+1:]
+	if dir := resolveAbsolute(modulePrefix, fileIdx, topPkgs, importerDir); dir != "" {
+		return dir + "." + symbol, true
+	}
+	// Internal package re-export or same-package import: keep the dotted target so
+	// downstream short-name matching still marks the symbol used.
+	seg0 := firstSeg(modulePrefix)
+	if topPkgs[seg0] && !pyStdlib[seg0] {
+		return dotted, true
+	}
+	return "", false
+}
+
 // suffixIndex maps a dotted-suffix key ("a.b.c", "b.c", "c") to the module dirs
 // whose trailing path segments produce that key. Buckets are pre-sorted so the
 // nearest source root (shortest physical path) is first.
