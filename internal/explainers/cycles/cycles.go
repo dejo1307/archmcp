@@ -61,59 +61,11 @@ func (e *CycleExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 	return insights, nil
 }
 
-// tarjanSCC implements Tarjan's strongly connected components algorithm.
+// tarjanSCC computes strongly connected components of the module graph. It
+// delegates to common.StronglyConnectedComponents, whose output is deterministic
+// (sorted components with sorted members) — so the emitted cycle path, evidence
+// order, and multi-cycle insight order no longer depend on Go's randomized map
+// iteration.
 func tarjanSCC(graph map[string][]string) [][]string {
-	var (
-		index    int
-		stack    []string
-		onStack  = make(map[string]bool)
-		indices  = make(map[string]int)
-		lowlinks = make(map[string]int)
-		sccs     [][]string
-	)
-
-	var strongConnect func(v string)
-	strongConnect = func(v string) {
-		indices[v] = index
-		lowlinks[v] = index
-		index++
-		stack = append(stack, v)
-		onStack[v] = true
-
-		for _, w := range graph[v] {
-			if _, visited := indices[w]; !visited {
-				strongConnect(w)
-				if lowlinks[w] < lowlinks[v] {
-					lowlinks[v] = lowlinks[w]
-				}
-			} else if onStack[w] {
-				if indices[w] < lowlinks[v] {
-					lowlinks[v] = indices[w]
-				}
-			}
-		}
-
-		// Root of an SCC
-		if lowlinks[v] == indices[v] {
-			var scc []string
-			for {
-				w := stack[len(stack)-1]
-				stack = stack[:len(stack)-1]
-				onStack[w] = false
-				scc = append(scc, w)
-				if w == v {
-					break
-				}
-			}
-			sccs = append(sccs, scc)
-		}
-	}
-
-	for v := range graph {
-		if _, visited := indices[v]; !visited {
-			strongConnect(v)
-		}
-	}
-
-	return sccs
+	return common.StronglyConnectedComponents(graph)
 }

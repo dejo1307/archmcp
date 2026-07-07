@@ -3,6 +3,7 @@ package layers
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/explainers/common"
@@ -222,8 +223,16 @@ func (e *LayerExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 
 	// Report detected architecture pattern
 	if best := e.bestPattern(patterns); best != nil {
-		evidence := make([]facts.Evidence, 0)
-		for mod, layer := range best.Modules {
+		// Sort the classified modules so the evidence order is deterministic —
+		// ranging best.Modules directly would follow Go's randomized map order.
+		mods := make([]string, 0, len(best.Modules))
+		for mod := range best.Modules {
+			mods = append(mods, mod)
+		}
+		sort.Strings(mods)
+		evidence := make([]facts.Evidence, 0, len(mods))
+		for _, mod := range mods {
+			layer := best.Modules[mod]
 			evidence = append(evidence, facts.Evidence{
 				Fact:   mod,
 				Detail: fmt.Sprintf("module %q maps to layer %q", mod, layer),
@@ -374,12 +383,25 @@ func presentFrameworks(store *facts.Store) map[string]bool {
 	return out
 }
 
-// detectViolations checks for layer boundary violations (inner layer importing outer layer).
+// detectViolations checks for layer boundary violations (inner layer importing
+// outer layer). Each distinct (source module -> target module) pair is reported
+// once: two files in the same module importing the same outer module are one
+// violation, not two, so the count the renderer derives isn't inflated. Relative
+// import targets (`./x`, `../y`) are resolved against the source module the same
+// way the shared module-graph builder does, so JS/TS-style relative imports match
+// a classified layer instead of silently missing. Output is sorted for
+// determinism.
 func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPattern) []facts.Insight {
-	var insights []facts.Insight
+	type violation struct {
+		sourceModule, targetModule string
+		sourceLayer, targetLayer   string
+		sourceLevel, targetLevel   int
+		file                       string
+	}
+	seen := make(map[string]bool)
+	var violations []violation
 
-	deps := store.ByKind(facts.KindDependency)
-	for _, dep := range deps {
+	for _, dep := range store.ByKind(facts.KindDependency) {
 		sourceModule := common.FileDir(dep.File)
 		sourceLayer, sourceOK := pattern.Modules[sourceModule]
 		if !sourceOK {
@@ -391,36 +413,63 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 				continue
 			}
 
-			targetLayer, targetOK := pattern.Modules[rel.Target]
+			target := rel.Target
+			if strings.HasPrefix(target, ".") {
+				target = common.ResolveRelativeImport(sourceModule, target)
+			}
+
+			targetLayer, targetOK := pattern.Modules[target]
 			if !targetOK {
 				continue
 			}
 
-			// Check if source layer level is lower than target
 			sourceDef := pattern.Layers[sourceLayer]
 			targetDef := pattern.Layers[targetLayer]
-
-			if sourceDef != nil && targetDef != nil && sourceDef.Level < targetDef.Level {
-				insights = append(insights, facts.Insight{
-					Title: fmt.Sprintf("Layer violation: %s -> %s", sourceLayer, targetLayer),
-					Description: fmt.Sprintf(
-						"Module %q (layer: %s, level %d) imports module %q (layer: %s, level %d). "+
-							"Inner layers should not depend on outer layers.",
-						sourceModule, sourceLayer, sourceDef.Level,
-						rel.Target, targetLayer, targetDef.Level,
-					),
-					Confidence: 0.8,
-					Evidence: []facts.Evidence{
-						{File: dep.File, Detail: fmt.Sprintf("import of %s", rel.Target)},
-					},
-					Actions: []string{
-						"Introduce an interface/port in the inner layer",
-						"Move shared types to a common package",
-						"Invert the dependency using dependency injection",
-					},
-				})
+			if sourceDef == nil || targetDef == nil || sourceDef.Level >= targetDef.Level {
+				continue
 			}
+
+			key := sourceModule + "\x00" + target
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			violations = append(violations, violation{
+				sourceModule: sourceModule, targetModule: target,
+				sourceLayer: sourceLayer, targetLayer: targetLayer,
+				sourceLevel: sourceDef.Level, targetLevel: targetDef.Level,
+				file: dep.File,
+			})
 		}
+	}
+
+	sort.Slice(violations, func(i, j int) bool {
+		if violations[i].sourceModule != violations[j].sourceModule {
+			return violations[i].sourceModule < violations[j].sourceModule
+		}
+		return violations[i].targetModule < violations[j].targetModule
+	})
+
+	insights := make([]facts.Insight, 0, len(violations))
+	for _, v := range violations {
+		insights = append(insights, facts.Insight{
+			Title: fmt.Sprintf("Layer violation: %s -> %s", v.sourceLayer, v.targetLayer),
+			Description: fmt.Sprintf(
+				"Module %q (layer: %s, level %d) imports module %q (layer: %s, level %d). "+
+					"Inner layers should not depend on outer layers.",
+				v.sourceModule, v.sourceLayer, v.sourceLevel,
+				v.targetModule, v.targetLayer, v.targetLevel,
+			),
+			Confidence: 0.8,
+			Evidence: []facts.Evidence{
+				{File: v.file, Detail: fmt.Sprintf("import of %s", v.targetModule)},
+			},
+			Actions: []string{
+				"Introduce an interface/port in the inner layer",
+				"Move shared types to a common package",
+				"Invert the dependency using dependency injection",
+			},
+		})
 	}
 
 	return insights

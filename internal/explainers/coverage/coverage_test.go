@@ -65,6 +65,66 @@ func TestExplain_DistinguishesGapFromPartial(t *testing.T) {
 	}
 }
 
+// TestExplain_JSONLRoundTripShape: a service reloaded from facts.jsonl carries
+// edge_coverage as []any of map[string]any with float64 numbers. readCoverage
+// must classify it identically to the in-memory []map[string]any/int form.
+func TestExplain_JSONLRoundTripShape(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(facts.Fact{Kind: facts.KindService, Name: "svc-gap", Repo: "svc-gap",
+		Props: map[string]any{"edge_coverage": []any{
+			map[string]any{"edge_type": "http_client", "detected": float64(5), "resolved": float64(0), "unresolved": float64(5)},
+		}}})
+
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 insight from JSONL-shape coverage, got %d", len(insights))
+	}
+	if !strings.HasPrefix(insights[0].Title, "Coverage gap") {
+		t.Errorf("JSONL-shape gap misclassified: %q", insights[0].Title)
+	}
+	if insights[0].Confidence != 0.9 {
+		t.Errorf("gap confidence = %v, want 0.9", insights[0].Confidence)
+	}
+}
+
+// TestExplain_MultipleEdgeTypes: counts across edge types are summed, and the
+// service is a partial (not a gap) because it has a resolved outbound edge.
+func TestExplain_MultipleEdgeTypes(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(facts.Fact{Kind: facts.KindService, Name: "svc", Repo: "svc",
+		Relations: []facts.Relation{{Kind: facts.RelDependsOn, Target: "other"}},
+		Props: map[string]any{"edge_coverage": []map[string]any{
+			{"edge_type": "http_client", "detected": 4, "resolved": 3, "unresolved": 1},
+			{"edge_type": "grpc_client", "detected": 3, "resolved": 1, "unresolved": 2},
+		}}})
+
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 insight, got %d", len(insights))
+	}
+	in := insights[0]
+	if !strings.HasPrefix(in.Title, "Partial coverage") {
+		t.Errorf("want partial coverage (has a resolved edge), got %q", in.Title)
+	}
+	// 1 + 2 = 3 unresolved across the two edge types.
+	if !strings.Contains(in.Title, "3 unresolved") {
+		t.Errorf("summed unresolved should be 3, got %q", in.Title)
+	}
+	if in.Confidence != 0.75 {
+		t.Errorf("partial confidence = %v, want 0.75", in.Confidence)
+	}
+	// Detail renders both edge types in stable insertion order.
+	if !strings.Contains(in.Description, "http_client") || !strings.Contains(in.Description, "grpc_client") {
+		t.Errorf("detail should mention both edge types: %q", in.Description)
+	}
+}
+
 func TestExplain_NoServicesNoInsights(t *testing.T) {
 	store := facts.NewStore()
 	store.Add(facts.Fact{Kind: facts.KindModule, Name: "internal/foo"})

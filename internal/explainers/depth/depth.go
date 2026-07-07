@@ -36,43 +36,104 @@ func (e *DepthExplainer) Name() string {
 
 // Explain builds the module import graph and computes each module's longest
 // downstream dependency chain (cycle-safe), reporting the deepest ones.
+//
+// Cycles are handled by collapsing each strongly-connected component to a single
+// super-node (the condensation), which is a DAG, then taking the longest path by
+// module count over that DAG. A component contributes its full size to any chain
+// passing through it. This is an intentional over-approximation: the exact
+// longest *simple* path is NP-hard, and inside a cycle every member is mutually
+// reachable, so counting the whole component is a safe cycle-safe upper bound
+// that never double-counts a module. A module's reported depth is its component's
+// depth; one insight is emitted per component (keyed by its smallest member),
+// so a cycle yields a single finding rather than one per entangled module.
 func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
 	graph := common.BuildModuleGraph(store)
 	if len(graph) == 0 {
 		return nil, nil
 	}
 
-	// Determinism: sort each neighbor list and the root iteration order so the
-	// memoized longest-path results don't depend on Go's randomized map
-	// iteration. Without this, cycles make the computed depths vary run to run.
-	roots := make([]string, 0, len(graph))
-	for mod := range graph {
-		roots = append(roots, mod)
-		sort.Strings(graph[mod])
+	// Condense the module graph into its SCC DAG. Components come back sorted
+	// (sorted members, ordered by smallest member) so the whole computation is
+	// deterministic regardless of Go's randomized map iteration.
+	sccs := common.StronglyConnectedComponents(graph)
+	sccOf := make(map[string]int, len(graph))
+	for i, scc := range sccs {
+		for _, m := range scc {
+			sccOf[m] = i
+		}
 	}
-	sort.Strings(roots)
 
-	memo := make(map[string][]string) // module -> deepest chain starting at module
-	visiting := make(map[string]bool)
-	for _, mod := range roots {
-		longestChain(mod, graph, memo, visiting)
+	// Build the condensed adjacency (successor component indices), deduped and
+	// sorted. Self-edges and intra-component edges are dropped — the condensation
+	// is acyclic by construction.
+	succ := make([][]int, len(sccs))
+	seen := make([]map[int]bool, len(sccs))
+	for i := range seen {
+		seen[i] = map[int]bool{}
+	}
+	for mod, neighbors := range graph {
+		si := sccOf[mod]
+		for _, n := range neighbors {
+			sj, ok := sccOf[n]
+			if !ok || sj == si {
+				continue
+			}
+			if !seen[si][sj] {
+				seen[si][sj] = true
+				succ[si] = append(succ[si], sj)
+			}
+		}
+	}
+	for i := range succ {
+		sort.Ints(succ[i])
+	}
+
+	// Longest path (by module count) over the DAG, memoized. Each component's
+	// depth is its own size plus the deepest successor chain; bestSucc lets us
+	// reconstruct a concrete chain of distinct modules for the evidence.
+	depth := make([]int, len(sccs))
+	bestSucc := make([]int, len(sccs))
+	computed := make([]bool, len(sccs))
+	for i := range bestSucc {
+		bestSucc[i] = -1
+	}
+	var compute func(i int) int
+	compute = func(i int) int {
+		if computed[i] {
+			return depth[i]
+		}
+		computed[i] = true // condensation is a DAG, so no cycle guard is needed
+		best, bi := 0, -1
+		for _, j := range succ[i] {
+			if d := compute(j); d > best {
+				best, bi = d, j
+			}
+		}
+		depth[i] = len(sccs[i]) + best
+		bestSucc[i] = bi
+		return depth[i]
+	}
+	for i := range sccs {
+		compute(i)
 	}
 
 	type result struct {
 		module string
+		depth  int
 		chain  []string
 	}
 	var results []result
-	for mod, chain := range memo {
-		if len(chain) >= minDepth {
-			results = append(results, result{module: mod, chain: chain})
+	for i, scc := range sccs {
+		if depth[i] < minDepth {
+			continue
 		}
+		results = append(results, result{module: scc[0], depth: depth[i], chain: chainFor(i, sccs, bestSucc)})
 	}
 
-	// Deepest first; break ties by name for determinism.
+	// Deepest first; break ties by module name for determinism.
 	sort.Slice(results, func(i, j int) bool {
-		if len(results[i].chain) != len(results[j].chain) {
-			return len(results[i].chain) > len(results[j].chain)
+		if results[i].depth != results[j].depth {
+			return results[i].depth > results[j].depth
 		}
 		return results[i].module < results[j].module
 	})
@@ -82,7 +143,6 @@ func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 		if i >= maxInsights {
 			break
 		}
-		depth := len(r.chain)
 		evidence := make([]facts.Evidence, 0, len(r.chain))
 		for _, m := range r.chain {
 			evidence = append(evidence, facts.Evidence{Fact: m})
@@ -90,12 +150,12 @@ func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 
 		insights = append(insights, facts.Insight{
 			// Title format is parsed by pkg/explain (Code health section); keep stable.
-			Title: fmt.Sprintf("Deep dependency chain: %s (depth %d)", r.module, depth),
+			Title: fmt.Sprintf("Deep dependency chain: %s (depth %d)", r.module, r.depth),
 			Description: fmt.Sprintf(
 				"Module %q has a longest dependency chain of %d modules: %s. "+
 					"Deep chains slow comprehension and widen rebuild/retest impact when a "+
 					"module near the bottom changes.",
-				r.module, depth, strings.Join(r.chain, " -> "),
+				r.module, r.depth, strings.Join(r.chain, " -> "),
 			),
 			Confidence: 0.7,
 			Evidence:   evidence,
@@ -110,35 +170,14 @@ func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 	return insights, nil
 }
 
-// longestChain returns the longest dependency chain starting at module, as a
-// slice beginning with module. Results are memoized. The visiting set breaks
-// cycles: a back-edge to a module already on the current path contributes no
-// further depth, so cyclic graphs terminate.
-func longestChain(module string, graph map[string][]string, memo map[string][]string, visiting map[string]bool) []string {
-	if chain, ok := memo[module]; ok {
-		return chain
+// chainFor reconstructs the deepest chain of distinct modules starting at
+// component i: all of i's (sorted) members, then the members of its best
+// successor component, and so on down the DAG.
+func chainFor(i int, sccs [][]string, bestSucc []int) []string {
+	var out []string
+	for i != -1 {
+		out = append(out, sccs[i]...)
+		i = bestSucc[i]
 	}
-	if visiting[module] {
-		// Cycle back-edge: the target is already on the current path, so
-		// following it would revisit a module. Contribute no further depth
-		// (returning the module here would double-count it up the chain).
-		return nil
-	}
-	visiting[module] = true
-
-	var best []string
-	for _, dep := range graph[module] {
-		if dep == module {
-			continue // self-import; ignore
-		}
-		child := longestChain(dep, graph, memo, visiting)
-		if len(child) > len(best) {
-			best = child
-		}
-	}
-
-	visiting[module] = false
-	chain := append([]string{module}, best...)
-	memo[module] = chain
-	return chain
+	return out
 }

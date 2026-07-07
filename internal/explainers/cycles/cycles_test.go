@@ -2,7 +2,9 @@ package cycles
 
 import (
 	"context"
+	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -197,6 +199,131 @@ func TestExplain_WithCycle(t *testing.T) {
 		if !evidenceModules[mod] {
 			t.Errorf("module %q missing from cycle evidence", mod)
 		}
+	}
+}
+
+// TestExplain_Deterministic guards BUG-2: the cycle path, evidence order, and
+// multi-cycle insight order used to depend on Go's randomized map iteration
+// (tarjanSCC ranged the graph map directly and never sorted). Each Explain call
+// re-ranges the maps, so 50 runs exercise many iteration orders; the fully
+// rendered output (title + description + evidence facts) must be byte-identical
+// every time — enola's core determinism promise for insights.json.
+func TestExplain_Deterministic(t *testing.T) {
+	store := makeStore(
+		[]string{"src/a", "src/b", "src/c", "src/d", "src/e", "src/f"},
+		map[string][]string{
+			"src/a": {"src/b"},
+			"src/b": {"src/c"},
+			"src/c": {"src/a"}, // cycle 1: a,b,c
+			"src/d": {"src/e"},
+			"src/e": {"src/f"},
+			"src/f": {"src/d"}, // cycle 2: d,e,f
+		},
+	)
+
+	render := func() string {
+		insights, err := New().Explain(context.Background(), store)
+		if err != nil {
+			t.Fatalf("Explain: %v", err)
+		}
+		var b strings.Builder
+		for _, in := range insights {
+			b.WriteString(in.Title)
+			b.WriteByte('\n')
+			b.WriteString(in.Description)
+			b.WriteByte('\n')
+			for _, ev := range in.Evidence {
+				b.WriteString(ev.Fact)
+				b.WriteByte(',')
+			}
+			b.WriteByte('\n')
+		}
+		return b.String()
+	}
+
+	want := render()
+	for i := 0; i < 50; i++ {
+		if got := render(); got != want {
+			t.Fatalf("non-deterministic output on iteration %d:\nwant:\n%s\ngot:\n%s", i, want, got)
+		}
+	}
+}
+
+// TestExplain_EvidenceCanonicalOrder locks that a cycle's evidence lists its
+// members in sorted order (the canonicalization behind the determinism fix).
+func TestExplain_EvidenceCanonicalOrder(t *testing.T) {
+	store := makeStore(
+		[]string{"src/c", "src/a", "src/b"},
+		map[string][]string{
+			"src/a": {"src/b"},
+			"src/b": {"src/c"},
+			"src/c": {"src/a"},
+		},
+	)
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 insight, got %d", len(insights))
+	}
+	var got []string
+	for _, ev := range insights[0].Evidence {
+		got = append(got, ev.Fact)
+	}
+	want := []string{"src/a", "src/b", "src/c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("evidence order = %v, want sorted %v", got, want)
+	}
+}
+
+// TestExplain_SelfLoopNoInsight runs a self-importing module through the full
+// Explain (not just tarjanSCC): a size-1 SCC is not a cycle, so no insight and
+// no panic.
+func TestExplain_SelfLoopNoInsight(t *testing.T) {
+	store := makeStore(
+		[]string{"src/a"},
+		map[string][]string{"src/a": {"src/a"}},
+	)
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 0 {
+		t.Errorf("self-loop should produce no cycle insight, got %d", len(insights))
+	}
+}
+
+// TestExplain_SharedNodeSingleInsight: two cycles sharing a node collapse into
+// one SCC, so Explain emits a single insight covering all three modules.
+func TestExplain_SharedNodeSingleInsight(t *testing.T) {
+	store := makeStore(
+		[]string{"src/a", "src/b", "src/c"},
+		map[string][]string{
+			"src/a": {"src/b"},
+			"src/b": {"src/a", "src/c"},
+			"src/c": {"src/b"},
+		},
+	)
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 insight for two cycles sharing a node, got %d", len(insights))
+	}
+	if len(insights[0].Evidence) != 3 {
+		t.Errorf("expected all 3 modules as evidence, got %d", len(insights[0].Evidence))
+	}
+}
+
+func TestExplain_EmptyStore(t *testing.T) {
+	insights, err := New().Explain(context.Background(), facts.NewStore())
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 0 {
+		t.Errorf("empty store should yield no insights, got %d", len(insights))
 	}
 }
 

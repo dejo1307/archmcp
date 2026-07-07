@@ -65,7 +65,7 @@ func (e *CrossRepoExplainer) Explain(ctx context.Context, store *facts.Store) ([
 // edgeDetail renders a short description of what justifies a cross-repo edge.
 func edgeDetail(d facts.Fact) string {
 	var parts []string
-	if v, ok := d.Props["via"].([]string); ok && len(v) > 0 {
+	if v := stringSlice(d.Props["via"]); len(v) > 0 {
 		parts = append(parts, "via "+strings.Join(v, "+"))
 	}
 	if n := propInt(d, "endpoint_count"); n > 0 {
@@ -81,6 +81,26 @@ func edgeDetail(d facts.Fact) string {
 		return "cross-repo dependency"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// stringSlice reads a string-slice prop, tolerating both the in-memory []string
+// form and the []any form a JSON round-trip through facts.jsonl produces (JSON
+// arrays decode as []any, not []string) — the slice analog of propInt's float64
+// handling. Non-string elements are skipped.
+func stringSlice(v any) []string {
+	switch s := v.(type) {
+	case []string:
+		return s
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, item := range s {
+			if str, ok := item.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // propInt reads an int-valued prop, tolerating the float64 form that survives a

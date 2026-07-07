@@ -2,6 +2,7 @@ package common
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -146,5 +147,89 @@ func TestMeanStdDev(t *testing.T) {
 	}
 	if got := OutlierThreshold(vals, 2); math.Abs(got-9) > 1e-9 {
 		t.Errorf("OutlierThreshold(vals, 2) = %v, want 9", got)
+	}
+}
+
+// TestOutlierThreshold_ZeroStdDev: with identical values the std dev is 0, so the
+// threshold equals the mean — every value is <= it, so nothing is a strict
+// outlier (why an all-equal fan-in/complexity distribution flags nothing).
+func TestOutlierThreshold_ZeroStdDev(t *testing.T) {
+	vals := []float64{7, 7, 7, 7}
+	mean, std := MeanStdDev(vals)
+	if std != 0 {
+		t.Errorf("std of identical values = %v, want 0", std)
+	}
+	if got := OutlierThreshold(vals, 2); got != mean {
+		t.Errorf("OutlierThreshold(identical, 2) = %v, want mean %v", got, mean)
+	}
+}
+
+// sccKey renders a component partition as a stable string for comparison.
+func sccKey(sccs [][]string) string {
+	parts := make([]string, len(sccs))
+	for i, scc := range sccs {
+		parts[i] = strings.Join(scc, ",")
+	}
+	return strings.Join(parts, " | ")
+}
+
+func TestStronglyConnectedComponents(t *testing.T) {
+	tests := []struct {
+		name  string
+		graph map[string][]string
+		want  string // sccKey of the expected (sorted) partition
+	}{
+		{"empty", map[string][]string{}, ""},
+		{"single isolated", map[string][]string{"a": nil}, "a"},
+		{"simple cycle", map[string][]string{"b": {"a"}, "a": {"b"}}, "a,b"},
+		{"triangle + tail", map[string][]string{"a": {"b"}, "b": {"c"}, "c": {"a", "d"}, "d": nil}, "a,b,c | d"},
+		{"two disjoint cycles", map[string][]string{"a": {"b"}, "b": {"a"}, "c": {"d"}, "d": {"c"}}, "a,b | c,d"},
+		{"self loop is singleton", map[string][]string{"a": {"a"}}, "a"},
+		{"neighbor-only node included", map[string][]string{"a": {"b"}}, "a | b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sccKey(StronglyConnectedComponents(tt.graph)); got != tt.want {
+				t.Errorf("SCC(%v) = %q, want %q", tt.graph, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStronglyConnectedComponents_Deterministic: repeated calls re-range the
+// graph map (Go randomizes iteration), but the sorted output must be identical.
+func TestStronglyConnectedComponents_Deterministic(t *testing.T) {
+	graph := map[string][]string{
+		"a": {"b"}, "b": {"c"}, "c": {"a", "d"},
+		"d": {"e"}, "e": {"d"},
+		"f": {"a"}, "g": nil,
+	}
+	want := sccKey(StronglyConnectedComponents(graph))
+	for i := 0; i < 50; i++ {
+		if got := sccKey(StronglyConnectedComponents(graph)); got != want {
+			t.Fatalf("non-deterministic SCC output on iteration %d:\nwant %q\ngot  %q", i, want, got)
+		}
+	}
+}
+
+// TestBuildModuleGraph_ExcludesTestRole: modules tagged module_role=test are
+// dropped as both nodes and edge endpoints.
+func TestBuildModuleGraph_ExcludesTestRole(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "src/app"})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "src/apptest",
+		Props: map[string]any{facts.PropModuleRole: facts.ModuleRoleTest}})
+	// app imports the test module and vice versa; the test edges must not appear.
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "src/app/f.go",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "src/apptest"}}})
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "src/apptest/f.go",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "src/app"}}})
+
+	graph := BuildModuleGraph(s)
+	if _, ok := graph["src/apptest"]; ok {
+		t.Error("test-role module should not be a graph node")
+	}
+	if len(graph["src/app"]) != 0 {
+		t.Errorf("edge to a test-role module should be dropped, got %v", graph["src/app"])
 	}
 }

@@ -404,6 +404,13 @@ func TestCodeHealthHelpers(t *testing.T) {
 	if got := fanDetail([]int{64, 20}); got != "fan-in 64 / out 20" {
 		t.Errorf("fanDetail: got %q", got)
 	}
+	// metricInts must ignore digits that appear before the marker (i.e. in the name).
+	if got := metricInts("Call-graph hotspot: pkg/x.Sha256Hash (fan-in 30, fan-out 12)", "("); len(got) != 2 || got[0] != 30 || got[1] != 12 {
+		t.Errorf("metricInts (hotspot, digit name): got %v, want [30 12]", got)
+	}
+	if got := metricInts("Large public surface: pkg/oauth2 exports 40 of 44 symbols (91%)", " exports"); len(got) != 3 || got[0] != 40 || got[1] != 44 || got[2] != 91 {
+		t.Errorf("metricInts (surface, digit name): got %v, want [40 44 91]", got)
+	}
 }
 
 // codeHealthInsights covers all 5 new explainer titles, with 6 god-class entries
@@ -422,6 +429,49 @@ func codeHealthInsights() []facts.Insight {
 		})
 	}
 	return ins
+}
+
+// TestCompute_CodeHealth_DigitsInNames is a regression guard: metric parsing
+// must not be corrupted by digits inside a symbol/module name (Sha256Hash,
+// oauth2, x509, ...). Before the fix, allInts scanned the whole title, so name
+// digits were misread — a hotspot on "Sha256Hash" rendered "fan-in 256 / out 30"
+// and a surface on "oauth2" rendered "2/40 (44%)". The digit-free codeHealth
+// fixtures never exercised this.
+func TestCompute_CodeHealth_DigitsInNames(t *testing.T) {
+	eng := newTestEngine(t)
+	eng.Store().Add(fixtureFacts()...)
+	eng.Store().BuildGraph()
+	eng.SetSnapshot(&facts.Snapshot{
+		Meta: facts.SnapshotMeta{RepoPath: "/repo/digits"},
+		Insights: []facts.Insight{
+			{Title: "Call-graph hotspot: pkg/x.Sha256Hash (fan-in 30, fan-out 12)"},
+			{Title: "Large public surface: pkg/oauth2 exports 40 of 44 symbols (91%)"},
+			{Title: "High fan-in symbol: pkg/x.Base64Encoder (18 dependents)"},
+			{Title: "Deep dependency chain: pkg/utf8 (depth 9)"},
+			{Title: "High cyclomatic complexity: pkg/x.ParseX509 (108)"},
+		},
+	})
+	r := Compute(eng)
+
+	byLabel := map[string]FindingGroup{}
+	for _, g := range r.CodeHealth {
+		byLabel[g.Label] = g
+	}
+	if d := byLabel["call-graph hotspots"].Top[0]; d.Name != "pkg/x.Sha256Hash" || d.Detail != "fan-in 30 / out 12" {
+		t.Errorf("hotspot with digit name: got name=%q detail=%q, want pkg/x.Sha256Hash / 'fan-in 30 / out 12'", d.Name, d.Detail)
+	}
+	if d := byLabel["large public surfaces"].Top[0]; d.Name != "pkg/oauth2" || d.Detail != "40/44 (91%)" {
+		t.Errorf("surface with digit name: got name=%q detail=%q, want pkg/oauth2 / '40/44 (91%%)'", d.Name, d.Detail)
+	}
+	if d := byLabel["god classes (high fan-in)"].Top[0]; d.Name != "pkg/x.Base64Encoder" || d.Detail != "18 dependents" {
+		t.Errorf("god-class with digit name: got name=%q detail=%q", d.Name, d.Detail)
+	}
+	if d := byLabel["deep dependency chains"].Top[0]; d.Name != "pkg/utf8" || d.Detail != "depth 9" {
+		t.Errorf("depth with digit name: got name=%q detail=%q", d.Name, d.Detail)
+	}
+	if d := byLabel["complexity outliers"].Top[0]; d.Name != "pkg/x.ParseX509" || d.Detail != "complexity 108" {
+		t.Errorf("complexity with digit name: got name=%q detail=%q", d.Name, d.Detail)
+	}
 }
 
 func computeCodeHealth(t *testing.T) *Report {

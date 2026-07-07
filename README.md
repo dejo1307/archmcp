@@ -315,7 +315,7 @@ enola --explain /path/to/repo
 
 Every finding carries a confidence score, and it means something exact: `1.0` is a structural fact (a cycle exists; an export ratio measured), while anything below is a flagged heuristic for you to review (a god class is a statistical fan-in outlier, not a rule). The analyses are computed by graph algorithms — Tarjan's SCC for cycles, longest-path for dependency depth, mean+2σ outlier tests for the rest — so the same commit yields the same report.
 
-Here's the actual report for [Apache Airflow](https://github.com/apache/airflow) — a large polyglot codebase (Python, Java, TypeScript, and OpenAPI specs) analyzed in a single pass, 112,792 facts in ~3.5s (extraction parses files in parallel across cores; timing measured on a 16-core machine):
+Here's the actual report for [Apache Airflow](https://github.com/apache/airflow) — a large polyglot codebase (Python, Java, TypeScript, gRPC, and OpenAPI specs) analyzed in a single pass, 122,772 facts in ~2s (extraction parses files in parallel across cores):
 
 ```
 ════════════════════════════════════════════════════════════
@@ -323,87 +323,89 @@ Here's the actual report for [Apache Airflow](https://github.com/apache/airflow)
 ════════════════════════════════════════════════════════════
 
 Overview
-  Generated:           2026-06-24T11:28:08Z
-  Analysis time:       3.522345875s
-  Languages:           java, openapi, python, typescript
-  Total facts:         112792
+  Generated:           2026-07-07T20:51:51Z
+  Analysis time:       2.100326959s
+  Languages:           python, typescript, java, grpc
+  Total facts:         122772
 
 Architectural kinds
-  module                   2492
-  symbol                  64192
-  route                    6359
+  module                   2499
+  symbol                  64148
+  route                    6426
   storage                    64
-  dependency              39685
+  dependency              44371
 
 Symbol breakdown
-  method                  41127
-  function                12371
-  class                    8621
+  method                  40976
+  function                12409
+  class                    8583
   type                     1393
-  variable                  636
-  interface                  36
+  variable                  732
+  interface                  37
+  struct                     10
   enum                        6
   constant                    2
 
 API & data surface
-  routes                   6359
-    (unspecified)          6182
-    GET                     105
-    POST                     28
-    PATCH                    22
-    DELETE                   16
-    PUT                       6
+  routes                   6426
+    PATCH                  6038
+    GET                     247
+    POST                     74
+    DELETE                   46
+    PUT                      20
+    HEAD                      1
   storage                    64
 
 Dependencies
-  internal                17810
-  stdlib                  12430
-  external                 9445
+  internal                20905
+  stdlib                  12858
+  external                10607
+  unclassified                1
 
 Architecture
   Pattern:             (none detected)
-  cyclic dependencies        26
+  cyclic dependencies        27
   layer violations            0
 
 Impact analysis (hotspots)
-  coupled modules           840
-    high criticality        486
-    medium criticality      354
+  coupled modules           915
+    high criticality        547
+    medium criticality      368
   Top hotspots (by coupling):
     module                            fan-in  fan-out crit     blast radius
-    airflow-core/src/airflow/models     1396      315 high     56732
-    devel-common/src/tests_common/t…    1450       85 high     35780
-    providers/common/compat/src/air…    1214        1 high     51068
-    airflow-core/src/airflow/utils      1029       69 high     62870
-    airflow-core/src/airflow             871       39 high     67265
-    providers/common/compat/tests/u…     690        0 high     61945
-    providers/google/src/airflow/pr…     323      284 high     14305
-    providers/amazon/tests/system/a…       1      510 high     177
+    airflow-core/src/airflow/models     1661      380 high     66716
+    devel-common/src/tests_common/t…    1496      161 high     39422
+    providers/common/compat/src/air…    1295        2 high     59376
+    airflow-core/src/airflow/utils      1124      132 high     68653
+    airflow-core/src/airflow            1172       71 high     71697
+    providers/common/compat/tests/u…     776        0 high     65589
+    providers/google/src/airflow/pr…     327      329 high     14701
+    task-sdk/src/airflow/sdk             591       15 high     64026
 
 Code health
-  god classes (high fan-in)    298
-    airflow-core/src/airflow/ui/openapi-gen/req… 153 dependents
-    airflow-ctl/tests/airflow_ctl/api/test_oper… 79 dependents
-    providers/cncf/kubernetes/tests/unit/cncf/k… 71 dependents
-    airflow-core/tests/unit/ti_deps/deps/test_t… 49 dependents
-    providers/hashicorp/tests/unit/hashicorp/ho… 45 dependents
-  call-graph hotspots       133
-    airflow-core/src/airflow/ui/openapi-gen/req… fan-in 153 / out 12
-    providers/cncf/kubernetes/tests/unit/cncf/k… fan-in 71 / out 6
-    providers/openlineage/tests/unit/openlineag… fan-in 3 / out 21
-    providers/edge3/src/airflow/providers/edge3… fan-in 3 / out 3
-    providers/google/src/airflow/providers/goog… fan-in 10 / out 18
+  god classes (high fan-in)    254
+    chart/tests/chart_utils/helm_template_gener… 1193 dependents
+    devel-common/src/tests_common/test_utils/co… 557 dependents
+    devel-common/src/tests_common/test_utils/sy… 476 dependents
+    dev/breeze/src/airflow_breeze/utils/console… 376 dependents
+    airflow-core/src/airflow/utils/session.crea… 288 dependents
+  call-graph hotspots       152
+    chart/tests/chart_utils/helm_template_gener… fan-in 1193 / out 7
+    devel-common/src/tests_common/test_utils/co… fan-in 557 / out 10
+    task-sdk/src/airflow/sdk/execution_time/tas… fan-in 101 / out 37
+    airflow-core/src/airflow/utils/session.crea… fan-in 288 / out 6
+    dev/breeze/src/airflow_breeze/utils/run_uti… fan-in 179 / out 9
   deep dependency chains     10
-    airflow-core/tests/unit/api_fastapi/core_ap… depth 57
-    airflow-core/tests/unit/api_fastapi/core_ap… depth 56
-    airflow-core/tests/unit/assets               depth 56
-    airflow-core/tests/unit/jobs                 depth 56
-    providers/fab/tests/unit/fab/plugins         depth 56
+    chart/docs                                   depth 196
+    dev/breeze/tests                             depth 196
+    dev/breeze/tests/integration_tests           depth 196
+    scripts/tools                                depth 196
+    airflow-core/tests/unit/api_fastapi/core_ap… depth 195
   large public surfaces      20
-    airflow-core/src/airflow/ui/openapi-gen/req… 911/911 (100%)
     airflow-core/src/airflow/ui/openapi-gen/que… 864/864 (100%)
+    airflow-core/src/airflow/ui/openapi-gen/req… 720/720 (100%)
     task-sdk/src/airflow/sdk/execution_time/com… 119/129 (92%)
-    providers/edge3/src/airflow/providers/edge3… 3/3 (100%)
+    providers/edge3/src/airflow/providers/edge3… 100/100 (100%)
     task-sdk/src/airflow/sdk/definitions/mapped… 100/111 (90%)
   complexity outliers        15
     airflow-core/src/airflow/jobs/scheduler_job… complexity 69

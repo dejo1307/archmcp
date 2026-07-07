@@ -220,14 +220,17 @@ func Compute(eng *bootstrap.Engine) *Report {
 				addFinding(godClass, name, fmt.Sprintf("%d dependents", firstParenInt(in.Title)))
 			case strings.HasPrefix(in.Title, "Call-graph hotspot:"):
 				name := nameBetween(in.Title, "Call-graph hotspot:", " (")
-				ints := allInts(in.Title)
-				addFinding(hotspots, name, fanDetail(ints))
+				// Scan for metrics only after "(" so digits in the symbol name
+				// (e.g. "Sha256Hash", "oauth2") aren't mistaken for fan-in/out.
+				addFinding(hotspots, name, fanDetail(metricInts(in.Title, "(")))
 			case strings.HasPrefix(in.Title, "Deep dependency chain:"):
 				name := nameBetween(in.Title, "Deep dependency chain:", " (")
 				addFinding(deepChains, name, fmt.Sprintf("depth %d", firstParenInt(in.Title)))
 			case strings.HasPrefix(in.Title, "Large public surface:"):
 				name := nameBetween(in.Title, "Large public surface:", " exports")
-				addFinding(surfaces, name, surfaceDetail(allInts(in.Title)))
+				// Scan for metrics only after " exports" so digits in the module
+				// name (e.g. "oauth2", "utf8") aren't parsed as exported/total.
+				addFinding(surfaces, name, surfaceDetail(metricInts(in.Title, " exports")))
 			case strings.HasPrefix(in.Title, "High cyclomatic complexity:"):
 				name := nameBetween(in.Title, "High cyclomatic complexity:", " (")
 				addFinding(complexFns, name, fmt.Sprintf("complexity %d", firstParenInt(in.Title)))
@@ -453,6 +456,19 @@ func nameBetween(title, prefix, stop string) string {
 		s = s[:i]
 	}
 	return strings.TrimSpace(s)
+}
+
+// metricInts parses the integer metrics out of an insight title, starting the
+// scan at the first occurrence of marker. Names precede the metric section (a
+// symbol/module name has no "(" and appears before " exports"), so cutting at
+// the marker keeps digits inside a name — "Sha256Hash", "oauth2", "utf8" — from
+// being misread as metrics. Falls back to scanning the whole title if the marker
+// is absent.
+func metricInts(title, marker string) []int {
+	if i := strings.Index(title, marker); i >= 0 {
+		return allInts(title[i:])
+	}
+	return allInts(title)
 }
 
 // allInts returns every run of digits in s as integers, in order. Used to pull

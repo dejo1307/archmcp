@@ -6,6 +6,7 @@ package common
 
 import (
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -160,4 +161,79 @@ func MeanStdDev(values []float64) (mean, std float64) {
 func OutlierThreshold(values []float64, k float64) float64 {
 	mean, std := MeanStdDev(values)
 	return mean + k*std
+}
+
+// StronglyConnectedComponents returns the strongly-connected components of a
+// directed graph (adjacency list: node -> successors) using Tarjan's algorithm.
+//
+// The result is deterministic regardless of Go's randomized map iteration: nodes
+// are visited in sorted order with sorted neighbor lists, each component's members
+// are sorted, and the component list is ordered by each component's smallest
+// member. Every key of graph appears in exactly one component (a node that appears
+// only as a neighbor is included as its own singleton). Shared by the cycles and
+// dependency-depth explainers, which both need a cycle-safe view of the module
+// graph — factoring it here keeps a single, tested implementation.
+func StronglyConnectedComponents(graph map[string][]string) [][]string {
+	nodes := make([]string, 0, len(graph))
+	for v := range graph {
+		nodes = append(nodes, v)
+	}
+	sort.Strings(nodes)
+
+	var (
+		index    int
+		stack    []string
+		onStack  = make(map[string]bool)
+		indices  = make(map[string]int)
+		lowlinks = make(map[string]int)
+		sccs     [][]string
+	)
+
+	var strongConnect func(v string)
+	strongConnect = func(v string) {
+		indices[v] = index
+		lowlinks[v] = index
+		index++
+		stack = append(stack, v)
+		onStack[v] = true
+
+		neighbors := append([]string(nil), graph[v]...)
+		sort.Strings(neighbors)
+		for _, w := range neighbors {
+			if _, visited := indices[w]; !visited {
+				strongConnect(w)
+				if lowlinks[w] < lowlinks[v] {
+					lowlinks[v] = lowlinks[w]
+				}
+			} else if onStack[w] {
+				if indices[w] < lowlinks[v] {
+					lowlinks[v] = indices[w]
+				}
+			}
+		}
+
+		if lowlinks[v] == indices[v] {
+			var scc []string
+			for {
+				w := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				onStack[w] = false
+				scc = append(scc, w)
+				if w == v {
+					break
+				}
+			}
+			sort.Strings(scc)
+			sccs = append(sccs, scc)
+		}
+	}
+
+	for _, v := range nodes {
+		if _, visited := indices[v]; !visited {
+			strongConnect(v)
+		}
+	}
+
+	sort.Slice(sccs, func(i, j int) bool { return sccs[i][0] < sccs[j][0] })
+	return sccs
 }

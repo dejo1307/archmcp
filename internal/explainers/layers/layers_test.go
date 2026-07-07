@@ -3,6 +3,7 @@ package layers
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -430,6 +431,119 @@ func TestDetectViolations_OuterImportsInner(t *testing.T) {
 	for _, insight := range insights {
 		if insight.Confidence == 0.8 {
 			t.Errorf("unexpected layer violation: %s", insight.Title)
+		}
+	}
+}
+
+// addDep adds a single import dependency fact from a specific file.
+func addDep(s *facts.Store, file, target string) {
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: file,
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: target}}})
+}
+
+func countViolations(insights []facts.Insight) int {
+	n := 0
+	for _, in := range insights {
+		if in.Confidence == 0.8 {
+			n++
+		}
+	}
+	return n
+}
+
+// TestDetectViolations_Dedup: two files in the same source module importing the
+// same outer module produce ONE violation, not two — so the renderer's
+// title-prefix count isn't inflated.
+func TestDetectViolations_Dedup(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"domain/entity", "presentation/views", "adapter/rest", "application/svc"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m})
+	}
+	addDep(s, "domain/entity/a.go", "presentation/views")
+	addDep(s, "domain/entity/b.go", "presentation/views") // same (source module, target) pair
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if got := countViolations(insights); got != 1 {
+		t.Errorf("duplicate import across two files should yield 1 violation, got %d", got)
+	}
+}
+
+// TestDetectViolations_LevelEqualNoViolation: an import between two same-level
+// layers (application -> port, both level 1) is not a violation.
+func TestDetectViolations_LevelEqualNoViolation(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"application/svc", "port/iface", "adapter/rest", "domain/entity"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m})
+	}
+	addDep(s, "application/svc/a.go", "port/iface")
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if got := countViolations(insights); got != 0 {
+		t.Errorf("same-level import should not be a violation, got %d", got)
+	}
+}
+
+// TestDetectViolations_RelativeImportResolved guards the fix where a JS/TS-style
+// relative import target ("../pages") is resolved against the source module
+// before matching a layer — previously the raw target never matched, so the
+// violation was missed.
+func TestDetectViolations_RelativeImportResolved(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("typescript", "pages", "components", "lib", "hooks")...)
+	s.Add(frameworkFact("nextjs"))
+	// lib (level 0) imports "../pages" (level 3) via a relative path -> violation.
+	addDep(s, "lib/util.ts", "../pages")
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	found := false
+	for _, in := range insights {
+		if in.Confidence == 0.8 && strings.Contains(in.Title, "lib -> pages") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("relative import lib -> ../pages should resolve to a lib->pages violation; got %v", func() []string {
+			out := make([]string, len(insights))
+			for i, in := range insights {
+				out[i] = in.Title
+			}
+			return out
+		}())
+	}
+}
+
+// TestExplain_PatternEvidenceDeterministic: the architecture-pattern insight's
+// evidence used to be built by ranging a map, so its order churned run to run.
+func TestExplain_PatternEvidenceDeterministic(t *testing.T) {
+	store := makeStore(
+		[]string{"domain/entity", "presentation/views", "adapter/rest", "application/svc"},
+		map[string][]string{},
+	)
+	render := func() string {
+		insights, err := New().Explain(context.Background(), store)
+		if err != nil {
+			t.Fatalf("Explain: %v", err)
+		}
+		var b strings.Builder
+		for _, ev := range insights[0].Evidence { // insights[0] is the architecture pattern
+			b.WriteString(ev.Fact)
+			b.WriteByte(',')
+		}
+		return b.String()
+	}
+	want := render()
+	for i := 0; i < 50; i++ {
+		if got := render(); got != want {
+			t.Fatalf("non-deterministic pattern evidence on iteration %d:\nwant %q\ngot  %q", i, want, got)
 		}
 	}
 }

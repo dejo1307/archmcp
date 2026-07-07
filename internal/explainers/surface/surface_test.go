@@ -104,6 +104,95 @@ func TestExplain_CappedAndRankedBySurface(t *testing.T) {
 	}
 }
 
+// TestExplain_MinSymbolsBoundary: a module with exactly minSymbols (all exported)
+// is reported; one symbol fewer is exempt.
+func TestExplain_MinSymbolsBoundary(t *testing.T) {
+	at := facts.NewStore()
+	addModuleSymbols(at, "pkg/edge", minSymbols, minSymbols)
+	got, err := New().Explain(context.Background(), at)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("module with exactly minSymbols (%d) should be reported, got %d", minSymbols, len(got))
+	}
+
+	below := facts.NewStore()
+	addModuleSymbols(below, "pkg/edge", minSymbols-1, minSymbols-1)
+	got, err = New().Explain(context.Background(), below)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("module with minSymbols-1 (%d) should be exempt, got %d", minSymbols-1, len(got))
+	}
+}
+
+// TestExplain_RatioBoundary: a module at exactly minExportedRatio is reported
+// (the gate is >=), just below is not.
+func TestExplain_RatioBoundary(t *testing.T) {
+	at := facts.NewStore()
+	addModuleSymbols(at, "pkg/edge", 20, 17) // 17/20 = 0.85 == minExportedRatio
+	got, err := New().Explain(context.Background(), at)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("ratio == minExportedRatio (0.85) should be reported, got %d", len(got))
+	}
+
+	below := facts.NewStore()
+	addModuleSymbols(below, "pkg/edge", 20, 16) // 0.80 < 0.85
+	got, err = New().Explain(context.Background(), below)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ratio below minExportedRatio should not be reported, got %d", len(got))
+	}
+}
+
+// TestExplain_MixedVisibilityRatioOnKnownOnly: symbols without an "exported" prop
+// are excluded from the tally, so the ratio is computed over known-visibility
+// symbols only.
+func TestExplain_MixedVisibilityRatioOnKnownOnly(t *testing.T) {
+	s := facts.NewStore()
+	addModuleSymbols(s, "pkg/mixed", 20, 19) // 20 known, 19 exported -> 95%
+	// Add symbols with unknown visibility; these must not change the ratio.
+	for i := 0; i < 10; i++ {
+		s.Add(facts.Fact{Kind: facts.KindSymbol, Name: fmt.Sprintf("pkg/mixed.Unknown%d", i), File: "pkg/mixed/u.go"})
+	}
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 insight, got %d", len(insights))
+	}
+	// Title reflects 19 of 20 (known only), not 19 of 30.
+	if !strings.Contains(insights[0].Title, "19 of 20") {
+		t.Errorf("ratio should be over known-visibility symbols only, got %q", insights[0].Title)
+	}
+}
+
+// TestExplain_TitleFormatWithDigitName locks the title contract pkg/explain
+// parses, for a module whose name contains digits (ties to the explain BUG-1 fix).
+func TestExplain_TitleFormatWithDigitName(t *testing.T) {
+	s := facts.NewStore()
+	addModuleSymbols(s, "pkg/oauth2", 44, 40) // 40/44 = 90.9% -> "91%"
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 insight, got %d", len(insights))
+	}
+	want := "Large public surface: pkg/oauth2 exports 40 of 44 symbols (91%)"
+	if insights[0].Title != want {
+		t.Errorf("title = %q, want %q", insights[0].Title, want)
+	}
+}
+
 func TestExplain_MissingVisibilityIgnored(t *testing.T) {
 	s := facts.NewStore()
 	for i := 0; i < 20; i++ {

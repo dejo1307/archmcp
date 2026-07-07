@@ -128,6 +128,111 @@ func TestExplain_CycleDoesNotInflateDepth(t *testing.T) {
 	}
 }
 
+// TestExplain_CycleUnderCountRegression guards BUG-3: the old memoized
+// longestChain cached a node's depth even when it was truncated by the cycle
+// back-edge cut, then reused that truncated value globally. In this graph
+// (m/a<->m/b cycle, tail m/c->m/d->m/e, feeder m/r->m/b) computing m/a first
+// memoized m/b at depth 1, so m/r's true depth-6 chain (r->b->a->c->d->e) was
+// never reported. The SCC-condensation rewrite reports it correctly.
+func TestExplain_CycleUnderCountRegression(t *testing.T) {
+	store := makeStore(
+		[]string{"m/a", "m/b", "m/c", "m/d", "m/e", "m/r"},
+		map[string][]string{
+			"m/a": {"m/b", "m/c"},
+			"m/b": {"m/a"},
+			"m/c": {"m/d"},
+			"m/d": {"m/e"},
+			"m/r": {"m/b"},
+		},
+	)
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+
+	byModule := map[string]facts.Insight{}
+	for _, in := range insights {
+		for _, m := range []string{"m/r", "m/a"} {
+			if strings.Contains(in.Title, m+" (") {
+				byModule[m] = in
+			}
+		}
+	}
+
+	rIn, ok := byModule["m/r"]
+	if !ok {
+		t.Fatalf("m/r (true depth 6) was not reported — under-count regression; got %+v", titles(insights))
+	}
+	if !strings.Contains(rIn.Title, "depth 6") {
+		t.Errorf("m/r should be reported at depth 6, got title %q", rIn.Title)
+	}
+	if len(rIn.Evidence) != 6 {
+		t.Errorf("m/r chain should span 6 distinct modules, got %d", len(rIn.Evidence))
+	}
+	seen := map[string]bool{}
+	for _, ev := range rIn.Evidence {
+		if seen[ev.Fact] {
+			t.Errorf("chain double-counts %q", ev.Fact)
+		}
+		seen[ev.Fact] = true
+	}
+	// The cycle members m/a and m/b share a depth of 5 (>= minDepth) and must be
+	// reported too — as a single component insight keyed on the smallest member.
+	if _, ok := byModule["m/a"]; !ok {
+		t.Errorf("cycle component (m/a) at depth 5 should be reported; got %v", titles(insights))
+	}
+}
+
+func titles(ins []facts.Insight) []string {
+	out := make([]string, len(ins))
+	for i, in := range ins {
+		out[i] = in.Title
+	}
+	return out
+}
+
+func TestExplain_CapsAtMaxInsights(t *testing.T) {
+	// A single long chain: a/m0..a/m15. Modules a/m0..a/m11 have depth >= minDepth
+	// (5), i.e. 12 qualifying modules — more than the cap of 10.
+	mods, deps := chain(16)
+	insights, err := New().Explain(context.Background(), makeStore(mods, deps))
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != maxInsights {
+		t.Fatalf("expected output capped at %d, got %d", maxInsights, len(insights))
+	}
+	if !strings.Contains(insights[0].Title, "a/m0 (") || !strings.Contains(insights[0].Title, "depth 16") {
+		t.Errorf("deepest module a/m0 (depth 16) should rank first, got %q", insights[0].Title)
+	}
+}
+
+func TestExplain_SelfImportDoesNotAddDepth(t *testing.T) {
+	// a/m0 imports itself and a/m1; the self-import must not inflate its depth.
+	mods, deps := chain(5)
+	deps["a/m0"] = append(deps["a/m0"], "a/m0")
+	insights, err := New().Explain(context.Background(), makeStore(mods, deps))
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 insight, got %d", len(insights))
+	}
+	if !strings.Contains(insights[0].Title, "depth 5") {
+		t.Errorf("self-import should not add depth; want depth 5, got %q", insights[0].Title)
+	}
+}
+
+func TestExplain_EmptyGraph(t *testing.T) {
+	insights, err := New().Explain(context.Background(), facts.NewStore())
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 0 {
+		t.Errorf("empty store should yield no insights, got %d", len(insights))
+	}
+}
+
 // TestExplain_Deterministic guards against the regression where cycle handling
 // depended on Go's randomized map iteration order. Each Explain call re-ranges
 // the graph map, so repeated calls exercise different iteration orders; the
