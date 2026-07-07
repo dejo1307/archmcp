@@ -114,6 +114,7 @@ var versionCoverage = map[int][]string{
 	80: {"TestExtractFile_FastAPIRoute_PathKeyword", "TestExtractEntryPoints_ProviderInfo", "TestAST_DottedStringLiteralEmitsRef"}, // Python path= keyword routes, pyproject entry-points, dotted-string refs
 	81: {"TestAST_ClassBodyCallAndValueRefEmitEdges", "TestAST_SameModuleValueRef", "TestAST_ParamPassedAsValue_NoFalseEdge", "TestAST_ComputedPathRouteHandlerTagged"}, // Python class-body wiring, same-module value-refs, computed-path route-handler tag
 	82: {"TestAST_RegistrationDecoratorsMarkUsed", "TestAST_AttributeArgValueRef", "TestAST_DictValueRef", "TestAST_ListOfLocalsNoFalseRef"}, // Python registration decorators + attribute/collection value-refs
+	83: {"TestPyComplexity_ScalingLoopDepth_BoundedInnerDiscounted", "TestPyComplexity_ScalingLoopDepth_FullyBounded", "TestPyComplexity_ScalingLoopDepth_WhileTrueBounded", "TestPyComplexity_IODirect", "TestPyComputePerformsIO_Transitive", "TestExtract_ScalingLoopDepth_BoundedDiscounted"}, // scaling_loop_depth (Python/Go) + Python io_direct/performs_io
 }
 
 func TestCacheVersionCoverage(t *testing.T) {

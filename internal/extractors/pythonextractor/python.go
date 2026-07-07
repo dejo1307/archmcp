@@ -151,6 +151,12 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 	}
 	resolveCallTargets(allFacts, fileModules)
 
+	// Propagate the walk-time io_direct flag transitively across the (now canonical)
+	// call graph into performs_io, so a function that reaches DB/network I/O only through
+	// helpers is still flagged — the signal the enterprise analyzer reads to tell a real
+	// per-iteration I/O call from a name that merely collides with a DB verb.
+	computePyPerformsIO(allFacts)
+
 	for dir := range modules {
 		allFacts = append(allFacts, facts.Fact{
 			Kind: facts.KindModule,
@@ -163,6 +169,66 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 	}
 
 	return allFacts, nil
+}
+
+// computePyPerformsIO propagates the per-body io_direct flag transitively across the
+// call graph into a performs_io prop, so a function that reaches DB/network/file I/O only
+// through helpers is still flagged. Mirrors computeTSPerformsIO: a monotone fixpoint that
+// only ever flips false→true, so it is cycle-safe. Only edges to known symbol names
+// propagate (unresolved external calls are ignored), so the closure stays within the repo.
+func computePyPerformsIO(allFacts []facts.Fact) {
+	exists := make(map[string]bool)
+	for i := range allFacts {
+		if allFacts[i].Kind == facts.KindSymbol {
+			exists[allFacts[i].Name] = true
+		}
+	}
+
+	io := make(map[string]bool)      // name → performs I/O (directly or transitively)
+	adj := make(map[string][]string) // name → called names that are known symbols
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
+		}
+		if b, _ := f.Props["io_direct"].(bool); b {
+			io[f.Name] = true
+		}
+		seen := make(map[string]bool)
+		for _, r := range f.Relations {
+			if r.Kind != facts.RelCalls || r.Target == f.Name || seen[r.Target] || !exists[r.Target] {
+				continue
+			}
+			seen[r.Target] = true
+			adj[f.Name] = append(adj[f.Name], r.Target)
+		}
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for name, callees := range adj {
+			if io[name] {
+				continue
+			}
+			for _, c := range callees {
+				if io[c] {
+					io[name] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind == facts.KindSymbol && io[f.Name] {
+			if f.Props == nil {
+				f.Props = map[string]any{}
+			}
+			f.Props["performs_io"] = true
+		}
+	}
 }
 
 // --- Regex patterns used by the AST walker ---
@@ -216,8 +282,8 @@ var (
 	// hooks. A function with any such decorator is marked used via a self file-ref edge.
 	registrationDecorators = map[string]bool{
 		"compiles": true, "listens_for": true, // SQLAlchemy
-		"register": true, // functools.singledispatch (also ABCMeta/registries)
-		"connect":  true, // blinker/Celery/Django signals
+		"register":     true, // functools.singledispatch (also ABCMeta/registries)
+		"connect":      true, // blinker/Celery/Django signals
 		"errorhandler": true, "app_errorhandler": true,
 		"before_request": true, "after_request": true,
 		"teardown_request": true, "teardown_appcontext": true,

@@ -1661,13 +1661,14 @@ func resolveJSXTag(nameNode *sitter.Node, src []byte, dir string, internal, name
 // tsBodyMetrics accumulates per-function complexity signals during the single
 // body walk — mirrors the Go/Python/Ruby/Swift/Kotlin extractors.
 type tsBodyMetrics struct {
-	loopDepth   int             // max loop nesting depth
-	loopCount   int             // number of loop constructs (syntactic + array-method callbacks)
-	decisions   int             // decision points (cyclomatic = 1 + decisions)
-	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
-	inLoopSeen  map[string]bool // dedup set for callsInLoop
-	recursive   bool            // body directly calls the enclosing function
-	ioDirect    bool            // body directly invokes a network/file I/O primitive
+	loopDepth        int             // max loop nesting depth
+	scalingLoopDepth int             // max nesting counting only unbounded (input-scaling) loops
+	loopCount        int             // number of loop constructs (syntactic + array-method callbacks)
+	decisions        int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop      []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen       map[string]bool // dedup set for callsInLoop
+	recursive        bool            // body directly calls the enclosing function
+	ioDirect         bool            // body directly invokes a network/file I/O primitive
 }
 
 // tsIterators are array/collection methods whose callback runs once per element —
@@ -1925,6 +1926,7 @@ type tsBodyWalker struct {
 	selfName, selfShort string
 	metrics             *tsBodyMetrics
 	loopDepth           int
+	scalingDepth        int // current nesting counting only input-scaling (unbounded) loops
 	rels                []facts.Relation
 	seen                map[string]bool
 }
@@ -1965,12 +1967,12 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 	// being mis-counted as a per-iteration call. The iterator's own callback is
 	// handled separately in the call_expression branch (its body walks at +1).
 	if w.metrics != nil && tsIsFunctionLike(kind) {
-		saved := w.loopDepth
-		w.loopDepth = 0
+		saved, savedScaling := w.loopDepth, w.scalingDepth
+		w.loopDepth, w.scalingDepth = 0, 0
 		for i := range n.ChildCount() {
 			w.walk(n.Child(i))
 		}
-		w.loopDepth = saved
+		w.loopDepth, w.scalingDepth = saved, savedScaling
 		return
 	}
 
@@ -1987,21 +1989,33 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 		}
 	}
 
-	// Syntactic loops: everything in the body runs per iteration.
+	// Syntactic loops: everything in the body runs per iteration. A loop over a literal
+	// collection (for..of [a,b,c]) or an infinite while(true)/do..while(true) event/retry
+	// loop is bounded — it raises loop_depth but not scaling_loop_depth (the Big-O exponent).
 	switch kind {
 	case "for_statement", "for_in_statement", "while_statement", "do_statement":
+		bounded := tsLoopBounded(n, w.src)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
 			if w.loopDepth+1 > w.metrics.loopDepth {
 				w.metrics.loopDepth = w.loopDepth + 1
 			}
+			if !bounded && w.scalingDepth+1 > w.metrics.scalingLoopDepth {
+				w.metrics.scalingLoopDepth = w.scalingDepth + 1
+			}
 		}
 		w.loopDepth++
+		if !bounded {
+			w.scalingDepth++
+		}
 		for i := range n.ChildCount() {
 			w.walk(n.Child(i))
 		}
 		w.loopDepth--
+		if !bounded {
+			w.scalingDepth--
+		}
 		return
 	}
 
@@ -2034,14 +2048,22 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 		// callback body runs per element, but the receiver/other args run once.
 		if w.metrics != nil {
 			if cb := tsIteratorCallback(n, w.src); cb != nil {
+				// A `[a,b,c].map(cb)` over a literal receiver iterates a fixed count — it
+				// raises loop_depth but not the scaling depth. The actual w.loopDepth /
+				// w.scalingDepth bump happens at the callback body inside walkCallbackSubtree;
+				// here we only record the maxes.
+				bounded := tsIteratorReceiverBounded(n, w.src)
 				w.metrics.loopCount++
 				w.metrics.decisions++
 				if w.loopDepth+1 > w.metrics.loopDepth {
 					w.metrics.loopDepth = w.loopDepth + 1
 				}
+				if !bounded && w.scalingDepth+1 > w.metrics.scalingLoopDepth {
+					w.metrics.scalingLoopDepth = w.scalingDepth + 1
+				}
 				for i := range n.ChildCount() {
 					if c := n.Child(i); tsByteContains(c, cb) {
-						w.walkCallbackSubtree(c, cb)
+						w.walkCallbackSubtree(c, cb, bounded)
 					} else {
 						w.walk(c)
 					}
@@ -2083,8 +2105,10 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 
 // walkCallbackSubtree descends toward an iterator's callback, bumping the loop depth
 // exactly at the callback (its body is per-iteration) while walking everything else
-// (the receiver, sibling args) at the current depth.
-func (w *tsBodyWalker) walkCallbackSubtree(n, cb *sitter.Node) {
+// (the receiver, sibling args) at the current depth. When the iterator's receiver is a
+// literal (bounded), the scaling depth is NOT bumped — the callback runs a fixed number
+// of times, so it does not add a factor of n to Big-O.
+func (w *tsBodyWalker) walkCallbackSubtree(n, cb *sitter.Node, bounded bool) {
 	if n == nil {
 		return
 	}
@@ -2094,15 +2118,21 @@ func (w *tsBodyWalker) walkCallbackSubtree(n, cb *sitter.Node) {
 		// because walk() would treat the callback as a function scope and reset
 		// the depth — but THIS callback genuinely runs per iteration.
 		w.loopDepth++
+		if !bounded {
+			w.scalingDepth++
+		}
 		for i := range cb.ChildCount() {
 			w.walk(cb.Child(i))
 		}
 		w.loopDepth--
+		if !bounded {
+			w.scalingDepth--
+		}
 		return
 	}
 	for i := range n.ChildCount() {
 		if c := n.Child(i); tsByteContains(c, cb) {
-			w.walkCallbackSubtree(c, cb)
+			w.walkCallbackSubtree(c, cb, bounded)
 		} else {
 			w.walk(c)
 		}
@@ -2128,6 +2158,9 @@ func applyTSMetrics(props map[string]any, m *tsBodyMetrics) {
 	props["cyclomatic"] = 1 + m.decisions
 	if m.loopDepth > 0 {
 		props["loop_depth"] = m.loopDepth
+		// Emit the scaling depth (bounded loops discounted) alongside — even when 0 — so
+		// the consumer distinguishes "all loops bounded" from "signal absent".
+		props["scaling_loop_depth"] = m.scalingLoopDepth
 	}
 	if m.loopCount > 0 {
 		props["loop_count"] = m.loopCount
@@ -2141,6 +2174,61 @@ func applyTSMetrics(props map[string]any, m *tsBodyMetrics) {
 	if m.ioDirect {
 		props["io_direct"] = true
 	}
+}
+
+// tsLoopBounded reports whether a syntactic loop iterates a fixed number of times
+// regardless of input: a for..of / for..in over an array/object literal, or an infinite
+// while(true) / do..while(true) event/retry loop. A C-style for(;;) is treated as
+// unbounded (its bound is not statically evident). Such a loop does not add a factor of n.
+func tsLoopBounded(n *sitter.Node, src []byte) bool {
+	switch n.Kind() {
+	case "for_in_statement":
+		if r := n.ChildByFieldName("right"); r != nil {
+			return tsIterableLiteral(r)
+		}
+	case "while_statement", "do_statement":
+		if c := n.ChildByFieldName("condition"); c != nil {
+			return tsIsTrueCondition(c, src)
+		}
+	}
+	return false
+}
+
+// tsIteratorReceiverBounded reports whether an array-iterator call (`recv.map(cb)`) has a
+// literal receiver (`[a,b,c].map(...)`), so the callback runs a fixed number of times.
+func tsIteratorReceiverBounded(n *sitter.Node, src []byte) bool {
+	fn := n.ChildByFieldName("function")
+	if fn == nil || fn.Kind() != "member_expression" {
+		return false
+	}
+	obj := fn.ChildByFieldName("object")
+	return obj != nil && tsIterableLiteral(obj)
+}
+
+// tsIterableLiteral reports whether a node is an array/object literal (a fixed-size iterable).
+func tsIterableLiteral(n *sitter.Node) bool {
+	switch n.Kind() {
+	case "array", "object":
+		return true
+	}
+	return false
+}
+
+// tsIsTrueCondition reports whether a loop condition is the constant `true` / a nonzero
+// literal — the `while (true) { … }` reconnect/event loop whose iteration count is driven
+// by external events, not input size.
+func tsIsTrueCondition(c *sitter.Node, src []byte) bool {
+	inner := c
+	if inner.Kind() == "parenthesized_expression" && inner.NamedChildCount() > 0 {
+		inner = inner.NamedChild(0)
+	}
+	switch inner.Kind() {
+	case "true":
+		return true
+	case "number":
+		return nodeText(inner, src) != "0"
+	}
+	return false
 }
 
 // computeTSPerformsIO propagates the walk-time io_direct flag transitively across the

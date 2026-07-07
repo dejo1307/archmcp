@@ -196,7 +196,13 @@ import (
 // references now also resolve attribute args (register_error_handler(404, m.handler))
 // and dict/list/set/tuple values (dispatch tables like {"ds": ds_filter}). Reduces
 // Python dead-code false positives; bump so cached snapshots re-extract.
-const cacheVersion = "v82"
+// v83: complexity signals gain a new prop scaling_loop_depth (loop nesting counting only
+// input-scaling loops — literal/constant/range(<const>) iterables and infinite
+// while(true)/for{} event loops are discounted), emitted by the Python, TypeScript, and Go
+// extractors; the Python extractor also now emits io_direct/performs_io (transitive
+// DB/network/file I/O). Consumed by the enterprise performance analyzer to deflate the
+// O(n^k) tail and tighten call-in-loop precision; bump so cached snapshots re-extract.
+const cacheVersion = "v83"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

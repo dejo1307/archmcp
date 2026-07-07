@@ -178,3 +178,41 @@ func Simple(a, b bool) bool {
 		t.Errorf("calls_in_loop should be omitted, got %v", f.Props["calls_in_loop"])
 	}
 }
+
+func TestExtract_ScalingLoopDepth_BoundedDiscounted(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"pkg/proc.go": `package pkg
+
+func Process(items []int) {
+	for _, x := range items {
+		for _, m := range []string{"a", "b"} {
+			use(x, m)
+		}
+	}
+}
+
+func Poll() {
+	for {
+		tick()
+	}
+}
+
+func use(x int, m string) {}
+func tick()               {}
+`,
+	})
+
+	f, _ := findFact(ff, "pkg.Process")
+	if got := intProp(t, f, "loop_depth"); got != 2 {
+		t.Errorf("loop_depth = %d, want 2", got)
+	}
+	// Inner range is over a composite literal → bounded → only the outer loop scales.
+	if got := intProp(t, f, "scaling_loop_depth"); got != 1 {
+		t.Errorf("scaling_loop_depth = %d, want 1", got)
+	}
+
+	p, _ := findFact(ff, "pkg.Poll")
+	if got := intProp(t, p, "scaling_loop_depth"); got != 0 {
+		t.Errorf("infinite for{} scaling_loop_depth = %d, want 0", got)
+	}
+}

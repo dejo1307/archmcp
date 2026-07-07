@@ -97,13 +97,32 @@ func CapTokens(s string, maxTokens int, isJSON bool) string {
 	return cut + notice
 }
 
-// IsGeneratedPath reports whether a repo-relative path is build/generated output
-// that should not be reported as source. Conservative: exact path-segment matches
-// only, so legitimately-named packages are never hidden.
+// IsGeneratedPath reports whether a repo-relative path is build/generated/vendored
+// output or a machine-generated source file that should not be reported as source.
+// Conservative: exact path-segment matches and explicit, unambiguous filename
+// suffixes only, so legitimately-named packages are never hidden.
 func IsGeneratedPath(p string) bool {
 	for _, part := range strings.Split(p, "/") {
 		switch part {
-		case "build", "Pods", "node_modules", "kspCaches", "generated", "__pycache__":
+		case "build", "Pods", "node_modules", "kspCaches", "generated",
+			"__pycache__", "vendor", "openapi-gen", "__generated__", "third_party":
+			return true
+		}
+	}
+	base := p
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	// Explicit code-generation / bundle suffixes. Kept unambiguous (a two-part
+	// suffix or a well-known tool marker) so a hand-written file is never matched:
+	// `.gen.ts` is emitted by openapi/graphql codegen, `.pb.go`/`_pb2.py` by
+	// protoc, `.min.js` is a minified bundle whose loop nesting is meaningless.
+	for _, suf := range []string{
+		".gen.ts", ".gen.tsx", ".gen.js", ".gen.go", ".generated.ts", ".generated.go",
+		".min.js", ".min.css", ".pb.go", ".pb.gw.go", ".g.dart",
+		"_pb2.py", "_pb2_grpc.py",
+	} {
+		if strings.HasSuffix(base, suf) {
 			return true
 		}
 	}

@@ -81,9 +81,10 @@ type pyWalker struct {
 	// metrics is nil outside a function body walk. loopDepth is the current loop
 	// nesting depth; selfName is the enclosing function's qualified name (for
 	// direct-recursion detection).
-	metrics   *pyBodyMetrics
-	loopDepth int
-	selfName  string
+	metrics      *pyBodyMetrics
+	loopDepth    int
+	scalingDepth int // current nesting counting only input-scaling (unbounded) loops
+	selfName     string
 
 	// fileRefs accumulates RelCalls edges made in file-scope (module-level) code
 	// and by decorators — references with no enclosing symbol owner. They are
@@ -95,12 +96,14 @@ type pyWalker struct {
 // pyBodyMetrics accumulates per-function complexity signals during the single
 // walkForCalls body traversal — mirrors the Go extractor's bodyMetrics.
 type pyBodyMetrics struct {
-	loopDepth   int             // max loop nesting depth
-	loopCount   int             // number of loop/comprehension constructs
-	decisions   int             // decision points (cyclomatic = 1 + decisions)
-	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
-	inLoopSeen  map[string]bool // dedup set for callsInLoop
-	recursive   bool            // body directly calls the enclosing function
+	loopDepth        int             // max loop nesting depth
+	scalingLoopDepth int             // max nesting counting only unbounded (input-scaling) loops
+	loopCount        int             // number of loop/comprehension constructs
+	decisions        int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop      []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen       map[string]bool // dedup set for callsInLoop
+	recursive        bool            // body directly calls the enclosing function
+	ioDirect         bool            // body directly invokes a network/file/DB I/O primitive
 }
 
 // recordCallMetrics notes a resolved call target against the current function's
@@ -767,11 +770,16 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		// after the walk updates the emitted fact.
 		w.metrics = &pyBodyMetrics{}
 		w.loopDepth = 0
+		w.scalingDepth = 0
 		w.selfName = qualName
 		w.walkForCalls(bodyNode)
 		props["cyclomatic"] = 1 + w.metrics.decisions
 		if w.metrics.loopDepth > 0 {
 			props["loop_depth"] = w.metrics.loopDepth
+			// Always emit the scaling depth (bounded loops discounted) alongside — even
+			// when it is 0 — so the consumer can tell "all loops are bounded" (discount to
+			// O(1)) from "no signal emitted" and fall back correctly.
+			props["scaling_loop_depth"] = w.metrics.scalingLoopDepth
 		}
 		if w.metrics.loopCount > 0 {
 			props["loop_count"] = w.metrics.loopCount
@@ -781,6 +789,9 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		}
 		if w.metrics.recursive {
 			props["recursive_self"] = true
+		}
+		if w.metrics.ioDirect {
+			props["io_direct"] = true
 		}
 		w.metrics = nil
 		w.selfName = ""
@@ -1073,6 +1084,12 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 	if kind == "call" {
 		if fn := node.ChildByFieldName("function"); fn != nil {
 			w.emitCallEdge(fn)
+			// Tag the body io_direct when it directly invokes a DB/network/file primitive
+			// (session.execute, requests.get, open(...)); computePyPerformsIO then
+			// propagates it transitively into performs_io across the call graph.
+			if w.metrics != nil && !w.metrics.ioDirect && pyIsIODirectCall(fn, w.src) {
+				w.metrics.ioDirect = true
+			}
 		}
 		if args := node.ChildByFieldName("arguments"); args != nil {
 			if owner := w.currentOwner(); owner != nil {
@@ -1120,17 +1137,28 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 		return
 	}
 
-	// Statement loops raise the nesting depth for calls within their body.
+	// Statement loops raise the nesting depth for calls within their body. A loop over
+	// a literal/constant collection or range(<const>), or an infinite while(true)
+	// event/retry loop, runs a fixed number of times — it does not scale in "n", so it
+	// raises loop_depth (still a real loop) but not scaling_loop_depth (the Big-O exponent).
 	isLoop := kind == "for_statement" || kind == "while_statement"
+	bounded := false
 	if isLoop {
+		bounded = pyLoopBounded(node, w.src)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
 			if w.loopDepth+1 > w.metrics.loopDepth {
 				w.metrics.loopDepth = w.loopDepth + 1
 			}
+			if !bounded && w.scalingDepth+1 > w.metrics.scalingLoopDepth {
+				w.metrics.scalingLoopDepth = w.scalingDepth + 1
+			}
 		}
 		w.loopDepth++
+		if !bounded {
+			w.scalingDepth++
+		}
 	}
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
@@ -1139,6 +1167,9 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 
 	if isLoop {
 		w.loopDepth--
+		if !bounded {
+			w.scalingDepth--
+		}
 	}
 }
 
@@ -1153,14 +1184,6 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 // multiple for-clauses (which are really nested); this keeps depth attribution
 // conservative rather than over-counting.
 func (w *pyWalker) walkComprehension(node *sitter.Node) {
-	if w.metrics != nil {
-		w.metrics.loopCount++
-		w.metrics.decisions++
-		if w.loopDepth+1 > w.metrics.loopDepth {
-			w.metrics.loopDepth = w.loopDepth + 1
-		}
-	}
-
 	// Identify the first for-clause's iterable (its "right" field).
 	var firstIter *sitter.Node
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
@@ -1169,11 +1192,29 @@ func (w *pyWalker) walkComprehension(node *sitter.Node) {
 			break
 		}
 	}
+	// A comprehension over a literal/constant iterable (`[f(x) for x in (A, B, C)]`) is
+	// bounded, so it does not add a scaling loop level.
+	bounded := firstIter != nil && pyIterableBounded(firstIter, w.src)
+
+	if w.metrics != nil {
+		w.metrics.loopCount++
+		w.metrics.decisions++
+		if w.loopDepth+1 > w.metrics.loopDepth {
+			w.metrics.loopDepth = w.loopDepth + 1
+		}
+		if !bounded && w.scalingDepth+1 > w.metrics.scalingLoopDepth {
+			w.metrics.scalingLoopDepth = w.scalingDepth + 1
+		}
+	}
+
 	if firstIter != nil {
 		w.walkForCalls(firstIter) // evaluated once → stays at outer depth
 	}
 
 	w.loopDepth++
+	if !bounded {
+		w.scalingDepth++
+	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		child := node.Child(i)
 		if child.Kind() == "for_in_clause" {
@@ -1191,6 +1232,111 @@ func (w *pyWalker) walkComprehension(node *sitter.Node) {
 		w.walkForCalls(child)
 	}
 	w.loopDepth--
+	if !bounded {
+		w.scalingDepth--
+	}
+}
+
+// --- Complexity: bounded-loop and direct-I/O classification ---
+
+// pyLoopBounded reports whether a for/while statement iterates a fixed number of times
+// regardless of input size: a for-loop over a literal collection or range(<int literal>),
+// or an infinite while(true)/while(1) event/retry loop (its iteration count is driven by
+// external events, not data). Such a loop does not contribute a factor of n to Big-O.
+func pyLoopBounded(node *sitter.Node, src []byte) bool {
+	switch node.Kind() {
+	case "for_statement":
+		it := node.ChildByFieldName("right")
+		return it != nil && pyIterableBounded(it, src)
+	case "while_statement":
+		cond := node.ChildByFieldName("condition")
+		if cond == nil {
+			return false
+		}
+		switch cond.Kind() {
+		case "true":
+			return true
+		case "integer":
+			return pyText(cond, src) != "0"
+		}
+	}
+	return false
+}
+
+// pyIterableBounded reports whether an iterable expression has a compile-time-fixed
+// length: a list/tuple/set/dict literal, or range(...) whose arguments are all integer
+// literals. Anything data-derived (a variable, range(len(x)), a call result) is unbounded.
+func pyIterableBounded(it *sitter.Node, src []byte) bool {
+	switch it.Kind() {
+	case "list", "tuple", "set", "dictionary":
+		return true
+	case "call":
+		fn := it.ChildByFieldName("function")
+		if fn == nil || pyText(fn, src) != "range" {
+			return false
+		}
+		args := it.ChildByFieldName("arguments")
+		if args == nil {
+			return false
+		}
+		sawArg := false
+		for i := uint(0); i < uint(args.ChildCount()); i++ {
+			c := args.Child(i)
+			switch c.Kind() {
+			case "(", ")", ",":
+				continue
+			}
+			sawArg = true
+			if c.Kind() != "integer" {
+				return false
+			}
+		}
+		return sawArg
+	}
+	return false
+}
+
+// pyIODirectMethods are Python method names that are unambiguously a DB/session
+// round-trip (SQLAlchemy / DBAPI). Ambiguous verbs (get/save/update/merge) are
+// intentionally excluded — they collide with in-memory helpers — and covered by
+// receiver matching (pyIOReceivers) instead.
+var pyIODirectMethods = map[string]bool{
+	"execute": true, "executemany": true, "scalars": true, "scalar": true,
+	"fetchone": true, "fetchall": true, "fetchmany": true,
+	"commit": true, "flush": true,
+	"bulk_create": true, "bulk_update": true, "bulk_save_objects": true,
+	"bulk_insert_mappings": true, "add_all": true,
+	"get_or_create": true, "update_or_create": true, "urlopen": true,
+}
+
+// pyIOReceivers are module/object roots whose calls are network I/O regardless of method.
+var pyIOReceivers = map[string]bool{
+	"requests": true, "httpx": true, "aiohttp": true, "urllib": true, "urllib2": true,
+}
+
+// pyIsIODirectCall reports whether a call's function node names a direct network/file/DB
+// I/O primitive — a builtin open()/urlopen(), an unambiguous DB method (session.execute,
+// cursor.fetchall), or a call on a known HTTP-client module (requests.get, httpx.post).
+func pyIsIODirectCall(fn *sitter.Node, src []byte) bool {
+	switch fn.Kind() {
+	case "identifier":
+		name := pyText(fn, src)
+		return name == "open" || name == "urlopen"
+	case "attribute":
+		if attr := fn.ChildByFieldName("attribute"); attr != nil && pyIODirectMethods[pyText(attr, src)] {
+			return true
+		}
+		obj := fn.ChildByFieldName("object")
+		if obj == nil {
+			return false
+		}
+		root := pyText(obj, src)
+		if i := strings.IndexByte(root, '.'); i >= 0 {
+			root = root[:i]
+		}
+		return pyIOReceivers[root]
+	}
+	return false
 }
 
 // emitCallEdge resolves the callee node and appends a relation to the current owner.
