@@ -72,10 +72,10 @@ type pyWalker struct {
 	// canonical qualified type. Reset at the entry of every handleFunction call.
 	localTypes map[string]string
 
-	// paramNames is the set of parameter names of the function whose body is being
-	// walked. Used to suppress same-module value-ref resolution for a param that
-	// shadows a same-named top-level def (e.g. get_user(user_id)). Nil outside a body.
-	paramNames map[string]bool
+	// localBound is the set of names bound in the current function's own scope
+	// (params + assigned/iterated/aliased names). Guards bare-identifier call
+	// and value-reference resolution against shadowing. Reset per handleFunction call.
+	localBound map[string]bool
 
 	// Per-function complexity state, set up by handleFunction around walkForCalls.
 	// metrics is nil outside a function body walk. loopDepth is the current loop
@@ -804,11 +804,11 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		// workaround) resolves to an edge. Must run before collectParamTypes/
 		// collectLocalTypes so those see the local imports too.
 		w.registerBodyImports(bodyNode)
-		w.paramNames = collectParamNames(node.ChildByFieldName("parameters"), w.src)
 		w.localTypes = collectParamTypes(node.ChildByFieldName("parameters"), w.src, w.importMap, w.module)
 		for k, v := range collectLocalTypes(bodyNode, w.src, w.importMap, w.module) {
 			w.localTypes[k] = v
 		}
+		w.localBound = collectLocalBoundNames(node.ChildByFieldName("parameters"), bodyNode, w.src)
 		// Set up per-function complexity tracking for this body walk. The props
 		// map is shared by reference with the fact in w.out, so writing to it
 		// after the walk updates the emitted fact.
@@ -843,7 +843,7 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		w.metrics = nil
 		w.selfName = ""
 		w.localTypes = nil
-		w.paramNames = nil
+		w.localBound = nil
 	}
 	// Walk parameter-default expressions (e.g. `body = Depends(parse_login_body)`)
 	// for call and value-reference edges. Metrics are already finalized/nil here, so
@@ -982,38 +982,14 @@ func (w *pyWalker) valueRefTarget(name string) string {
 		return t
 	}
 	// Same-module top-level def (function or class) referenced by name. Skip when the
-	// name is a parameter of the enclosing function (it shadows the def — e.g.
+	// name is bound in the enclosing function's own scope — a param or a
+	// local assigned/iterated/aliased name (it shadows the def — e.g.
 	// get_user(user_id) passing the param, not the same-named function). Rescues
 	// `f(local_helper)` where local_helper is a same-module def.
-	if w.idx != nil && !w.paramNames[name] && w.idx.moduleDefs[w.module][name] {
+	if w.idx != nil && !w.localBound[name] && w.idx.moduleDefs[w.module][name] {
 		return w.module + "." + name
 	}
 	return ""
-}
-
-// collectParamNames returns the set of parameter names declared by a function's
-// parameters node (all forms: bare, typed, defaulted, *args, **kwargs).
-func collectParamNames(params *sitter.Node, src []byte) map[string]bool {
-	out := make(map[string]bool)
-	if params == nil {
-		return out
-	}
-	for i := uint(0); i < uint(params.ChildCount()); i++ {
-		c := params.Child(i)
-		switch c.Kind() {
-		case "identifier":
-			out[pyText(c, src)] = true
-		case "typed_parameter", "list_splat_pattern", "dictionary_splat_pattern":
-			if id := firstChildOfKind(c, "identifier"); id != nil {
-				out[pyText(id, src)] = true
-			}
-		case "default_parameter", "typed_default_parameter":
-			if n := c.ChildByFieldName("name"); n != nil {
-				out[pyText(n, src)] = true
-			}
-		}
-	}
-	return out
 }
 
 // stringRefRelation returns a reference edge for a string literal that names an
@@ -1157,6 +1133,18 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 	}
 	if kind == "dictionary" || kind == "list" || kind == "set" || kind == "tuple" {
 		w.emitCollectionValueRefs(node)
+	}
+	if kind == "assignment" {
+		for _, ident := range collectRefValueIdents(node.ChildByFieldName("right")) {
+			w.emitValueRef(ident)
+		}
+	}
+	if kind == "return_statement" {
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			for _, ident := range collectRefValueIdents(node.Child(i)) {
+				w.emitValueRef(ident)
+			}
+		}
 	}
 
 	// Complexity metrics: count decision points so the single body walk doubles
@@ -1399,6 +1387,9 @@ func (w *pyWalker) emitCallEdge(fn *sitter.Node) {
 		if pyBuiltins[name] {
 			return
 		}
+		if w.localBound[name] {
+			return // shadowed by a param/local — not the module-level def of this name
+		}
 		if pyCapitalized(name) {
 			owner.Relations = append(owner.Relations, facts.Relation{
 				Kind:   facts.RelInstantiates,
@@ -1501,12 +1492,12 @@ func (w *pyWalker) resolveCall(name string) string {
 	if target, ok := w.importMap[name]; ok {
 		return target // "" means external → no edge
 	}
-	// Same-module top-level function. A bare callee that shadows a parameter is the
-	// parameter, not the module-level def (e.g. def wrapper(cb): cb()). When an index
-	// is available, resolve only names that are actually module-level defs, so callable
-	// locals/params/loop vars don't fabricate edges. Without an index (single-file
+	// Same-module top-level function. A bare callee that shadows a param/local/loop-var
+	// is that local binding, not the module-level def (e.g. def wrapper(cb): cb()). When
+	// an index is available, resolve only names that are actually module-level defs, so
+	// callable locals/params/loop vars don't fabricate edges. Without an index (single-file
 	// extraction) fall back to best-effort; production always supplies one.
-	if w.paramNames[name] {
+	if w.localBound[name] {
 		return ""
 	}
 	if w.idx != nil {
@@ -1516,6 +1507,102 @@ func (w *pyWalker) resolveCall(name string) string {
 		return ""
 	}
 	return w.module + "." + name
+}
+
+// pyBindTargets recursively binds an assignment/parameter target node into out:
+// identifier -> itself; unpacking forms -> recurse into elements. attribute
+// (self.x) and subscript (d[k]) targets are not name bindings and are skipped.
+func pyBindTargets(node *sitter.Node, src []byte, out map[string]bool) {
+	if node == nil {
+		return
+	}
+	switch node.Kind() {
+	case "identifier":
+		out[pyText(node, src)] = true
+	case "pattern_list", "tuple_pattern", "list_pattern", "list_splat_pattern", "dictionary_splat_pattern":
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			pyBindTargets(node.Child(i), src, out)
+		}
+	}
+}
+
+// pyParamBoundNames adds every name a `parameters` node binds to out, covering
+// all parameter shapes (x, x=1, x: T, x: T = 1, *args, **kwargs).
+func pyParamBoundNames(params *sitter.Node, src []byte, out map[string]bool) {
+	if params == nil {
+		return
+	}
+	for i := uint(0); i < uint(params.ChildCount()); i++ {
+		c := params.Child(i)
+		switch c.Kind() {
+		case "identifier", "list_splat_pattern", "dictionary_splat_pattern":
+			pyBindTargets(c, src, out)
+		case "default_parameter", "typed_default_parameter":
+			pyBindTargets(c.ChildByFieldName("name"), src, out)
+		case "typed_parameter":
+			for j := uint(0); j < uint(c.ChildCount()); j++ {
+				pyBindTargets(c.Child(j), src, out)
+			}
+		}
+	}
+}
+
+// collectLocalBoundNames returns every name bound in a function's own scope:
+// its parameters plus every name assigned, iterated, or aliased in its body.
+// Used to guard bare-identifier call resolution — a name bound here refers to
+// a local value, not a same-module def of the same name.
+func collectLocalBoundNames(params, body *sitter.Node, src []byte) map[string]bool {
+	bound := make(map[string]bool)
+	pyParamBoundNames(params, src, bound)
+	walkLocalBoundNames(body, src, bound)
+	return bound
+}
+
+// walkLocalBoundNames walks a function body collecting bound names, stopping
+// at nested function/class/lambda scopes (their bindings belong to them).
+func walkLocalBoundNames(node *sitter.Node, src []byte, bound map[string]bool) {
+	if node == nil {
+		return
+	}
+	switch node.Kind() {
+	case "function_definition", "class_definition", "decorated_definition", "lambda":
+		return
+	case "assignment", "augmented_assignment":
+		pyBindTargets(node.ChildByFieldName("left"), src, bound)
+	case "for_statement":
+		pyBindTargets(node.ChildByFieldName("left"), src, bound)
+	case "named_expression":
+		pyBindTargets(node.ChildByFieldName("name"), src, bound)
+	case "with_item":
+		if v := node.ChildByFieldName("value"); v != nil && v.Kind() == "as_pattern" {
+			pyBindTargets(v.ChildByFieldName("alias"), src, bound)
+		}
+	}
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		walkLocalBoundNames(node.Child(i), src, bound)
+	}
+}
+
+// collectRefValueIdents returns the bare identifier(s) a value expression
+// resolves to: itself if it's a plain identifier, or each identifier element
+// of a tuple (expression_list), e.g. `cb = handler` / `a, b = f, g`.
+func collectRefValueIdents(node *sitter.Node) []*sitter.Node {
+	if node == nil {
+		return nil
+	}
+	switch node.Kind() {
+	case "identifier":
+		return []*sitter.Node{node}
+	case "expression_list":
+		var out []*sitter.Node
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			if c := node.Child(i); c.Kind() == "identifier" {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // collectPyMethodNames returns the set of function names declared directly in a

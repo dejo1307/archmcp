@@ -1287,3 +1287,225 @@ func TestAST_PopOnEmptyStack_NoPanic(t *testing.T) {
 			len(w.ownerStack), len(w.typeStack), len(w.methodSets))
 	}
 }
+
+// --- Shadow-guard coverage: localBound (params + assigned/iterated/aliased
+// locals) extends the param-only guard above to direct calls and value-refs ---
+
+func TestAST_ShadowedParamNotResolvedAsCall(t *testing.T) {
+	src := `
+def send():
+    pass
+
+def register(send):
+    send()
+`
+	result := astExtract(t, "svc.py", src, false)
+	idx := byName(result)
+
+	regFact, ok := idx["svc.register"]
+	if !ok {
+		t.Fatalf("missing svc.register; keys: %v", keys(idx))
+	}
+	if calls := relsByKind(regFact, facts.RelCalls); len(calls) != 0 {
+		t.Errorf("register: expected no RelCalls (send is a param), got %v", calls)
+	}
+}
+
+func TestAST_ShadowedLoopVarNotResolvedAsCall(t *testing.T) {
+	src := `
+def helper():
+    pass
+
+def process(items):
+    for helper in items:
+        helper()
+`
+	result := astExtract(t, "svc.py", src, false)
+	idx := byName(result)
+
+	procFact, ok := idx["svc.process"]
+	if !ok {
+		t.Fatalf("missing svc.process; keys: %v", keys(idx))
+	}
+	for _, c := range relsByKind(procFact, facts.RelCalls) {
+		if c == "svc.helper" {
+			t.Errorf("process: unexpected RelCalls to svc.helper (helper is a loop var)")
+		}
+	}
+}
+
+func TestAST_ShadowGuard_UnshadowedCallStillResolves(t *testing.T) {
+	src := `
+def helper():
+    pass
+
+def main(x):
+    y = 5
+    helper()
+`
+	result := astExtract(t, "svc.py", src, false)
+	idx := byName(result)
+
+	mainFact, ok := idx["svc.main"]
+	if !ok {
+		t.Fatalf("missing svc.main; keys: %v", keys(idx))
+	}
+	found := false
+	for _, c := range relsByKind(mainFact, facts.RelCalls) {
+		if c == "svc.helper" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("main: expected RelCalls to svc.helper (unrelated locals x/y must not block it)")
+	}
+}
+
+func TestAST_KeywordArgumentCallbackEmitsRef(t *testing.T) {
+	src := `
+def on_done():
+    pass
+
+def schedule(callback):
+    pass
+
+def start():
+    schedule(callback=on_done)
+`
+	result := astExtractIdx(t, "svc.py", src)
+	fn := byName(result)["svc.start"]
+	calls := relsByKind(fn, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "svc.on_done" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("start: RelCalls = %v, want a keyword-argument value-ref to svc.on_done", calls)
+	}
+}
+
+func TestAST_DispatchTable_ListValues(t *testing.T) {
+	src := `
+def handle_a():
+    pass
+
+def handle_b():
+    pass
+
+def build():
+    handlers = [handle_a, handle_b]
+    return handlers
+`
+	result := astExtractIdx(t, "svc.py", src)
+	fn := byName(result)["svc.build"]
+	calls := relsByKind(fn, facts.RelCalls)
+	for _, want := range []string{"svc.handle_a", "svc.handle_b"} {
+		found := false
+		for _, c := range calls {
+			if c == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("build: RelCalls = %v, want %s", calls, want)
+		}
+	}
+}
+
+// --- Assignment/return value-refs: coverage upstream's value-ref pass doesn't
+// have (it only walks call args, decorator args, and collection literals) ---
+
+func TestAST_AssignedAndReturnedCallback(t *testing.T) {
+	src := `
+def handler():
+    pass
+
+def register():
+    cb = handler
+    return cb
+
+def get_handler():
+    return handler
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	regFact, ok := idx["svc.register"]
+	if !ok {
+		t.Fatalf("missing svc.register; keys: %v", keys(idx))
+	}
+	if calls := relsByKind(regFact, facts.RelCalls); len(calls) == 0 || calls[0] != "svc.handler" {
+		t.Errorf("register: RelCalls = %v, want [svc.handler]", calls)
+	}
+
+	getFact, ok := idx["svc.get_handler"]
+	if !ok {
+		t.Fatalf("missing svc.get_handler; keys: %v", keys(idx))
+	}
+	if calls := relsByKind(getFact, facts.RelCalls); len(calls) == 0 || calls[0] != "svc.handler" {
+		t.Errorf("get_handler: RelCalls = %v, want [svc.handler]", calls)
+	}
+}
+
+func TestAST_AssignedCallback_ShadowGuarded(t *testing.T) {
+	src := `
+def handler():
+    pass
+
+def register(handler):
+    cb = handler
+    return cb
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	regFact, ok := idx["svc.register"]
+	if !ok {
+		t.Fatalf("missing svc.register; keys: %v", keys(idx))
+	}
+	if calls := relsByKind(regFact, facts.RelCalls); len(calls) != 0 {
+		t.Errorf("register: expected no RelCalls (handler is a param), got %v", calls)
+	}
+}
+
+func TestAST_ReturnedPlainVariable_NoPhantomRef(t *testing.T) {
+	src := `
+GREETING = "hi"
+
+def process():
+    return GREETING
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	procFact, ok := idx["svc.process"]
+	if !ok {
+		t.Fatalf("missing svc.process; keys: %v", keys(idx))
+	}
+	if calls := relsByKind(procFact, facts.RelCalls); len(calls) != 0 {
+		t.Errorf("process: expected no RelCalls (GREETING is not a def), got %v", calls)
+	}
+}
+
+func TestAST_ReturnedForwardReference_Resolves(t *testing.T) {
+	src := `
+def build():
+    return later_handler
+
+def later_handler():
+    pass
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	buildFact, ok := idx["svc.build"]
+	if !ok {
+		t.Fatalf("missing svc.build; keys: %v", keys(idx))
+	}
+	calls := relsByKind(buildFact, facts.RelCalls)
+	if len(calls) == 0 || calls[0] != "svc.later_handler" {
+		t.Errorf("build: RelCalls = %v, want [svc.later_handler]", calls)
+	}
+}

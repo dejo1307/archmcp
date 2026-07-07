@@ -253,7 +253,14 @@ import (
 // explainer can exclude ActiveRecord associations) and adds common Rails framework constants
 // (I18n, Rails, Logger, ...) to the builtin-const ignore list. Cached Ruby snapshots must
 // re-extract to pick up the new edge props and suppressed references.
-const cacheVersion = "v95"
+// v96: Python value-ref resolution now records assignment-RHS and return-statement bare-name
+// references (cb = handler; return cb / return handler) as RelCalls edges, not just call
+// args/decorator args/collection literals; and its shadow guard (previously param-only, shared
+// with resolveCall's v87 fix) now covers any name bound in the enclosing function's own scope —
+// assigned/iterated/aliased locals, not just parameters — so a loop var or local reusing a
+// same-named top-level def's name no longer fabricates a same-module edge. Cached Python
+// snapshots must re-extract.
+const cacheVersion = "v96"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

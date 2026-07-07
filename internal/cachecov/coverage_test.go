@@ -127,6 +127,7 @@ var versionCoverage = map[int][]string{
 	93: {"TestSwitchReturns_MultiLineCaseLabels", "TestExtractEndpointFacts_MultiLineMethodCase"},                                                                                                                                                                                                 // Swift multi-line case-label method parsing
 	94: {"TestExtractEndpointFacts_ConstantMethod"},                                                                                                                                                                                                                                              // Swift single-value (constant) method property
 	95: {"TestResolveImports_CouplingKindTagged", "TestResolveImports_ReferenceBeatsAssociation"},                                                                                                                                                                                                // Ruby synthetic-edge coupling_kind prop + framework-const ignore list
+	96: {"TestAST_AssignedAndReturnedCallback", "TestAST_AssignedCallback_ShadowGuarded", "TestAST_ReturnedPlainVariable_NoPhantomRef", "TestAST_ReturnedForwardReference_Resolves", "TestAST_ShadowedLoopVarNotResolvedAsCall"},                                                                 // Python assignment/return value-refs + scope-wide (not just param) shadow guard
 }
 
 func TestCacheVersionCoverage(t *testing.T) {
