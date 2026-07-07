@@ -207,7 +207,22 @@ import (
 // extractors. Lets the performance analyzer treat a call in a bounded loop (literal /
 // range(<const>) / while(true)) as a fixed count, not an N+1; bump so cached snapshots
 // re-extract with the new signal.
-const cacheVersion = "v84"
+// v85: Python extractor emits two new structural props so package-metrics stops
+// mislabeling idiomatic-Python packages. (1) `enum` on Enum/IntEnum/StrEnum/Flag/IntFlag
+// subclasses (excluded from N like Kotlin enums) and `data_class` on DTO/schema/record
+// classes — @dataclass/@attrs-decorated, Pydantic BaseModel, NamedTuple, TypedDict —
+// so DTO/model packages (e.g. OpenAPI-generated Pydantic "datamodels") are no longer
+// flagged "rigid — extract interfaces". data_class covers Pydantic BaseModel, NamedTuple,
+// and TypedDict subclasses plus @dataclass/@attrs-decorated classes. (2) `abstract` now
+// also covers the duck-typed abstract pattern (a method whose whole body is
+// `raise NotImplementedError`), so abstractness (A) is meaningful for Python base classes
+// that don't use ABC. Bump so cached Python snapshots re-extract with the new props.
+// v86: Python data_class detection broadened to Pydantic RootModel/GenericModel/BaseSettings
+// and any "*BaseModel" subclass — covers project-local Pydantic bases (StrictBaseModel,
+// <App>BaseModel) used by hand-written schema packages, which v85 missed because BaseModel
+// wasn't a direct base (so those datamodels packages were still flagged "rigid"). Bump so
+// snapshots cached under v85 re-extract with the widened detection.
+const cacheVersion = "v86"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

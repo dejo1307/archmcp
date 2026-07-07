@@ -369,7 +369,36 @@ var (
 	pyAbstractBases = map[string]bool{
 		"ABC": true, "ABCMeta": true, "Protocol": true,
 	}
+
+	// pyEnumBases mark a class as an enum. Enums are concrete value enumerations,
+	// not domain types, so package-metrics excludes them from N (mirrors the Kotlin
+	// enum handling) — otherwise a pure-enum package skews abstractness/distance.
+	pyEnumBases = map[string]bool{
+		"Enum": true, "IntEnum": true, "StrEnum": true,
+		"Flag": true, "IntFlag": true, "ReprEnum": true,
+	}
+
+	// pyDataHolderBases mark a class as a data holder (DTO / schema / record):
+	// Pydantic models/settings, typing.NamedTuple, and TypedDict. These are value
+	// carriers, the Python analogue of TypeScript structural interfaces — concrete
+	// BY DESIGN. package-metrics uses the "data_class" prop to keep such packages out
+	// of the "rigid — extract interfaces" off-main-sequence finding, which is not
+	// actionable for schema/model bundles (e.g. OpenAPI-generated Pydantic models).
+	// A base whose name ends in "BaseModel" is also treated as a data holder, which
+	// covers project-local Pydantic subclasses used as a common base (StrictBaseModel,
+	// <App>BaseModel) — see isDataHolderBase.
+	pyDataHolderBases = map[string]bool{
+		"BaseModel": true, "RootModel": true, "GenericModel": true,
+		"BaseSettings": true, "NamedTuple": true, "TypedDict": true,
+	}
 )
+
+// isDataHolderBase reports whether a base-class short name marks the subclass as a
+// data holder: an exact Pydantic/typing data base, or any "*BaseModel" name (the
+// idiomatic project-local Pydantic base, e.g. StrictBaseModel).
+func isDataHolderBase(last string) bool {
+	return pyDataHolderBases[last] || strings.HasSuffix(last, "BaseModel")
+}
 
 // applyDecoratorProps sets structural boolean props on a symbol based on a
 // decorator name. Only well-known structural decorators produce props; unknown
@@ -389,6 +418,12 @@ func applyDecoratorProps(props map[string]any, decoratorName string) {
 		props["class_method"] = true
 	case "abstractmethod":
 		props["abstract"] = true
+	case "dataclass":
+		// @dataclass / @dataclasses.dataclass / @pydantic.dataclasses.dataclass.
+		props["data_class"] = true
+	case "define", "frozen", "mutable", "attrs":
+		// attrs data classes: @attrs.define / @define / @frozen / @attr.attrs.
+		props["data_class"] = true
 	case "task":
 		props["task"] = true
 	case "command", "group":
@@ -400,6 +435,11 @@ func applyDecoratorProps(props map[string]any, decoratorName string) {
 		// shared_task is Celery-specific; bare @task is used by Airflow, Prefect, Luigi, etc.
 		props["task"] = true
 		props["framework"] = "celery"
+	}
+	// @attr.s is the legacy attrs data-class decorator; its last component "s" is
+	// too generic to switch on, so match the full "attr.s" path explicitly.
+	if last == "s" && strings.HasPrefix(decoratorName, "attr") {
+		props["data_class"] = true
 	}
 }
 

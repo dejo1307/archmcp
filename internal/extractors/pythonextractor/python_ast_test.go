@@ -345,6 +345,110 @@ class Concrete:
 	}
 }
 
+// TestAST_DataClassAndEnumProps verifies enum classes and DTO/schema classes get
+// the structural props package-metrics relies on: `enum` (excluded from N like
+// Kotlin enums) and `data_class` (a value carrier, not a "rigid" abstraction).
+func TestAST_DataClassAndEnumProps(t *testing.T) {
+	src := `
+from dataclasses import dataclass
+from enum import Enum, IntEnum
+from typing import NamedTuple, TypedDict
+from pydantic import BaseModel, RootModel
+import attrs
+
+class Color(Enum):
+    RED = 1
+
+class Level(IntEnum):
+    LOW = 1
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+@attrs.define
+class Box:
+    w: int
+
+class UserModel(BaseModel):
+    name: str
+
+# Project-local Pydantic base (StrictBaseModel(BaseModel)): matched by the
+# "*BaseModel" suffix rule even though BaseModel isn't a direct base here.
+class VariableResponse(StrictBaseModel):
+    key: str
+
+class XComSlice(RootModel):
+    root: list
+
+class Pair(NamedTuple):
+    a: int
+    b: int
+
+class Config(TypedDict):
+    debug: bool
+
+class Plain:
+    def do(self):
+        return 1
+`
+	idx := byName(astExtract(t, "svc.py", src, false))
+
+	for _, name := range []string{"svc.Color", "svc.Level"} {
+		if idx[name].Props["enum"] != true {
+			t.Errorf("%s: enum = %v, want true", name, idx[name].Props["enum"])
+		}
+	}
+	for _, name := range []string{"svc.Point", "svc.Box", "svc.UserModel", "svc.VariableResponse", "svc.XComSlice", "svc.Pair", "svc.Config"} {
+		if idx[name].Props["data_class"] != true {
+			t.Errorf("%s: data_class = %v, want true", name, idx[name].Props["data_class"])
+		}
+	}
+	if p := idx["svc.Plain"]; p.Props["data_class"] == true || p.Props["enum"] == true {
+		t.Errorf("svc.Plain should be a plain class (no enum/data_class props): %v", p.Props)
+	}
+}
+
+// TestAST_InformalAbstractDetection verifies the idiomatic duck-typed abstract
+// pattern — a method whose whole body is `raise NotImplementedError` (optionally
+// after a docstring) — marks a class abstract, while conservative bare `...`/`pass`
+// stub bodies do NOT.
+func TestAST_InformalAbstractDetection(t *testing.T) {
+	src := `
+class BaseOperator:
+    """Base."""
+    def execute(self, context):
+        raise NotImplementedError()
+
+class BaseHook:
+    def get_conn(self):
+        """Return a connection."""
+        raise NotImplementedError
+
+class StubOnly:
+    def maybe(self):
+        ...
+
+class Concrete:
+    def execute(self, context):
+        return 1
+`
+	idx := byName(astExtract(t, "svc.py", src, false))
+
+	for _, name := range []string{"svc.BaseOperator", "svc.BaseHook"} {
+		if idx[name].Props["abstract"] != true {
+			t.Errorf("%s: abstract = %v, want true (raise NotImplementedError)", name, idx[name].Props["abstract"])
+		}
+	}
+	if idx["svc.StubOnly"].Props["abstract"] == true {
+		t.Error("svc.StubOnly (bare ... body) should NOT be abstract")
+	}
+	if idx["svc.Concrete"].Props["abstract"] == true {
+		t.Error("svc.Concrete should not be abstract")
+	}
+}
+
 // TestAST_ExportedProp verifies the leading-underscore export convention.
 func TestAST_ExportedProp(t *testing.T) {
 	src := `

@@ -630,19 +630,41 @@ func (w *pyWalker) handleClass(node *sitter.Node, decorators []string) {
 		}
 	}
 	// A class is abstract if it inherits ABC/ABCMeta/Protocol, uses metaclass=ABCMeta,
-	// or declares any @abstractmethod. Recorded so package-metrics abstractness (A)
-	// is meaningful for Python (which has no interface keyword).
+	// declares any @abstractmethod, or follows the idiomatic duck-typed abstract
+	// pattern (a method whose whole body is `raise NotImplementedError`). Recorded so
+	// package-metrics abstractness (A) is meaningful for Python (which has no
+	// interface keyword and where formal ABCs are the exception, not the rule).
+	// A class is also classified as an enum (concrete value enumeration, excluded
+	// from N) or a data holder (DTO/schema/record — Pydantic/NamedTuple/TypedDict,
+	// concrete by design) so package-metrics does not mislabel such packages.
+	enum := false
+	dataHolder := false
 	for _, base := range bases {
-		if pyAbstractBases[lastComponent(base)] {
+		last := lastComponent(base)
+		if pyAbstractBases[last] {
 			abstract = true
-			break
+		}
+		if pyEnumBases[last] {
+			enum = true
+		}
+		if isDataHolderBase(last) {
+			dataHolder = true
 		}
 	}
 	if !abstract && bodyHasAbstractMethod(node.ChildByFieldName("body"), w.src) {
 		abstract = true
 	}
+	if !abstract && bodyHasNotImplementedMethod(node.ChildByFieldName("body"), w.src) {
+		abstract = true
+	}
 	if abstract {
 		props["abstract"] = true
+	}
+	if enum {
+		props["enum"] = true
+	}
+	if dataHolder {
+		props["data_class"] = true
 	}
 
 	for _, dec := range decorators {
@@ -1528,6 +1550,82 @@ func bodyHasAbstractMethod(body *sitter.Node, src []byte) bool {
 				}
 			}
 		}
+	}
+	return false
+}
+
+// bodyHasNotImplementedMethod reports whether a class body declares at least one
+// method whose entire body is `raise NotImplementedError` (optionally preceded by
+// a docstring). This is the idiomatic Python "abstract base" pattern for code that
+// does not use ABC/@abstractmethod, so treating it as abstract makes package-metrics
+// abstractness (A) meaningful for duck-typed hierarchies. Conservative on purpose:
+// bare `pass` / `...` bodies are NOT treated as abstract (too many concrete stubs
+// use them), only an explicit NotImplementedError raise.
+func bodyHasNotImplementedMethod(body *sitter.Node, src []byte) bool {
+	if body == nil {
+		return false
+	}
+	for i := uint(0); i < uint(body.ChildCount()); i++ {
+		fn := funcDefOf(body.Child(i))
+		if fn == nil {
+			continue
+		}
+		if funcBodyOnlyRaisesNotImplemented(fn.ChildByFieldName("body"), src) {
+			return true
+		}
+	}
+	return false
+}
+
+// funcDefOf returns the function_definition node for a class-body child, unwrapping
+// a decorated_definition; returns nil for non-function children.
+func funcDefOf(n *sitter.Node) *sitter.Node {
+	switch n.Kind() {
+	case "function_definition":
+		return n
+	case "decorated_definition":
+		if d := n.ChildByFieldName("definition"); d != nil && d.Kind() == "function_definition" {
+			return d
+		}
+	}
+	return nil
+}
+
+// funcBodyOnlyRaisesNotImplemented reports whether a function body consists solely
+// of a `raise NotImplementedError` (with an optional leading docstring). Any other
+// statement means the method has a real implementation.
+func funcBodyOnlyRaisesNotImplemented(fnBody *sitter.Node, src []byte) bool {
+	if fnBody == nil {
+		return false
+	}
+	sawRaise := false
+	for i := uint(0); i < uint(fnBody.ChildCount()); i++ {
+		c := fnBody.Child(i)
+		switch c.Kind() {
+		case "comment":
+			continue
+		case "expression_statement":
+			if stmtIsDocstring(c) { // leading docstring is allowed
+				continue
+			}
+			return false
+		case "raise_statement":
+			if !strings.Contains(pyText(c, src), "NotImplementedError") {
+				return false
+			}
+			sawRaise = true
+		default:
+			return false
+		}
+	}
+	return sawRaise
+}
+
+// stmtIsDocstring reports whether an expression_statement is a bare string literal
+// (a docstring), as opposed to a call, assignment, or other expression.
+func stmtIsDocstring(stmt *sitter.Node) bool {
+	for i := uint(0); i < uint(stmt.ChildCount()); i++ {
+		return stmt.Child(i).Kind() == "string"
 	}
 	return false
 }
