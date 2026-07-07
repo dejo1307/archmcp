@@ -105,7 +105,9 @@ func IsGeneratedPath(p string) bool {
 	for _, part := range strings.Split(p, "/") {
 		switch part {
 		case "build", "Pods", "node_modules", "kspCaches", "generated",
-			"__pycache__", "vendor", "openapi-gen", "__generated__", "third_party":
+			"__pycache__", "vendor", "openapi-gen", "__generated__", "third_party",
+			// Python virtual environments and installed dependencies — never source.
+			".venv", "venv", "site-packages":
 			return true
 		}
 	}

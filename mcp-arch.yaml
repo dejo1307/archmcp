@@ -5,6 +5,21 @@ ignore:
   - "node_modules/**"
   - ".git/**"
   - ".enola/**"
+  # Python virtual environments, installed dependencies, and tool caches. A
+  # repo-local .venv/venv holds the whole dependency tree (thousands of
+  # third-party .py files) and must never be indexed — it dominates snapshot
+  # time. site-packages is the definitive catch for any oddly-named env
+  # (.tox/.nox/conda/direnv all nest one). Kept in sync with config.Default().
+  - "**/.venv/**"
+  - "**/venv/**"
+  - "**/site-packages/**"
+  - "**/.tox/**"
+  - "**/.nox/**"
+  - "**/.eggs/**"
+  - "**/__pycache__/**"
+  - "**/.mypy_cache/**"
+  - "**/.pytest_cache/**"
+  - "**/.ruff_cache/**"
   # Tests
   - "**/*_test.go"
   - "**/*.test.ts"

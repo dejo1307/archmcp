@@ -38,6 +38,34 @@ func TestIsIgnored(t *testing.T) {
 			true,
 		},
 		{
+			// The reported bug: a repo-local .venv held the whole dependency tree
+			// and was indexed. The **/x/** form must prune the directory itself so
+			// the walk never descends into it.
+			"venv dir itself pruned at any depth",
+			"backend/.venv", true,
+			[]string{"**/.venv/**"},
+			true,
+		},
+		{
+			"site-packages under a nested venv",
+			"backend/.venv/lib/python3.12/site-packages/pandas/core/frame.py", false,
+			[]string{"**/.venv/**", "**/site-packages/**"},
+			true,
+		},
+		{
+			"plain venv dir",
+			"venv/lib/python3.11/site-packages/x.py", false,
+			[]string{"**/venv/**"},
+			true,
+		},
+		{
+			// "env" alone must NOT be treated as a venv (too common a name).
+			"env is not ignored",
+			"app/env/settings.py", false,
+			[]string{"**/.venv/**", "**/venv/**", "**/site-packages/**"},
+			false,
+		},
+		{
 			"git directory",
 			".git/HEAD", false,
 			[]string{".git/**"},

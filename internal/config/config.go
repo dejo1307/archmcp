@@ -65,7 +65,22 @@ func Default() *Config {
 			"coverage/**",
 			".nuxt/**",
 			".svelte-kit/**",
-			"__pycache__/**",
+			"**/__pycache__/**",
+			// Python virtual environments, installed dependencies, and tool caches.
+			// A repo-local .venv/venv holds the entire dependency tree (thousands of
+			// third-party .py files); indexing it is never wanted and dominates
+			// snapshot time. site-packages is the definitive catch for any oddly-named
+			// env (.tox/.nox/conda/direnv all nest one). Any-depth (**/x/**) form so
+			// monorepo sub-project venvs are pruned too.
+			"**/.venv/**",
+			"**/venv/**",
+			"**/site-packages/**",
+			"**/.tox/**",
+			"**/.nox/**",
+			"**/.eggs/**",
+			"**/.mypy_cache/**",
+			"**/.pytest_cache/**",
+			"**/.ruff_cache/**",
 			"**/Pods/**",
 			"**/.gradle/**",
 			// Minified / bundled JS by name. The extractor also detects minified

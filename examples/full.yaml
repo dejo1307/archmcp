@@ -22,6 +22,17 @@ ignore:
   - ".git/**"
   - ".enola/**"
 
+  # Python virtual environments, installed dependencies, and tool caches
+  - "**/.venv/**"
+  - "**/venv/**"
+  - "**/site-packages/**"
+  - "**/.tox/**"
+  - "**/.nox/**"
+  - "**/__pycache__/**"
+  - "**/.mypy_cache/**"
+  - "**/.pytest_cache/**"
+  - "**/.ruff_cache/**"
+
   # Go tests
   - "**/*_test.go"
 

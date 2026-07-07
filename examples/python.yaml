@@ -22,8 +22,11 @@ ignore:
   - "**/.venv/**"
   - "venv/**"
   - "**/venv/**"
+  # Definitive catch for any oddly-named env (conda/direnv/.tox/.nox all nest one).
+  - "**/site-packages/**"
   - ".tox/**"
   - "**/.tox/**"
+  - "**/.nox/**"
   - ".mypy_cache/**"
   - "**/.mypy_cache/**"
   - ".pytest_cache/**"

@@ -23,3 +23,22 @@ func TestDefaultIgnoresNestedBuildAndPods(t *testing.T) {
 		t.Error("Default().Ignore still has top-level-only \"build/**\"; want \"**/build/**\"")
 	}
 }
+
+// TestDefaultIgnoresPythonEnvs locks in the .venv fix: Python virtual
+// environments and installed dependencies must be ignored at any depth so a
+// repo-local .venv (whole dependency tree) is never indexed.
+func TestDefaultIgnoresPythonEnvs(t *testing.T) {
+	has := func(want string) bool {
+		for _, p := range Default().Ignore {
+			if p == want {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{"**/.venv/**", "**/venv/**", "**/site-packages/**"} {
+		if !has(want) {
+			t.Errorf("Default().Ignore missing %q", want)
+		}
+	}
+}
