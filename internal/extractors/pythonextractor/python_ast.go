@@ -1622,12 +1622,13 @@ func funcBodyOnlyRaisesNotImplemented(fnBody *sitter.Node, src []byte) bool {
 }
 
 // stmtIsDocstring reports whether an expression_statement is a bare string literal
-// (a docstring), as opposed to a call, assignment, or other expression.
+// (a docstring), as opposed to a call, assignment, or other expression. The first
+// child holds the statement's expression, so a string there means a docstring.
 func stmtIsDocstring(stmt *sitter.Node) bool {
-	for i := uint(0); i < uint(stmt.ChildCount()); i++ {
-		return stmt.Child(i).Kind() == "string"
+	if stmt.ChildCount() == 0 {
+		return false
 	}
-	return false
+	return stmt.Child(0).Kind() == "string"
 }
 
 // hasDecorator reports whether any name in decorators has last as its
