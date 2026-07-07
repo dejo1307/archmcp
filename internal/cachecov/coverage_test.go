@@ -111,6 +111,9 @@ var versionCoverage = map[int][]string{
 	77: {"TestDetect_LooseRubyFileNoGemfile", "TestDetect_ExtensionlessRubyShebang"},        // Ruby Gemfile-less detection + extensionless shebang indexing
 	78: {"TestAST_AbsoluteImportEmitsCallEdge", "TestResolveCallTargets_AbsoluteInternal_RewritesToSlashSymbol", "TestResolveCallTargets_External_DropsEdge", "TestAST_TopLevelCallEmitsFileRef", "TestAST_DecoratorEmitsRef"}, // Python absolute-import call edges + top-level/decorator refs
 	79: {"TestAST_LazyImportInsideFunctionResolves", "TestAST_CallArgumentValueRefEmitsEdge", "TestAST_ParameterDefaultCallEmitsEdge", "TestAST_DecoratorArgumentCallEmitsFileRef", "TestAST_ClickCommandTagged"}, // Python lazy imports, value-ref args, param defaults, decorator args, click tagging
+	80: {"TestExtractFile_FastAPIRoute_PathKeyword", "TestExtractEntryPoints_ProviderInfo", "TestAST_DottedStringLiteralEmitsRef"}, // Python path= keyword routes, pyproject entry-points, dotted-string refs
+	81: {"TestAST_ClassBodyCallAndValueRefEmitEdges", "TestAST_SameModuleValueRef", "TestAST_ParamPassedAsValue_NoFalseEdge", "TestAST_ComputedPathRouteHandlerTagged"}, // Python class-body wiring, same-module value-refs, computed-path route-handler tag
+	82: {"TestAST_RegistrationDecoratorsMarkUsed", "TestAST_AttributeArgValueRef", "TestAST_DictValueRef", "TestAST_ListOfLocalsNoFalseRef"}, // Python registration decorators + attribute/collection value-refs
 }
 
 func TestCacheVersionCoverage(t *testing.T) {

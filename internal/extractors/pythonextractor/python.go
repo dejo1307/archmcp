@@ -89,19 +89,25 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 	// Pass 1: build a global symbol index across all Python files. Each file is
 	// indexed into a local table in parallel, then the tables are merged in file
 	// order so duplicate-module last-write-wins stays deterministic.
-	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo)}
-	localIdxs := parallel.MapFiles(ctx, pyFiles, func(relFile string) map[string]*pyClassInfo {
+	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo), moduleDefs: make(map[string]map[string]bool)}
+	localIdxs := parallel.MapFiles(ctx, pyFiles, func(relFile string) *pySymbolIndex {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			return nil
 		}
-		local := &pySymbolIndex{classes: make(map[string]*pyClassInfo)}
+		local := &pySymbolIndex{classes: make(map[string]*pyClassInfo), moduleDefs: make(map[string]map[string]bool)}
 		buildFileIndex(src, relFile, local)
-		return local.classes
+		return local
 	})
 	for _, m := range localIdxs {
-		for qualName, info := range m {
+		if m == nil {
+			continue
+		}
+		for qualName, info := range m.classes {
 			idx.classes[qualName] = info
+		}
+		for module, defs := range m.moduleDefs {
+			idx.moduleDefs[module] = defs
 		}
 	}
 	finalizeImplMap(idx)
@@ -128,6 +134,12 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 	// stdlib/external) now that the full module set is known. Without this,
 	// Python imports never match module Names downstream.
 	resolveImports(allFacts, modules)
+
+	// Parse pyproject.toml entry-points (console_scripts, plugin groups) into
+	// reference edges, so functions registered as entry points — loaded by name by
+	// the framework, never called in-code — are not mis-reported as dead. Emitted
+	// before resolveCallTargets so their dotted targets resolve to slash symbols.
+	allFacts = append(allFacts, extractEntryPoints(repoPath, files)...)
 
 	// Resolve the dotted call/instantiate targets emitted for absolute imports into
 	// canonical slash symbol names (dropping stdlib/third-party edges) now that the
@@ -157,8 +169,16 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 
 var (
 	// routeDecoratorRe matches FastAPI/Starlette route decorators.
-	// Groups: (object, method, path).
-	routeDecoratorRe = regexp.MustCompile(`^\s*@([\w.]+)\.(get|post|put|delete|patch|head|options)\s*\(\s*["']([^"']+)["']`)
+	// Groups: (object, method, path). The path may be positional (`@r.get("/x")`) or
+	// the `path=` keyword (`@r.get(path="/x")`), and may be empty (`path=""` — the
+	// collection endpoint under the router prefix); `\s*` spans the newline of a
+	// multi-line decorator.
+	routeDecoratorRe = regexp.MustCompile(`^\s*@([\w.]+)\.(get|post|put|delete|patch|head|options)\s*\(\s*(?:path\s*=\s*)?["']([^"']*)["']`)
+
+	// routeMethodRe matches a route-method decorator in ANY path form (literal,
+	// path= keyword, or a computed expression), used to tag the handler as a
+	// framework-dispatched entry point even when the path isn't a parseable literal.
+	routeMethodRe = regexp.MustCompile(`^\s*@[\w.]+\.(?:get|post|put|delete|patch|head|options)\s*\(`)
 
 	// tableNameRe matches SQLAlchemy __tablename__ assignments. Group: (table).
 	tableNameRe = regexp.MustCompile(`^\s*__tablename__\s*=\s*["']([^"']+)["']`)
@@ -177,7 +197,83 @@ var (
 	// urlPathRe matches Django path() and re_path() calls in urls.py.
 	// Groups: (url_path, view_ref)
 	urlPathRe = regexp.MustCompile(`(?:re_)?path\s*\(\s*r?["']([^"']+)["']\s*,\s*([\w.]+)`)
+
+	// entryPointSectionRe matches pyproject.toml TOML section headers that declare
+	// entry points: [project.scripts], [project.gui-scripts], and
+	// [project.entry-points…] (incl. quoted group subtables).
+	entryPointSectionRe = regexp.MustCompile(`^\s*\[\s*project\.(scripts|gui-scripts|entry-points)\b`)
+	// anyTOMLSectionRe matches any TOML section header (ends an entry-point section).
+	anyTOMLSectionRe = regexp.MustCompile(`^\s*\[`)
+	// entryPointValueRe matches an entry-point line `name = "module.path:attr"`,
+	// capturing the module path and the attribute (a function or Class.method).
+	entryPointValueRe = regexp.MustCompile(`^\s*[^=\[\]#]+=\s*["']([A-Za-z_][\w.]*):([A-Za-z_][\w.]*)["']`)
+
+	// registrationDecorators are decorator names (matched on the last dotted segment)
+	// that REGISTER their function with a framework, which then dispatches it — so the
+	// function has no in-code caller by construction (like a route handler or CLI
+	// command). Covers SQLAlchemy (@compiles, @event.listens_for), functools
+	// singledispatch (@base.register), signals (@sig.connect), and Flask app/blueprint
+	// hooks. A function with any such decorator is marked used via a self file-ref edge.
+	registrationDecorators = map[string]bool{
+		"compiles": true, "listens_for": true, // SQLAlchemy
+		"register": true, // functools.singledispatch (also ABCMeta/registries)
+		"connect":  true, // blinker/Celery/Django signals
+		"errorhandler": true, "app_errorhandler": true,
+		"before_request": true, "after_request": true,
+		"teardown_request": true, "teardown_appcontext": true,
+		"context_processor": true,
+		"template_filter":   true, "template_global": true, "template_test": true,
+	}
+
+	// dottedPathRe matches a string literal that is an identifier-dotted symbol path
+	// of at least 3 segments (module.sub.symbol), e.g. a lazy_load_command target or
+	// a provider "class-name". The ≥3-segment floor avoids crediting short dotted
+	// strings (logger names, config keys); resolveCallTargets prunes non-internal ones.
+	dottedPathRe = regexp.MustCompile(`^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,}$`)
 )
+
+// extractEntryPoints scans each pyproject.toml in files for console-script / plugin
+// entry points and emits a KindFileRef fact per file carrying RelCalls edges to the
+// referenced module.attr targets (colon rewritten to dot). Entry-point functions are
+// loaded by name by the framework, so without these edges they read as dead code.
+// The dotted targets are resolved to slash symbols by resolveCallTargets.
+func extractEntryPoints(repoPath string, files []string) []facts.Fact {
+	var out []facts.Fact
+	for _, rel := range files {
+		if filepath.Base(rel) != "pyproject.toml" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(repoPath, rel))
+		if err != nil {
+			continue
+		}
+		var rels []facts.Relation
+		inEntryPoints := false
+		for _, line := range strings.Split(string(data), "\n") {
+			if anyTOMLSectionRe.MatchString(line) {
+				inEntryPoints = entryPointSectionRe.MatchString(line)
+				continue
+			}
+			if !inEntryPoints {
+				continue
+			}
+			if m := entryPointValueRe.FindStringSubmatch(line); m != nil {
+				rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: m[1] + "." + m[2]})
+			}
+		}
+		if len(rels) > 0 {
+			out = append(out, facts.Fact{
+				Kind:      facts.KindFileRef,
+				Name:      rel,
+				File:      rel,
+				Line:      1,
+				Props:     map[string]any{"language": "python"},
+				Relations: rels,
+			})
+		}
+	}
+	return out
+}
 
 // Django class base sets used to classify models, views, and serializers.
 var (

@@ -3,6 +3,7 @@ package pythonextractor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -1318,4 +1319,87 @@ func TestDetectDjango(t *testing.T) {
 			t.Error("detectDjango should return false for non-Django project")
 		}
 	})
+}
+
+// --- Pass 3: path= keyword routes + pyproject entry-points ---
+
+func TestExtractFile_FastAPIRoute_PathKeyword(t *testing.T) {
+	src := `
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/backfills")
+
+@router.put(
+    path="/{backfill_id}/cancel",
+    dependencies=[Depends(requires_access_backfill(method="PUT"))],
+)
+def cancel_backfill(backfill_id):
+    pass
+
+@router.get(path="")
+def list_backfills():
+    pass
+`
+	relFile := "routes/backfills.py"
+	result := astExtract(t, relFile, src, false)
+	routes := factsByKind(result, facts.KindRoute)
+	if len(routes) != 2 {
+		t.Fatalf("expected 2 route facts (path= keyword, incl. empty path), got %d", len(routes))
+	}
+	byHandler := map[string]facts.Fact{}
+	for _, r := range routes {
+		byHandler[r.Props["handler"].(string)] = r
+	}
+	if _, ok := byHandler[mod(relFile)+".cancel_backfill"]; !ok {
+		t.Errorf("expected a route with handler cancel_backfill; got handlers %v", byHandler)
+	}
+	if _, ok := byHandler[mod(relFile)+".list_backfills"]; !ok {
+		t.Errorf("expected a route with handler list_backfills (empty path); got handlers %v", byHandler)
+	}
+}
+
+func TestExtractEntryPoints_ProviderInfo(t *testing.T) {
+	dir := t.TempDir()
+	pyproject := `
+[project]
+name = "apache-airflow-providers-slack"
+dependencies = ["apache-airflow>=2.0"]
+
+[project.entry-points."apache_airflow_provider"]
+provider_info = "airflow.providers.slack.get_provider_info:get_provider_info"
+
+[project.scripts]
+my-tool = "airflow.providers.slack.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(pyproject), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := extractEntryPoints(dir, []string{"pyproject.toml"})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 file_ref fact, got %d", len(got))
+	}
+	targets := relsByKind(got[0], facts.RelCalls)
+	want := map[string]bool{
+		"airflow.providers.slack.get_provider_info.get_provider_info": false,
+		"airflow.providers.slack.cli.main":                            false,
+	}
+	for _, tgt := range targets {
+		if _, ok := want[tgt]; ok {
+			want[tgt] = true
+		}
+	}
+	for tgt, seen := range want {
+		if !seen {
+			t.Errorf("missing entry-point reference edge to %q; got %v", tgt, targets)
+		}
+	}
+	// The [build-system] requires line must NOT be parsed as an entry point.
+	for _, tgt := range targets {
+		if strings.Contains(tgt, "hatchling") {
+			t.Errorf("build-system dependency leaked as an entry point: %q", tgt)
+		}
+	}
 }

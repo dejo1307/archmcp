@@ -72,6 +72,11 @@ type pyWalker struct {
 	// canonical qualified type. Reset at the entry of every handleFunction call.
 	localTypes map[string]string
 
+	// paramNames is the set of parameter names of the function whose body is being
+	// walked. Used to suppress same-module value-ref resolution for a param that
+	// shadows a same-named top-level def (e.g. get_user(user_id)). Nil outside a body.
+	paramNames map[string]bool
+
 	// Per-function complexity state, set up by handleFunction around walkForCalls.
 	// metrics is nil outside a function body walk. loopDepth is the current loop
 	// nesting depth; selfName is the enclosing function's qualified name (for
@@ -195,6 +200,12 @@ func (w *pyWalker) walkTopLevelCalls(node *sitter.Node) {
 		if args := node.ChildByFieldName("arguments"); args != nil {
 			w.fileRefs = append(w.fileRefs, w.argRefRelations(args)...)
 		}
+	case "string":
+		if rel, ok := w.stringRefRelation(node); ok {
+			w.fileRefs = append(w.fileRefs, rel)
+		}
+	case "dictionary", "list", "set", "tuple":
+		w.emitCollectionValueRefs(node)
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		w.walkTopLevelCalls(node.Child(i))
@@ -431,6 +442,10 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 	// decorators before we see the handler name. Indices are used (not pointers)
 	// because subsequent appends to w.out may reallocate its backing array.
 	var pendingRouteIndices []int
+	// isRouteHandler is set when a route-method decorator (@r.get/post/…) is present
+	// in any form (literal, path= keyword, or computed path). The handler is
+	// dispatched by the framework, so it is tagged as an entry point.
+	var isRouteHandler bool
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
@@ -446,6 +461,12 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 				if args := call.ChildByFieldName("arguments"); args != nil {
 					w.walkTopLevelCalls(args)
 				}
+			}
+			// A route-method decorator in any path form (literal, path= keyword, or a
+			// computed expression the route regex below cannot parse) marks this a
+			// framework-dispatched handler.
+			if routeMethodRe.MatchString(text) {
+				isRouteHandler = true
 			}
 			// FastAPI / Starlette route decorator.
 			if m := routeDecoratorRe.FindStringSubmatch(text); m != nil {
@@ -487,11 +508,25 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 			if hasDecorator(decorators, "overload") {
 				continue
 			}
+			fnIdx := len(w.out)
 			w.handleFunction(c, decorators)
+			// Tag a route handler as an entry point (framework-dispatched, no in-code
+			// caller). Covers computed/keyword paths the route-fact regex can't parse.
+			if isRouteHandler && fnIdx < len(w.out) && w.out[fnIdx].Kind == facts.KindSymbol {
+				w.out[fnIdx].Props["web_component"] = "route_handler"
+			}
 			handlerName := w.module + "." + w.qualify(pyFuncName(c, w.src))
 			// Back-fill handler into pending FastAPI route facts.
 			for _, idx := range pendingRouteIndices {
 				w.out[idx].Props["handler"] = handlerName
+			}
+			// A framework-registration decorator (@compiles, @x.register, @sig.connect,
+			// @event.listens_for, Flask hooks) dispatches the function — mark it used.
+			for _, dec := range decorators {
+				if registrationDecorators[lastComponent(dec)] {
+					w.fileRefs = append(w.fileRefs, facts.Relation{Kind: facts.RelCalls, Target: handlerName})
+					break
+				}
 			}
 			// @api_view routes — emit after we know the handler name.
 			if len(pendingApiViewMethods) > 0 {
@@ -646,6 +681,12 @@ func (w *pyWalker) handleClass(node *sitter.Node, decorators []string) {
 	w.pushType(name, collectPyMethodNames(bodyNode, w.src))
 	if bodyNode != nil {
 		w.walkBody(bodyNode)
+		// Walk class-body statements for call / value-reference edges (attrs/pydantic/
+		// SQLAlchemy field defaults, `x = Depends(dep)` class attrs). These run at
+		// class-definition time and are attributed to the class (the current owner);
+		// walkForCalls stops at nested defs, so methods keep their own owners. Metrics
+		// are nil here, so complexity is unaffected.
+		w.walkForCalls(bodyNode)
 	}
 	w.popType()
 	w.popOwner()
@@ -716,6 +757,7 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		// workaround) resolves to an edge. Must run before collectParamTypes/
 		// collectLocalTypes so those see the local imports too.
 		w.registerBodyImports(bodyNode)
+		w.paramNames = collectParamNames(node.ChildByFieldName("parameters"), w.src)
 		w.localTypes = collectParamTypes(node.ChildByFieldName("parameters"), w.src, w.importMap, w.module)
 		for k, v := range collectLocalTypes(bodyNode, w.src, w.importMap, w.module) {
 			w.localTypes[k] = v
@@ -743,6 +785,7 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		w.metrics = nil
 		w.selfName = ""
 		w.localTypes = nil
+		w.paramNames = nil
 	}
 	// Walk parameter-default expressions (e.g. `body = Depends(parse_login_body)`)
 	// for call and value-reference edges. Metrics are already finalized/nil here, so
@@ -778,38 +821,93 @@ func (w *pyWalker) registerBodyImports(node *sitter.Node) {
 
 // argRefRelations returns reference edges for functions/classes passed by name as
 // call arguments (positional or keyword value), e.g. Depends(get_user),
-// add_command(cmd), register(Handler). Only names that resolve to an internal
-// target emit an edge; builtins are skipped. This captures value-passed callables
+// add_command(cmd), register_error_handler(404, views.not_found). Only names that
+// resolve to an internal target emit an edge. This captures value-passed callables
 // that are never invoked at the call site and so have no callee edge.
 func (w *pyWalker) argRefRelations(args *sitter.Node) []facts.Relation {
 	var rels []facts.Relation
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
 		c := args.Child(i)
-		var id *sitter.Node
+		var val *sitter.Node
 		switch c.Kind() {
-		case "identifier":
-			id = c
+		case "identifier", "attribute":
+			val = c
 		case "keyword_argument":
-			if v := c.ChildByFieldName("value"); v != nil && v.Kind() == "identifier" {
-				id = v
-			}
+			val = c.ChildByFieldName("value")
 		}
-		if id == nil {
+		if val == nil {
 			continue
 		}
-		name := pyText(id, w.src)
-		if pyBuiltins[name] {
-			continue
-		}
-		if pyCapitalized(name) {
-			rels = append(rels, facts.Relation{Kind: facts.RelInstantiates, Target: name})
-			continue
-		}
-		if target := w.valueRefTarget(name); target != "" {
-			rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: target})
+		if rel, ok := w.valueRefRelation(val); ok {
+			rels = append(rels, rel)
 		}
 	}
 	return rels
+}
+
+// valueRefRelation resolves a node used in a VALUE position (call argument, dict
+// value, collection element) to a reference edge. A bare identifier resolves via
+// the strict valueRefTarget (imported / same-module def / same-class, param-guarded);
+// a capitalized identifier is an instantiation (bare short name); a simple obj.attr
+// resolves via resolveVarType. Returns ok=false when nothing internal resolves.
+func (w *pyWalker) valueRefRelation(node *sitter.Node) (facts.Relation, bool) {
+	switch node.Kind() {
+	case "identifier":
+		name := pyText(node, w.src)
+		if pyBuiltins[name] {
+			return facts.Relation{}, false
+		}
+		if pyCapitalized(name) {
+			return facts.Relation{Kind: facts.RelInstantiates, Target: name}, true
+		}
+		if target := w.valueRefTarget(name); target != "" {
+			return facts.Relation{Kind: facts.RelCalls, Target: target}, true
+		}
+	case "attribute":
+		obj := node.ChildByFieldName("object")
+		attr := node.ChildByFieldName("attribute")
+		if obj == nil || attr == nil || obj.Kind() != "identifier" {
+			return facts.Relation{}, false
+		}
+		if qt := w.resolveVarType(pyText(obj, w.src)); qt != "" {
+			return facts.Relation{Kind: facts.RelCalls, Target: qt + "." + pyText(attr, w.src)}, true
+		}
+	}
+	return facts.Relation{}, false
+}
+
+// emitValueRef records a value-reference edge for node against the current owner
+// (function/class body) or, at module scope, the file-scope refs.
+func (w *pyWalker) emitValueRef(node *sitter.Node) {
+	rel, ok := w.valueRefRelation(node)
+	if !ok {
+		return
+	}
+	if owner := w.currentOwner(); owner != nil {
+		owner.Relations = append(owner.Relations, rel)
+	} else {
+		w.fileRefs = append(w.fileRefs, rel)
+	}
+}
+
+// emitCollectionValueRefs records value-reference edges for the values of a dict
+// literal or the elements of a list/set/tuple — dispatch tables / registries such
+// as {"ds": ds_filter} or [handler_a, handler_b].
+func (w *pyWalker) emitCollectionValueRefs(node *sitter.Node) {
+	switch node.Kind() {
+	case "dictionary":
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			if p := node.Child(i); p.Kind() == "pair" {
+				if v := p.ChildByFieldName("value"); v != nil {
+					w.emitValueRef(v)
+				}
+			}
+		}
+	case "list", "set", "tuple":
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			w.emitValueRef(node.Child(i))
+		}
+	}
 }
 
 // valueRefTarget resolves a bare name used as a VALUE (a call argument, not a
@@ -825,7 +923,58 @@ func (w *pyWalker) valueRefTarget(name string) string {
 	if t, ok := w.importMap[name]; ok && t != "" {
 		return t
 	}
+	// Same-module top-level def (function or class) referenced by name. Skip when the
+	// name is a parameter of the enclosing function (it shadows the def — e.g.
+	// get_user(user_id) passing the param, not the same-named function). Rescues
+	// `f(local_helper)` where local_helper is a same-module def.
+	if w.idx != nil && !w.paramNames[name] && w.idx.moduleDefs[w.module][name] {
+		return w.module + "." + name
+	}
 	return ""
+}
+
+// collectParamNames returns the set of parameter names declared by a function's
+// parameters node (all forms: bare, typed, defaulted, *args, **kwargs).
+func collectParamNames(params *sitter.Node, src []byte) map[string]bool {
+	out := make(map[string]bool)
+	if params == nil {
+		return out
+	}
+	for i := uint(0); i < uint(params.ChildCount()); i++ {
+		c := params.Child(i)
+		switch c.Kind() {
+		case "identifier":
+			out[pyText(c, src)] = true
+		case "typed_parameter", "list_splat_pattern", "dictionary_splat_pattern":
+			if id := firstChildOfKind(c, "identifier"); id != nil {
+				out[pyText(id, src)] = true
+			}
+		case "default_parameter", "typed_default_parameter":
+			if n := c.ChildByFieldName("name"); n != nil {
+				out[pyText(n, src)] = true
+			}
+		}
+	}
+	return out
+}
+
+// stringRefRelation returns a reference edge for a string literal that names an
+// internal symbol by dotted path (e.g. lazy_load_command("airflow.cli.commands.x.y")
+// or a provider "class-name": "airflow.providers….short_circuit_task"). Only plain
+// strings whose content is an identifier-dotted path of ≥3 segments qualify;
+// f-strings (which have interpolation children, not a single string_content) and
+// hyphenated/spaced strings are skipped. resolveCallTargets resolves the dotted
+// target to a slash symbol and drops non-internal ones.
+func (w *pyWalker) stringRefRelation(node *sitter.Node) (facts.Relation, bool) {
+	content := firstChildOfKind(node, "string_content")
+	if content == nil {
+		return facts.Relation{}, false
+	}
+	s := pyText(content, w.src)
+	if !dottedPathRe.MatchString(s) {
+		return facts.Relation{}, false
+	}
+	return facts.Relation{Kind: facts.RelCalls, Target: s}, true
 }
 
 // firstChildOfKind returns the first direct child of node with the given kind.
@@ -932,6 +1081,18 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 				w.fileRefs = append(w.fileRefs, w.argRefRelations(args)...)
 			}
 		}
+	}
+	if kind == "string" {
+		if rel, ok := w.stringRefRelation(node); ok {
+			if owner := w.currentOwner(); owner != nil {
+				owner.Relations = append(owner.Relations, rel)
+			} else {
+				w.fileRefs = append(w.fileRefs, rel)
+			}
+		}
+	}
+	if kind == "dictionary" || kind == "list" || kind == "set" || kind == "tuple" {
+		w.emitCollectionValueRefs(node)
 	}
 
 	// Complexity metrics: count decision points so the single body walk doubles
@@ -1415,6 +1576,10 @@ type pyClassInfo struct {
 type pySymbolIndex struct {
 	classes map[string]*pyClassInfo // "module.ClassName" → info
 	implMap map[string][]string     // base name → concrete implementor qual names
+	// moduleDefs maps a module path → set of its top-level def short names (functions
+	// and classes). Used to safely credit a same-module symbol passed by name as a
+	// value (a param/local of the same name is never in this set).
+	moduleDefs map[string]map[string]bool
 }
 
 // buildFileIndex scans src for class declarations and populates idx.
@@ -1435,15 +1600,39 @@ func buildFileIndex(src []byte, relFile string, idx *pySymbolIndex) {
 		switch node.Kind() {
 		case "class_definition":
 			indexClass(node, src, module, idx)
+			indexModuleDef(node, src, module, idx)
+		case "function_definition":
+			indexModuleDef(node, src, module, idx)
 		case "decorated_definition":
 			for j := uint(0); j < uint(node.ChildCount()); j++ {
-				if node.Child(j).Kind() == "class_definition" {
-					indexClass(node.Child(j), src, module, idx)
+				inner := node.Child(j)
+				if inner.Kind() == "class_definition" {
+					indexClass(inner, src, module, idx)
+					indexModuleDef(inner, src, module, idx)
+					break
+				}
+				if inner.Kind() == "function_definition" {
+					indexModuleDef(inner, src, module, idx)
 					break
 				}
 			}
 		}
 	}
+}
+
+// indexModuleDef records a top-level function/class short name under its module in
+// idx.moduleDefs, so a same-module reference by name can be resolved safely.
+func indexModuleDef(node *sitter.Node, src []byte, module string, idx *pySymbolIndex) {
+	nameNode := node.ChildByFieldName("name")
+	if nameNode == nil || idx.moduleDefs == nil {
+		return
+	}
+	set := idx.moduleDefs[module]
+	if set == nil {
+		set = make(map[string]bool)
+		idx.moduleDefs[module] = set
+	}
+	set[pyText(nameNode, src)] = true
 }
 
 // indexClass records a class from the index pass into idx.

@@ -829,3 +829,243 @@ def plain():
 		t.Error("commands.plain: cli_command should be unset for a non-click function")
 	}
 }
+
+func TestAST_DottedStringLiteralEmitsRef(t *testing.T) {
+	src := `
+def register():
+    return lazy_load_command("airflow.cli.commands.asset_command.asset_list")
+
+MESSAGE = "just a plain message"
+TWO = "airflow.models"
+`
+	result := astExtract(t, "cli_config.py", src, false)
+	// The dotted 4-segment string inside register() is a reference edge on the owner.
+	fn := byName(result)["cli_config.register"]
+	calls := relsByKind(fn, facts.RelCalls)
+	want := "airflow.cli.commands.asset_command.asset_list"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("register: RelCalls = %v, want a dotted-string ref to %q", calls, want)
+	}
+	// The plain message and the 2-segment string must not produce edges anywhere.
+	for _, f := range result {
+		for _, r := range f.Relations {
+			if r.Target == "just a plain message" || r.Target == "airflow.models" {
+				t.Errorf("unexpected edge from non-qualifying string: %q", r.Target)
+			}
+		}
+	}
+}
+
+// --- Pass 4: class-body wiring, same-module value-refs, route-handler tag ---
+
+// astExtractIdx runs the index pass over src, then extracts with that index so
+// moduleDefs-based same-module value-ref resolution is exercised.
+func astExtractIdx(t *testing.T, filename, src string) []facts.Fact {
+	t.Helper()
+	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo), moduleDefs: make(map[string]map[string]bool)}
+	buildFileIndex([]byte(src), filename, idx)
+	finalizeImplMap(idx)
+	return extractFileAST([]byte(src), filename, false, idx)
+}
+
+func TestAST_ClassBodyCallAndValueRefEmitEdges(t *testing.T) {
+	src := `
+def _conf_list_factory(section, key):
+    return None
+
+def _generate_kid(self):
+    return "kid"
+
+class Signer:
+    algo = _conf_list_factory("api_auth", "jwt_algorithm")
+    kid = attrs.field(default=attrs.Factory(_generate_kid, takes_self=True))
+`
+	result := astExtractIdx(t, "tokens.py", src)
+	cls := byName(result)["tokens.Signer"]
+	calls := relsByKind(cls, facts.RelCalls)
+	for _, want := range []string{"tokens._conf_list_factory", "tokens._generate_kid"} {
+		found := false
+		for _, c := range calls {
+			if c == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Signer class body: RelCalls = %v, want an edge to %q", calls, want)
+		}
+	}
+}
+
+func TestAST_SameModuleValueRef(t *testing.T) {
+	src := `
+def custom_show_warning(message):
+    pass
+
+def replace_showwarning(fn):
+    pass
+
+original = replace_showwarning(custom_show_warning)
+`
+	result := astExtractIdx(t, "settings.py", src)
+	// The module-level call's arg (a same-module function) must be credited.
+	var all []string
+	for _, f := range result {
+		all = append(all, relsByKind(f, facts.RelCalls)...)
+	}
+	found := false
+	for _, c := range all {
+		if c == "settings.custom_show_warning" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a same-module value-ref edge to settings.custom_show_warning; got %v", all)
+	}
+}
+
+func TestAST_ParamPassedAsValue_NoFalseEdge(t *testing.T) {
+	// Regression guard: a parameter/local passed by value must NOT be credited as a
+	// same-module symbol, even if a same-named top-level def exists.
+	src := `
+def user_id():
+    return 1
+
+def get_user(user_id):
+    return lookup(user_id)
+`
+	result := astExtractIdx(t, "svc.py", src)
+	fn := byName(result)["svc.get_user"]
+	for _, c := range relsByKind(fn, facts.RelCalls) {
+		if c == "svc.user_id" {
+			t.Errorf("param user_id was wrongly credited as a ref to the same-named function svc.user_id")
+		}
+	}
+}
+
+func TestAST_ComputedPathRouteHandlerTagged(t *testing.T) {
+	src := `
+@task_instances_router.get(
+    task_instances_prefix + "/{task_id}/listMapped",
+    dependencies=[Depends(requires_access_dag(method="GET"))],
+)
+def get_mapped_task_instances(dag_id):
+    pass
+`
+	result := astExtractIdx(t, "routes/task_instances.py", src)
+	fn := byName(result)["routes/task_instances.get_mapped_task_instances"]
+	if fn.Props["web_component"] != "route_handler" {
+		t.Errorf("computed-path handler: web_component = %v, want route_handler", fn.Props["web_component"])
+	}
+}
+
+// --- Pass 5: registration decorators, attribute/collection value-refs ---
+
+func TestAST_RegistrationDecoratorsMarkUsed(t *testing.T) {
+	src := `
+@compiles(JSONExtract, "postgresql")
+def compile_postgres(element, compiler, **kw):
+    pass
+
+@handle_event_submit.register
+def _(event, **kw):
+    pass
+
+@worker_ready.connect
+def on_worker_ready(*args, **kwargs):
+    pass
+
+@event.listens_for(User.__table__, "after_create")
+def _restore_idx(table, conn, **kw):
+    pass
+`
+	result := astExtractIdx(t, "reg.py", src)
+	fr, ok := firstOfKind(result, facts.KindFileRef)
+	if !ok {
+		t.Fatal("expected a KindFileRef fact for registration-decorated functions")
+	}
+	targets := map[string]bool{}
+	for _, r := range relsByKind(fr, facts.RelCalls) {
+		targets[r] = true
+	}
+	for _, want := range []string{"reg.compile_postgres", "reg._", "reg.on_worker_ready", "reg._restore_idx"} {
+		if !targets[want] {
+			t.Errorf("missing registration self-edge to %q; got %v", want, targets)
+		}
+	}
+}
+
+func TestAST_AttributeArgValueRef(t *testing.T) {
+	src := `
+from airflow.providers.fab.www import views
+
+def init_app(app):
+    app.register_error_handler(404, views.not_found)
+`
+	result := astExtractIdx(t, "init_views.py", src)
+	fn := byName(result)["init_views.init_app"]
+	calls := relsByKind(fn, facts.RelCalls)
+	want := "airflow.providers.fab.www.views.not_found"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("init_app: RelCalls = %v, want attribute value-ref to %q", calls, want)
+	}
+}
+
+func TestAST_DictValueRef(t *testing.T) {
+	src := `
+def ds_filter(v):
+    return v
+
+def ts_filter(v):
+    return v
+
+FILTERS = {
+    "ds": ds_filter,
+    "ts": ts_filter,
+}
+`
+	result := astExtractIdx(t, "templater.py", src)
+	var all []string
+	for _, f := range result {
+		all = append(all, relsByKind(f, facts.RelCalls)...)
+	}
+	for _, want := range []string{"templater.ds_filter", "templater.ts_filter"} {
+		found := false
+		for _, c := range all {
+			if c == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected dict-value ref to %q; got %v", want, all)
+		}
+	}
+}
+
+func TestAST_ListOfLocalsNoFalseRef(t *testing.T) {
+	// A list of local variables must not produce edges (valueRefTarget resolves only
+	// imported / same-module def / same-class names).
+	src := `
+def build(a, b):
+    items = [a, b]
+    return items
+`
+	result := astExtractIdx(t, "svc.py", src)
+	fn := byName(result)["svc.build"]
+	for _, c := range relsByKind(fn, facts.RelCalls) {
+		if c == "svc.a" || c == "svc.b" {
+			t.Errorf("local var wrongly credited as a ref: %q", c)
+		}
+	}
+}

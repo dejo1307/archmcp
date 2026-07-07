@@ -176,7 +176,27 @@ import (
 // Depends(...) in signatures and route-decorator dependencies); and click/Typer
 // @command/@group functions are tagged cli_command. Reduces Python dead-code false
 // positives; bump so cached snapshots re-extract.
-const cacheVersion = "v79"
+// v80: Python extractor tracks three more reference mechanisms — FastAPI route
+// decorators declared with the path= keyword (and empty paths) now emit route facts
+// (so their handlers are rescued); pyproject.toml entry-points / console-scripts emit
+// reference edges to the registered module:function; and dotted-path string literals
+// (>=3 identifier segments) that name an internal symbol (lazy_load_command targets,
+// provider "class-name" metadata) emit reference edges. Reduces Python dead-code
+// false positives; bump so cached snapshots re-extract.
+// v81: Python extractor closes three more reference gaps — class-body statements are
+// walked for calls/value-refs (attrs/pydantic/SQLAlchemy field wiring like
+// factory=_helper(...) and default=Factory(fn)); same-module functions/classes passed
+// by name as a value are credited (via a per-module top-level-def index, excluding
+// shadowing params); and FastAPI route handlers declared with a non-literal/computed
+// path are tagged web_component=route_handler (framework entry points). Reduces Python
+// dead-code false positives; bump so cached snapshots re-extract.
+// v82: Python extractor closes the last registration gaps — functions decorated with a
+// framework-registration decorator (@compiles, @x.register singledispatch, @sig.connect,
+// @event.listens_for, Flask hooks) are marked used via a self file-ref edge; value
+// references now also resolve attribute args (register_error_handler(404, m.handler))
+// and dict/list/set/tuple values (dispatch tables like {"ds": ds_filter}). Reduces
+// Python dead-code false positives; bump so cached snapshots re-extract.
+const cacheVersion = "v82"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
