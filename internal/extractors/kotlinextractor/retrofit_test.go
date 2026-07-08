@@ -43,3 +43,46 @@ interface EntitlementApiService {
 		t.Errorf("missing POST auth/login route (relative path); got %+v", byName)
 	}
 }
+
+// TestRetrofit_AbsoluteURLExternal verifies that a Retrofit annotation with a full
+// http(s) URL is tagged external + host (bucketed out of internal coverage) with the
+// Name reduced to the base-relative path, while a relative annotation is untouched.
+func TestRetrofit_AbsoluteURLExternal(t *testing.T) {
+	src := `package com.example.data.api
+
+interface AdService {
+    @GET("https://adserver.example.com/track/impression")
+    suspend fun track(): Response<Unit>
+
+    @POST("v2/events.json")
+    suspend fun events(@Body b: EventBody): Response<Unit>
+}
+`
+	ff := extractRetrofitFacts([]byte(src), "data/api/AdService.kt")
+	if len(ff) != 2 {
+		t.Fatalf("expected 2 client routes, got %d: %+v", len(ff), ff)
+	}
+	byName := map[string]map[string]any{}
+	for _, f := range ff {
+		byName[f.Name] = f.Props
+	}
+
+	ext, ok := byName["track/impression"]
+	if !ok {
+		t.Fatalf("absolute URL should reduce to base-relative path 'track/impression'; got %+v", byName)
+	}
+	if e, _ := ext["external"].(bool); !e {
+		t.Errorf("absolute URL should be external=true; got %+v", ext)
+	}
+	if ext["host"] != "adserver.example.com" {
+		t.Errorf("host = %v, want adserver.example.com", ext["host"])
+	}
+
+	rel, ok := byName["v2/events.json"]
+	if !ok {
+		t.Fatalf("relative route missing; got %+v", byName)
+	}
+	if _, has := rel["external"]; has {
+		t.Errorf("relative annotation must not be external; got %+v", rel)
+	}
+}

@@ -15,6 +15,13 @@ import (
 //	@POST("auth/login")
 var retrofitAnnotation = regexp.MustCompile(`@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*\(\s*"([^"]*)"`)
 
+// absoluteClientURL matches an absolute http(s) URL in a Retrofit annotation,
+// capturing the host and the remaining path. A full URL targets a fixed external
+// host, so the call is tagged external (bucketed out of internal coverage) rather
+// than matched against a backend route — mirroring the Swift extractor's external
+// handling.
+var absoluteClientURL = regexp.MustCompile(`^https?://([^/?#]+)(/[^?#]*)?`)
+
 // ioDirectAnnotations are method-level annotations that mark a function as a direct
 // network / DB I/O operation: Retrofit HTTP endpoints and Room DAO operations. A
 // method carrying one performs a real round-trip, so a per-iteration call to it is a
@@ -62,19 +69,31 @@ func extractRetrofitFacts(src []byte, relFile string) []facts.Fact {
 		if path == "" {
 			continue
 		}
+		props := map[string]any{
+			"role":      "client",
+			"method":    method,
+			"framework": "retrofit",
+			"language":  "kotlin",
+			"source":    "retrofit",
+			"api":       api,
+		}
+		// A full http(s):// URL targets a fixed external host: tag it external + host
+		// and reduce the Name to the base-relative path so it reads consistently.
+		if hm := absoluteClientURL.FindStringSubmatch(path); hm != nil {
+			props["external"] = true
+			props["host"] = hm[1]
+			if rest := strings.Trim(hm[2], "/"); rest != "" {
+				path = rest
+			} else {
+				path = hm[1]
+			}
+		}
 		out = append(out, facts.Fact{
-			Kind: facts.KindRoute,
-			Name: path,
-			File: relFile,
-			Line: i + 1,
-			Props: map[string]any{
-				"role":      "client",
-				"method":    method,
-				"framework": "retrofit",
-				"language":  "kotlin",
-				"source":    "retrofit",
-				"api":       api,
-			},
+			Kind:      facts.KindRoute,
+			Name:      path,
+			File:      relFile,
+			Line:      i + 1,
+			Props:     props,
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})
 	}

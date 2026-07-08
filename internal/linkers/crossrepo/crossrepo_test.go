@@ -216,6 +216,39 @@ func TestComputeLinks_ExternalClientBucketed(t *testing.T) {
 	}
 }
 
+// TestUnmatchedClientRouteKeys verifies the per-call unresolved verdict mirrors the
+// linker: resolved calls are absent, and each unresolved call carries its reason,
+// while external calls are omitted.
+func TestUnmatchedClientRouteKeys(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),                                 // resolves
+		clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil),                                // no server -> no_match
+		clientRoute("svc-alpha", "/health", "GET", nil),                                          // 1 segment -> generic_path
+		clientRoute("svc-alpha", "/api/things/{id}", "", nil),                                     // no verb -> no_method
+		clientRoute("svc-alpha", "/rest/api/2/issue", "POST", map[string]any{"external": true}),  // external -> omitted
+		serverRoute("svc-beta", "/api/items/{itemId}", "GET"),
+	}
+	got := UnmatchedClientRouteKeys(in)
+
+	want := map[string]string{
+		RouteIdentity(clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil)): "no_match",
+		RouteIdentity(clientRoute("svc-alpha", "/health", "GET", nil)):           "generic_path",
+		RouteIdentity(clientRoute("svc-alpha", "/api/things/{id}", "", nil)):     "no_method",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d unmatched, want %d: %+v", len(got), len(want), got)
+	}
+	for id, reason := range want {
+		if got[id] != reason {
+			t.Errorf("identity %q: got reason %q, want %q", id, got[id], reason)
+		}
+	}
+	// The resolved and the external call must not appear.
+	if _, bad := got[RouteIdentity(clientRoute("svc-alpha", "/api/items/{id}", "GET", nil))]; bad {
+		t.Errorf("resolved call should not be flagged unmatched")
+	}
+}
+
 // edgeCoverageOf returns the http_client edge_coverage map for a service node.
 func edgeCoverageOf(out []facts.Fact, repo string) map[string]any {
 	for _, f := range out {

@@ -393,40 +393,51 @@ func (e *Engine) linkCrossRepo() {
 	log.Printf("[engine] cross-repo links: %d service nodes, %d dependency edges", services, edges)
 }
 
-// flagUnmatchedRoutes marks each server route fact that no loaded client route
-// resolves to with an "unmatched_by_clients" prop, and clears the prop on every
-// other route, so the flag is recomputed idempotently on each (re-)link. The
-// signal is only meaningful with 2+ repos loaded; for a single-repo snapshot the
-// key set is empty and this pass simply clears any stale flags. Routes carrying
-// the prop are the candidates the unused-routes explainer summarizes and that
-// query_facts(kind=route, prop=unmatched_by_clients, prop_value=true) returns.
+// flagUnmatchedRoutes marks each route fact with its cross-repo resolution verdict,
+// recomputed idempotently on each (re-)link: a server route no loaded client calls
+// gets "unmatched_by_clients" (the unused-routes candidates); a client call site
+// that resolves to no loaded server route gets "unmatched_by_server" plus an
+// "unmatched_reason" (no_method | generic_path | no_match) — the queryable
+// counterpart to the aggregate coverage counts. Both signals are only meaningful
+// with 2+ repos loaded; for a single-repo snapshot the key sets are empty and this
+// pass simply clears any stale flags. Surfaced via
+// query_facts(kind=route, prop=unmatched_by_clients|unmatched_by_server).
 func (e *Engine) flagUnmatchedRoutes() {
-	keys := crossrepo.UnmatchedServerRouteKeys(e.store.All())
-	flagged := 0
+	serverKeys := crossrepo.UnmatchedServerRouteKeys(e.store.All())
+	clientKeys := crossrepo.UnmatchedClientRouteKeys(e.store.All())
+	flaggedServer, flaggedClient := 0, 0
 	e.store.UpdateWhere(func(f *facts.Fact) {
 		if f.Kind != facts.KindRoute {
 			return
 		}
-		// A client-role route is a call site, never a served endpoint; never flag
-		// it, even if it shares an identity with an unused server route.
+		// A client-role route is a call site, never a served endpoint: it carries the
+		// reverse (unmatched_by_server) verdict, never unmatched_by_clients.
 		if f.Props != nil && f.Props["role"] == "client" {
 			delete(f.Props, "unmatched_by_clients")
+			if reason, ok := clientKeys[crossrepo.RouteIdentity(*f)]; ok {
+				f.Props["unmatched_by_server"] = true
+				f.Props["unmatched_reason"] = reason
+				flaggedClient++
+			} else {
+				delete(f.Props, "unmatched_by_server")
+				delete(f.Props, "unmatched_reason")
+			}
 			return
 		}
-		if keys[crossrepo.RouteIdentity(*f)] {
+		if serverKeys[crossrepo.RouteIdentity(*f)] {
 			if f.Props == nil {
 				f.Props = map[string]any{}
 			}
 			f.Props["unmatched_by_clients"] = true
-			flagged++
+			flaggedServer++
 			return
 		}
 		if f.Props != nil {
 			delete(f.Props, "unmatched_by_clients")
 		}
 	})
-	if flagged > 0 {
-		log.Printf("[engine] flagged %d server route(s) unused by loaded clients", flagged)
+	if flaggedServer > 0 || flaggedClient > 0 {
+		log.Printf("[engine] flagged %d server route(s) unused by clients, %d client call(s) unresolved to a server", flaggedServer, flaggedClient)
 	}
 }
 

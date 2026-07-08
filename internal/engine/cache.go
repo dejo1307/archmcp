@@ -233,7 +233,10 @@ import (
 // .rawValue/Alamofire .method forms) and tags calls to hardcoded absolute hosts with
 // external=true + host. Changes route methods and props, so cached Swift snapshots must
 // re-extract.
-const cacheVersion = "v89"
+// v90: Kotlin Retrofit extractor tags absolute-URL annotations external=true + host; Ruby
+// route extractor adds `match ... via:` verbs and reads `scope`/`namespace path:` keyword
+// prefixes. New/changed route facts, so cached Kotlin and Ruby snapshots must re-extract.
+const cacheVersion = "v90"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

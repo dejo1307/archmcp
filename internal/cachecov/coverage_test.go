@@ -121,6 +121,7 @@ var versionCoverage = map[int][]string{
 	87: {"TestAST_ParamCall_NoEdge", "TestAST_LocalCallable_NoEdge", "TestAST_LoopVarCall_NoEdge", "TestAST_SameModuleCall_StillResolves"},                                                                                                                                                        // Python resolveCall no longer fabricates same-module edges for params/locals/loop vars
 	88: {"TestPyGRPC_ClientStubCall_EmitsRoute", "TestPyGRPC_StubRebinding_PositionalBinding", "TestPyGRPC_DynamicStubClass_NoRoute", "TestPyGRPC_NoStubImport_NoRoute"},                                                                                                                          // Python gRPC client-role routes from stub.Method() call sites
 	89: {"TestMethodNear_BeforeAndEnumForms", "TestExtractEndpointFacts_ExternalHost"},                                                                                                                                                                                                           // Swift widened method inference + external-host tagging
+	90: {"TestRetrofit_AbsoluteURLExternal", "TestRoutes_MatchViaVerbs", "TestRoutes_ScopePathKeyword"},                                                                                                                                                                                          // Kotlin Retrofit external tagging + Ruby match via:/scope path:
 }
 
 func TestCacheVersionCoverage(t *testing.T) {

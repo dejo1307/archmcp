@@ -821,6 +821,47 @@ end
 	}
 }
 
+// TestRoutes_MatchViaVerbs: `match ... via:` emits one route per listed verb
+// (array or single symbol), and nothing when via: is absent.
+func TestRoutes_MatchViaVerbs(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  match 'search', to: 'search#index', via: [:get, :post]
+  match 'ping', via: :get
+end
+`
+	routes := routeMethods(parseRouteFileAST([]byte(src), "config/routes.rb"))
+	search := routes["/search"]
+	for _, m := range []string{"GET", "POST"} {
+		if !search[m] {
+			t.Errorf("match via: missing %s for /search; got %v", m, search)
+		}
+	}
+	if !routes["/ping"]["GET"] {
+		t.Errorf("match via: :get missing GET for /ping; got %v", routes["/ping"])
+	}
+}
+
+// TestRoutes_ScopePathKeyword: a `scope path:`/`namespace path:` keyword sets the
+// URL prefix (independently of module:).
+func TestRoutes_ScopePathKeyword(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  scope path: 'api', module: :api do
+    get 'health'
+  end
+  namespace :admin, path: 'administration' do
+    get 'dashboard'
+  end
+end
+`
+	routes := routeMethods(parseRouteFileAST([]byte(src), "config/routes.rb"))
+	if !routes["/api/health"]["GET"] {
+		t.Errorf("scope path: 'api' should prefix child route; got %v", routes)
+	}
+	if !routes["/administration/dashboard"]["GET"] {
+		t.Errorf("namespace path: override should apply; got %v", routes)
+	}
+}
+
 // TestRoutes_NestedPluralResources: a plural `resources` nested in a plural
 // `resources` nests under the parent member id.
 func TestRoutes_NestedPluralResources(t *testing.T) {
