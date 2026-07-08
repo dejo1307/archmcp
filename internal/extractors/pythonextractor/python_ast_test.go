@@ -27,7 +27,7 @@ func astExtract(t *testing.T, filename, src string, isDjango bool) []facts.Fact 
 // extracts facts from targetFile using that index.
 func astExtractWithIndex(t *testing.T, files map[string]string, targetFile string, isDjango bool) []facts.Fact {
 	t.Helper()
-	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo)}
+	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo), moduleDefs: make(map[string]map[string]bool)}
 	for filename, src := range files {
 		buildFileIndex([]byte(src), filename, idx)
 	}
@@ -1171,5 +1171,119 @@ def build(a, b):
 		if c == "svc.a" || c == "svc.b" {
 			t.Errorf("local var wrongly credited as a ref: %q", c)
 		}
+	}
+}
+
+// --- resolveCall must not fabricate edges for params/locals/loop vars (bug 05) ---
+
+// hasCallTo reports whether fact f has a RelCalls edge to target.
+func hasCallTo(f facts.Fact, target string) bool {
+	for _, c := range relsByKind(f, facts.RelCalls) {
+		if c == target {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAST_ParamCall_NoEdge: a callable parameter invoked by name must not resolve
+// to a same-module symbol.
+func TestAST_ParamCall_NoEdge(t *testing.T) {
+	files := map[string]string{
+		"svc.py": `
+def wrapper(callback):
+    callback()
+`,
+	}
+	result := astExtractWithIndex(t, files, "svc.py", false)
+	idx := byName(result)
+
+	fn, ok := idx["svc.wrapper"]
+	if !ok {
+		t.Fatalf("missing svc.wrapper; keys: %v", keys(idx))
+	}
+	if hasCallTo(fn, "svc.callback") {
+		t.Errorf("param 'callback' wrongly resolved to svc.callback; calls=%v", relsByKind(fn, facts.RelCalls))
+	}
+}
+
+// TestAST_LocalCallable_NoEdge: a locally-assigned callable invoked by name must
+// not resolve to a same-module symbol (it is not a module-level def).
+func TestAST_LocalCallable_NoEdge(t *testing.T) {
+	files := map[string]string{
+		"svc.py": `
+def f():
+    fn = lambda: None
+    fn()
+`,
+	}
+	result := astExtractWithIndex(t, files, "svc.py", false)
+	idx := byName(result)
+
+	fn, ok := idx["svc.f"]
+	if !ok {
+		t.Fatalf("missing svc.f; keys: %v", keys(idx))
+	}
+	if hasCallTo(fn, "svc.fn") {
+		t.Errorf("local 'fn' wrongly resolved to svc.fn; calls=%v", relsByKind(fn, facts.RelCalls))
+	}
+}
+
+// TestAST_LoopVarCall_NoEdge: a loop variable invoked by name must not resolve to
+// a same-module symbol.
+func TestAST_LoopVarCall_NoEdge(t *testing.T) {
+	files := map[string]string{
+		"svc.py": `
+def f(handlers):
+    for handler in handlers:
+        handler()
+`,
+	}
+	result := astExtractWithIndex(t, files, "svc.py", false)
+	idx := byName(result)
+
+	fn, ok := idx["svc.f"]
+	if !ok {
+		t.Fatalf("missing svc.f; keys: %v", keys(idx))
+	}
+	if hasCallTo(fn, "svc.handler") {
+		t.Errorf("loop var 'handler' wrongly resolved to svc.handler; calls=%v", relsByKind(fn, facts.RelCalls))
+	}
+}
+
+// TestAST_SameModuleCall_StillResolves: a genuine same-module top-level def call
+// must still emit a RelCalls edge (regression guard for the bug 05 fix).
+func TestAST_SameModuleCall_StillResolves(t *testing.T) {
+	files := map[string]string{
+		"svc.py": `
+def helper():
+    pass
+
+def main():
+    helper()
+`,
+	}
+	result := astExtractWithIndex(t, files, "svc.py", false)
+	idx := byName(result)
+
+	fn, ok := idx["svc.main"]
+	if !ok {
+		t.Fatalf("missing svc.main; keys: %v", keys(idx))
+	}
+	if !hasCallTo(fn, "svc.helper") {
+		t.Errorf("main: expected RelCalls to svc.helper; got %v", relsByKind(fn, facts.RelCalls))
+	}
+}
+
+// TestAST_PopOnEmptyStack_NoPanic: popOwner/popType must be no-ops on empty
+// stacks rather than panicking with a slice-bounds underflow (defensive hardening).
+func TestAST_PopOnEmptyStack_NoPanic(t *testing.T) {
+	w := &pyWalker{}
+	// Must not panic on empty stacks.
+	w.popOwner()
+	w.popType()
+	if len(w.ownerStack) != 0 || len(w.typeStack) != 0 || len(w.methodSets) != 0 {
+		t.Fatalf("expected all stacks to remain empty, got owner=%d type=%d methodSets=%d",
+			len(w.ownerStack), len(w.typeStack), len(w.methodSets))
 	}
 }

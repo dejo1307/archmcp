@@ -233,3 +233,47 @@ func TestBuildModuleGraph_ExcludesTestRole(t *testing.T) {
 		t.Errorf("edge to a test-role module should be dropped, got %v", graph["src/app"])
 	}
 }
+
+// TestBuildModuleGraph_SingleSegmentInternalModule: a top-level internal module
+// with a single-segment name (e.g. "config") must be included as an import edge.
+// Before the fix, IsExternalImport("config") returned true and the edge was
+// dropped before the authoritative moduleNames gate.
+func TestBuildModuleGraph_SingleSegmentInternalModule(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "config"})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "handlers"})
+	s.Add(facts.Fact{
+		Kind:      facts.KindDependency,
+		File:      "handlers/h.go",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "config"}},
+	})
+
+	graph := BuildModuleGraph(s)
+
+	if edges := graph["handlers"]; len(edges) != 1 || edges[0] != "config" {
+		t.Errorf("handlers edges = %v, want [config]", edges)
+	}
+}
+
+// TestBuildModuleGraph_ExternalStillDropped: single-segment names that are NOT
+// declared modules (Go stdlib "fmt", npm "react") must still be dropped — the
+// moduleNames gate remains authoritative after removing the IsExternalImport
+// pre-filter.
+func TestBuildModuleGraph_ExternalStillDropped(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "handlers"})
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency,
+		File: "handlers/h.go",
+		Relations: []facts.Relation{
+			{Kind: facts.RelImports, Target: "fmt"},
+			{Kind: facts.RelImports, Target: "react"},
+		},
+	})
+
+	graph := BuildModuleGraph(s)
+
+	if edges := graph["handlers"]; len(edges) != 0 {
+		t.Errorf("handlers edges = %v, want none (fmt/react are not modules)", edges)
+	}
+}

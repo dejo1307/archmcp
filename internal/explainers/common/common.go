@@ -107,14 +107,14 @@ func BuildModuleGraph(store *facts.Store) map[string][]string {
 			}
 			target := rel.Target
 
-			if IsExternalImport(target) {
-				continue
-			}
-
 			if strings.HasPrefix(target, ".") {
 				target = ResolveRelativeImport(sourceModule, target)
 			}
 
+			// A target is included only if it names a known internal module. This gate is
+			// authoritative; we deliberately do NOT pre-filter with IsExternalImport, which
+			// misclassifies single-segment internal modules (top-level "cmd", "config") as
+			// external and would drop real edges before this check.
 			if moduleNames[target] {
 				graph[sourceModule] = append(graph[sourceModule], target)
 			}

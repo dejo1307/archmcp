@@ -1963,12 +1963,26 @@ func (s *Server) pathCandidates(store *facts.Store, input, resolved string, res 
 	return out
 }
 
+// firstOr returns the first element of s, or fallback when s is empty.
+func firstOr(s []string, fallback string) string {
+	if len(s) == 0 {
+		return fallback
+	}
+	return s[0]
+}
+
 // bestPath tries to connect any from-candidate to any to-candidate, expanding each
 // to-candidate with RollupSeeds (a path to a type usually ends at one of its
 // methods/constructor). It scans in ranked order, keeps the shortest path found,
 // and is bounded by maxPathAttempts (returning early on a ≤2-hop hit). When no
 // path exists it returns a not-found PathResult naming the first from/to tried.
 func (s *Server) bestPath(graph *facts.Graph, fromCands, toCands []string, relKinds []string, maxDepth int) facts.PathResult {
+	// Self-defensive: callers are expected to pass non-empty candidate slices, but
+	// guard so an empty slice yields a clean not-found result instead of indexing
+	// fromCands[0]/toCands[0] out of range.
+	if len(fromCands) == 0 || len(toCands) == 0 {
+		return facts.PathResult{From: firstOr(fromCands, ""), To: firstOr(toCands, ""), Found: false}
+	}
 	var best facts.PathResult
 	attempts := 0
 	for _, from := range fromCands {

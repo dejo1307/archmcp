@@ -1913,6 +1913,28 @@ func TestBestPath_NoPath(t *testing.T) {
 	}
 }
 
+// TestBestPath_EmptyCandidates_NoPanic: bestPath must return a clean not-found
+// result rather than panicking on fromCands[0]/toCands[0] when either candidate
+// slice is empty (defensive hardening; callers are expected to pre-filter).
+func TestBestPath_EmptyCandidates_NoPanic(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(facts.Fact{Kind: facts.KindSymbol, Name: "a.Foo", Props: map[string]any{"symbol_kind": "struct"}})
+	store.BuildGraph()
+	srv := newTestServer(store)
+
+	cases := []struct{ from, to []string }{
+		{nil, []string{"a.Foo"}},
+		{[]string{"a.Foo"}, nil},
+		{nil, nil},
+	}
+	for _, tc := range cases {
+		res := srv.bestPath(store.Graph(), tc.from, tc.to, nil, 0)
+		if res.Found {
+			t.Errorf("bestPath(from=%v, to=%v): Found = true, want false", tc.from, tc.to)
+		}
+	}
+}
+
 func TestBuildCoverageReport_Classifications(t *testing.T) {
 	store := facts.NewStore()
 	store.Add(

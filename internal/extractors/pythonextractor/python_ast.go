@@ -141,7 +141,11 @@ func (w *pyWalker) recordCallMetrics(target string) {
 }
 
 func (w *pyWalker) pushOwner(idx int) { w.ownerStack = append(w.ownerStack, idx) }
-func (w *pyWalker) popOwner()         { w.ownerStack = w.ownerStack[:len(w.ownerStack)-1] }
+func (w *pyWalker) popOwner() {
+	if len(w.ownerStack) > 0 {
+		w.ownerStack = w.ownerStack[:len(w.ownerStack)-1]
+	}
+}
 func (w *pyWalker) currentOwner() *facts.Fact {
 	if len(w.ownerStack) == 0 {
 		return nil
@@ -164,8 +168,12 @@ func (w *pyWalker) pushType(name string, methods map[string]bool) {
 }
 
 func (w *pyWalker) popType() {
-	w.typeStack = w.typeStack[:len(w.typeStack)-1]
-	w.methodSets = w.methodSets[:len(w.methodSets)-1]
+	if len(w.typeStack) > 0 {
+		w.typeStack = w.typeStack[:len(w.typeStack)-1]
+	}
+	if len(w.methodSets) > 0 {
+		w.methodSets = w.methodSets[:len(w.methodSets)-1]
+	}
 }
 
 func (w *pyWalker) currentMethods() map[string]bool {
@@ -1493,7 +1501,20 @@ func (w *pyWalker) resolveCall(name string) string {
 	if target, ok := w.importMap[name]; ok {
 		return target // "" means external → no edge
 	}
-	// Same-module top-level function.
+	// Same-module top-level function. A bare callee that shadows a parameter is the
+	// parameter, not the module-level def (e.g. def wrapper(cb): cb()). When an index
+	// is available, resolve only names that are actually module-level defs, so callable
+	// locals/params/loop vars don't fabricate edges. Without an index (single-file
+	// extraction) fall back to best-effort; production always supplies one.
+	if w.paramNames[name] {
+		return ""
+	}
+	if w.idx != nil {
+		if w.idx.moduleDefs[w.module][name] {
+			return w.module + "." + name
+		}
+		return ""
+	}
 	return w.module + "." + name
 }
 
