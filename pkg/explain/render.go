@@ -50,6 +50,15 @@ func (r *Report) Render() string {
 	}
 	b.WriteString("\n")
 
+	// Relations
+	if len(r.RelationCounts) > 0 {
+		b.WriteString("Relations\n")
+		for _, rc := range r.RelationCounts {
+			countRow(&b, rc.Label, rc.Count)
+		}
+		b.WriteString("\n")
+	}
+
 	// Symbol breakdown
 	if len(r.SymbolKinds) > 0 {
 		b.WriteString("Symbol breakdown\n")

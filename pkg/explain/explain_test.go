@@ -151,6 +151,28 @@ func TestCompute_KindCounts(t *testing.T) {
 	}
 }
 
+func TestCompute_RelationCounts(t *testing.T) {
+	r := computeFixture(t)
+
+	want := map[string]int{
+		facts.RelDeclares: 4, // the 4 symbol facts
+		facts.RelCalls:    1, // DoThing -> Helper
+		facts.RelImports:  7, // the 7 dependency facts
+	}
+	got := map[string]int{}
+	for _, rc := range r.RelationCounts {
+		got[rc.Label] = rc.Count
+	}
+	for k, n := range want {
+		if got[k] != n {
+			t.Errorf("relation %q: got %d, want %d", k, got[k], n)
+		}
+	}
+	if _, ok := got[facts.RelReferences]; ok {
+		t.Errorf("references relation should be omitted when zero")
+	}
+}
+
 func TestCompute_SymbolKinds(t *testing.T) {
 	r := computeFixture(t)
 	got := map[string]int{}
@@ -280,6 +302,7 @@ func TestRender_ContainsHeadlineNumbers(t *testing.T) {
 	for _, want := range []string{
 		"Repository explanation: /repo/demo",
 		"Architectural kinds",
+		"Relations",
 		"Symbol breakdown",
 		"Impact analysis (hotspots)",
 		"Go-standard",

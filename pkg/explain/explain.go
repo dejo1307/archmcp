@@ -86,9 +86,10 @@ type Report struct {
 	Languages  []string `json:"languages,omitempty"`
 	TotalFacts int      `json:"total_facts"`
 
-	KindCounts  []LabelCount `json:"kind_counts"`  // module/symbol/route/storage/dependency/service
-	SymbolKinds []LabelCount `json:"symbol_kinds"` // function/method/struct/…
-	DepSources  []LabelCount `json:"dep_sources"`  // external/internal/stdlib/…
+	KindCounts     []LabelCount `json:"kind_counts"`     // module/symbol/route/storage/dependency/service
+	RelationCounts []LabelCount `json:"relation_counts"` // declares/imports/calls/implements/depends_on/instantiates/injects/has_method/references
+	SymbolKinds    []LabelCount `json:"symbol_kinds"`    // function/method/struct/…
+	DepSources     []LabelCount `json:"dep_sources"`     // external/internal/stdlib/…
 
 	Routes         int          `json:"routes"`
 	RoutesByMethod []LabelCount `json:"routes_by_method,omitempty"`
@@ -142,6 +143,24 @@ func Compute(eng *bootstrap.Engine) *Report {
 	} {
 		if n := len(store.ByKind(k)); n > 0 {
 			r.KindCounts = append(r.KindCounts, LabelCount{Label: k, Count: n})
+		}
+	}
+
+	// Relation-kind tallies (edge counts, not fact counts) — relations live on
+	// facts of every kind, so this scans the whole store, not one ByKind slice.
+	relCount := map[string]int{}
+	for _, f := range store.All() {
+		for _, rel := range f.Relations {
+			relCount[rel.Kind]++
+		}
+	}
+	for _, k := range []string{
+		facts.RelDeclares, facts.RelImports, facts.RelCalls, facts.RelImplements,
+		facts.RelDependsOn, facts.RelInstantiates, facts.RelInjects, facts.RelHasMethod,
+		facts.RelReferences,
+	} {
+		if n := relCount[k]; n > 0 {
+			r.RelationCounts = append(r.RelationCounts, LabelCount{Label: k, Count: n})
 		}
 	}
 
