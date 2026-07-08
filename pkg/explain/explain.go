@@ -322,6 +322,9 @@ func computeHotspots(store *facts.Store, r *Report) {
 
 	fanIn := map[string]int{}
 	fanOut := map[string]int{}
+	// revAdj[dst] is the set of modules that directly import dst — a deduped reverse
+	// module adjacency used to compute a module-granularity blast radius (below).
+	revAdj := map[string]map[string]bool{}
 	resolvedEdges := 0
 	deps := store.ByKind(facts.KindDependency)
 	for _, dep := range deps {
@@ -340,6 +343,12 @@ func computeHotspots(store *facts.Store, r *Report) {
 				fanOut[src]++
 				fanIn[dst]++
 				resolvedEdges++
+				if src != dst {
+					if revAdj[dst] == nil {
+						revAdj[dst] = map[string]bool{}
+					}
+					revAdj[dst][src] = true
+				}
 			}
 		}
 	}
@@ -378,23 +387,49 @@ func computeHotspots(store *facts.Store, r *Report) {
 		return ranked[i].name < ranked[j].name // stable, deterministic
 	})
 
-	graph := store.Graph()
 	limit := topHotspots
 	if len(ranked) < limit {
 		limit = len(ranked)
 	}
 	for _, s := range ranked[:limit] {
-		h := Hotspot{
+		r.Hotspots = append(r.Hotspots, Hotspot{
 			Module:      s.name,
 			FanIn:       s.fanIn,
 			FanOut:      s.fanOut,
 			Criticality: criticalityLabel(s.score),
-		}
-		if graph != nil {
-			h.BlastRadius = graph.ImpactSet(s.name, blastDepth, blastNodes, false).TotalDependents
-		}
-		r.Hotspots = append(r.Hotspots, h)
+			// Blast radius is the count of distinct MODULES that transitively depend on
+			// this one within blastDepth hops. Computing it over the module graph (not
+			// the full symbol/fact graph via ImpactSet) keeps it bounded by the module
+			// count and comparable to the fan-in column: in a densely-coupled autoloaded
+			// codebase (Rails) an all-node reverse count saturates into the tens of
+			// thousands and stops discriminating between modules.
+			BlastRadius: reverseModuleReach(revAdj, s.name, blastDepth),
+		})
 	}
+}
+
+// reverseModuleReach counts the distinct modules that transitively depend on start
+// within maxDepth hops of the reverse module adjacency (breadth-first, each module
+// counted once, the start itself excluded).
+func reverseModuleReach(revAdj map[string]map[string]bool, start string, maxDepth int) int {
+	if maxDepth <= 0 {
+		maxDepth = 3
+	}
+	visited := map[string]bool{start: true}
+	frontier := []string{start}
+	for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, mod := range frontier {
+			for dep := range revAdj[mod] {
+				if !visited[dep] {
+					visited[dep] = true
+					next = append(next, dep)
+				}
+			}
+		}
+		frontier = next
+	}
+	return len(visited) - 1 // exclude start
 }
 
 func criticalityLabel(score int) string {

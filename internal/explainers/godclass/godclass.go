@@ -90,6 +90,12 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 	}
 	var candidates []candidate
 	for _, s := range distinct {
+		// A Rails/framework base class (ApplicationRecord, *BaseController, *::Base)
+		// has high fan-in purely because every subclass inherits from it — that is
+		// not a god class. Skip it (non-Ruby symbols are unaffected).
+		if common.IsRubyFrameworkBaseSymbol(s.Name, s.File) {
+			continue
+		}
 		n := fanIn[s.Name]
 		if n < minFanIn || float64(n) <= threshold {
 			continue

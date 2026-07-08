@@ -39,13 +39,17 @@ func (e *DepthExplainer) Name() string {
 //
 // Cycles are handled by collapsing each strongly-connected component to a single
 // super-node (the condensation), which is a DAG, then taking the longest path by
-// module count over that DAG. A component contributes its full size to any chain
-// passing through it. This is an intentional over-approximation: the exact
-// longest *simple* path is NP-hard, and inside a cycle every member is mutually
-// reachable, so counting the whole component is a safe cycle-safe upper bound
-// that never double-counts a module. A module's reported depth is its component's
-// depth; one insight is emitted per component (keyed by its smallest member),
-// so a cycle yields a single finding rather than one per entangled module.
+// module count over that DAG. A small component contributes its full size to any
+// chain passing through it (a genuine tangle deepens the chain). But an *oversized*
+// component (> common.OversizedClusterModules) is an autoload coupling cluster, not
+// deep layering — in Ruby/Rails mutual constant references collapse most of the app
+// into one giant SCC, and counting its full size would report every chain through it
+// as "depth ~100" (the cycle false-positive leaking into depth). Such a cluster is
+// therefore weighted as a single logical layer (componentWeight), so depth measures
+// real layering rather than cluster size; the cluster itself is already reported by
+// the cycles explainer. A module's reported depth is its component's depth; one
+// insight is emitted per component (keyed by its smallest member), so a cycle yields
+// a single finding rather than one per entangled module.
 func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
 	graph := common.BuildModuleGraph(store)
 	if len(graph) == 0 {
@@ -109,7 +113,7 @@ func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 				best, bi = d, j
 			}
 		}
-		depth[i] = len(sccs[i]) + best
+		depth[i] = componentWeight(sccs[i]) + best
 		bestSucc[i] = bi
 		return depth[i]
 	}
@@ -170,13 +174,30 @@ func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 	return insights, nil
 }
 
+// componentWeight is how much a strongly-connected component contributes to a
+// dependency-chain's depth: its full member count for a small tangle, but just 1
+// for an oversized autoload cluster (which is one logical layer, not deep layering
+// — see the Explain doc comment).
+func componentWeight(scc []string) int {
+	if len(scc) > common.OversizedClusterModules {
+		return 1
+	}
+	return len(scc)
+}
+
 // chainFor reconstructs the deepest chain of distinct modules starting at
-// component i: all of i's (sorted) members, then the members of its best
-// successor component, and so on down the DAG.
+// component i: for a small component all of its (sorted) members, but for an
+// oversized cluster only a single representative (so the evidence chain length
+// stays consistent with the reported depth instead of dumping ~100 modules), then
+// its best successor component, and so on down the DAG.
 func chainFor(i int, sccs [][]string, bestSucc []int) []string {
 	var out []string
 	for i != -1 {
-		out = append(out, sccs[i]...)
+		if len(sccs[i]) > common.OversizedClusterModules {
+			out = append(out, sccs[i][0])
+		} else {
+			out = append(out, sccs[i]...)
+		}
 		i = bestSucc[i]
 	}
 	return out

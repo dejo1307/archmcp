@@ -16,8 +16,9 @@ import (
 // signal, not a defect. Such components are reported once as a softer,
 // lower-confidence "Highly coupled module cluster" note instead of an alarming
 // confidence-1.0 cycle with advice ("introduce an interface") that cannot
-// meaningfully be applied to a 99-node cluster.
-const maxCycleModules = 8
+// meaningfully be applied to a 99-node cluster. Shared with the depth explainer
+// via common.OversizedClusterModules.
+const maxCycleModules = common.OversizedClusterModules
 
 // maxClusterMembers caps how many representative members are listed as evidence
 // for an oversized coupling cluster.

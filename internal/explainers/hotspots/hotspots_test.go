@@ -87,6 +87,49 @@ func TestExplain_DedupReopenedSymbol(t *testing.T) {
 	}
 }
 
+// TestExplain_RubyBaseClassExcluded: a Rails base class (.rb) with high fan-in AND
+// fan-out is still excluded from hotspots (its inbound degree is inheritance), while
+// a same-degree domain type is reported.
+func TestExplain_RubyBaseClassExcluded(t *testing.T) {
+	s := facts.NewStore()
+	addHub := func(name, file string) {
+		calls := make([]facts.Relation, 0, 4)
+		for i := 0; i < 4; i++ {
+			tgt := fmt.Sprintf("%s_dep%d.Fn", name, i)
+			calls = append(calls, facts.Relation{Kind: facts.RelCalls, Target: tgt})
+			s.Add(facts.Fact{Kind: facts.KindSymbol, Name: tgt, File: "dep.rb"})
+		}
+		s.Add(facts.Fact{Kind: facts.KindSymbol, Name: name, File: file, Relations: calls})
+		for i := 0; i < 4; i++ {
+			s.Add(facts.Fact{Kind: facts.KindSymbol, Name: fmt.Sprintf("%s_caller%d.Fn", name, i),
+				File: "caller.rb", Relations: []facts.Relation{{Kind: facts.RelCalls, Target: name}}})
+		}
+	}
+	addHub("NotifierBase", "app/notifiers/notifier_base.rb")
+	addHub("User", "app/models/user.rb")
+	s.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	var sawBase, sawUser bool
+	for _, in := range insights {
+		if strings.Contains(in.Title, "NotifierBase") {
+			sawBase = true
+		}
+		if strings.Contains(in.Title, "User") {
+			sawUser = true
+		}
+	}
+	if sawBase {
+		t.Errorf("framework base class should be excluded from hotspots")
+	}
+	if !sawUser {
+		t.Errorf("real domain hotspot User should still be reported")
+	}
+}
+
 func TestExplain_BelowDegreeFloor(t *testing.T) {
 	// High fan-out but fan-in below minDegree -> not a pinch point.
 	store := makeStore("core.Hub", 1, 10)

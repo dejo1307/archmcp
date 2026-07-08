@@ -233,6 +233,47 @@ func TestCompute_Hotspots(t *testing.T) {
 	}
 }
 
+// TestComputeHotspots_BlastRadiusIsModuleGranular: blast radius counts distinct
+// dependent MODULES, not symbols/facts — so adding many symbols to the hub module
+// does not inflate it. Guards the module-granularity fix (an all-node reverse count
+// saturates in a densely-coupled Rails graph).
+func TestComputeHotspots_BlastRadiusIsModuleGranular(t *testing.T) {
+	var ff []facts.Fact
+	ff = append(ff, facts.Fact{Kind: facts.KindModule, Name: "app/hub", File: "app/hub"})
+	// 5 modules each import app/hub (one dependency fact per importer).
+	for i := 0; i < 5; i++ {
+		mod := "app/m" + strconv.Itoa(i)
+		ff = append(ff, facts.Fact{Kind: facts.KindModule, Name: mod, File: mod})
+		ff = append(ff, facts.Fact{Kind: facts.KindDependency, File: mod + "/dep.go",
+			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "app/hub"}}})
+	}
+	// 20 symbols declared in app/hub — must NOT count toward its blast radius.
+	for i := 0; i < 20; i++ {
+		ff = append(ff, facts.Fact{Kind: facts.KindSymbol, Name: "app/hub.S" + strconv.Itoa(i),
+			File: "app/hub/s.go", Props: map[string]any{"symbol_kind": facts.SymbolFunc},
+			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: "app/hub"}}})
+	}
+
+	eng := newTestEngine(t)
+	eng.Store().Add(ff...)
+	eng.Store().BuildGraph()
+	var r Report
+	computeHotspots(eng.Store(), &r)
+
+	var hub *Hotspot
+	for i := range r.Hotspots {
+		if r.Hotspots[i].Module == "app/hub" {
+			hub = &r.Hotspots[i]
+		}
+	}
+	if hub == nil {
+		t.Fatalf("app/hub should be a hotspot; got %+v", r.Hotspots)
+	}
+	if hub.BlastRadius != 5 {
+		t.Errorf("blast radius should be the 5 dependent modules (not inflated by 20 symbols), got %d", hub.BlastRadius)
+	}
+}
+
 func TestRender_ContainsHeadlineNumbers(t *testing.T) {
 	r := computeFixture(t)
 	out := r.Render()

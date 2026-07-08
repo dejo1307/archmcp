@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/enola-labs/enola/internal/explainers/common"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -220,6 +221,39 @@ func TestExplain_SelfImportDoesNotAddDepth(t *testing.T) {
 	}
 	if !strings.Contains(insights[0].Title, "depth 5") {
 		t.Errorf("self-import should not add depth; want depth 5, got %q", insights[0].Title)
+	}
+}
+
+// TestExplain_OversizedClusterNotDeep: a large autoload cluster (a ring of
+// OversizedClusterModules+3 modules) must count as ONE logical layer, not its full
+// size, so it does not masquerade as a deep dependency chain. With a short tail
+// below it the whole graph's real layering stays under minDepth and nothing is
+// reported — matching the cycles explainer already covering the cluster.
+func TestExplain_OversizedClusterNotDeep(t *testing.T) {
+	n := common.OversizedClusterModules + 3
+	mods := make([]string, 0, n+1)
+	deps := map[string][]string{}
+	ring := make([]string, n)
+	for i := 0; i < n; i++ {
+		ring[i] = fmt.Sprintf("c/m%02d", i)
+		mods = append(mods, ring[i])
+	}
+	for i := 0; i < n; i++ {
+		deps[ring[i]] = []string{ring[(i+1)%n]} // one big SCC
+	}
+	// A short 2-module tail hanging off the cluster: c/m00 -> t/t0 -> t/t1.
+	mods = append(mods, "t/t0", "t/t1")
+	deps["c/m00"] = append(deps["c/m00"], "t/t0")
+	deps["t/t0"] = []string{"t/t1"}
+
+	insights, err := New().Explain(context.Background(), makeStore(mods, deps))
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	// Cluster weighted as 1 + tail(2) = depth 3 < minDepth(5) -> no findings, and
+	// crucially not a "depth ~N" report of the whole cluster.
+	if len(insights) != 0 {
+		t.Fatalf("oversized cluster should not produce a deep-chain finding, got %d: %v", len(insights), titles(insights))
 	}
 }
 

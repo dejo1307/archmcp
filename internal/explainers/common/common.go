@@ -12,6 +12,15 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 )
 
+// OversizedClusterModules is the module-count above which a strongly-connected
+// component is treated as a coupling *cluster* rather than a discrete, actionable
+// tangle. In an autoloaded language (Ruby/Rails) mutual constant references across
+// many directories are the expected topology, so a large SCC is a coupling-density
+// signal, not a fixable cycle or a genuine deep layering. Shared by the cycles
+// explainer (softens such SCCs into a cluster note) and the depth explainer (counts
+// such an SCC as one logical layer instead of its full size).
+const OversizedClusterModules = 8
+
 // FileDir returns the directory portion of a file path, which enola uses as the
 // canonical module name. A path with no separator maps to ".".
 func FileDir(file string) string {
@@ -145,6 +154,48 @@ func BuildModuleGraphExcluding(store *facts.Store, excludeKinds ...string) map[s
 	}
 
 	return graph
+}
+
+// rubyFrameworkBaseClasses are exact Rails/framework base-class names whose high
+// fan-in comes from being inherited, not from being a god class.
+var rubyFrameworkBaseClasses = map[string]bool{
+	"ApplicationRecord": true, "ApplicationController": true, "ApplicationJob": true,
+	"ApplicationMailer": true, "ApplicationService": true, "ApplicationSerializer": true,
+	"ApplicationCable": true, "ApplicationPolicy": true, "ApplicationInteractor": true,
+	"ApplicationPresenter": true,
+}
+
+// rubyBaseClassSuffixes are naming conventions for user-defined base classes
+// (NotifierBase, ApiBaseController, Pusher::Base, ...). A class named like this is
+// a base others inherit from, so its inbound degree is inheritance, not coupling.
+var rubyBaseClassSuffixes = []string{
+	"BaseController", "BaseJob", "BaseService", "BaseMailer", "BaseSerializer",
+	"BasePolicy", "BasePresenter", "BaseInteractor", "Base",
+}
+
+// IsRubyFrameworkBaseSymbol reports whether a symbol is a Rails/framework base
+// class — one whose high fan-in is a product of inheritance (every subclass
+// "depends on" it) rather than a design smell. Gated on a .rb file so non-Ruby
+// symbols are never affected. Used by the god-class and hotspots explainers to keep
+// framework scaffolding (ApplicationRecord/Controller/Job, *BaseController, *::Base)
+// out of their findings while still surfacing genuine central domain types.
+func IsRubyFrameworkBaseSymbol(name, file string) bool {
+	if !strings.HasSuffix(file, ".rb") {
+		return false
+	}
+	seg := name
+	if i := strings.LastIndex(seg, "::"); i >= 0 {
+		seg = seg[i+2:]
+	}
+	if rubyFrameworkBaseClasses[seg] {
+		return true
+	}
+	for _, suffix := range rubyBaseClassSuffixes {
+		if strings.HasSuffix(seg, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // SymbolModule returns the module a symbol belongs to. Symbol names encode the

@@ -77,6 +77,15 @@ func (e *SurfaceExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 
 	mods := make(map[string]*moduleSurface)
 	for _, s := range symbols {
+		// Ruby is public-by-default: every class/method is "exported", so the
+		// exported/total ratio is ~100% for every module and carries no signal (it
+		// floods with namespace modules like Core::V3, RailsAdmin, V2). Skip Ruby
+		// symbols so Ruby modules never become candidates; other languages in a
+		// multi-repo snapshot are unaffected. "Too big/central" is already covered by
+		// the god-class and complexity explainers.
+		if lang, _ := s.Props["language"].(string); lang == "ruby" {
+			continue
+		}
 		exported, ok := s.Props["exported"].(bool)
 		if !ok {
 			// Extractor didn't record visibility; ignore so it doesn't distort the ratio.

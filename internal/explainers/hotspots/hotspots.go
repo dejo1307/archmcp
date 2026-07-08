@@ -89,6 +89,11 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 	}
 	var candidates []candidate
 	for _, s := range distinct {
+		// A Rails/framework base class has high fan-in via inheritance, not because
+		// it is a genuine pinch point — skip it (non-Ruby symbols are unaffected).
+		if common.IsRubyFrameworkBaseSymbol(s.Name, s.File) {
+			continue
+		}
 		in := len(reverse[s.Name])
 		out := len(forward[s.Name])
 		if in < minDegree || out < minDegree {

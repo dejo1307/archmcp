@@ -42,6 +42,42 @@ func TestExplain_LargePublicSurface(t *testing.T) {
 	}
 }
 
+// TestExplain_RubySkipped: Ruby symbols are public-by-default, so the exported
+// ratio is uninformative and Ruby modules must never be flagged; other languages in
+// the same store still are.
+func TestExplain_RubySkipped(t *testing.T) {
+	s := facts.NewStore()
+	// A large, fully-"exported" Ruby namespace — must be skipped.
+	for i := 0; i < 30; i++ {
+		s.Add(facts.Fact{
+			Kind: facts.KindSymbol, Name: fmt.Sprintf("Core::V3.Sym%d", i),
+			File:  "app/controllers/core/v3/file.rb",
+			Props: map[string]any{"exported": true, "language": "ruby"},
+		})
+	}
+	// A non-Ruby over-exposed module — must still be reported.
+	addModuleSymbols(s, "pkg/leaky", 20, 19)
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	for _, in := range insights {
+		if strings.Contains(in.Title, "Core::V3") {
+			t.Errorf("Ruby module should be skipped by exported-surface: %q", in.Title)
+		}
+	}
+	if len(insights) != 1 || !strings.Contains(insights[0].Title, "pkg/leaky") {
+		t.Errorf("non-Ruby module should still be flagged; got %v", func() []string {
+			out := make([]string, len(insights))
+			for i, in := range insights {
+				out[i] = in.Title
+			}
+			return out
+		}())
+	}
+}
+
 func TestExplain_BelowRatio(t *testing.T) {
 	s := facts.NewStore()
 	addModuleSymbols(s, "pkg/mid", 20, 15) // 75% exported, below minExportedRatio
