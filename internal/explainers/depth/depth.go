@@ -43,13 +43,15 @@ func (e *DepthExplainer) Name() string {
 // chain passing through it (a genuine tangle deepens the chain). But an *oversized*
 // component (> common.OversizedClusterModules) is an autoload coupling cluster, not
 // deep layering — in Ruby/Rails mutual constant references collapse most of the app
-// into one giant SCC, and counting its full size would report every chain through it
-// as "depth ~100" (the cycle false-positive leaking into depth). Such a cluster is
-// therefore weighted as a single logical layer (componentWeight), so depth measures
-// real layering rather than cluster size; the cluster itself is already reported by
-// the cycles explainer. A module's reported depth is its component's depth; one
-// insight is emitted per component (keyed by its smallest member), so a cycle yields
-// a single finding rather than one per entangled module.
+// into one giant SCC. Such a cluster is therefore (a) weighted 0 (componentWeight)
+// and (b) made a sink in the condensation (its outgoing edges are dropped), so a
+// chain earns depth only from genuine, distinct-module layering above/outside the
+// cluster and never by threading through it. Otherwise every chain reaching the
+// cluster would report an inflated depth that merely restates the coupling the
+// cycles explainer already reports as a "Highly coupled module cluster". A module's
+// reported depth is its component's depth; one insight is emitted per component
+// (keyed by its smallest member), so a small cycle yields a single finding rather
+// than one per entangled module.
 func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
 	graph := common.BuildModuleGraph(store)
 	if len(graph) == 0 {
@@ -69,7 +71,9 @@ func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 
 	// Build the condensed adjacency (successor component indices), deduped and
 	// sorted. Self-edges and intra-component edges are dropped — the condensation
-	// is acyclic by construction.
+	// is acyclic by construction. An oversized coupling cluster is made a sink (its
+	// outgoing edges are dropped) so a chain cannot earn depth by threading through
+	// it — see the Explain doc comment.
 	succ := make([][]int, len(sccs))
 	seen := make([]map[int]bool, len(sccs))
 	for i := range seen {
@@ -77,6 +81,9 @@ func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 	}
 	for mod, neighbors := range graph {
 		si := sccOf[mod]
+		if len(sccs[si]) > common.OversizedClusterModules {
+			continue // oversized cluster is a depth sink
+		}
 		for _, n := range neighbors {
 			sj, ok := sccOf[n]
 			if !ok || sj == si {
@@ -175,29 +182,30 @@ func (e *DepthExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 }
 
 // componentWeight is how much a strongly-connected component contributes to a
-// dependency-chain's depth: its full member count for a small tangle, but just 1
-// for an oversized autoload cluster (which is one logical layer, not deep layering
-// — see the Explain doc comment).
+// dependency-chain's depth: its full member count for a small tangle, but 0 for an
+// oversized autoload cluster. Combined with making the cluster a sink (its outgoing
+// edges are dropped), this means a chain earns depth only from genuine layering
+// above/outside the cluster, never from threading through it — see the Explain doc
+// comment.
 func componentWeight(scc []string) int {
 	if len(scc) > common.OversizedClusterModules {
-		return 1
+		return 0
 	}
 	return len(scc)
 }
 
 // chainFor reconstructs the deepest chain of distinct modules starting at
-// component i: for a small component all of its (sorted) members, but for an
-// oversized cluster only a single representative (so the evidence chain length
-// stays consistent with the reported depth instead of dumping ~100 modules), then
-// its best successor component, and so on down the DAG.
+// component i: all of each small component's (sorted) members, then its best
+// successor, and so on down the DAG. An oversized cluster (weight 0, and a sink so
+// it is always terminal) is omitted, keeping the reported chain length equal to the
+// reported depth instead of dumping ~100 cluster members.
 func chainFor(i int, sccs [][]string, bestSucc []int) []string {
 	var out []string
 	for i != -1 {
 		if len(sccs[i]) > common.OversizedClusterModules {
-			out = append(out, sccs[i][0])
-		} else {
-			out = append(out, sccs[i]...)
+			break // weight-0 sink; not part of the reported chain
 		}
+		out = append(out, sccs[i]...)
 		i = bestSucc[i]
 	}
 	return out
