@@ -165,6 +165,28 @@ func indexServerRoutes(all []facts.Fact) map[string][]routeRef {
 	return server
 }
 
+// indexServerPathSuffixes returns the set of server route path-suffixes ignoring
+// method — the method-agnostic counterpart to indexServerRoutes. It lets the
+// unmatched-client pass tell "the endpoint exists but we have the wrong verb"
+// (method_mismatch) from "no server route serves this path at all" (path_unknown).
+func indexServerPathSuffixes(all []facts.Fact) map[string]bool {
+	set := map[string]bool{}
+	for _, f := range all {
+		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) == "client" {
+			continue
+		}
+		if normalizeMethod(propString(f, "method")) == "" {
+			continue
+		}
+		for _, p := range serverPaths(f) {
+			for _, suf := range pathSuffixes(p) {
+				set[suf] = true
+			}
+		}
+	}
+	return set
+}
+
 func linkHTTP(all []facts.Fact, edges map[string]*edge, cov map[string]*httpCoverage) {
 	// Index server routes by normalized path-suffix + method (shared with the
 	// unmatched-client pass so verdicts stay in lockstep).
@@ -439,6 +461,7 @@ func UnmatchedClientRouteKeys(all []facts.Fact) map[string]string {
 		return nil
 	}
 	server := indexServerRoutes(all)
+	serverSuffixes := indexServerPathSuffixes(all)
 	unmatched := map[string]string{}
 	for _, f := range all {
 		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) != "client" {
@@ -458,12 +481,31 @@ func UnmatchedClientRouteKeys(all []facts.Fact) map[string]string {
 			unmatched[id] = "generic_path"
 			continue
 		}
-		matches, _ := lookupClientMatches(server, canonicalLeadingSlash(np), method)
+		cp := canonicalLeadingSlash(np)
+		matches, _ := lookupClientMatches(server, cp, method)
 		if provider, _ := pickProvider(f, matches); provider == "" {
-			unmatched[id] = "no_match"
+			// Distinguish "a server serves this path but not this verb" from "no
+			// server serves this path at all", so the residual is self-triaging.
+			if clientPathHasServer(serverSuffixes, cp) {
+				unmatched[id] = "method_mismatch"
+			} else {
+				unmatched[id] = "path_unknown"
+			}
 		}
 	}
 	return unmatched
+}
+
+// clientPathHasServer reports whether any of a client path's trailing-segment
+// suffixes matches a server route path suffix regardless of verb (mirrors
+// lookupClientMatches' suffix generation, minus the method filter).
+func clientPathHasServer(serverSuffixes map[string]bool, clientPath string) bool {
+	for _, suf := range pathSuffixes(clientPath) {
+		if serverSuffixes[suf] {
+			return true
+		}
+	}
+	return false
 }
 
 // repoFromIdentity extracts the repo label from a route identity key (see

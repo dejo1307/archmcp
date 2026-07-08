@@ -821,6 +821,25 @@ end
 	}
 }
 
+// TestRoutes_ResourcesUpdatePutAndPatch: a resources/resource update action serves
+// both PATCH and PUT (Rails routes both verbs to update), so both are emitted.
+func TestRoutes_ResourcesUpdatePutAndPatch(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  resources :widgets, only: [:update]
+  resource :profile, only: [:update]
+end
+`
+	routes := routeMethods(parseRouteFileAST([]byte(src), "config/routes.rb"))
+	for _, m := range []string{"PATCH", "PUT"} {
+		if !routes["/widgets/:id"][m] {
+			t.Errorf("resources update missing %s; got %v", m, routes["/widgets/:id"])
+		}
+		if !routes["/profile"][m] {
+			t.Errorf("singular resource update missing %s; got %v", m, routes["/profile"])
+		}
+	}
+}
+
 // TestRoutes_MatchViaVerbs: `match ... via:` emits one route per listed verb
 // (array or single symbol), and nothing when via: is absent.
 func TestRoutes_MatchViaVerbs(t *testing.T) {

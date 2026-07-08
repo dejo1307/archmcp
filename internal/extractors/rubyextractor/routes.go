@@ -124,7 +124,10 @@ func restfulActions(only, except map[string]bool) []restAction {
 		{name: "create", method: "POST", suffix: ""},
 		{name: "new", method: "GET", suffix: "/new"},
 		{name: "show", method: "GET", suffix: "/:id"},
+		// Rails routes BOTH PATCH and PUT to the update action, so emit both — a
+		// client calling either verb must resolve to the same served endpoint.
 		{name: "update", method: "PATCH", suffix: "/:id"},
+		{name: "update", method: "PUT", suffix: "/:id"},
 		{name: "edit", method: "GET", suffix: "/:id/edit"},
 		{name: "destroy", method: "DELETE", suffix: "/:id"},
 	}
@@ -146,7 +149,9 @@ func restfulActionsSingular(only, except map[string]bool) []restAction {
 		{name: "create", method: "POST", suffix: ""},
 		{name: "new", method: "GET", suffix: "/new"},
 		{name: "show", method: "GET", suffix: ""},
+		// Rails routes BOTH PATCH and PUT to update (see restfulActions).
 		{name: "update", method: "PATCH", suffix: ""},
+		{name: "update", method: "PUT", suffix: ""},
 		{name: "edit", method: "GET", suffix: "/edit"},
 		{name: "destroy", method: "DELETE", suffix: ""},
 	}

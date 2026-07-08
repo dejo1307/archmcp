@@ -41,8 +41,8 @@ func TestFlagUnmatchedRoutes_ClientSide(t *testing.T) {
 	if e, _ := unknown["unmatched_by_server"].(bool); !e {
 		t.Errorf("/api/unknown should be unmatched_by_server; got %+v", unknown)
 	}
-	if unknown["unmatched_reason"] != "no_match" {
-		t.Errorf("/api/unknown reason = %v, want no_match", unknown["unmatched_reason"])
+	if unknown["unmatched_reason"] != "path_unknown" {
+		t.Errorf("/api/unknown reason = %v, want path_unknown", unknown["unmatched_reason"])
 	}
 
 	items := props["/api/items/{id}"]

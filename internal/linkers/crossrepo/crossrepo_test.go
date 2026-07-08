@@ -222,7 +222,8 @@ func TestComputeLinks_ExternalClientBucketed(t *testing.T) {
 func TestUnmatchedClientRouteKeys(t *testing.T) {
 	in := []facts.Fact{
 		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),                                 // resolves
-		clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil),                                // no server -> no_match
+		clientRoute("svc-alpha", "/api/items/{id}", "DELETE", nil),                               // path exists, wrong verb -> method_mismatch
+		clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil),                                // no server serves path -> path_unknown
 		clientRoute("svc-alpha", "/health", "GET", nil),                                          // 1 segment -> generic_path
 		clientRoute("svc-alpha", "/api/things/{id}", "", nil),                                     // no verb -> no_method
 		clientRoute("svc-alpha", "/rest/api/2/issue", "POST", map[string]any{"external": true}),  // external -> omitted
@@ -231,9 +232,10 @@ func TestUnmatchedClientRouteKeys(t *testing.T) {
 	got := UnmatchedClientRouteKeys(in)
 
 	want := map[string]string{
-		RouteIdentity(clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil)): "no_match",
-		RouteIdentity(clientRoute("svc-alpha", "/health", "GET", nil)):           "generic_path",
-		RouteIdentity(clientRoute("svc-alpha", "/api/things/{id}", "", nil)):     "no_method",
+		RouteIdentity(clientRoute("svc-alpha", "/api/items/{id}", "DELETE", nil)): "method_mismatch",
+		RouteIdentity(clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil)):  "path_unknown",
+		RouteIdentity(clientRoute("svc-alpha", "/health", "GET", nil)):            "generic_path",
+		RouteIdentity(clientRoute("svc-alpha", "/api/things/{id}", "", nil)):      "no_method",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d unmatched, want %d: %+v", len(got), len(want), got)

@@ -236,7 +236,10 @@ import (
 // v90: Kotlin Retrofit extractor tags absolute-URL annotations external=true + host; Ruby
 // route extractor adds `match ... via:` verbs and reads `scope`/`namespace path:` keyword
 // prefixes. New/changed route facts, so cached Kotlin and Ruby snapshots must re-extract.
-const cacheVersion = "v90"
+// v91: Ruby route extractor emits both PATCH and PUT for the resources/resource update
+// action (Rails routes both verbs to update), so a client calling PUT resolves. New route
+// facts, so cached Ruby snapshots must re-extract.
+const cacheVersion = "v91"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
