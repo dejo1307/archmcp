@@ -1673,6 +1673,30 @@ func firstSymbolArg(args *sitter.Node, src []byte) string {
 	return ""
 }
 
+// firstPositionalPath returns the first positional route-path argument — a string
+// literal or a bare symbol — skipping keyword pairs (to:, via:, only:, ...). Unlike
+// firstStringArg it does not descend into pair values, so `get :cities_by_zip` yields
+// "cities_by_zip" and `get :x, to: 'c#a'` yields "x" (the path, not the handler).
+func firstPositionalPath(args *sitter.Node, src []byte) string {
+	if args == nil {
+		return ""
+	}
+	for i := uint(0); i < args.ChildCount(); i++ {
+		c := args.Child(i)
+		switch c.Kind() {
+		case "string":
+			for j := uint(0); j < c.ChildCount(); j++ {
+				if c.Child(j).Kind() == "string_content" {
+					return rubyText(c.Child(j), src)
+				}
+			}
+		case "simple_symbol":
+			return strings.TrimPrefix(rubyText(c, src), ":")
+		}
+	}
+	return ""
+}
+
 // isAllCaps reports whether s is an ALL_CAPS constant name (letters uppercase,
 // digits and underscores allowed). Matches the former constant regex.
 func isAllCaps(s string) bool {

@@ -239,7 +239,10 @@ import (
 // v91: Ruby route extractor emits both PATCH and PUT for the resources/resource update
 // action (Rails routes both verbs to update), so a client calling PUT resolves. New route
 // facts, so cached Ruby snapshots must re-extract.
-const cacheVersion = "v91"
+// v92: Ruby route extractor handles symbol path args (`get :cities_by_zip`), a bare-symbol
+// `scope :users` path prefix, and the `resource(s) ..., path:` segment override. New/
+// corrected route paths, so cached Ruby snapshots must re-extract.
+const cacheVersion = "v92"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

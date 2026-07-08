@@ -123,6 +123,7 @@ var versionCoverage = map[int][]string{
 	89: {"TestMethodNear_BeforeAndEnumForms", "TestExtractEndpointFacts_ExternalHost"},                                                                                                                                                                                                           // Swift widened method inference + external-host tagging
 	90: {"TestRetrofit_AbsoluteURLExternal", "TestRoutes_MatchViaVerbs", "TestRoutes_ScopePathKeyword"},                                                                                                                                                                                          // Kotlin Retrofit external tagging + Ruby match via:/scope path:
 	91: {"TestRoutes_ResourcesUpdatePutAndPatch"},                                                                                                                                                                                                                                                 // Ruby resources/resource update emits PATCH + PUT
+	92: {"TestRoutes_SymbolPathArg", "TestRoutes_ScopeBareSymbolPrefix", "TestRoutes_ResourcePathOverride"},                                                                                                                                                                                        // Ruby symbol path args + scope :symbol + resource path: override
 }
 
 func TestCacheVersionCoverage(t *testing.T) {

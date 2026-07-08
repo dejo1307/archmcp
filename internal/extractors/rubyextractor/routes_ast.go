@@ -80,7 +80,9 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 
 	switch method {
 	case "get", "post", "put", "patch", "delete":
-		path := firstStringArg(args, rw.src)
+		// Accept both a string path ('cities_by_zip') and a bare symbol (:cities_by_zip);
+		// the positional helper also avoids picking up a `to:` handler string.
+		path := firstPositionalPath(args, rw.src)
 		if path == "" {
 			return
 		}
@@ -130,7 +132,13 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 				parentMember = "/:" + p
 			}
 		}
-		segment := parentMember + "/" + name
+		// `path:` overrides the URL segment while the resource name still drives the
+		// props and the nested member param (Rails derives `:name_id` from the name).
+		segmentName := name
+		if p := pairString(args, "path", rw.src); p != "" {
+			segmentName = strings.Trim(p, "/")
+		}
+		segment := parentMember + "/" + segmentName
 		resourcePath := prefix + segment
 
 		actions := restfulActions(only, except)
@@ -159,7 +167,7 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		// `match 'x', via: [:get, :post]` maps one path to several verbs; emit one
 		// route per listed verb. Without a `via:` the verb set is ambiguous (older
 		// Rails defaulted to all), so emit nothing rather than guess.
-		path := firstStringArg(args, rw.src)
+		path := firstPositionalPath(args, rw.src)
 		if path == "" {
 			return
 		}
@@ -207,6 +215,11 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		path := firstStringArg(args, rw.src)
 		if path == "" {
 			path = pairString(args, "path", rw.src)
+		}
+		if path == "" {
+			// A bare positional symbol is a path prefix: `scope :users` == `scope
+			// path: 'users'`. (module: is a keyword pair, so it is not read here.)
+			path = firstSymbolArg(args, rw.src)
 		}
 		if path != "" {
 			if !strings.HasPrefix(path, "/") {
