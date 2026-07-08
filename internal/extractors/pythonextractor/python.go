@@ -120,7 +120,13 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 			log.Printf("[python-extractor] error reading %s: %v", relFile, err)
 			return nil
 		}
-		return extractFileAST(src, relFile, isDjango, idx)
+		ff := extractFileAST(src, relFile, isDjango, idx)
+		// gRPC client call sites (stub.Method(...)) become client-role routes,
+		// detected from source since generated *_pb2_grpc.py stubs are typically
+		// not committed. Names are provisional (short service) and resolved to the
+		// fully-qualified wire path by the engine before cross-repo linking.
+		ff = append(ff, extractPyGRPCClientFacts(src, relFile)...)
+		return ff
 	})
 
 	var allFacts []facts.Fact

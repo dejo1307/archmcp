@@ -245,6 +245,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	// import/shared-lib references. Recomputed from scratch each run (prior
 	// synthetic facts are dropped first) so it stays idempotent across appends.
 	tStage = time.Now()
+	e.resolvePyGRPCClientRoutes()
 	e.linkCrossRepo()
 	e.flagUnmatchedRoutes()
 	e.bindGRPCHandlers()

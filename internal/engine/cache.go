@@ -226,7 +226,10 @@ import (
 // parameters, locals, and loop variables — it now resolves a bare callee only when the name
 // is a known module-level def and not shadowed by a parameter (mirrors valueRefTarget). Drops
 // spurious call edges; bump so cached Python snapshots re-extract with the tightened resolver.
-const cacheVersion = "v87"
+// v88: Python extractor now emits gRPC client-role routes (source=python-grpc-client) for
+// stub.Method(...) call sites, detected from source. New facts, so cached Python snapshots must
+// re-extract to pick them up.
+const cacheVersion = "v88"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

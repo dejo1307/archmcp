@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package vosk.stt.v1;
+
+// Trimmed from vosk-server/grpc/stt_service.proto — a real Python gRPC service.
+service SttService {
+  rpc StreamingRecognize (stream StreamingRecognitionRequest) returns (stream StreamingRecognitionResponse) {
+  }
+}
+
+service StatsService {
+  rpc GetStats (StatsRequest) returns (StatsResponse) {}
+}
+
+message StreamingRecognitionRequest {
+  bytes audio_content = 1;
+}
+
+message StreamingRecognitionResponse {
+  string text = 1;
+}
+
+message StatsRequest {}
+
+message StatsResponse {
+  int32 n_streams = 1;
+}

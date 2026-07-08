@@ -252,6 +252,7 @@ var handWrittenClientSources = map[string]bool{
 	"ts-http-client": true, "retrofit": true, "urlsession": true,
 	"swift-endpoint": true, "ruby-http-client": true, "go-http-client": true,
 	"php-http-client": true, "ts-grpc-client": true, "go-grpc-client": true,
+	"python-grpc-client": true,
 }
 
 // httpVia returns the via label for an HTTP edge derived from a client route:

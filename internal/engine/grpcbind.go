@@ -14,6 +14,12 @@ import (
 // alias-qualified) — capturing the service short name ("UserService").
 var unimplementedEmbed = regexp.MustCompile(`^(?:.*\.)?Unimplemented(.+)Server$`)
 
+// servicerBase matches the target of the `implements` edge a Python gRPC servicer
+// carries by subclassing its generated base — e.g.
+// "stt_service_pb2_grpc.SttServiceServicer" — capturing the service short name
+// ("SttService"). grpc_python_out always names the base "<Service>Servicer".
+var servicerBase = regexp.MustCompile(`^(?:.*\.)?(.+)Servicer$`)
+
 // bindGRPCHandlers connects each gRPC server route (emitted from a .proto by the
 // grpc extractor) to the Go method that implements it, so route → handler is
 // traversable by impact_analysis and find_path.
@@ -41,7 +47,7 @@ func (e *Engine) bindGRPCHandlers() {
 	for _, s := range symbols {
 		kind, _ := s.Props["symbol_kind"].(string)
 		switch kind {
-		case facts.SymbolStruct:
+		case facts.SymbolStruct, facts.SymbolClass:
 			short := implShortName(s)
 			if short == "" {
 				continue
@@ -99,14 +105,105 @@ func (e *Engine) bindGRPCHandlers() {
 	}
 }
 
-// implShortName returns the gRPC service short name a struct implements by
-// embedding Unimplemented<Service>Server, or "" if it embeds no such type.
+// resolvePyGRPCClientRoutes rewrites provisional Python gRPC client routes to their
+// fully-qualified wire path. The Python extractor only sees the short service name
+// (e.g. "SttService"), so it emits Name = "/SttService/StreamingRecognize" plus a
+// grpc_service_short prop; the fully-qualified name ("vosk.stt.v1.SttService") lives
+// only in the .proto. This pass resolves short → fq from the gRPC server routes in
+// the store and rewrites the Name to "/vosk.stt.v1.SttService/StreamingRecognize"
+// so it matches the server route at cross-repo link time.
+//
+// It MUST run before linkCrossRepo (which matches routes by Name). It re-resolves
+// from the preserved grpc_service_short prop each run, so it is idempotent across
+// appends. A client route whose service has no proto in the snapshot (or an
+// ambiguous short name) is left provisional.
+func (e *Engine) resolvePyGRPCClientRoutes() {
+	// Proto index from server routes: short service name → fq, plus per-fq method
+	// sets and an ambiguity guard (two packages sharing a short service name).
+	fqOf := map[string]string{}
+	ambiguous := map[string]bool{}
+	methodsOf := map[string]map[string]bool{}
+	for _, r := range e.store.ByKind(facts.KindRoute) {
+		if valProp(r, "type") != "grpc" || valProp(r, "role") != "server" {
+			continue
+		}
+		fq := valProp(r, "rpc_service")
+		if fq == "" {
+			continue
+		}
+		short := lastDotSegment(fq)
+		if prev, ok := fqOf[short]; ok && prev != fq {
+			ambiguous[short] = true
+		} else {
+			fqOf[short] = fq
+		}
+		if methodsOf[fq] == nil {
+			methodsOf[fq] = map[string]bool{}
+		}
+		if m := valProp(r, "rpc_method"); m != "" {
+			methodsOf[fq][m] = true
+		}
+	}
+
+	// Collect + resolve client routes, then remove-and-re-add so the store's name
+	// index stays consistent (in-place Name mutation would desync byName).
+	var replaced []facts.Fact
+	found := false
+	for _, r := range e.store.ByKind(facts.KindRoute) {
+		if valProp(r, "source") != "python-grpc-client" {
+			continue
+		}
+		found = true
+		short := valProp(r, "grpc_service_short")
+		method := valProp(r, "rpc_method")
+		fq := fqOf[short]
+		if short != "" && method != "" && fq != "" && !ambiguous[short] && methodsOf[fq][method] {
+			r.Props = cloneProps(r.Props)
+			r.Name = "/" + fq + "/" + method
+			r.Props["rpc_service"] = fq
+		}
+		replaced = append(replaced, r)
+	}
+	if !found {
+		return
+	}
+	e.store.RemoveWhere(func(f facts.Fact) bool {
+		return f.Kind == facts.KindRoute && valProp(f, "source") == "python-grpc-client"
+	})
+	e.store.Add(replaced...)
+}
+
+// valProp reads a string prop from a value Fact, tolerating a nil Props map.
+func valProp(f facts.Fact, key string) string {
+	if f.Props == nil {
+		return ""
+	}
+	v, _ := f.Props[key].(string)
+	return v
+}
+
+// cloneProps returns a shallow copy of a props map so a rewritten fact does not
+// mutate the shared original.
+func cloneProps(p map[string]any) map[string]any {
+	out := make(map[string]any, len(p)+1)
+	for k, v := range p {
+		out[k] = v
+	}
+	return out
+}
+
+// implShortName returns the gRPC service short name a symbol implements — a Go
+// struct embedding Unimplemented<Service>Server, or a Python class subclassing a
+// generated <Service>Servicer base — or "" if it implements no such type.
 func implShortName(s facts.Fact) string {
 	for _, r := range s.Relations {
 		if r.Kind != facts.RelImplements {
 			continue
 		}
 		if m := unimplementedEmbed.FindStringSubmatch(r.Target); m != nil {
+			return m[1]
+		}
+		if m := servicerBase.FindStringSubmatch(r.Target); m != nil {
 			return m[1]
 		}
 	}
