@@ -242,7 +242,14 @@ import (
 // v92: Ruby route extractor handles symbol path args (`get :cities_by_zip`), a bare-symbol
 // `scope :users` path prefix, and the `resource(s) ..., path:` segment override. New/
 // corrected route paths, so cached Ruby snapshots must re-extract.
-const cacheVersion = "v92"
+// v93: Swift endpoint extractor's switchReturns now collects case labels that wrap across
+// multiple lines, so a `case .a,\n .b: return .post` maps every label (not just the first)
+// — correcting HTTP methods that previously defaulted to GET. Cached Swift snapshots must
+// re-extract.
+// v94: Swift endpoint extractor reads a single-value method property (`var method:
+// HTTPMethod { return .post }`, no switch) and applies its lone verb to every case, instead
+// of defaulting to GET. Cached Swift snapshots must re-extract.
+const cacheVersion = "v94"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

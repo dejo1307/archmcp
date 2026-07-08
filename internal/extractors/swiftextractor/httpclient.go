@@ -324,6 +324,15 @@ func extractEndpointFacts(src []byte, relFile, dir, defaultPrefix string) []fact
 		return nil
 	}
 	methodByCase := switchReturns(methodBody, swiftReturnEnumCase)
+	// A single-value method property (`var method: HTTPMethod { return .post }`, no
+	// switch) yields no per-case entries; read its lone returned verb and apply it to
+	// every case, mirroring how prefixResolver handles a single-value prefix body.
+	methodConst := ""
+	if len(methodByCase) == 0 {
+		if m := swiftReturnEnumCase.FindStringSubmatch(methodBody); m != nil {
+			methodConst = m[1]
+		}
+	}
 	resolvePrefix := prefixResolver(text, defaultPrefix)
 
 	api := swiftAPIHint(relFile)
@@ -347,6 +356,9 @@ func extractEndpointFacts(src []byte, relFile, dir, defaultPrefix string) []fact
 		verb := methodByCase[label]
 		if verb == "" {
 			verb = methodByCase[swiftDefaultLabel]
+		}
+		if verb == "" {
+			verb = methodConst
 		}
 		if v := mapSwiftMethod(verb); v != "" {
 			method = v
@@ -458,13 +470,23 @@ func switchReturns(body string, valueRe *regexp.Regexp) map[string]string {
 		return out
 	}
 	var cur []string
+	inLabels := false // accumulating a case-label list that spans multiple lines (before its ':')
 	for _, ln := range strings.Split(body, "\n") {
 		t := strings.TrimSpace(ln)
 		switch {
 		case strings.HasPrefix(t, "case "):
 			cur = caseLabels(t)
+			// A label list may wrap onto following lines; keep collecting until the
+			// clause's terminating colon so `case .a,\n .b:` maps both a and b.
+			inLabels = !strings.Contains(t, ":")
 		case strings.HasPrefix(t, "default:"), strings.HasPrefix(t, "default :"):
 			cur = []string{swiftDefaultLabel}
+			inLabels = false
+		case inLabels:
+			cur = append(cur, caseLabels(t)...)
+			if strings.Contains(t, ":") {
+				inLabels = false
+			}
 		}
 		if m := valueRe.FindStringSubmatch(t); m != nil {
 			for _, lbl := range cur {
