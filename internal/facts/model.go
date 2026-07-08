@@ -283,3 +283,33 @@ func (m SnapshotMeta) Receipt() Receipt {
 		},
 	}
 }
+
+// GraphReceipt is the graph-wide manifest written to ~/.enola/receipt.json — it
+// describes the CURRENT multi-repo "graph of graphs": which repositories compose
+// it, the git commit each sits on, when each entered the graph and how long it has
+// been a member, and what the graph consists of now. Unlike the per-repo Receipt
+// (which proves what one deterministic snapshot was generated over), this is a
+// machine-global picture of the live graph. It works for a single-repo graph too
+// (Repos then has one entry).
+type GraphReceipt struct {
+	GeneratedAt     string           `json:"generated_at"`       // RFC3339 UTC, this write
+	EnolaVersion    string           `json:"enola_version"`      // build version that produced the current graph
+	SnapshotID      string           `json:"snapshot_id"`        // whole-graph content fingerprint (SnapshotMeta.SnapshotID)
+	FactCount       int              `json:"fact_count"`         // total facts across all repos
+	InsightCount    int              `json:"insight_count"`      // total insights
+	ServiceCount    int              `json:"service_count"`         // KindService nodes = repos materialized in the cross-repo graph
+	CrossRepoEdgeCount int           `json:"cross_repo_edge_count"` // consumer->provider edges in the cross-repo "graph of graphs" (NOT the total dependency-fact count, which also covers ordinary imports)
+	Coverage        *CoverageSummary `json:"coverage,omitempty"`    // cross-repo edge-coverage rollup, nil in single-repo mode
+	Repos           []GraphRepoEntry `json:"repos"`              // one entry per repository in the graph, sorted by Label
+}
+
+// GraphRepoEntry describes one repository's membership in the current graph.
+type GraphRepoEntry struct {
+	Label           string   `json:"label"`                       // filepath.Base(absRepo); the store's repo label
+	Path            string   `json:"path"`                        // absolute repo root
+	Git             *GitInfo `json:"git,omitempty"`               // ref/commit/dirty; nil for non-git dirs
+	AddedAt         string   `json:"added_at"`                    // RFC3339 UTC, first time this label entered the graph (merged forward across regenerations)
+	InGraphFor      string   `json:"in_graph_for"`                // human duration since AddedAt (e.g. "72h3m0s"); derived, recomputed each write
+	FactCount       int      `json:"fact_count"`                  // facts tagged with this repo label
+	CommitChangedAt string   `json:"commit_changed_at,omitempty"` // RFC3339 UTC, last time the recorded commit moved; AddedAt is NOT reset when the commit changes
+}

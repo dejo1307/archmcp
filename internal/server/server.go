@@ -458,6 +458,11 @@ func (s *Server) registerTools() {
 			log.Printf("[server] warning: failed to write artifacts: %v", err)
 		}
 
+		// Refresh the graph-wide receipt at ~/.enola/receipt.json (non-fatal).
+		if err := s.eng.WriteGlobalReceipt(); err != nil {
+			log.Printf("[server] warning: failed to write global receipt: %v", err)
+		}
+
 		// Return summary
 		summary := fmt.Sprintf(
 			"Snapshot generated successfully.\n\n"+

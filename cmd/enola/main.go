@@ -79,6 +79,12 @@ func main() {
 			log.Fatalf("failed to write artifacts: %v", err)
 		}
 
+		// Refresh the graph-wide receipt at ~/.enola/receipt.json. Non-fatal: a
+		// failure here must not abort an otherwise-successful snapshot.
+		if err := eng.WriteGlobalReceipt(); err != nil {
+			log.Printf("warning: failed to write global receipt: %v", err)
+		}
+
 		fmt.Fprintf(os.Stderr, "\nSnapshot complete:\n")
 		fmt.Fprintf(os.Stderr, "  Repository:  %s\n", snapshot.Meta.RepoPath)
 		fmt.Fprintf(os.Stderr, "  Facts:       %d\n", snapshot.Meta.FactCount)

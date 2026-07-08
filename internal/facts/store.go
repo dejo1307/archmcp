@@ -148,6 +148,14 @@ func (s *Store) ByRepo(repo string) []Fact {
 	return s.collectByIndex(s.byRepo[repo])
 }
 
+// CountByRepo returns how many facts carry the given repo label, in O(1) from the
+// byRepo index without materializing (and copying) the facts themselves.
+func (s *Store) CountByRepo(repo string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.byRepo[repo])
+}
+
 // ByRelation returns all facts that have a relation of the given kind.
 func (s *Store) ByRelation(relKind string) []Fact {
 	s.mu.RLock()

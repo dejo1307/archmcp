@@ -99,6 +99,11 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	return e.eng.WriteArtifacts(repoPath)
 }
 
+// WriteGlobalReceipt refreshes the graph-wide receipt at ~/.enola/receipt.json.
+func (e *Engine) WriteGlobalReceipt() error {
+	return e.eng.WriteGlobalReceipt()
+}
+
 // SetBaseline pins the current on-disk snapshot as the diff baseline.
 func (e *Engine) SetBaseline(repoPath string) error {
 	return e.eng.SetBaseline(repoPath)
