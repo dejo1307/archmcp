@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/upgrade"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/explain"
@@ -18,6 +19,13 @@ func main() {
 	bootstrap.ConfigureRuntime()
 
 	ctx := context.Background()
+
+	if len(os.Args) > 1 && os.Args[1] == "upgrade" {
+		if err := upgrade.Run(ctx, version.Version); err != nil {
+			log.Fatalf("upgrade failed: %v", err)
+		}
+		os.Exit(0)
+	}
 
 	generateMode := false
 	explainMode := false
