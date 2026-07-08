@@ -161,6 +161,12 @@ enola upgrade
 
 This downloads the newest build for your platform, verifies its checksum, and replaces the running binary. If enola is installed somewhere your user can't write, re-run with elevated permissions or re-run the install script above.
 
+Because your agent launches enola as a long-lived MCP server process, an upgrade only takes effect once that process restarts — reconnect the MCP server so it picks up the new binary:
+
+- **Claude Code** — restart the session, or re-register with `claude mcp remove enola && claude mcp add enola enola`.
+- **Cursor** — toggle the enola server off and back on in **Settings → MCP** (or reload the window).
+- **GitHub Copilot (VS Code)** — restart the server from the `.vscode/mcp.json` editor (the **Restart** CodeLens above the server entry), or reload the window.
+
 ### Configuration (optional)
 
 **enola needs no config file.** Every setting has a built-in default, so out of the box it indexes the current repo with all extractors enabled and writes to `.enola/`. A config file (`mcp-arch.yaml`) only *overrides* those defaults — it never adds capability you'd otherwise lack. When enola can't find one it simply prints `warning: …, using defaults` and carries on.

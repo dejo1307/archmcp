@@ -88,7 +88,7 @@ func TestLatestVersion(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, `{"tag_name": "v0.1.26", "name": "release"}`)
+		_, _ = fmt.Fprint(w, `{"tag_name": "v0.1.26", "name": "release"}`)
 	}))
 	defer srv.Close()
 
@@ -108,7 +108,7 @@ func TestLatestVersion(t *testing.T) {
 func TestDownload(t *testing.T) {
 	body := []byte("asset bytes")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
 

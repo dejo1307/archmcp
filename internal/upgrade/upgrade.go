@@ -116,7 +116,7 @@ func latestVersion(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("GitHub API returned %s", resp.Status)
 	}
@@ -167,7 +167,7 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP %s", resp.Status)
 	}
@@ -198,7 +198,7 @@ func extractBinary(tarball []byte, want string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening gzip: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
 	for {
@@ -240,12 +240,12 @@ func replaceExecutable(binary []byte) error {
 	cleanup := true
 	defer func() {
 		if cleanup {
-			os.Remove(tmpPath)
+			_ = os.Remove(tmpPath)
 		}
 	}()
 
 	if _, err := tmp.Write(binary); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -258,16 +258,16 @@ func replaceExecutable(binary []byte) error {
 	if runtime.GOOS == "windows" {
 		// A running .exe cannot be overwritten; move it aside first.
 		old := exe + ".old"
-		os.Remove(old) // best-effort cleanup of a prior upgrade
+		_ = os.Remove(old) // best-effort cleanup of a prior upgrade
 		if err := os.Rename(exe, old); err != nil {
 			return installPermError(dir, err)
 		}
 		if err := os.Rename(tmpPath, exe); err != nil {
-			os.Rename(old, exe) // roll back
+			_ = os.Rename(old, exe) // roll back
 			return installPermError(dir, err)
 		}
 		cleanup = false
-		os.Remove(old) // best-effort; may fail while the old exe is still running
+		_ = os.Remove(old) // best-effort; may fail while the old exe is still running
 		return nil
 	}
 
