@@ -1,6 +1,6 @@
 module github.com/enola-labs/enola
 
-go 1.25.11
+go 1.25.12
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.4.1
