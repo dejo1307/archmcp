@@ -1414,6 +1414,7 @@ type edgeCoverage struct {
 	Detected   int    `json:"detected"`
 	Resolved   int    `json:"resolved"`
 	Unresolved int    `json:"unresolved"`
+	External   int    `json:"external,omitempty"`
 }
 
 // serviceCoverage is the coverage picture for one service node.
@@ -1423,6 +1424,7 @@ type serviceCoverage struct {
 	OutboundEdges   int            `json:"outbound_edges"`
 	EdgeCoverage    []edgeCoverage `json:"edge_coverage,omitempty"`
 	UnresolvedTotal int            `json:"unresolved_total"`
+	ExternalTotal   int            `json:"external_total,omitempty"`
 }
 
 // buildCoverageReport derives the per-service coverage picture from the service
@@ -1443,14 +1445,17 @@ func buildCoverageReport(store *facts.Store, repo string) []serviceCoverage {
 		}
 
 		cov := readEdgeCoverage(svc)
-		detected, unresolved := 0, 0
+		detected, unresolved, external := 0, 0, 0
 		for _, c := range cov {
 			detected += c.Detected
 			unresolved += c.Unresolved
+			external += c.External
 		}
 
 		class := "connected"
 		if outbound == 0 {
+			// external-only call sites are expected, not a blind spot, so a service
+			// with no resolved edges but only external calls stays isolated, not a gap.
 			if detected > 0 && unresolved > 0 {
 				class = "coverage_gap"
 			} else {
@@ -1464,6 +1469,7 @@ func buildCoverageReport(store *facts.Store, repo string) []serviceCoverage {
 			OutboundEdges:   outbound,
 			EdgeCoverage:    cov,
 			UnresolvedTotal: unresolved,
+			ExternalTotal:   external,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
@@ -1498,6 +1504,7 @@ func readEdgeCoverage(svc facts.Fact) []edgeCoverage {
 			Detected:   coverageInt(m["detected"]),
 			Resolved:   coverageInt(m["resolved"]),
 			Unresolved: coverageInt(m["unresolved"]),
+			External:   coverageInt(m["external"]),
 		})
 	}
 	return out
@@ -1532,16 +1539,16 @@ func renderCoverageReport(report []serviceCoverage) string {
 		sb.WriteString(fmt.Sprintf("⚠️  %d service(s) classified `coverage_gap`: they look isolated but have unresolved outbound call sites — verify against source.\n\n", gaps))
 	}
 
-	sb.WriteString("| Service | Classification | Outbound edges | Detected | Resolved | Unresolved |\n")
-	sb.WriteString("|---|---|---|---|---|---|\n")
+	sb.WriteString("| Service | Classification | Outbound edges | Detected | Resolved | Unresolved | External |\n")
+	sb.WriteString("|---|---|---|---|---|---|---|\n")
 	for _, sc := range report {
 		detected, resolved := 0, 0
 		for _, c := range sc.EdgeCoverage {
 			detected += c.Detected
 			resolved += c.Resolved
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s | %d | %d | %d | %d |\n",
-			sc.Service, sc.Classification, sc.OutboundEdges, detected, resolved, sc.UnresolvedTotal))
+		sb.WriteString(fmt.Sprintf("| %s | %s | %d | %d | %d | %d | %d |\n",
+			sc.Service, sc.Classification, sc.OutboundEdges, detected, resolved, sc.UnresolvedTotal, sc.ExternalTotal))
 	}
 	return sb.String()
 }

@@ -296,6 +296,85 @@ final class EntitlementAPIService {
 	}
 }
 
+// TestMethodNear_BeforeAndEnumForms verifies the widened method inference: a verb
+// set on the request BEFORE the path line is found (symmetric window), and enum/
+// member forms (HTTPMethod.delete.rawValue, Alamofire .put) map to the verb instead
+// of silently defaulting to GET.
+func TestMethodNear_BeforeAndEnumForms(t *testing.T) {
+	src := `import Foundation
+
+final class OrdersAPIService {
+    func remove(id: Int) async throws {
+        var request = URLRequest(url: URL(string: "placeholder")!)
+        request.httpMethod = HTTPMethod.delete.rawValue
+        request.url = baseURL.appendingPathComponent("orders/\(id)/remove")
+        _ = try await send(request)
+    }
+    func replace(id: Int) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("orders/\(id)/replace"))
+        request.method = .put
+        _ = try await send(request)
+    }
+}
+`
+	byName := map[string]string{}
+	for _, f := range extractURLSessionFacts([]byte(src), "Data/Network/OrdersAPIService.swift") {
+		byName[f.Name] = f.Props["method"].(string)
+		if _, ok := f.Props["external"]; ok {
+			t.Errorf("%s should not be external (injected base URL): %+v", f.Name, f.Props)
+		}
+	}
+	if byName["orders/{}/remove"] != "DELETE" {
+		t.Errorf("remove: want DELETE from enum form set before the path, got %q (%+v)", byName["orders/{}/remove"], byName)
+	}
+	if byName["orders/{}/replace"] != "PUT" {
+		t.Errorf("replace: want PUT from .put form, got %q (%+v)", byName["orders/{}/replace"], byName)
+	}
+}
+
+// TestExtractEndpointFacts_ExternalHost verifies that a client whose base URL is a
+// hardcoded absolute host (the APIService.Jira idiom) is tagged external + host, so
+// the linker buckets it out of the internal unresolved count.
+func TestExtractEndpointFacts_ExternalHost(t *testing.T) {
+	src := `import Foundation
+
+extension APIService.Jira: ImageUploadEndpoint {
+    public var urlString: String {
+        return "https://jira.service.com/\(urlPathComponent)"
+    }
+    public var urlPathComponent: String {
+        switch self {
+        case .createIssue:
+            return "rest/api/2/issue"
+        case .addAttachment:
+            return "rest/api/2/issue/attachments"
+        }
+    }
+    public var method: HTTPMethod {
+        switch self {
+        case .createIssue, .addAttachment:
+            return .post
+        }
+    }
+}
+`
+	ff := extractEndpointFacts([]byte(src), "Sources/Core/3P/APIService.Jira.swift", "Sources/Core", "")
+	if len(ff) == 0 {
+		t.Fatalf("expected endpoint routes, got none")
+	}
+	for _, f := range ff {
+		if ext, _ := f.Props["external"].(bool); !ext {
+			t.Errorf("%s: want external=true, got %+v", f.Name, f.Props)
+		}
+		if f.Props["host"] != "jira.service.com" {
+			t.Errorf("%s: want host jira.service.com, got %v", f.Name, f.Props["host"])
+		}
+		if f.Props["method"] != "POST" {
+			t.Errorf("%s: want POST, got %v", f.Name, f.Props["method"])
+		}
+	}
+}
+
 // TestExtractURLSessionFacts_NonNetworkFileSkipped verifies the file-level gate:
 // a source that never references URLSession/URLRequest (e.g. a PDF exporter using
 // appendingPathComponent for file I/O) emits no client routes.

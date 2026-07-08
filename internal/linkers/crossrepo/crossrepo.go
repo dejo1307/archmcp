@@ -66,6 +66,7 @@ type edge struct {
 type httpCoverage struct {
 	detected int
 	resolved int
+	external int // detected call sites to a hardcoded external host — not an internal blind spot
 }
 
 func (e *edge) note(via string) {
@@ -176,6 +177,13 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge, cov map[string]*httpCove
 		// (no method, generic path) and call sites with no matching server both fall
 		// into unresolved (detected - resolved) — the blind spot the report exposes.
 		covFor(cov, f.Repo).detected++
+		// A call to a hardcoded external host (e.g. a third-party API) can never
+		// resolve to a loaded repo, so bucket it separately instead of leaving it in
+		// unresolved — otherwise it reads as an internal blind spot it is not.
+		if isExternalClient(f) {
+			covFor(cov, f.Repo).external++
+			continue
+		}
 		method := normalizeMethod(propString(f, "method"))
 		if method == "" {
 			continue
@@ -831,7 +839,8 @@ func materialize(edges map[string]*edge, allRepos []string, cov map[string]*http
 				"edge_type":  "http_client",
 				"detected":   c.detected,
 				"resolved":   c.resolved,
-				"unresolved": c.detected - c.resolved,
+				"external":   c.external,
+				"unresolved": c.detected - c.resolved - c.external,
 			}}
 		}
 		out = append(out, facts.Fact{
@@ -849,6 +858,17 @@ func materialize(edges map[string]*edge, allRepos []string, cov map[string]*http
 // --- small helpers ---
 
 func roleOf(f facts.Fact) string { return propString(f, "role") }
+
+// isExternalClient reports whether a client route targets a hardcoded external host
+// (tagged external=true by the extractor). Tolerates the bool surviving a JSON
+// round-trip as a bool literal.
+func isExternalClient(f facts.Fact) bool {
+	if f.Props == nil {
+		return false
+	}
+	v, _ := f.Props["external"].(bool)
+	return v
+}
 
 func propString(f facts.Fact, key string) string {
 	if f.Props == nil {

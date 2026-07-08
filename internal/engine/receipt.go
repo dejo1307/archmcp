@@ -112,19 +112,21 @@ func coverageSummary(store *facts.Store) *facts.CoverageSummary {
 	}
 	sum := &facts.CoverageSummary{ServicesTotal: len(services)}
 	for _, svc := range services {
-		unresolved := readUnresolved(svc)
+		unresolved := readCoverageField(svc, "unresolved")
 		if unresolved > 0 {
 			sum.CoverageGaps++
 			sum.UnresolvedEdges += unresolved
 		}
+		sum.ExternalEdges += readCoverageField(svc, "external")
 	}
 	return sum
 }
 
-// readUnresolved sums the unresolved outbound edge count across a service node's
-// edge_coverage entries, tolerating both the in-memory shape and the float64
-// shape that survives a facts.jsonl JSON round-trip (mirrors coverage.readCoverage).
-func readUnresolved(svc facts.Fact) int {
+// readCoverageField sums one numeric field (e.g. "unresolved" or "external") across
+// a service node's edge_coverage entries, tolerating both the in-memory shape and
+// the float64 shape that survives a facts.jsonl JSON round-trip (mirrors
+// coverage.readCoverage).
+func readCoverageField(svc facts.Fact, field string) int {
 	if svc.Props == nil {
 		return 0
 	}
@@ -143,7 +145,7 @@ func readUnresolved(svc facts.Fact) int {
 	}
 	total := 0
 	for _, m := range raw {
-		switch n := m["unresolved"].(type) {
+		switch n := m[field].(type) {
 		case int:
 			total += n
 		case float64:

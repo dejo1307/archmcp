@@ -14,12 +14,18 @@ import (
 // the path literal, e.g. baseURL.appendingPathComponent("settings/feedback").
 var swiftPathComponent = regexp.MustCompile(`appendingPathComponent\(\s*"([^"]*)"`)
 
-// swiftHTTPMethod matches an explicit method assignment, e.g.
-// request.httpMethod = "POST".
-var swiftHTTPMethod = regexp.MustCompile(`\.httpMethod\s*=\s*"([A-Za-z]+)"`)
+// swiftHTTPMethodExpr matches an HTTP-method assignment on a URLRequest in any of
+// the forms Swift code uses in practice — a string literal (`request.httpMethod =
+// "POST"`), an enum member (`request.httpMethod = HTTPMethod.post.rawValue`), or a
+// leading-dot enum case (Alamofire `request.method = .post`). Capture group 1 is the
+// string-literal verb; group 2 is the enum-case name. The caller validates whichever
+// is present via mapSwiftMethod, so a non-method assignment (e.g. `= someVar`) is
+// ignored rather than mistaken for a verb.
+var swiftHTTPMethodExpr = regexp.MustCompile(`\.(?:httpMethod|method)\s*=\s*(?:"([A-Za-z]+)"|(?:(?:HTTPMethod|RequestMethod|HTTPMethodType)\.|\.)([A-Za-z]+)(?:\.rawValue)?)`)
 
-// methodWindow is how many lines after an appendingPathComponent call to scan
-// for the associated httpMethod assignment.
+// methodWindow is how many lines on either side of an appendingPathComponent call to
+// scan for the associated method assignment — symmetric because the verb is often
+// set on the request before the URL path is appended, not only after it.
 const methodWindow = 5
 
 // fileURLSignals are tokens that, when present on the same line as an
@@ -70,6 +76,7 @@ func extractURLSessionFactsWithDir(src []byte, relFile, dir string) []facts.Fact
 
 	lines := strings.Split(string(src), "\n")
 	api := swiftAPIHint(relFile)
+	host := swiftExternalHost(string(src))
 
 	var out []facts.Fact
 	for i, line := range lines {
@@ -88,38 +95,61 @@ func extractURLSessionFactsWithDir(src []byte, relFile, dir string) []facts.Fact
 			continue
 		}
 		method := methodNear(lines, i)
+		props := map[string]any{
+			"role":      "client",
+			"method":    method,
+			"framework": "urlsession",
+			"language":  "swift",
+			"source":    "urlsession",
+			"api":       api,
+		}
+		applyExternal(props, host)
 		out = append(out, facts.Fact{
-			Kind: facts.KindRoute,
-			Name: path,
-			File: relFile,
-			Line: i + 1,
-			Props: map[string]any{
-				"role":      "client",
-				"method":    method,
-				"framework": "urlsession",
-				"language":  "swift",
-				"source":    "urlsession",
-				"api":       api,
-			},
+			Kind:      facts.KindRoute,
+			Name:      path,
+			File:      relFile,
+			Line:      i + 1,
+			Props:     props,
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})
 	}
 	return out
 }
 
-// methodNear returns the HTTP method assigned within methodWindow lines at or
-// after idx, or "GET" when none is found (the URLSession default).
+// methodNear returns the HTTP method assigned within methodWindow lines of idx,
+// scanning outward (nearest line wins, forward preferred on ties), or "GET" when no
+// valid verb is found — the URLSession default.
 func methodNear(lines []string, idx int) string {
-	end := idx + methodWindow
-	if end >= len(lines) {
-		end = len(lines) - 1
+	if v := methodInLine(lines[idx]); v != "" {
+		return v
 	}
-	for j := idx; j <= end; j++ {
-		if m := swiftHTTPMethod.FindStringSubmatch(lines[j]); m != nil {
-			return strings.ToUpper(m[1])
+	for d := 1; d <= methodWindow; d++ {
+		if j := idx + d; j < len(lines) {
+			if v := methodInLine(lines[j]); v != "" {
+				return v
+			}
+		}
+		if j := idx - d; j >= 0 {
+			if v := methodInLine(lines[j]); v != "" {
+				return v
+			}
 		}
 	}
 	return "GET"
+}
+
+// methodInLine extracts and validates an HTTP verb from a single line's method
+// assignment, or "" when the line has no assignment or its value is not a known verb.
+func methodInLine(line string) string {
+	m := swiftHTTPMethodExpr.FindStringSubmatch(line)
+	if m == nil {
+		return ""
+	}
+	tok := m[1] // string-literal form
+	if tok == "" {
+		tok = m[2] // enum-case form
+	}
+	return mapSwiftMethod(tok) // "" for anything that isn't a recognized verb
 }
 
 // cleanSwiftPath converts Swift interpolation to the {} placeholder the linker
@@ -208,11 +238,49 @@ func isSwiftTestFile(relFile string) bool {
 // `switch self`), independent of any specific protocol or app name.
 var swiftVarFinders = func() map[string]*regexp.Regexp {
 	m := map[string]*regexp.Regexp{}
-	for _, n := range []string{"urlPathComponent", "path", "urlPrefixComponent", "basePath", "method"} {
+	for _, n := range []string{"urlPathComponent", "path", "urlPrefixComponent", "basePath", "method", "urlString", "baseURL", "baseURLString"} {
 		m[n] = regexp.MustCompile(`var\s+` + n + `\s*:\s*[^{]*\{`)
 	}
 	return m
 }()
+
+// swiftBaseURLProps are the computed-property names that carry a client's base URL.
+// When one of them yields a hardcoded absolute host, the calls are external.
+var swiftBaseURLProps = []string{"urlString", "baseURL", "baseURLString"}
+
+// swiftAbsoluteHost captures the host of an absolute URL literal (e.g. the
+// "jira.service.com" in "https://jira.service.com/...").
+var swiftAbsoluteHost = regexp.MustCompile(`"https?://([A-Za-z0-9.\-]+)`)
+
+// swiftStoredBaseURLHost captures a hardcoded absolute host assigned to a base-URL
+// identifier in stored form, e.g. `let baseURL = URL(string: "https://host/…")` or
+// `let baseURL = "https://host"`.
+var swiftStoredBaseURLHost = regexp.MustCompile(`(?:baseURL|urlString|baseURLString)\w*\s*(?::[^={\n]*)?=\s*(?:URL\(string:\s*)?"https?://([A-Za-z0-9.\-]+)`)
+
+// swiftExternalHost returns the absolute host a client type targets when its base
+// URL is a hardcoded https?:// literal (e.g. APIService.Jira -> "jira.service.com"),
+// or "" when the base URL is injected/relative (an internal-candidate call). A
+// hardcoded external host means the call leaves the cross-repo graph, so its routes
+// are classified external rather than counted as unresolved internal edges.
+func swiftExternalHost(text string) string {
+	if body, _ := firstPropBody(text, swiftBaseURLProps); body != "" {
+		if m := swiftAbsoluteHost.FindStringSubmatch(body); m != nil {
+			return m[1]
+		}
+	}
+	if m := swiftStoredBaseURLHost.FindStringSubmatch(text); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// applyExternal tags a client route's props as external when host is non-empty.
+func applyExternal(props map[string]any, host string) {
+	if host != "" {
+		props["external"] = true
+		props["host"] = host
+	}
+}
 
 // swiftPathProps / swiftPrefixProps are the property names carrying an endpoint's
 // path and its optional version/base prefix, most specific first.
@@ -259,6 +327,7 @@ func extractEndpointFacts(src []byte, relFile, dir, defaultPrefix string) []fact
 	resolvePrefix := prefixResolver(text, defaultPrefix)
 
 	api := swiftAPIHint(relFile)
+	host := swiftExternalHost(text)
 	line := 1 + strings.Count(text[:pathIdx], "\n")
 
 	var out []facts.Fact
@@ -287,19 +356,21 @@ func extractEndpointFacts(src []byte, relFile, dir, defaultPrefix string) []fact
 			continue
 		}
 		seen[key] = true
+		props := map[string]any{
+			"role":      "client",
+			"method":    method,
+			"framework": "apiendpoint",
+			"language":  "swift",
+			"source":    "swift-endpoint",
+			"api":       api,
+		}
+		applyExternal(props, host)
 		out = append(out, facts.Fact{
-			Kind: facts.KindRoute,
-			Name: path,
-			File: relFile,
-			Line: line,
-			Props: map[string]any{
-				"role":      "client",
-				"method":    method,
-				"framework": "apiendpoint",
-				"language":  "swift",
-				"source":    "swift-endpoint",
-				"api":       api,
-			},
+			Kind:      facts.KindRoute,
+			Name:      path,
+			File:      relFile,
+			Line:      line,
+			Props:     props,
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})
 	}

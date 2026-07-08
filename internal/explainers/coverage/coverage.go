@@ -85,16 +85,23 @@ type coverageEntry struct {
 	detected   int
 	resolved   int
 	unresolved int
+	external   int
 }
 
-// coverageDetail renders the per-edge-type counts for an insight description.
+// coverageDetail renders the per-edge-type counts for an insight description. The
+// external count (calls to hardcoded third-party hosts) is shown only when present,
+// since it is expected rather than a blind spot.
 func coverageDetail(cov []coverageEntry) string {
 	out := ""
 	for i, c := range cov {
 		if i > 0 {
 			out += ", "
 		}
-		out += fmt.Sprintf("%s %d/%d resolved (%d unresolved)", c.edgeType, c.resolved, c.detected, c.unresolved)
+		out += fmt.Sprintf("%s %d/%d resolved (%d unresolved", c.edgeType, c.resolved, c.detected, c.unresolved)
+		if c.external > 0 {
+			out += fmt.Sprintf(", %d external", c.external)
+		}
+		out += ")"
 	}
 	return out
 }
@@ -141,6 +148,7 @@ func readCoverage(svc facts.Fact) []coverageEntry {
 			detected:   asInt(m["detected"]),
 			resolved:   asInt(m["resolved"]),
 			unresolved: asInt(m["unresolved"]),
+			external:   asInt(m["external"]),
 		})
 	}
 	return out

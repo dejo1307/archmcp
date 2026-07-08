@@ -212,8 +212,9 @@ type ParseError struct {
 // without the consumer running coverage_report.
 type CoverageSummary struct {
 	ServicesTotal   int `json:"services_total"`
-	CoverageGaps    int `json:"coverage_gaps"`    // services with unresolved outbound call sites
-	UnresolvedEdges int `json:"unresolved_edges"` // total detected-but-unresolved outbound edges
+	CoverageGaps    int `json:"coverage_gaps"`             // services with unresolved (internal) outbound call sites
+	UnresolvedEdges int `json:"unresolved_edges"`          // detected outbound edges that did not resolve to a loaded service (internal blind spots; excludes external)
+	ExternalEdges   int `json:"external_edges,omitempty"`  // detected outbound edges to hardcoded external hosts (third-party APIs) — expected, not a blind spot
 }
 
 // Receipt is the compact, machine-readable manifest written to receipt.json — a

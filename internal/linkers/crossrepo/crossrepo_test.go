@@ -190,6 +190,48 @@ func TestComputeLinks_HTTPMatch(t *testing.T) {
 	}
 }
 
+// TestComputeLinks_ExternalClientBucketed verifies that a client route tagged
+// external is counted in the external bucket, not unresolved, and produces no
+// cross-repo edge — while internal calls still resolve/unresolve as before.
+func TestComputeLinks_ExternalClientBucketed(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),                                   // resolves to svc-beta
+		clientRoute("svc-alpha", "/rest/api/2/issue", "POST", map[string]any{"external": true}),    // external third party
+		clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil),                                  // internal, no server -> unresolved
+		serverRoute("svc-beta", "/api/items/{itemId}", "GET"),
+	}
+	out := ComputeLinks(in)
+
+	ec := edgeCoverageOf(out, "svc-alpha")
+	if ec == nil {
+		t.Fatalf("no edge_coverage on svc-alpha; got %+v", out)
+	}
+	if ec["detected"] != 3 || ec["resolved"] != 1 || ec["external"] != 1 || ec["unresolved"] != 1 {
+		t.Errorf("coverage = detected:%v resolved:%v external:%v unresolved:%v; want 3/1/1/1",
+			ec["detected"], ec["resolved"], ec["external"], ec["unresolved"])
+	}
+	// The external call must not create a cross-repo edge.
+	if hasServiceEdge(out, "svc-alpha", "svc-beta") == false {
+		t.Errorf("expected the internal /api/items edge to svc-beta")
+	}
+}
+
+// edgeCoverageOf returns the http_client edge_coverage map for a service node.
+func edgeCoverageOf(out []facts.Fact, repo string) map[string]any {
+	for _, f := range out {
+		if f.Kind != facts.KindService || f.Name != repo {
+			continue
+		}
+		list, _ := f.Props["edge_coverage"].([]map[string]any)
+		for _, ec := range list {
+			if ec["edge_type"] == "http_client" {
+				return ec
+			}
+		}
+	}
+	return nil
+}
+
 func TestComputeLinks_HTTPGatewayPath(t *testing.T) {
 	server := serverRoute("svc-beta", "/items/{id}", "GET")
 	server.Props["gateway_path"] = "/api/catalogue/items/{id}"

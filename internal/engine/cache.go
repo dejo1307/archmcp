@@ -229,7 +229,11 @@ import (
 // v88: Python extractor now emits gRPC client-role routes (source=python-grpc-client) for
 // stub.Method(...) call sites, detected from source. New facts, so cached Python snapshots must
 // re-extract to pick them up.
-const cacheVersion = "v88"
+// v89: Swift HTTP-client extractor widens method inference (symmetric scan window + enum/
+// .rawValue/Alamofire .method forms) and tags calls to hardcoded absolute hosts with
+// external=true + host. Changes route methods and props, so cached Swift snapshots must
+// re-extract.
+const cacheVersion = "v89"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
