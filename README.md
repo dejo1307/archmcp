@@ -315,7 +315,7 @@ enola --explain /path/to/repo
 
 Every finding carries a confidence score, and it means something exact: `1.0` is a structural fact (a cycle exists; an export ratio measured), while anything below is a flagged heuristic for you to review (a god class is a statistical fan-in outlier, not a rule). The analyses are computed by graph algorithms — Tarjan's SCC for cycles, longest-path for dependency depth, mean+2σ outlier tests for the rest — so the same commit yields the same report.
 
-Here's the actual report for [Apache Airflow](https://github.com/apache/airflow) — a large polyglot codebase (Python, Java, TypeScript, gRPC, and OpenAPI specs) analyzed in a single pass, 122,772 facts in ~2s (extraction parses files in parallel across cores):
+Here's the actual report for [Apache Airflow](https://github.com/apache/airflow) — a large polyglot codebase (Python, Java, TypeScript, gRPC, and OpenAPI specs) analyzed in a single pass, 122,257 facts in ~2s (extraction parses files in parallel across cores):
 
 ```
 ════════════════════════════════════════════════════════════
@@ -326,10 +326,10 @@ Overview
   Generated:           2026-07-07T20:51:51Z
   Analysis time:       2.100326959s
   Languages:           python, typescript, java, grpc
-  Total facts:         122772
+  Total facts:         122257
 
 Architectural kinds
-  module                   2499
+  module                   2500
   symbol                  64148
   route                    6426
   storage                    64
@@ -383,18 +383,18 @@ Impact analysis (hotspots)
     task-sdk/src/airflow/sdk             591       15 high     64026
 
 Code health
-  god classes (high fan-in)    254
+  god classes (high fan-in)    249
     chart/tests/chart_utils/helm_template_gener… 1193 dependents
     devel-common/src/tests_common/test_utils/co… 557 dependents
     devel-common/src/tests_common/test_utils/sy… 476 dependents
     dev/breeze/src/airflow_breeze/utils/console… 376 dependents
     airflow-core/src/airflow/utils/session.crea… 288 dependents
-  call-graph hotspots       152
+  call-graph hotspots       150
     chart/tests/chart_utils/helm_template_gener… fan-in 1193 / out 7
     devel-common/src/tests_common/test_utils/co… fan-in 557 / out 10
     task-sdk/src/airflow/sdk/execution_time/tas… fan-in 101 / out 37
     airflow-core/src/airflow/utils/session.crea… fan-in 288 / out 6
-    dev/breeze/src/airflow_breeze/utils/run_uti… fan-in 179 / out 9
+    providers/hashicorp/src/airflow/providers/h… fan-in 76 / out 21
   deep dependency chains     10
     chart/docs                                   depth 196
     dev/breeze/tests                             depth 196

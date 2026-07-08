@@ -222,7 +222,11 @@ import (
 // <App>BaseModel) used by hand-written schema packages, which v85 missed because BaseModel
 // wasn't a direct base (so those datamodels packages were still flagged "rigid"). Bump so
 // snapshots cached under v85 re-extract with the widened detection.
-const cacheVersion = "v86"
+// v87: Python resolveCall no longer fabricates same-module RelCalls edges for callable
+// parameters, locals, and loop variables — it now resolves a bare callee only when the name
+// is a known module-level def and not shadowed by a parameter (mirrors valueRefTarget). Drops
+// spurious call edges; bump so cached Python snapshots re-extract with the tightened resolver.
+const cacheVersion = "v87"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
