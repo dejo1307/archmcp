@@ -2,6 +2,7 @@ package cycles
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -199,6 +200,74 @@ func TestExplain_WithCycle(t *testing.T) {
 		if !evidenceModules[mod] {
 			t.Errorf("module %q missing from cycle evidence", mod)
 		}
+	}
+}
+
+// TestExplain_OversizedClusterSoftened: an SCC larger than maxCycleModules is not
+// a fixable cycle (in autoloaded Ruby/Rails it is the expected topology). It must
+// be reported once as a soft, low-confidence "Highly coupled module cluster" note
+// whose title does NOT start with "Cyclic dependency" (so pkg/explain won't count
+// it as a cycle), not as a confidence-1.0 alarm.
+func TestExplain_OversizedClusterSoftened(t *testing.T) {
+	n := maxCycleModules + 3
+	modules := make([]string, n)
+	deps := map[string][]string{}
+	for i := 0; i < n; i++ {
+		modules[i] = fmt.Sprintf("app/m%02d", i)
+	}
+	// One big ring: m0 -> m1 -> ... -> m(n-1) -> m0, so all n form a single SCC.
+	for i := 0; i < n; i++ {
+		deps[modules[i]] = []string{modules[(i+1)%n]}
+	}
+	store := makeStore(modules, deps)
+
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 cluster insight, got %d: %+v", len(insights), insights)
+	}
+	in := insights[0]
+	if strings.HasPrefix(in.Title, "Cyclic dependency") {
+		t.Errorf("oversized SCC should not be titled as a cyclic dependency: %q", in.Title)
+	}
+	if !strings.HasPrefix(in.Title, "Highly coupled module cluster") {
+		t.Errorf("expected a coupling-cluster title, got %q", in.Title)
+	}
+	if in.Confidence >= 1.0 {
+		t.Errorf("cluster confidence should be soft (<1.0), got %v", in.Confidence)
+	}
+	if len(in.Evidence) > maxClusterMembers {
+		t.Errorf("cluster evidence not capped: got %d, want <= %d", len(in.Evidence), maxClusterMembers)
+	}
+}
+
+// TestExplain_AssociationEdgesExcluded: a two-model "cycle" formed solely by
+// ActiveRecord associations (Order has_many LineItems, LineItem belongs_to Order)
+// is bidirectional by nature, not a load-order cycle, and must not be reported.
+func TestExplain_AssociationEdgesExcluded(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "app/models/order"})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "app/models/line_item"})
+	// Synthetic association edges both ways (as emitEdges would produce).
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency, File: "app/models/order/_coupling.rb",
+		Props:     map[string]any{facts.PropCouplingKind: facts.CouplingAssociation},
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "app/models/line_item"}},
+	})
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency, File: "app/models/line_item/_coupling.rb",
+		Props:     map[string]any{facts.PropCouplingKind: facts.CouplingAssociation},
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "app/models/order"}},
+	})
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 0 {
+		t.Errorf("association-only 2-cycle should not be reported, got %d: %+v", len(insights), insights)
 	}
 }
 

@@ -194,6 +194,53 @@ func TestResolveImports_MethodCall(t *testing.T) {
 	}
 }
 
+// edgeKind returns the coupling_kind prop of the synthetic src->dst edge, or "".
+func edgeKind(out []facts.Fact, src, dst string) string {
+	for _, f := range out {
+		if f.Name == src+" -> "+dst {
+			k, _ := f.Props[facts.PropCouplingKind].(string)
+			return k
+		}
+	}
+	return ""
+}
+
+// TestResolveImports_CouplingKindTagged: each emitted edge carries a coupling_kind
+// matching the reference that produced it — association edges are tagged so the
+// cycles explainer can exclude them.
+func TestResolveImports_CouplingKindTagged(t *testing.T) {
+	ff := []facts.Fact{
+		depFactRuby("app/models/order.rb",
+			map[string]any{"language": "ruby", "association_kind": "has_many"},
+			facts.Relation{Kind: facts.RelDependsOn, Target: "Item"}),
+		symFact("Item", "app/models/items", facts.SymbolClass),
+	}
+	out := resolveImports(ff, false)
+	if got := edgeKind(out, "app/models", "app/models/items"); got != facts.CouplingAssociation {
+		t.Errorf("association edge coupling_kind = %q, want %q", got, facts.CouplingAssociation)
+	}
+}
+
+// TestResolveImports_ReferenceBeatsAssociation: when the same src->dst edge arises
+// from BOTH a real method call and an association, the reference (harder) kind wins
+// so the edge is NOT excluded from cycle detection as a mere association.
+func TestResolveImports_ReferenceBeatsAssociation(t *testing.T) {
+	ff := []facts.Fact{
+		// Association Order -> Item.
+		depFactRuby("app/models/order.rb",
+			map[string]any{"language": "ruby", "association_kind": "has_many"},
+			facts.Relation{Kind: facts.RelDependsOn, Target: "Item"}),
+		// A real method call from the same source dir to the same target dir.
+		symFact("Order#refresh", "app/models", facts.SymbolMethod,
+			facts.Relation{Kind: facts.RelCalls, Target: "Item.stale"}),
+		symFact("Item", "app/models/items", facts.SymbolClass),
+	}
+	out := resolveImports(ff, false)
+	if got := edgeKind(out, "app/models", "app/models/items"); got != facts.CouplingReference {
+		t.Errorf("mixed reference+association edge coupling_kind = %q, want %q", got, facts.CouplingReference)
+	}
+}
+
 func TestResolveImports_SelfEdgeSkipped(t *testing.T) {
 	ff := []facts.Fact{
 		symFact("Account", "app/models", facts.SymbolClass,

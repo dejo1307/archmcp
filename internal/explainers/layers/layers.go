@@ -63,15 +63,41 @@ var (
 		{Name: "api", Patterns: []string{"api"}, Level: 2},
 	}
 
-	// Ruby on Rails MVC layout
+	// Ruby on Rails layout.
+	//
+	// Rails is not a hexagonal/onion architecture: models routinely call service
+	// objects, jobs, mailers and helpers, and that is idiomatic — not a layer
+	// violation. Modelling it with fine-grained inner/outer levels made the layers
+	// explainer flag most Rails codebases (model -> service, model -> job,
+	// service -> helper, ...). So we collapse it to two tiers:
+	//
+	//   delivery (Level 2): controllers, views — the HTTP/request surface
+	//   domain   (Level 1): everything the app is built from (models, services,
+	//                       jobs, mailers, helpers, interactors, presenters, ...)
+	//
+	// With every domain directory at the same level, intra-domain references are
+	// same-level and never violations; only a domain module reaching UP into the
+	// delivery layer (e.g. a model or service referencing a controller/view
+	// constant) is reported — which is a genuine Rails smell.
 	railsLayers = []layerDef{
-		{Name: "model", Patterns: []string{"model", "models"}, Level: 0},
-		{Name: "controller", Patterns: []string{"controller", "controllers"}, Level: 3},
-		{Name: "view", Patterns: []string{"view", "views"}, Level: 3},
-		{Name: "helper", Patterns: []string{"helper", "helpers"}, Level: 2},
-		{Name: "mailer", Patterns: []string{"mailer", "mailers"}, Level: 2},
-		{Name: "job", Patterns: []string{"job", "jobs", "worker", "workers"}, Level: 1},
+		{Name: "controller", Patterns: []string{"controller", "controllers"}, Level: 2},
+		{Name: "view", Patterns: []string{"view", "views"}, Level: 2},
+		{Name: "model", Patterns: []string{"model", "models"}, Level: 1},
 		{Name: "service", Patterns: []string{"service", "services"}, Level: 1},
+		{Name: "job", Patterns: []string{"job", "jobs", "worker", "workers"}, Level: 1},
+		{Name: "mailer", Patterns: []string{"mailer", "mailers"}, Level: 1},
+		{Name: "helper", Patterns: []string{"helper", "helpers"}, Level: 1},
+		{Name: "interactor", Patterns: []string{"interactor", "interactors"}, Level: 1},
+		{Name: "presenter", Patterns: []string{"presenter", "presenters"}, Level: 1},
+		{Name: "serializer", Patterns: []string{"serializer", "serializers"}, Level: 1},
+		{Name: "notifier", Patterns: []string{"notifier", "notifiers"}, Level: 1},
+		{Name: "policy", Patterns: []string{"policy", "policies"}, Level: 1},
+		{Name: "decorator", Patterns: []string{"decorator", "decorators"}, Level: 1},
+		{Name: "form", Patterns: []string{"form", "forms"}, Level: 1},
+		{Name: "query", Patterns: []string{"query", "queries"}, Level: 1},
+		{Name: "validator", Patterns: []string{"validator", "validators"}, Level: 1},
+		{Name: "type", Patterns: []string{"type", "types"}, Level: 1},
+		{Name: "lib", Patterns: []string{"lib"}, Level: 1},
 	}
 
 	// Android clean architecture / MVVM layout

@@ -72,6 +72,25 @@ const (
 	SymbolEnum      = "enum"
 )
 
+// Coupling-kind property values annotate a synthetic module-coupling dependency
+// fact (currently emitted by the Ruby extractor) with the reference that produced
+// the edge, so consumers can treat edge classes differently — e.g. the cycles
+// explainer excludes CouplingAssociation, because ActiveRecord has_many/belongs_to
+// pairs are bidirectional by nature and would manufacture false cycles. Set on the
+// Props["coupling_kind"] of a synthetic edge; an absent value means unclassified
+// (treated as a normal edge). When one edge arises from several references, the
+// hardest kind wins (a real reference is never downgraded to an association).
+const (
+	PropCouplingKind = "coupling_kind"
+
+	CouplingReference   = "reference"   // constant-receiver method call
+	CouplingInheritance = "inheritance" // superclass
+	CouplingMixin       = "mixin"       // include/extend/prepend
+	CouplingAssociation = "association" // ActiveRecord has_many/belongs_to/...
+	CouplingRequire     = "require"     // require / require_relative
+	CouplingPackwerk    = "packwerk"    // explicit package.yml dependency
+)
+
 // Module role property values classify a module fact as production code vs.
 // non-production (test bundles, build tooling) so downstream analyses (package
 // metrics, coverage, insights) can measure the production architecture. Extractors
@@ -212,9 +231,9 @@ type ParseError struct {
 // without the consumer running coverage_report.
 type CoverageSummary struct {
 	ServicesTotal   int `json:"services_total"`
-	CoverageGaps    int `json:"coverage_gaps"`             // services with unresolved (internal) outbound call sites
-	UnresolvedEdges int `json:"unresolved_edges"`          // detected outbound edges that did not resolve to a loaded service (internal blind spots; excludes external)
-	ExternalEdges   int `json:"external_edges,omitempty"`  // detected outbound edges to hardcoded external hosts (third-party APIs) — expected, not a blind spot
+	CoverageGaps    int `json:"coverage_gaps"`            // services with unresolved (internal) outbound call sites
+	UnresolvedEdges int `json:"unresolved_edges"`         // detected outbound edges that did not resolve to a loaded service (internal blind spots; excludes external)
+	ExternalEdges   int `json:"external_edges,omitempty"` // detected outbound edges to hardcoded external hosts (third-party APIs) — expected, not a blind spot
 }
 
 // Receipt is the compact, machine-readable manifest written to receipt.json — a
@@ -293,15 +312,15 @@ func (m SnapshotMeta) Receipt() Receipt {
 // machine-global picture of the live graph. It works for a single-repo graph too
 // (Repos then has one entry).
 type GraphReceipt struct {
-	GeneratedAt     string           `json:"generated_at"`       // RFC3339 UTC, this write
-	EnolaVersion    string           `json:"enola_version"`      // build version that produced the current graph
-	SnapshotID      string           `json:"snapshot_id"`        // whole-graph content fingerprint (SnapshotMeta.SnapshotID)
-	FactCount       int              `json:"fact_count"`         // total facts across all repos
-	InsightCount    int              `json:"insight_count"`      // total insights
-	ServiceCount    int              `json:"service_count"`         // KindService nodes = repos materialized in the cross-repo graph
-	CrossRepoEdgeCount int           `json:"cross_repo_edge_count"` // consumer->provider edges in the cross-repo "graph of graphs" (NOT the total dependency-fact count, which also covers ordinary imports)
-	Coverage        *CoverageSummary `json:"coverage,omitempty"`    // cross-repo edge-coverage rollup, nil in single-repo mode
-	Repos           []GraphRepoEntry `json:"repos"`              // one entry per repository in the graph, sorted by Label
+	GeneratedAt        string           `json:"generated_at"`          // RFC3339 UTC, this write
+	EnolaVersion       string           `json:"enola_version"`         // build version that produced the current graph
+	SnapshotID         string           `json:"snapshot_id"`           // whole-graph content fingerprint (SnapshotMeta.SnapshotID)
+	FactCount          int              `json:"fact_count"`            // total facts across all repos
+	InsightCount       int              `json:"insight_count"`         // total insights
+	ServiceCount       int              `json:"service_count"`         // KindService nodes = repos materialized in the cross-repo graph
+	CrossRepoEdgeCount int              `json:"cross_repo_edge_count"` // consumer->provider edges in the cross-repo "graph of graphs" (NOT the total dependency-fact count, which also covers ordinary imports)
+	Coverage           *CoverageSummary `json:"coverage,omitempty"`    // cross-repo edge-coverage rollup, nil in single-repo mode
+	Repos              []GraphRepoEntry `json:"repos"`                 // one entry per repository in the graph, sorted by Label
 }
 
 // GraphRepoEntry describes one repository's membership in the current graph.

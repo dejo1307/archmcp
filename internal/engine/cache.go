@@ -249,7 +249,11 @@ import (
 // v94: Swift endpoint extractor reads a single-value method property (`var method:
 // HTTPMethod { return .post }`, no switch) and applies its lone verb to every case, instead
 // of defaulting to GET. Cached Swift snapshots must re-extract.
-const cacheVersion = "v94"
+// v95: Ruby extractor tags synthetic coupling edges with a coupling_kind prop (so the cycles
+// explainer can exclude ActiveRecord associations) and adds common Rails framework constants
+// (I18n, Rails, Logger, ...) to the builtin-const ignore list. Cached Ruby snapshots must
+// re-extract to pick up the new edge props and suppressed references.
+const cacheVersion = "v95"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

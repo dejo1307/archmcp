@@ -22,6 +22,11 @@ const (
 	stdDevK = 2.0
 	// maxEvidence caps how many dependents are listed as evidence per insight.
 	maxEvidence = 8
+	// maxInsights caps how many high-fan-in symbols are reported, matching the
+	// sibling explainers (surface=20, complexity=15, depth=10). Without a cap a
+	// large repo can emit hundreds of findings dominated by central-by-design
+	// framework types.
+	maxInsights = 25
 )
 
 // GodClassExplainer detects high-fan-in symbols.
@@ -50,10 +55,27 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 		return nil, nil
 	}
 
-	// Fan-in per symbol and the distribution used for outlier detection.
-	fanIn := make(map[string]int, len(symbols))
-	values := make([]float64, 0, len(symbols))
+	// Report each distinct symbol name once. A constant reopened across many files
+	// (Ruby STI/concerns, monkey-patched framework namespaces like
+	// RailsAdmin::Config::Actions) yields one symbol fact per file, all sharing a
+	// Name. Fan-in is keyed by name, so without de-duping they produced identical
+	// findings AND skewed the outlier distribution below (the repeated high value
+	// dragged the threshold up). De-dupe here so both the distribution and the
+	// candidate set are over distinct symbols.
+	distinct := make([]facts.Fact, 0, len(symbols))
+	seen := make(map[string]bool, len(symbols))
 	for _, s := range symbols {
+		if seen[s.Name] {
+			continue
+		}
+		seen[s.Name] = true
+		distinct = append(distinct, s)
+	}
+
+	// Fan-in per symbol and the distribution used for outlier detection.
+	fanIn := make(map[string]int, len(distinct))
+	values := make([]float64, 0, len(distinct))
+	for _, s := range distinct {
 		n := len(reverse[s.Name])
 		fanIn[s.Name] = n
 		values = append(values, float64(n))
@@ -67,7 +89,7 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 		labels []string
 	}
 	var candidates []candidate
-	for _, s := range symbols {
+	for _, s := range distinct {
 		n := fanIn[s.Name]
 		if n < minFanIn || float64(n) <= threshold {
 			continue
@@ -87,6 +109,10 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 		}
 		return candidates[i].fact.Name < candidates[j].fact.Name
 	})
+
+	if len(candidates) > maxInsights {
+		candidates = candidates[:maxInsights]
+	}
 
 	var insights []facts.Insight
 	for _, c := range candidates {

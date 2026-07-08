@@ -1143,6 +1143,14 @@ var rubyBuiltinConsts = map[string]bool{
 	"StopIteration": true, "ZeroDivisionError": true, "FrozenError": true,
 	"Marshal": true, "ObjectSpace": true, "GC": true, "Process": true, "Signal": true,
 	"Encoding": true, "Random": true, "SecureRandom": true, "Mutex_m": true,
+	// Ubiquitous Rails/framework top-level constants. Bare references to these
+	// appear in nearly every file (I18n.t, Rails.env, Logger.new, ...); recording a
+	// call edge to them only inflates fan-in on a reopened module fact (e.g. I18n at
+	// 273 dependents), producing spurious god-class/hotspot findings while never
+	// being a useful dead-code lead. Qualified names (ActiveRecord::Base) are
+	// matched separately and unaffected; app base classes (ApplicationRecord) are
+	// deliberately NOT listed — they are legitimately central.
+	"Rails": true, "I18n": true, "Logger": true, "GlobalID": true, "Mime": true,
 }
 
 // rubyNonCalls are bare identifiers that must not be treated as method-call

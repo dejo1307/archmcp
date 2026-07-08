@@ -54,9 +54,24 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		return nil, nil
 	}
 
-	scores := make(map[string]int, len(symbols))
-	values := make([]float64, 0, len(symbols))
+	// Report each distinct symbol name once. A constant reopened across many files
+	// (Ruby STI/concerns, monkey-patched framework namespaces) yields one symbol
+	// fact per file, all sharing a Name and therefore identical in/out degree.
+	// De-dupe here so both the outlier distribution and the candidate set are over
+	// distinct symbols (repeated values would otherwise skew the threshold).
+	distinct := make([]facts.Fact, 0, len(symbols))
+	seen := make(map[string]bool, len(symbols))
 	for _, s := range symbols {
+		if seen[s.Name] {
+			continue
+		}
+		seen[s.Name] = true
+		distinct = append(distinct, s)
+	}
+
+	scores := make(map[string]int, len(distinct))
+	values := make([]float64, 0, len(distinct))
+	for _, s := range distinct {
 		in := len(reverse[s.Name])
 		out := len(forward[s.Name])
 		score := in * out
@@ -73,7 +88,7 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		score int
 	}
 	var candidates []candidate
-	for _, s := range symbols {
+	for _, s := range distinct {
 		in := len(reverse[s.Name])
 		out := len(forward[s.Name])
 		if in < minDegree || out < minDegree {

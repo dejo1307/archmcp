@@ -26,12 +26,20 @@ func resolveImports(allFacts []facts.Fact, isRails bool) []facts.Fact {
 	ix := buildConstIndex(allFacts)
 	moduleNames := collectModuleNames(allFacts)
 
-	edges := map[[2]string]bool{}
-	add := func(src, dst string) {
+	// edges maps a src->dst pair to its coupling kind. When the same edge arises
+	// from several references the hardest kind wins (couplingRank), so an edge that
+	// is also a real reference/inheritance is never downgraded to "association" —
+	// only association-ONLY edges stay tagged association and get excluded from
+	// cycle detection.
+	edges := map[[2]string]string{}
+	add := func(src, dst, kind string) {
 		if src == "" || dst == "" || src == dst {
 			return // skip empties and self-edges
 		}
-		edges[[2]string{src, dst}] = true
+		key := [2]string{src, dst}
+		if cur, ok := edges[key]; !ok || couplingRank(kind) > couplingRank(cur) {
+			edges[key] = kind
+		}
 	}
 
 	for i := range allFacts {
@@ -42,10 +50,10 @@ func resolveImports(allFacts []facts.Fact, isRails bool) []facts.Fact {
 			for _, rel := range f.Relations {
 				switch rel.Kind {
 				case facts.RelImplements: // inheritance
-					add(src, ix.resolve(rel.Target, src))
+					add(src, ix.resolve(rel.Target, src), facts.CouplingInheritance)
 				case facts.RelCalls:
 					if c := constFromCall(rel.Target); c != "" {
-						add(src, ix.resolve(c, src))
+						add(src, ix.resolve(c, src), facts.CouplingReference)
 					}
 				}
 			}
@@ -56,14 +64,14 @@ func resolveImports(allFacts []facts.Fact, isRails bool) []facts.Fact {
 				switch rel.Kind {
 				case facts.RelImplements: // include/extend/prepend mixins
 					if dst := ix.resolve(rel.Target, src); dst != "" {
-						add(src, dst)
+						add(src, dst, facts.CouplingMixin)
 						setSource(f, "internal")
 					} else {
 						setSource(f, "external")
 					}
 				case facts.RelDependsOn: // ActiveRecord associations
 					if dst := ix.resolve(rel.Target, src); dst != "" {
-						add(src, dst)
+						add(src, dst, facts.CouplingAssociation)
 						setSource(f, "internal")
 					} else {
 						setSource(f, "external")
@@ -76,13 +84,36 @@ func resolveImports(allFacts []facts.Fact, isRails bool) []facts.Fact {
 			// Packwerk package.yml dependencies: explicit module -> module edges.
 			for _, rel := range f.Relations {
 				if rel.Kind == facts.RelDependsOn {
-					add(packwerkDir(f.Name), packwerkDir(rel.Target))
+					add(packwerkDir(f.Name), packwerkDir(rel.Target), facts.CouplingPackwerk)
 				}
 			}
 		}
 	}
 
 	return emitEdges(edges, isRails)
+}
+
+// couplingRank orders coupling kinds so the "hardest" (most import-like) wins when
+// one edge arises from multiple references. Association is weakest: any other kind
+// overrides it, so an edge is tagged "association" only when associations are its
+// sole source — which is exactly the set the cycles explainer excludes.
+func couplingRank(kind string) int {
+	switch kind {
+	case facts.CouplingAssociation:
+		return 0
+	case facts.CouplingReference:
+		return 1
+	case facts.CouplingMixin:
+		return 2
+	case facts.CouplingInheritance:
+		return 3
+	case facts.CouplingRequire:
+		return 4
+	case facts.CouplingPackwerk:
+		return 5
+	default:
+		return 1
+	}
 }
 
 // constIndex resolves a Ruby constant reference to the slash dir of the module
@@ -181,13 +212,13 @@ func commonPrefixSegments(a, b string) int {
 // classifyRequire resolves a require/require_relative dependency fact: relative
 // requires are intra-project (resolved to a module dir when possible); absolute
 // requires are stdlib or external. Sets Props["source"] in place.
-func classifyRequire(f *facts.Fact, rel *facts.Relation, src string, moduleNames map[string]bool, add func(s, d string)) {
+func classifyRequire(f *facts.Fact, rel *facts.Relation, src string, moduleNames map[string]bool, add func(s, d, kind string)) {
 	raw := rel.Target
 	isRel, _ := f.Props["require_relative"].(bool)
 	switch {
 	case isRel || strings.HasPrefix(raw, "."):
 		if dst := resolveRequireRelative(raw, src, moduleNames); dst != "" {
-			add(src, dst)
+			add(src, dst, facts.CouplingRequire)
 		}
 		setSource(f, "internal")
 	case rubyStdlib[raw] || rubyStdlib[firstPathSeg(raw)]:
@@ -243,14 +274,15 @@ func nearestModule(dir string, moduleNames map[string]bool) string {
 // emitEdges builds one synthetic dependency fact per unique edge. File is set to
 // "<srcDir>/_coupling.rb" so that consumers deriving the source module via
 // fileDir(File) recover exactly srcDir (a bare srcDir would lose its last segment).
-func emitEdges(edges map[[2]string]bool, isRails bool) []facts.Fact {
+func emitEdges(edges map[[2]string]string, isRails bool) []facts.Fact {
 	out := make([]facts.Fact, 0, len(edges))
-	for e := range edges {
+	for e, kind := range edges {
 		src, dst := e[0], e[1]
 		props := map[string]any{
-			"language":           "ruby",
-			"source":             "internal",
-			"synthetic_coupling": true,
+			"language":             "ruby",
+			"source":               "internal",
+			"synthetic_coupling":   true,
+			facts.PropCouplingKind: kind,
 		}
 		if isRails {
 			props["framework"] = "rails"

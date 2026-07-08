@@ -77,6 +77,54 @@ func TestExplain_DetectsGodClass(t *testing.T) {
 	}
 }
 
+// TestExplain_DedupReopenedSymbol: a constant reopened across many files (Ruby
+// STI/concerns, monkey-patched framework namespaces) yields one symbol fact per
+// file, all sharing a Name. Fan-in is keyed by name, so each produced an identical
+// insight — the RailsAdmin::Config::Actions ×50 flood. Report the name once.
+func TestExplain_DedupReopenedSymbol(t *testing.T) {
+	store := makeStore("core.Hub", manyCallers(12), nil)
+	// Simulate the same constant reopened in 4 more files.
+	for i := 0; i < 4; i++ {
+		store.Add(facts.Fact{Kind: facts.KindSymbol, Name: "core.Hub", File: fmt.Sprintf("reopen/%d.go", i)})
+	}
+	store.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("reopened symbol should yield 1 insight, got %d: %+v", len(insights), insights)
+	}
+}
+
+// TestExplain_CapsInsightCount: no more than maxInsights findings are emitted even
+// when many distinct symbols exceed the outlier threshold.
+func TestExplain_CapsInsightCount(t *testing.T) {
+	s := facts.NewStore()
+	// 40 distinct hubs, each with 12 dependents -> all well above the floor.
+	for h := 0; h < 40; h++ {
+		hub := fmt.Sprintf("core.Hub%d", h)
+		s.Add(facts.Fact{Kind: facts.KindSymbol, Name: hub, File: fmt.Sprintf("core/hub%d.go", h)})
+		for i := 0; i < 12; i++ {
+			s.Add(facts.Fact{
+				Kind: facts.KindSymbol, Name: fmt.Sprintf("caller%d_%d.Fn", h, i),
+				File:      fmt.Sprintf("callers/%d_%d.go", h, i),
+				Relations: []facts.Relation{{Kind: facts.RelCalls, Target: hub}},
+			})
+		}
+	}
+	s.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) > maxInsights {
+		t.Errorf("insight count not capped: got %d, want <= %d", len(insights), maxInsights)
+	}
+}
+
 func TestExplain_BelowFloor(t *testing.T) {
 	// Hub has only 5 dependents — below minFanIn even if it's the max.
 	store := makeStore("core.Hub", manyCallers(5), nil)

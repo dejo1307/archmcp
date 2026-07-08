@@ -67,6 +67,26 @@ func TestExplain_DetectsHotspot(t *testing.T) {
 	}
 }
 
+// TestExplain_DedupReopenedSymbol: a constant reopened across many files yields
+// one symbol fact per file, all sharing a Name and therefore identical in/out
+// degree. Report the name once instead of once per reopening.
+func TestExplain_DedupReopenedSymbol(t *testing.T) {
+	store := makeStore("core.Hub", 5, 5)
+	// Simulate the same constant reopened in 3 more files (no extra edges).
+	for i := 0; i < 3; i++ {
+		store.Add(facts.Fact{Kind: facts.KindSymbol, Name: "core.Hub", File: fmt.Sprintf("reopen/%d.go", i)})
+	}
+	store.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("reopened symbol should yield 1 hotspot insight, got %d: %+v", len(insights), insights)
+	}
+}
+
 func TestExplain_BelowDegreeFloor(t *testing.T) {
 	// High fan-out but fan-in below minDegree -> not a pinch point.
 	store := makeStore("core.Hub", 1, 10)

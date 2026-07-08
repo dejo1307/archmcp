@@ -78,7 +78,25 @@ func ResolveRelativeImport(sourceModule, target string) string {
 // roles. Modules with an absent or non-test role are kept (consumers treat an
 // absent role as included).
 func BuildModuleGraph(store *facts.Store) map[string][]string {
+	return BuildModuleGraphExcluding(store)
+}
+
+// BuildModuleGraphExcluding is BuildModuleGraph with the ability to drop synthetic
+// coupling edges by their Props["coupling_kind"] (see facts.Coupling* constants).
+// A dependency fact whose coupling_kind is in excludeKinds contributes no edge.
+// The cycles explainer uses this to exclude ActiveRecord associations, whose
+// inherent bidirectionality would otherwise manufacture false cycles. With no
+// excludeKinds it is identical to BuildModuleGraph.
+func BuildModuleGraphExcluding(store *facts.Store, excludeKinds ...string) map[string][]string {
 	graph := make(map[string][]string)
+
+	var excluded map[string]bool
+	if len(excludeKinds) > 0 {
+		excluded = make(map[string]bool, len(excludeKinds))
+		for _, k := range excludeKinds {
+			excluded[k] = true
+		}
+	}
 
 	modules := store.ByKind(facts.KindModule)
 	moduleNames := make(map[string]bool)
@@ -99,6 +117,11 @@ func BuildModuleGraph(store *facts.Store) map[string][]string {
 		sourceModule := FileDir(dep.File)
 		if testModules[sourceModule] {
 			continue // edge out of a test bundle — not production architecture
+		}
+		if excluded != nil {
+			if ck, _ := dep.Props[facts.PropCouplingKind].(string); excluded[ck] {
+				continue
+			}
 		}
 
 		for _, rel := range dep.Relations {

@@ -126,6 +126,7 @@ var versionCoverage = map[int][]string{
 	92: {"TestRoutes_SymbolPathArg", "TestRoutes_ScopeBareSymbolPrefix", "TestRoutes_ResourcePathOverride"},                                                                                                                                                                                        // Ruby symbol path args + scope :symbol + resource path: override
 	93: {"TestSwitchReturns_MultiLineCaseLabels", "TestExtractEndpointFacts_MultiLineMethodCase"},                                                                                                                                                                                                 // Swift multi-line case-label method parsing
 	94: {"TestExtractEndpointFacts_ConstantMethod"},                                                                                                                                                                                                                                              // Swift single-value (constant) method property
+	95: {"TestResolveImports_CouplingKindTagged", "TestResolveImports_ReferenceBeatsAssociation"},                                                                                                                                                                                                // Ruby synthetic-edge coupling_kind prop + framework-const ignore list
 }
 
 func TestCacheVersionCoverage(t *testing.T) {

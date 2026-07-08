@@ -489,6 +489,40 @@ func TestDetectViolations_LevelEqualNoViolation(t *testing.T) {
 	}
 }
 
+// TestDetectViolations_RailsDomainTier: in Rails, models calling services/jobs/
+// helpers is idiomatic (all one domain tier) and must NOT be a violation; only a
+// domain module reaching UP into the delivery layer (a controller/view) is flagged.
+func TestDetectViolations_RailsDomainTier(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("ruby",
+		"app/models", "app/services", "app/jobs", "app/helpers",
+		"app/controllers", "app/views")...)
+	s.Add(frameworkFact("rails"))
+	// Idiomatic Rails — all domain tier, no violation.
+	addDep(s, "app/models/_coupling.rb", "app/services")
+	addDep(s, "app/models/_coupling.rb", "app/jobs")
+	addDep(s, "app/services/_coupling.rb", "app/helpers")
+	// Genuine smell — a model reaching up into a controller.
+	addDep(s, "app/models/_coupling.rb", "app/controllers")
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	var titles []string
+	for _, in := range insights {
+		if in.Confidence == 0.8 {
+			titles = append(titles, in.Title)
+		}
+	}
+	if len(titles) != 1 {
+		t.Fatalf("expected exactly 1 Rails violation (model -> controller), got %d: %v", len(titles), titles)
+	}
+	if !strings.Contains(titles[0], "model -> controller") {
+		t.Errorf("expected the model -> controller violation, got %q", titles[0])
+	}
+}
+
 // TestDetectViolations_RelativeImportResolved guards the fix where a JS/TS-style
 // relative import target ("../pages") is resolved against the source module
 // before matching a layer — previously the raw target never matched, so the
