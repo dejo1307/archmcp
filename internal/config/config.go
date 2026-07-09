@@ -48,8 +48,15 @@ func Default() *Config {
 			"**/*.test.tsx",
 			"**/*.spec.ts",
 			"**/*.spec.tsx",
-			"**/*_spec.rb",
-			"**/*_test.rb",
+			// Ruby, unlike Go and TS, has no co-located test convention: RSpec
+			// requires spec/, Minitest defaults to test/. Demand the directory as
+			// well as the filename — a bare "**/*_test.rb" also swallows production
+			// code that merely ends in the token (a job named cache_warmup_ab_test.rb),
+			// deleting it from the graph.
+			// Keep in sync with TestGlobs below: a file that stops being a test must
+			// stop being ignored, or it is dropped without being recovered.
+			"**/spec/**/*_spec.rb",
+			"**/test/**/*_test.rb",
 			".enola/**",
 			// Build / cache artifacts. These are generated output (often transpiled
 			// JS, e.g. Next.js .next/) and must never be indexed as source — doing so
@@ -95,7 +102,7 @@ func Default() *Config {
 		// include test symbols — but the engine collects them separately for
 		// reference-only extraction so the dead-code detector can see that a
 		// production symbol is exercised by a test and not mis-report it as dead.
-		TestGlobs:  []string{"**/*_spec.rb", "**/*_test.rb"},
+		TestGlobs:  []string{"**/spec/**/*_spec.rb", "**/test/**/*_test.rb"},
 		Extractors: []string{"cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},
 		Renderers:  []string{"llm_context"},

@@ -365,7 +365,7 @@ func TestExtractEndpointFacts_ConstantMethod(t *testing.T) {
 	src := `extension APIService.Tracking: APIEndpoint {
    var urlPathComponent: String {
       switch self {
-      case .hoodMessage: return "hood_message_trackings.json"
+      case .order: return "order_trackings.json"
       }
    }
    var method: HTTPMethod {

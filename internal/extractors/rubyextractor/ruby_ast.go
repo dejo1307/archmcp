@@ -1183,7 +1183,7 @@ func collectLocals(method *sitter.Node, src []byte) map[string]bool {
 	// Block parameters (`things.each do |user| … end`, `{ |k, v| … }`) are locals
 	// too — and, being the most common identifiers inside loops, are the main
 	// source of false N+1 findings when their name coincides with an ActiveRecord
-	// association (`user`, `hood_message`, …). collectLocals is method-wide, so a
+	// association (`user`, `comment`, …). collectLocals is method-wide, so a
 	// block var here shadows a same-named bare method call elsewhere in the method;
 	// that over-approximation is safe (it only suppresses over-emission) and matches
 	// how assignment targets are already collected.

@@ -64,8 +64,8 @@ ignore:
   - "**/*Test.swift"
 
   # Ruby / Rails
-  - "**/*_spec.rb"
-  - "**/*_test.rb"
+  - "**/spec/**/*_spec.rb"
+  - "**/test/**/*_test.rb"
   - "tmp/**"
   - "log/**"
   - "public/assets/**"

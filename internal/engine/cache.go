@@ -260,7 +260,13 @@ import (
 // assigned/iterated/aliased locals, not just parameters — so a loop var or local reusing a
 // same-named top-level def's name no longer fabricates a same-module edge. Cached Python
 // snapshots must re-extract.
-const cacheVersion = "v96"
+// v97: the Ruby ignore/test globs are directory-scoped ("**/spec/**/*_spec.rb" rather than
+// "**/*_spec.rb"), so a production file whose basename merely ends in the token _test/_spec
+// (a job named cache_warmup_ab_test.rb) is indexed as source instead of being ignored and
+// misrouted to reference-only test-ref extraction. The glob matcher gained the
+// "<prefix>/**/<fileglob>" form to express it. Cached Ruby snapshots must re-extract: the
+// file set reaching the extractor changes.
+const cacheVersion = "v97"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

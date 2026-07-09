@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -499,11 +500,33 @@ func (e *Engine) matchesTestGlob(relPath string) bool {
 	return matchAnyGlob(filepath.ToSlash(relPath), e.cfg.TestGlobs)
 }
 
-// matchAnyGlob reports whether a forward-slash path matches any of the patterns,
-// mirroring the "**/<name>/**", trailing-"/**", and "**/<glob>" handling of
-// isIgnored so test-glob matching stays consistent with ignore matching.
+// matchAnyGlob reports whether a forward-slash path matches any of the patterns.
+// It is the single matcher behind both the ignore list and the test globs, so a
+// file the two lists disagree about cannot exist: an ignored file that stops being
+// a test necessarily stops being ignored. Supported forms:
+//
+//	vendor/**                 anchored directory prefix
+//	**/build/**               a directory named "build" at any depth
+//	**/*_test.go              a basename glob at any depth
+//	**/spec/**/*_spec.rb      a basename glob under a directory named "spec"
+//
+// The last form is the only one that constrains directory and filename together;
+// see matchDirScopedGlob for why the Ruby test globs need it.
 func matchAnyGlob(relPath string, patterns []string) bool {
 	for _, pattern := range patterns {
+		// "<prefix>/**/<fileglob>". Handled first and exclusively: the branches
+		// below would match such a pattern only when exactly one directory sits
+		// between prefix and file, which is an artifact of filepath.Match reading
+		// "**" as "*", not a rule anyone intended.
+		if i := strings.Index(pattern, "/**/"); i >= 0 {
+			prefix, fileGlob := pattern[:i], pattern[i+len("/**/"):]
+			if !strings.Contains(fileGlob, "/") {
+				if matchDirScopedGlob(relPath, prefix, fileGlob) {
+					return true
+				}
+				continue
+			}
+		}
 		if strings.HasPrefix(pattern, "**/") && strings.HasSuffix(pattern, "/**") {
 			seg := strings.TrimSuffix(strings.TrimPrefix(pattern, "**/"), "/**")
 			if seg != "" && !strings.Contains(seg, "/") {
@@ -536,56 +559,47 @@ func matchAnyGlob(relPath string, patterns []string) bool {
 	return false
 }
 
-// isIgnored checks whether a path matches any ignore pattern.
-func (e *Engine) isIgnored(relPath string, isDir bool) bool {
-	// Normalize to forward slashes for matching
-	relPath = filepath.ToSlash(relPath)
-
-	for _, pattern := range e.cfg.Ignore {
-		// "**/<seg>/**" — ignore a directory named <seg> at ANY depth (and
-		// everything under it). The literal-prefix branch below cannot handle this
-		// because the leading "**/" is not a real path component; match by checking
-		// whether any path segment equals <seg>. Also covers the top-level case.
-		if strings.HasPrefix(pattern, "**/") && strings.HasSuffix(pattern, "/**") {
-			seg := strings.TrimSuffix(strings.TrimPrefix(pattern, "**/"), "/**")
-			if seg != "" && !strings.Contains(seg, "/") {
-				for _, part := range strings.Split(relPath, "/") {
-					if part == seg {
-						return true
-					}
-				}
-			}
-		}
-
-		// Handle directory-only patterns
-		if strings.HasSuffix(pattern, "/**") {
-			dirPrefix := strings.TrimSuffix(pattern, "/**")
-			if relPath == dirPrefix || strings.HasPrefix(relPath, dirPrefix+"/") {
-				return true
-			}
-		}
-
-		// Standard glob match
-		matched, err := filepath.Match(pattern, relPath)
-		if err == nil && matched {
-			return true
-		}
-
-		// Also try matching just the filename for patterns like **/*.go
-		if strings.HasPrefix(pattern, "**/") {
-			subPattern := strings.TrimPrefix(pattern, "**/")
-			matched, err = filepath.Match(subPattern, filepath.Base(relPath))
-			if err == nil && matched {
-				return true
-			}
-			// Also try the full relative path
-			matched, err = filepath.Match(subPattern, relPath)
-			if err == nil && matched {
-				return true
-			}
-		}
+// matchDirScopedGlob reports whether relPath's basename matches fileGlob AND
+// prefix names one of its ancestor directories ("**/<seg>" for a segment at any
+// depth, otherwise an anchored literal path).
+//
+// A filename alone cannot classify a Ruby test. `lib/foo_test.rb` is one and
+// `app/jobs/cache_warmup_ab_test.rb` is a production A/B-test job, yet both end in
+// the token `test`; matching on the suffix deleted the latter from the graph
+// entirely. Ruby settles it by convention — RSpec requires spec/, Minitest defaults
+// to test/ — so the directory segment is the signal, and this predicate lets a
+// single pattern demand both halves.
+//
+// Because every element of dirSegs is by construction an ancestor of the basename,
+// segment equality alone places the file under the directory: no depth bookkeeping,
+// and "spec/user_spec.rb" (zero intervening directories) falls out for free.
+func matchDirScopedGlob(relPath, prefix, fileGlob string) bool {
+	segs := strings.Split(relPath, "/")
+	if len(segs) < 2 {
+		return false // no directory component, so no prefix can name an ancestor
 	}
-	return false
+	dirSegs, base := segs[:len(segs)-1], segs[len(segs)-1]
+
+	if m, err := filepath.Match(fileGlob, base); err != nil || !m {
+		return false
+	}
+	if seg, ok := strings.CutPrefix(prefix, "**/"); ok {
+		if seg == "" || strings.Contains(seg, "/") {
+			return false
+		}
+		return slices.Contains(dirSegs, seg)
+	}
+	if prefix == "**" {
+		return true // any directory
+	}
+	return strings.HasPrefix(relPath, prefix+"/")
+}
+
+// isIgnored checks whether a path matches any ignore pattern. isDir is unused: the
+// patterns discriminate on shape, not on file type, and a directory that matches is
+// pruned by the caller.
+func (e *Engine) isIgnored(relPath string, isDir bool) bool {
+	return matchAnyGlob(filepath.ToSlash(relPath), e.cfg.Ignore)
 }
 
 // runExtractors detects applicable extractors and runs them. When cache is

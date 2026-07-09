@@ -128,6 +128,7 @@ var versionCoverage = map[int][]string{
 	94: {"TestExtractEndpointFacts_ConstantMethod"},                                                                                                                                                                                                                                              // Swift single-value (constant) method property
 	95: {"TestResolveImports_CouplingKindTagged", "TestResolveImports_ReferenceBeatsAssociation"},                                                                                                                                                                                                // Ruby synthetic-edge coupling_kind prop + framework-const ignore list
 	96: {"TestAST_AssignedAndReturnedCallback", "TestAST_AssignedCallback_ShadowGuarded", "TestAST_ReturnedPlainVariable_NoPhantomRef", "TestAST_ReturnedForwardReference_Resolves", "TestAST_ShadowedLoopVarNotResolvedAsCall"},                                                                 // Python assignment/return value-refs + scope-wide (not just param) shadow guard
+	97: {"TestMatchAnyGlob_MidPatternDoublestar", "TestGolden"},                                                                                                                                                                                                                                // Directory-scoped Ruby test globs: production *_ab_test.rb no longer deleted from the graph
 }
 
 func TestCacheVersionCoverage(t *testing.T) {

@@ -17,8 +17,8 @@ ignore:
   - ".git/**"
   - ".enola/**"
   # Tests
-  - "**/*_spec.rb"
-  - "**/*_test.rb"
+  - "**/spec/**/*_spec.rb"
+  - "**/test/**/*_test.rb"
   - "spec/**"
   - "test/**"
   # Ruby / Rails

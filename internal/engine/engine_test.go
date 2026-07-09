@@ -166,6 +166,121 @@ func TestIsIgnored(t *testing.T) {
 	}
 }
 
+// TestMatchAnyGlob_MidPatternDoublestar covers the "<prefix>/**/<fileglob>" form,
+// which lets a pattern require BOTH a directory segment and a filename shape.
+//
+// The Ruby test globs need it. A bare "**/*_test.rb" is a filename-suffix match, so
+// a production ActiveJob named cache_warmup_ab_test.rb was ignored AND routed to
+// reference-only test-ref extraction — its class vanished from the graph. No
+// filename-only rule can separate that file from lib/foo_test.rb: both end in the
+// token "test". The directory segment is the only reliable signal, and Ruby supplies
+// one (RSpec requires spec/, Minitest defaults to test/).
+func TestMatchAnyGlob_MidPatternDoublestar(t *testing.T) {
+	rubyTestGlobs := []string{"**/spec/**/*_spec.rb", "**/test/**/*_test.rb"}
+
+	tests := []struct {
+		name     string
+		relPath  string
+		patterns []string
+		want     bool
+	}{
+		{
+			// The reported bug: a production A/B-test job under app/jobs.
+			"production job whose name ends in _ab_test",
+			"app/jobs/reporting/cache_warmup_ab_test.rb",
+			rubyTestGlobs,
+			false,
+		},
+		{
+			"production model named ab_test",
+			"app/models/ab_test.rb",
+			rubyTestGlobs,
+			false,
+		},
+		{
+			// Zero intermediate directories. filepath.Match's "*" never crosses a
+			// separator, so the pre-existing "**/<glob>" branch could not match this.
+			"spec directly under spec/",
+			"spec/user_spec.rb",
+			rubyTestGlobs,
+			true,
+		},
+		{
+			"spec one level down",
+			"spec/services/report_worker_spec.rb",
+			rubyTestGlobs,
+			true,
+		},
+		{
+			"spec segment at any depth, several levels down",
+			"engines/billing/spec/models/nested/invoice_spec.rb",
+			rubyTestGlobs,
+			true,
+		},
+		{
+			"minitest file under test/",
+			"test/models/user_test.rb",
+			rubyTestGlobs,
+			true,
+		},
+		{
+			// The dir segment is present but the basename shape is wrong.
+			"support file under spec/ is not a spec",
+			"spec/rails_helper.rb",
+			rubyTestGlobs,
+			false,
+		},
+		{
+			// "spec" must be a DIRECTORY segment, not the basename stem.
+			"file named spec.rb outside a spec dir",
+			"app/models/spec.rb",
+			rubyTestGlobs,
+			false,
+		},
+		{
+			"anchored prefix form",
+			"spec/models/user_spec.rb",
+			[]string{"spec/**/*_spec.rb"},
+			true,
+		},
+		{
+			"anchored prefix form does not match a nested spec dir",
+			"engines/billing/spec/models/user_spec.rb",
+			[]string{"spec/**/*_spec.rb"},
+			false,
+		},
+		// The pre-existing pattern forms must keep their semantics — the new branch
+		// fires only on a literal "/**/" in the pattern, which none of them contain.
+		{
+			"**/build/** still matches a nested build dir",
+			"data/build/kspCaches/devDebug/Gen.kt",
+			[]string{"**/build/**"},
+			true,
+		},
+		{
+			"**/*_test.go still matches by filename at any depth",
+			"internal/pkg/foo_test.go",
+			[]string{"**/*_test.go"},
+			true,
+		},
+		{
+			"vendor/** still matches an anchored prefix",
+			"vendor/github.com/foo/bar.go",
+			[]string{"vendor/**"},
+			true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchAnyGlob(tt.relPath, tt.patterns); got != tt.want {
+				t.Errorf("matchAnyGlob(%q, %v) = %v, want %v",
+					tt.relPath, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveFactFile_SingleRepo(t *testing.T) {
 	cfg := config.Default()
 	eng, _ := New(cfg)
