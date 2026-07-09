@@ -264,6 +264,117 @@ func TestCompute_NoChurnFromCollidingRouteMethods(t *testing.T) {
 	}
 }
 
+// classSym builds a symbol fact for a class whose only distinguishing prop is
+// its signature — the shape of a Swift type declared twice under mutually
+// exclusive #if/#else branches. symbol_kind is "class" on both, so no prop
+// discriminates them and only positional pairing can tell them apart.
+func classSym(name, file, signature string, line int) facts.Fact {
+	return facts.Fact{Kind: facts.KindSymbol, Name: name, File: file, Line: line, Repo: "r",
+		Props: map[string]any{"symbol_kind": facts.SymbolClass, "signature": signature}}
+}
+
+// depFact builds a dependency fact. Real dependency names embed the import
+// target ("pkg -> react"), so two imports of the same target in one file are
+// identical in name, props and relations — they differ only by line.
+func depFact(from, target, file string, line int) facts.Fact {
+	return facts.Fact{Kind: facts.KindDependency, Name: from + " -> " + target, File: file, Line: line, Repo: "r",
+		Props:     map[string]any{"source": "external"},
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: target}}}
+}
+
+// TestCompute_NoChurnFromCollidingSymbols is the regression guard for the
+// phantom diff observed on my-golf-journal-ios: ArchitectureFitnessGateTests is
+// declared twice in one file (#if/#else), so two symbol facts share
+// (kind, repo, file, name) and differ only in line and signature. The on-disk
+// baseline and the in-memory current iterate them in different orders, so
+// last-write-wins picks a different representative on each side and the diff
+// reports "changed" between byte-identical fact sets.
+func TestCompute_NoChurnFromCollidingSymbols(t *testing.T) {
+	macOS := classSym("Tests.ArchitectureFitnessGateTests", "Tests/A.swift", "func testFull() throws", 5)
+	iOS := classSym("Tests.ArchitectureFitnessGateTests", "Tests/A.swift", "func testSkipped() throws", 101)
+
+	// Same facts, different iteration order — as disk and memory produce them.
+	d := Compute(snap([]facts.Fact{macOS, iOS}, nil), snap([]facts.Fact{iOS, macOS}, nil))
+	if !d.Empty() {
+		t.Fatalf("colliding symbols churned the diff: %+v", d)
+	}
+}
+
+// TestCompute_CollidingSymbolRemovalIsDetected pins the silent-drop half of the
+// bug: with last-write-wins, one of two colliding facts never reaches the map,
+// so deleting it produces no diff entry at all.
+func TestCompute_CollidingSymbolRemovalIsDetected(t *testing.T) {
+	macOS := classSym("Tests.Gate", "Tests/A.swift", "func testFull() throws", 5)
+	iOS := classSym("Tests.Gate", "Tests/A.swift", "func testSkipped() throws", 101)
+
+	d := Compute(snap([]facts.Fact{macOS, iOS}, nil), snap([]facts.Fact{macOS}, nil))
+	if len(d.FactsRemoved) != 1 {
+		t.Fatalf("expected exactly 1 removed fact, got %d: %+v", len(d.FactsRemoved), d.FactsRemoved)
+	}
+	if got := d.FactsRemoved[0].Line; got != 101 {
+		t.Fatalf("expected the line-101 declaration removed, got line %d", got)
+	}
+	if len(d.FactsAdded) != 0 || len(d.FactsChanged) != 0 {
+		t.Fatalf("removal must not churn: added=%+v changed=%+v", d.FactsAdded, d.FactsChanged)
+	}
+}
+
+// TestCompute_CollidingSymbolPropsChangeIsAChange asserts a real edit to one of
+// two colliding facts still surfaces — the fix must not silence the diff.
+func TestCompute_CollidingSymbolPropsChangeIsAChange(t *testing.T) {
+	a := classSym("Tests.Gate", "Tests/A.swift", "func testFull() throws", 5)
+	b := classSym("Tests.Gate", "Tests/A.swift", "func testSkipped() throws", 101)
+	bEdited := classSym("Tests.Gate", "Tests/A.swift", "func testSkipped() async throws", 101)
+
+	d := Compute(snap([]facts.Fact{a, b}, nil), snap([]facts.Fact{a, bEdited}, nil))
+	if len(d.FactsChanged) != 1 {
+		t.Fatalf("expected exactly 1 changed fact, got %d: %+v", len(d.FactsChanged), d.FactsChanged)
+	}
+	if len(d.FactsAdded) != 0 || len(d.FactsRemoved) != 0 {
+		t.Fatalf("props change must not become add+remove: added=%+v removed=%+v", d.FactsAdded, d.FactsRemoved)
+	}
+	if got := d.FactsChanged[0].After.Line; got != 101 {
+		t.Fatalf("wrong member paired: expected line 101, got %d", got)
+	}
+}
+
+// TestCompute_NoChurnFromCollidingDependencies covers the kind the original bug
+// report named. A dependency fact's name already embeds its import target, so
+// two imports of the same target in one file are identical in name, props AND
+// relations — discriminating on Relations[0].Target cannot separate them.
+func TestCompute_NoChurnFromCollidingDependencies(t *testing.T) {
+	first := depFact("src/app/hub", "react", "src/app/hub/page.tsx", 3)
+	second := depFact("src/app/hub", "react", "src/app/hub/page.tsx", 5)
+
+	d := Compute(snap([]facts.Fact{first, second}, nil), snap([]facts.Fact{second, first}, nil))
+	if !d.Empty() {
+		t.Fatalf("colliding dependencies churned the diff: %+v", d)
+	}
+
+	// And dropping one must be visible.
+	d2 := Compute(snap([]facts.Fact{first, second}, nil), snap([]facts.Fact{first}, nil))
+	if len(d2.FactsRemoved) != 1 {
+		t.Fatalf("expected 1 removed dependency, got %d: %+v", len(d2.FactsRemoved), d2.FactsRemoved)
+	}
+}
+
+// TestCompute_CollidingFactsAreDeterministic guards the output ordering: once
+// colliding facts both survive, factKey alone no longer totally orders them.
+func TestCompute_CollidingFactsAreDeterministic(t *testing.T) {
+	base := snap(nil, nil)
+	cur := snap([]facts.Fact{
+		classSym("Tests.Gate", "Tests/A.swift", "func b() throws", 101),
+		classSym("Tests.Gate", "Tests/A.swift", "func a() throws", 5),
+	}, nil)
+
+	want := Compute(base, cur).RenderCompact()
+	for i := 0; i < 50; i++ {
+		if got := Compute(base, cur).RenderCompact(); got != want {
+			t.Fatalf("nondeterministic output on run %d:\n--- want ---\n%s\n--- got ---\n%s", i, want, got)
+		}
+	}
+}
+
 func TestRenderSummary_EmptyIsExplicit(t *testing.T) {
 	d := Compute(snap(nil, nil), snap(nil, nil))
 	out := d.RenderSummary()

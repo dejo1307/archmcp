@@ -116,28 +116,28 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 	baseFacts := snapFacts(baseline)
 	curFacts := snapFacts(current)
 
-	baseByKey := make(map[string]facts.Fact, len(baseFacts))
-	for _, f := range baseFacts {
-		baseByKey[factKey(f)] = f
-	}
-	curByKey := make(map[string]facts.Fact, len(curFacts))
-	for _, f := range curFacts {
-		curByKey[factKey(f)] = f
-	}
+	baseByKey := groupByKey(baseFacts)
+	curByKey := groupByKey(curFacts)
 
-	for k, cf := range curByKey {
-		bf, ok := baseByKey[k]
-		if !ok {
-			d.FactsAdded = append(d.FactsAdded, cf)
-			continue
-		}
-		if propsChanged(bf, cf) {
-			d.FactsChanged = append(d.FactsChanged, FactChange{Before: bf, After: cf})
+	for k, curGroup := range curByKey {
+		baseGroup := baseByKey[k]
+		// Pair member i of the baseline group with member i of the current group.
+		// Both groups are ordered by intraGroupOrder, so the pairing is stable
+		// across the on-disk baseline and the in-memory current snapshot.
+		for i, cf := range curGroup {
+			if i >= len(baseGroup) {
+				d.FactsAdded = append(d.FactsAdded, cf)
+				continue
+			}
+			if propsChanged(baseGroup[i], cf) {
+				d.FactsChanged = append(d.FactsChanged, FactChange{Before: baseGroup[i], After: cf})
+			}
 		}
 	}
-	for k, bf := range baseByKey {
-		if _, ok := curByKey[k]; !ok {
-			d.FactsRemoved = append(d.FactsRemoved, bf)
+	for k, baseGroup := range baseByKey {
+		curGroup := curByKey[k]
+		for i := len(curGroup); i < len(baseGroup); i++ {
+			d.FactsRemoved = append(d.FactsRemoved, baseGroup[i])
 		}
 	}
 
@@ -398,12 +398,69 @@ func factKey(f facts.Fact) string {
 	return f.Kind + "\x00" + f.Repo + "\x00" + f.File + "\x00" + f.Name + "\x00" + factDiscriminator(f)
 }
 
+// groupByKey buckets facts by factKey, preserving every member rather than
+// letting the last one win.
+//
+// factKey is NOT unique even with a discriminator, and no prop can make it so:
+// Swift declares the same class twice under mutually exclusive #if/#else
+// branches, overloaded methods share a name and symbol_kind, and a dependency
+// fact's name already embeds its import target, so two imports of one target in
+// one file are identical in name, props AND relations. Such facts differ only
+// by line. Keying them into a map[string]Fact silently dropped all but one, so
+// a deletion produced no diff entry and — because the on-disk baseline and the
+// in-memory current iterate facts in different orders — the surviving
+// representative differed between the two sides, reporting a "changed" fact
+// between byte-identical fact sets.
+//
+// Each bucket is sorted by intraGroupOrder so the two sides pair positionally.
+func groupByKey(fs []facts.Fact) map[string][]facts.Fact {
+	groups := make(map[string][]facts.Fact, len(fs))
+	for _, f := range fs {
+		k := factKey(f)
+		groups[k] = append(groups[k], f)
+	}
+	for _, g := range groups {
+		if len(g) > 1 {
+			sort.Slice(g, func(i, j int) bool { return intraGroupOrder(g[i]) < intraGroupOrder(g[j]) })
+		}
+	}
+	return groups
+}
+
+// intraGroupOrder totally orders facts that share a factKey. Line comes first
+// because it is the only field that reliably separates them and it is stable
+// under the edits that matter: an insertion above the group shifts every member
+// equally, preserving their relative order, so the pairing does not churn.
+//
+// This is the ONLY place line participates in matching, and only WITHIN a group
+// that already shares an identity. It never enters factKey, so a lone fact that
+// merely moves is still unchanged — see TestCompute_LineShiftIsNotAChange.
+func intraGroupOrder(f facts.Fact) string {
+	return fmt.Sprintf("%09d\x00%s\x00%s", f.Line, propsJSON(f.Props), relationsJSON(f.Relations))
+}
+
+// relationsJSON renders relations order-stably for use as a tiebreak.
+func relationsJSON(rs []facts.Relation) string {
+	if len(rs) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(rs)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // factDiscriminator returns the props that distinguish facts which legitimately
 // share (kind, repo, file, name). It is kind-specific because only a few kinds
 // have multiple facts per name; for the rest the fully-qualified name is unique.
 // It deliberately uses identity-bearing props (a route's method, a storage
 // reference's operation), not mutable ones, so a genuine attribute change still
 // surfaces as "changed" rather than remove+add.
+//
+// It is no longer load-bearing for correctness — groupByKey handles collisions
+// it cannot separate — but it still improves pairing: a route's GET and DELETE
+// facts match up by method rather than by position.
 func factDiscriminator(f facts.Fact) string {
 	switch f.Kind {
 	case facts.KindRoute:
@@ -413,6 +470,13 @@ func factDiscriminator(f facts.Fact) string {
 	default:
 		return ""
 	}
+}
+
+// factSortKey totally orders facts for deterministic output. It extends factKey
+// with intraGroupOrder so that facts sharing an identity still have a stable
+// relative order in the rendered diff.
+func factSortKey(f facts.Fact) string {
+	return factKey(f) + "\x00" + intraGroupOrder(f)
 }
 
 // propString returns the named prop as a string, or "" if absent.
@@ -554,11 +618,17 @@ func insightMatches(in facts.Insight, focusLC string) bool {
 }
 
 // sortAll orders every collection by its stable key so output is deterministic.
+//
+// Facts are ordered by factSortKey, not factKey: colliding facts share a factKey,
+// and the collections are built by ranging over a map, so factKey alone would
+// leave their relative order to sort.Slice and to Go's randomized map iteration.
 func (d *SnapshotDiff) sortAll() {
-	sort.Slice(d.FactsAdded, func(i, j int) bool { return factKey(d.FactsAdded[i]) < factKey(d.FactsAdded[j]) })
-	sort.Slice(d.FactsRemoved, func(i, j int) bool { return factKey(d.FactsRemoved[i]) < factKey(d.FactsRemoved[j]) })
+	sort.Slice(d.FactsAdded, func(i, j int) bool { return factSortKey(d.FactsAdded[i]) < factSortKey(d.FactsAdded[j]) })
+	sort.Slice(d.FactsRemoved, func(i, j int) bool {
+		return factSortKey(d.FactsRemoved[i]) < factSortKey(d.FactsRemoved[j])
+	})
 	sort.Slice(d.FactsChanged, func(i, j int) bool {
-		return factKey(d.FactsChanged[i].After) < factKey(d.FactsChanged[j].After)
+		return factSortKey(d.FactsChanged[i].After) < factSortKey(d.FactsChanged[j].After)
 	})
 	sort.Slice(d.EdgesAdded, func(i, j int) bool { return edgeKey(d.EdgesAdded[i]) < edgeKey(d.EdgesAdded[j]) })
 	sort.Slice(d.EdgesRemoved, func(i, j int) bool { return edgeKey(d.EdgesRemoved[i]) < edgeKey(d.EdgesRemoved[j]) })
