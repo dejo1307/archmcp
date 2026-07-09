@@ -46,7 +46,7 @@ GitHub Copilot / VS Code (add to `.vscode/mcp.json`):
 
 Done. Your agent now has a precise structural map of your code. For configuration options, multi-repo setup, and what to ask next, see [Quick start](#quick-start) below.
 
-**Supported languages:** Go · JavaScript · TypeScript · Python · Java · Kotlin · Swift · Ruby · C · C++ · PHP · Vue · Svelte · OpenAPI · gRPC — with framework awareness (Next.js, Nuxt, SvelteKit, FastAPI, Django, Spring, Rails, Laravel, Symfony, SwiftUI, Jetpack Compose, WordPress, …)
+**Supported languages:** Go · JavaScript · TypeScript · Python · Java · Kotlin · Swift · Ruby · Rust · C · C++ · PHP · Vue · Svelte · OpenAPI · gRPC — with framework awareness (Next.js, Nuxt, SvelteKit, FastAPI, Django, Spring, Rails, Laravel, Symfony, SwiftUI, Jetpack Compose, WordPress, …)
 
 ---
 
@@ -296,6 +296,7 @@ When you snapshot a *different* repo without `append`, enola assumes you're exte
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
 | Ruby       | `Gemfile` (Rails / ActiveRecord / Packwerk aware) |
+| Rust       | `Cargo.toml` (workspace or single crate; crate/module/`impl`/trait aware) |
 | C / C++    | `.c`/`.h` (tree-sitter-c) or `.cpp`/`.hpp`/… (tree-sitter-cpp), or `CMakeLists.txt`/`Makefile` + header (per-fact `language`, header/source method merging, namespaces, templates) |
 | PHP        | `composer.json`, WordPress markers, or any `.php` source (WordPress / Laravel / Symfony route + outbound HTTP-client aware) |
 | OpenAPI    | any spec with an `openapi:` / `swagger:` key |
@@ -303,7 +304,7 @@ When you snapshot a *different* repo without `append`, enola assumes you're exte
 
 Framework- and platform-specific detection for each language is described in **[ARCHITECTURE.md → Supported languages](ARCHITECTURE.md#supported-languages)**.
 
-> Python, Ruby, and PHP are parsed with tree-sitter and contribute call and dependency edges to the graph, so `traverse`, `find_path`, and `impact_analysis` reach into them — not just modules and routes.
+> Python, Ruby, PHP, and Rust are parsed with tree-sitter and contribute call and dependency edges to the graph, so `traverse`, `find_path`, and `impact_analysis` reach into them — not just modules and routes.
 
 ---
 

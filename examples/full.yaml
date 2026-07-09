@@ -11,6 +11,7 @@
 #   - typescript (detection: tsconfig.json or package.json with TypeScript)
 #   - swift      (detection: Package.swift, .xcodeproj, or .xcworkspace)
 #   - ruby       (detection: Gemfile)
+#   - rust       (detection: Cargo.toml)
 #   - cpp        (detection: .cpp/.hpp/... or CMakeLists.txt/Makefile + header)
 #   - php        (detection: composer.json, WordPress markers, or any .php source)
 
@@ -104,6 +105,7 @@ extractors:
   - typescript
   - swift
   - ruby
+  - rust
   - php
 explainers:
   - cycles
