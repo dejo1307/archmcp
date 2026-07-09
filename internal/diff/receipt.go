@@ -54,6 +54,7 @@ func CompareReceipts(base, cur facts.SnapshotMeta) *ReceiptComparison {
 		delta("files_seen", base.FilesSeen, cur.FilesSeen),
 		delta("files_parsed", base.FilesParsed, cur.FilesParsed),
 		delta("files_skipped", base.FilesSkipped, cur.FilesSkipped),
+		delta("dirs_skipped", base.DirsSkipped, cur.DirsSkipped),
 		delta("parse_errors", base.ParseErrors, cur.ParseErrors),
 		delta("coverage_gaps", baseGaps, curGaps),
 		delta("unresolved_edges", baseUnresolved, curUnresolved),

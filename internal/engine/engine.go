@@ -317,6 +317,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			FilesSeen:         len(files),
 			FilesParsed:       e.store.CountFilesWithFacts(files, parsedPrefix),
 			FilesSkipped:      skips.count,
+			DirsSkipped:       skips.dirCount,
 			SkippedSample:     skips.sample,
 			IgnoreGlobHash:    ignoreGlobHash,
 			ParseErrors:       len(parseErrs),
@@ -442,12 +443,29 @@ func (e *Engine) flagUnmatchedRoutes() {
 	}
 }
 
-// walkSkips is a lightweight tally of files dropped by the ignore globs, kept so
-// a snapshot receipt can report how much of the tree was excluded (and a sample
-// of what) without retaining every skipped path.
+// walkSkips is a lightweight tally of what the ignore globs dropped, kept so a
+// snapshot receipt can report how much of the tree was excluded (and a sample of
+// what) without retaining every skipped path.
+//
+// Files and directories are tallied separately because they cost differently to
+// know. An ignored directory is pruned whole — the walker never descends, so its
+// contents are counted nowhere. Counting them would mean walking node_modules/
+// purely to size it, a stat per file for a number no architecture graph wants.
+// One pruned directory is one architecturally meaningful fact; its 55,041 files
+// are not.
 type walkSkips struct {
-	count  int
-	sample []string
+	count    int      // ignored FILES the walker visited
+	dirCount int      // ignored DIRECTORIES pruned; their contents are never visited
+	sample   []string // capped sample of both, each annotated with the glob that matched
+}
+
+// record appends "<path> (glob: <pattern>)" until the sample is full. Directories
+// arrive with a trailing slash, which is what distinguishes a pruned subtree from
+// a single dropped file in the receipt.
+func (s *walkSkips) record(path, pattern string) {
+	if len(s.sample) < skippedSampleCap {
+		s.sample = append(s.sample, path+" (glob: "+pattern+")")
+	}
 }
 
 // skippedSampleCap bounds the number of skipped paths retained for the receipt.
@@ -456,8 +474,8 @@ const skippedSampleCap = 20
 // walkRepo collects all files in the repo, applying ignore patterns. It returns
 // the indexable source files, separately the test/spec files matched by
 // TestGlobs (excluded from normal indexing but collected for reference-only
-// extraction — see runTestRefExtractors), and a tally of ignored files for the
-// snapshot receipt.
+// extraction — see runTestRefExtractors), and a tally of what the ignore globs
+// dropped — ignored files, and pruned directories — for the snapshot receipt.
 func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips walkSkips, err error) {
 	err = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -470,8 +488,15 @@ func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips wal
 		}
 
 		// Skip ignored paths
-		if e.isIgnored(relPath, d.IsDir()) {
+		if pattern, ok := e.ignoreMatch(relPath); ok {
 			if d.IsDir() {
+				// enola's own output directory is not part of the source tree.
+				// Counting it would make dirs_skipped differ between a repo's
+				// first-ever snapshot and every one after it, for no signal.
+				if relPath != e.cfg.Output.Dir {
+					skips.dirCount++
+					skips.record(filepath.ToSlash(relPath)+"/", pattern)
+				}
 				return filepath.SkipDir
 			}
 			// An ignored FILE that is a test/spec is not indexed as production
@@ -481,9 +506,7 @@ func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips wal
 				testFiles = append(testFiles, relPath)
 			}
 			skips.count++
-			if len(skips.sample) < skippedSampleCap {
-				skips.sample = append(skips.sample, filepath.ToSlash(relPath))
-			}
+			skips.record(filepath.ToSlash(relPath), pattern)
 			return nil
 		}
 
@@ -503,7 +526,15 @@ func (e *Engine) matchesTestGlob(relPath string) bool {
 // matchAnyGlob reports whether a forward-slash path matches any of the patterns.
 // It is the single matcher behind both the ignore list and the test globs, so a
 // file the two lists disagree about cannot exist: an ignored file that stops being
-// a test necessarily stops being ignored. Supported forms:
+// a test necessarily stops being ignored.
+func matchAnyGlob(relPath string, patterns []string) bool {
+	_, ok := matchGlob(relPath, patterns)
+	return ok
+}
+
+// matchGlob returns the first pattern that matches relPath. The receipt records it
+// beside the skipped path, so "why is this file missing from the graph?" is a
+// lookup rather than an investigation. Supported forms:
 //
 //	vendor/**                 anchored directory prefix
 //	**/build/**               a directory named "build" at any depth
@@ -512,7 +543,7 @@ func (e *Engine) matchesTestGlob(relPath string) bool {
 //
 // The last form is the only one that constrains directory and filename together;
 // see matchDirScopedGlob for why the Ruby test globs need it.
-func matchAnyGlob(relPath string, patterns []string) bool {
+func matchGlob(relPath string, patterns []string) (string, bool) {
 	for _, pattern := range patterns {
 		// "<prefix>/**/<fileglob>". Handled first and exclusively: the branches
 		// below would match such a pattern only when exactly one directory sits
@@ -522,7 +553,7 @@ func matchAnyGlob(relPath string, patterns []string) bool {
 			prefix, fileGlob := pattern[:i], pattern[i+len("/**/"):]
 			if !strings.Contains(fileGlob, "/") {
 				if matchDirScopedGlob(relPath, prefix, fileGlob) {
-					return true
+					return pattern, true
 				}
 				continue
 			}
@@ -532,7 +563,7 @@ func matchAnyGlob(relPath string, patterns []string) bool {
 			if seg != "" && !strings.Contains(seg, "/") {
 				for _, part := range strings.Split(relPath, "/") {
 					if part == seg {
-						return true
+						return pattern, true
 					}
 				}
 			}
@@ -540,23 +571,23 @@ func matchAnyGlob(relPath string, patterns []string) bool {
 		if strings.HasSuffix(pattern, "/**") {
 			dirPrefix := strings.TrimSuffix(pattern, "/**")
 			if relPath == dirPrefix || strings.HasPrefix(relPath, dirPrefix+"/") {
-				return true
+				return pattern, true
 			}
 		}
 		if m, err := filepath.Match(pattern, relPath); err == nil && m {
-			return true
+			return pattern, true
 		}
 		if strings.HasPrefix(pattern, "**/") {
 			sub := strings.TrimPrefix(pattern, "**/")
 			if m, err := filepath.Match(sub, filepath.Base(relPath)); err == nil && m {
-				return true
+				return pattern, true
 			}
 			if m, err := filepath.Match(sub, relPath); err == nil && m {
-				return true
+				return pattern, true
 			}
 		}
 	}
-	return false
+	return "", false
 }
 
 // matchDirScopedGlob reports whether relPath's basename matches fileGlob AND
@@ -600,6 +631,12 @@ func matchDirScopedGlob(relPath, prefix, fileGlob string) bool {
 // pruned by the caller.
 func (e *Engine) isIgnored(relPath string, isDir bool) bool {
 	return matchAnyGlob(filepath.ToSlash(relPath), e.cfg.Ignore)
+}
+
+// ignoreMatch reports whether a path is ignored, and by which pattern. The walker
+// needs the pattern to record it in the receipt's skipped sample.
+func (e *Engine) ignoreMatch(relPath string) (string, bool) {
+	return matchGlob(filepath.ToSlash(relPath), e.cfg.Ignore)
 }
 
 // runExtractors detects applicable extractors and runs them. When cache is

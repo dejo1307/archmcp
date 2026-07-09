@@ -114,4 +114,31 @@ func TestCompareReceipts(t *testing.T) {
 			t.Error("expected Identical=true for matching snapshot_id")
 		}
 	})
+
+	// A newly-ignored directory prunes a whole subtree. It reports as a dirs_skipped
+	// delta and NOT as a quality regression: pruning vendor/ is usually the operator
+	// doing the right thing, and files_seen falling is the signal that costs something.
+	t.Run("a pruned directory surfaces as a dirs_skipped delta", func(t *testing.T) {
+		cur := base
+		cur.SnapshotID = "bbb"
+		cur.DirsSkipped = 2
+
+		rc := CompareReceipts(base, cur)
+
+		var found *MetricDelta
+		for i := range rc.Deltas {
+			if rc.Deltas[i].Name == "dirs_skipped" {
+				found = &rc.Deltas[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("no dirs_skipped delta; got %v", rc.Deltas)
+		}
+		if found.Before != 0 || found.After != 2 || found.Delta != 2 {
+			t.Errorf("dirs_skipped delta = %+v, want before=0 after=2 delta=2", *found)
+		}
+		if len(rc.QualityRegressions) != 0 {
+			t.Errorf("pruning a directory is not a regression, got: %v", rc.QualityRegressions)
+		}
+	})
 }

@@ -580,8 +580,8 @@ func (r *LLMContextRenderer) renderExtractionQuality(snapshot *facts.Snapshot) s
 
 	var sb strings.Builder
 	sb.WriteString("## Extraction Quality\n\n")
-	fmt.Fprintf(&sb, "- Files parsed: **%d** / %d seen (%d skipped by ignore globs)\n",
-		m.FilesParsed, m.FilesSeen, m.FilesSkipped)
+	fmt.Fprintf(&sb, "- Files parsed: **%d** / %d seen (%d file(s) + %d directory tree(s) skipped by ignore globs)\n",
+		m.FilesParsed, m.FilesSeen, m.FilesSkipped, m.DirsSkipped)
 
 	if m.ParseErrors > 0 {
 		fmt.Fprintf(&sb, "- ⚠️ Parse errors: **%d** — some sources failed to extract; the graph may be missing symbols here\n", m.ParseErrors)

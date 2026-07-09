@@ -192,8 +192,9 @@ type SnapshotMeta struct {
 	// Extraction-quality fields (the loop signal).
 	FilesSeen         int               `json:"files_seen,omitempty"`         // source files the walker enumerated (excludes ignored)
 	FilesParsed       int               `json:"files_parsed,omitempty"`       // distinct files that produced at least one fact
-	FilesSkipped      int               `json:"files_skipped,omitempty"`      // paths dropped by ignore globs
-	SkippedSample     []string          `json:"skipped_sample,omitempty"`     // a capped sample of skipped paths
+	FilesSkipped      int               `json:"files_skipped,omitempty"`      // ignored FILES the walker visited; a pruned directory counts once in DirsSkipped, not once per file
+	DirsSkipped       int               `json:"dirs_skipped,omitempty"`       // ignored DIRECTORIES pruned whole; their contents are never visited, so they are counted nowhere else
+	SkippedSample     []string          `json:"skipped_sample,omitempty"`     // a capped sample of both, each naming the glob that matched it
 	IgnoreGlobHash    string            `json:"ignore_glob_hash,omitempty"`   // hash of the sorted ignore+test globs
 	ParseErrors       int               `json:"parse_errors,omitempty"`       // count of extractor detect/parse failures (non-fatal)
 	ParseErrorSample  []ParseError      `json:"parse_error_sample,omitempty"` // a capped sample of those failures
@@ -267,6 +268,7 @@ type ReceiptQuality struct {
 	FilesSeen         int              `json:"files_seen"`
 	FilesParsed       int              `json:"files_parsed"`
 	FilesSkipped      int              `json:"files_skipped"`
+	DirsSkipped       int              `json:"dirs_skipped"`
 	SkippedSample     []string         `json:"skipped_sample,omitempty"`
 	ParseErrors       int              `json:"parse_errors"`
 	ParseErrorSample  []ParseError     `json:"parse_error_sample,omitempty"`
@@ -295,6 +297,7 @@ func (m SnapshotMeta) Receipt() Receipt {
 			FilesSeen:         m.FilesSeen,
 			FilesParsed:       m.FilesParsed,
 			FilesSkipped:      m.FilesSkipped,
+			DirsSkipped:       m.DirsSkipped,
 			SkippedSample:     m.SkippedSample,
 			ParseErrors:       m.ParseErrors,
 			ParseErrorSample:  m.ParseErrorSample,

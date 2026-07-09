@@ -1306,7 +1306,8 @@ func renderReceipt(r facts.Receipt) string {
 
 	q := r.Quality
 	sb.WriteString("## Extraction quality\n\n")
-	fmt.Fprintf(&sb, "- **Files:** %d parsed / %d seen · %d skipped by ignore globs\n", q.FilesParsed, q.FilesSeen, q.FilesSkipped)
+	fmt.Fprintf(&sb, "- **Files:** %d parsed / %d seen · %d file(s) + %d directory tree(s) skipped by ignore globs\n",
+		q.FilesParsed, q.FilesSeen, q.FilesSkipped, q.DirsSkipped)
 	fmt.Fprintf(&sb, "- **Parse errors:** %d\n", q.ParseErrors)
 	fmt.Fprintf(&sb, "- **Heuristic insights:** %d of %d (confidence < 1.0; the rest are structural facts)\n", q.HeuristicInsights, r.InsightCount)
 	if q.Coverage != nil {
