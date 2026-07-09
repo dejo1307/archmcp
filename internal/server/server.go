@@ -1437,12 +1437,7 @@ func buildCoverageReport(store *facts.Store, repo string) []serviceCoverage {
 			continue
 		}
 
-		outbound := 0
-		for _, rel := range svc.Relations {
-			if rel.Kind == facts.RelDependsOn {
-				outbound++
-			}
-		}
+		outbound := facts.DependsOnCount(svc)
 
 		cov := readEdgeCoverage(svc)
 		detected, unresolved, external := 0, 0, 0
@@ -1452,20 +1447,9 @@ func buildCoverageReport(store *facts.Store, repo string) []serviceCoverage {
 			external += c.External
 		}
 
-		class := "connected"
-		if outbound == 0 {
-			// external-only call sites are expected, not a blind spot, so a service
-			// with no resolved edges but only external calls stays isolated, not a gap.
-			if detected > 0 && unresolved > 0 {
-				class = "coverage_gap"
-			} else {
-				class = "isolated"
-			}
-		}
-
 		out = append(out, serviceCoverage{
 			Service:         svc.Name,
-			Classification:  class,
+			Classification:  facts.ClassifyService(outbound, detected, unresolved),
 			OutboundEdges:   outbound,
 			EdgeCoverage:    cov,
 			UnresolvedTotal: unresolved,
@@ -1531,7 +1515,7 @@ func renderCoverageReport(report []serviceCoverage) string {
 
 	gaps := 0
 	for _, sc := range report {
-		if sc.Classification == "coverage_gap" {
+		if sc.Classification == facts.ServiceCoverageGap {
 			gaps++
 		}
 	}

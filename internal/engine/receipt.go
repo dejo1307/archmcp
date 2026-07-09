@@ -105,6 +105,11 @@ func runGit(repoPath string, args ...string) (string, error) {
 // coverageSummary rolls up the per-service edge_coverage counts the cross-repo
 // linker records into a single snapshot-level summary. It returns nil for a
 // single-repo snapshot (no service nodes), matching the coverage explainer.
+//
+// A gap is counted through facts.ClassifyService, so the receipt, coverage_report
+// and the coverage explainer cannot drift apart. UnresolvedEdges accumulates for
+// every service regardless of class — a partially-covered service still has blind
+// spots worth reporting, it just is not a gap.
 func coverageSummary(store *facts.Store) *facts.CoverageSummary {
 	services := store.ByKind(facts.KindService)
 	if len(services) == 0 {
@@ -112,12 +117,13 @@ func coverageSummary(store *facts.Store) *facts.CoverageSummary {
 	}
 	sum := &facts.CoverageSummary{ServicesTotal: len(services)}
 	for _, svc := range services {
+		detected := readCoverageField(svc, "detected")
 		unresolved := readCoverageField(svc, "unresolved")
-		if unresolved > 0 {
-			sum.CoverageGaps++
-			sum.UnresolvedEdges += unresolved
-		}
+		sum.UnresolvedEdges += unresolved
 		sum.ExternalEdges += readCoverageField(svc, "external")
+		if facts.ClassifyService(facts.DependsOnCount(svc), detected, unresolved) == facts.ServiceCoverageGap {
+			sum.CoverageGaps++
+		}
 	}
 	return sum
 }

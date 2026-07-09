@@ -44,11 +44,11 @@ func (e *CoverageExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 			continue
 		}
 
-		outbound := dependsOnCount(svc)
+		outbound := facts.DependsOnCount(svc)
 		evidence := []facts.Evidence{{Fact: svc.Name, Detail: coverageDetail(cov)}}
 
 		var insight facts.Insight
-		if outbound == 0 {
+		if facts.ClassifyService(outbound, detected, unresolved) == facts.ServiceCoverageGap {
 			insight = facts.Insight{
 				Title: fmt.Sprintf("Coverage gap: service %s appears isolated but has %d unresolved outbound call site(s)",
 					svc.Name, unresolved),
@@ -104,18 +104,6 @@ func coverageDetail(cov []coverageEntry) string {
 		out += ")"
 	}
 	return out
-}
-
-// dependsOnCount returns how many resolved outbound (cross-repo) dependencies a
-// service node carries.
-func dependsOnCount(svc facts.Fact) int {
-	n := 0
-	for _, rel := range svc.Relations {
-		if rel.Kind == facts.RelDependsOn {
-			n++
-		}
-	}
-	return n
 }
 
 // readCoverage extracts the edge_coverage entries from a service node's props,

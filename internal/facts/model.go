@@ -231,7 +231,7 @@ type ParseError struct {
 // without the consumer running coverage_report.
 type CoverageSummary struct {
 	ServicesTotal   int `json:"services_total"`
-	CoverageGaps    int `json:"coverage_gaps"`            // services with unresolved (internal) outbound call sites
+	CoverageGaps    int `json:"coverage_gaps"`            // services classified ServiceCoverageGap: no resolved outbound edge, yet unresolved call sites were detected. A service that resolved some edges is partially covered, not a gap
 	UnresolvedEdges int `json:"unresolved_edges"`         // detected outbound edges that did not resolve to a loaded service (internal blind spots; excludes external)
 	ExternalEdges   int `json:"external_edges,omitempty"` // detected outbound edges to hardcoded external hosts (third-party APIs) — expected, not a blind spot
 }
