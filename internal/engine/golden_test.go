@@ -59,6 +59,9 @@ var fixtures = []fixture{
 	{name: "php_multirepo", subRepos: []string{"provider", "consumer"}},
 	{name: "go_grpc_multirepo", subRepos: []string{"server", "client"}},
 	{name: "py_grpc_multirepo", subRepos: []string{"server", "client"}},
+	// Two different-language repos sharing only nested type names. The linker must
+	// draw no shared_symbols edge between them; see GAP-LK-03.
+	{name: "kotlin_swift_multirepo", subRepos: []string{"android", "ios"}},
 }
 
 func TestGolden(t *testing.T) {

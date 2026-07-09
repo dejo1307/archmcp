@@ -765,6 +765,46 @@ func TestComputeLinks_SharedSymbolsQualifiedCrossLanguageLinks(t *testing.T) {
 	}
 }
 
+// TestComputeLinks_SharedSymbolsCrossLanguageNestedTypesSkipped covers the parallel-
+// app false positive that survives module stripping: Kotlin and Swift both name a
+// nested type "Outer.Inner", so the residual dot is nesting, not a namespace. A
+// Kotlin and a Swift app sharing no source must not link on it.
+func TestComputeLinks_SharedSymbolsCrossLanguageNestedTypesSkipped(t *testing.T) {
+	in := []facts.Fact{
+		module("android", "app"),
+		typeSymLang("android", "app.RegisterUseCase.ValidationError", facts.SymbolClass, "kotlin"),
+		typeSymLang("android", "app.HandicapAnalytics.DifferentialEntry", facts.SymbolClass, "kotlin"),
+		typeSymLang("android", "app.FullAnalysisDataBuilder.TimeWindow", facts.SymbolClass, "kotlin"),
+		module("ios", "Sources"),
+		typeSymLang("ios", "Sources.RegisterUseCase.ValidationError", facts.SymbolClass, "swift"),
+		typeSymLang("ios", "Sources.HandicapAnalytics.DifferentialEntry", facts.SymbolClass, "swift"),
+		typeSymLang("ios", "Sources.FullAnalysisDataBuilder.TimeWindow", facts.SymbolClass, "swift"),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("nested types shared across languages must not link: %+v", edges)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsSameLanguageNestedTypesLink confirms the nested-type
+// fix does not over-reach. Once a residual dot no longer counts as a namespace, a
+// nested identity is unqualified and so falls under the same-language guard —
+// between two same-language repos it must still link (genuine copied source).
+func TestComputeLinks_SharedSymbolsSameLanguageNestedTypesLink(t *testing.T) {
+	in := []facts.Fact{
+		module("app-a", "app"),
+		typeSymLang("app-a", "app.RegisterUseCase.ValidationError", facts.SymbolClass, "kotlin"),
+		typeSymLang("app-a", "app.HandicapAnalytics.DifferentialEntry", facts.SymbolClass, "kotlin"),
+		typeSymLang("app-a", "app.FullAnalysisDataBuilder.TimeWindow", facts.SymbolClass, "kotlin"),
+		module("app-b", "lib"),
+		typeSymLang("app-b", "lib.RegisterUseCase.ValidationError", facts.SymbolClass, "kotlin"),
+		typeSymLang("app-b", "lib.HandicapAnalytics.DifferentialEntry", facts.SymbolClass, "kotlin"),
+		typeSymLang("app-b", "lib.FullAnalysisDataBuilder.TimeWindow", facts.SymbolClass, "kotlin"),
+	}
+	if findEdge(ComputeLinks(in), "app-a", "app-b") == nil {
+		t.Errorf("same-language repos sharing distinctive nested types should still link")
+	}
+}
+
 // --- via: http-client tag and confidence ---
 
 func TestComputeLinks_HTTPClientViaTag(t *testing.T) {

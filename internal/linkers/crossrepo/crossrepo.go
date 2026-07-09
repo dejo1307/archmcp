@@ -665,19 +665,20 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 
 	// For each identity shared by 2+ repos, record it against every repo pair — but
 	// only when the shared identity is a trustworthy coupling signal for that pair.
-	// A namespace-qualified identity (contains "::"/".", the mark of vendored/shared
-	// source) always counts, language-independent. A bare unqualified name counts
-	// only between same-language repos: two apps written in different languages
-	// sharing a plain domain type name (e.g. Kotlin and Swift both declaring
-	// "LoginViewModel") is parallel modeling of the same product, not shared code,
-	// and must not fabricate a dependency.
+	// A namespace-qualified identity (contains "::", the mark of vendored/shared
+	// source) always counts, language-independent. Any other name — bare, or dotted
+	// because it names a nested type — counts only between same-language repos: two
+	// apps written in different languages sharing a plain domain type name (e.g.
+	// Kotlin and Swift both declaring "LoginViewModel", or both nesting
+	// "RegisterUseCase.ValidationError") is parallel modeling of the same product,
+	// not shared code, and must not fabricate a dependency.
 	// pairShared["a\x00b"] (a<b) -> set of shared identities.
 	pairShared := map[string]map[string]bool{}
 	for id, repos := range idToRepos {
 		if len(repos) < 2 {
 			continue
 		}
-		qualified := isQualifiedIdentity(id)
+		qualified := isNamespaceQualified(id)
 		rs := make([]string, 0, len(repos))
 		for r := range repos {
 			rs = append(rs, r)
@@ -762,13 +763,14 @@ func typeIdentity(name string, modules []string) string {
 }
 
 // isDistinctiveIdentity filters out identities too generic to safely link on. A
-// namespaced identity (containing "::" or ".") is always kept; an unqualified one
-// is kept only if it is reasonably long and not a common generic type name.
+// namespaced identity (containing "::") is always kept; anything else — including a
+// dotted nested type name — is kept only if it is reasonably long and not a common
+// generic type name.
 func isDistinctiveIdentity(id string) bool {
 	if id == "" {
 		return false
 	}
-	if isQualifiedIdentity(id) {
+	if isNamespaceQualified(id) {
 		return true
 	}
 	if len(id) < 5 {
@@ -777,12 +779,17 @@ func isDistinctiveIdentity(id string) bool {
 	return !genericTypeNames[strings.ToLower(id)]
 }
 
-// isQualifiedIdentity reports whether a type identity is namespace-qualified
-// (contains "::" or "."). A qualified identity shared across repos is a strong
-// vendored/shared-source signal, independent of language; an unqualified one is a
-// bare type name that two repos may coincidentally share.
-func isQualifiedIdentity(id string) bool {
-	return strings.Contains(id, "::") || strings.Contains(id, ".")
+// isNamespaceQualified reports whether a type identity carries a namespace (only
+// "::" does). A namespaced identity shared across repos is a strong vendored/
+// shared-source signal, independent of language; an unqualified one is a bare type
+// name that two repos may coincidentally share.
+//
+// A "." does NOT qualify. typeIdentity has already stripped the module prefix, so
+// any dot left in the identity is type *nesting* — "Outer.Inner", which Kotlin and
+// Swift both emit for a nested declaration — not a namespace. Treating it as one
+// let two parallel apps sharing only a domain vocabulary fabricate a dependency.
+func isNamespaceQualified(id string) bool {
+	return strings.Contains(id, "::")
 }
 
 // primaryLanguageByRepo returns each repo's dominant source language (the most
