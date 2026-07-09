@@ -87,7 +87,7 @@ type Report struct {
 	TotalFacts int      `json:"total_facts"`
 
 	KindCounts     []LabelCount `json:"kind_counts"`     // module/symbol/route/storage/dependency/service
-	RelationCounts []LabelCount `json:"relation_counts"` // declares/imports/calls/implements/depends_on/instantiates/injects/has_method/references
+	RelationCounts []LabelCount `json:"relation_counts"` // declares/imports/calls/implements/depends_on/instantiates/injects/has_method
 	SymbolKinds    []LabelCount `json:"symbol_kinds"`    // function/method/struct/…
 	DepSources     []LabelCount `json:"dep_sources"`     // external/internal/stdlib/…
 
@@ -157,7 +157,6 @@ func Compute(eng *bootstrap.Engine) *Report {
 	for _, k := range []string{
 		facts.RelDeclares, facts.RelImports, facts.RelCalls, facts.RelImplements,
 		facts.RelDependsOn, facts.RelInstantiates, facts.RelInjects, facts.RelHasMethod,
-		facts.RelReferences,
 	} {
 		if n := relCount[k]; n > 0 {
 			r.RelationCounts = append(r.RelationCounts, LabelCount{Label: k, Count: n})

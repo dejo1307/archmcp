@@ -168,8 +168,8 @@ func TestCompute_RelationCounts(t *testing.T) {
 			t.Errorf("relation %q: got %d, want %d", k, got[k], n)
 		}
 	}
-	if _, ok := got[facts.RelReferences]; ok {
-		t.Errorf("references relation should be omitted when zero")
+	if _, ok := got[facts.RelInstantiates]; ok {
+		t.Errorf("instantiates relation should be omitted when zero")
 	}
 }
 
