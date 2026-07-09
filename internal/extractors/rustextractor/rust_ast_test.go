@@ -263,6 +263,60 @@ fn make() {
 	_ = ff
 }
 
+func TestAST_StructLiteral_Instantiates(t *testing.T) {
+	ff := extractAST(t, `
+pub struct User { id: u32, name: String }
+fn make(id: u32) -> User {
+    User { id, name: String::from("x") }
+}
+`)
+	m, ok := findFact(ff, "pkg.make")
+	if !ok {
+		t.Fatal("expected fact for pkg.make")
+	}
+	if !hasRelation(m, facts.RelInstantiates, "User") {
+		t.Errorf("expected RelInstantiates -> User for the struct literal, got %+v", m.Relations)
+	}
+	// The field value's nested call is still walked and credited normally.
+	if !hasRelation(m, facts.RelCalls, "from") {
+		t.Errorf("expected RelCalls -> from for String::from(...) inside the literal, got %+v", m.Relations)
+	}
+}
+
+func TestAST_StructLiteralWithUpdateSyntax_Instantiates(t *testing.T) {
+	// `..base` (functional update syntax) construction still counts.
+	ff := extractAST(t, `
+pub struct Config { a: u32, b: u32 }
+fn make(base: Config) -> Config {
+    Config { a: 1, ..base }
+}
+`)
+	m, ok := findFact(ff, "pkg.make")
+	if !ok {
+		t.Fatal("expected fact for pkg.make")
+	}
+	if !hasRelation(m, facts.RelInstantiates, "Config") {
+		t.Errorf("expected RelInstantiates -> Config, got %+v", m.Relations)
+	}
+}
+
+func TestAST_QualifiedStructLiteral_Instantiates(t *testing.T) {
+	// A struct literal reached through a module/crate path still credits the
+	// simple type name (mirrors the scoped_identifier call-callee handling).
+	ff := extractAST(t, `
+fn make() -> other::Wrapper {
+    other::Wrapper { n: 0 }
+}
+`)
+	m, ok := findFact(ff, "pkg.make")
+	if !ok {
+		t.Fatal("expected fact for pkg.make")
+	}
+	if !hasRelation(m, facts.RelInstantiates, "Wrapper") {
+		t.Errorf("expected RelInstantiates -> Wrapper, got %+v", m.Relations)
+	}
+}
+
 func TestAST_SelfMethodCall(t *testing.T) {
 	ff := extractAST(t, `
 pub struct Service;

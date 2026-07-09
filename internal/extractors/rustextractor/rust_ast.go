@@ -516,11 +516,30 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		}
 	case "call_expression":
 		w.handleCallExpression(node)
+	case "struct_expression":
+		w.handleStructExpression(node)
 	}
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		w.walkChild(node.Child(i))
 	}
+}
+
+// handleStructExpression emits a RelInstantiates edge for a named struct
+// literal (`Foo { field: value }`), the idiomatic Rust construction form —
+// unlike a tuple-call construction (`Foo()`), it isn't a call_expression, so
+// it needs its own case. Field values are walked for nested calls by the
+// normal child recursion in walkForCalls, not here.
+func (w *astWalker) handleStructExpression(node *sitter.Node) {
+	owner := w.currentOwner()
+	if owner == nil {
+		return
+	}
+	name := simpleTypeName(node.ChildByFieldName("name"), w.src)
+	if name == "" {
+		return
+	}
+	owner.Relations = append(owner.Relations, facts.Relation{Kind: facts.RelInstantiates, Target: name})
 }
 
 func (w *astWalker) handleCallExpression(node *sitter.Node) {
