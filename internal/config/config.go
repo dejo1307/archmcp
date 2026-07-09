@@ -90,6 +90,7 @@ func Default() *Config {
 			"**/.ruff_cache/**",
 			"**/Pods/**",
 			"**/.gradle/**",
+			"**/target/**",
 			// Minified / bundled JS by name. The extractor also detects minified
 			// content heuristically (very long lines), but these globs cheaply skip
 			// the common named cases before a file is ever read. Keep in sync with
@@ -113,7 +114,7 @@ func Default() *Config {
 			"**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx",
 			"**/spec/**/*_spec.rb", "**/test/**/*_test.rb",
 		},
-		Extractors: []string{"cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby"},
+		Extractors: []string{"cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{

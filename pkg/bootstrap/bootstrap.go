@@ -29,6 +29,7 @@ import (
 	"github.com/enola-labs/enola/internal/extractors/phpextractor"
 	"github.com/enola-labs/enola/internal/extractors/pythonextractor"
 	"github.com/enola-labs/enola/internal/extractors/rubyextractor"
+	"github.com/enola-labs/enola/internal/extractors/rustextractor"
 	"github.com/enola-labs/enola/internal/extractors/swiftextractor"
 	"github.com/enola-labs/enola/internal/extractors/tsextractor"
 	"github.com/enola-labs/enola/internal/facts"
@@ -212,6 +213,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExtractor(tsextractor.New())
 	eng.RegisterExtractor(swiftextractor.New())
 	eng.RegisterExtractor(rubyextractor.New())
+	eng.RegisterExtractor(rustextractor.New())
 
 	// Register all OSS explainers
 	eng.RegisterExplainer(cycles.New())

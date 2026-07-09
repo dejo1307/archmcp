@@ -60,6 +60,7 @@ var fixtures = []fixture{
 	{name: "ruby_sample", subRepos: []string{"."}},
 	{name: "swift_sample", subRepos: []string{"."}},
 	{name: "kotlin_sample", subRepos: []string{"."}},
+	{name: "rust_sample", subRepos: []string{"."}},
 	{name: "java_sample", subRepos: []string{"."}},
 	{name: "cpp_sample", subRepos: []string{"."}},
 	{name: "php_sample", subRepos: []string{"."}},
