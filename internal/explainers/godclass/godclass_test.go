@@ -254,6 +254,74 @@ func TestExplain_MultipleHubsOrderedByFanIn(t *testing.T) {
 	}
 }
 
+// TestExplain_ExcludesTestRefFanIn: a hub referenced by production symbols AND by
+// test_ref/file_ref facts (spec files, initializers) must report a fan-in that
+// counts only the architectural (symbol) dependents. Reference-only facts carry
+// RelCalls edges into production code but are not symbols; counting them inflates
+// the fan-in and drifts the outlier threshold (GAP-XL-15).
+func TestExplain_ExcludesTestRefFanIn(t *testing.T) {
+	s := facts.NewStore()
+	const hub = "core.Hub"
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: hub, File: "core/hub.go"})
+	// 8 real symbol dependents — clears the minFanIn floor on symbols alone.
+	for i := 0; i < 8; i++ {
+		s.Add(facts.Fact{
+			Kind: facts.KindSymbol, Name: fmt.Sprintf("pkg/c%d.Call", i),
+			File:      fmt.Sprintf("pkg/c%d.go", i),
+			Relations: []facts.Relation{{Kind: facts.RelCalls, Target: hub}},
+		})
+	}
+	// 5 reference-only dependents that also call the hub — must NOT count.
+	for i := 0; i < 3; i++ {
+		s.Add(facts.Fact{
+			Kind: facts.KindTestRef, Name: fmt.Sprintf("spec/c%d_spec.rb", i),
+			File:      fmt.Sprintf("spec/c%d_spec.rb", i),
+			Relations: []facts.Relation{{Kind: facts.RelCalls, Target: hub}},
+		})
+	}
+	for i := 0; i < 2; i++ {
+		s.Add(facts.Fact{
+			Kind: facts.KindFileRef, Name: fmt.Sprintf("config/init%d.rb", i),
+			File:      fmt.Sprintf("config/init%d.rb", i),
+			Relations: []facts.Relation{{Kind: facts.RelCalls, Target: hub}},
+		})
+	}
+	// Low-fan-in noise so the outlier threshold is meaningful.
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "leaf.A", File: "leaf/a.go"})
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "leaf.B", File: "leaf/b.go"})
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "leaf.C", File: "leaf/c.go"})
+	s.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+
+	var hubInsight *facts.Insight
+	for i := range insights {
+		if strings.Contains(insights[i].Title, hub) {
+			hubInsight = &insights[i]
+			break
+		}
+	}
+	if hubInsight == nil {
+		t.Fatalf("hub %q not reported as a god-class; got %v", hub, insights)
+	}
+	// Fan-in must be 8 (symbols), not 13 (symbols + 3 test_ref + 2 file_ref).
+	if !strings.Contains(hubInsight.Title, "(8 dependents)") {
+		t.Errorf("fan-in should exclude reference-only facts; title = %q, want it to report 8 dependents", hubInsight.Title)
+	}
+	if strings.Contains(hubInsight.Title, "(13 dependents)") {
+		t.Errorf("fan-in wrongly includes test_ref/file_ref facts; title = %q", hubInsight.Title)
+	}
+	// No spec file or initializer should appear as a dependent in the evidence.
+	for _, ev := range hubInsight.Evidence[1:] {
+		if strings.HasPrefix(ev.Symbol, "spec/") || strings.HasPrefix(ev.Symbol, "config/") {
+			t.Errorf("reference-only fact %q leaked into god-class evidence", ev.Symbol)
+		}
+	}
+}
+
 // TestConfidenceMath locks the 0.5→1.0 scaling and its clamps.
 func TestConfidenceMath(t *testing.T) {
 	tests := []struct {

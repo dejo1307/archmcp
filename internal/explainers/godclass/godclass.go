@@ -48,7 +48,10 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 	if graph == nil {
 		return nil, nil
 	}
-	reverse := graph.Reverse()
+	// Architectural fan-in only: reference-only facts (test_ref/file_ref) carry
+	// RelCalls edges into production code but are not symbols. Counting them
+	// inflates fan-in and drifts the outlier threshold below (GAP-XL-15).
+	reverse := graph.ArchitecturalReverse()
 
 	symbols := store.ByKind(facts.KindSymbol)
 	if len(symbols) == 0 {

@@ -47,7 +47,11 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		return nil, nil
 	}
 	forward := graph.Forward()
-	reverse := graph.Reverse()
+	// Architectural fan-in only: reference-only facts (test_ref/file_ref) are not
+	// symbols, so counting their RelCalls edges inflates the centrality score and
+	// the outlier distribution (GAP-XL-15). Fan-out is unaffected — a symbol never
+	// calls a reference node.
+	reverse := graph.ArchitecturalReverse()
 
 	symbols := store.ByKind(facts.KindSymbol)
 	if len(symbols) == 0 {

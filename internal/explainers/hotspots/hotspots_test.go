@@ -195,6 +195,73 @@ func TestExplain_NeighborsCappedAndSorted(t *testing.T) {
 	}
 }
 
+// TestExplain_ExcludesTestRefFanIn: a pinch point's fan-in counts only
+// architectural (symbol) callers. test_ref/file_ref facts carry RelCalls edges
+// into the hub but are not symbols; counting them inflates the centrality score
+// and the outlier distribution (GAP-XL-15).
+func TestExplain_ExcludesTestRefFanIn(t *testing.T) {
+	s := facts.NewStore()
+	const hub = "core.Hub"
+	// Fan-out: hub calls 5 targets.
+	calls := make([]facts.Relation, 0, 5)
+	for i := 0; i < 5; i++ {
+		tgt := fmt.Sprintf("dep/t%d.Fn", i)
+		calls = append(calls, facts.Relation{Kind: facts.RelCalls, Target: tgt})
+		s.Add(facts.Fact{Kind: facts.KindSymbol, Name: tgt, File: "dep/t.go"})
+	}
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: hub, File: "core/hub.go", Relations: calls})
+	// 4 real symbol callers (fan-in) — clears minDegree on symbols alone.
+	for i := 0; i < 4; i++ {
+		s.Add(facts.Fact{
+			Kind: facts.KindSymbol, Name: fmt.Sprintf("caller/c%d.Fn", i),
+			File:      "caller/c.go",
+			Relations: []facts.Relation{{Kind: facts.RelCalls, Target: hub}},
+		})
+	}
+	// 3 reference-only callers that must not count toward fan-in.
+	for i := 0; i < 2; i++ {
+		s.Add(facts.Fact{
+			Kind: facts.KindTestRef, Name: fmt.Sprintf("spec/c%d_spec.rb", i),
+			File:      fmt.Sprintf("spec/c%d_spec.rb", i),
+			Relations: []facts.Relation{{Kind: facts.RelCalls, Target: hub}},
+		})
+	}
+	s.Add(facts.Fact{
+		Kind: facts.KindFileRef, Name: "config/init.rb", File: "config/init.rb",
+		Relations: []facts.Relation{{Kind: facts.RelCalls, Target: hub}},
+	})
+	s.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+
+	var hubInsight *facts.Insight
+	for i := range insights {
+		if strings.Contains(insights[i].Title, hub) {
+			hubInsight = &insights[i]
+			break
+		}
+	}
+	if hubInsight == nil {
+		t.Fatalf("hub %q not reported as a hotspot; got %v", hub, insights)
+	}
+	// Fan-in must be 4 (symbols), not 7 (symbols + 2 test_ref + 1 file_ref).
+	if !strings.Contains(hubInsight.Title, "fan-in 4") {
+		t.Errorf("fan-in should exclude reference-only facts; title = %q, want fan-in 4", hubInsight.Title)
+	}
+	if strings.Contains(hubInsight.Title, "fan-in 7") {
+		t.Errorf("fan-in wrongly includes test_ref/file_ref facts; title = %q", hubInsight.Title)
+	}
+	// No spec file or initializer should appear as an in-caller in the evidence.
+	for _, ev := range hubInsight.Evidence[1:] {
+		if strings.HasPrefix(ev.Symbol, "spec/") || strings.HasPrefix(ev.Symbol, "config/") {
+			t.Errorf("reference-only fact %q leaked into hotspot evidence", ev.Symbol)
+		}
+	}
+}
+
 // TestExplain_OrderedByScore: the higher fanIn×fanOut hotspot ranks first.
 func TestExplain_OrderedByScore(t *testing.T) {
 	s := facts.NewStore()

@@ -710,6 +710,45 @@ func (g *Graph) Reverse() map[string][]Edge {
 	return g.reverse
 }
 
+// isReferenceOnlyKind reports whether a fact kind carries only reference
+// (RelCalls) edges into production code — test_ref and file_ref. They exist so
+// the dead-code detector can see a production symbol is used from a test/spec or
+// a file-scope block; by contract "no other explainer is affected"
+// (pkg/plugin/plugin.go). They are not part of the architectural coupling graph,
+// so counting them as dependents inflates god-class fan-in and hotspots
+// centrality and drifts the outlier threshold (GAP-XL-15).
+func isReferenceOnlyKind(kind string) bool {
+	return kind == KindTestRef || kind == KindFileRef
+}
+
+// ArchitecturalReverse returns a reverse adjacency map restricted to edges whose
+// SOURCE fact is part of the architectural coupling graph — i.e. excluding
+// reference-only kinds (test_ref/file_ref). The outlier explainers (god-class,
+// hotspots) use this instead of Reverse() so their fan-in/centrality and the
+// distribution they threshold over count only real symbol coupling. orphans,
+// impact_analysis, traverse and find_path keep using the unfiltered Reverse()
+// index — they intentionally surface those references. (GAP-XL-15)
+func (g *Graph) ArchitecturalReverse() map[string][]Edge {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make(map[string][]Edge, len(g.reverse))
+	for target, edges := range g.reverse {
+		kept := make([]Edge, 0, len(edges))
+		for _, e := range edges {
+			// In a reverse edge, e.Target holds the SOURCE fact name.
+			if idx, ok := g.factIdx[e.Target]; ok && idx < len(g.facts) &&
+				isReferenceOnlyKind(g.facts[idx].Kind) {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		if len(kept) > 0 {
+			out[target] = kept
+		}
+	}
+	return out
+}
+
 // NodeCount returns the number of unique nodes in the graph.
 func (g *Graph) NodeCount() int {
 	g.mu.RLock()

@@ -938,3 +938,42 @@ func impactNodes(res ImpactResult) []TraversalNode {
 	}
 	return out
 }
+
+// TestArchitecturalReverse_ExcludesReferenceKinds verifies that reference-only
+// facts (test_ref/file_ref) are dropped from the architectural reverse index.
+// Their RelCalls edges must not count as dependents — otherwise they inflate
+// god-class fan-in and hotspots centrality and drift the outlier threshold
+// (GAP-XL-15). The unfiltered Reverse() index must still surface them, since
+// orphans/impact_analysis rely on seeing test/file references.
+func TestArchitecturalReverse_ExcludesReferenceKinds(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		Fact{Kind: KindSymbol, Name: "Prod", File: "app/prod.rb"},
+		Fact{Kind: KindSymbol, Name: "Caller", File: "app/caller.rb", Relations: []Relation{
+			{Kind: RelCalls, Target: "Prod"},
+		}},
+		Fact{Kind: KindTestRef, Name: "spec/prod_spec.rb", File: "spec/prod_spec.rb", Relations: []Relation{
+			{Kind: RelCalls, Target: "Prod"},
+		}},
+		Fact{Kind: KindFileRef, Name: "config/initializers/boot.rb", File: "config/initializers/boot.rb", Relations: []Relation{
+			{Kind: RelCalls, Target: "Prod"},
+		}},
+	)
+	s.BuildGraph()
+	g := s.Graph()
+
+	// Unfiltered: all three sources (symbol + test_ref + file_ref) are dependents.
+	if got := len(g.Reverse()["Prod"]); got != 3 {
+		t.Fatalf("Reverse()[Prod] = %d edges, want 3 (Caller + test_ref + file_ref)", got)
+	}
+
+	// Architectural: only the symbol dependent survives.
+	arch := g.ArchitecturalReverse()["Prod"]
+	if len(arch) != 1 {
+		t.Fatalf("ArchitecturalReverse()[Prod] = %d edges, want 1 (symbol only): %+v", len(arch), arch)
+	}
+	// In a reverse edge, Edge.Target holds the SOURCE fact name.
+	if arch[0].Target != "Caller" {
+		t.Errorf("surviving dependent = %q, want Caller (the symbol source)", arch[0].Target)
+	}
+}
