@@ -1470,6 +1470,28 @@ def register(handler):
 	}
 }
 
+func TestAST_ConstructorParamShadowsSynonymProperty(t *testing.T) {
+	src := `
+class DagRun:
+    @property
+    def state(self):
+        return self._state
+
+    def __init__(self, state=None):
+        self.state = state
+`
+	result := astExtractIdx(t, "models.py", src)
+	idx := byName(result)
+
+	initFact, ok := idx["models.DagRun.__init__"]
+	if !ok {
+		t.Fatalf("missing models.DagRun.__init__; keys: %v", keys(idx))
+	}
+	if calls := relsByKind(initFact, facts.RelCalls); len(calls) != 0 {
+		t.Errorf("__init__: expected no RelCalls (state is the param, not the property), got %v", calls)
+	}
+}
+
 func TestAST_ReturnedPlainVariable_NoPhantomRef(t *testing.T) {
 	src := `
 GREETING = "hi"

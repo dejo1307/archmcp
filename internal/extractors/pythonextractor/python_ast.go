@@ -975,18 +975,20 @@ func (w *pyWalker) emitCollectionValueRefs(node *sitter.Node) {
 // be wrong. Only imported names and same-class methods — which are unambiguously
 // real symbol references — resolve.
 func (w *pyWalker) valueRefTarget(name string) string {
+	// A name bound in the enclosing function's own scope — a param or a local
+	// assigned/iterated/aliased name — shadows a same-class method or same-module def
+	// (e.g. self.x = x in __init__ passing the param, not the same-named property).
+	if w.localBound[name] {
+		return ""
+	}
 	if methods := w.currentMethods(); methods[name] {
 		return w.module + "." + w.enclosingType() + "." + name
 	}
 	if t, ok := w.importMap[name]; ok && t != "" {
 		return t
 	}
-	// Same-module top-level def (function or class) referenced by name. Skip when the
-	// name is bound in the enclosing function's own scope — a param or a
-	// local assigned/iterated/aliased name (it shadows the def — e.g.
-	// get_user(user_id) passing the param, not the same-named function). Rescues
-	// `f(local_helper)` where local_helper is a same-module def.
-	if w.idx != nil && !w.localBound[name] && w.idx.moduleDefs[w.module][name] {
+	// Same-module top-level def (function or class) referenced by name.
+	if w.idx != nil && w.idx.moduleDefs[w.module][name] {
 		return w.module + "." + name
 	}
 	return ""
@@ -1484,6 +1486,12 @@ func (w *pyWalker) emitImplementorCalls(owner *facts.Fact, methodName, qualType 
 
 // resolveCall maps a bare call name to a canonical fact target.
 func (w *pyWalker) resolveCall(name string) string {
+	// A bare name that shadows a param/local/loop-var is that local binding, not a
+	// same-class method or module-level def (e.g. def wrapper(cb): cb()), so this must
+	// gate every branch below, not just the same-module fallback.
+	if w.localBound[name] {
+		return ""
+	}
 	// Same-class method.
 	if methods := w.currentMethods(); methods[name] {
 		return w.module + "." + w.enclosingType() + "." + name
@@ -1492,14 +1500,10 @@ func (w *pyWalker) resolveCall(name string) string {
 	if target, ok := w.importMap[name]; ok {
 		return target // "" means external → no edge
 	}
-	// Same-module top-level function. A bare callee that shadows a param/local/loop-var
-	// is that local binding, not the module-level def (e.g. def wrapper(cb): cb()). When
-	// an index is available, resolve only names that are actually module-level defs, so
-	// callable locals/params/loop vars don't fabricate edges. Without an index (single-file
-	// extraction) fall back to best-effort; production always supplies one.
-	if w.localBound[name] {
-		return ""
-	}
+	// Same-module top-level function. When an index is available, resolve only names
+	// that are actually module-level defs, so callable locals/params/loop vars don't
+	// fabricate edges. Without an index (single-file extraction) fall back to
+	// best-effort; production always supplies one.
 	if w.idx != nil {
 		if w.idx.moduleDefs[w.module][name] {
 			return w.module + "." + name
