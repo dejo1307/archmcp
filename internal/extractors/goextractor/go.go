@@ -325,8 +325,14 @@ func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile
 		}
 		if len(m.callsInLoop) > 0 {
 			symbolFact.Props["calls_in_loop"] = m.callsInLoop
-		}
-		if len(m.callsInScalingLoop) > 0 {
+			// Emit the N+1 subset alongside — even when EMPTY — so the consumer
+			// distinguishes "no call repeats" from "signal absent". An omitted key makes
+			// perf.scalingLoopCalls() fall back to the unfiltered calls_in_loop, which
+			// silently defeats the discount in exactly the case it exists for: every
+			// in-loop call sitting inside a constant loop.
+			if m.callsInScalingLoop == nil {
+				m.callsInScalingLoop = []string{}
+			}
 			symbolFact.Props["calls_in_scaling_loop"] = m.callsInScalingLoop
 		}
 		if m.recursiveSelf {
@@ -448,10 +454,16 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 	inLoopSeen := make(map[string]bool)
 	inScalingSeen := make(map[string]bool)
 	var loopEnds []token.Pos // end positions of enclosing loops
-	// scalingEnds tracks only the enclosing loops that scale with input (bounded loops —
-	// `for {}` event loops and `range` over a composite literal — are excluded), so
-	// len(scalingEnds) is the current scaling nesting depth used for Big-O.
+	// scalingEnds tracks only the enclosing loops that scale with input (a `for {}` event
+	// loop and a `range` over a composite literal are excluded), so len(scalingEnds) is
+	// the current scaling nesting depth used for Big-O.
 	var scalingEnds []token.Pos
+	// repeatEnds tracks the enclosing loops that run a NON-CONSTANT number of times.
+	// It differs from scalingEnds for `for {}`: an infinite loop adds no factor of n, but
+	// its body still runs many times, so a per-iteration query inside it is an N+1
+	// candidate (a parent-chain walk doing one SELECT per level). Only a range over a
+	// composite literal is excluded here. Scaling and repeating are not the same property.
+	var repeatEnds []token.Pos
 
 	ast.Inspect(body, func(n ast.Node) bool {
 		if n == nil {
@@ -463,6 +475,9 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 		}
 		for len(scalingEnds) > 0 && n.Pos() >= scalingEnds[len(scalingEnds)-1] {
 			scalingEnds = scalingEnds[:len(scalingEnds)-1]
+		}
+		for len(repeatEnds) > 0 && n.Pos() >= repeatEnds[len(repeatEnds)-1] {
+			repeatEnds = repeatEnds[:len(repeatEnds)-1]
 		}
 		switch x := n.(type) {
 		case *ast.ForStmt:
@@ -478,6 +493,8 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 					m.scalingLoopDepth = len(scalingEnds)
 				}
 			}
+			// A `for {}` is infinite, not constant: it repeats.
+			repeatEnds = append(repeatEnds, x.End())
 		case *ast.RangeStmt:
 			m.loopCount++
 			decisions++
@@ -490,6 +507,7 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 				if len(scalingEnds) > m.scalingLoopDepth {
 					m.scalingLoopDepth = len(scalingEnds)
 				}
+				repeatEnds = append(repeatEnds, x.End())
 			}
 		case *ast.IfStmt:
 			decisions++
@@ -522,9 +540,11 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 				inLoopSeen[resolved] = true
 				m.callsInLoop = append(m.callsInLoop, resolved)
 			}
-			// A call inside an input-scaling loop is an N+1 candidate; a call only ever in
-			// a bounded loop (`for {}` / range over a composite literal) is not.
-			if len(scalingEnds) > 0 && !inScalingSeen[resolved] {
+			// A call inside a loop that repeats a non-constant number of times is an N+1
+			// candidate. A call only ever inside a constant loop (range over a composite
+			// literal) runs a fixed number of times and is not — but a `for {}` DOES
+			// repeat, so its calls stay candidates even though its depth is discounted.
+			if len(repeatEnds) > 0 && !inScalingSeen[resolved] {
 				inScalingSeen[resolved] = true
 				m.callsInScalingLoop = append(m.callsInScalingLoop, resolved)
 			}
@@ -538,16 +558,22 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 	return m
 }
 
-// goForBounded reports whether a for-statement runs a fixed number of times regardless
-// of input: a bare `for { }` infinite loop is driven by break/return/events, not data
-// size, so it does not add a factor of n to Big-O. (A `for i := 0; i < n; i++` with a
-// data-derived bound is treated as unbounded — its static bound is not evident here.)
+// goForBounded reports whether a for-statement's trip count is independent of the input
+// size: a bare `for { }` is driven by break/return/events, not data size, so it adds no
+// factor of n to Big-O. (A `for i := 0; i < n; i++` with a data-derived bound is treated
+// as unbounded — its static bound is not evident here.)
+//
+// It does NOT mean the loop runs a constant number of times: a `for { id = parent(id) }`
+// chain walk iterates once per level. Such a loop is discounted from scaling_loop_depth
+// but still contributes calls_in_scaling_loop, the N+1 candidate set.
 func goForBounded(x *ast.ForStmt) bool {
 	return x.Cond == nil && x.Init == nil && x.Post == nil
 }
 
 // goRangeBounded reports whether a range loop iterates a fixed-size composite literal
-// (`for _, x := range []T{a, b, c}` / a map literal) — a constant count, not input-scaling.
+// (`for _, x := range []T{a, b, c}` / a map literal) — a genuinely constant count. Unlike
+// goForBounded, this bounds the trip count itself, so calls inside such a loop are not
+// N+1 candidates either.
 func goRangeBounded(x *ast.RangeStmt) bool {
 	_, ok := x.X.(*ast.CompositeLit)
 	return ok

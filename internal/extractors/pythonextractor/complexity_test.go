@@ -335,3 +335,65 @@ def consume(x):
 		t.Errorf("calls_in_scaling_loop = %v, must NOT contain setup (bounded literal-tuple loop)", scaling)
 	}
 }
+
+// --- v99: calls_in_scaling_loop counts REPEATED loops, not just scaling ones --------
+//
+// `while True:` adds no factor of n (it exits by break/return), but its body still runs
+// many times — a retry loop or a parent-chain walk doing one query per level. Its calls
+// must remain N+1 candidates even though its depth is discounted.
+func TestPyComplexity_CallsInScalingLoop_InfiniteLoopCallsRetained(t *testing.T) {
+	src := `
+def get_path(node_id):
+    while True:
+        get_by_id(node_id)
+
+def get_by_id(node_id):
+    pass
+`
+	f := byName(astExtract(t, "svc.py", src, false))["svc.get_path"]
+	if got := cxIntProp(t, f, "scaling_loop_depth"); got != 0 {
+		t.Errorf("scaling_loop_depth = %d, want 0 (an infinite loop adds no factor of n)", got)
+	}
+	scaling := cxStrSlice(f, "calls_in_scaling_loop")
+	if !cxContains(scaling, "svc.get_by_id") {
+		t.Errorf("calls_in_scaling_loop = %v, want get_by_id retained: an infinite loop "+
+			"repeats, so a per-iteration query inside it is still an N+1 candidate", scaling)
+	}
+}
+
+// The key must be present (and empty) whenever calls_in_loop is, or perf's
+// scalingLoopCalls() falls back to the unfiltered calls_in_loop.
+func TestPyComplexity_CallsInScalingLoop_PresentButEmptyWhenAllBounded(t *testing.T) {
+	src := `
+def seed():
+    for c in (A, B):
+        setup(c)
+
+def setup(c):
+    pass
+`
+	f := byName(astExtract(t, "svc.py", src, false))["svc.seed"]
+	if !cxContains(cxStrSlice(f, "calls_in_loop"), "svc.setup") {
+		t.Fatalf("calls_in_loop = %v, want setup", f.Props["calls_in_loop"])
+	}
+	if _, present := f.Props["calls_in_scaling_loop"]; !present {
+		t.Fatalf("calls_in_scaling_loop must be present even when empty")
+	}
+	if got := cxStrSlice(f, "calls_in_scaling_loop"); len(got) != 0 {
+		t.Fatalf("calls_in_scaling_loop = %v, want empty", got)
+	}
+}
+
+func TestPyComplexity_CallsInScalingLoop_AbsentWithoutLoopCalls(t *testing.T) {
+	src := `
+def count(items):
+    n = 0
+    for _ in items:
+        n += 1
+    return n
+`
+	f := byName(astExtract(t, "svc.py", src, false))["svc.count"]
+	if _, present := f.Props["calls_in_scaling_loop"]; present {
+		t.Fatalf("calls_in_scaling_loop must be absent when calls_in_loop is")
+	}
+}

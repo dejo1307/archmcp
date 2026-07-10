@@ -1929,6 +1929,10 @@ type tsBodyWalker struct {
 	metrics             *tsBodyMetrics
 	loopDepth           int
 	scalingDepth        int // current nesting counting only input-scaling (unbounded) loops
+	// repeatDepth counts the enclosing loops that run a non-constant number of times. It
+	// differs from scalingDepth for `while (true)`, which adds no factor of n but whose
+	// body still runs many times — so a query inside it is still an N+1 candidate.
+	repeatDepth int
 	rels                []facts.Relation
 	seen                map[string]bool
 }
@@ -1954,9 +1958,11 @@ func (w *tsBodyWalker) recordInLoop(target string) {
 		w.metrics.inLoopSeen[target] = true
 		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
 	}
-	// A call inside an input-scaling loop is an N+1 candidate; a call only ever in a
-	// bounded loop (literal-receiver iterator / while(true)) runs a fixed number of times.
-	if w.scalingDepth > 0 {
+	// A call inside a loop that repeats a non-constant number of times is an N+1
+	// candidate. Only a genuinely constant loop (a literal-receiver iterator, for..of over
+	// an array literal) excludes its calls; `while (true)` repeats, so its calls stay
+	// candidates even though its depth is discounted from the Big-O exponent.
+	if w.repeatDepth > 0 {
 		if w.metrics.inScalingSeen == nil {
 			w.metrics.inScalingSeen = make(map[string]bool)
 		}
@@ -1980,12 +1986,12 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 	// being mis-counted as a per-iteration call. The iterator's own callback is
 	// handled separately in the call_expression branch (its body walks at +1).
 	if w.metrics != nil && tsIsFunctionLike(kind) {
-		saved, savedScaling := w.loopDepth, w.scalingDepth
-		w.loopDepth, w.scalingDepth = 0, 0
+		saved, savedScaling, savedRepeat := w.loopDepth, w.scalingDepth, w.repeatDepth
+		w.loopDepth, w.scalingDepth, w.repeatDepth = 0, 0, 0
 		for i := range n.ChildCount() {
 			w.walk(n.Child(i))
 		}
-		w.loopDepth, w.scalingDepth = saved, savedScaling
+		w.loopDepth, w.scalingDepth, w.repeatDepth = saved, savedScaling, savedRepeat
 		return
 	}
 
@@ -2008,6 +2014,7 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 	switch kind {
 	case "for_statement", "for_in_statement", "while_statement", "do_statement":
 		bounded := tsLoopBounded(n, w.src)
+		repeats := tsLoopRepeats(n)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
@@ -2022,12 +2029,18 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 		if !bounded {
 			w.scalingDepth++
 		}
+		if repeats {
+			w.repeatDepth++
+		}
 		for i := range n.ChildCount() {
 			w.walk(n.Child(i))
 		}
 		w.loopDepth--
 		if !bounded {
 			w.scalingDepth--
+		}
+		if repeats {
+			w.repeatDepth--
 		}
 		return
 	}
@@ -2130,9 +2143,12 @@ func (w *tsBodyWalker) walkCallbackSubtree(n, cb *sitter.Node, bounded bool) {
 		// We descend into the callback's children directly rather than walk(cb),
 		// because walk() would treat the callback as a function scope and reset
 		// the depth — but THIS callback genuinely runs per iteration.
+		// An iterator receiver is either a literal (constant) or data-derived (scaling);
+		// it is never infinite, so repeating and scaling coincide here.
 		w.loopDepth++
 		if !bounded {
 			w.scalingDepth++
+			w.repeatDepth++
 		}
 		for i := range cb.ChildCount() {
 			w.walk(cb.Child(i))
@@ -2140,6 +2156,7 @@ func (w *tsBodyWalker) walkCallbackSubtree(n, cb *sitter.Node, bounded bool) {
 		w.loopDepth--
 		if !bounded {
 			w.scalingDepth--
+			w.repeatDepth--
 		}
 		return
 	}
@@ -2180,8 +2197,13 @@ func applyTSMetrics(props map[string]any, m *tsBodyMetrics) {
 	}
 	if len(m.callsInLoop) > 0 {
 		props["calls_in_loop"] = m.callsInLoop
-	}
-	if len(m.callsInScalingLoop) > 0 {
+		// Emit the N+1 subset alongside — even when EMPTY — so the consumer distinguishes
+		// "no call repeats" from "signal absent". An omitted key makes the consumer fall
+		// back to the unfiltered calls_in_loop, defeating the discount in exactly the case
+		// it exists for (every in-loop call sitting inside a constant loop).
+		if m.callsInScalingLoop == nil {
+			m.callsInScalingLoop = []string{}
+		}
 		props["calls_in_scaling_loop"] = m.callsInScalingLoop
 	}
 	if m.recursive {
@@ -2192,16 +2214,38 @@ func applyTSMetrics(props map[string]any, m *tsBodyMetrics) {
 	}
 }
 
-// tsLoopBounded reports whether a syntactic loop iterates a fixed number of times
-// regardless of input: a for..of / for..in over an array/object literal, or an infinite
-// while(true) / do..while(true) event/retry loop. A C-style for(;;) is treated as
-// unbounded (its bound is not statically evident). Such a loop does not add a factor of n.
+// tsLoopBounded reports whether a syntactic loop's trip count is independent of the input
+// size, so it adds no factor of n: a for..of / for..in over an array/object literal, or an
+// infinite while(true) / do..while(true) event/retry loop. A C-style for(;;) is treated as
+// unbounded (its bound is not statically evident).
+//
+// It does NOT mean the loop runs a constant number of times — see tsLoopRepeats.
 func tsLoopBounded(n *sitter.Node, src []byte) bool {
+	return tsLoopConstant(n) || tsLoopInfinite(n, src)
+}
+
+// tsLoopRepeats reports whether the loop body runs a non-constant number of times, so a
+// call inside it is an N+1 candidate. Only a genuinely constant loop is excluded: a
+// `while (true) { row = await fetch(id) }` reconnect/retry loop queries once per
+// iteration even though its depth is discounted. Scaling and repeating differ.
+func tsLoopRepeats(n *sitter.Node) bool {
+	return !tsLoopConstant(n)
+}
+
+// tsLoopConstant reports whether a for..of / for..in iterates an array/object literal —
+// a compile-time-fixed element count. A while/do loop never qualifies.
+func tsLoopConstant(n *sitter.Node) bool {
+	if n.Kind() != "for_in_statement" {
+		return false
+	}
+	r := n.ChildByFieldName("right")
+	return r != nil && tsIterableLiteral(r)
+}
+
+// tsLoopInfinite reports whether a loop is the `while (true)` / `do … while (true)` form,
+// exited by break/return rather than by exhausting the input.
+func tsLoopInfinite(n *sitter.Node, src []byte) bool {
 	switch n.Kind() {
-	case "for_in_statement":
-		if r := n.ChildByFieldName("right"); r != nil {
-			return tsIterableLiteral(r)
-		}
 	case "while_statement", "do_statement":
 		if c := n.ChildByFieldName("condition"); c != nil {
 			return tsIsTrueCondition(c, src)

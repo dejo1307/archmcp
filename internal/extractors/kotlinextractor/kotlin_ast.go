@@ -82,8 +82,16 @@ type astWalker struct {
 	// names (for direct-recursion detection).
 	metrics   *kotlinBodyMetrics
 	loopDepth int
-	selfName  string
-	selfShort string
+	// scalingLoopDepth counts only the enclosing loops whose iteration count grows with
+	// the function's input; repeatDepth counts those that run a non-constant number of
+	// times. They differ for an infinite loop: `while (true)` adds no factor of n (so it
+	// is not scaling), but its body still runs many times (so it is repeating, and a
+	// per-iteration DB call inside it is still an N+1 candidate). A constant loop
+	// (`for (i in 0..2)`) is neither.
+	scalingLoopDepth int
+	repeatDepth      int
+	selfName         string
+	selfShort        string
 	// selfParams is the enclosing function's declared parameter count. A resolved
 	// self-call is only genuine recursion when its argument count matches — otherwise
 	// it is delegation to a same-named overload (updateItem(x) → updateItem(i, x)).
@@ -98,17 +106,252 @@ type astWalker struct {
 // kotlinBodyMetrics accumulates per-function complexity signals during the single
 // walkForCalls body traversal — mirrors the Go/Python/Ruby/Swift extractors.
 type kotlinBodyMetrics struct {
-	loopDepth   int             // max loop nesting depth
-	loopCount   int             // number of loop constructs (syntactic + lambda iterators)
-	decisions   int             // decision points (cyclomatic = 1 + decisions)
-	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
-	inLoopSeen  map[string]bool // dedup set for callsInLoop
-	recursive   bool            // body directly calls the enclosing function
+	loopDepth        int             // max loop nesting depth
+	scalingLoopDepth int             // max nesting depth counting only input-scaling loops
+	loopCount        int             // number of loop constructs (syntactic + lambda iterators)
+	decisions        int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop      []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen       map[string]bool // dedup set for callsInLoop
+	// callsInScalingLoop is the subset of callsInLoop made inside a loop that repeats a
+	// non-constant number of times — the N+1 candidates. A call made only inside a
+	// constant loop (`listOf(a, b).forEach { dao.insert(it) }`) runs a fixed number of
+	// times and is excluded.
+	callsInScalingLoop []string
+	inScalingSeen      map[string]bool
+	recursive          bool // body directly calls the enclosing function
 	// sawSuperSelf is set when the body calls super.<enclosingName>(). Such a method
 	// is a framework/override that also makes a bare <enclosingName>(...) call to a
 	// DIFFERENT same-named overload (a real self-call would be infinite recursion), so
 	// its arity-matched bare self-call is delegation, not recursion — clear it.
 	sawSuperSelf bool
+}
+
+// kotlinLoopClass partitions loops by how their iteration count relates to the
+// function's input. The distinction matters because two different consumers read it:
+// Big-O nesting depth cares whether the count grows with n, while N+1 detection cares
+// whether the body runs more than a constant number of times. An infinite loop answers
+// those two questions differently.
+type kotlinLoopClass int
+
+const (
+	// kotlinLoopScaling — the iteration count grows with the input (`for (x in items)`,
+	// `while (n > 0)`). Adds a factor of n; its calls are N+1 candidates.
+	kotlinLoopScaling kotlinLoopClass = iota
+	// kotlinLoopConstant — a compile-time-fixed count (`for (i in 0..2)`,
+	// `listOf(a, b).forEach`). Adds no factor of n; its calls run a fixed number of
+	// times and are not N+1 candidates.
+	kotlinLoopConstant
+	// kotlinLoopInfinite — `while (true)` / `do … while (true)`, exited by break/return.
+	// Its trip count is driven by events or by walking a chain, not by the input size,
+	// so it adds no factor of n — but the body still runs many times, so a per-iteration
+	// query inside it IS an N+1 candidate (a parent-chain walk doing one SELECT per
+	// level). Scaling and repeating are not the same property.
+	kotlinLoopInfinite
+)
+
+// scales reports whether the loop contributes a factor of n to Big-O.
+func (c kotlinLoopClass) scales() bool { return c == kotlinLoopScaling }
+
+// repeats reports whether the loop body runs a non-constant number of times, so a call
+// inside it is an N+1 candidate.
+func (c kotlinLoopClass) repeats() bool { return c != kotlinLoopConstant }
+
+// kotlinSyntacticLoopClass classifies a for/while/do-while statement.
+func kotlinSyntacticLoopClass(node *sitter.Node, src []byte) kotlinLoopClass {
+	switch node.Kind() {
+	case "for_statement":
+		if kotlinConstantIterable(kotlinForCollection(node), src) {
+			return kotlinLoopConstant
+		}
+	case "while_statement":
+		// Named children are (condition, body).
+		if kotlinIsTrueCondition(firstNamedChild(node), src) {
+			return kotlinLoopInfinite
+		}
+	case "do_while_statement":
+		// Named children are (body, condition) — the condition trails.
+		if kotlinIsTrueCondition(lastNamedChild(node), src) {
+			return kotlinLoopInfinite
+		}
+	}
+	return kotlinLoopScaling
+}
+
+// kotlinForCollection returns the iterated expression of a `for (v in <expr>) { … }`:
+// the first named child that is neither the loop variable nor the body.
+func kotlinForCollection(node *sitter.Node) *sitter.Node {
+	for i := uint(0); i < node.NamedChildCount(); i++ {
+		switch c := node.NamedChild(i); c.Kind() {
+		case "variable_declaration", "multi_variable_declaration":
+			continue
+		case "block", "control_structure_body":
+			return nil
+		default:
+			return c
+		}
+	}
+	return nil
+}
+
+// kotlinIsTrueCondition reports whether a loop condition is the literal `true`. The
+// Kotlin grammar parses `true` as an `identifier`, so this is a text match, not a node
+// kind — and a named constant that merely happens to hold true (`while (RUNNING)`) is
+// deliberately NOT matched.
+func kotlinIsTrueCondition(cond *sitter.Node, src []byte) bool {
+	if cond == nil {
+		return false
+	}
+	if cond.Kind() == "parenthesized_expression" && cond.NamedChildCount() > 0 {
+		cond = cond.NamedChild(0)
+	}
+	return nodeText(cond, src) == "true"
+}
+
+// kotlinConstantIterable reports whether a `for … in <expr>` iterates a compile-time
+// -fixed number of times: a literal integer range (`0..2`, `0 until 3`, `2 downTo 0`,
+// `0..10 step 2`), a collection-literal factory call (`listOf(1, 2, 3)`), or an ALL-CAPS
+// data constant (`STOP_CHARS`). A range with a variable endpoint (`0 until n`) or a
+// mixed-case receiver (a var/property/parameter) scales with the input and is NOT
+// constant. Mirrors pyIterableBounded / swiftBoundedForCollection.
+func kotlinConstantIterable(it *sitter.Node, src []byte) bool {
+	if it == nil {
+		return false
+	}
+	switch it.Kind() {
+	case "range_expression": // 0..2
+		return kotlinAllIntLiterals(it)
+	case "infix_expression": // 0 until 3 · 2 downTo 0 · 0..10 step 2
+		if it.NamedChildCount() != 3 {
+			return false
+		}
+		left, op, right := it.NamedChild(0), nodeText(it.NamedChild(1), src), it.NamedChild(2)
+		switch op {
+		case "until", "downTo":
+			return kotlinIsIntLiteral(left) && kotlinIsIntLiteral(right)
+		case "step":
+			return kotlinConstantIterable(left, src) && kotlinIsIntLiteral(right)
+		}
+		return false
+	}
+	return kotlinConstantBoundReceiver(it, src)
+}
+
+// kotlinConstantBoundReceiver reports whether an iterator's receiver holds a
+// compile-time-fixed number of elements, so its lambda runs a fixed number of times
+// regardless of the function's input: a collection-literal factory call
+// (`listOf(a, b).forEach`), an ALL-CAPS data constant (`STOP_CHARS.forEach`, also
+// through a type qualifier — `Screen.STOP_CHARS.forEach`), or a size-preserving chain
+// (`listOf(1, 2).sorted().forEach`) unwrapped and re-checked. A mixed-case identifier is
+// a var/property/parameter and is NOT constant — a local `val xs = listOf(1, 2)` is
+// deliberately not folded, since the extractor does no constant propagation.
+// Mirrors swiftConstantBoundReceiver.
+func kotlinConstantBoundReceiver(recv *sitter.Node, src []byte) bool {
+	if recv == nil {
+		return false
+	}
+	switch recv.Kind() {
+	case "simple_identifier", "identifier":
+		return isScreamingSnake(nodeText(recv, src))
+	case "navigation_expression":
+		// `Screen.STOP_CHARS` — the constant is the trailing member. This is also the
+		// callee of a chain call (`listOf(1, 2).sorted()`), whose trailing member is the
+		// chain method: unwrap to the chain's base and re-check.
+		last := lastNamedChild(recv)
+		if last == nil {
+			return false
+		}
+		name := nodeText(last, src)
+		if kotlinChainPreservesBound[name] {
+			return kotlinConstantBoundReceiver(firstNamedChild(recv), src)
+		}
+		return isScreamingSnake(name)
+	case "call_expression":
+		callee := firstNamedChild(recv)
+		if callee == nil {
+			return false
+		}
+		if callee.Kind() == "navigation_expression" {
+			// A trailing size-preserving chain method: unwrap and re-check its base.
+			return kotlinConstantBoundReceiver(callee, src)
+		}
+		return kotlinCollectionLiteralCall(recv, callee, src)
+	}
+	return false
+}
+
+// kotlinCollectionLiteralFactories build a collection whose element count is the
+// literal argument count.
+var kotlinCollectionLiteralFactories = map[string]bool{
+	"listOf": true, "listOfNotNull": true, "mutableListOf": true, "arrayListOf": true,
+	"setOf": true, "mutableSetOf": true, "sortedSetOf": true, "hashSetOf": true,
+	"mapOf": true, "mutableMapOf": true, "hashMapOf": true, "linkedMapOf": true,
+	"arrayOf": true, "sequenceOf": true,
+	"intArrayOf": true, "longArrayOf": true, "shortArrayOf": true, "byteArrayOf": true,
+	"floatArrayOf": true, "doubleArrayOf": true, "booleanArrayOf": true, "charArrayOf": true,
+	"emptyList": true, "emptySet": true, "emptyMap": true,
+}
+
+// kotlinChainPreservesBound are methods that cannot grow a collection, so a bounded
+// receiver stays bounded through them.
+var kotlinChainPreservesBound = map[string]bool{
+	"sorted": true, "sortedDescending": true, "reversed": true, "asReversed": true,
+	"toList": true, "toSet": true, "toTypedArray": true, "asSequence": true,
+	"asIterable": true, "distinct": true, "shuffled": true, "filterNotNull": true,
+	"withIndex": true,
+}
+
+// kotlinCollectionLiteralCall reports whether call is `listOf(a, b, c)` and friends.
+// A spread argument (`listOf(*xs)`) makes the element count data-derived, so it is not
+// a literal.
+func kotlinCollectionLiteralCall(call, callee *sitter.Node, src []byte) bool {
+	if !kotlinCollectionLiteralFactories[nodeText(callee, src)] {
+		return false
+	}
+	args := findChildByKind(call, "value_arguments")
+	if args == nil {
+		return true // `emptyList()` parsed without an argument list
+	}
+	for i := uint(0); i < args.NamedChildCount(); i++ {
+		if strings.HasPrefix(nodeText(args.NamedChild(i), src), "*") {
+			return false
+		}
+	}
+	return true
+}
+
+func kotlinIsIntLiteral(n *sitter.Node) bool {
+	return n != nil && (n.Kind() == "integer_literal" || n.Kind() == "number_literal")
+}
+
+// kotlinAllIntLiterals reports whether every named child of a range is an int literal.
+func kotlinAllIntLiterals(n *sitter.Node) bool {
+	if n.NamedChildCount() == 0 {
+		return false
+	}
+	for i := uint(0); i < n.NamedChildCount(); i++ {
+		if !kotlinIsIntLiteral(n.NamedChild(i)) {
+			return false
+		}
+	}
+	return true
+}
+
+// isScreamingSnake reports whether s is SCREAMING_SNAKE_CASE — only uppercase letters,
+// digits, and underscores, with at least one letter (`STOP_CHARS`, `MAX_RETRIES`). A
+// data constant with a fixed element count, unlike a mixed-case property (`ratings`)
+// whose `.forEach` is not bounded.
+func isScreamingSnake(s string) bool {
+	hasLetter := false
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return hasLetter
 }
 
 // kotlinIterators are higher-order methods whose lambda runs once per element —
@@ -222,7 +465,8 @@ func (w *astWalker) recordCallMetrics(target string, argCount int) {
 
 // recordInLoopCall adds a target to calls_in_loop (deduped) when inside a loop,
 // without the recursion check — used for raw instance-method names whose name must
-// not be mistaken for self-recursion.
+// not be mistaken for self-recursion. A target inside a loop that repeats a
+// non-constant number of times is additionally recorded as an N+1 candidate.
 func (w *astWalker) recordInLoopCall(target string) {
 	if w.metrics == nil || target == "" || w.loopDepth == 0 {
 		return
@@ -233,6 +477,39 @@ func (w *astWalker) recordInLoopCall(target string) {
 	if !w.metrics.inLoopSeen[target] {
 		w.metrics.inLoopSeen[target] = true
 		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
+	}
+	if w.repeatDepth == 0 {
+		return
+	}
+	if w.metrics.inScalingSeen == nil {
+		w.metrics.inScalingSeen = make(map[string]bool)
+	}
+	if !w.metrics.inScalingSeen[target] {
+		w.metrics.inScalingSeen[target] = true
+		w.metrics.callsInScalingLoop = append(w.metrics.callsInScalingLoop, target)
+	}
+}
+
+// pushLoop / popLoop enter and leave a loop body, maintaining the three nesting
+// counters. Every loop bumps loopDepth; only an input-scaling one bumps
+// scalingLoopDepth; every non-constant one bumps repeatDepth.
+func (w *astWalker) pushLoop(class kotlinLoopClass) {
+	w.loopDepth++
+	if class.scales() {
+		w.scalingLoopDepth++
+	}
+	if class.repeats() {
+		w.repeatDepth++
+	}
+}
+
+func (w *astWalker) popLoop(class kotlinLoopClass) {
+	w.loopDepth--
+	if class.scales() {
+		w.scalingLoopDepth--
+	}
+	if class.repeats() {
+		w.repeatDepth--
 	}
 }
 
@@ -628,10 +905,12 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 	// outer state rather than clearing it. Props are written via the stable index
 	// (the pointer may be invalidated if the body walk grows w.out).
 	savedMetrics, savedDepth := w.metrics, w.loopDepth
+	savedScaling, savedRepeat := w.scalingLoopDepth, w.repeatDepth
 	savedName, savedShort := w.selfName, w.selfShort
 	savedParams, savedReactive := w.selfParams, w.reactiveContext
 	w.metrics = &kotlinBodyMetrics{}
 	w.loopDepth = 0
+	w.scalingLoopDepth, w.repeatDepth = 0, 0
 	w.selfName = f.Name
 	w.selfShort = name
 	w.selfParams = kotlinParamCount(node)
@@ -657,12 +936,25 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 	props["cyclomatic"] = 1 + m.decisions
 	if m.loopDepth > 0 {
 		props["loop_depth"] = m.loopDepth
+		// Emit the scaling depth (constant and infinite loops discounted) alongside —
+		// even when 0 — so the consumer distinguishes "all loops discounted" from
+		// "signal absent". perf.funcInfo.HasScalingDepth is keyed on the prop's
+		// PRESENCE, and its absence falls back to the raw loop_depth.
+		props["scaling_loop_depth"] = m.scalingLoopDepth
 	}
 	if m.loopCount > 0 {
 		props["loop_count"] = m.loopCount
 	}
 	if len(m.callsInLoop) > 0 {
 		props["calls_in_loop"] = m.callsInLoop
+		// Likewise emitted even when EMPTY: an omitted key means "this extractor never
+		// computed the subset" and makes perf.scalingLoopCalls() fall back to the
+		// unfiltered calls_in_loop — silently defeating the discount in exactly the case
+		// it exists for (every in-loop call sitting inside a constant loop).
+		if m.callsInScalingLoop == nil {
+			m.callsInScalingLoop = []string{}
+		}
+		props["calls_in_scaling_loop"] = m.callsInScalingLoop
 	}
 	// A body that calls super.<self>() is a framework override delegating to a
 	// same-named overload, not genuine recursion — the arity-matched bare self-call is
@@ -671,6 +963,7 @@ func (w *astWalker) handleFunctionDeclaration(node *sitter.Node) {
 		props["recursive_self"] = true
 	}
 	w.metrics, w.loopDepth = savedMetrics, savedDepth
+	w.scalingLoopDepth, w.repeatDepth = savedScaling, savedRepeat
 	w.selfName, w.selfShort = savedName, savedShort
 	w.selfParams, w.reactiveContext = savedParams, savedReactive
 	w.popOwner()
@@ -852,12 +1145,12 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	// counted as a per-iteration call). The iterator's OWN lambda is handled in the
 	// call_expression branch (its body walks at +1).
 	if w.metrics != nil && kind == "lambda_literal" {
-		saved := w.loopDepth
-		w.loopDepth = 0
+		savedLoop, savedScaling, savedRepeat := w.loopDepth, w.scalingLoopDepth, w.repeatDepth
+		w.loopDepth, w.scalingLoopDepth, w.repeatDepth = 0, 0, 0
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
 			w.walkForCalls(node.Child(i))
 		}
-		w.loopDepth = saved
+		w.loopDepth, w.scalingLoopDepth, w.repeatDepth = savedLoop, savedScaling, savedRepeat
 		return
 	}
 
@@ -878,23 +1171,28 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	// Syntactic loops: everything in the body runs per iteration.
 	switch kind {
 	case "for_statement", "while_statement", "do_while_statement":
+		class := kotlinSyntacticLoopClass(node, w.src)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
 			if w.loopDepth+1 > w.metrics.loopDepth {
 				w.metrics.loopDepth = w.loopDepth + 1
 			}
+			if class.scales() && w.scalingLoopDepth+1 > w.metrics.scalingLoopDepth {
+				w.metrics.scalingLoopDepth = w.scalingLoopDepth + 1
+			}
 		}
-		w.loopDepth++
+		w.pushLoop(class)
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
 			w.walkChild(node.Child(i))
 		}
-		w.loopDepth--
+		w.popLoop(class)
 		return
 	}
 
 	if kind == "call_expression" {
 		var iterLambda *sitter.Node
+		iterClass := kotlinLoopScaling
 		argCount := kotlinCallArgCount(node)
 		// First named child is the callee expression.
 		if callee := firstNamedChild(node); callee != nil {
@@ -958,6 +1256,13 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 				if w.metrics != nil && kotlinIterators[name] &&
 					(!w.reactiveContext || !kotlinReactiveOps[name]) {
 					iterLambda = findChildByKind(node, "annotated_lambda")
+					// A literal / ALL-CAPS-constant receiver runs the lambda a fixed
+					// number of times (`listOf(a, b).forEach`), so it is a loop for
+					// cyclomatic purposes but adds no Big-O exponent and yields no N+1
+					// candidates. An iterator is never infinite.
+					if isNav && kotlinConstantBoundReceiver(firstNamedChild(callee), w.src) {
+						iterClass = kotlinLoopConstant
+					}
 				}
 			}
 		}
@@ -967,9 +1272,12 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 			if w.loopDepth+1 > w.metrics.loopDepth {
 				w.metrics.loopDepth = w.loopDepth + 1
 			}
+			if iterClass.scales() && w.scalingLoopDepth+1 > w.metrics.scalingLoopDepth {
+				w.metrics.scalingLoopDepth = w.scalingLoopDepth + 1
+			}
 			for i := uint(0); i < uint(node.ChildCount()); i++ {
 				if c := node.Child(i); byteContains(c, iterLambda) {
-					w.walkLambdaSubtree(c, iterLambda)
+					w.walkLambdaSubtree(c, iterLambda, iterClass)
 				} else {
 					w.walkChild(c)
 				}
@@ -1060,7 +1368,7 @@ func byteContains(outer, inner *sitter.Node) bool {
 // walkLambdaSubtree descends toward an iterator's trailing lambda, bumping the loop
 // depth exactly at the lambda (its body is per-iteration) while walking everything
 // else (the receiver, sibling arguments) at the current depth.
-func (w *astWalker) walkLambdaSubtree(node, lambda *sitter.Node) {
+func (w *astWalker) walkLambdaSubtree(node, lambda *sitter.Node, class kotlinLoopClass) {
 	if node == nil {
 		return
 	}
@@ -1073,16 +1381,16 @@ func (w *astWalker) walkLambdaSubtree(node, lambda *sitter.Node) {
 		if lit := findChildByKind(node, "lambda_literal"); lit != nil {
 			body = lit
 		}
-		w.loopDepth++
+		w.pushLoop(class)
 		for i := uint(0); i < uint(body.ChildCount()); i++ {
 			w.walkChild(body.Child(i))
 		}
-		w.loopDepth--
+		w.popLoop(class)
 		return
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		if c := node.Child(i); byteContains(c, lambda) {
-			w.walkLambdaSubtree(c, lambda)
+			w.walkLambdaSubtree(c, lambda, class)
 		} else {
 			w.walkChild(c)
 		}
@@ -1398,6 +1706,21 @@ func firstNamedChild(node *sitter.Node) *sitter.Node {
 		}
 	}
 	return nil
+}
+
+// lastNamedChild returns the trailing named child — the member of a navigation
+// expression (`Screen.STOP_CHARS` → `STOP_CHARS`) or the condition of a do-while.
+func lastNamedChild(node *sitter.Node) *sitter.Node {
+	if node == nil {
+		return nil
+	}
+	var last *sitter.Node
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		if c := node.Child(i); c.IsNamed() {
+			last = c
+		}
+	}
+	return last
 }
 
 // findFirstIdentifier returns the first descendant identifier-ish node. It

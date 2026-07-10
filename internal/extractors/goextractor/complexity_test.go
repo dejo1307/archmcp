@@ -243,3 +243,85 @@ func consume(x int)   {}
 		t.Errorf("calls_in_scaling_loop = %v, must NOT contain setup (range over composite literal)", scaling)
 	}
 }
+
+// --- v99: calls_in_scaling_loop counts REPEATED loops, not just scaling ones --------
+//
+// A bare `for {}` adds no factor of n (it is exited by break/return), but its body still
+// runs many times — a parent-chain walk doing one query per level. Its calls must stay
+// N+1 candidates even though its depth is discounted. Reproduced on fairwayhub/golf:
+// OrganizationRepository.GetOrganizationPath (`for { org = GetByID(parentID) }`) and
+// GroupRepository.makeUniqueSlug (`for { QueryRowContext(...) }`) are both real
+// high/medium-severity N+1 findings that ride on this.
+func TestExtract_CallsInScalingLoop_InfiniteLoopCallsRetained(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"pkg/proc.go": `package pkg
+
+func GetPath(id int) {
+	for {
+		getByID(id)
+	}
+}
+
+func getByID(id int) {}
+`,
+	})
+	f, _ := findFact(ff, "pkg.GetPath")
+	if got := intProp(t, f, "scaling_loop_depth"); got != 0 {
+		t.Errorf("scaling_loop_depth = %d, want 0 (an infinite loop adds no factor of n)", got)
+	}
+	scaling := strSliceProp(f, "calls_in_scaling_loop")
+	if !containsStr(scaling, "pkg.getByID") {
+		t.Errorf("calls_in_scaling_loop = %v, want getByID retained: an infinite loop "+
+			"repeats, so a per-iteration query inside it is still an N+1 candidate", scaling)
+	}
+}
+
+// calls_in_scaling_loop must be PRESENT (and empty) whenever calls_in_loop is, or
+// perf.scalingLoopCalls() reads its absence as "extractor never computed the subset"
+// and falls back to the unfiltered calls_in_loop — defeating the discount in exactly
+// the case it exists for.
+func TestExtract_CallsInScalingLoop_PresentButEmptyWhenAllBounded(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"pkg/proc.go": `package pkg
+
+func Seed() {
+	for _, c := range []string{"a", "b"} {
+		setup(c)
+	}
+}
+
+func setup(c string) {}
+`,
+	})
+	f, _ := findFact(ff, "pkg.Seed")
+	if !containsStr(strSliceProp(f, "calls_in_loop"), "pkg.setup") {
+		t.Fatalf("calls_in_loop = %v, want setup", f.Props["calls_in_loop"])
+	}
+	v, present := f.Props["calls_in_scaling_loop"]
+	if !present {
+		t.Fatalf("calls_in_scaling_loop must be present even when empty")
+	}
+	if got := strSliceProp(f, "calls_in_scaling_loop"); len(got) != 0 {
+		t.Fatalf("calls_in_scaling_loop = %v (%T), want empty", got, v)
+	}
+}
+
+// ...and absent when there are no in-loop calls at all.
+func TestExtract_CallsInScalingLoop_AbsentWithoutLoopCalls(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"pkg/proc.go": `package pkg
+
+func Count(items []int) int {
+	n := 0
+	for range items {
+		n++
+	}
+	return n
+}
+`,
+	})
+	f, _ := findFact(ff, "pkg.Count")
+	if _, present := f.Props["calls_in_scaling_loop"]; present {
+		t.Fatalf("calls_in_scaling_loop must be absent when calls_in_loop is")
+	}
+}

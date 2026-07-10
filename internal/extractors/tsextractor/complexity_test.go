@@ -185,3 +185,47 @@ func TestTsComplexity_CallsInScalingLoop_BoundedExcluded(t *testing.T) {
 		t.Errorf("calls_in_scaling_loop = %v, must NOT contain setup (for..of over array literal)", scaling)
 	}
 }
+
+// --- v99: calls_in_scaling_loop counts REPEATED loops, not just scaling ones --------
+//
+// `while (true)` adds no factor of n (it exits by break/return), but its body still runs
+// many times — a reconnect loop, a retry, or a parent-chain walk doing one query per
+// level. Its calls must remain N+1 candidates even though its depth is discounted.
+func TestTsComplexity_CallsInScalingLoop_InfiniteLoopCallsRetained(t *testing.T) {
+	for _, src := range []string{
+		"export function r() {\n  while (true) { getById(id) }\n}",
+		"export function r() {\n  do { getById(id) } while (true)\n}",
+	} {
+		f := tsExtractFunc(t, src, "src.r")
+		if got := tsIntProp(t, f, "scaling_loop_depth"); got != 0 {
+			t.Errorf("%s\n  scaling_loop_depth = %d, want 0", src, got)
+		}
+		scaling := tsStrSlice(f, "calls_in_scaling_loop")
+		if !tsContains(scaling, "src.getById") {
+			t.Errorf("%s\n  calls_in_scaling_loop = %v, want getById retained: an infinite "+
+				"loop repeats, so a per-iteration query inside it is still an N+1 candidate", src, scaling)
+		}
+	}
+}
+
+// The key must be present (and empty) whenever calls_in_loop is, or perf's
+// scalingLoopCalls() falls back to the unfiltered calls_in_loop.
+func TestTsComplexity_CallsInScalingLoop_PresentButEmptyWhenAllBounded(t *testing.T) {
+	f := tsExtractFunc(t, "export function r() {\n  for (const c of [1, 2]) { setup(c) }\n}", "src.r")
+	if !tsContains(tsStrSlice(f, "calls_in_loop"), "src.setup") {
+		t.Fatalf("calls_in_loop = %v, want setup", f.Props["calls_in_loop"])
+	}
+	if _, present := f.Props["calls_in_scaling_loop"]; !present {
+		t.Fatalf("calls_in_scaling_loop must be present even when empty")
+	}
+	if got := tsStrSlice(f, "calls_in_scaling_loop"); len(got) != 0 {
+		t.Fatalf("calls_in_scaling_loop = %v, want empty", got)
+	}
+}
+
+func TestTsComplexity_CallsInScalingLoop_AbsentWithoutLoopCalls(t *testing.T) {
+	f := tsExtractFunc(t, "export function r() {\n  let n = 0\n  for (const x of items) { n++ }\n  return n\n}", "src.r")
+	if _, present := f.Props["calls_in_scaling_loop"]; present {
+		t.Fatalf("calls_in_scaling_loop must be absent when calls_in_loop is")
+	}
+}

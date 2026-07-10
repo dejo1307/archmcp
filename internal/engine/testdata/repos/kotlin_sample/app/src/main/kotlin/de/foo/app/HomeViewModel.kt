@@ -63,3 +63,18 @@ fun fib(n: Int): Int {
     if (n < 2) return n
     return fib(n - 1) + fib(n - 2)
 }
+
+// Bounded-loop discounting (v98/v99). `while (true)` adds no Big-O exponent, but it
+// repeats — one lookup per iteration — so loadPath keeps its N+1 candidate. bootstrap's
+// only in-loop call sits inside a constant literal loop, so its scaling subset is empty.
+class LoopShapes(private val repo: HomeRepo) {
+    fun loadPath(id: Int) {
+        while (true) {
+            repo.getById(id)
+        }
+    }
+
+    fun bootstrap() {
+        listOf("a", "b").forEach { repo.getById(it) }
+    }
+}

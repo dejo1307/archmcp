@@ -84,6 +84,10 @@ type pyWalker struct {
 	metrics      *pyBodyMetrics
 	loopDepth    int
 	scalingDepth int // current nesting counting only input-scaling (unbounded) loops
+	// repeatDepth counts the enclosing loops that run a non-constant number of times.
+	// It differs from scalingDepth for `while True:`, which adds no factor of n but whose
+	// body still runs many times — so a query inside it is still an N+1 candidate.
+	repeatDepth int
 	selfName     string
 
 	// fileRefs accumulates RelCalls edges made in file-scope (module-level) code
@@ -126,10 +130,11 @@ func (w *pyWalker) recordCallMetrics(target string) {
 			w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
 		}
 	}
-	// A call inside an input-scaling loop is an N+1 candidate; a call only ever in a
-	// bounded loop (literal/constant/range(<const>)/while(true)) runs a fixed number of
-	// times and is not.
-	if w.scalingDepth > 0 {
+	// A call inside a loop that repeats a non-constant number of times is an N+1
+	// candidate. Only a genuinely constant loop (literal collection / range(<const>))
+	// excludes its calls; `while True` repeats, so its calls stay candidates even though
+	// its depth is discounted from the Big-O exponent.
+	if w.repeatDepth > 0 {
 		if w.metrics.inScalingSeen == nil {
 			w.metrics.inScalingSeen = make(map[string]bool)
 		}
@@ -830,8 +835,13 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		}
 		if len(w.metrics.callsInLoop) > 0 {
 			props["calls_in_loop"] = w.metrics.callsInLoop
-		}
-		if len(w.metrics.callsInScalingLoop) > 0 {
+			// Always emit the N+1 subset alongside — even when EMPTY — for the same
+			// reason: an omitted key means "signal absent" and makes the consumer fall
+			// back to the unfiltered calls_in_loop, defeating the discount in exactly the
+			// case it exists for (every in-loop call sitting inside a constant loop).
+			if w.metrics.callsInScalingLoop == nil {
+				w.metrics.callsInScalingLoop = []string{}
+			}
 			props["calls_in_scaling_loop"] = w.metrics.callsInScalingLoop
 		}
 		if w.metrics.recursive {
@@ -1178,10 +1188,13 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 	// a literal/constant collection or range(<const>), or an infinite while(true)
 	// event/retry loop, runs a fixed number of times — it does not scale in "n", so it
 	// raises loop_depth (still a real loop) but not scaling_loop_depth (the Big-O exponent).
+	// Only the CONSTANT loop also stops its calls being N+1 candidates: `while True`
+	// repeats, so it raises repeatDepth.
 	isLoop := kind == "for_statement" || kind == "while_statement"
-	bounded := false
+	bounded, repeats := false, false
 	if isLoop {
 		bounded = pyLoopBounded(node, w.src)
+		repeats = pyLoopRepeats(node, w.src)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
@@ -1196,6 +1209,9 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 		if !bounded {
 			w.scalingDepth++
 		}
+		if repeats {
+			w.repeatDepth++
+		}
 	}
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
@@ -1206,6 +1222,9 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 		w.loopDepth--
 		if !bounded {
 			w.scalingDepth--
+		}
+		if repeats {
+			w.repeatDepth--
 		}
 	}
 }
@@ -1248,9 +1267,12 @@ func (w *pyWalker) walkComprehension(node *sitter.Node) {
 		w.walkForCalls(firstIter) // evaluated once → stays at outer depth
 	}
 
+	// A comprehension's iterable is either constant or input-scaling — never infinite —
+	// so repeating and scaling coincide here.
 	w.loopDepth++
 	if !bounded {
 		w.scalingDepth++
+		w.repeatDepth++
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		child := node.Child(i)
@@ -1271,31 +1293,56 @@ func (w *pyWalker) walkComprehension(node *sitter.Node) {
 	w.loopDepth--
 	if !bounded {
 		w.scalingDepth--
+		w.repeatDepth--
 	}
 }
 
 // --- Complexity: bounded-loop and direct-I/O classification ---
 
-// pyLoopBounded reports whether a for/while statement iterates a fixed number of times
-// regardless of input size: a for-loop over a literal collection or range(<int literal>),
-// or an infinite while(true)/while(1) event/retry loop (its iteration count is driven by
-// external events, not data). Such a loop does not contribute a factor of n to Big-O.
+// pyLoopBounded reports whether a for/while statement's trip count is independent of the
+// input size, so it contributes no factor of n to Big-O: a for-loop over a literal
+// collection or range(<int literal>), or an infinite while(true)/while(1) event/retry
+// loop (driven by external events, not data).
+//
+// It does NOT mean the loop runs a constant number of times — see pyLoopRepeats.
 func pyLoopBounded(node *sitter.Node, src []byte) bool {
-	switch node.Kind() {
-	case "for_statement":
-		it := node.ChildByFieldName("right")
-		return it != nil && pyIterableBounded(it, src)
-	case "while_statement":
-		cond := node.ChildByFieldName("condition")
-		if cond == nil {
-			return false
-		}
-		switch cond.Kind() {
-		case "true":
-			return true
-		case "integer":
-			return pyText(cond, src) != "0"
-		}
+	return pyLoopConstant(node, src) || pyLoopInfinite(node, src)
+}
+
+// pyLoopRepeats reports whether the loop body runs a non-constant number of times, so a
+// call inside it is an N+1 candidate. Every loop repeats except a genuinely constant one:
+// `while True: row = fetch(id)` is a retry / chain walk that queries once per iteration,
+// even though its depth is discounted from the Big-O exponent. Scaling and repeating are
+// not the same property.
+func pyLoopRepeats(node *sitter.Node, src []byte) bool {
+	return !pyLoopConstant(node, src)
+}
+
+// pyLoopConstant reports whether a for-loop iterates a compile-time-fixed number of
+// times. A while-loop never qualifies: `while True` repeats indefinitely.
+func pyLoopConstant(node *sitter.Node, src []byte) bool {
+	if node.Kind() != "for_statement" {
+		return false
+	}
+	it := node.ChildByFieldName("right")
+	return it != nil && pyIterableBounded(it, src)
+}
+
+// pyLoopInfinite reports whether a while-loop is the `while True:` / `while 1:` form,
+// exited by break/return rather than by exhausting the input.
+func pyLoopInfinite(node *sitter.Node, src []byte) bool {
+	if node.Kind() != "while_statement" {
+		return false
+	}
+	cond := node.ChildByFieldName("condition")
+	if cond == nil {
+		return false
+	}
+	switch cond.Kind() {
+	case "true":
+		return true
+	case "integer":
+		return pyText(cond, src) != "0"
 	}
 	return false
 }

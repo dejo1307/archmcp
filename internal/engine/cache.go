@@ -266,7 +266,26 @@ import (
 // misrouted to reference-only test-ref extraction. The glob matcher gained the
 // "<prefix>/**/<fileglob>" form to express it. Cached Ruby snapshots must re-extract: the
 // file set reaching the extractor changes.
-const cacheVersion = "v97"
+// v98: the Kotlin extractor learned bounded-loop discounting and now emits
+// scaling_loop_depth (and calls_in_scaling_loop) alongside loop_depth, joining the
+// Go/Python/TypeScript convention. A constant-count loop — a literal integer range
+// (0..2, 0 until 3, 2 downTo 0, 0..10 step 2), a collection-literal receiver
+// (listOf(a, b).forEach), an ALL_CAPS data constant, or a size-preserving chain over
+// either — no longer inflates the Big-O exponent, and neither does an infinite
+// while (true) / do-while (true). Previously perf.scalingDepth() silently substituted the
+// raw loop_depth for Kotlin, so `for (ring in 1..6) { for (i in 0 until sides) }` reported
+// O(n2) at full confidence. Cached Kotlin snapshots must re-extract.
+// v99: calls_in_scaling_loop now means "calls inside a loop that repeats a NON-CONSTANT
+// number of times", not "calls inside an input-scaling loop", and is emitted by the Go,
+// Python, TypeScript and Kotlin extractors whenever calls_in_loop is — even when empty.
+// Two bugs, one cause: `for {}` / `while (true)` were classed bounded, which is right for
+// the Big-O exponent (they add no factor of n) but wrong for N+1 detection (a parent-chain
+// walk runs one query per level), and an omitted empty subset was read by
+// perf.scalingLoopCalls() as "extractor never computed it", falling back to the unfiltered
+// calls_in_loop. The second bug masked the first: fixing only the emptiness would have
+// deleted true-positive N+1 findings on infinite loops. Cached Go/Python/TypeScript/Kotlin
+// snapshots must re-extract.
+const cacheVersion = "v99"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
