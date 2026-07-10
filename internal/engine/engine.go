@@ -399,8 +399,9 @@ func (e *Engine) linkCrossRepo() {
 // recomputed idempotently on each (re-)link: a server route no loaded client calls
 // gets "unmatched_by_clients" (the unused-routes candidates); a client call site
 // that resolves to no loaded server route gets "unmatched_by_server" plus an
-// "unmatched_reason" (no_method | generic_path | no_match) — the queryable
-// counterpart to the aggregate coverage counts. Both signals are only meaningful
+// "unmatched_reason" (one of crossrepo's Reason* constants: no_method | generic_path |
+// method_mismatch | path_unknown) — the queryable counterpart to the aggregate
+// coverage counts. Both signals are only meaningful
 // with 2+ repos loaded; for a single-repo snapshot the key sets are empty and this
 // pass simply clears any stale flags. Surfaced via
 // query_facts(kind=route, prop=unmatched_by_clients|unmatched_by_server).

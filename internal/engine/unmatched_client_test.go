@@ -22,9 +22,13 @@ func TestFlagUnmatchedRoutes_ClientSide(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	eng.store.Add(
-		clientRouteFact("app", "/api/items/{id}", "GET"),   // resolves to backend
-		clientRouteFact("app", "/api/unknown/{id}", "GET"), // no server -> no_match
+		clientRouteFact("app", "/api/items/{id}", "GET"),    // resolves to backend
+		clientRouteFact("app", "/api/unknown/{id}", "GET"),  // no server serves it -> path_unknown
+		clientRouteFact("app", "/api/orders/{id}", "POST"),  // path served, wrong verb -> method_mismatch
+		clientRouteFact("app", "/health", "GET"),            // sub-2-segment path -> generic_path
 		facts.Fact{Kind: facts.KindRoute, Name: "/api/items/{itemId}", Repo: "backend",
+			Props: map[string]any{"role": "server", "method": "GET"}},
+		facts.Fact{Kind: facts.KindRoute, Name: "/api/orders/{orderId}", Repo: "backend",
 			Props: map[string]any{"role": "server", "method": "GET"}},
 	)
 
@@ -37,12 +41,22 @@ func TestFlagUnmatchedRoutes_ClientSide(t *testing.T) {
 		}
 	}
 
-	unknown := props["/api/unknown/{id}"]
-	if e, _ := unknown["unmatched_by_server"].(bool); !e {
-		t.Errorf("/api/unknown should be unmatched_by_server; got %+v", unknown)
-	}
-	if unknown["unmatched_reason"] != "path_unknown" {
-		t.Errorf("/api/unknown reason = %v, want path_unknown", unknown["unmatched_reason"])
+	// Each reason the resolver can emit for an unresolved client call, asserted by name
+	// so the value set stays pinned to the crossrepo.Reason* constants.
+	for _, tc := range []struct {
+		name, wantReason string
+	}{
+		{"/api/unknown/{id}", "path_unknown"},
+		{"/api/orders/{id}", "method_mismatch"},
+		{"/health", "generic_path"},
+	} {
+		got := props[tc.name]
+		if e, _ := got["unmatched_by_server"].(bool); !e {
+			t.Errorf("%s should be unmatched_by_server; got %+v", tc.name, got)
+		}
+		if got["unmatched_reason"] != tc.wantReason {
+			t.Errorf("%s reason = %v, want %s", tc.name, got["unmatched_reason"], tc.wantReason)
+		}
 	}
 
 	items := props["/api/items/{id}"]

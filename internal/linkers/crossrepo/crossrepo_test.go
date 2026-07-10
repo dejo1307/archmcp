@@ -1032,3 +1032,24 @@ func TestComputeLinks_ExternalClientStillMatchesLoadedServer(t *testing.T) {
 			ec["detected"], ec["resolved"], ec["external"], ec["unresolved"])
 	}
 }
+
+// TestUnmatchedReasonConstants pins the string values of the Reason* constants. They
+// are written verbatim to a client route's "unmatched_reason" prop and are queried by
+// agents (query_facts(kind=route, prop=unmatched_reason, prop_value=...)), so a rename
+// that changed a value would silently break every such query and desync the doc
+// comments that name them. GAP-LK-10: the value "no_match" the comments once claimed is
+// deliberately absent — the resolver splits it into method_mismatch and path_unknown.
+func TestUnmatchedReasonConstants(t *testing.T) {
+	for _, tc := range []struct {
+		got, want string
+	}{
+		{ReasonNoMethod, "no_method"},
+		{ReasonGenericPath, "generic_path"},
+		{ReasonMethodMismatch, "method_mismatch"},
+		{ReasonPathUnknown, "path_unknown"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("reason constant = %q, want %q", tc.got, tc.want)
+		}
+	}
+}

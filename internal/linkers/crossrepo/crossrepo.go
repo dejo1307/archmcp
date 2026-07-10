@@ -452,11 +452,24 @@ func UnmatchedServerRouteKeys(all []facts.Fact) map[string]bool {
 	return unmatched
 }
 
+// The Reason* constants are the exhaustive set of values written to a client route's
+// "unmatched_reason" prop by UnmatchedClientRouteKeys (surfaced via
+// query_facts(kind=route, prop=unmatched_reason)). They are the string source of
+// truth: the doc comments on UnmatchedClientRouteKeys and Engine.flagUnmatchedRoutes
+// name them rather than restating the literals, so the value set cannot be described
+// in two files and silently drift. Changing a value here changes emitted facts.
+const (
+	ReasonNoMethod       = "no_method"       // the call site carried no usable HTTP verb
+	ReasonGenericPath    = "generic_path"    // a sub-2-segment path the matcher deliberately skips
+	ReasonMethodMismatch = "method_mismatch" // a server route serves this path suffix, but not this verb
+	ReasonPathUnknown    = "path_unknown"    // no server route shares a >=2-segment suffix with this path
+)
+
 // UnmatchedClientRouteKeys returns the identity (see RouteIdentity) of every client
 // route the cross-repo HTTP linker could not resolve to a loaded server route,
-// mapped to a short reason: "no_method" (the call site carried no usable verb),
-// "generic_path" (a sub-2-segment path the matcher deliberately skips), or
-// "no_match" (no server route shares a >=2-segment suffix + method). It mirrors
+// mapped to one of the Reason* constants: ReasonNoMethod, ReasonGenericPath,
+// ReasonMethodMismatch (a server serves this path suffix, but not this verb), or
+// ReasonPathUnknown (no server shares a >=2-segment suffix with this path). It mirrors
 // linkHTTP's exact resolution steps, so the set is precisely the client calls that
 // fell into the unresolved coverage count — the queryable counterpart to the
 // aggregate edge_coverage numbers. External calls (hardcoded third-party hosts) are
@@ -478,12 +491,12 @@ func UnmatchedClientRouteKeys(all []facts.Fact) map[string]string {
 		id := RouteIdentity(f)
 		method := normalizeMethod(propString(f, "method"))
 		if method == "" {
-			unmatched[id] = "no_method"
+			unmatched[id] = ReasonNoMethod
 			continue
 		}
 		np := normalizePath(f.Name)
 		if isGenericPath(np) {
-			unmatched[id] = "generic_path"
+			unmatched[id] = ReasonGenericPath
 			continue
 		}
 		cp := canonicalLeadingSlash(np)
@@ -492,9 +505,9 @@ func UnmatchedClientRouteKeys(all []facts.Fact) map[string]string {
 			// Distinguish "a server serves this path but not this verb" from "no
 			// server serves this path at all", so the residual is self-triaging.
 			if clientPathHasServer(serverSuffixes, cp) {
-				unmatched[id] = "method_mismatch"
+				unmatched[id] = ReasonMethodMismatch
 			} else {
-				unmatched[id] = "path_unknown"
+				unmatched[id] = ReasonPathUnknown
 			}
 		}
 	}
