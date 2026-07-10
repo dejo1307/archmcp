@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -30,6 +31,26 @@ func (r *LLMContextRenderer) Name() string {
 type section struct {
 	name    string
 	content string
+	// reserve sets this section's budget aside before layout, so an oversized
+	// earlier section cannot starve it.
+	reserve bool
+}
+
+// cutAt returns the first n bytes of s, backed off to the nearest rune boundary.
+// The token budget is counted in bytes but the content is UTF-8, so a naive slice
+// can split a multi-byte character (a warning glyph, a non-ASCII identifier) and
+// emit invalid UTF-8.
+func cutAt(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n < 0 {
+		n = 0
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // Render produces the llm_context.md artifact using progressive summarization.
@@ -38,59 +59,77 @@ type section struct {
 func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapshot) ([]facts.Artifact, error) {
 	// Sections ordered by priority (most important first)
 	sections := []section{
-		{"Repository Map", r.renderRepoMap(snapshot)},
+		{name: "Repository Map", content: r.renderRepoMap(snapshot)},
 		// Extraction Quality is a compact trust-preface: it states how complete this
-		// extraction was (thin extraction, parse errors, coverage gaps) BEFORE the
-		// reader relies on the map below. It sits high on purpose — it is small, and
-		// it is the in-loop signal an agent uses to spot when enola's own coverage is
-		// the problem, so it must survive the token budget rather than being the first
-		// thing truncated on a large repo.
-		{"Extraction Quality", r.renderExtractionQuality(snapshot)},
-		{"Architecture Pattern", r.renderArchPattern(snapshot)},
-		{"Cross-Repo Dependencies", r.renderCrossRepo(snapshot)},
-		{"Entry Points", r.renderEntryPoints(snapshot)},
-		{"Routes", r.renderRoutes(snapshot)},
-		{"Storage", r.renderStorage(snapshot)},
-		{"Dependency Rules", r.renderDependencyRules(snapshot)},
-		{"Critical Modules", r.renderCriticalModules(snapshot)},
-		{"Risk Zones", r.renderRiskZones(snapshot)},
-		{"How to Add a Feature", r.renderFeatureGuide(snapshot)},
-		{"Meta", r.renderMeta(snapshot)},
+		// extraction was (thin extraction, parse errors, unresolved cross-repo edges)
+		// before the reader relies on the graph. It is reserved rather than merely
+		// placed high: Repository Map grows with the repo and, on a large multi-repo
+		// snapshot, overran the whole budget — which truncated this section away on
+		// exactly the clusters whose extraction is least complete.
+		{name: "Extraction Quality", content: r.renderExtractionQuality(snapshot), reserve: true},
+		{name: "Architecture Pattern", content: r.renderArchPattern(snapshot)},
+		{name: "Cross-Repo Dependencies", content: r.renderCrossRepo(snapshot)},
+		{name: "Entry Points", content: r.renderEntryPoints(snapshot)},
+		{name: "Routes", content: r.renderRoutes(snapshot)},
+		{name: "Storage", content: r.renderStorage(snapshot)},
+		{name: "Dependency Rules", content: r.renderDependencyRules(snapshot)},
+		{name: "Critical Modules", content: r.renderCriticalModules(snapshot)},
+		{name: "Risk Zones", content: r.renderRiskZones(snapshot)},
+		{name: "How to Add a Feature", content: r.renderFeatureGuide(snapshot)},
+		{name: "Meta", content: r.renderMeta(snapshot)},
 	}
 
 	header := "# Architecture Snapshot\n\n"
 	maxChars := r.maxTokens * 4 // rough estimate: 1 token ~= 4 chars
 	remaining := maxChars - len(header)
 
+	// Set the reserved sections' budget aside before laying anything out, so the
+	// running total the loop spends can never encroach on them. Sections are still
+	// emitted in priority order; reserving buys survival, not precedence.
+	for _, sec := range sections {
+		if sec.reserve {
+			remaining -= len(sec.content)
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString(header)
 
+	// Once the budget is spent, keep scanning: a later reserved section is still owed
+	// the bytes held back for it.
+	spent := false
 	for i, sec := range sections {
 		if sec.content == "" {
 			continue
 		}
-		if len(sec.content) <= remaining {
+		if sec.reserve {
+			sb.WriteString(sec.content)
+			continue
+		}
+		if spent {
+			continue
+		}
+
+		switch {
+		case len(sec.content) <= remaining:
 			sb.WriteString(sec.content)
 			remaining -= len(sec.content)
-		} else if remaining > 200 {
+		case remaining > 200:
 			// Partially include this section
-			cutpoint := remaining - 100
-			if cutpoint < 0 {
-				cutpoint = 0
-			}
-			sb.WriteString(sec.content[:cutpoint])
+			sb.WriteString(cutAt(sec.content, remaining-100))
 			fmt.Fprintf(&sb, "\n\n---\n*[Truncated in: %s]*\n", sec.name)
-			break
-		} else {
-			// List omitted sections
+			spent = true
+		default:
+			// List omitted sections. Reserved ones are not omitted, so naming them
+			// here would be a lie.
 			var omitted []string
 			for _, s := range sections[i:] {
-				if s.content != "" {
+				if s.content != "" && !s.reserve {
 					omitted = append(omitted, s.name)
 				}
 			}
 			fmt.Fprintf(&sb, "\n\n---\n*[Omitted: %s]*\n", strings.Join(omitted, ", "))
-			break
+			spent = true
 		}
 	}
 
@@ -570,7 +609,8 @@ func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string
 // reading the snapshot can SEE thin extraction (a bad ignore glob, a failing
 // extractor, unresolved cross-repo edges) without calling snapshot_receipt — the
 // in-loop signal for improving enola's own coverage. It emphasizes genuine
-// signals (parse errors, coverage gaps) and stays quiet when extraction is clean.
+// signals (parse errors, coverage gaps, unresolved edges) and stays quiet when
+// extraction is clean.
 func (r *LLMContextRenderer) renderExtractionQuality(snapshot *facts.Snapshot) string {
 	m := snapshot.Meta
 	// Nothing meaningful to report on an old/auto-loaded snapshot with no receipt.
@@ -589,12 +629,27 @@ func (r *LLMContextRenderer) renderExtractionQuality(snapshot *facts.Snapshot) s
 		sb.WriteString("- Parse errors: 0\n")
 	}
 
-	if m.Coverage != nil && m.Coverage.CoverageGaps > 0 {
-		fmt.Fprintf(&sb, "- ⚠️ Cross-repo coverage gaps: **%d** service(s), %d unresolved outbound edge(s) — some links could not be resolved to a loaded repo\n",
-			m.Coverage.CoverageGaps, m.Coverage.UnresolvedEdges)
+	// Gaps and unresolved edges are independent: a connected service has resolved an
+	// outbound edge by definition, yet may still have call sites that resolved to no
+	// loaded repo. Guarding the count on the gap total hid it on exactly the healthy
+	// multi-repo snapshot an agent is most likely to trust. External edges are a third
+	// signal — expected, not a blind spot — so they are reported without a warning.
+	if m.Coverage != nil {
+		if m.Coverage.CoverageGaps > 0 {
+			fmt.Fprintf(&sb, "- ⚠️ Cross-repo coverage gaps: **%d** service(s) with no resolved outbound edges — their outbound links could not be resolved to a loaded repo\n",
+				m.Coverage.CoverageGaps)
+		}
+		if m.Coverage.UnresolvedEdges > 0 {
+			fmt.Fprintf(&sb, "- ⚠️ Unresolved outbound edges: **%d** — call site(s) that did not resolve to a loaded repo (an unloaded repo, or an extractor blind spot)\n",
+				m.Coverage.UnresolvedEdges)
+		}
+		if m.Coverage.ExternalEdges > 0 {
+			fmt.Fprintf(&sb, "- Outbound edges to external hosts: **%d** — third-party APIs, expected (not a coverage blind spot)\n",
+				m.Coverage.ExternalEdges)
+		}
 	}
 
-	if m.ParseErrors > 0 || (m.Coverage != nil && m.Coverage.CoverageGaps > 0) {
+	if m.ParseErrors > 0 || (m.Coverage != nil && (m.Coverage.CoverageGaps > 0 || m.Coverage.UnresolvedEdges > 0)) {
 		sb.WriteString("\n_These are extraction limits, not code defects — verify against source, and consider whether an extractor, detection, or ignore glob needs improving._\n")
 	}
 

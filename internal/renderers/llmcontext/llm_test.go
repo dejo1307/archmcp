@@ -2,8 +2,10 @@ package llmcontext
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -246,6 +248,188 @@ func TestCriticalModules_FanInFanOut(t *testing.T) {
 	// lib-core has fanIn=3, fanOut=0, score=3 → "low" criticality
 	if !strings.Contains(content, "| 3 | 0 |") {
 		t.Error("expected lib-core to have fanIn=3, fanOut=0")
+	}
+}
+
+// renderWithCoverage renders a minimal snapshot whose only extraction-quality
+// signal is the given cross-repo coverage summary. A nil summary is the
+// single-repo shape: coverageSummary returns nil when there are no service nodes.
+func renderWithCoverage(t *testing.T, cov *facts.CoverageSummary) string {
+	t.Helper()
+	snapshot := makeSnapshot(nil, nil)
+	snapshot.Meta.Coverage = cov
+	return string(mustRender(t, snapshot))
+}
+
+// lineWith returns the first rendered line containing substr, or "" if none does.
+func lineWith(content, substr string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, substr) {
+			return line
+		}
+	}
+	return ""
+}
+
+// A connected service resolves at least one outbound edge, so it is not a coverage
+// gap — yet any call site it could not resolve still lands in UnresolvedEdges. That
+// is the normal healthy multi-repo shape, and it must not hide the count.
+func TestExtractionQuality_UnresolvedEdgesWithoutGaps(t *testing.T) {
+	content := renderWithCoverage(t, &facts.CoverageSummary{
+		ServicesTotal: 4, CoverageGaps: 0, UnresolvedEdges: 23, ExternalEdges: 2,
+	})
+
+	unresolved := lineWith(content, "Unresolved outbound edges")
+	if !strings.Contains(unresolved, "**23**") {
+		t.Errorf("unresolved-edge count not rendered; got line %q in:\n%s", unresolved, content)
+	}
+	if !strings.Contains(unresolved, "⚠️") {
+		t.Errorf("unresolved edges are an internal blind spot and must be flagged; got %q", unresolved)
+	}
+
+	external := lineWith(content, "external hosts")
+	if !strings.Contains(external, "**2**") {
+		t.Errorf("external-edge count not rendered; got line %q in:\n%s", external, content)
+	}
+	// External call sites are expected, not a blind spot: flagging them would invite
+	// exactly the misreading this section exists to prevent.
+	if strings.Contains(external, "⚠️") {
+		t.Errorf("external edges must not be flagged as a warning; got %q", external)
+	}
+
+	if strings.Contains(content, "coverage gaps") {
+		t.Errorf("no gaps in this snapshot, yet a gaps line rendered:\n%s", content)
+	}
+	if !strings.Contains(content, "These are extraction limits") {
+		t.Errorf("unresolved edges are an extraction limit; footer missing in:\n%s", content)
+	}
+}
+
+func TestExtractionQuality_GapsStillRender(t *testing.T) {
+	content := renderWithCoverage(t, &facts.CoverageSummary{
+		ServicesTotal: 2, CoverageGaps: 1, UnresolvedEdges: 348,
+	})
+
+	if gaps := lineWith(content, "Cross-repo coverage gaps"); !strings.Contains(gaps, "**1**") {
+		t.Errorf("gap count not rendered; got line %q in:\n%s", gaps, content)
+	}
+	if unresolved := lineWith(content, "Unresolved outbound edges"); !strings.Contains(unresolved, "**348**") {
+		t.Errorf("unresolved count not rendered alongside gaps; got line %q in:\n%s", unresolved, content)
+	}
+	if strings.Contains(content, "external hosts") {
+		t.Errorf("no external edges in this snapshot, yet a line rendered:\n%s", content)
+	}
+	if !strings.Contains(content, "These are extraction limits") {
+		t.Errorf("footer missing in:\n%s", content)
+	}
+}
+
+// Clean cross-repo coverage stays quiet: the section header still renders (Coverage
+// is non-nil), but nothing warns.
+func TestExtractionQuality_CleanCoverageQuiet(t *testing.T) {
+	content := renderWithCoverage(t, &facts.CoverageSummary{ServicesTotal: 4})
+
+	if !strings.Contains(content, "## Extraction Quality") {
+		t.Fatalf("section should render whenever Coverage is non-nil:\n%s", content)
+	}
+	for _, unwanted := range []string{
+		"coverage gaps", "Unresolved outbound edges", "external hosts", "These are extraction limits",
+	} {
+		if strings.Contains(content, unwanted) {
+			t.Errorf("clean coverage must not render %q in:\n%s", unwanted, content)
+		}
+	}
+}
+
+// A single-repo snapshot has no service nodes, so Coverage is nil and there is no
+// receipt to report on at all.
+func TestExtractionQuality_SingleRepoNoCoverage(t *testing.T) {
+	content := renderWithCoverage(t, nil)
+	if strings.Contains(content, "## Extraction Quality") {
+		t.Errorf("section should be absent with no receipt and no coverage:\n%s", content)
+	}
+}
+
+// bigRepoMapSnapshot returns a snapshot whose Repository Map alone overruns any
+// small token budget — the shape of a real multi-repo cluster.
+func bigRepoMapSnapshot(modules int, cov *facts.CoverageSummary) *facts.Snapshot {
+	var ff []facts.Fact
+	for i := 0; i < modules; i++ {
+		ff = append(ff, facts.Fact{
+			Kind:  facts.KindModule,
+			Name:  fmt.Sprintf("service/%03d/%s", i, strings.Repeat("segment_", 4)),
+			Props: map[string]any{"language": "go"},
+		})
+	}
+	snapshot := makeSnapshot(ff, nil)
+	snapshot.Meta.FilesSeen = 5552
+	snapshot.Meta.FilesParsed = 2870
+	snapshot.Meta.Coverage = cov
+	return snapshot
+}
+
+// The Extraction Quality preface is the signal an agent uses to calibrate how far to
+// trust the graph, and it is worth more than the tail of a module table. An earlier
+// oversized section must not starve it — which is exactly what happened on a 4-repo
+// snapshot, where the whole section vanished behind "[Truncated in: Repository Map]".
+func TestRender_ExtractionQualitySurvivesTruncatedRepoMap(t *testing.T) {
+	const maxTokens = 1000
+	snapshot := bigRepoMapSnapshot(400, &facts.CoverageSummary{
+		ServicesTotal: 4, CoverageGaps: 0, UnresolvedEdges: 23, ExternalEdges: 2,
+	})
+
+	artifacts, err := New(maxTokens).Render(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	content := string(artifacts[0].Content)
+
+	if !strings.Contains(content, "[Truncated in: Repository Map]") {
+		t.Fatalf("test is not exercising truncation; Repository Map fit the budget:\n%s", content)
+	}
+	if !strings.Contains(content, "## Extraction Quality") {
+		t.Errorf("Extraction Quality starved by an earlier oversized section:\n%s", content)
+	}
+	if !strings.Contains(content, "**23**") {
+		t.Errorf("unresolved-edge count lost to truncation:\n%s", content)
+	}
+	// The reservation must come out of the budget, not be added on top of it.
+	if limit := maxTokens*4 + 100; len(content) > limit {
+		t.Errorf("content length %d exceeds budget %d", len(content), limit)
+	}
+}
+
+// The budget is a byte count, but the content is UTF-8: a warning glyph or a
+// non-ASCII identifier must never be cut in half into invalid UTF-8.
+func TestCutAt_NeverSplitsRune(t *testing.T) {
+	s := "map: `ünïcode/módule` ⚠️ tail"
+	for n := 0; n <= len(s); n++ {
+		got := cutAt(s, n)
+		if !utf8.ValidString(got) {
+			t.Errorf("cutAt(%q, %d) = %q, which is not valid UTF-8", s, n, got)
+		}
+		if len(got) > n {
+			t.Errorf("cutAt(%q, %d) returned %d bytes, over the limit", s, n, len(got))
+		}
+	}
+}
+
+// The cut point moves with the budget, so sweep it: some budget lands mid-rune in a
+// non-ASCII module name, and the artifact must stay valid UTF-8 at every one.
+func TestRender_TruncatedOutputIsValidUTF8(t *testing.T) {
+	snapshot := bigRepoMapSnapshot(400, nil)
+	for i := range snapshot.Facts {
+		snapshot.Facts[i].Name = fmt.Sprintf("sérvice/%03d/%s", i, strings.Repeat("ø", 20))
+	}
+
+	for tokens := 200; tokens <= 400; tokens++ {
+		artifacts, err := New(tokens).Render(context.Background(), snapshot)
+		if err != nil {
+			t.Fatalf("Render(%d): %v", tokens, err)
+		}
+		if !utf8.Valid(artifacts[0].Content) {
+			t.Fatalf("truncation at maxTokens=%d produced invalid UTF-8", tokens)
+		}
 	}
 }
 
