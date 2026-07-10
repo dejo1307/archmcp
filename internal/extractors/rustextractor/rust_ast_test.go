@@ -1,6 +1,7 @@
 package rustextractor
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -470,5 +471,176 @@ func TestAST_ExternCrate(t *testing.T) {
 	deps := findFactsByKind(ff, facts.KindDependency)
 	if len(deps) != 1 || deps[0].Props["source"] != "external" {
 		t.Errorf("expected 1 external dependency fact for extern crate serde, got %+v", deps)
+	}
+}
+
+// --- Import-based bare-call resolution ---
+
+func TestAST_BareCallResolvesThroughInternalImport(t *testing.T) {
+	ff, _ := extractFileAST([]byte(`
+use self::helper::run;
+
+fn caller() {
+    run();
+}
+`), "pkg/lib.rs",
+		[]crateInfo{{name: "pkg", dir: "pkg"}},
+		map[string]bool{"pkg": true, "pkg/helper": true})
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	if !hasRelation(c, facts.RelCalls, "pkg/helper.run") {
+		t.Errorf("expected RelCalls -> pkg/helper.run via the use import, got %+v", c.Relations)
+	}
+}
+
+func TestAST_BareCallToExternalImport_NoEdge(t *testing.T) {
+	ff := extractAST(t, `
+use serde::Deserialize;
+
+fn caller() {
+    Deserialize();
+}
+`)
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	// Capitalized bare call -> instantiates, not calls; either way it must not
+	// resolve to a phantom local fact name.
+	for _, r := range c.Relations {
+		if r.Kind == facts.RelCalls && strings.HasPrefix(r.Target, "pkg.") {
+			t.Errorf("external import must not resolve to a local fact name, got %+v", r)
+		}
+	}
+}
+
+func TestAST_ImportedNameShadowedBySiblingMethod(t *testing.T) {
+	// A sibling method of the same name takes priority over an import — the
+	// import map is only consulted when nothing closer resolves.
+	ff, _ := extractFileAST([]byte(`
+use self::other::run;
+
+struct Service;
+impl Service {
+    fn call(&self) {
+        run();
+    }
+    fn run(&self) {}
+}
+`), "pkg/lib.rs",
+		[]crateInfo{{name: "pkg", dir: "pkg"}},
+		map[string]bool{"pkg": true, "pkg/other": true})
+	c, ok := findFact(ff, "pkg.Service.call")
+	if !ok {
+		t.Fatal("expected fact for pkg.Service.call")
+	}
+	if !hasRelation(c, facts.RelCalls, "pkg.Service.run") {
+		t.Errorf("expected the sibling method to win over the import, got %+v", c.Relations)
+	}
+	if hasRelation(c, facts.RelCalls, "pkg/other.run") {
+		t.Errorf("import must not shadow a closer sibling method, got %+v", c.Relations)
+	}
+}
+
+// --- #[cfg(test)] mod isolation ---
+
+func TestAST_CfgTestMod_NoProductionFacts(t *testing.T) {
+	ff := extractAST(t, `
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture;
+
+    #[test]
+    fn it_adds() {
+        assert_eq!(add(1, 2), 3);
+    }
+}
+`)
+	if _, ok := findFact(ff, "pkg.tests.it_adds"); ok {
+		t.Error("test function must not become a production symbol fact")
+	}
+	if _, ok := findFact(ff, "pkg.tests.Fixture"); ok {
+		t.Error("test-only fixture struct must not become a production symbol fact")
+	}
+	// The production function is unaffected.
+	if _, ok := findFact(ff, "pkg.add"); !ok {
+		t.Error("expected the production function pkg.add to still be emitted")
+	}
+}
+
+func TestAST_CfgTestMod_CreditsProductionCallsAsTestRef(t *testing.T) {
+	ff := extractAST(t, `
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_adds() {
+        // Deliberately not wrapped in assert_eq!(...) — macro arguments are
+        // raw token trees to tree-sitter, not a parsed call_expression, so a
+        // call made only inside a macro invocation is invisible to the walker.
+        let result = add(1, 2);
+        assert_eq!(result, 3);
+    }
+}
+`)
+	refs := findFactsByKind(ff, facts.KindTestRef)
+	if len(refs) != 1 {
+		t.Fatalf("expected exactly 1 KindTestRef fact, got %d: %+v", len(refs), refs)
+	}
+	if refs[0].Name != "pkg/lib.rs" || refs[0].File != "pkg/lib.rs" {
+		t.Errorf("KindTestRef fact should be keyed by file path, got Name=%q File=%q", refs[0].Name, refs[0].File)
+	}
+	if !hasRelation(refs[0], facts.RelCalls, "pkg.add") {
+		t.Errorf("expected RelCalls -> pkg.add from the test body, got %+v", refs[0].Relations)
+	}
+}
+
+func TestAST_NonCfgTestMod_StillProduction(t *testing.T) {
+	// A mod without #[cfg(test)] (even if named "tests") is ordinary code.
+	ff := extractAST(t, `
+mod tests {
+    pub fn helper() {}
+}
+`)
+	if _, ok := findFact(ff, "pkg.tests.helper"); !ok {
+		t.Error("expected pkg.tests.helper to be a normal production symbol (no #[cfg(test)] gate)")
+	}
+}
+
+func TestAST_CfgTestMod_NestedInsideMod(t *testing.T) {
+	ff := extractAST(t, `
+mod inner {
+    pub fn helper() {}
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn it_works() {
+            helper();
+        }
+    }
+}
+`)
+	if _, ok := findFact(ff, "pkg.inner.tests.it_works"); ok {
+		t.Error("nested #[cfg(test)] mod must still be suppressed")
+	}
+	refs := findFactsByKind(ff, facts.KindTestRef)
+	if len(refs) != 1 || !hasRelation(refs[0], facts.RelCalls, "pkg.inner.helper") {
+		t.Errorf("expected a KindTestRef -> pkg.inner.helper, got %+v", refs)
 	}
 }

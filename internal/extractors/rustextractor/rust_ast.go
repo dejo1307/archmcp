@@ -13,9 +13,10 @@ import (
 // extractFileAST parses a Rust file with tree-sitter and emits architectural
 // facts: module-directory-scoped symbols (functions, methods, structs, enums,
 // traits, type aliases, consts/statics), dependency facts for `use`
-// declarations, RelCalls/RelInstantiates relations, and per-function
-// cyclomatic complexity. impl-trait observations are returned separately (see
-// implPair) because attaching them requires the full, merged fact set.
+// declarations, RelCalls/RelInstantiates relations, per-function cyclomatic
+// complexity, and (Axum) route facts. impl-trait observations are returned
+// separately (see implPair) because attaching them requires the full, merged
+// fact set.
 func extractFileAST(src []byte, relFile string, crates []crateInfo, moduleDirs map[string]bool) ([]facts.Fact, []implPair) {
 	parser := sitter.NewParser()
 	defer parser.Close()
@@ -25,6 +26,7 @@ func extractFileAST(src []byte, relFile string, crates []crateInfo, moduleDirs m
 
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
+	root := tree.RootNode()
 
 	dir := filepath.ToSlash(filepath.Dir(relFile))
 	w := &astWalker{
@@ -35,7 +37,24 @@ func extractFileAST(src []byte, relFile string, crates []crateInfo, moduleDirs m
 		crates:     crates,
 		moduleDirs: moduleDirs,
 	}
-	w.walkSourceFile(tree.RootNode())
+	w.walkSourceFile(root)
+
+	// A #[cfg(test)] module's calls into production code are collected across
+	// the whole file (see enterTestMod) into a single reference-only fact,
+	// rather than one per test function, matching the KindTestRef convention
+	// used by the Ruby extractor's spec-file handling.
+	if len(w.testRefRels) > 0 {
+		w.out = append(w.out, facts.Fact{
+			Kind:      facts.KindTestRef,
+			Name:      relFile,
+			File:      relFile,
+			Props:     map[string]any{"language": "rust"},
+			Relations: w.testRefRels,
+		})
+	}
+
+	w.out = append(w.out, extractAxumRoutes(root, src, relFile, dir)...)
+
 	return w.out, w.impls
 }
 
@@ -72,6 +91,26 @@ type astWalker struct {
 	// decisions counts cyclomatic decision points in the function/method body
 	// currently being walked; saved/restored around nested function items.
 	decisions int
+
+	// importMap maps a `use`-imported simple name to its canonical symbol fact
+	// name (e.g. "run" -> "src/helper.run") when the import resolved to a known
+	// internal directory, or to "" when it resolved to an external/stdlib crate
+	// (imported, but no local fact — a bare call to it must not be resolved).
+	// Populated by emitDependency; consulted by resolveCall.
+	importMap map[string]string
+
+	// inTestMod is true while walking inside a #[cfg(test)] module's subtree.
+	// No symbol facts are emitted there (test functions/fixtures never become
+	// production symbols), and calls are redirected into testRefRels instead of
+	// the owner stack — see enterTestMod.
+	inTestMod bool
+	// testRefRels accumulates the (deduplicated) RelCalls edges a #[cfg(test)]
+	// module makes into production code, later emitted as a single KindTestRef
+	// fact for the file. Built as a plain slice rather than a pointer held into
+	// w.out, since appends to w.out elsewhere in the walk can reallocate its
+	// backing array and silently orphan writes through a stale pointer.
+	testRefRels []facts.Relation
+	testRefSeen map[string]bool
 }
 
 // calleeForm classifies how a call_expression's callee was written, so the
@@ -88,6 +127,16 @@ func (w *astWalker) qualify(name string) string {
 	parts := make([]string, 0, len(w.modStack)+len(w.typeStack)+1)
 	parts = append(parts, w.modStack...)
 	parts = append(parts, w.typeStack...)
+	parts = append(parts, name)
+	return strings.Join(parts, ".")
+}
+
+// qualifyMod is like qualify but drops typeStack — used by resolveCall's
+// same-scope fallback, so it doesn't mistake a bare call to an unrelated
+// top-level function for a call scoped to the caller's enclosing impl block.
+func (w *astWalker) qualifyMod(name string) string {
+	parts := make([]string, 0, len(w.modStack)+1)
+	parts = append(parts, w.modStack...)
 	parts = append(parts, name)
 	return strings.Join(parts, ".")
 }
@@ -119,8 +168,90 @@ func (w *astWalker) currentMethods() map[string]bool {
 }
 
 func (w *astWalker) walkSourceFile(root *sitter.Node) {
-	for i := uint(0); i < uint(root.ChildCount()); i++ {
-		w.walkChild(root.Child(i))
+	w.walkItemsTrackingAttrs(root)
+}
+
+// walkItemsTrackingAttrs iterates parent's children like walkChild, but first
+// tracks preceding attribute_item siblings so a `#[cfg(test)] mod { ... }` can
+// be detected and routed into test mode (enterTestMod) instead of being walked
+// as ordinary production code. Attributes are separate sibling nodes in the
+// grammar, not children of the item they annotate, so this bookkeeping can't
+// live in walkChild itself. Used at file scope and inside mod bodies — the two
+// places a Rust test module can appear; impl/trait bodies never contain one.
+func (w *astWalker) walkItemsTrackingAttrs(parent *sitter.Node) {
+	sawCfgTest := false
+	for i := uint(0); i < uint(parent.ChildCount()); i++ {
+		c := parent.Child(i)
+		if c.Kind() == "attribute_item" {
+			if isCfgTestAttribute(nodeText(c, w.src)) {
+				sawCfgTest = true
+			}
+			continue
+		}
+		if c.Kind() == "mod_item" && sawCfgTest {
+			w.enterTestMod(c)
+		} else {
+			w.walkChild(c)
+		}
+		sawCfgTest = false
+	}
+}
+
+// isCfgTestAttribute reports whether an attribute_item's raw text is a
+// `#[cfg(test)]`-shaped gate. A coarse substring check (rather than requiring
+// an exact `cfg(test)` match) also catches compound forms like
+// `#[cfg(all(test, feature = "x"))]`, at the cost of a vanishingly unlikely
+// false positive (an attribute mentioning both words for an unrelated reason).
+func isCfgTestAttribute(text string) bool {
+	return strings.Contains(text, "cfg") && strings.Contains(text, "test")
+}
+
+// enterTestMod walks a #[cfg(test)] module's body in test mode: no symbol
+// facts are emitted for anything declared inside (so test helpers/fixtures
+// never pollute production symbol/complexity stats), and calls made from test
+// function bodies are credited to the file's single KindTestRef fact instead —
+// letting the dead-code detector see that a production symbol is exercised by
+// a test without treating the test code itself as production surface.
+func (w *astWalker) enterTestMod(node *sitter.Node) {
+	body := node.ChildByFieldName("body")
+	if body == nil {
+		return
+	}
+	saved := w.inTestMod
+	w.inTestMod = true
+	for i := uint(0); i < uint(body.ChildCount()); i++ {
+		w.walkTestItem(body.Child(i))
+	}
+	w.inTestMod = saved
+}
+
+// walkTestItem dispatches one item inside a #[cfg(test)] module. Only
+// function bodies are walked (for the calls they make into production code);
+// struct/enum/trait/impl/const/static declarations are test-only fixtures and
+// are skipped entirely — no fact, no further descent, since walking their
+// internals for calls into production code is low-value here. A nested `mod`
+// stays in test mode (module qualification doesn't matter — no symbol names
+// are being built), and `use` is still processed normally (e.g. `use super::*;`
+// contributes nothing resolvable to importMap, but is harmless to record).
+func (w *astWalker) walkTestItem(c *sitter.Node) {
+	switch c.Kind() {
+	case "function_item":
+		if body := c.ChildByFieldName("body"); body != nil {
+			w.walkForCalls(body)
+		}
+	case "mod_item":
+		if body := c.ChildByFieldName("body"); body != nil {
+			for i := uint(0); i < uint(body.ChildCount()); i++ {
+				w.walkTestItem(body.Child(i))
+			}
+		}
+	case "use_declaration":
+		w.handleUse(c)
+	case "impl_item", "struct_item", "enum_item", "trait_item",
+		"type_item", "const_item", "static_item", "function_signature_item":
+		// Test-only fixtures: intentionally not emitted or descended into.
+	default:
+		w.walkForCalls(c)
 	}
 }
 
@@ -171,9 +302,7 @@ func (w *astWalker) handleMod(node *sitter.Node) {
 		name = nodeText(n, w.src)
 	}
 	w.modStack = append(w.modStack, name)
-	for i := uint(0); i < uint(body.ChildCount()); i++ {
-		w.walkChild(body.Child(i))
-	}
+	w.walkItemsTrackingAttrs(body)
 	w.modStack = w.modStack[:len(w.modStack)-1]
 }
 
@@ -419,11 +548,9 @@ func (w *astWalker) handleExternCrate(node *sitter.Node) {
 	w.emitDependency([]string{nodeText(nameNode, w.src)}, int(node.StartPosition().Row)+1)
 }
 
-// emitDependency classifies a `use`/`extern crate` path and emits the
-// dependency fact, plus (for a resolvable single-segment item name) an
-// importMap-equivalent resolveCall fallback is intentionally NOT populated
-// here — see resolveCall's doc comment for why bare-call resolution stays
-// local to the enclosing impl/module instead of following imports.
+// emitDependency classifies a `use`/`extern crate` path, emits the dependency
+// fact, and records the imported simple name in importMap so a later bare call
+// to it resolves (see resolveCall).
 func (w *astWalker) emitDependency(segs []string, line int) {
 	if len(segs) == 0 || segs[len(segs)-1] == "" {
 		return
@@ -441,6 +568,30 @@ func (w *astWalker) emitDependency(segs []string, line int) {
 		},
 		Relations: []facts.Relation{{Kind: facts.RelImports, Target: target}},
 	})
+	w.recordImportMapping(segs, target, source)
+}
+
+// recordImportMapping maps the imported item's simple name — the last "::"
+// segment, e.g. "run" in "self::helper::run" — to its canonical symbol fact
+// name (target + "." + name) when the import resolved internally, or to ""
+// when it resolved to an external/stdlib crate (imported, but no local fact
+// exists, so a bare call to it must not be resolved). A wildcard import
+// (`use foo::*;`, last segment "*") brings an unknown set of names into scope
+// and is skipped — recording nothing is safe; it just leaves those calls
+// unresolved rather than guessing.
+func (w *astWalker) recordImportMapping(segs []string, target, source string) {
+	last := segs[len(segs)-1]
+	if last == "" || last == "*" {
+		return
+	}
+	if w.importMap == nil {
+		w.importMap = make(map[string]string)
+	}
+	if source == "internal" {
+		w.importMap[last] = target + "." + last
+	} else {
+		w.importMap[last] = ""
+	}
 }
 
 // collectUseItems expands a `use` declaration's argument tree into one
@@ -531,67 +682,80 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 // it needs its own case. Field values are walked for nested calls by the
 // normal child recursion in walkForCalls, not here.
 func (w *astWalker) handleStructExpression(node *sitter.Node) {
-	owner := w.currentOwner()
-	if owner == nil {
-		return
-	}
 	name := simpleTypeName(node.ChildByFieldName("name"), w.src)
 	if name == "" {
 		return
 	}
-	owner.Relations = append(owner.Relations, facts.Relation{Kind: facts.RelInstantiates, Target: name})
+	w.emitEdge(facts.RelInstantiates, name)
 }
 
 func (w *astWalker) handleCallExpression(node *sitter.Node) {
-	owner := w.currentOwner()
-	if owner == nil {
-		return
-	}
 	name, form := w.calleeTrailing(node.ChildByFieldName("function"))
 	if name == "" {
 		return
 	}
 	if isCapitalized(name) {
-		owner.Relations = append(owner.Relations, facts.Relation{Kind: facts.RelInstantiates, Target: name})
+		w.emitEdge(facts.RelInstantiates, name)
 		return
 	}
 	switch form {
 	case calleeBare:
 		if target := w.resolveCall(name); target != "" {
-			owner.Relations = append(owner.Relations, facts.Relation{Kind: facts.RelCalls, Target: target})
+			w.emitEdge(facts.RelCalls, target)
 		}
 	case calleeSelfRef:
 		if methods := w.currentMethods(); methods[name] {
-			owner.Relations = append(owner.Relations, facts.Relation{
-				Kind:   facts.RelCalls,
-				Target: w.dir + "." + w.qualify(name),
-			})
+			w.emitEdge(facts.RelCalls, w.dir+"."+w.qualify(name))
 		}
 	case calleeOther:
 		// Receiver/path type is unknown without full type inference. Emitting
 		// the bare member name still lets short-name dead-code matching mark
 		// the (unqualified) target used, mirroring the Kotlin extractor's
 		// navigation_expression fallback.
-		owner.Relations = append(owner.Relations, facts.Relation{Kind: facts.RelCalls, Target: name})
+		w.emitEdge(facts.RelCalls, name)
 	}
 }
 
-// resolveCall maps a bare call name to a canonical symbol fact name: a sibling
-// method of the enclosing impl/trait block, or a same-directory top-level
-// function. Calls to a name reached only through a `use` import are
-// deliberately left unresolved (rather than guessing a same-directory
-// fallback that could collide with an unrelated local symbol of the same
-// name) — precise cross-file bare-call resolution would need the same
-// whole-crate module-tree knowledge that submodule `use` resolution already
-// approximates in classifyUsePath, which isn't attempted for call sites.
+// emitEdge records a relation either on the current production owner, or —
+// while walking a #[cfg(test)] module (w.inTestMod) — as a deduplicated
+// RelCalls reference into testRefRels. KindTestRef carries only RelCalls (per
+// its doc comment), so a would-be RelInstantiates from a test still just
+// proves the target is used, not constructed for real.
+func (w *astWalker) emitEdge(kind, target string) {
+	if w.inTestMod {
+		if w.testRefSeen == nil {
+			w.testRefSeen = make(map[string]bool)
+		}
+		if w.testRefSeen[target] {
+			return
+		}
+		w.testRefSeen[target] = true
+		w.testRefRels = append(w.testRefRels, facts.Relation{Kind: facts.RelCalls, Target: target})
+		return
+	}
+	owner := w.currentOwner()
+	if owner == nil {
+		return
+	}
+	owner.Relations = append(owner.Relations, facts.Relation{Kind: kind, Target: target})
+}
+
+// resolveCall maps a bare call name to a canonical symbol fact name, in order
+// of preference: a sibling method of the enclosing impl/trait block, a name
+// brought into scope by a `use` import (internal target, or "" to suppress an
+// external/stdlib one), or a same-directory top-level function as the final
+// fallback.
 func (w *astWalker) resolveCall(name string) string {
 	if methods := w.currentMethods(); methods[name] {
 		return w.dir + "." + w.qualify(name)
 	}
+	if target, ok := w.importMap[name]; ok {
+		return target
+	}
 	if rustBuiltins[name] {
 		return ""
 	}
-	return w.dir + "." + name
+	return w.dir + "." + w.qualifyMod(name)
 }
 
 // calleeTrailing extracts a call_expression's callee simple name and reports
