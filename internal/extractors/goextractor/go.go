@@ -162,12 +162,17 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *par
 	// resolves at its call sites.
 	pkgVarClients := collectPackageVarClients(pp.parsedFiles, grpcStubs)
 
+	// Package-scoped string-literal bindings (const/var/assign/field) so a
+	// `baseURL + "/path"` client call can recover the host the concat discards,
+	// even when the base URL is declared in a sibling file of the same package.
+	baseURLLits := collectBaseURLLiterals(pp.parsedFiles)
+
 	for _, relFile := range pp.relFiles {
 		f, ok := pp.fileMap[relFile]
 		if !ok {
 			continue
 		}
-		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames, grpcStubs, pkgVarClients)...)
+		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames, grpcStubs, pkgVarClients, baseURLLits)...)
 	}
 
 	moduleFact := facts.Fact{
@@ -189,7 +194,7 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *par
 	return result
 }
 
-func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex, pkgVarClients map[string]string) []facts.Fact {
+func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex, pkgVarClients map[string]string, baseURLLits map[string][]string) []facts.Fact {
 	var result []facts.Fact
 
 	// Build per-file import alias map for call resolution.
@@ -240,7 +245,7 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 	result = append(result, extractRoutes(fset, f, relFile, pkgDir)...)
 
 	// Extract outbound HTTP-client calls
-	result = append(result, extractHTTPClientFacts(fset, f, relFile, pkgDir)...)
+	result = append(result, extractHTTPClientFacts(fset, f, relFile, pkgDir, baseURLLits)...)
 
 	// Extract outbound gRPC-client calls
 	result = append(result, extractGRPCClientFacts(fset, f, relFile, pkgDir, modulePath, fileImports, fieldTypes, pkgVarClients, grpcStubs)...)

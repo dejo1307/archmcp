@@ -296,7 +296,19 @@ import (
 // spelled exactly as one from production and inherits goBuiltins filtering: a package-level
 // `min` shadowing the Go 1.21 builtin is still not credited, from either side. The file set
 // reaching the extractors changes, so cached snapshots must re-extract.
-const cacheVersion = "v100"
+// v101: the Go HTTP-client extractor recovers the host that `baseURL + "/path"`
+// concatenation discards. It resolves the base identifier through a package-scoped
+// string-literal index (const/var/assignment/composite-field bindings) and, when
+// every binding is an absolute http(s) URL, tags the route external=true (plus a
+// host prop when the bindings agree on one host). Before this, a service calling
+// only third-party APIs — golf, calling ZeptoMail and MailerLite via base-URL
+// concats — accumulated phantom "unresolved internal edges" and was misclassified
+// coverage_gap. A config-injected base (options.BaseURL, no literal binding) stays
+// an internal client route. Route facts gain external/host props, so cached Go
+// snapshots must re-extract. (The paired linker change — matching a client route
+// before bucketing it external, so a hardcoded internal host still resolves — runs
+// post-extraction and needs no cache bump; it is covered by TestGolden here.)
+const cacheVersion = "v101"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

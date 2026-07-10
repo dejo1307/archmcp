@@ -58,6 +58,11 @@ var fixtures = []fixture{
 	{name: "multirepo", subRepos: []string{"repoA", "repoB"}},
 	{name: "php_multirepo", subRepos: []string{"provider", "consumer"}},
 	{name: "go_grpc_multirepo", subRepos: []string{"server", "client"}},
+	// A Go backend plus a Go client that calls it and two third-party APIs. Pins
+	// GAP-LK-02 (v101): a `baseURL + "/path"` concat to a hardcoded host is tagged
+	// external, a hardcoded INTERNAL host still resolves to its loaded repo, and a
+	// config-injected base URL stays an unresolved internal edge.
+	{name: "go_httpclient_multirepo", subRepos: []string{"api", "consumer"}},
 	{name: "py_grpc_multirepo", subRepos: []string{"server", "client"}},
 	// Two different-language repos sharing only nested type names. The linker must
 	// draw no shared_symbols edge between them; see GAP-LK-03.

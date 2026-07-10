@@ -202,48 +202,53 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge, cov map[string]*httpCove
 		// (no method, generic path) and call sites with no matching server both fall
 		// into unresolved (detected - resolved) — the blind spot the report exposes.
 		covFor(cov, f.Repo).detected++
-		// A call to a hardcoded external host (e.g. a third-party API) can never
-		// resolve to a loaded repo, so bucket it separately instead of leaving it in
-		// unresolved — otherwise it reads as an internal blind spot it is not.
-		if isExternalClient(f) {
-			covFor(cov, f.Repo).external++
-			continue
-		}
+		// Attempt to resolve the call site to a loaded server first, then fall back
+		// to the external bucket. Ordering matters: a route tagged external may
+		// still target a hardcoded *internal* host that is loaded (the Go extractor
+		// tags those since v101), and such a call must keep its cross-repo edge
+		// rather than vanish into the external bucket. Bucketing external only after
+		// a failed match also preserves the blind-spot signal — an untagged,
+		// unmatched call still falls into unresolved (detected - resolved - external).
+		matched := false
 		method := normalizeMethod(propString(f, "method"))
-		if method == "" {
-			continue
+		if method != "" {
+			np := normalizePath(f.Name)
+			if !isGenericPath(np) {
+				// Canonicalize the leading slash so a base-relative client path
+				// ("settings/x") matches the indexed suffix form ("/settings/x").
+				clientPath := canonicalLeadingSlash(np)
+				// Try the client path's trailing-segment suffixes against the server
+				// suffix index, longest first. The server index already holds suffixes
+				// of every server path, so matching client suffixes too makes the join
+				// symmetric: it resolves a client call that carries an extra gateway/BFF
+				// prefix ("/api/settings/tickets/{}/resolve") to a server serving the
+				// un-prefixed path ("/tickets/{}/resolve"), as well as the reverse (a
+				// base-relative client calling a longer server path).
+				matches, matchedPath := lookupClientMatches(server, clientPath, method)
+				provider, unambiguous := pickProvider(f, matches)
+				// A non-empty provider means the call site matched a loaded service (a
+				// self-match is internal, not a blind spot) — count it resolved either way.
+				if provider != "" {
+					covFor(cov, f.Repo).resolved++
+					matched = true
+				}
+				if provider != "" && provider != f.Repo {
+					e := edgeFor(edges, f.Repo, provider)
+					e.note(httpVia(f))
+					if e.endpoints == nil {
+						e.endpoints = map[string]bool{}
+					}
+					e.endpoints[method+" "+f.Name] = true
+					e.noteConfidence(matchConfidence(matchedPath, np, provider, matches, unambiguous))
+				}
+			}
 		}
-		np := normalizePath(f.Name)
-		if isGenericPath(np) {
-			continue
+		// A call to a hardcoded external host (e.g. a third-party API) that matched
+		// no loaded repo is bucketed separately instead of left in unresolved —
+		// otherwise it reads as an internal blind spot it is not.
+		if !matched && isExternalClient(f) {
+			covFor(cov, f.Repo).external++
 		}
-		// Canonicalize the leading slash so a base-relative client path
-		// ("settings/x") matches the indexed suffix form ("/settings/x").
-		clientPath := canonicalLeadingSlash(np)
-		// Try the client path's trailing-segment suffixes against the server suffix
-		// index, longest first. The server index already holds suffixes of every
-		// server path, so matching client suffixes too makes the join symmetric: it
-		// resolves a client call that carries an extra gateway/BFF prefix
-		// ("/api/settings/tickets/{}/resolve") to a server serving the un-prefixed
-		// path ("/tickets/{}/resolve"), as well as the reverse (a base-relative
-		// client calling a longer server path) the index already handled.
-		matches, matchedPath := lookupClientMatches(server, clientPath, method)
-		provider, unambiguous := pickProvider(f, matches)
-		// A non-empty provider means the call site matched a loaded service (a
-		// self-match is internal, not a blind spot) — count it resolved either way.
-		if provider != "" {
-			covFor(cov, f.Repo).resolved++
-		}
-		if provider == "" || provider == f.Repo {
-			continue
-		}
-		e := edgeFor(edges, f.Repo, provider)
-		e.note(httpVia(f))
-		if e.endpoints == nil {
-			e.endpoints = map[string]bool{}
-		}
-		e.endpoints[method+" "+f.Name] = true
-		e.noteConfidence(matchConfidence(matchedPath, np, provider, matches, unambiguous))
 	}
 }
 

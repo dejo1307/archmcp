@@ -1001,3 +1001,34 @@ func TestRouteIdentityMatchesKeyHelper(t *testing.T) {
 		t.Errorf("RouteIdentity normalized mismatch: got %q want %q", got, want)
 	}
 }
+
+// TestComputeLinks_ExternalClientStillMatchesLoadedServer pins the fix for the
+// linker-ordering half of GAP-LK-02 (v101): isExternalClient was consulted
+// before the server match and `continue`d, so a client route tagged external
+// could never resolve. That was harmless while only Kotlin/Swift set external
+// (always third-party hosts), but the Go extractor now tags a hardcoded
+// *internal* host too. Such a route must still resolve to a loaded server:
+// external is a fallback bucket for unmatched calls, not a veto on matching.
+func TestComputeLinks_ExternalClientStillMatchesLoadedServer(t *testing.T) {
+	in := []facts.Fact{
+		// external=true, but the host is an internal service that IS loaded.
+		clientRoute("consumer", "/v1/things/{id}", "GET", map[string]any{"external": true, "host": "api:8080"}),
+		serverRoute("api", "/v1/things/{id}", "GET"),
+		// a genuinely third-party external call: no server serves it -> external bucket.
+		clientRoute("consumer", "/v1/widgets", "GET", map[string]any{"external": true, "host": "api.example.com"}),
+	}
+	out := ComputeLinks(in)
+
+	if !hasServiceEdge(out, "consumer", "api") {
+		t.Errorf("external-tagged client route to a loaded server must produce an edge; got %+v", serviceNodes(out))
+	}
+	ec := edgeCoverageOf(out, "consumer")
+	if ec == nil {
+		t.Fatalf("no edge_coverage on consumer; got %+v", out)
+	}
+	// detected 2: one resolves to api, one has no server -> external bucket.
+	if ec["detected"] != 2 || ec["resolved"] != 1 || ec["external"] != 1 || ec["unresolved"] != 0 {
+		t.Errorf("coverage = detected:%v resolved:%v external:%v unresolved:%v; want 2/1/1/0",
+			ec["detected"], ec["resolved"], ec["external"], ec["unresolved"])
+	}
+}

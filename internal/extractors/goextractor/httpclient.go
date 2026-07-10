@@ -3,6 +3,8 @@ package goextractor
 import (
 	"go/ast"
 	"go/token"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -30,7 +32,7 @@ var urlVarSuffixes = []string{
 // can match them (by method + path suffix) to the service route that serves
 // them. It runs only when net/http is imported, and skips external absolute URLs
 // and non-literal targets so server-handler code is never misread as a client.
-func extractHTTPClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir string) []facts.Fact {
+func extractHTTPClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir string, baseURLLits map[string][]string) []facts.Fact {
 	if !importsNetHTTP(f) {
 		return nil
 	}
@@ -54,25 +56,149 @@ func extractHTTPClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir st
 		if !ok {
 			return true
 		}
+		props := map[string]any{
+			"role":        "client",
+			"method":      method,
+			"framework":   "net-http",
+			"language":    "go",
+			"source":      "go-http-client",
+			"api":         api,
+			"target_hint": envHintFromExpr(urlArg),
+		}
+		// extractStringExpr discards the host of a `baseURL + "/path"` concat and
+		// keeps only the path. Recover it here so the linker can bucket a call to
+		// a hardcoded host as external rather than mistaking it for an unresolved
+		// internal edge (GAP-LK-02). This only sets props; the route Name — which
+		// fact identity and server matching key on — is left untouched.
+		if external, host := resolveClientHost(urlArg, baseURLLits); external {
+			props["external"] = true
+			if host != "" {
+				props["host"] = host
+			}
+		}
 		out = append(out, facts.Fact{
-			Kind: facts.KindRoute,
-			Name: path,
-			File: relFile,
-			Line: fset.Position(call.Pos()).Line,
-			Props: map[string]any{
-				"role":        "client",
-				"method":      method,
-				"framework":   "net-http",
-				"language":    "go",
-				"source":      "go-http-client",
-				"api":         api,
-				"target_hint": envHintFromExpr(urlArg),
-			},
+			Kind:      facts.KindRoute,
+			Name:      path,
+			File:      relFile,
+			Line:      fset.Position(call.Pos()).Line,
+			Props:     props,
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: pkgDir}},
 		})
 		return true
 	})
 	return out
+}
+
+// collectBaseURLLiterals maps an identifier name to every string literal bound to
+// it anywhere in the package — const/var declarations, assignments (including the
+// arms of a region switch), and composite-literal fields. It is used only to
+// decide whether a `baseURL + "/path"` client call targets a hardcoded host; the
+// bare-name keying is a heuristic, kept safe by resolveClientHost's requirement
+// that EVERY binding be an absolute http(s) URL before tagging external.
+func collectBaseURLLiterals(files []*ast.File) map[string][]string {
+	out := map[string][]string{}
+	add := func(name, val string) {
+		if name == "" || name == "_" || val == "" {
+			return
+		}
+		out[name] = append(out[name], val)
+	}
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.ValueSpec: // const NAME = "lit" / var NAME = "lit"
+				for i, nm := range node.Names {
+					if i < len(node.Values) {
+						if s, ok := stringLitValue(node.Values[i]); ok {
+							add(nm.Name, s)
+						}
+					}
+				}
+			case *ast.AssignStmt: // NAME = "lit" / NAME := "lit" / s.NAME = "lit"
+				for i, lhs := range node.Lhs {
+					if i < len(node.Rhs) {
+						if s, ok := stringLitValue(node.Rhs[i]); ok {
+							add(tailIdentName(lhs), s)
+						}
+					}
+				}
+			case *ast.KeyValueExpr: // composite literal field: NAME: "lit"
+				if key, ok := node.Key.(*ast.Ident); ok {
+					if s, ok := stringLitValue(node.Value); ok {
+						add(key.Name, s)
+					}
+				}
+			}
+			return true
+		})
+	}
+	return out
+}
+
+// resolveClientHost inspects the URL argument of a client call. When it is a
+// `X + "/path"` concatenation whose base identifier X is bound only to absolute
+// http(s) literals, it reports external=true and, when every binding agrees on a
+// single host, that host. A base with any non-absolute or missing binding (e.g.
+// a config-injected options.BaseURL) reports external=false, keeping the call an
+// internal client route that the linker may still resolve or flag unresolved.
+func resolveClientHost(urlArg ast.Expr, baseURLLits map[string][]string) (bool, string) {
+	be, ok := urlArg.(*ast.BinaryExpr)
+	if !ok || be.Op != token.ADD {
+		return false, ""
+	}
+	if right := extractStringExpr(be.Y); !strings.HasPrefix(right, "/") {
+		return false, ""
+	}
+	name := tailIdentName(be.X)
+	vals := baseURLLits[name]
+	if len(vals) == 0 {
+		return false, ""
+	}
+	hosts := map[string]bool{}
+	for _, v := range vals {
+		if !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
+			return false, "" // a relative binding: cannot claim a hardcoded host
+		}
+		if u, err := url.Parse(v); err == nil && u.Host != "" {
+			hosts[u.Host] = true
+		}
+	}
+	host := ""
+	if len(hosts) == 1 {
+		for h := range hosts {
+			host = h
+		}
+	}
+	return true, host
+}
+
+// tailIdentName returns the trailing identifier of a base-URL expression:
+// "baseURL" for `baseURL`, `s.baseURL`, and `c.options.baseURL` alike, so a
+// package const and a struct field carrying the same name resolve identically.
+func tailIdentName(e ast.Expr) string {
+	switch x := e.(type) {
+	case *ast.Ident:
+		return x.Name
+	case *ast.SelectorExpr:
+		return x.Sel.Name
+	case *ast.ParenExpr:
+		return tailIdentName(x.X)
+	}
+	return ""
+}
+
+// stringLitValue unquotes a string-literal expression (both "..." and `...`
+// forms), or reports ok=false for anything else.
+func stringLitValue(e ast.Expr) (string, bool) {
+	bl, ok := e.(*ast.BasicLit)
+	if !ok || bl.Kind != token.STRING {
+		return "", false
+	}
+	s, err := strconv.Unquote(bl.Value)
+	if err != nil {
+		return "", false
+	}
+	return s, true
 }
 
 // classifyClientCall returns the HTTP method and the URL argument expression for
