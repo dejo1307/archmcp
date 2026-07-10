@@ -315,7 +315,16 @@ import (
 // now emits the edge (guarded like handleInit — system types and function/tuple/
 // optional RHS shapes, which have no simple type name, emit nothing). Swift symbol
 // facts gain a relation, so cached Swift snapshots must re-extract.
-const cacheVersion = "v102"
+// v103: the TypeScript extractor implements plugin.TestRefExtractor, and
+// config.Default().TestGlobs gains the four *.test.ts(x)/*.spec.ts(x) globs, so a
+// production symbol whose only caller is its co-located test keeps an incoming
+// edge and is no longer reported dead (GAP-XL-02 TS half — the last language
+// affected under config.Default(), after Go at v100). ExtractTestRefs reuses the
+// file-ref walk's production resolvers so targets are fully qualified (no bare-name
+// over-crediting via orphans' lastSeg fold). TS test files now emit test_ref facts,
+// so cached TS snapshots must re-extract; the bump is required because the TS
+// extractor is a FileOwner (cached).
+const cacheVersion = "v103"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

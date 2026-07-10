@@ -70,3 +70,25 @@ func TestDefaultTestGlobsCoverGoAndStayIgnored(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultTestGlobsCoverTypeScriptAndStayIgnored pins both halves of the
+// test-ref contract for TypeScript (GAP-XL-02 TS half, v103): the four
+// *.test.ts(x)/*.spec.ts(x) globs must be in TestGlobs (so an ignored test file's
+// references are recovered) AND stay in Ignore (so test symbols are never indexed
+// as production code). Adding to one list and not the other silently drops the file
+// or pollutes the production graph.
+//
+// Like Go's *_test.go, the dotted suffixes are unambiguous test markers, so no
+// production file can collide — no directory scoping needed (contrast Ruby, v97).
+func TestDefaultTestGlobsCoverTypeScriptAndStayIgnored(t *testing.T) {
+	cfg := Default()
+
+	for _, g := range []string{"**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"} {
+		if !contains(cfg.TestGlobs, g) {
+			t.Errorf("Default().TestGlobs missing %q — TS test files are ignored but never recovered", g)
+		}
+		if !contains(cfg.Ignore, g) {
+			t.Errorf("TestGlob %q is not in Default().Ignore; a test glob that is not ignored indexes test symbols as production code", g)
+		}
+	}
+}

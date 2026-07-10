@@ -287,7 +287,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// like route configs, namespace member access, require()-bound names). Emitted as
 	// a KindFileRef so file-scope references the per-function call walk cannot see do
 	// not leave used code mis-reported as dead.
-	result = append(result, e.collectTSFileRefs(root, ctx, aliases)...)
+	result = append(result, e.collectTSFileRefs(root, ctx, aliases, facts.KindFileRef)...)
 
 	// Detect Next.js routes
 	if isNextJS {
@@ -1358,7 +1358,12 @@ func buildImportSymbols(root *sitter.Node, src []byte, relFile string, aliases m
 // even when the canonical declaration lives behind a folder index (the last segment
 // still matches). This only ever ADDS references, so it can hide a real orphan but
 // never invent a false one — the detector's deliberate conservative bias.
-func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, aliases map[string]string) []facts.Fact {
+//
+// kind selects the emitted fact kind: facts.KindFileRef for the production
+// file-scope pass, facts.KindTestRef when the caller is ExtractTestRefs walking a
+// test/spec file. The walk and resolvers are identical either way — a reference
+// from a test is spelled exactly as the same reference from production code.
+func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, aliases map[string]string, kind string) []facts.Fact {
 	src := ctx.src
 	fileDir := filepath.Dir(ctx.relFile)
 	internal := make(map[string]string)   // local name -> canonical target (internal modules only)
@@ -1603,13 +1608,110 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 		rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: t})
 	}
 	return []facts.Fact{{
-		Kind:      facts.KindFileRef,
+		Kind:      kind,
 		Name:      ctx.relFile,
 		File:      ctx.relFile,
 		Line:      1,
 		Props:     map[string]any{"language": "typescript"},
 		Relations: rels,
 	}}
+}
+
+// tsTestSuffixes are the co-located TypeScript test/spec suffixes that
+// config.Default().TestGlobs matches. Kept in one place so isTSTestFile and any
+// future glob check agree.
+var tsTestSuffixes = []string{".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"}
+
+// isTSTestFile reports whether a repo-relative path is a TypeScript test/spec file.
+// The convention reserves these dotted suffixes for tests, so — like Go's *_test.go
+// — no production file can legally collide.
+func isTSTestFile(relFile string) bool {
+	for _, suffix := range tsTestSuffixes {
+		if strings.HasSuffix(relFile, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ExtractTestRefs implements plugin.TestRefExtractor. It parses *.test.ts(x) /
+// *.spec.ts(x) files for the SOLE purpose of capturing their outbound references
+// into production code, emitting one facts.KindTestRef fact per file that carries
+// only RelCalls edges — no symbols. A production symbol exercised only by its test
+// therefore keeps an incoming edge and is no longer mis-reported as dead, while no
+// symbol/module/route explainer is affected.
+//
+// tsextractor already implements plugin.FileOwner (for production caching), so
+// runTestRefExtractors scopes the handoff to isTypeScriptFile — which owns non-test
+// TS files too. We therefore still filter to test paths here, exactly as
+// goextractor and rubyextractor do.
+//
+// Targets are resolved with the SAME production resolvers the file-ref pass uses
+// (collectTSFileRefs → resolveImportPath / resolveLocalOrImport / resolveJSXTag), so
+// every target is fully qualified ("<dir>.<name>") and orphans' lastSeg folding
+// stays a safety net rather than the primary match — emitting bare names instead
+// would rescue unrelated same-named symbols. knownFiles is left nil: the resolver
+// then degrades to short-name matching (its documented conservative bias — only
+// ever ADDS references), which is exactly how the dead-code detector matches. Path
+// aliases ARE reconstructed so "@/…"-imported helpers still resolve.
+func (e *TSExtractor) ExtractTestRefs(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
+	var testFiles []string
+	for _, relFile := range files {
+		if isTSTestFile(relFile) {
+			testFiles = append(testFiles, relFile)
+		}
+	}
+	if len(testFiles) == 0 {
+		return nil, nil
+	}
+
+	aliasRoots := collectTSAliasRoots(repoPath)
+
+	perFile := parallel.MapFiles(ctx, testFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			log.Printf("[ts-extractor] error reading test file %s: %v", relFile, err)
+			return nil
+		}
+		if isMinifiedSource(src) {
+			return nil
+		}
+		return e.testRefsFromFile(src, relFile, aliasesForDir(aliasRoots, filepath.Dir(relFile)))
+	})
+
+	var out []facts.Fact
+	for _, ff := range perFile {
+		out = append(out, ff...)
+	}
+	return out, nil
+}
+
+// testRefsFromFile parses one TS test file and returns its single KindTestRef fact
+// (or nil when it references nothing), reusing collectTSFileRefs' walk. Only the
+// fields collectTSFileRefs reads are populated on the ctx; knownFiles is left nil
+// (see ExtractTestRefs).
+func (e *TSExtractor) testRefsFromFile(src []byte, relFile string, aliases map[string]string) []facts.Fact {
+	isTSX := strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx")
+	lang := typescript.LanguageTypescript()
+	if isTSX {
+		lang = typescript.LanguageTSX()
+	}
+
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
+		return nil
+	}
+	tree := parser.Parse(src, nil)
+	defer tree.Close()
+
+	ctx := &extractCtx{
+		src:     src,
+		relFile: relFile,
+		dir:     filepath.Dir(relFile),
+		isTSX:   isTSX,
+	}
+	return e.collectTSFileRefs(tree.RootNode(), ctx, aliases, facts.KindTestRef)
 }
 
 // resolveLocalOrImport resolves a bare name used in a value/call position to its

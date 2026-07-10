@@ -79,8 +79,8 @@ func TestWalkRepo_IgnoredDirectoryIsCounted(t *testing.T) {
 			t.Errorf("pruned subtree leaked into files: %q", got)
 		}
 	}
-	if len(testFiles) != 0 {
-		t.Errorf("testFiles = %v, want none (a .test.ts matches no default TestGlob)", testFiles)
+	if len(testFiles) != 1 || filepath.ToSlash(testFiles[0]) != "src/app.test.ts" {
+		t.Errorf("testFiles = %v, want [src/app.test.ts] (a .test.ts is ignored for indexing but matches the default TestGlob, so it is collected for reference-only extraction)", testFiles)
 	}
 }
 
