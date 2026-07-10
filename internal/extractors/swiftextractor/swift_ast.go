@@ -1016,6 +1016,20 @@ func (w *astWalker) handleTypeAlias(node *sitter.Node) {
 		return
 	}
 	modifiers := findChildByKind(node, "modifiers")
+	relations := []facts.Relation{
+		{Kind: facts.RelDeclares, Target: w.dir},
+	}
+	// A `typealias Foo = Bar` is a genuine reference to Bar, so fold the aliased
+	// type in as an instantiation edge: a type reached only through its alias name
+	// (the idiomatic `typealias FooViewModel = FooEditorState`) would otherwise have
+	// no incoming edge and be mis-reported as an unreferenced orphan (GAP-SW-09).
+	// Mirrors handleInit's type guard — skip system types and function/tuple/
+	// optional RHS shapes, which yield no simple resolvable type name.
+	if valueNode := node.ChildByFieldName("value"); valueNode != nil {
+		if target := simpleTypeName(valueNode, w.src); target != "" && !isSystemType(target) && isTypeName(target) {
+			relations = append(relations, facts.Relation{Kind: facts.RelInstantiates, Target: target})
+		}
+	}
 	w.out = append(w.out, facts.Fact{
 		Kind: facts.KindSymbol,
 		Name: w.dir + "." + w.qualify(name),
@@ -1026,9 +1040,7 @@ func (w *astWalker) handleTypeAlias(node *sitter.Node) {
 			"exported":    !isPrivateAccess(nodeText(modifiers, w.src)),
 			"language":    "swift",
 		},
-		Relations: []facts.Relation{
-			{Kind: facts.RelDeclares, Target: w.dir},
-		},
+		Relations: relations,
 	})
 }
 

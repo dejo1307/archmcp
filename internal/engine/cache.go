@@ -308,7 +308,14 @@ import (
 // snapshots must re-extract. (The paired linker change — matching a client route
 // before bucketing it external, so a hardcoded internal host still resolves — runs
 // post-extraction and needs no cache bump; it is covered by TestGolden here.)
-const cacheVersion = "v101"
+// v102: the Swift extractor folds a typealias's aliased type into the alias fact
+// as a RelInstantiates edge. `typealias FooViewModel = FooEditorState` used to
+// leave FooEditorState with no incoming edge, so a type reached only through its
+// alias name was mis-reported as unreferenced dead code (GAP-SW-09). handleTypeAlias
+// now emits the edge (guarded like handleInit — system types and function/tuple/
+// optional RHS shapes, which have no simple type name, emit nothing). Swift symbol
+// facts gain a relation, so cached Swift snapshots must re-extract.
+const cacheVersion = "v102"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
