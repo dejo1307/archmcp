@@ -285,7 +285,18 @@ import (
 // calls_in_loop. The second bug masked the first: fixing only the emptiness would have
 // deleted true-positive N+1 findings on infinite loops. Cached Go/Python/TypeScript/Kotlin
 // snapshots must re-extract.
-const cacheVersion = "v99"
+// v100: the Go extractor implements plugin.TestRefExtractor and config.Default().TestGlobs
+// gained "**/*_test.go", so a production function whose only caller is its own _test.go is
+// no longer reported as high-confidence dead code. Both gates were needed: the glob alone
+// is a no-op (runTestRefExtractors skips non-implementers), and the interface alone never
+// sees the files (walkRepo collects an ignored file only when it matches a test glob). Go
+// was the sharpest case of GAP-XL-02 — _test.go is ignored under BOTH shipped configs and a
+// plain function's orphan tier is `high`. Test refs are resolved with the production
+// resolvers (flattenSelector/collectLocalTypes/resolveChain), so a reference from a test is
+// spelled exactly as one from production and inherits goBuiltins filtering: a package-level
+// `min` shadowing the Go 1.21 builtin is still not credited, from either side. The file set
+// reaching the extractors changes, so cached snapshots must re-extract.
+const cacheVersion = "v100"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

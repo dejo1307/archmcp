@@ -102,7 +102,12 @@ func Default() *Config {
 		// include test symbols — but the engine collects them separately for
 		// reference-only extraction so the dead-code detector can see that a
 		// production symbol is exercised by a test and not mis-report it as dead.
-		TestGlobs:  []string{"**/spec/**/*_spec.rb", "**/test/**/*_test.rb"},
+		// A glob here without an extractor implementing plugin.TestRefExtractor is a
+		// no-op (engine.runTestRefExtractors skips non-implementers), so extend this
+		// list only alongside the matching extractor. Go's bare suffix is correct:
+		// the toolchain defines any *_test.go as a test file, so — unlike Ruby's
+		// _test.rb (v97) — no production file can collide with it.
+		TestGlobs:  []string{"**/*_test.go", "**/spec/**/*_spec.rb", "**/test/**/*_test.rb"},
 		Extractors: []string{"cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},
 		Renderers:  []string{"llm_context"},
