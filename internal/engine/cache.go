@@ -375,7 +375,18 @@ import (
 // tagged framework="flask". The @app.get verb shorthand is labeled from project detection
 // (detectFlask/detectFastAPI) instead of a hardcoded "fastapi", so a Flask 2.0 app is no
 // longer mislabeled. Cached Python snapshots must re-extract (GAP-PY-01).
-const cacheVersion = "v109"
+// v110: the Java extractor now emits `io_direct`/`performs_io` on methods that are
+// genuine DB/network round-trips — every method of a @FeignClient interface or a
+// Spring Data repository interface (extends JpaRepository/CrudRepository/…), any
+// @Query/@Modifying/@Procedure method, and Room ops inside a @Dao interface. This
+// populates enola-enterprise's isExpensiveJvmCall I/O index, which was empty on
+// pure-Java Spring/JPA repos (v57 wired the prop for Kotlin only), so a per-iteration
+// repository call now ranks a confirmed N+1 `high` instead of a keyword guess. The
+// seed is deliberately type-level and never keys off a bare HTTP verb (@GET/@GetMapping),
+// which on server-side Java is an inbound JAX-RS/Spring handler, not I/O; and there is
+// no transitive fixpoint (performs_io == io_direct), matching the Kotlin design. Cached
+// Java snapshots must re-extract (GAP-JV-02).
+const cacheVersion = "v110"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

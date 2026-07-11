@@ -432,6 +432,11 @@ type routeScope struct {
 	isFeignClient bool
 	feignHint     string
 	basePath      string
+	// isRepository is a Spring Data repository interface (extends JpaRepository/…):
+	// every declared method is a DB round-trip. isDao is a Room @Dao interface.
+	// Both feed the GAP-JV-02 io_direct seed in handleMethod.
+	isRepository bool
+	isDao        bool
 }
 
 func (w *astWalker) enclosingType() string { return strings.Join(w.typeStack, ".") }
@@ -625,7 +630,8 @@ func (w *astWalker) handleClassLike(node *sitter.Node, kind string) {
 
 	// Framework classification (Spring component / JPA / Dubbo SPI) mutates props
 	// and may emit a companion storage fact.
-	classifyComponent(&f, name, annotations, w.supertypeSimpleNames(node))
+	supers := w.supertypeSimpleNames(node)
+	classifyComponent(&f, name, annotations, supers)
 	if sf := detectJpaStorage(name, annotations, w.relFile, int(node.StartPosition().Row)+1, w.dir); sf != nil {
 		w.out = append(w.out, *sf)
 	}
@@ -643,6 +649,8 @@ func (w *astWalker) handleClassLike(node *sitter.Node, kind string) {
 		isFeignClient: hasAnnotation(annotations, "FeignClient"),
 		feignHint:     feignServiceHint(annotations),
 		basePath:      requestMappingPath(annotations),
+		isRepository:  isSpringDataRepository(supers),
+		isDao:         hasAnnotation(annotations, "Dao"),
 	})
 
 	// Constructor-based DI: a class with a single constructor, or one annotated
@@ -789,6 +797,17 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 	// overload, not genuine recursion — clear the arity-matched self-call flag.
 	if m.recursive && !m.sawSuperSelf {
 		props["recursive_self"] = true
+	}
+	// GAP-JV-02: flag genuine DB/network round-trips so enola-enterprise's
+	// isExpensiveJvmCall I/O index sees the in-loop callee. Seeded from type-level
+	// signals (@FeignClient / Spring Data repository / @Dao) plus unambiguous query
+	// annotations (@Query/@Modifying/@Procedure) — never a bare HTTP verb or
+	// @GetMapping, which on server-side Java is an INBOUND handler, not I/O.
+	// performs_io == io_direct: no transitive pass (Java call edges are same-class
+	// only, and the consumer matches the flagged leaf callee by short name).
+	if w.methodPerformsIO(annotations) {
+		props["io_direct"] = true
+		props["performs_io"] = true
 	}
 	w.metrics, w.loopDepth = savedMetrics, savedDepth
 	w.scalingDepth, w.repeatDepth = savedScaling, savedRepeat
