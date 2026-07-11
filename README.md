@@ -296,7 +296,7 @@ When you snapshot a *different* repo without `append`, enola assumes you're exte
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
 | Ruby       | `Gemfile` (Rails / ActiveRecord / Packwerk aware) |
-| Rust       | `Cargo.toml` (workspace or single crate; crate/module/`impl`/trait aware) |
+| Rust       | `Cargo.toml` (workspace or single crate; crate/module/`impl`/trait aware; Axum route DSL aware) |
 | C / C++    | `.c`/`.h` (tree-sitter-c) or `.cpp`/`.hpp`/… (tree-sitter-cpp), or `CMakeLists.txt`/`Makefile` + header (per-fact `language`, header/source method merging, namespaces, templates) |
 | PHP        | `composer.json`, WordPress markers, or any `.php` source (WordPress / Laravel / Symfony route + outbound HTTP-client aware) |
 | OpenAPI    | any spec with an `openapi:` / `swagger:` key |
