@@ -354,7 +354,15 @@ import (
 // calls as N+1 candidates. Cached PHP snapshots must re-extract. With this, all seven
 // AST extractors that discount bounded loops (Go, Python, TS, Kotlin, Java, C/C++, PHP)
 // plus Ruby/Swift (inline) are complete — GAP-XL-01 is fully closed.
-const cacheVersion = "v106"
+// v107: the Swift extractor now emits the `override` prop on a method declared with the
+// `override` modifier, mirroring the Kotlin extractor (kotlin_ast.go). An override is
+// dispatched polymorphically through its supertype — UIKit/SwiftUI lifecycle callbacks
+// (viewDidLoad, viewWillAppear, …) are invoked by the framework, never by the override's
+// own literal name — so the enterprise dead-code detector (orphans.go, which already
+// consumes the prop and documented it as Kotlin/Swift) now excludes them as framework
+// entry points instead of flagging them as orphans. Cached Swift snapshots must
+// re-extract (GAP-SW-01).
+const cacheVersion = "v107"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

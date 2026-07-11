@@ -826,6 +826,13 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	if enclosing != "" {
 		f.Props["receiver"] = enclosing
 	}
+	// An `override` is dispatched polymorphically through its supertype — UIKit /
+	// SwiftUI lifecycle callbacks (viewDidLoad, viewWillAppear, …) are invoked by
+	// the framework, never by the override's own literal name, so the dead-code
+	// detector must not report them as orphans. Mirrors kotlin_ast.go.
+	if strings.Contains(modifierText, "override") {
+		f.Props["override"] = true
+	}
 	if strings.Contains(header, " async") {
 		f.Props["async"] = true
 	}
