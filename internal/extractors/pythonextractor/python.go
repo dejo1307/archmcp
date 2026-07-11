@@ -77,6 +77,8 @@ func (e *PythonExtractor) Detect(repoPath string) (bool, error) {
 // time on large polyglot repos, so this is the main throughput lever.
 func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
 	isDjango := detectDjango(repoPath)
+	isFlask := detectFlask(repoPath)
+	isFastAPI := detectFastAPI(repoPath)
 
 	// Restrict to Python files once; both passes iterate the same ordered set.
 	var pyFiles []string
@@ -120,7 +122,7 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 			log.Printf("[python-extractor] error reading %s: %v", relFile, err)
 			return nil
 		}
-		ff := extractFileAST(src, relFile, isDjango, idx)
+		ff := extractFileAST(src, relFile, isDjango, isFlask, isFastAPI, idx)
 		// gRPC client call sites (stub.Method(...)) become client-role routes,
 		// detected from source since generated *_pb2_grpc.py stubs are typically
 		// not committed. Names are provisional (short service) and resolved to the
@@ -240,17 +242,30 @@ func computePyPerformsIO(allFacts []facts.Fact) {
 // --- Regex patterns used by the AST walker ---
 
 var (
-	// routeDecoratorRe matches FastAPI/Starlette route decorators.
-	// Groups: (object, method, path). The path may be positional (`@r.get("/x")`) or
-	// the `path=` keyword (`@r.get(path="/x")`), and may be empty (`path=""` — the
-	// collection endpoint under the router prefix); `\s*` spans the newline of a
-	// multi-line decorator.
-	routeDecoratorRe = regexp.MustCompile(`^\s*@([\w.]+)\.(get|post|put|delete|patch|head|options)\s*\(\s*(?:path\s*=\s*)?["']([^"']*)["']`)
+	// routeDecoratorRe matches FastAPI/Starlette verb decorators AND Flask's
+	// @app.route / @bp.route. Groups: (object, method, path). The path may be
+	// positional (`@r.get("/x")`) or the `path=` keyword (`@r.get(path="/x")`), and
+	// may be empty (`path=""` — the collection endpoint under the router prefix);
+	// `\s*` spans the newline of a multi-line decorator. When method is `route`
+	// (Flask), the HTTP verbs live in a `methods=[...]` kwarg parsed by
+	// routeMethodsListRe below, defaulting to GET.
+	routeDecoratorRe = regexp.MustCompile(`^\s*@([\w.]+)\.(route|get|post|put|delete|patch|head|options)\s*\(\s*(?:path\s*=\s*)?["']([^"']*)["']`)
 
 	// routeMethodRe matches a route-method decorator in ANY path form (literal,
 	// path= keyword, or a computed expression), used to tag the handler as a
 	// framework-dispatched entry point even when the path isn't a parseable literal.
-	routeMethodRe = regexp.MustCompile(`^\s*@[\w.]+\.(?:get|post|put|delete|patch|head|options)\s*\(`)
+	routeMethodRe = regexp.MustCompile(`^\s*@[\w.]+\.(?:route|get|post|put|delete|patch|head|options)\s*\(`)
+
+	// exposeDecoratorRe matches Flask-AppBuilder's @expose("/path", methods=[...]) —
+	// which has no receiver dot, so routeDecoratorRe cannot match it. It is the
+	// dominant route idiom in a real FAB app (289 of 293 route defs on superset).
+	// Group: (path). Also matches the qualified `@self.expose(...)` form.
+	exposeDecoratorRe = regexp.MustCompile(`^\s*@(?:[\w.]+\.)?expose\s*\(\s*["']([^"']*)["']`)
+
+	// routeMethodsListRe extracts the `methods=[...]` kwarg of a Flask route/expose
+	// decorator. Group: (list body) — the uppercase verbs are then pulled by
+	// httpMethodWordRe, mirroring @api_view.
+	routeMethodsListRe = regexp.MustCompile(`methods\s*=\s*\[([^\]]+)\]`)
 
 	// tableNameRe matches SQLAlchemy __tablename__ assignments. Group: (table).
 	tableNameRe = regexp.MustCompile(`^\s*__tablename__\s*=\s*["']([^"']+)["']`)
@@ -464,6 +479,28 @@ func detectDjango(repoPath string) bool {
 	_, err := os.Stat(filepath.Join(repoPath, "manage.py"))
 	return err == nil
 }
+
+// detectDependencyToken reports whether any of the project's dependency manifests
+// mentions token (case-insensitive). Shared by the Flask/FastAPI detectors, which
+// disambiguate the framework prop of verb-shorthand routes (@app.get).
+func detectDependencyToken(repoPath, token string) bool {
+	for _, name := range []string{"requirements.txt", "pyproject.toml", "setup.cfg", "setup.py"} {
+		data, err := os.ReadFile(filepath.Join(repoPath, name))
+		if err != nil {
+			continue
+		}
+		if strings.Contains(strings.ToLower(string(data)), token) {
+			return true
+		}
+	}
+	return false
+}
+
+// detectFlask returns true if the project at repoPath depends on Flask.
+func detectFlask(repoPath string) bool { return detectDependencyToken(repoPath, "flask") }
+
+// detectFastAPI returns true if the project at repoPath depends on FastAPI.
+func detectFastAPI(repoPath string) bool { return detectDependencyToken(repoPath, "fastapi") }
 
 // camelToSnake converts a PascalCase class name to the snake_case table name
 // Django would auto-generate. e.g. "UserProfile" → "user_profile".

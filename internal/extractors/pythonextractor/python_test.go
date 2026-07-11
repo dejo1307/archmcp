@@ -1321,6 +1321,219 @@ func TestDetectDjango(t *testing.T) {
 	})
 }
 
+func TestDetectFlask(t *testing.T) {
+	t.Run("requirements_txt", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("Flask>=2.2\nflask-appbuilder\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !detectFlask(dir) {
+			t.Error("detectFlask should return true for requirements.txt with flask")
+		}
+	})
+
+	t.Run("pyproject_toml", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[project]\ndependencies = [\"flask>=2.2.5\"]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !detectFlask(dir) {
+			t.Error("detectFlask should return true for pyproject.toml with flask")
+		}
+	})
+
+	t.Run("no_flask", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("fastapi\nsqlalchemy\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if detectFlask(dir) {
+			t.Error("detectFlask should return false for non-Flask project")
+		}
+	})
+}
+
+// --- GAP-PY-01: Flask route detection + framework labeling ---
+
+// @app.route / @bp.route with a methods= list emits one route fact per verb,
+// tagged framework:"flask".
+func TestRouteExtractor_FlaskAppRoute(t *testing.T) {
+	src := `
+app = Flask(__name__)
+
+@app.route("/users", methods=["POST"])
+def create_user():
+    pass
+`
+	relFile := "app.py"
+	result := astExtract(t, relFile, src, false)
+	routes := factsByKind(result, facts.KindRoute)
+
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route fact, got %d: %+v", len(routes), routes)
+	}
+	r := routes[0]
+	if r.Name != "/users" {
+		t.Errorf("route name = %q, want %q", r.Name, "/users")
+	}
+	if r.Props["method"] != "POST" {
+		t.Errorf("method = %v, want POST", r.Props["method"])
+	}
+	if r.Props["role"] != "server" {
+		t.Errorf("role = %v, want server", r.Props["role"])
+	}
+	if r.Props["path"] != "/users" {
+		t.Errorf("path = %v, want /users", r.Props["path"])
+	}
+	if r.Props["framework"] != "flask" {
+		t.Errorf("framework = %v, want flask", r.Props["framework"])
+	}
+	if want := mod(relFile) + ".create_user"; r.Props["handler"] != want {
+		t.Errorf("handler = %v, want %q", r.Props["handler"], want)
+	}
+}
+
+// @app.route with no methods= defaults to GET.
+func TestRouteExtractor_FlaskAppRouteDefaultGet(t *testing.T) {
+	src := `
+app = Flask(__name__)
+
+@app.route("/health")
+def health():
+    pass
+`
+	result := astExtract(t, "app.py", src, false)
+	routes := factsByKind(result, facts.KindRoute)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route fact, got %d", len(routes))
+	}
+	if routes[0].Props["method"] != "GET" {
+		t.Errorf("method = %v, want GET (default)", routes[0].Props["method"])
+	}
+	if routes[0].Props["framework"] != "flask" {
+		t.Errorf("framework = %v, want flask", routes[0].Props["framework"])
+	}
+}
+
+// A Blueprint route (@bp.route) is detected like @app.route.
+func TestRouteExtractor_Blueprint(t *testing.T) {
+	src := `
+bp = Blueprint("admin", __name__, url_prefix="/admin")
+
+@bp.route("/x")
+def x():
+    pass
+`
+	result := astExtract(t, "views/admin.py", src, false)
+	routes := factsByKind(result, facts.KindRoute)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route fact, got %d", len(routes))
+	}
+	// Scope: bare leaf path (GAP-PY-06 tracks url_prefix folding).
+	if routes[0].Name != "/x" {
+		t.Errorf("route name = %q, want %q (bare leaf; prefix folding is GAP-PY-06)", routes[0].Name, "/x")
+	}
+	if routes[0].Props["framework"] != "flask" {
+		t.Errorf("framework = %v, want flask", routes[0].Props["framework"])
+	}
+}
+
+// @route with an explicit multi-verb methods= list emits one fact per verb.
+func TestRouteExtractor_FlaskAppRouteMultiVerb(t *testing.T) {
+	src := `
+app = Flask(__name__)
+
+@app.route("/item", methods=["GET", "PUT"])
+def item():
+    pass
+`
+	result := astExtract(t, "app.py", src, false)
+	routes := factsByKind(result, facts.KindRoute)
+	if len(routes) != 2 {
+		t.Fatalf("expected 2 route facts (GET, PUT), got %d", len(routes))
+	}
+	methods := map[string]bool{}
+	for _, r := range routes {
+		methods[r.Props["method"].(string)] = true
+		if r.Props["framework"] != "flask" {
+			t.Errorf("framework = %v, want flask", r.Props["framework"])
+		}
+	}
+	if !methods["GET"] || !methods["PUT"] {
+		t.Errorf("methods = %v, want GET and PUT", methods)
+	}
+}
+
+// Flask-AppBuilder @expose (no receiver dot) on a method inside a view class is
+// detected, tagged flask, and its handler back-filled.
+func TestRouteExtractor_Expose(t *testing.T) {
+	src := `
+class HealthView(BaseView):
+    route_base = "/api"
+
+    @expose("/health", methods=["GET"])
+    def health(self):
+        pass
+`
+	relFile := "views/health.py"
+	result := astExtract(t, relFile, src, false)
+	routes := factsByKind(result, facts.KindRoute)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route fact, got %d: %+v", len(routes), routes)
+	}
+	r := routes[0]
+	if r.Name != "/health" {
+		t.Errorf("route name = %q, want %q", r.Name, "/health")
+	}
+	if r.Props["method"] != "GET" {
+		t.Errorf("method = %v, want GET", r.Props["method"])
+	}
+	if r.Props["framework"] != "flask" {
+		t.Errorf("framework = %v, want flask", r.Props["framework"])
+	}
+	if want := mod(relFile) + ".HealthView.health"; r.Props["handler"] != want {
+		t.Errorf("handler = %v, want %q", r.Props["handler"], want)
+	}
+}
+
+// Defect 2: @app.get in a Flask project (not FastAPI) is labeled flask, not fastapi.
+func TestRouteExtractor_FlaskGetLabeledFlask(t *testing.T) {
+	src := `
+app = Flask(__name__)
+
+@app.get("/h")
+def h():
+    pass
+`
+	result := astExtractFrameworks(t, "app.py", src, false /*django*/, true /*flask*/, false /*fastapi*/)
+	routes := factsByKind(result, facts.KindRoute)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route fact, got %d", len(routes))
+	}
+	if routes[0].Props["framework"] != "flask" {
+		t.Errorf("framework = %v, want flask (Flask project, @app.get)", routes[0].Props["framework"])
+	}
+}
+
+// Control: @router.get with no Flask/FastAPI hints keeps the fastapi default.
+func TestRouteExtractor_VerbShorthandDefaultsFastAPI(t *testing.T) {
+	src := `
+router = APIRouter()
+
+@router.get("/h")
+async def h():
+    pass
+`
+	result := astExtractFrameworks(t, "app.py", src, false, false, false)
+	routes := factsByKind(result, facts.KindRoute)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route fact, got %d", len(routes))
+	}
+	if routes[0].Props["framework"] != "fastapi" {
+		t.Errorf("framework = %v, want fastapi (default)", routes[0].Props["framework"])
+	}
+}
+
 // --- Pass 3: path= keyword routes + pyproject entry-points ---
 
 func TestExtractFile_FastAPIRoute_PathKeyword(t *testing.T) {

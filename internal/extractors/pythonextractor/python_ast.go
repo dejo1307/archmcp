@@ -14,7 +14,7 @@ import (
 // facts. It is a superset of extractFile: every symbol / import / route / storage
 // fact is preserved, and RelCalls / RelInstantiates edges are added when call
 // sites are observed inside function bodies.
-func extractFileAST(src []byte, relFile string, isDjango bool, idx *pySymbolIndex) []facts.Fact {
+func extractFileAST(src []byte, relFile string, isDjango, isFlask, isFastAPI bool, idx *pySymbolIndex) []facts.Fact {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(python.Language())); err != nil {
@@ -30,21 +30,25 @@ func extractFileAST(src []byte, relFile string, isDjango bool, idx *pySymbolInde
 	w := &pyWalker{
 		src:      src,
 		relFile:  relFile,
-		module:   module,
-		dir:      dir,
-		isDjango: isDjango,
-		idx:      idx,
+		module:    module,
+		dir:       dir,
+		isDjango:  isDjango,
+		isFlask:   isFlask,
+		isFastAPI: isFastAPI,
+		idx:       idx,
 	}
 	w.walkModule(tree.RootNode())
 	return w.out
 }
 
 type pyWalker struct {
-	src      []byte
-	relFile  string
-	module   string
-	dir      string
-	isDjango bool
+	src       []byte
+	relFile   string
+	module    string
+	dir       string
+	isDjango  bool
+	isFlask   bool
+	isFastAPI bool
 
 	out []facts.Fact
 
@@ -494,32 +498,30 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 			}
 			// A route-method decorator in any path form (literal, path= keyword, or a
 			// computed expression the route regex below cannot parse) marks this a
-			// framework-dispatched handler.
-			if routeMethodRe.MatchString(text) {
+			// framework-dispatched handler. Covers @r.get / @app.route and Flask-AppBuilder
+			// @expose (which has no receiver dot, so routeMethodRe alone misses it).
+			if routeMethodRe.MatchString(text) || exposeDecoratorRe.MatchString(text) {
 				isRouteHandler = true
 			}
-			// FastAPI / Starlette route decorator.
+			// FastAPI/Starlette verb decorator (@r.get) or Flask @app.route / @bp.route.
 			if m := routeDecoratorRe.FindStringSubmatch(text); m != nil {
-				method := strings.ToUpper(m[2])
 				path := m[3]
-				w.out = append(w.out, facts.Fact{
-					Kind: facts.KindRoute,
-					// Name is the bare path (like every other extractor) so the
-					// cross-repo linker, which treats route Name as the path, can match
-					// it. Multiple methods on one path produce same-Name facts
-					// disambiguated by the method prop — the linker indexes by (path, method).
-					Name: path,
-					File: w.relFile,
-					Line: int(c.StartPosition().Row) + 1,
-					Props: map[string]any{
-						"role":      "server",
-						"method":    method,
-						"path":      path,
-						"framework": "fastapi",
-						"language":  "python",
-					},
-				})
-				pendingRouteIndices = append(pendingRouteIndices, len(w.out)-1)
+				line := int(c.StartPosition().Row) + 1
+				if strings.EqualFold(m[2], "route") {
+					// Flask: HTTP verbs come from methods=[...] (default GET); framework
+					// is the @X.route idiom itself, not the project detection.
+					w.emitRoutes(path, routeMethods(text), "flask", line, &pendingRouteIndices)
+				} else {
+					// Verb shorthand (@r.get). Shared by FastAPI and Flask 2.0, so the
+					// framework is derived from project detection rather than hardcoded.
+					w.emitRoutes(path, []string{strings.ToUpper(m[2])}, w.verbShorthandFramework(), line, &pendingRouteIndices)
+				}
+				continue
+			}
+			// Flask-AppBuilder @expose("/path", methods=[...]).
+			if m := exposeDecoratorRe.FindStringSubmatch(text); m != nil {
+				line := int(c.StartPosition().Row) + 1
+				w.emitRoutes(m[1], routeMethods(text), "flask", line, &pendingRouteIndices)
 				continue
 			}
 			// DRF @api_view(['GET','POST']).
@@ -587,6 +589,57 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 	for _, dec := range decorators {
 		w.emitDecoratorRef(dec)
 	}
+}
+
+// emitRoutes appends one KindRoute fact per HTTP method for a server route.
+// Name is the bare path (like every other extractor) so the cross-repo linker,
+// which treats route Name as the path, can match it; multiple methods on one path
+// produce same-Name facts disambiguated by the method prop (the linker indexes by
+// (path, method)). Blueprint url_prefix / FAB route_base folding is GAP-PY-06.
+// Each new fact's index is appended to *pending so handleDecoratedDefinition can
+// back-fill the handler prop once the function name is known.
+func (w *pyWalker) emitRoutes(path string, methods []string, framework string, line int, pending *[]int) {
+	for _, method := range methods {
+		w.out = append(w.out, facts.Fact{
+			Kind: facts.KindRoute,
+			Name: path,
+			File: w.relFile,
+			Line: line,
+			Props: map[string]any{
+				"role":      "server",
+				"method":    method,
+				"path":      path,
+				"framework": framework,
+				"language":  "python",
+			},
+		})
+		*pending = append(*pending, len(w.out)-1)
+	}
+}
+
+// verbShorthandFramework picks the framework prop for a bare verb decorator
+// (@r.get), shared by FastAPI and Flask 2.0. FastAPI wins when present (preserving
+// the historical default); a Flask-only project relabels to flask.
+func (w *pyWalker) verbShorthandFramework() string {
+	switch {
+	case w.isFastAPI:
+		return "fastapi"
+	case w.isFlask:
+		return "flask"
+	default:
+		return "fastapi"
+	}
+}
+
+// routeMethods reads the HTTP verbs from a Flask route/expose decorator's
+// methods=[...] kwarg, defaulting to GET when absent (Flask's own default).
+func routeMethods(decoratorText string) []string {
+	if m := routeMethodsListRe.FindStringSubmatch(decoratorText); m != nil {
+		if verbs := httpMethodWordRe.FindAllString(m[1], -1); len(verbs) > 0 {
+			return verbs
+		}
+	}
+	return []string{"GET"}
 }
 
 // handleClass emits a KindSymbol fact for a class and walks its body.

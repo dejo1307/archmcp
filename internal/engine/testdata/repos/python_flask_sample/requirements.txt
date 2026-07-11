@@ -1,0 +1,2 @@
+Flask>=2.2.5
+Flask-AppBuilder>=4.3

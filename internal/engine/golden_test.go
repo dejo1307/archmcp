@@ -46,6 +46,10 @@ var fixtures = []fixture{
 	{name: "go_sample", subRepos: []string{"."}},
 	{name: "ts_sample", subRepos: []string{"."}},
 	{name: "python_sample", subRepos: []string{"."}},
+	// Flask app: @app.route (methods=), @app.get shorthand, a Blueprint @bp.route,
+	// and Flask-AppBuilder @expose views. Pins GAP-PY-01 (v109) — routes detected
+	// and framework=flask (the @app.get shorthand is NOT mislabeled fastapi).
+	{name: "python_flask_sample", subRepos: []string{"."}},
 	{name: "ruby_sample", subRepos: []string{"."}},
 	{name: "swift_sample", subRepos: []string{"."}},
 	{name: "kotlin_sample", subRepos: []string{"."}},

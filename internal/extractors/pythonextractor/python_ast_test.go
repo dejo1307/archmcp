@@ -20,7 +20,14 @@ func astExtract(t *testing.T, filename, src string, isDjango bool) []facts.Fact 
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return extractFileAST([]byte(src), filename, isDjango, nil)
+	return extractFileAST([]byte(src), filename, isDjango, false, false, nil)
+}
+
+// astExtractFrameworks is astExtract with explicit Flask/FastAPI project hints,
+// for the verb-shorthand framework-labeling tests.
+func astExtractFrameworks(t *testing.T, filename, src string, isDjango, isFlask, isFastAPI bool) []facts.Fact {
+	t.Helper()
+	return extractFileAST([]byte(src), filename, isDjango, isFlask, isFastAPI, nil)
 }
 
 // astExtractWithIndex runs the index pass over all provided sources, then
@@ -36,7 +43,7 @@ func astExtractWithIndex(t *testing.T, files map[string]string, targetFile strin
 	if !ok {
 		t.Fatalf("targetFile %q not in files map", targetFile)
 	}
-	return extractFileAST([]byte(src), targetFile, isDjango, idx)
+	return extractFileAST([]byte(src), targetFile, isDjango, false, false, idx)
 }
 
 // relsByKind returns all relations of a given kind from a fact.
@@ -975,7 +982,7 @@ func astExtractIdx(t *testing.T, filename, src string) []facts.Fact {
 	idx := &pySymbolIndex{classes: make(map[string]*pyClassInfo), moduleDefs: make(map[string]map[string]bool)}
 	buildFileIndex([]byte(src), filename, idx)
 	finalizeImplMap(idx)
-	return extractFileAST([]byte(src), filename, false, idx)
+	return extractFileAST([]byte(src), filename, false, false, false, idx)
 }
 
 func TestAST_ClassBodyCallAndValueRefEmitEdges(t *testing.T) {

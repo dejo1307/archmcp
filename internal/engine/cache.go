@@ -369,7 +369,13 @@ import (
 // (exported-surface, complexity-outliers, package-metrics, via facts.CanonicalSymbols)
 // collapse the duplicate while both declarations stay individually queryable. Cached
 // Swift snapshots must re-extract (GAP-SW-10).
-const cacheVersion = "v108"
+// v109: the Python extractor now detects Flask routes. Classic @app.route / @bp.route
+// (verbs read from methods=[...], default GET) and Flask-AppBuilder @expose — which has
+// no receiver dot and was invisible to the FastAPI verb regex — now emit KindRoute facts
+// tagged framework="flask". The @app.get verb shorthand is labeled from project detection
+// (detectFlask/detectFastAPI) instead of a hardcoded "fastapi", so a Flask 2.0 app is no
+// longer mislabeled. Cached Python snapshots must re-extract (GAP-PY-01).
+const cacheVersion = "v109"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
