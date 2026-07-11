@@ -39,6 +39,39 @@ func TestExplain_DetectsOutlier(t *testing.T) {
 	}
 }
 
+// TestExplain_CollapsesConditionalDuplicates asserts a complex method declared once
+// per #if/#else branch (two same-name conditional facts) is flagged once, not twice,
+// and does not enter the outlier distribution twice. GAP-SW-10.
+func TestExplain_CollapsesConditionalDuplicates(t *testing.T) {
+	s := facts.NewStore()
+	for i := 0; i < 20; i++ {
+		s.Add(fn(fmt.Sprintf("pkg/x.simple%d", i), 2))
+	}
+	for _, line := range []int{5, 40} {
+		s.Add(facts.Fact{
+			Kind:  facts.KindSymbol,
+			Name:  "pkg/x.Monster",
+			File:  "pkg/x/monster.swift",
+			Line:  line,
+			Props: map[string]any{"symbol_kind": facts.SymbolMethod, "cyclomatic": 30, "conditional": true},
+		})
+	}
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	count := 0
+	for _, in := range insights {
+		if strings.Contains(in.Title, "pkg/x.Monster") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("conditional duplicate flagged %d times, want 1: %+v", count, insights)
+	}
+}
+
 func TestExplain_FloatPropFromJSONL(t *testing.T) {
 	// Simulate a snapshot reloaded from JSONL where numbers decode as float64.
 	s := facts.NewStore()

@@ -93,6 +93,15 @@ type astWalker struct {
 	// initializers) that have no enclosing symbol — e.g. #!/usr/bin/swift build
 	// scripts that invoke their own top-level functions. Mirrors the Ruby extractor.
 	fileRefIdx int
+
+	// condDepth is the current #if/#elseif/#else conditional-compilation nesting
+	// depth. Tree-sitter walks BOTH branches of a #if/#else block (it does not
+	// evaluate the compile-time condition), so a type declared once per branch
+	// yields two same-name symbol facts. Symbols emitted while condDepth > 0 are
+	// tagged conditional=true so consumers can group/dedupe them (GAP-SW-10). The
+	// grammar emits directives as flat sibling `directive` nodes, not containers,
+	// so depth is tracked by the ordered walk loops (walkSourceFile, walkTypeBody).
+	condDepth int
 }
 
 // swiftBodyMetrics accumulates per-function complexity signals during the single
@@ -486,12 +495,60 @@ func (w *astWalker) addTentativeMethodCall(name string) {
 	w.addOwnerEdge(facts.RelCalls, name)
 }
 
+// applyDirective adjusts conditional-compilation nesting depth for a `directive`
+// node (#if / #elseif / #else / #endif) encountered while iterating declarations in
+// order, and reports whether the node was a directive so the caller skips it. The
+// grammar emits directives as flat siblings of the declarations they guard, so depth
+// must be tracked here rather than by recursion. #else/#elseif keep the same block
+// open (no depth change); the token is matched exactly so #else never prefix-matches
+// #elseif.
+func (w *astWalker) applyDirective(node *sitter.Node) bool {
+	if node.Kind() != "directive" {
+		return false
+	}
+	if fields := strings.Fields(nodeText(node, w.src)); len(fields) > 0 {
+		switch fields[0] {
+		case "#if":
+			w.condDepth++
+		case "#endif":
+			if w.condDepth > 0 {
+				w.condDepth--
+			}
+		}
+	}
+	return true
+}
+
+// stampConditional marks every symbol fact appended at index >= from with
+// conditional=true when the walker is currently inside a #if/#elseif/#else branch.
+// Called after each declaration handler so a conditional type and all its members
+// (appended during the recursive body walk) are tagged together. Idempotent, so a
+// member already tagged by a nested walkTypeBody is harmlessly re-tagged.
+func (w *astWalker) stampConditional(from int) {
+	if w.condDepth <= 0 {
+		return
+	}
+	for i := from; i < len(w.out); i++ {
+		if w.out[i].Kind != facts.KindSymbol {
+			continue
+		}
+		if w.out[i].Props == nil {
+			w.out[i].Props = map[string]any{}
+		}
+		w.out[i].Props["conditional"] = true
+	}
+}
+
 func (w *astWalker) walkSourceFile(root *sitter.Node) {
 	if root == nil {
 		return
 	}
 	for i := uint(0); i < uint(root.ChildCount()); i++ {
 		child := root.Child(i)
+		if w.applyDirective(child) {
+			continue
+		}
+		before := len(w.out)
 		switch child.Kind() {
 		case "import_declaration":
 			w.handleImport(child)
@@ -506,6 +563,7 @@ func (w *astWalker) walkSourceFile(root *sitter.Node) {
 		case "typealias_declaration":
 			w.handleTypeAlias(child)
 		}
+		w.stampConditional(before)
 	}
 	w.walkFileScopeCalls(root)
 }
@@ -766,6 +824,10 @@ func (w *astWalker) walkTypeBody(body *sitter.Node, iosComponent string) {
 	}
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
+		if w.applyDirective(c) {
+			continue
+		}
+		before := len(w.out)
 		switch c.Kind() {
 		case "function_declaration":
 			w.handleFunction(c)
@@ -781,6 +843,7 @@ func (w *astWalker) walkTypeBody(body *sitter.Node, iosComponent string) {
 		case "typealias_declaration":
 			w.handleTypeAlias(c)
 		}
+		w.stampConditional(before)
 	}
 }
 

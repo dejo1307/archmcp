@@ -74,3 +74,9 @@ const (
 // tooling / unknown). Re-exported so consumers share one source of truth with the
 // extractors instead of re-implementing the heuristic.
 func ModuleRoleForPath(dir string) string { return internal.ModuleRoleForPath(dir) }
+
+// CanonicalSymbols collapses #if/#else conditional-compilation duplicates in a
+// symbol-fact slice, keeping non-conditional overloads intact. Re-exported so
+// out-of-module consumers that count symbols (package-metrics) apply the same rule
+// as the OSS explainers. See internal/facts for the full contract.
+func CanonicalSymbols(syms []Fact) []Fact { return internal.CanonicalSymbols(syms) }

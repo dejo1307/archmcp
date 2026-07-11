@@ -362,7 +362,14 @@ import (
 // consumes the prop and documented it as Kotlin/Swift) now excludes them as framework
 // entry points instead of flagging them as orphans. Cached Swift snapshots must
 // re-extract (GAP-SW-01).
-const cacheVersion = "v107"
+// v108: the Swift extractor now emits `conditional: true` on every symbol declared
+// inside a #if/#elseif/#else conditional-compilation branch. Tree-sitter walks both
+// branches (the compile-time condition is not evaluated), so a type declared once per
+// branch yields two same-name symbol facts; tagging them lets the counting consumers
+// (exported-surface, complexity-outliers, package-metrics, via facts.CanonicalSymbols)
+// collapse the duplicate while both declarations stay individually queryable. Cached
+// Swift snapshots must re-extract (GAP-SW-10).
+const cacheVersion = "v108"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

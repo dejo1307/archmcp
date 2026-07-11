@@ -70,7 +70,10 @@ type moduleSurface struct {
 // Explain tallies exported vs total symbols per module and reports the modules
 // with the largest near-fully-exported public surface.
 func (e *SurfaceExplainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
-	symbols := store.ByKind(facts.KindSymbol)
+	// Collapse #if/#else duplicates so a type declared once per branch is not counted
+	// twice toward a module's exported/total surface. Genuine overloads (same base
+	// name, not tagged conditional) are preserved.
+	symbols := facts.CanonicalSymbols(store.ByKind(facts.KindSymbol))
 	if len(symbols) == 0 {
 		return nil, nil
 	}

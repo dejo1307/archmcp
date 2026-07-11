@@ -41,7 +41,10 @@ func (e *ComplexityExplainer) Name() string {
 // Explain reads cyclomatic complexity from function/method symbols and reports
 // the statistical outliers above a sensible floor.
 func (e *ComplexityExplainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
-	symbols := store.ByKind(facts.KindSymbol)
+	// Collapse #if/#else duplicates: a method declared once per branch is emitted as
+	// two same-name facts, which would each enter the outlier distribution and could
+	// each be flagged. Genuine overloads (not tagged conditional) are preserved.
+	symbols := facts.CanonicalSymbols(store.ByKind(facts.KindSymbol))
 	if len(symbols) == 0 {
 		return nil, nil
 	}

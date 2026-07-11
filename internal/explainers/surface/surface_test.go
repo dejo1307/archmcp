@@ -42,6 +42,36 @@ func TestExplain_LargePublicSurface(t *testing.T) {
 	}
 }
 
+// TestExplain_CollapsesConditionalDuplicates asserts a type declared in both
+// branches of a #if/#else block (two same-name conditional facts) is counted once
+// toward the module's public surface, not twice. GAP-SW-10.
+func TestExplain_CollapsesConditionalDuplicates(t *testing.T) {
+	s := facts.NewStore()
+	addModuleSymbols(s, "pkg/app", 19, 19) // 19 distinct exported symbols
+	// One type declared once per #if/#else branch → two same-name conditional facts.
+	for _, line := range []int{5, 20} {
+		s.Add(facts.Fact{
+			Kind:  facts.KindSymbol,
+			Name:  "pkg/app.Gate",
+			File:  "pkg/app/gate.swift",
+			Line:  line,
+			Props: map[string]any{"exported": true, "conditional": true, "language": "swift"},
+		})
+	}
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 insight, got %d: %+v", len(insights), insights)
+	}
+	// 19 + 1 canonical Gate = 20, NOT 21 (the second branch fact is collapsed).
+	if !strings.Contains(insights[0].Title, "exports 20 of 20 symbols") {
+		t.Errorf("conditional duplicate must be counted once; title = %q", insights[0].Title)
+	}
+}
+
 // TestExplain_RubySkipped: Ruby symbols are public-by-default, so the exported
 // ratio is uninformative and Ruby modules must never be flagged; other languages in
 // the same store still are.
