@@ -350,6 +350,33 @@ func TestExtractionQuality_SingleRepoNoCoverage(t *testing.T) {
 	}
 }
 
+// GAP-LK-04: a real single-repo snapshot (files parsed, but Coverage nil because
+// there are no service nodes) renders the section and must state that the cross-repo
+// linker did not run — otherwise renderCrossRepo's empty section reads identically
+// to a fully-resolved cluster's.
+func TestExtractionQuality_SingleRepoNotesCrossRepoNotRun(t *testing.T) {
+	snapshot := makeSnapshot(nil, nil)
+	snapshot.Meta.FilesSeen = 1920
+	snapshot.Meta.FilesParsed = 1595
+	snapshot.Meta.Coverage = nil // single-repo: no service nodes
+	content := string(mustRender(t, snapshot))
+
+	if !strings.Contains(content, "## Extraction Quality") {
+		t.Fatalf("section should render when files were seen:\n%s", content)
+	}
+	if !strings.Contains(content, "Cross-repo analysis: not run") {
+		t.Errorf("single-repo snapshot must state the cross-repo linker did not run:\n%s", content)
+	}
+}
+
+// The multi-repo shape (Coverage non-nil) must NOT carry the single-repo note.
+func TestExtractionQuality_MultiRepoOmitsCrossRepoNotRun(t *testing.T) {
+	content := renderWithCoverage(t, &facts.CoverageSummary{ServicesTotal: 4})
+	if strings.Contains(content, "Cross-repo analysis: not run") {
+		t.Errorf("multi-repo snapshot must not claim cross-repo analysis did not run:\n%s", content)
+	}
+}
+
 // bigRepoMapSnapshot returns a snapshot whose Repository Map alone overruns any
 // small token budget — the shape of a real multi-repo cluster.
 func bigRepoMapSnapshot(modules int, cov *facts.CoverageSummary) *facts.Snapshot {

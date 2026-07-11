@@ -1989,3 +1989,85 @@ func TestReadEdgeCoverage_JSONRoundTripShape(t *testing.T) {
 		t.Errorf("readEdgeCoverage = %+v, want detected 4 resolved 1 unresolved 3", cov)
 	}
 }
+
+// --- GAP-LK-04: cross-repo explainers must not degrade silently ---
+
+func TestCrossRepoExplainer(t *testing.T) {
+	for _, name := range []string{"unused-routes", "coverage", "crossrepo"} {
+		if !crossRepoExplainer(name) {
+			t.Errorf("crossRepoExplainer(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"god-class", "cycles", "hotspots", ""} {
+		if crossRepoExplainer(name) {
+			t.Errorf("crossRepoExplainer(%q) = true, want false", name)
+		}
+	}
+}
+
+// A cross-repo explainer on a single-repo store (no KindService facts) could not
+// run at all — its response must say so, not read like a clean "nothing found".
+func TestNoMatchInsightsMessage_CrossRepoDidNotRun(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(facts.Fact{Kind: facts.KindRoute, Name: "GET /x", Props: map[string]any{"role": "server"}})
+	snap := &facts.Snapshot{Insights: []facts.Insight{{Title: "gc", Source: "god-class"}}}
+
+	msg := noMatchInsightsMessage("unused-routes", "", 0, snap, store)
+	if !strings.Contains(msg, "did not run") || !strings.Contains(msg, "append=true") {
+		t.Errorf("expected a did-not-run/append hint, got: %q", msg)
+	}
+	if strings.Contains(msg, "No insights matched") {
+		t.Errorf("a gated-out cross-repo explainer must not read as a clean no-match: %q", msg)
+	}
+}
+
+// With a KindService fact the linker ran, so a no-match is genuine. The message
+// must also list only the explainers that actually produced insights (from
+// Insight.Source), not the ran-without-error set — the old misattribution.
+func TestNoMatchInsightsMessage_RanFoundNothing(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(facts.Fact{Kind: facts.KindService, Name: "svc", Repo: "svc"})
+	snap := &facts.Snapshot{Insights: []facts.Insight{{Title: "gc", Source: "god-class"}}}
+
+	msg := noMatchInsightsMessage("unused-routes", "", 0, snap, store)
+	if !strings.Contains(msg, "No insights matched") {
+		t.Errorf("with services present the explainer ran; expected a genuine no-match: %q", msg)
+	}
+	// The source list names only explainers that produced an insight. unused-routes
+	// produced none, so it must not appear as a source (it still legitimately echoes
+	// in the explainer=... filter, so assert on the "produced by:" list specifically).
+	if !strings.Contains(msg, "produced by: [god-class]") {
+		t.Errorf("source list should be exactly the producing explainers: %q", msg)
+	}
+}
+
+func TestNoMatchInsightsMessage_NoInsightsAtAll(t *testing.T) {
+	msg := noMatchInsightsMessage("cycles", "", 0, &facts.Snapshot{}, facts.NewStore())
+	if !strings.Contains(msg, "No insights were produced") {
+		t.Errorf("empty snapshot should report no insights produced: %q", msg)
+	}
+}
+
+func TestSingleRepoServiceHint(t *testing.T) {
+	single := facts.NewStore()
+	single.Add(facts.Fact{Kind: facts.KindRoute, Name: "GET /x"}) // no Repo label -> single-repo
+
+	multi := facts.NewStore()
+	multi.Add(
+		facts.Fact{Kind: facts.KindService, Name: "a", Repo: "a"},
+		facts.Fact{Kind: facts.KindService, Name: "b", Repo: "b"},
+	)
+
+	if _, ok := singleRepoServiceHint(facts.KindService, 0, single); !ok {
+		t.Error("single-repo empty service query should return an append-mode hint")
+	}
+	if _, ok := singleRepoServiceHint(facts.KindService, 0, multi); ok {
+		t.Error("multi-repo store must not return the single-repo service hint")
+	}
+	if _, ok := singleRepoServiceHint(facts.KindSymbol, 0, single); ok {
+		t.Error("hint is only for kind=service")
+	}
+	if _, ok := singleRepoServiceHint(facts.KindService, 3, single); ok {
+		t.Error("hint must not fire when results are non-empty")
+	}
+}

@@ -653,6 +653,14 @@ func (r *LLMContextRenderer) renderExtractionQuality(snapshot *facts.Snapshot) s
 		sb.WriteString("\n_These are extraction limits, not code defects — verify against source, and consider whether an extractor, detection, or ignore glob needs improving._\n")
 	}
 
+	// A single-repo snapshot has no service nodes (Coverage is nil), so the cross-repo
+	// linker never ran and the Cross-Repo Dependencies section below renders empty —
+	// byte-identical to a fully-resolved cluster's. State the difference here so its
+	// silence is not read as "no unused routes / no coverage gaps".
+	if m.Coverage == nil {
+		sb.WriteString("- Cross-repo analysis: not run (single-repo snapshot — append client/backend repos to enable unused-routes and coverage)\n")
+	}
+
 	sb.WriteString("\n")
 	return sb.String()
 }

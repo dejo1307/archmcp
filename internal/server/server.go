@@ -248,6 +248,75 @@ func filterInsights(insights []facts.Insight, explainer, repo string, minConfide
 	return out
 }
 
+// crossRepoExplainer reports whether name identifies an explainer whose findings
+// depend on KindService nodes — the cross-repo "graph of graphs" the linker builds
+// only for a multi-repo (append-mode) snapshot. On a single-repo snapshot these
+// explainers return nothing not because the code is clean but because they could
+// not run; the response must say which. Keep in sync with crossrepo.ComputeLinks,
+// which returns nil below two repos.
+func crossRepoExplainer(name string) bool {
+	switch name {
+	case "unused-routes", "coverage", "crossrepo":
+		return true
+	}
+	return false
+}
+
+// producingExplainers returns the sorted, de-duplicated set of explainer names
+// that actually produced at least one insight in snap, read from the Insight.Source
+// the engine stamps. Unlike SnapshotMeta.Explainers — the ran-without-error set,
+// which includes explainers gated out to zero insights — this lists only the
+// genuine sources, so it never implies an insight came from an explainer that
+// produced none.
+func producingExplainers(snap *facts.Snapshot) []string {
+	seen := map[string]struct{}{}
+	for _, in := range snap.Insights {
+		if in.Source != "" {
+			seen[in.Source] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// noMatchInsightsMessage builds the query_insights response for the case where no
+// insight matched the filter. It separates three situations the old single string
+// conflated: nothing was produced at all; a cross-repo explainer could not run
+// because the snapshot is single-repo (no KindService nodes); and a genuine
+// no-match. The middle wording mirrors coverage_report's, so the two surfaces read
+// the same for the same underlying cause.
+func noMatchInsightsMessage(explainer, repo string, minConfidence float64, snap *facts.Snapshot, store *facts.Store) string {
+	if len(snap.Insights) == 0 {
+		return "No insights were produced for this snapshot."
+	}
+	if crossRepoExplainer(explainer) && len(store.ByKind(facts.KindService)) == 0 {
+		return fmt.Sprintf(
+			"Explainer %q did not run: it needs a multi-repo (append-mode) snapshot. "+
+				"Snapshot the backend, then each client with append=true.", explainer)
+	}
+	return fmt.Sprintf(
+		"No insights matched (explainer=%q, repo=%q, min_confidence=%.2f). The snapshot has %d insight(s) produced by: %v. "+
+			"Call query_insights without filters to list them.",
+		explainer, repo, minConfidence, len(snap.Insights), producingExplainers(snap))
+}
+
+// singleRepoServiceHint returns an append-mode hint (and true) when a
+// query_facts(kind=service) call returned nothing because the snapshot is
+// single-repo — service nodes exist only in multi-repo (append-mode) snapshots, so
+// a bare marshalled null here reads like an absence of edges rather than an absence
+// of the whole cross-repo graph. Mirrors coverage_report's wording.
+func singleRepoServiceHint(kind string, resultCount int, store *facts.Store) (string, bool) {
+	if kind == facts.KindService && resultCount == 0 && len(store.RepoLabels()) <= 1 {
+		return "No service nodes found: query_facts(kind=\"service\") needs a multi-repo (append-mode) snapshot. " +
+			"Snapshot the backend, then each client with append=true.", true
+	}
+	return "", false
+}
+
 // pathInRepo reports whether a repo-prefixed evidence path (e.g.
 // "golf/internal/x.go") belongs to repo (given lowercased). Matching is on the
 // first path segment, so "golf" does not match "golf-ui/..." or
@@ -598,6 +667,13 @@ func (s *Server) registerTools() {
 			extra, extraTotal := store.QueryAdvanced(opts)
 			results = append(results, extra...)
 			total += extraTotal
+		}
+
+		// A query_facts(kind=service) that comes back empty on a single-repo snapshot
+		// means the cross-repo graph was never built, not that this service is a leaf.
+		// Say so, mirroring coverage_report, instead of returning a bare null.
+		if hint, ok := singleRepoServiceHint(args.Kind, len(results), store); ok {
+			return textResult(hint), nil, nil
 		}
 
 		// Non-JSON output modes: return text instead of JSON.
@@ -1094,12 +1170,7 @@ func (s *Server) registerTools() {
 		}
 		matched := filterInsights(snap.Insights, args.Explainer, args.Repo, args.MinConfidence, len(repos) > 1)
 		if len(matched) == 0 {
-			if len(snap.Insights) == 0 {
-				return textResult("No insights were produced for this snapshot."), nil, nil
-			}
-			return textResult(fmt.Sprintf(
-				"No insights matched (explainer=%q, repo=%q, min_confidence=%.2f). The snapshot has %d insight(s) from these explainers: %v. Call query_insights without filters to list them.",
-				args.Explainer, args.Repo, args.MinConfidence, len(snap.Insights), snap.Meta.Explainers)), nil, nil
+			return textResult(noMatchInsightsMessage(args.Explainer, args.Repo, args.MinConfidence, snap, s.eng.Store())), nil, nil
 		}
 
 		switch resolveOutputMode(args.OutputMode, modeSummary) {
