@@ -77,3 +77,144 @@ function walk($nodes) {
 		t.Errorf("expected calls_in_loop to include walk; props %v", f.Props)
 	}
 }
+
+// --- Bounded-loop discounting (GAP-PH-01, cacheVersion v106) -----------------
+// PHP joins the Go/Python/TS/Kotlin/Java convention. A constant-count loop — a
+// literal-bounded `for ($i = 0; $i < 3; $i++)` or a `foreach` over an array literal —
+// is discounted from scaling_loop_depth; an infinite `while (true)` is discounted from
+// the exponent but keeps its per-iteration calls as N+1 candidates.
+
+func phpFn(t *testing.T, body string) facts.Fact {
+	t.Helper()
+	src := "<?php\nfunction f($xs, $n) {\n" + body + "\n}\n"
+	f, ok := symbolsByName(extractFileAST([]byte(src), "x.php"))["f"]
+	if !ok {
+		t.Fatalf("missing symbol f")
+	}
+	return f
+}
+
+func phpIntProp(f facts.Fact, key string) int {
+	if v, ok := f.Props[key].(int); ok {
+		return v
+	}
+	return 0
+}
+
+func phpHasProp(f facts.Fact, key string) bool {
+	_, ok := f.Props[key]
+	return ok
+}
+
+func phpStrSlice(f facts.Fact, key string) []string {
+	s, _ := f.Props[key].([]string)
+	return s
+}
+
+func TestPhpComplexity_ScalingLoopDepth_ConstantForDiscounted(t *testing.T) {
+	f := phpFn(t, "for ($i = 0; $i < 3; $i++) { work(); }")
+	if got := phpIntProp(f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1", got)
+	}
+	if !phpHasProp(f, "scaling_loop_depth") {
+		t.Fatalf("scaling_loop_depth must be present (even 0)")
+	}
+	if got := phpIntProp(f, "scaling_loop_depth"); got != 0 {
+		t.Errorf("scaling_loop_depth = %d, want 0 (literal-bounded for adds no factor of n)", got)
+	}
+}
+
+func TestPhpComplexity_ScalingLoopDepth_VariableForNotDiscounted(t *testing.T) {
+	f := phpFn(t, "for ($i = 0; $i < $n; $i++) { work(); }")
+	if got := phpIntProp(f, "scaling_loop_depth"); got != 1 {
+		t.Errorf("scaling_loop_depth = %d, want 1 (data-derived bound scales)", got)
+	}
+}
+
+func TestPhpComplexity_ScalingLoopDepth_ForeachScales(t *testing.T) {
+	f := phpFn(t, "foreach ($xs as $x) { work(); }")
+	if got := phpIntProp(f, "scaling_loop_depth"); got != 1 {
+		t.Errorf("scaling_loop_depth = %d, want 1 (foreach over a variable scales)", got)
+	}
+}
+
+func TestPhpComplexity_ScalingLoopDepth_ConstantForeachDiscounted(t *testing.T) {
+	f := phpFn(t, "foreach ([1, 2, 3] as $x) { work(); }")
+	if got := phpIntProp(f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1", got)
+	}
+	if got := phpIntProp(f, "scaling_loop_depth"); got != 0 {
+		t.Errorf("scaling_loop_depth = %d, want 0 (an array literal iterates a fixed count)", got)
+	}
+}
+
+func TestPhpComplexity_ScalingLoopDepth_ConstantOuterScalingInner(t *testing.T) {
+	f := phpFn(t, "for ($i = 0; $i < 3; $i++) { foreach ($xs as $x) { work(); } }")
+	if got := phpIntProp(f, "loop_depth"); got != 2 {
+		t.Errorf("loop_depth = %d, want 2", got)
+	}
+	if got := phpIntProp(f, "scaling_loop_depth"); got != 1 {
+		t.Errorf("scaling_loop_depth = %d, want 1 (only the inner scaling loop counts)", got)
+	}
+}
+
+func TestPhpComplexity_ScalingLoopDepth_InfiniteWhileDiscounted(t *testing.T) {
+	f := phpFn(t, "while (true) { work(); }")
+	if got := phpIntProp(f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1", got)
+	}
+	if got := phpIntProp(f, "scaling_loop_depth"); got != 0 {
+		t.Errorf("scaling_loop_depth = %d, want 0 (while(true) adds no factor of n)", got)
+	}
+}
+
+func TestPhpComplexity_ScalingLoopDepth_ConditionalWhileNotDiscounted(t *testing.T) {
+	f := phpFn(t, "while ($n > 0) { $n--; work(); }")
+	if got := phpIntProp(f, "scaling_loop_depth"); got != 1 {
+		t.Errorf("scaling_loop_depth = %d, want 1 (a data-driven while scales)", got)
+	}
+}
+
+func TestPhpComplexity_ScalingLoopDepth_AbsentWithoutLoops(t *testing.T) {
+	f := phpFn(t, "work();")
+	if phpHasProp(f, "scaling_loop_depth") {
+		t.Errorf("scaling_loop_depth must be omitted for a loop-free function, got %v", f.Props["scaling_loop_depth"])
+	}
+}
+
+func TestPhpComplexity_CallsInScalingLoop_ConstantExcluded(t *testing.T) {
+	f := phpFn(t, "for ($i = 0; $i < 3; $i++) { db_query(); }")
+	if len(phpStrSlice(f, "calls_in_loop")) == 0 {
+		t.Errorf("calls_in_loop should include db_query; props %v", f.Props)
+	}
+	if !phpHasProp(f, "calls_in_scaling_loop") {
+		t.Fatalf("calls_in_scaling_loop must be present (even empty) whenever calls_in_loop is")
+	}
+	if n := len(phpStrSlice(f, "calls_in_scaling_loop")); n != 0 {
+		t.Errorf("calls_in_scaling_loop has %d entries, want 0 (call is inside a constant loop)", n)
+	}
+}
+
+func TestPhpComplexity_CallsInScalingLoop_InfiniteLoopCallsRetained(t *testing.T) {
+	f := phpFn(t, "while (true) { db_query(); }")
+	if len(phpStrSlice(f, "calls_in_scaling_loop")) == 0 {
+		t.Errorf("calls_in_scaling_loop should retain db_query (infinite loop still repeats); props %v", f.Props)
+	}
+}
+
+func TestPhpComplexity_CallsInScalingLoop_ScalingRetained(t *testing.T) {
+	f := phpFn(t, "foreach ($xs as $x) { db_query(); }")
+	if len(phpStrSlice(f, "calls_in_scaling_loop")) == 0 {
+		t.Errorf("calls_in_scaling_loop should retain db_query; props %v", f.Props)
+	}
+}
+
+func TestPhpComplexity_CallsInScalingLoop_PresentButEmptyWhenAllBounded(t *testing.T) {
+	f := phpFn(t, "for ($i = 0; $i < 3; $i++) { db_query(); }")
+	if !phpHasProp(f, "calls_in_scaling_loop") {
+		t.Fatalf("calls_in_scaling_loop must be present (even empty)")
+	}
+	if n := len(phpStrSlice(f, "calls_in_scaling_loop")); n != 0 {
+		t.Errorf("calls_in_scaling_loop has %d entries, want 0", n)
+	}
+}

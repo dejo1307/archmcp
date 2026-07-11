@@ -54,19 +54,28 @@ type phpWalker struct {
 	// metrics is nil outside a function/method body walk.
 	metrics   *phpBodyMetrics
 	loopDepth int
-	selfName  string // enclosing callable's qualified name (for recursion detection)
-	selfShort string // enclosing callable's short name
+	// scalingDepth counts only input-scaling (unbounded) loops — the Big-O exponent.
+	// repeatDepth counts loops that run a non-constant number of times; it differs from
+	// scalingDepth only for while(true)/for(;;), which add no factor of n but whose body
+	// still runs many times, so a query inside stays an N+1 candidate.
+	scalingDepth int
+	repeatDepth  int
+	selfName     string // enclosing callable's qualified name (for recursion detection)
+	selfShort    string // enclosing callable's short name
 }
 
 // phpBodyMetrics accumulates per-function complexity signals during the single
 // walkForCalls body traversal — mirrors the Go/Ruby/Python extractors.
 type phpBodyMetrics struct {
-	loopDepth   int             // max loop nesting depth
-	loopCount   int             // number of loop constructs
-	decisions   int             // decision points (cyclomatic = 1 + decisions)
-	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
-	inLoopSeen  map[string]bool // dedup set for callsInLoop
-	recursive   bool            // body directly calls the enclosing callable
+	loopDepth          int             // max loop nesting depth
+	loopCount          int             // number of loop constructs
+	decisions          int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop        []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen         map[string]bool // dedup set for callsInLoop
+	scalingLoopDepth   int             // max nesting counting only unbounded (input-scaling) loops
+	callsInScalingLoop []string        // distinct targets invoked inside a repeating loop (N+1 candidates)
+	inScalingSeen      map[string]bool // dedup set for callsInScalingLoop
+	recursive          bool            // body directly calls the enclosing callable
 }
 
 // --- program / namespace ---
@@ -325,18 +334,29 @@ func (w *phpWalker) handleCallable(node *sitter.Node, isMethod bool) {
 	seen := make(map[string]bool)
 	w.metrics = &phpBodyMetrics{}
 	w.loopDepth = 0
+	w.scalingDepth = 0
+	w.repeatDepth = 0
 	w.selfName = fullName
 	w.selfShort = name
 	w.walkForCalls(node.ChildByFieldName("body"), ownerIdx, seen)
 	props["cyclomatic"] = 1 + w.metrics.decisions
 	if w.metrics.loopDepth > 0 {
 		props["loop_depth"] = w.metrics.loopDepth
+		// Emit the scaling depth (bounded loops discounted) alongside — even when 0 — so
+		// the consumer distinguishes "all loops bounded" from "signal absent".
+		props["scaling_loop_depth"] = w.metrics.scalingLoopDepth
 	}
 	if w.metrics.loopCount > 0 {
 		props["loop_count"] = w.metrics.loopCount
 	}
 	if len(w.metrics.callsInLoop) > 0 {
 		props["calls_in_loop"] = w.metrics.callsInLoop
+		// Emit the N+1 subset alongside — even when EMPTY — so the consumer distinguishes
+		// "no call repeats" from "signal absent" and does not fall back to calls_in_loop.
+		if w.metrics.callsInScalingLoop == nil {
+			w.metrics.callsInScalingLoop = []string{}
+		}
+		props["calls_in_scaling_loop"] = w.metrics.callsInScalingLoop
 	}
 	if w.metrics.recursive {
 		props["recursive_self"] = true
@@ -370,18 +390,36 @@ func (w *phpWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[strin
 		"interface_declaration", "trait_declaration", "enum_declaration":
 		return
 	case "for_statement", "foreach_statement", "while_statement", "do_statement":
+		// A constant-count loop raises loop_depth but not scaling_loop_depth (the Big-O
+		// exponent); an infinite loop is discounted from the exponent but still repeats.
+		class := phpSyntacticLoopClass(node, w.src)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
 			if w.loopDepth+1 > w.metrics.loopDepth {
 				w.metrics.loopDepth = w.loopDepth + 1
 			}
+			if class.scales() && w.scalingDepth+1 > w.metrics.scalingLoopDepth {
+				w.metrics.scalingLoopDepth = w.scalingDepth + 1
+			}
 		}
 		w.loopDepth++
+		if class.scales() {
+			w.scalingDepth++
+		}
+		if class.repeats() {
+			w.repeatDepth++
+		}
 		for i := uint(0); i < node.ChildCount(); i++ {
 			w.walkForCalls(node.Child(i), ownerIdx, seen)
 		}
 		w.loopDepth--
+		if class.scales() {
+			w.scalingDepth--
+		}
+		if class.repeats() {
+			w.repeatDepth--
+		}
 		return
 	case "function_call_expression":
 		fn := node.ChildByFieldName("function")
@@ -493,6 +531,136 @@ func (w *phpWalker) recordCallMetrics(target string) {
 		w.metrics.inLoopSeen[target] = true
 		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
 	}
+	// A call inside a loop that repeats a non-constant number of times is an N+1
+	// candidate. A constant loop (literal-bounded for, foreach over an array literal)
+	// excludes its calls; while(true)/for(;;) repeats, so its calls stay candidates even
+	// though its depth is discounted from the Big-O exponent.
+	if w.repeatDepth > 0 {
+		if w.metrics.inScalingSeen == nil {
+			w.metrics.inScalingSeen = make(map[string]bool)
+		}
+		if !w.metrics.inScalingSeen[target] {
+			w.metrics.inScalingSeen[target] = true
+			w.metrics.callsInScalingLoop = append(w.metrics.callsInScalingLoop, target)
+		}
+	}
+}
+
+// phpLoopClass classifies a loop by two independent properties: whether it adds a
+// factor of n to Big-O (scales) and whether its body runs a non-constant number of
+// times (repeats). A constant-count loop — `for ($i = 0; $i < 3; $i++)`, a foreach over
+// an array literal or ALL_CAPS constant — does neither. An infinite `for (;;)` /
+// `while (true)` does not scale but still repeats. Collapsing the two deletes true
+// positives (cache.go v99).
+type phpLoopClass int
+
+const (
+	phpLoopScaling phpLoopClass = iota
+	phpLoopConstant
+	phpLoopInfinite
+)
+
+func (c phpLoopClass) scales() bool  { return c == phpLoopScaling }
+func (c phpLoopClass) repeats() bool { return c != phpLoopConstant }
+
+// phpSyntacticLoopClass classifies a for / foreach / while / do-while statement.
+func phpSyntacticLoopClass(node *sitter.Node, src []byte) phpLoopClass {
+	switch node.Kind() {
+	case "for_statement":
+		cond := node.ChildByFieldName("condition")
+		if cond == nil {
+			return phpLoopInfinite // for (;;)
+		}
+		if phpConstantForCondition(cond, src) {
+			return phpLoopConstant
+		}
+	case "foreach_statement":
+		if phpConstantIterable(phpForeachIterable(node), src) {
+			return phpLoopConstant
+		}
+	case "while_statement", "do_statement":
+		if phpIsTrueCondition(node.ChildByFieldName("condition"), src) {
+			return phpLoopInfinite
+		}
+	}
+	return phpLoopScaling
+}
+
+// phpForeachIterable returns the iterated expression of a foreach — its first named
+// child, the `foreach (<expr> as ...)` collection, which precedes the value variable
+// and body.
+func phpForeachIterable(node *sitter.Node) *sitter.Node {
+	if node.NamedChildCount() == 0 {
+		return nil
+	}
+	return node.NamedChild(0)
+}
+
+// phpConstantForCondition reports whether a for's condition compares the loop variable
+// against an integer literal (`$i < 3`), so the loop runs a statically fixed number of
+// times. A data-derived bound (`$i < $n`, `$i < count($xs)`) is conservatively treated
+// as scaling — no genuine O(n) finding is deleted.
+func phpConstantForCondition(cond *sitter.Node, src []byte) bool {
+	if cond == nil || cond.Kind() != "binary_expression" {
+		return false
+	}
+	switch phpText(cond.ChildByFieldName("operator"), src) {
+	case "<", "<=", ">", ">=", "!=", "<>":
+	default:
+		return false
+	}
+	l := cond.ChildByFieldName("left")
+	r := cond.ChildByFieldName("right")
+	return (l != nil && l.Kind() == "integer") || (r != nil && r.Kind() == "integer")
+}
+
+// phpConstantIterable reports whether a foreach iterates a compile-time-fixed number of
+// times: an array literal (`[1, 2, 3]` / `array(...)`) or an ALL_CAPS constant. A
+// variable receiver scales. Mirrors kotlinConstantIterable / pyIterableBounded.
+func phpConstantIterable(it *sitter.Node, src []byte) bool {
+	if it == nil {
+		return false
+	}
+	switch it.Kind() {
+	case "array_creation_expression":
+		return true
+	case "name":
+		return phpIsScreamingConst(phpText(it, src))
+	}
+	return false
+}
+
+// phpIsScreamingConst reports whether a name is SCREAMING_SNAKE_CASE — a conventional
+// PHP compile-time constant, whose iteration count is input-independent.
+func phpIsScreamingConst(s string) bool {
+	if s == "" {
+		return false
+	}
+	hasLetter := false
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return hasLetter
+}
+
+// phpIsTrueCondition reports whether a loop condition is the literal `true`
+// (case-insensitive, PHP-style) — `while (true)`, `do … while (TRUE)`. A named constant
+// is not matched. The condition arrives wrapped in parentheses, so strip them first.
+func phpIsTrueCondition(cond *sitter.Node, src []byte) bool {
+	if cond == nil {
+		return false
+	}
+	t := strings.TrimSpace(phpText(cond, src))
+	for strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
+		t = strings.TrimSpace(t[1 : len(t)-1])
+	}
+	return strings.EqualFold(t, "true")
 }
 
 // --- constants / enum cases / properties ---

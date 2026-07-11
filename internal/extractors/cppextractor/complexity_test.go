@@ -341,3 +341,132 @@ int classify(int a, int b) {
 		t.Errorf("cyclomatic = %d, want 6", got)
 	}
 }
+
+func cppHasProp(f facts.Fact, key string) bool {
+	_, ok := f.Props[key]
+	return ok
+}
+
+// --- Bounded-loop discounting (GAP-CP-01, cacheVersion v105) -----------------
+// C/C++ joins the Go/Python/TS/Kotlin/Java convention. A constant-count loop — a
+// literal-bounded `for (int i = 0; i < 3; i++)` or a range-for over a braced list —
+// is discounted from scaling_loop_depth; an infinite `for (;;)` / `while (true)` is
+// discounted from the exponent but keeps its per-iteration calls as N+1 candidates.
+
+func cppLoopFn(t *testing.T, body string) facts.Fact {
+	t.Helper()
+	ff := extractProject(t, map[string]string{"pkg/lp.cpp": "void work();\nvoid db_query();\n" + body})
+	f, ok := findFact(ff, "pkg.run")
+	if !ok {
+		t.Fatalf("missing pkg.run; got %v", factNames(ff))
+	}
+	return f
+}
+
+func TestCppComplexity_ScalingLoopDepth_ConstantForDiscounted(t *testing.T) {
+	f := cppLoopFn(t, "void run() {\n  for (int i = 0; i < 3; i++) { work(); }\n}")
+	if got := intProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1", got)
+	}
+	if !cppHasProp(f, "scaling_loop_depth") {
+		t.Fatalf("scaling_loop_depth must be present (even 0)")
+	}
+	if got := intProp(t, f, "scaling_loop_depth"); got != 0 {
+		t.Errorf("scaling_loop_depth = %d, want 0 (literal-bounded for adds no factor of n)", got)
+	}
+}
+
+func TestCppComplexity_ScalingLoopDepth_VariableForNotDiscounted(t *testing.T) {
+	f := cppLoopFn(t, "void run(int n) {\n  for (int i = 0; i < n; i++) { work(); }\n}")
+	if got := intProp(t, f, "scaling_loop_depth"); got != 1 {
+		t.Errorf("scaling_loop_depth = %d, want 1 (data-derived bound scales)", got)
+	}
+}
+
+func TestCppComplexity_ScalingLoopDepth_RangeForScales(t *testing.T) {
+	f := cppLoopFn(t, "void run(int* xs, int n) {\n  for (int x : xs) { work(); }\n}")
+	if got := intProp(t, f, "scaling_loop_depth"); got != 1 {
+		t.Errorf("scaling_loop_depth = %d, want 1 (range-for over a variable scales)", got)
+	}
+}
+
+func TestCppComplexity_ScalingLoopDepth_ConstantRangeDiscounted(t *testing.T) {
+	f := cppLoopFn(t, "void run() {\n  for (int x : {1, 2, 3}) { work(); }\n}")
+	if got := intProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1", got)
+	}
+	if got := intProp(t, f, "scaling_loop_depth"); got != 0 {
+		t.Errorf("scaling_loop_depth = %d, want 0 (a braced init-list iterates a fixed count)", got)
+	}
+}
+
+func TestCppComplexity_ScalingLoopDepth_ConstantOuterScalingInner(t *testing.T) {
+	f := cppLoopFn(t, "void run(int* xs, int n) {\n  for (int i = 0; i < 3; i++) { for (int x : xs) { work(); } }\n}")
+	if got := intProp(t, f, "loop_depth"); got != 2 {
+		t.Errorf("loop_depth = %d, want 2", got)
+	}
+	if got := intProp(t, f, "scaling_loop_depth"); got != 1 {
+		t.Errorf("scaling_loop_depth = %d, want 1 (only the inner scaling loop counts)", got)
+	}
+}
+
+func TestCppComplexity_ScalingLoopDepth_InfiniteForDiscounted(t *testing.T) {
+	f := cppLoopFn(t, "void run() {\n  for (;;) { work(); }\n}")
+	if got := intProp(t, f, "loop_depth"); got != 1 {
+		t.Errorf("loop_depth = %d, want 1", got)
+	}
+	if got := intProp(t, f, "scaling_loop_depth"); got != 0 {
+		t.Errorf("scaling_loop_depth = %d, want 0 (an infinite loop adds no factor of n)", got)
+	}
+}
+
+func TestCppComplexity_ScalingLoopDepth_InfiniteWhileDiscounted(t *testing.T) {
+	f := cppLoopFn(t, "void run() {\n  while (true) { work(); }\n}")
+	if got := intProp(t, f, "scaling_loop_depth"); got != 0 {
+		t.Errorf("scaling_loop_depth = %d, want 0 (while(true) adds no factor of n)", got)
+	}
+}
+
+func TestCppComplexity_ScalingLoopDepth_AbsentWithoutLoops(t *testing.T) {
+	f := cppLoopFn(t, "void run() {\n  work();\n}")
+	if cppHasProp(f, "scaling_loop_depth") {
+		t.Errorf("scaling_loop_depth must be omitted for a loop-free function, got %v", f.Props["scaling_loop_depth"])
+	}
+}
+
+func TestCppComplexity_CallsInScalingLoop_ConstantExcluded(t *testing.T) {
+	f := cppLoopFn(t, "void run() {\n  for (int i = 0; i < 3; i++) { db_query(); }\n}")
+	if !containsStr(strSliceProp(f, "calls_in_loop"), "pkg.db_query") {
+		t.Errorf("calls_in_loop = %v, want to contain pkg.db_query", strSliceProp(f, "calls_in_loop"))
+	}
+	if !cppHasProp(f, "calls_in_scaling_loop") {
+		t.Fatalf("calls_in_scaling_loop must be present (even empty) whenever calls_in_loop is")
+	}
+	if containsStr(strSliceProp(f, "calls_in_scaling_loop"), "pkg.db_query") {
+		t.Errorf("calls_in_scaling_loop = %v, must NOT contain a call made only inside a constant loop", strSliceProp(f, "calls_in_scaling_loop"))
+	}
+}
+
+func TestCppComplexity_CallsInScalingLoop_InfiniteLoopCallsRetained(t *testing.T) {
+	f := cppLoopFn(t, "void run() {\n  for (;;) { db_query(); }\n}")
+	if !containsStr(strSliceProp(f, "calls_in_scaling_loop"), "pkg.db_query") {
+		t.Errorf("calls_in_scaling_loop = %v, want to contain pkg.db_query (infinite loop still repeats)", strSliceProp(f, "calls_in_scaling_loop"))
+	}
+}
+
+func TestCppComplexity_CallsInScalingLoop_ScalingRetained(t *testing.T) {
+	f := cppLoopFn(t, "void run(int* xs, int n) {\n  for (int x : xs) { db_query(); }\n}")
+	if !containsStr(strSliceProp(f, "calls_in_scaling_loop"), "pkg.db_query") {
+		t.Errorf("calls_in_scaling_loop = %v, want to contain pkg.db_query", strSliceProp(f, "calls_in_scaling_loop"))
+	}
+}
+
+func TestCppComplexity_CallsInScalingLoop_PresentButEmptyWhenAllBounded(t *testing.T) {
+	f := cppLoopFn(t, "void run() {\n  for (int i = 0; i < 3; i++) { db_query(); }\n}")
+	if !cppHasProp(f, "calls_in_scaling_loop") {
+		t.Fatalf("calls_in_scaling_loop must be present (even empty)")
+	}
+	if n := len(strSliceProp(f, "calls_in_scaling_loop")); n != 0 {
+		t.Errorf("calls_in_scaling_loop has %d entries, want 0 (every in-loop call is inside a constant loop)", n)
+	}
+}

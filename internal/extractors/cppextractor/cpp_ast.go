@@ -152,19 +152,28 @@ type astWalker struct {
 	// direct-recursion detection).
 	metrics   *cppBodyMetrics
 	loopDepth int
-	selfName  string
-	selfShort string
+	// scalingDepth counts only input-scaling (unbounded) loops — the Big-O exponent.
+	// repeatDepth counts loops that run a non-constant number of times; it differs from
+	// scalingDepth only for `for (;;)` / `while (true)`, which add no factor of n but
+	// whose body still runs many times, so a query inside stays an N+1 candidate.
+	scalingDepth int
+	repeatDepth  int
+	selfName     string
+	selfShort    string
 }
 
 // cppBodyMetrics accumulates per-function complexity signals during the single
 // walkForCalls body traversal — mirrors the other extractors.
 type cppBodyMetrics struct {
-	loopDepth   int             // max loop nesting depth
-	loopCount   int             // number of loop constructs (syntactic + STL-algorithm lambdas)
-	decisions   int             // decision points (cyclomatic = 1 + decisions)
-	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
-	inLoopSeen  map[string]bool // dedup set for callsInLoop
-	recursive   bool            // body directly calls the enclosing function
+	loopDepth          int             // max loop nesting depth
+	loopCount          int             // number of loop constructs (syntactic + STL-algorithm lambdas)
+	decisions          int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop        []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen         map[string]bool // dedup set for callsInLoop
+	scalingLoopDepth   int             // max nesting counting only unbounded (input-scaling) loops
+	callsInScalingLoop []string        // distinct targets invoked inside a repeating loop (N+1 candidates)
+	inScalingSeen      map[string]bool // dedup set for callsInScalingLoop
+	recursive          bool            // body directly calls the enclosing function
 }
 
 // cppStlIterators are <algorithm>/<numeric> functions whose lambda/functor argument
@@ -205,6 +214,95 @@ func (w *astWalker) recordInLoop(target string) {
 		w.metrics.inLoopSeen[target] = true
 		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
 	}
+	// A call inside a loop that repeats a non-constant number of times is an N+1
+	// candidate. A constant loop (literal-bounded for, range-for over a braced list)
+	// excludes its calls; `for (;;)` / `while (true)` repeats, so its calls stay
+	// candidates even though its depth is discounted from the Big-O exponent.
+	if w.repeatDepth > 0 {
+		if w.metrics.inScalingSeen == nil {
+			w.metrics.inScalingSeen = make(map[string]bool)
+		}
+		if !w.metrics.inScalingSeen[target] {
+			w.metrics.inScalingSeen[target] = true
+			w.metrics.callsInScalingLoop = append(w.metrics.callsInScalingLoop, target)
+		}
+	}
+}
+
+// cppLoopClass classifies a loop by two independent properties: whether it adds a
+// factor of n to Big-O (scales) and whether its body runs a non-constant number of
+// times (repeats). A constant-count loop — `for (int i = 0; i < 3; i++)`, a range-for
+// over a braced init-list — does neither. An infinite `for (;;)` / `while (true)` does
+// not scale but still repeats. Collapsing the two deletes true positives (cache.go v99).
+type cppLoopClass int
+
+const (
+	cppLoopScaling cppLoopClass = iota
+	cppLoopConstant
+	cppLoopInfinite
+)
+
+func (c cppLoopClass) scales() bool  { return c == cppLoopScaling }
+func (c cppLoopClass) repeats() bool { return c != cppLoopConstant }
+
+// cppSyntacticLoopClass classifies a for / range-for / while / do-while statement.
+func cppSyntacticLoopClass(node *sitter.Node, src []byte) cppLoopClass {
+	switch node.Kind() {
+	case "for_statement":
+		cond := node.ChildByFieldName("condition")
+		if cond == nil {
+			return cppLoopInfinite // for (;;)
+		}
+		if cppConstantForCondition(cond) {
+			return cppLoopConstant
+		}
+	case "for_range_loop":
+		// for (T x : {a, b, c}) — a braced init-list iterates a fixed count. A variable
+		// range (for (x : xs)) scales.
+		if r := node.ChildByFieldName("right"); r != nil && r.Kind() == "initializer_list" {
+			return cppLoopConstant
+		}
+	case "while_statement", "do_statement":
+		if cppIsTrueCondition(node.ChildByFieldName("condition"), src) {
+			return cppLoopInfinite
+		}
+	}
+	return cppLoopScaling
+}
+
+// cppConstantForCondition reports whether a three-clause for's condition compares the
+// loop variable against a numeric literal (`i < 3`), so the loop runs a statically fixed
+// number of times. A data-derived bound (`i < n`, `i < v.size()`) or a compound
+// condition is conservatively treated as scaling — no genuine O(n) finding is deleted.
+func cppConstantForCondition(cond *sitter.Node) bool {
+	if cond == nil || cond.Kind() != "binary_expression" {
+		return false
+	}
+	hasCmp, hasLiteral := false, false
+	for i := uint(0); i < cond.ChildCount(); i++ {
+		switch cond.Child(i).Kind() {
+		case "<", "<=", ">", ">=", "!=":
+			hasCmp = true
+		case "number_literal":
+			hasLiteral = true
+		}
+	}
+	return hasCmp && hasLiteral
+}
+
+// cppIsTrueCondition reports whether a loop condition is the literal `true` (or C's
+// `1`) — `while (true)`, `do … while (1)`. A named constant is not matched. The
+// condition arrives wrapped (condition_clause / parenthesized_expression), so strip
+// the outer parens and compare text.
+func cppIsTrueCondition(cond *sitter.Node, src []byte) bool {
+	if cond == nil {
+		return false
+	}
+	t := strings.TrimSpace(nodeText(cond, src))
+	for strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
+		t = strings.TrimSpace(t[1 : len(t)-1])
+	}
+	return t == "true" || t == "1"
 }
 
 // cppCheapMethods are obviously-cheap STL container / iterator / accessor methods.
@@ -593,9 +691,12 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 	// scopes (lambdas), so save and restore the outer state. Props are written via
 	// the stable index (the pointer may be invalidated if the body walk grows w.out).
 	savedMetrics, savedDepth := w.metrics, w.loopDepth
+	savedScaling, savedRepeat := w.scalingDepth, w.repeatDepth
 	savedName, savedShort := w.selfName, w.selfShort
 	w.metrics = &cppBodyMetrics{}
 	w.loopDepth = 0
+	w.scalingDepth = 0
+	w.repeatDepth = 0
 	w.selfName = symbolName
 	w.selfShort = shortName
 	if body := node.ChildByFieldName("body"); body != nil {
@@ -606,17 +707,27 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 	props["cyclomatic"] = 1 + m.decisions
 	if m.loopDepth > 0 {
 		props["loop_depth"] = m.loopDepth
+		// Emit the scaling depth (bounded loops discounted) alongside — even when 0 — so
+		// the consumer distinguishes "all loops bounded" from "signal absent".
+		props["scaling_loop_depth"] = m.scalingLoopDepth
 	}
 	if m.loopCount > 0 {
 		props["loop_count"] = m.loopCount
 	}
 	if len(m.callsInLoop) > 0 {
 		props["calls_in_loop"] = m.callsInLoop
+		// Emit the N+1 subset alongside — even when EMPTY — so the consumer distinguishes
+		// "no call repeats" from "signal absent" and does not fall back to calls_in_loop.
+		if m.callsInScalingLoop == nil {
+			m.callsInScalingLoop = []string{}
+		}
+		props["calls_in_scaling_loop"] = m.callsInScalingLoop
 	}
 	if m.recursive {
 		props["recursive_self"] = true
 	}
 	w.metrics, w.loopDepth = savedMetrics, savedDepth
+	w.scalingDepth, w.repeatDepth = savedScaling, savedRepeat
 	w.selfName, w.selfShort = savedName, savedShort
 	for range outOfLineScopes {
 		w.popType()
@@ -1346,12 +1457,12 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	// defined inside a loop). An STL iterator's OWN lambda is handled in the
 	// call_expression branch (its body walks at +1).
 	if w.metrics != nil && kind == "lambda_expression" {
-		saved := w.loopDepth
-		w.loopDepth = 0
+		saved, savedScaling, savedRepeat := w.loopDepth, w.scalingDepth, w.repeatDepth
+		w.loopDepth, w.scalingDepth, w.repeatDepth = 0, 0, 0
 		for i := uint(0); i < node.ChildCount(); i++ {
 			w.walkForCalls(node.Child(i))
 		}
-		w.loopDepth = saved
+		w.loopDepth, w.scalingDepth, w.repeatDepth = saved, savedScaling, savedRepeat
 		return
 	}
 
@@ -1369,19 +1480,37 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 
 	switch kind {
 	case "for_statement", "while_statement", "do_statement", "for_range_loop":
-		// Syntactic loops: everything in the body runs per iteration.
+		// Syntactic loops: everything in the body runs per iteration. A constant-count
+		// loop raises loop_depth but not scaling_loop_depth (the Big-O exponent); an
+		// infinite loop is discounted from the exponent but still repeats.
+		class := cppSyntacticLoopClass(node, w.src)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
 			if w.loopDepth+1 > w.metrics.loopDepth {
 				w.metrics.loopDepth = w.loopDepth + 1
 			}
+			if class.scales() && w.scalingDepth+1 > w.metrics.scalingLoopDepth {
+				w.metrics.scalingLoopDepth = w.scalingDepth + 1
+			}
 		}
 		w.loopDepth++
+		if class.scales() {
+			w.scalingDepth++
+		}
+		if class.repeats() {
+			w.repeatDepth++
+		}
 		for i := uint(0); i < node.ChildCount(); i++ {
 			w.walkForCalls(node.Child(i))
 		}
 		w.loopDepth--
+		if class.scales() {
+			w.scalingDepth--
+		}
+		if class.repeats() {
+			w.repeatDepth--
+		}
 		return
 	case "call_expression":
 		w.handleCall(node)
@@ -1389,10 +1518,15 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		// its lambda body runs per element, but the receiver/other args run once.
 		if w.metrics != nil {
 			if lambda := w.cppStlLambda(node); lambda != nil {
+				// An STL algorithm iterates its [begin, end) container, so it scales with
+				// the input — count it toward scaling_loop_depth too.
 				w.metrics.loopCount++
 				w.metrics.decisions++
 				if w.loopDepth+1 > w.metrics.loopDepth {
 					w.metrics.loopDepth = w.loopDepth + 1
+				}
+				if w.scalingDepth+1 > w.metrics.scalingLoopDepth {
+					w.metrics.scalingLoopDepth = w.scalingDepth + 1
 				}
 				for i := uint(0); i < node.ChildCount(); i++ {
 					if c := node.Child(i); cppByteContains(c, lambda) {
@@ -1532,11 +1666,17 @@ func (w *astWalker) walkCppLambdaSubtree(node, lambda *sitter.Node) {
 		return
 	}
 	if node.Kind() == "lambda_expression" && node.StartByte() == lambda.StartByte() && node.EndByte() == lambda.EndByte() {
+		// The STL algorithm invokes this lambda per element and scales with the
+		// container, so bump the scaling and repeat depths alongside loop_depth.
 		w.loopDepth++
+		w.scalingDepth++
+		w.repeatDepth++
 		for i := uint(0); i < node.ChildCount(); i++ {
 			w.walkForCalls(node.Child(i))
 		}
 		w.loopDepth--
+		w.scalingDepth--
+		w.repeatDepth--
 		return
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {

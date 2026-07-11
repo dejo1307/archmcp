@@ -324,7 +324,37 @@ import (
 // over-crediting via orphans' lastSeg fold). TS test files now emit test_ref facts,
 // so cached TS snapshots must re-extract; the bump is required because the TS
 // extractor is a FileOwner (cached).
-const cacheVersion = "v103"
+// v104: the Java extractor learned bounded-loop discounting and now emits
+// scaling_loop_depth (and calls_in_scaling_loop) alongside loop_depth, joining the
+// Go/Python/TypeScript/Kotlin convention (GAP-JV-01, the Java third of GAP-XL-01). A
+// constant-count loop — a literal-bounded for (for (int i = 0; i < 3; i++)), a for-each
+// over a collection literal (List.of(...)) or an ALL_CAPS constant, or a stream iterator
+// over such a receiver — no longer inflates the Big-O exponent; an infinite for (;;) /
+// while (true) is likewise discounted from the exponent but keeps its per-iteration calls
+// as N+1 candidates (three-valued classification: constant / infinite / scaling — see
+// v99). Previously perf.scalingDepth() silently substituted the raw loop_depth for Java,
+// so a fixed-count for reported O(n2)/O(n3) at full confidence. Cached Java snapshots must
+// re-extract. C/C++ and PHP remain undiscounted (GAP-XL-01 stays open for them).
+// v105: the C/C++ extractor learned bounded-loop discounting and now emits
+// scaling_loop_depth (and calls_in_scaling_loop) alongside loop_depth, joining the
+// convention (GAP-CP-01). A constant-count loop — a literal-bounded for
+// (for (int i = 0; i < 3; i++)) or a range-for over a braced init-list ({1, 2, 3}) —
+// no longer inflates the Big-O exponent; an infinite for (;;) / while (true) / while (1)
+// is discounted from the exponent but keeps its per-iteration calls as N+1 candidates
+// (three-valued classification, cache.go v99). STL algorithms (std::for_each over
+// [begin, end)) scale with the container and count toward scaling_loop_depth. C/C++ was
+// the worst-affected language — fixed-size array iteration is idiomatic. Cached C/C++
+// snapshots must re-extract.
+// v106: the PHP extractor learned bounded-loop discounting and now emits
+// scaling_loop_depth (and calls_in_scaling_loop) alongside loop_depth, joining the
+// convention (GAP-PH-01, the last of GAP-XL-01). A constant-count loop — a
+// literal-bounded for ($i = 0; $i < 3; $i++) or a foreach over an array literal
+// ([1, 2, 3]) / ALL_CAPS constant — no longer inflates the Big-O exponent; an infinite
+// while (true) / for (;;) is discounted from the exponent but keeps its per-iteration
+// calls as N+1 candidates. Cached PHP snapshots must re-extract. With this, all seven
+// AST extractors that discount bounded loops (Go, Python, TS, Kotlin, Java, C/C++, PHP)
+// plus Ruby/Swift (inline) are complete — GAP-XL-01 is fully closed.
+const cacheVersion = "v106"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

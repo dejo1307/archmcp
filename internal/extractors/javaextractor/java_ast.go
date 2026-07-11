@@ -78,8 +78,15 @@ type astWalker struct {
 	// direct-recursion detection).
 	metrics   *javaBodyMetrics
 	loopDepth int
-	selfName  string
-	selfShort string
+	// scalingDepth is the current nesting counting only input-scaling (unbounded) loops
+	// — the Big-O exponent. repeatDepth counts enclosing loops that run a non-constant
+	// number of times; it differs from scalingDepth only for while(true)/for(;;), which
+	// add no factor of n but whose body still runs many times, so a query inside stays
+	// an N+1 candidate.
+	scalingDepth int
+	repeatDepth  int
+	selfName     string
+	selfShort    string
 	// selfParams is the enclosing method's declared parameter count. A resolved
 	// self-call is only genuine recursion when its argument count matches — otherwise
 	// it is a call to a same-named overload, not recursion.
@@ -89,13 +96,16 @@ type astWalker struct {
 // javaBodyMetrics accumulates per-method complexity signals during the single
 // walkForCalls body traversal — mirrors the other extractors.
 type javaBodyMetrics struct {
-	loopDepth   int             // max loop nesting depth
-	loopCount   int             // number of loop constructs (syntactic + stream lambdas)
-	decisions   int             // decision points (cyclomatic = 1 + decisions)
-	callsInLoop  []string        // distinct call targets invoked at loop depth >= 1
-	inLoopSeen   map[string]bool // dedup set for callsInLoop
-	recursive    bool            // body directly calls the enclosing method
-	sawSuperSelf bool            // body calls super.<enclosingName>() (override delegation)
+	loopDepth          int             // max loop nesting depth
+	loopCount          int             // number of loop constructs (syntactic + stream lambdas)
+	decisions          int             // decision points (cyclomatic = 1 + decisions)
+	callsInLoop        []string        // distinct call targets invoked at loop depth >= 1
+	inLoopSeen         map[string]bool // dedup set for callsInLoop
+	scalingLoopDepth   int             // max nesting counting only unbounded (input-scaling) loops
+	callsInScalingLoop []string        // distinct targets invoked inside a repeating loop (N+1 candidates)
+	inScalingSeen      map[string]bool // dedup set for callsInScalingLoop
+	recursive          bool            // body directly calls the enclosing method
+	sawSuperSelf       bool            // body calls super.<enclosingName>() (override delegation)
 }
 
 // javaIterators are Stream/Collection methods whose lambda argument runs once per
@@ -184,6 +194,167 @@ func (w *astWalker) recordInLoop(target string) {
 		w.metrics.inLoopSeen[target] = true
 		w.metrics.callsInLoop = append(w.metrics.callsInLoop, target)
 	}
+	// A call inside a loop that repeats a non-constant number of times is an N+1
+	// candidate. Only a genuinely constant loop (a literal-bounded for, a for-each over
+	// a collection literal) excludes its calls; while(true)/for(;;) repeats, so its
+	// calls stay candidates even though its depth is discounted from the Big-O exponent.
+	if w.repeatDepth > 0 {
+		if w.metrics.inScalingSeen == nil {
+			w.metrics.inScalingSeen = make(map[string]bool)
+		}
+		if !w.metrics.inScalingSeen[target] {
+			w.metrics.inScalingSeen[target] = true
+			w.metrics.callsInScalingLoop = append(w.metrics.callsInScalingLoop, target)
+		}
+	}
+}
+
+// javaLoopClass classifies a loop by two independent properties: whether it adds a
+// factor of n to Big-O (scales) and whether its body runs a non-constant number of
+// times (repeats). A constant-count loop — `for (int i = 0; i < 3; i++)`, a for-each
+// over a collection literal or ALL_CAPS constant — does neither. An infinite
+// `while (true)` / `for (;;)` does not scale but still repeats, so a query inside it
+// stays an N+1 candidate. Collapsing constant and infinite into one "bounded" flag
+// deletes true positives — see cache.go v99.
+type javaLoopClass int
+
+const (
+	javaLoopScaling javaLoopClass = iota
+	javaLoopConstant
+	javaLoopInfinite
+)
+
+// scales reports whether the loop contributes a factor of n to Big-O.
+func (c javaLoopClass) scales() bool { return c == javaLoopScaling }
+
+// repeats reports whether the loop body runs a non-constant number of times, so a call
+// inside it is an N+1 candidate.
+func (c javaLoopClass) repeats() bool { return c != javaLoopConstant }
+
+// javaSyntacticLoopClass classifies a for / enhanced-for / while / do-while statement.
+func javaSyntacticLoopClass(node *sitter.Node, src []byte) javaLoopClass {
+	switch node.Kind() {
+	case "for_statement":
+		// Three-clause C-style for. No condition (`for (;;)`) is infinite; a condition
+		// comparing against an integer literal (`i < 3`, `i <= 10`) runs a fixed number
+		// of times → constant; anything data-derived (`i < n`, `i < xs.size()`) scales.
+		cond := node.ChildByFieldName("condition")
+		if cond == nil {
+			return javaLoopInfinite
+		}
+		if javaConstantForCondition(cond) {
+			return javaLoopConstant
+		}
+	case "enhanced_for_statement":
+		// for (T x : <iterable>) — constant iff the iterable is a collection/array
+		// literal or an ALL_CAPS constant.
+		if javaConstantIterable(node.ChildByFieldName("value"), src) {
+			return javaLoopConstant
+		}
+	case "while_statement", "do_statement":
+		if javaIsTrueCondition(node.ChildByFieldName("condition"), src) {
+			return javaLoopInfinite
+		}
+	}
+	return javaLoopScaling
+}
+
+// javaConstantForCondition reports whether a three-clause for's condition compares the
+// loop variable against an integer literal (`i < 3`), so the loop runs a statically
+// fixed number of times. A data-derived bound (`i < n`, `i < xs.size()`) or a compound
+// condition (`i < 3 && ok`) is conservatively treated as scaling — so no genuine O(n)
+// finding is ever deleted, only a clearly-constant one discounted.
+func javaConstantForCondition(cond *sitter.Node) bool {
+	if cond == nil || cond.Kind() != "binary_expression" {
+		return false
+	}
+	hasCmp, hasLiteral := false, false
+	for i := uint(0); i < uint(cond.ChildCount()); i++ {
+		switch cond.Child(i).Kind() {
+		case "<", "<=", ">", ">=", "!=":
+			hasCmp = true
+		case "decimal_integer_literal", "hex_integer_literal", "octal_integer_literal", "binary_integer_literal":
+			hasLiteral = true
+		}
+	}
+	return hasCmp && hasLiteral
+}
+
+// javaConstantIterable reports whether a for-each iterates a compile-time-fixed number
+// of times: a collection-literal factory (`List.of(...)`, `Set.of(...)`, `Map.of(...)`,
+// `Arrays.asList(...)`), an array literal (`new int[]{...}`), or an ALL_CAPS data
+// constant (`STOP_CHARS`, `Screen.STOP_CHARS`). A variable receiver scales. Mirrors
+// kotlinConstantIterable / pyIterableBounded.
+func javaConstantIterable(value *sitter.Node, src []byte) bool {
+	if value == nil {
+		return false
+	}
+	switch value.Kind() {
+	case "array_creation_expression":
+		return value.ChildByFieldName("value") != nil // has an array_initializer
+	case "array_initializer":
+		return true
+	case "identifier":
+		return javaIsScreamingConst(nodeText(value, src))
+	case "field_access":
+		if f := value.ChildByFieldName("field"); f != nil {
+			return javaIsScreamingConst(nodeText(f, src))
+		}
+	case "method_invocation":
+		name := ""
+		if nn := value.ChildByFieldName("name"); nn != nil {
+			name = nodeText(nn, src)
+		}
+		obj := ""
+		if on := value.ChildByFieldName("object"); on != nil {
+			obj = nodeText(on, src)
+		}
+		switch name {
+		case "of":
+			return obj == "List" || obj == "Set" || obj == "Map"
+		case "asList":
+			return obj == "Arrays"
+		}
+	}
+	return false
+}
+
+// javaIsScreamingConst reports whether an identifier is SCREAMING_SNAKE_CASE — a
+// conventional Java compile-time constant, whose iteration count is input-independent.
+func javaIsScreamingConst(s string) bool {
+	if s == "" {
+		return false
+	}
+	hasLetter := false
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return hasLetter
+}
+
+// javaIsTrueCondition reports whether a loop condition is the literal `true`
+// (`while (true)`, `do … while (true)`). A named constant that merely holds true
+// (`while (RUNNING)`) is deliberately not matched — its trip count is not statically
+// evident.
+func javaIsTrueCondition(cond *sitter.Node, src []byte) bool {
+	if cond == nil {
+		return false
+	}
+	t := strings.TrimSpace(nodeText(cond, src))
+	t = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(t, "("), ")"))
+	return t == "true"
+}
+
+// javaStreamReceiverBounded reports whether a stream-iterator call's receiver is a
+// constant iterable (`List.of(a, b).forEach(...)`), so the callback runs a fixed count.
+func javaStreamReceiverBounded(call *sitter.Node, src []byte) bool {
+	return javaConstantIterable(call.ChildByFieldName("object"), src)
 }
 
 func javaBooleanOp(node *sitter.Node) bool {
@@ -223,21 +394,33 @@ func javaStreamLambda(call *sitter.Node, src []byte) *sitter.Node {
 // at +1 (it runs per element), while walking everything else (receiver, other args)
 // at the current depth. Kind-checked so an ancestor with the same byte span isn't
 // mistaken for the lambda.
-func (w *astWalker) walkJavaLambdaSubtree(node, lambda *sitter.Node) {
+// bounded is true when the iterator's receiver is a collection literal, so the callback
+// runs a fixed number of times and neither scales nor repeats.
+func (w *astWalker) walkJavaLambdaSubtree(node, lambda *sitter.Node, bounded bool) {
 	if node == nil {
 		return
 	}
 	if node.Kind() == "lambda_expression" && node.StartByte() == lambda.StartByte() && node.EndByte() == lambda.EndByte() {
 		w.loopDepth++
+		if !bounded {
+			// An iterator receiver is either a literal (constant) or data-derived
+			// (scaling); it is never infinite, so repeating and scaling coincide here.
+			w.scalingDepth++
+			w.repeatDepth++
+		}
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
 			w.walkForCalls(node.Child(i))
 		}
 		w.loopDepth--
+		if !bounded {
+			w.scalingDepth--
+			w.repeatDepth--
+		}
 		return
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		if c := node.Child(i); javaByteContains(c, lambda) {
-			w.walkJavaLambdaSubtree(c, lambda)
+			w.walkJavaLambdaSubtree(c, lambda, bounded)
 		} else {
 			w.walkForCalls(c)
 		}
@@ -566,10 +749,13 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 	// restore the outer state. Props are written via the stable index (the pointer
 	// may be invalidated if the body walk grows w.out).
 	savedMetrics, savedDepth := w.metrics, w.loopDepth
+	savedScaling, savedRepeat := w.scalingDepth, w.repeatDepth
 	savedName, savedShort := w.selfName, w.selfShort
 	savedParams := w.selfParams
 	w.metrics = &javaBodyMetrics{}
 	w.loopDepth = 0
+	w.scalingDepth = 0
+	w.repeatDepth = 0
 	w.selfName = f.Name
 	w.selfShort = name
 	w.selfParams = javaParamCount(node)
@@ -581,12 +767,23 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 	props["cyclomatic"] = 1 + m.decisions
 	if m.loopDepth > 0 {
 		props["loop_depth"] = m.loopDepth
+		// Emit the scaling depth (bounded loops discounted) alongside — even when 0 — so
+		// the consumer distinguishes "all loops bounded" from "signal absent".
+		props["scaling_loop_depth"] = m.scalingLoopDepth
 	}
 	if m.loopCount > 0 {
 		props["loop_count"] = m.loopCount
 	}
 	if len(m.callsInLoop) > 0 {
 		props["calls_in_loop"] = m.callsInLoop
+		// Emit the N+1 subset alongside — even when EMPTY — so the consumer distinguishes
+		// "no call repeats" from "signal absent". An omitted key makes perf fall back to
+		// the unfiltered calls_in_loop, defeating the discount in exactly the case it
+		// exists for (every in-loop call sitting inside a constant loop).
+		if m.callsInScalingLoop == nil {
+			m.callsInScalingLoop = []string{}
+		}
+		props["calls_in_scaling_loop"] = m.callsInScalingLoop
 	}
 	// A body that calls super.<self>() is an override delegating to a same-named
 	// overload, not genuine recursion — clear the arity-matched self-call flag.
@@ -594,6 +791,7 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 		props["recursive_self"] = true
 	}
 	w.metrics, w.loopDepth = savedMetrics, savedDepth
+	w.scalingDepth, w.repeatDepth = savedScaling, savedRepeat
 	w.selfName, w.selfShort = savedName, savedShort
 	w.selfParams = savedParams
 	w.popOwner()
@@ -749,12 +947,12 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	// or listener defined inside a loop). A stream iterator's OWN lambda is handled
 	// in the method_invocation branch (its body walks at +1).
 	if w.metrics != nil && kind == "lambda_expression" {
-		saved := w.loopDepth
-		w.loopDepth = 0
+		saved, savedScaling, savedRepeat := w.loopDepth, w.scalingDepth, w.repeatDepth
+		w.loopDepth, w.scalingDepth, w.repeatDepth = 0, 0, 0
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
 			w.walkForCalls(node.Child(i))
 		}
-		w.loopDepth = saved
+		w.loopDepth, w.scalingDepth, w.repeatDepth = saved, savedScaling, savedRepeat
 		return
 	}
 
@@ -785,19 +983,37 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		w.handleClassLike(node, facts.SymbolClass)
 		return
 	case "for_statement", "enhanced_for_statement", "while_statement", "do_statement":
-		// Syntactic loops: everything in the body runs per iteration.
+		// Syntactic loops: everything in the body runs per iteration. A constant-count
+		// loop raises loop_depth but not scaling_loop_depth (the Big-O exponent); an
+		// infinite loop is discounted from the exponent but still repeats.
+		class := javaSyntacticLoopClass(node, w.src)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
 			if w.loopDepth+1 > w.metrics.loopDepth {
 				w.metrics.loopDepth = w.loopDepth + 1
 			}
+			if class.scales() && w.scalingDepth+1 > w.metrics.scalingLoopDepth {
+				w.metrics.scalingLoopDepth = w.scalingDepth + 1
+			}
 		}
 		w.loopDepth++
+		if class.scales() {
+			w.scalingDepth++
+		}
+		if class.repeats() {
+			w.repeatDepth++
+		}
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
 			w.walkForCalls(node.Child(i))
 		}
 		w.loopDepth--
+		if class.scales() {
+			w.scalingDepth--
+		}
+		if class.repeats() {
+			w.repeatDepth--
+		}
 		return
 	case "object_creation_expression":
 		if t := w.targetForType(node.ChildByFieldName("type")); t != "" {
@@ -811,14 +1027,22 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		// loop: its lambda body runs per element, but the receiver/other args once.
 		if w.metrics != nil {
 			if lambda := javaStreamLambda(node, w.src); lambda != nil {
+				// A `List.of(a, b).forEach(...)` over a literal receiver iterates a fixed
+				// count — it raises loop_depth but not the scaling depth. The depth bump
+				// happens at the lambda body inside walkJavaLambdaSubtree; here we only
+				// record the maxes.
+				bounded := javaStreamReceiverBounded(node, w.src)
 				w.metrics.loopCount++
 				w.metrics.decisions++
 				if w.loopDepth+1 > w.metrics.loopDepth {
 					w.metrics.loopDepth = w.loopDepth + 1
 				}
+				if !bounded && w.scalingDepth+1 > w.metrics.scalingLoopDepth {
+					w.metrics.scalingLoopDepth = w.scalingDepth + 1
+				}
 				for i := uint(0); i < uint(node.ChildCount()); i++ {
 					if c := node.Child(i); javaByteContains(c, lambda) {
-						w.walkJavaLambdaSubtree(c, lambda)
+						w.walkJavaLambdaSubtree(c, lambda, bounded)
 					} else {
 						w.walkForCalls(c)
 					}
