@@ -447,7 +447,19 @@ import (
 // now tracked as references. Also fixes a latent bug where a nested item (a local `fn`
 // inside a function body) could reallocate the fact slice and silently drop the
 // enclosing function's own relations recorded afterward.
-const cacheVersion = "v116"
+// v117: Rust — a function reference nested inside a macro argument (vec![Box::new(f)])
+// is now tracked; the merge crate's #[merge(strategy = mod::path)] attribute (and any
+// other flattened scoped-path attribute value, previously mis-read as just its first
+// segment) resolves correctly; an unprefixed `use foo::bar;` where foo is a body-less
+// `mod foo;` in the same file/mod scope is now classified internal instead of external
+// (it shares its parent's directory, so classifyUsePath had nothing to match it
+// against); an attribute can embed an ordinary call — thiserror's #[error("{}",
+// helper(x))] — scanned the same way as a macro invocation regardless of macro name;
+// and calls/references made in macro content with no enclosing symbol (a macro_rules!
+// template body, or an item-level macro invocation standing in for a whole function
+// like `ffi_fn! { fn foo() { ... } }`) are now recorded on a file_ref fact instead of
+// silently dropped for lack of an owner.
+const cacheVersion = "v117"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

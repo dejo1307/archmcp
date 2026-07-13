@@ -829,3 +829,73 @@ fn handle_error(s: String) -> String { s }
 		t.Errorf("expected RelCalls -> pkg.handle_error, got %+v", c.Relations)
 	}
 }
+
+func TestAST_MergeStrategyAttribute_ReferencesScopedFunction(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Config {
+    #[merge(strategy = merge_strategies_extend::overwrite_always)]
+    name: Option<String>,
+}
+mod merge_strategies_extend {
+    pub fn overwrite_always(a: &mut Option<String>, b: Option<String>) { *a = b; }
+}
+`)
+	s, ok := findFact(ff, "pkg.Config")
+	if !ok {
+		t.Fatal("expected fact for pkg.Config")
+	}
+	if !hasRelation(s, facts.RelCalls, "overwrite_always") {
+		t.Errorf("expected RelCalls -> overwrite_always, got %+v", s.Relations)
+	}
+}
+
+func TestAST_ThiserrorAttributeCall_ReferencesFunction(t *testing.T) {
+	ff := extractAST(t, `
+#[derive(Debug, thiserror::Error)]
+pub enum ProfileError {
+    #[error("{}", not_found_message(.searched, .explicit_profiles_dir))]
+    NotFound {
+        searched: Vec<String>,
+        explicit_profiles_dir: bool,
+    },
+}
+fn not_found_message(searched: &[String], explicit: &bool) -> String { String::new() }
+`)
+	e, ok := findFact(ff, "pkg.ProfileError")
+	if !ok {
+		t.Fatal("expected fact for pkg.ProfileError")
+	}
+	if !hasRelation(e, facts.RelCalls, "pkg.not_found_message") {
+		t.Errorf("expected RelCalls -> pkg.not_found_message, got %+v", e.Relations)
+	}
+}
+
+func TestAST_MacroRulesBodyCall_EmitsFileRef(t *testing.T) {
+	ff := extractAST(t, `
+fn utf8(name: &str) -> String { name.to_string() }
+
+macro_rules! table_schema {
+    (@field $name:expr, utf8) => { utf8($name) };
+}
+`)
+	refs := findFactsByKind(ff, facts.KindFileRef)
+	if len(refs) != 1 || !hasRelation(refs[0], facts.RelCalls, "pkg.utf8") {
+		t.Errorf("expected a KindFileRef -> pkg.utf8, got %+v", refs)
+	}
+}
+
+func TestAST_ItemLevelMacroInvocationCall_EmitsFileRef(t *testing.T) {
+	ff := extractAST(t, `
+fn with_cow(x: i32) {}
+
+ffi_fn! {
+    fn my_ffi_func(x: i32) {
+        with_cow(x);
+    }
+}
+`)
+	refs := findFactsByKind(ff, facts.KindFileRef)
+	if len(refs) != 1 || !hasRelation(refs[0], facts.RelCalls, "pkg.with_cow") {
+		t.Errorf("expected a KindFileRef -> pkg.with_cow, got %+v", refs)
+	}
+}

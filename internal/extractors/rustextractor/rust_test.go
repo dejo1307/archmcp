@@ -152,3 +152,36 @@ func TestExtract_ImplSplitAcrossFilesStillAttaches(t *testing.T) {
 		t.Errorf("expected RelImplements -> Display attached across files, got %+v", w.Relations)
 	}
 }
+
+func TestExtract_UnprefixedUseOfSiblingFileSubmodule(t *testing.T) {
+	repo, files := writeRustRepo(t, map[string]string{
+		"Cargo.toml": "[package]\nname = \"demo\"\n",
+		"src/mod.rs": `
+pub mod writer;
+pub use writer::spawn_writer;
+
+pub fn start() {
+    spawn_writer();
+}
+`,
+		"src/writer.rs": "pub fn spawn_writer() {}\n",
+	})
+	ff, err := New().Extract(context.Background(), repo, files)
+	if err != nil {
+		t.Fatalf("Extract error: %v", err)
+	}
+	start, ok := findFact(ff, "src.start")
+	if !ok {
+		t.Fatalf("expected fact for src.start, got %+v", ff)
+	}
+	if !hasRelation(start, facts.RelCalls, "src.spawn_writer") {
+		t.Errorf("expected RelCalls -> src.spawn_writer, got %+v", start.Relations)
+	}
+	dep, ok := findFact(ff, "src -> writer::spawn_writer")
+	if !ok {
+		t.Fatalf("expected a dependency fact for writer::spawn_writer, got %+v", findFactsByKind(ff, facts.KindDependency))
+	}
+	if dep.Props["source"] != "internal" {
+		t.Errorf("sibling-file submodule source = %v, want internal", dep.Props["source"])
+	}
+}

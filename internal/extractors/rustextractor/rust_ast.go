@@ -36,6 +36,7 @@ func extractFileAST(src []byte, relFile string, crates []crateInfo, moduleDirs m
 		crateDir:   nearestCrateDir(dir, crates),
 		crates:     crates,
 		moduleDirs: moduleDirs,
+		fileRefIdx: -1,
 	}
 	w.walkSourceFile(root)
 
@@ -78,6 +79,14 @@ type astWalker struct {
 	// reallocate its backing array and strand a raw pointer.
 	ownerStack []int
 
+	// fileRefIdx: index into out of the lazily-created file-scope reference
+	// fact (facts.KindFileRef), or -1 until first used. Catches calls/
+	// references made in macro content with no enclosing symbol — a
+	// macro_rules! template body, or an item-level macro invocation standing
+	// in for a whole function (e.g. `ffi_fn! { fn foo() { ... } }`) — which
+	// emitEdge would otherwise silently drop for lack of an owner.
+	fileRefIdx int
+
 	// modStack/typeStack hold the enclosing inline-`mod { }` and
 	// impl/trait-block names, so a nested declaration's canonical name is
 	// "<dir>.<mod1>.<mod2>...<Type>.<name>" — the same qualification scheme
@@ -92,6 +101,10 @@ type astWalker struct {
 	// modFnStack[len-1]: function names declared directly in the enclosing
 	// mod/file scope, order-independent. Parallel to modStack.
 	modFnStack []map[string]bool
+
+	// modSubmoduleStack[len-1]: body-less `mod foo;` names declared directly
+	// in the enclosing mod/file scope. Parallel to modStack.
+	modSubmoduleStack []map[string]bool
 
 	// decisions counts cyclomatic decision points in the function/method body
 	// currently being walked; saved/restored around nested function items.
@@ -174,7 +187,9 @@ func (w *astWalker) currentMethods() map[string]bool {
 
 func (w *astWalker) walkSourceFile(root *sitter.Node) {
 	w.modFnStack = append(w.modFnStack, collectFnNames(root, w.src))
+	w.modSubmoduleStack = append(w.modSubmoduleStack, collectSubmoduleNames(root, w.src))
 	w.walkItemsTrackingAttrs(root)
+	w.modSubmoduleStack = w.modSubmoduleStack[:len(w.modSubmoduleStack)-1]
 	w.modFnStack = w.modFnStack[:len(w.modFnStack)-1]
 }
 
@@ -184,6 +199,18 @@ func (w *astWalker) walkSourceFile(root *sitter.Node) {
 func (w *astWalker) isKnownFn(name string) bool {
 	for i := len(w.modFnStack) - 1; i >= 0; i-- {
 		if w.modFnStack[i][name] {
+			return true
+		}
+	}
+	return false
+}
+
+// isKnownSubmodule checks every enclosing mod/file scope for a body-less
+// `mod name;` declaration, so `use name::item;` (no self::/crate:: prefix)
+// is recognized as a reference to that sibling file, not an external crate.
+func (w *astWalker) isKnownSubmodule(name string) bool {
+	for i := len(w.modSubmoduleStack) - 1; i >= 0; i-- {
+		if w.modSubmoduleStack[i][name] {
 			return true
 		}
 	}
@@ -322,7 +349,9 @@ func (w *astWalker) handleMod(node *sitter.Node) {
 	}
 	w.modStack = append(w.modStack, name)
 	w.modFnStack = append(w.modFnStack, collectFnNames(body, w.src))
+	w.modSubmoduleStack = append(w.modSubmoduleStack, collectSubmoduleNames(body, w.src))
 	w.walkItemsTrackingAttrs(body)
+	w.modSubmoduleStack = w.modSubmoduleStack[:len(w.modSubmoduleStack)-1]
 	w.modFnStack = w.modFnStack[:len(w.modFnStack)-1]
 	w.modStack = w.modStack[:len(w.modStack)-1]
 }
@@ -585,7 +614,18 @@ func (w *astWalker) emitDependency(segs []string, line int) {
 	if len(segs) == 0 || segs[len(segs)-1] == "" {
 		return
 	}
-	target, source := classifyUsePath(segs, w.dir, w.crateDir, w.crates, w.moduleDirs)
+	var target, source string
+	switch {
+	case segs[0] != "self" && segs[0] != "super" && segs[0] != "crate" && w.isKnownSubmodule(segs[0]):
+		// An unprefixed `use foo::bar;` where "foo" is a body-less `mod foo;`
+		// declared in this same file/mod scope is a reference to that sibling
+		// file, not an external crate — classifyUsePath can't see that on its
+		// own since foo.rs shares its parent's directory (no subdirectory to
+		// find in moduleDirs).
+		target, source = joinRustPath(w.dir, segs, w.moduleDirs), "internal"
+	default:
+		target, source = classifyUsePath(segs, w.dir, w.crateDir, w.crates, w.moduleDirs)
+	}
 	raw := strings.Join(segs, "::")
 	w.out = append(w.out, facts.Fact{
 		Kind: facts.KindDependency,
@@ -840,7 +880,9 @@ func (w *astWalker) handleCallExpression(node *sitter.Node) {
 // while walking a #[cfg(test)] module (w.inTestMod) — as a deduplicated
 // RelCalls reference into testRefRels. KindTestRef carries only RelCalls (per
 // its doc comment), so a would-be RelInstantiates from a test still just
-// proves the target is used, not constructed for real.
+// proves the target is used, not constructed for real. With no owner and not
+// in test mode, it's file-scope macro content (see fileRefIdx) — recorded
+// there instead of dropped.
 func (w *astWalker) emitEdge(kind, target string) {
 	if w.inTestMod {
 		if w.testRefSeen == nil {
@@ -855,22 +897,40 @@ func (w *astWalker) emitEdge(kind, target string) {
 	}
 	owner := w.currentOwner()
 	if owner == nil {
+		idx := w.ensureFileRefFact()
+		w.out[idx].Relations = append(w.out[idx].Relations, facts.Relation{Kind: kind, Target: target})
 		return
 	}
 	owner.Relations = append(owner.Relations, facts.Relation{Kind: kind, Target: target})
 }
 
+// ensureFileRefFact returns the index of this file's lazily-created
+// file-scope reference fact (facts.KindFileRef), creating it on first use.
+func (w *astWalker) ensureFileRefFact() int {
+	if w.fileRefIdx < 0 {
+		w.out = append(w.out, facts.Fact{
+			Kind:  facts.KindFileRef,
+			Name:  w.relFile,
+			File:  w.relFile,
+			Props: map[string]any{"language": "rust"},
+		})
+		w.fileRefIdx = len(w.out) - 1
+	}
+	return w.fileRefIdx
+}
+
 // attrFnRefKeys: field-attribute options whose value names a function —
-// serde's #[serde(default = "some_fn")] (string) or clap's
-// #[arg(value_parser = some_fn)] (bare path) — resolved by that macro.
+// serde's #[serde(default = "some_fn")] (string), clap's
+// #[arg(value_parser = some_fn)] (bare path), or the merge crate's
+// #[merge(strategy = mod::path)] (scoped path) — resolved by that macro.
 var attrFnRefKeys = map[string]bool{
 	"default": true, "skip_serializing_if": true,
 	"serialize_with": true, "deserialize_with": true, "with": true,
-	"value_parser": true,
+	"value_parser": true, "strategy": true,
 }
 
 // attrFnRefMacros: attribute macro names worth scanning for attrFnRefKeys.
-var attrFnRefMacros = map[string]bool{"serde": true, "arg": true}
+var attrFnRefMacros = map[string]bool{"serde": true, "arg": true, "merge": true}
 
 // scanAttributeFnRefs walks a struct/enum body for #[serde(...)]/#[arg(...)]
 // attributes referencing a function by name.
@@ -882,6 +942,13 @@ func (w *astWalker) scanAttributeFnRefs(body *sitter.Node) {
 	walk = func(n *sitter.Node) {
 		if n.Kind() == "attribute" {
 			w.scanAttribute(n)
+			// Beyond the curated key=value macros above, an attribute can embed
+			// an ordinary call — thiserror's #[error("{}", helper(x))] — using
+			// the exact same flattened shape as a macro invocation's token_tree,
+			// so the same scan applies regardless of which macro this is.
+			if tree := findChildByKind(n, "token_tree"); tree != nil {
+				w.scanTokenTreeCalls(tree)
+			}
 			return
 		}
 		for i := uint(0); i < uint(n.ChildCount()); i++ {
@@ -912,14 +979,23 @@ func (w *astWalker) scanAttribute(attr *sitter.Node) {
 			if content := findChildByKind(v, "string_content"); content != nil {
 				name = nodeText(content, w.src)
 			}
-		case "identifier", "scoped_identifier":
+		case "identifier":
+			// A scoped path (mod::path::fn) is flattened into separate
+			// identifier/"::" siblings inside a macro-like token_tree, not a
+			// single scoped_identifier node — walk to the last segment.
+			j := i + 2
+			for j+2 < n && tree.Child(j+1).Kind() == "::" && tree.Child(j+2).Kind() == "identifier" {
+				j += 2
+			}
+			name = nodeText(tree.Child(j), w.src)
+		case "scoped_identifier":
 			name = nodeText(v, w.src)
+			if idx := strings.LastIndex(name, "::"); idx >= 0 {
+				name = name[idx+2:]
+			}
 		}
 		if name == "" {
 			continue
-		}
-		if idx := strings.LastIndex(name, "::"); idx >= 0 {
-			name = name[idx+2:]
 		}
 		w.emitEdge(facts.RelCalls, name)
 	}
@@ -1050,6 +1126,28 @@ func collectFnNames(body *sitter.Node, src []byte) map[string]bool {
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
 		if c.Kind() != "function_item" && c.Kind() != "function_signature_item" {
+			continue
+		}
+		if n := c.ChildByFieldName("name"); n != nil {
+			names[nodeText(n, src)] = true
+		}
+	}
+	return names
+}
+
+// collectSubmoduleNames returns the names declared by body-less `mod foo;`
+// items directly in body — a file-based submodule (foo.rs or foo/mod.rs),
+// as opposed to an inline `mod foo { ... }` block. Used to recognize an
+// unprefixed `use foo::bar;` as a reference to that sibling file rather than
+// an external crate.
+func collectSubmoduleNames(body *sitter.Node, src []byte) map[string]bool {
+	names := make(map[string]bool)
+	if body == nil {
+		return names
+	}
+	for i := uint(0); i < uint(body.ChildCount()); i++ {
+		c := body.Child(i)
+		if c.Kind() != "mod_item" || c.ChildByFieldName("body") != nil {
 			continue
 		}
 		if n := c.ChildByFieldName("name"); n != nil {
