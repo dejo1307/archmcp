@@ -135,3 +135,66 @@ func TestRenderQuerySummary_SurfacesUnmatchedFlag(t *testing.T) {
 		t.Errorf("summary should surface the unmatched_by_clients flag count; got:\n%s", out)
 	}
 }
+
+// TestRenderInsightsSummary_HeadlineReflectsTheFilter composes the filter with the
+// summary, which no test in either repo did before. It pins the invariant that the
+// enterprise analyze_performance tool violated (bug new/56): a tool that filters its
+// results and then summarizes must count the FILTERED set, not the corpus. There,
+// the summary was built before the filter ran, so package="androidTest" printed the
+// repo-wide total (61 findings) above an empty table — a real number, and the answer
+// to a question the caller never asked.
+//
+// query_insights is correct by construction — renderInsightsSummary is handed only
+// the matched slice and does not have snap.Insights in scope, so it cannot count the
+// wrong thing. This test is what keeps that true.
+func TestRenderInsightsSummary_HeadlineReflectsTheFilter(t *testing.T) {
+	all := sampleInsights() // 3 insights: unused-routes, cycles, god-class
+
+	tests := []struct {
+		name         string
+		explainer    string
+		minConf      float64
+		wantHeadline string
+		wantAbsent   string
+	}{
+		{"unfiltered", "", 0, "Found **3** insight(s)", ""},
+		{"by explainer", "cycles", 0, "Found **1** insight(s)", "unused-routes"},
+		{"by confidence", "", 0.8, "Found **1** insight(s)", "god-class"},
+		{"explainer with no matches", "layers", 0, "Found **0** insight(s)", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matched := filterInsights(all, tt.explainer, "", tt.minConf, false)
+			out := renderInsightsSummary(matched)
+
+			if !strings.Contains(out, tt.wantHeadline) {
+				t.Errorf("headline does not reflect the filter: want %q in\n%s", tt.wantHeadline, out)
+			}
+			// The by-explainer tally must be over the filtered set too — a breakdown
+			// computed over the corpus is the same defect one line lower.
+			if tt.wantAbsent != "" && strings.Contains(out, tt.wantAbsent) {
+				t.Errorf("filtered-out explainer %q leaked into the summary:\n%s", tt.wantAbsent, out)
+			}
+		})
+	}
+}
+
+// TestRenderQuerySummary_HeadlineIsTheFilteredTotal pins the same invariant for
+// query_facts, whose headline takes `total` as an argument — so unlike
+// query_insights it *could* be handed the wrong number. store.QueryAdvanced returns
+// the post-filter match count; this asserts the renderer reports that, and not the
+// size of the store.
+func TestRenderQuerySummary_HeadlineIsTheFilteredTotal(t *testing.T) {
+	results := []facts.Fact{
+		{Kind: facts.KindRoute, Name: "GET /a", File: "a.go"},
+		{Kind: facts.KindRoute, Name: "GET /b", File: "b.go"},
+	}
+	// The filtered total is 2, even though the store holds far more.
+	out := renderQuerySummary(results, len(results))
+	if !strings.Contains(out, "Found **2** matching facts.") {
+		t.Errorf("headline must be the filtered total, got:\n%s", out)
+	}
+	if strings.Contains(out, "Found **500**") || strings.Contains(out, "Found **0**") {
+		t.Errorf("headline reported something other than the filtered total:\n%s", out)
+	}
+}

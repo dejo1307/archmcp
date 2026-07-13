@@ -3300,8 +3300,13 @@ func (s *Server) renderTraverseSummary(store *facts.Store, resp traverseResponse
 		sb.WriteString("\n")
 	}
 
-	fmt.Fprintf(&sb, "_Stats: %d nodes, %d edges, max depth %d. Use output_mode=compact for the per-depth node list, output_mode=full for the raw graph._\n",
-		resp.Stats.NodesVisited, len(resp.Edges), resp.Stats.MaxDepthReached)
+	// NodesVisited counts every node the walk PASSED THROUGH, including those a
+	// node_kinds filter excluded from the result (graph.go traverses through them to
+	// reach their neighbours). Printing it as a bare "N nodes" put an unfiltered
+	// number beside a filtered list — node_kinds=["route"] could report "used by 2
+	// nodes" above "Stats: 431 nodes". Label the two counts for what they are.
+	fmt.Fprintf(&sb, "_Stats: %d nodes matched, %d walked, %d edges, max depth %d. Use output_mode=compact for the per-depth node list, output_mode=full for the raw graph._\n",
+		reached, resp.Stats.NodesVisited, len(resp.Edges), resp.Stats.MaxDepthReached)
 	return sb.String()
 }
 
