@@ -50,6 +50,13 @@ var fixtures = []fixture{
 	// and Flask-AppBuilder @expose views. Pins GAP-PY-01 (v109) — routes detected
 	// and framework=flask (the @app.get shorthand is NOT mislabeled fastapi).
 	{name: "python_flask_sample", subRepos: []string{"."}},
+	// TypeScript ORMs: a TypeORM @Entity class, a Drizzle pgTable const, and Prisma
+	// models in schema.prisma (read off-glob). Pins GAP-XL-04's TS half (v112) —
+	// tsextractor emitted ZERO storage facts, so a database-backed Node service
+	// modelled no tables at all. Also pins the io_direct seeding: repo.ts wraps an ORM
+	// call in loadPostsFor() and calls it once per iteration, which is only detectable
+	// as an N+1 once the ORM call seeds performs_io through the wrapper.
+	{name: "ts_orm_sample", subRepos: []string{"."}},
 	{name: "ruby_sample", subRepos: []string{"."}},
 	{name: "swift_sample", subRepos: []string{"."}},
 	{name: "kotlin_sample", subRepos: []string{"."}},

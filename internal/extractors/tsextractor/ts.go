@@ -117,6 +117,10 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	isVue := detectVue(repoPath)
 	isNuxt := detectNuxt(repoPath)
 	isSvelteKit := detectSvelteKit(repoPath)
+	// ORM detection is gated on the package.json dependency, exactly as Vue/Nuxt are, so
+	// a class coincidentally decorated @Entity models nothing in a repo without TypeORM.
+	isTypeORM, isDrizzle, isPrisma := detectORMs(repoPath)
+	orms := ormFlags{typeORM: isTypeORM, drizzle: isDrizzle}
 
 	// Parse tsconfig.json path aliases, one root per package for monorepos.
 	aliasRoots := collectTSAliasRoots(repoPath)
@@ -160,7 +164,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			return nil
 		}
 		aliases := aliasesForDir(aliasRoots, filepath.Dir(relFile))
-		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, aliases, knownFiles, grpcStubs)
+		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, orms, aliases, knownFiles, grpcStubs)
 	})
 
 	// Group files by directory for module detection. Files that produced no
@@ -180,6 +184,12 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// call graph into performs_io, so wrapper-hidden network/file I/O is visible to the
 	// enterprise performance analyzer. Mirrors the Swift extractor's computePerformsIO.
 	computeTSPerformsIO(allFacts)
+
+	// Prisma models live in schema.prisma — a separate DSL, so tree-sitter never sees it.
+	// Read it off-glob, the same way package.json and tsconfig.json already are.
+	if isPrisma {
+		allFacts = append(allFacts, extractPrismaStorage(repoPath)...)
+	}
 
 	// Emit module facts for each directory
 	for dir := range modules {
@@ -206,12 +216,13 @@ type extractCtx struct {
 	isNextJS   bool
 	isVue      bool
 	isNuxt     bool
+	orms       ormFlags
 	importMap  map[string]string
 	ioBindings map[string]bool // local names bound to imports from a network module (I/O sinks)
 	knownFiles map[string]bool // repo-relative (slash) paths of all indexed TS/JS files
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit bool, aliases map[string]string, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit bool, orms ormFlags, aliases map[string]string, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
 	if isVueFile(relFile) {
 		return e.extractVueSFC(src, relFile, isNuxt, aliases)
 	}
@@ -261,6 +272,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		isNextJS:   isNextJS,
 		isVue:      isVue,
 		isNuxt:     isNuxt,
+		orms:       orms,
 		importMap:  buildImportSymbols(root, src, relFile, aliases),
 		ioBindings: buildIOImportBindings(root, src),
 		knownFiles: knownFiles,
@@ -532,6 +544,16 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 		classifySymbol(&f, symbolName, classBody, ctx, facts.SymbolClass)
 		result = append(result, f)
 
+		// TypeORM: a class decorated @Entity is a table. The storage fact is a COMPANION
+		// to the symbol above, as in Kotlin/Room and Java/JPA — the class keeps its own
+		// symbol fact.
+		if ctx.orms.typeORM {
+			if sf := typeORMEntityStorage(node, src, symbolName, relFile, dir,
+				int(node.StartPosition().Row)+1); sf != nil {
+				result = append(result, *sf)
+			}
+		}
+
 		// Extract class methods
 		if classBody != nil {
 			for j := range classBody.ChildCount() {
@@ -657,6 +679,17 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 			}
 			classifySymbol(&f, symbolName, body, ctx, symbolKind)
 			result = append(result, f)
+
+			// Drizzle: `export const orders = pgTable("orders", {...})` is a table. The
+			// call_expression is already in hand above — it simply fails isComponentWrapper.
+			if ctx.orms.drizzle {
+				if call := findChildByKind(decl, "call_expression"); call != nil {
+					if sf := drizzleTableStorage(call, src, symbolName, relFile, dir,
+						int(decl.StartPosition().Row)+1); sf != nil {
+						result = append(result, *sf)
+					}
+				}
+			}
 		}
 	}
 
@@ -1831,6 +1864,25 @@ var tsIOReceivers = map[string]bool{
 // tsIOMemberMethods are method names that denote I/O regardless of receiver.
 var tsIOMemberMethods = map[string]bool{
 	"sendBeacon": true, // navigator.sendBeacon
+
+	// ORM query methods (Prisma, TypeORM, Drizzle) — a real DB round-trip.
+	//
+	// These seed io_direct, which computeTSPerformsIO then propagates transitively into
+	// performs_io. That is the whole point: a direct in-loop `prisma.post.findMany()` was
+	// already caught by the enterprise analyzer's own name list, but a REPOSITORY WRAPPER
+	// around it was not — the wrapper invokes no network primitive, so it was never
+	// io_direct, so it was never performs_io, so a per-iteration call to it was invisible.
+	//
+	// The names mirror perf.tsExpensiveMethods exactly, and for the same reason: they are
+	// distinctive multi-word ORM names. The generic single verbs (find/fetch/update/save)
+	// are deliberately ABSENT — frontend TS reuses them for in-memory helpers
+	// (updateState, findIndex, getFetchAllUpdate), and since almost everything in a
+	// frontend module is exported, tagging those as I/O floods the high-severity bucket
+	// with false N+1s. That false-positive class is exactly what the TS detector was
+	// narrowed to avoid; do not widen this list to the generic verbs.
+	"findMany": true, "findFirst": true, "findUnique": true, "findOne": true,
+	"createMany": true, "updateMany": true, "deleteMany": true,
+	"aggregate": true, "queryRaw": true, "executeRaw": true,
 }
 
 // tsIOConstructors are constructor names (new X()) that open a network/stream resource.

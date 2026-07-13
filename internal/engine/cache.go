@@ -403,7 +403,27 @@ import (
 // discriminator that rejects the stub by construction. Consumed by the new engine pass
 // bindHTTPHandlers (post-extraction, outside the cache). Cached Go snapshots must
 // re-extract (new/18).
-const cacheVersion = "v111"
+// v112: the TypeScript extractor now emits `storage` facts for the three mainstream TS
+// ORMs — a TypeORM `@Entity()` class (the extractor's first decorator support; it read
+// none before), a Drizzle `pgTable("orders", …)` const, and every `model` in a Prisma
+// `schema.prisma` (read off-glob, as package.json and tsconfig.json already are, since
+// the schema is a separate DSL that tree-sitter never sees). Facts are named after the
+// declaration with the physical table in a `table` prop, matching Kotlin/Room and
+// Java/JPA. TypeScript was the ONLY backend language in enola that modelled no storage
+// at all — Go, Java, Kotlin, Python and Ruby all do — so a database-backed Node service
+// reported zero tables in explore, impact_analysis, llm_context and --explain.
+//
+// The same change adds the distinctive ORM query methods (findMany/findUnique/queryRaw/…)
+// to the io_direct seed set, so computeTSPerformsIO propagates performs_io through a
+// REPOSITORY WRAPPER. A direct in-loop `prisma.post.findMany()` was already caught by the
+// analyzer's name list; a wrapper around it invoked no network primitive, so it was never
+// io_direct and a per-iteration call to it was invisible. The generic verbs
+// (find/save/update) stay OUT of the seed set: frontend TS reuses them for in-memory
+// helpers and everything is exported, which is what flooded the high bucket with false
+// N+1s and is why the TS detector was narrowed in the first place. Detection is gated on
+// the package.json dependency, so a class coincidentally decorated @Entity in a non-ORM
+// repo models nothing. Cached TypeScript snapshots must re-extract (GAP-XL-04, new/26).
+const cacheVersion = "v112"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

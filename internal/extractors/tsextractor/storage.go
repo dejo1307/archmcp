@@ -1,0 +1,243 @@
+package tsextractor
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	sitter "github.com/tree-sitter/go-tree-sitter"
+
+	"github.com/enola-labs/enola/internal/facts"
+)
+
+// TypeScript storage modelling — TypeORM, Drizzle and Prisma.
+//
+// tsextractor emitted ZERO storage facts before this, making TypeScript the only backend
+// language in enola that models no tables: Go, Java, Kotlin, Python and Ruby all do. A
+// database-backed Node service therefore reported no storage at all in explore,
+// impact_analysis, llm_context and --explain's data surface.
+//
+// Facts are named after the DECLARATION (dir + "." + name) with the physical table in a
+// `table` prop — the dominant convention (Kotlin's Room detectRoomStorage, Java's JPA
+// detectJpaStorage, Ruby's ActiveRecord models). The class/const still emits its own
+// symbol fact; the storage fact is a companion, not a replacement.
+
+// ormDeps are the package.json dependencies that switch each ORM on. Detection is gated
+// on the dependency, so a class coincidentally decorated `@Entity`, or a helper named
+// `pgTable`, models nothing in a repo that does not use the ORM.
+const (
+	depTypeORM = "typeorm"
+	depDrizzle = "drizzle-orm"
+	depPrisma  = "@prisma/client"
+)
+
+// drizzleTableFns are Drizzle's per-dialect table constructors.
+var drizzleTableFns = map[string]bool{
+	"pgTable": true, "sqliteTable": true, "mysqlTable": true,
+}
+
+// detectORMs reports which ORMs the repo declares, reusing the same package.json
+// primitive (and the same tsRoot + repo-root fallback) that Vue/Nuxt detection uses.
+func detectORMs(repoPath string) (typeorm, drizzle, prisma bool) {
+	tsRoot, _ := findTSRoot(repoPath)
+	has := func(pkg string) bool {
+		return hasPkgDependency(tsRoot, pkg) || (tsRoot != repoPath && hasPkgDependency(repoPath, pkg))
+	}
+	return has(depTypeORM), has(depDrizzle), has(depPrisma)
+}
+
+// typeORMEntityStorage emits a storage fact for a class decorated `@Entity()` or
+// `@Entity("users")`.
+//
+// tsextractor read NO decorators before this — there was not one occurrence in the whole
+// package — so this is the extractor's first decorator support. Decorator nodes hang off
+// the class_declaration itself, which is why the class branch is the hook.
+func typeORMEntityStorage(node *sitter.Node, src []byte, className, relFile, dir string, line int) *facts.Fact {
+	name, arg, ok := classDecorator(node, src, "Entity")
+	if !ok || name == "" {
+		return nil
+	}
+	table := arg
+	if table == "" {
+		// `@Entity()` with no argument: TypeORM defaults the table to the class name.
+		table = className
+	}
+	return &facts.Fact{
+		Kind: facts.KindStorage,
+		Name: dir + "." + className,
+		File: relFile,
+		Line: line,
+		Props: map[string]any{
+			"storage_kind": "entity",
+			"language":     "typescript",
+			"framework":    "typeorm",
+			"table":        table,
+		},
+		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
+	}
+}
+
+// classDecorator finds a decorator by name on a class node and returns its first string
+// argument, if any. Handles both `@Entity` and `@Entity("users")` shapes.
+//
+// The decorator hangs off DIFFERENT nodes depending on export:
+//
+//	class_declaration        →  decorator, class, type_identifier, class_body   (bare class)
+//	export_statement         →  decorator, export, class_declaration            (exported class)
+//
+// so a search of the class node alone finds nothing for `@Entity() export class X` — which
+// is the shape essentially every real entity uses. Look at the class node, then at its
+// parent.
+func classDecorator(node *sitter.Node, src []byte, want string) (name, arg string, ok bool) {
+	if n, a, found := decoratorIn(node, src, want); found {
+		return n, a, true
+	}
+	if parent := node.Parent(); parent != nil && parent.Kind() == "export_statement" {
+		return decoratorIn(parent, src, want)
+	}
+	return "", "", false
+}
+
+// decoratorIn scans one node's immediate children for a named decorator.
+func decoratorIn(node *sitter.Node, src []byte, want string) (name, arg string, ok bool) {
+	for i := range node.ChildCount() {
+		child := node.Child(i)
+		if child.Kind() != "decorator" {
+			continue
+		}
+		// The decorator wraps either a bare identifier (@Entity) or a call (@Entity(...)).
+		for j := range child.ChildCount() {
+			inner := child.Child(j)
+			switch inner.Kind() {
+			case "identifier":
+				if nodeText(inner, src) == want {
+					return want, "", true
+				}
+			case "call_expression":
+				fn := inner.ChildByFieldName("function")
+				if fn == nil || nodeText(fn, src) != want {
+					continue
+				}
+				return want, firstStringArg(inner.ChildByFieldName("arguments"), src), true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// drizzleTableStorage emits a storage fact for `export const orders = pgTable("orders", …)`.
+// The call_expression is already in hand at the lexical_declaration branch — it simply
+// fails the isComponentWrapper check today.
+func drizzleTableStorage(call *sitter.Node, src []byte, constName, relFile, dir string, line int) *facts.Fact {
+	fn := call.ChildByFieldName("function")
+	if fn == nil || !drizzleTableFns[nodeText(fn, src)] {
+		return nil
+	}
+	table := firstStringArg(call.ChildByFieldName("arguments"), src)
+	if table == "" {
+		table = constName
+	}
+	return &facts.Fact{
+		Kind: facts.KindStorage,
+		Name: dir + "." + constName,
+		File: relFile,
+		Line: line,
+		Props: map[string]any{
+			"storage_kind": "entity",
+			"language":     "typescript",
+			"framework":    "drizzle",
+			"table":        table,
+		},
+		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
+	}
+}
+
+// firstStringArg returns the text of the first string literal in an argument list.
+func firstStringArg(args *sitter.Node, src []byte) string {
+	if args == nil {
+		return ""
+	}
+	for i := range args.ChildCount() {
+		a := args.Child(i)
+		if a.Kind() != "string" {
+			continue
+		}
+		return strings.Trim(nodeText(a, src), `"'`+"`")
+	}
+	return ""
+}
+
+// prismaModel matches a `model User {` block header in a Prisma schema.
+var prismaModel = regexp.MustCompile(`(?m)^\s*model\s+(\w+)\s*\{`)
+
+// prismaSchemaFiles are the conventional locations of a Prisma schema, relative to the
+// repo (or TS) root.
+var prismaSchemaFiles = []string{
+	filepath.Join("prisma", "schema.prisma"),
+	"schema.prisma",
+}
+
+// extractPrismaStorage reads schema.prisma OFF-GLOB and emits one storage fact per model.
+//
+// schema.prisma is a separate DSL, not TypeScript, so tree-sitter never sees it. That is
+// not an obstacle: the extractor ALREADY reads non-TS files from disk this way —
+// package.json for framework detection and tsconfig.json for path aliases. This is the
+// same mechanism, plus a block-header match. (`datasource`/`generator` blocks are not
+// models and are ignored by construction.)
+func extractPrismaStorage(repoPath string) []facts.Fact {
+	tsRoot, _ := findTSRoot(repoPath)
+	roots := []string{tsRoot}
+	if tsRoot != repoPath {
+		roots = append(roots, repoPath)
+	}
+
+	var out []facts.Fact
+	seen := map[string]bool{}
+	for _, root := range roots {
+		for _, rel := range prismaSchemaFiles {
+			abs := filepath.Join(root, rel)
+			data, err := os.ReadFile(abs)
+			if err != nil {
+				continue
+			}
+			relFile, err := filepath.Rel(repoPath, abs)
+			if err != nil {
+				continue
+			}
+			relFile = filepath.ToSlash(relFile)
+			dir := filepath.ToSlash(filepath.Dir(relFile))
+			src := string(data)
+			for _, m := range prismaModel.FindAllStringSubmatchIndex(src, -1) {
+				model := src[m[2]:m[3]]
+				name := dir + "." + model
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+				out = append(out, facts.Fact{
+					Kind: facts.KindStorage,
+					Name: name,
+					File: relFile,
+					Line: strings.Count(src[:m[0]], "\n") + 1,
+					Props: map[string]any{
+						"storage_kind": "entity",
+						"language":     "typescript",
+						"framework":    "prisma",
+						"table":        model,
+					},
+					Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
+				})
+			}
+		}
+	}
+	return out
+}
+
+// ormFlags carries the per-repo ORM detection results into per-file extraction. The
+// extractor runs files in parallel, so these are read-only once computed — as the
+// existing isNextJS/isVue/isNuxt flags are.
+type ormFlags struct {
+	typeORM bool
+	drizzle bool
+}
