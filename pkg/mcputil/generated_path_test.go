@@ -17,6 +17,10 @@ func TestIsGeneratedPath(t *testing.T) {
 		"airflow/ui/openapi-gen/requests/client/utils.gen.ts",
 		"a/b/params.gen.tsx", "svc/api.pb.go", "svc/api_pb2.py",
 		"svc/api_pb2_grpc.py", "web/app.min.js", "web/app.min.css",
+		// Bare "gen" segment (prost-build and similar Rust/Go protobuf output).
+		"crates/proto-rust/src/gen/v1.public.core_types.rs",
+		"crates/dbt-telemetry/src/gen/v1.events.rs",
+		"pkg/gen/api.pb.rs",
 	}
 	for _, p := range generated {
 		if !IsGeneratedPath(p) {
@@ -28,7 +32,9 @@ func TestIsGeneratedPath(t *testing.T) {
 		"airflow/models/dagrun.py", "internal/perf/perf.go",
 		"src/components/Graph/reactflowUtils.ts",
 		// "generator" is not the exact segment "generated"; ".genesis.ts" is not ".gen.ts".
+		// "general"/"genetics" are not the exact segment "gen".
 		"pkg/generator/x.go", "src/genesis.ts", "app/vendored_helpers.py",
+		"internal/general/config.go", "src/genetics/model.py",
 		// Bare "env" is too common to treat as a venv; only .venv/venv/site-packages match.
 		"app/env/settings.py", "src/environments/prod.py",
 	}

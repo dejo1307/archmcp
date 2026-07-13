@@ -899,3 +899,73 @@ ffi_fn! {
 		t.Errorf("expected a KindFileRef -> pkg.with_cow, got %+v", refs)
 	}
 }
+
+func TestAST_DropImplTagsOverride(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Guard;
+impl Drop for Guard {
+    fn drop(&mut self) {}
+}
+`)
+	f, ok := findFact(ff, "pkg.Guard.drop")
+	if !ok {
+		t.Fatal("expected fact for pkg.Guard.drop")
+	}
+	if f.Props["override"] != true {
+		t.Errorf("Drop::drop override = %v, want true", f.Props["override"])
+	}
+}
+
+func TestAST_FutureImplTagsOverride(t *testing.T) {
+	ff := extractAST(t, `
+pub struct MyFuture;
+impl Future for MyFuture {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
+        Poll::Ready(())
+    }
+}
+`)
+	f, ok := findFact(ff, "pkg.MyFuture.poll")
+	if !ok {
+		t.Fatal("expected fact for pkg.MyFuture.poll")
+	}
+	if f.Props["override"] != true {
+		t.Errorf("Future::poll override = %v, want true", f.Props["override"])
+	}
+}
+
+func TestAST_InherentDropLikeMethod_NotTaggedOverride(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Cache;
+impl Cache {
+    fn drop(&mut self) {}
+}
+`)
+	f, ok := findFact(ff, "pkg.Cache.drop")
+	if !ok {
+		t.Fatal("expected fact for pkg.Cache.drop")
+	}
+	if f.Props["override"] == true {
+		t.Errorf("inherent (non-trait) drop method should not be tagged override, got %v", f.Props["override"])
+	}
+}
+
+func TestAST_OtherTraitMethodNamedDrop_NotTaggedOverride(t *testing.T) {
+	ff := extractAST(t, `
+trait Cleaner {
+    fn drop(&mut self);
+}
+pub struct Sweeper;
+impl Cleaner for Sweeper {
+    fn drop(&mut self) {}
+}
+`)
+	f, ok := findFact(ff, "pkg.Sweeper.drop")
+	if !ok {
+		t.Fatal("expected fact for pkg.Sweeper.drop")
+	}
+	if f.Props["override"] == true {
+		t.Errorf("a custom trait's drop method (not std::ops::Drop) should not be tagged override, got %v", f.Props["override"])
+	}
+}

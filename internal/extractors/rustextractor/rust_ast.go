@@ -87,6 +87,11 @@ type astWalker struct {
 	// emitEdge would otherwise silently drop for lack of an owner.
 	fileRefIdx int
 
+	// implTrait: the trait name of the impl block currently being walked
+	// ("" outside any impl, or for a plain inherent impl). Lets handleFunction
+	// recognize compilerOrRuntimeInvokedMethods (Drop::drop, Future::poll).
+	implTrait string
+
 	// modStack/typeStack hold the enclosing inline-`mod { }` and
 	// impl/trait-block names, so a nested declaration's canonical name is
 	// "<dir>.<mod1>.<mod2>...<Type>.<name>" — the same qualification scheme
@@ -443,8 +448,9 @@ func (w *astWalker) handleImpl(node *sitter.Node) {
 	if typeName == "" {
 		return
 	}
+	traitName := ""
 	if traitNode := node.ChildByFieldName("trait"); traitNode != nil {
-		if traitName := simpleTypeName(traitNode, w.src); traitName != "" {
+		if traitName = simpleTypeName(traitNode, w.src); traitName != "" {
 			w.impls = append(w.impls, implPair{
 				typeName:  w.dir + "." + w.qualify(typeName),
 				traitName: traitName,
@@ -454,11 +460,14 @@ func (w *astWalker) handleImpl(node *sitter.Node) {
 
 	body := node.ChildByFieldName("body")
 	w.pushType(typeName, collectFnNames(body, w.src))
+	savedImplTrait := w.implTrait
+	w.implTrait = traitName
 	if body != nil {
 		for i := uint(0); i < uint(body.ChildCount()); i++ {
 			w.walkChild(body.Child(i))
 		}
 	}
+	w.implTrait = savedImplTrait
 	w.popType()
 }
 
@@ -491,6 +500,9 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 		if !hasSelfParam(node.ChildByFieldName("parameters")) {
 			f.Props["static"] = true
 		}
+	}
+	if compilerInvokedTraitMethods[w.implTrait][name] {
+		f.Props["override"] = true
 	}
 
 	w.out = append(w.out, f)
@@ -1098,6 +1110,17 @@ func rustBooleanOp(node *sitter.Node) bool {
 var rustBuiltins = map[string]bool{
 	"drop": true, "panic": true, "print": true, "println": true,
 	"format": true, "assert": true, "matches": true,
+}
+
+// compilerInvokedTraitMethods: trait methods invoked exclusively by the
+// compiler (Drop::drop, at scope exit — calling it directly is a compile
+// error) or the async runtime (Future::poll, driven by .await), never by
+// their literal method name in ordinary code. Unlike fmt/eq/hash/clone/
+// default — which sometimes genuinely are called by name — these have no
+// legitimate direct-call precedent, so they're always safe to exclude.
+var compilerInvokedTraitMethods = map[string]map[string]bool{
+	"Drop":   {"drop": true},
+	"Future": {"poll": true},
 }
 
 // hasSelfParam reports whether a `parameters` node's first parameter is

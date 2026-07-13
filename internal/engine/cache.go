@@ -459,7 +459,11 @@ import (
 // template body, or an item-level macro invocation standing in for a whole function
 // like `ffi_fn! { fn foo() { ... } }`) are now recorded on a file_ref fact instead of
 // silently dropped for lack of an owner.
-const cacheVersion = "v117"
+// v118: Rust tags Drop::drop and Future::poll methods with the override prop — they are
+// invoked exclusively by the compiler (scope exit) or the async runtime (.await), never
+// by their literal method name, so the dead-code detector now excludes them like any
+// other framework-dispatched override (mirrors Kotlin/Swift's `override` handling).
+const cacheVersion = "v118"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

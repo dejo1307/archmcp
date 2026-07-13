@@ -104,7 +104,7 @@ func CapTokens(s string, maxTokens int, isJSON bool) string {
 func IsGeneratedPath(p string) bool {
 	for _, part := range strings.Split(p, "/") {
 		switch part {
-		case "build", "Pods", "node_modules", "kspCaches", "generated",
+		case "build", "Pods", "node_modules", "kspCaches", "generated", "gen",
 			"__pycache__", "vendor", "openapi-gen", "__generated__", "third_party",
 			// Python virtual environments and installed dependencies — never source.
 			".venv", "venv", "site-packages":
@@ -121,7 +121,7 @@ func IsGeneratedPath(p string) bool {
 	// protoc, `.min.js` is a minified bundle whose loop nesting is meaningless.
 	for _, suf := range []string{
 		".gen.ts", ".gen.tsx", ".gen.js", ".gen.go", ".generated.ts", ".generated.go",
-		".min.js", ".min.css", ".pb.go", ".pb.gw.go", ".g.dart",
+		".min.js", ".min.css", ".pb.go", ".pb.gw.go", ".pb.rs", ".g.dart",
 		"_pb2.py", "_pb2_grpc.py",
 	} {
 		if strings.HasSuffix(base, suf) {
