@@ -90,6 +90,34 @@ func BuildModuleGraph(store *facts.Store) map[string][]string {
 	return BuildModuleGraphExcluding(store)
 }
 
+// isTestModule reports whether a module is test scaffolding rather than production
+// architecture, and must therefore be kept out of the coupling graph the cycles and
+// dependency-depth explainers read.
+//
+// The extractor's `module_role` prop is AUTHORITATIVE where it exists: it comes from
+// a build file, not a guess — an SPM/Xcode target type, a Gradle source set. A module
+// the extractor tagged `production` stays in the graph even if its path looks like a
+// test tree, because the build system is right and the path is not. nan/nebenan-android-app
+// ships a real package called `app/src/main/java/…/ui/base/testing`; Gradle says
+// `src/main`, so it is production, and no path heuristic gets to overrule that.
+//
+// But only java, kotlin, ruby and swift emit the prop at all. Go, Python, TypeScript,
+// PHP and C/C++ emit NONE — and the exclusion used to key on the prop alone, so their
+// test trees walked straight into the graph. On python/superset that meant ALL TEN
+// dependency-depth findings were test modules (`tests/unit_tests/dao (depth 11)`, …)
+// and 2 of the 10 cycles ran through them: an explainer whose entire output was test
+// scaffolding. Where the prop is absent, fall back to the path.
+func isTestModule(m facts.Fact) bool {
+	switch role, _ := m.Props[facts.PropModuleRole].(string); role {
+	case facts.ModuleRoleTest:
+		return true
+	case facts.ModuleRoleProduction, facts.ModuleRoleTooling:
+		return false // authoritative: the build file said so
+	}
+	// No usable signal (absent, "", or "unknown") — the five untagged languages.
+	return facts.IsTestPath(m.Name)
+}
+
 // BuildModuleGraphExcluding is BuildModuleGraph with the ability to drop synthetic
 // coupling edges by their Props["coupling_kind"] (see facts.Coupling* constants).
 // A dependency fact whose coupling_kind is in excludeKinds contributes no edge.
@@ -111,7 +139,7 @@ func BuildModuleGraphExcluding(store *facts.Store, excludeKinds ...string) map[s
 	moduleNames := make(map[string]bool)
 	testModules := make(map[string]bool)
 	for _, m := range modules {
-		if role, _ := m.Props[facts.PropModuleRole].(string); role == facts.ModuleRoleTest {
+		if isTestModule(m) {
 			testModules[m.Name] = true
 			continue
 		}

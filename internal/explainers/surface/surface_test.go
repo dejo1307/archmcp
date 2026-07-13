@@ -273,3 +273,46 @@ func TestExplain_MissingVisibilityIgnored(t *testing.T) {
 		t.Errorf("expected 0 insights when visibility is unknown, got %d", len(insights))
 	}
 }
+
+// TestExplain_GradleAndJestTestModulesExcluded pins the surface half of new/55.
+// excludedSegments lowercases the module path, so `Tests/` already matched its
+// `tests` entry — but `androidTest` lowercases to `androidtest`, which is not in the
+// set, and neither are `__tests__` or the Kotlin-Multiplatform trees. On
+// nan/nebenan-android-app that produced a real finding: "Large public surface:
+// app/src/androidTest/java/de/nebenan/app/ui/signup/compose". An instrumented-test
+// source set is not a hand-maintained public API.
+func TestExplain_GradleAndJestTestModulesExcluded(t *testing.T) {
+	s := facts.NewStore()
+	addModuleSymbols(s, "app/src/androidTest/java/de/nebenan/app/ui/signup/compose", 30, 30)
+	addModuleSymbols(s, "src/components/__tests__", 30, 30)
+	addModuleSymbols(s, "shared/src/commonTest/kotlin", 30, 30)
+	addModuleSymbols(s, "Tests/Testability/Sources", 30, 30)
+	addModuleSymbols(s, "app/Mocks", 30, 30)
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 0 {
+		for _, in := range insights {
+			t.Errorf("test-source module reported as a public surface: %q", in.Title)
+		}
+	}
+}
+
+// TestExplain_ProductionModuleNamedLikeATestKept is the fixed/28 guard, at the
+// module level. A production package whose name merely CONTAINS a test-ish token —
+// `contest`, `latest`, an A/B-test feature — must still be analyzed. Suppressing a
+// real module is silent; reporting one is not.
+func TestExplain_ProductionModuleNamedLikeATestKept(t *testing.T) {
+	s := facts.NewStore()
+	addModuleSymbols(s, "app/features/contest", 30, 30)
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Errorf("a production module named 'contest' must not be excluded, got %d insights", len(insights))
+	}
+}

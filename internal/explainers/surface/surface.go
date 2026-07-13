@@ -18,10 +18,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/enola-labs/enola/internal/explainers/common"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/pkg/mcputil"
 )
 
 const (
@@ -38,17 +38,8 @@ const (
 	maxEvidence = 8
 )
 
-// excludedSegments are path segments whose modules are skipped: mocks, test
-// helpers, fixtures, and generated code naturally export everything and aren't
-// hand-maintained public APIs.
-var excludedSegments = map[string]bool{
-	"mock": true, "mocks": true,
-	"test": true, "tests": true, "testing": true,
-	"testutil": true, "testutils": true, "testdata": true,
-	"fixture": true, "fixtures": true,
-	"spec": true, "specs": true,
-	"generated": true,
-}
+// (The old excludedSegments map lived here. It has been replaced by the shared
+// facts.IsTestPath — see excludedModule.)
 
 // SurfaceExplainer detects modules with an oversized exported surface.
 type SurfaceExplainer struct{}
@@ -174,13 +165,17 @@ func (e *SurfaceExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 	return insights, nil
 }
 
-// excludedModule reports whether any path segment of the module is a mock/test/
-// generated marker.
+// excludedModule reports whether a module is test scaffolding or generated output:
+// both naturally export everything and are not hand-maintained public APIs.
+//
+// It used to carry its own segment list, lowercasing the module path to match it.
+// That covered `Tests/` (via `tests`) but not `androidTest` — which lowercases to
+// `androidtest` — nor `__tests__` nor the Kotlin-Multiplatform trees, so
+// nan/nebenan-android-app reported "Large public surface:
+// app/src/androidTest/java/…/ui/signup/compose" as a finding. Both questions now have
+// exactly one owner each: facts.IsTestPath and mcputil.IsGeneratedPath. Note
+// IsTestPath is case-SENSITIVE and carries the real-world spellings (`Tests`,
+// `Mocks`, `androidTest`, `__tests__`), so the lowercasing is gone with the list.
 func excludedModule(mod string) bool {
-	for _, seg := range strings.Split(strings.ToLower(mod), "/") {
-		if excludedSegments[seg] {
-			return true
-		}
-	}
-	return false
+	return facts.IsTestPath(mod) || mcputil.IsGeneratedPath(mod)
 }

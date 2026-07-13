@@ -277,3 +277,58 @@ func TestBuildModuleGraph_ExternalStillDropped(t *testing.T) {
 		t.Errorf("handlers edges = %v, want none (fmt/react are not modules)", edges)
 	}
 }
+
+// TestBuildModuleGraph_UntaggedTestModuleExcluded pins the real defect behind
+// new/55. The test-module exclusion above keys on the module_role prop — which only
+// java, kotlin, ruby and swift emit. Go, Python, TypeScript, PHP and C/C++ emit no
+// module_role at all, so their test trees walked straight into the cycles and
+// dependency-depth graphs: on python/superset, 10 of the 10 dependency-depth findings
+// were test modules, and 2 of the 10 cycles ran through them.
+//
+// Where the prop is absent, fall back to the path.
+func TestBuildModuleGraph_UntaggedTestModuleExcluded(t *testing.T) {
+	s := facts.NewStore()
+	// Python/TS/Go: no module_role prop at all.
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "superset/dao"})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "tests/unit_tests/dao"})
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "tests/unit_tests/dao/f.py",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "superset/dao"}}})
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "superset/dao/f.py",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "tests/unit_tests/dao"}}})
+
+	graph := BuildModuleGraph(s)
+	if _, ok := graph["tests/unit_tests/dao"]; ok {
+		t.Error("an untagged test module must not be a graph node")
+	}
+	if len(graph["superset/dao"]) != 0 {
+		t.Errorf("edge to an untagged test module should be dropped, got %v", graph["superset/dao"])
+	}
+}
+
+// TestBuildModuleGraph_AuthoritativeRoleWins is the anti-regression guard, and the
+// reason new/55's own prescribed fix was refuted. nan/nebenan-android-app has a
+// production package literally named `app/src/main/java/.../ui/base/testing`. Gradle
+// says src/main, so the extractor tags it module_role=production — an AUTHORITATIVE
+// signal. The path heuristic must never override it, or a real production package is
+// silently dropped from the architecture graph for having "testing" in its name.
+//
+// This is why the fallback is a fallback and not a union: the report proposed
+// widening ModuleRoleForPath itself, which would have suppressed this package.
+func TestBuildModuleGraph_AuthoritativeRoleWins(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "app/src/main/java/de/nebenan/app/ui/base/testing",
+		Props: map[string]any{facts.PropModuleRole: facts.ModuleRoleProduction}})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "app/src/main/java/de/nebenan/app/ui",
+		Props: map[string]any{facts.PropModuleRole: facts.ModuleRoleProduction}})
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "app/src/main/java/de/nebenan/app/ui/f.kt",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "app/src/main/java/de/nebenan/app/ui/base/testing"}}})
+
+	graph := BuildModuleGraph(s)
+	if _, ok := graph["app/src/main/java/de/nebenan/app/ui/base/testing"]; !ok {
+		t.Error("a module the extractor authoritatively tagged production must stay in the graph, " +
+			"even though its path contains a test segment")
+	}
+	if len(graph["app/src/main/java/de/nebenan/app/ui"]) != 1 {
+		t.Error("the edge into it must survive")
+	}
+}
