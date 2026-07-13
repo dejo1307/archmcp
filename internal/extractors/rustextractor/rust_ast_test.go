@@ -778,3 +778,54 @@ fn is_false(b: &bool) -> bool { !b }
 		t.Errorf("expected RelCalls -> is_false, got %+v", s.Relations)
 	}
 }
+
+func TestAST_ClapValueParserAttribute_ReferencesFunction(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Args {
+    #[arg(value_parser = check_target)]
+    target: String,
+}
+fn check_target(s: &str) -> Result<String, String> { Ok(s.to_string()) }
+`)
+	s, ok := findFact(ff, "pkg.Args")
+	if !ok {
+		t.Fatal("expected fact for pkg.Args")
+	}
+	if !hasRelation(s, facts.RelCalls, "check_target") {
+		t.Errorf("expected RelCalls -> check_target, got %+v", s.Relations)
+	}
+}
+
+func TestAST_LocalFunctionPassedAsCallbackWithinSameBody(t *testing.T) {
+	ff := extractAST(t, `
+fn caller(a: Vec<Option<String>>) {
+    fn normalize_item(opt: &Option<String>) -> Option<String> { opt.clone() }
+    let normalized: Vec<Option<String>> = a.iter().map(normalize_item).collect();
+}
+`)
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	if !hasRelation(c, facts.RelCalls, "pkg.normalize_item") {
+		t.Errorf("expected RelCalls -> pkg.normalize_item, got %+v", c.Relations)
+	}
+}
+
+func TestAST_FunctionReferenceNestedInsideMacroArgument(t *testing.T) {
+	ff := extractAST(t, `
+fn caller() {
+    let transforms: Vec<Box<dyn Fn(String) -> String>> = vec![
+        Box::new(handle_error),
+    ];
+}
+fn handle_error(s: String) -> String { s }
+`)
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	if !hasRelation(c, facts.RelCalls, "pkg.handle_error") {
+		t.Errorf("expected RelCalls -> pkg.handle_error, got %+v", c.Relations)
+	}
+}

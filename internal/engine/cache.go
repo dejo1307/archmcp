@@ -437,12 +437,17 @@ import (
 // v115: adds the Rust extractor (fn/struct/enum/trait/type/const/static symbols; impl/trait
 // "implements" edges attached via a post-pass; use-based dependency facts classified
 // internal/external/stdlib; calls/instantiates edges; cyclomatic complexity; Axum route
-// facts; calls inside a macro invocation's token_tree; a function passed by name as a
-// value — call argument, struct field, &f; serde default/skip_serializing_if attribute
-// strings). Rust is a new FileOwner, so its arrival also reshuffles which files count as
+// facts). Rust is a new FileOwner, so its arrival also reshuffles which files count as
 // "shared" for every other cached extractor's key in a mixed-language repo. Cached
 // snapshots of any repo containing Rust files must re-extract.
-const cacheVersion = "v115"
+// v116: Rust call-reference precision — calls inside a macro invocation's token_tree
+// (bail!/format!/matches! arguments), a function passed by name as a value (call
+// argument, struct field, &f, a local fn declared earlier in the same body), and
+// serde/clap attribute strings/paths (default, skip_serializing_if, value_parser) are
+// now tracked as references. Also fixes a latent bug where a nested item (a local `fn`
+// inside a function body) could reallocate the fact slice and silently drop the
+// enclosing function's own relations recorded afterward.
+const cacheVersion = "v116"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

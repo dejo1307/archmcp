@@ -72,10 +72,11 @@ type astWalker struct {
 	out   []facts.Fact
 	impls []implPair
 
-	// ownerStack[len-1] points at the symbol fact currently being constructed.
-	// Calls/instantiations discovered while walking that symbol's body are
-	// appended to its Relations slice.
-	ownerStack []*facts.Fact
+	// ownerStack[len-1] indexes into out for the symbol fact currently being
+	// constructed. Stored as an index, not a *facts.Fact: a nested item (a
+	// local `fn` inside a function body) appends to out too, which can
+	// reallocate its backing array and strand a raw pointer.
+	ownerStack []int
 
 	// modStack/typeStack hold the enclosing inline-`mod { }` and
 	// impl/trait-block names, so a nested declaration's canonical name is
@@ -145,13 +146,13 @@ func (w *astWalker) qualifyMod(name string) string {
 	return strings.Join(parts, ".")
 }
 
-func (w *astWalker) pushOwner(f *facts.Fact) { w.ownerStack = append(w.ownerStack, f) }
-func (w *astWalker) popOwner()               { w.ownerStack = w.ownerStack[:len(w.ownerStack)-1] }
+func (w *astWalker) pushOwner(idx int) { w.ownerStack = append(w.ownerStack, idx) }
+func (w *astWalker) popOwner()         { w.ownerStack = w.ownerStack[:len(w.ownerStack)-1] }
 func (w *astWalker) currentOwner() *facts.Fact {
 	if len(w.ownerStack) == 0 {
 		return nil
 	}
-	return w.ownerStack[len(w.ownerStack)-1]
+	return &w.out[w.ownerStack[len(w.ownerStack)-1]]
 }
 
 func (w *astWalker) pushType(name string, methods map[string]bool) {
@@ -177,11 +178,16 @@ func (w *astWalker) walkSourceFile(root *sitter.Node) {
 	w.modFnStack = w.modFnStack[:len(w.modFnStack)-1]
 }
 
-func (w *astWalker) currentModFns() map[string]bool {
-	if len(w.modFnStack) == 0 {
-		return nil
+// isKnownFn checks every enclosing scope (function-local, then outward
+// through mod/file scope), not just the innermost, so a value-reference
+// inside a function body still resolves to an outer mod-level sibling.
+func (w *astWalker) isKnownFn(name string) bool {
+	for i := len(w.modFnStack) - 1; i >= 0; i-- {
+		if w.modFnStack[i][name] {
+			return true
+		}
 	}
-	return w.modFnStack[len(w.modFnStack)-1]
+	return false
 }
 
 // walkItemsTrackingAttrs iterates parent's children like walkChild, but first
@@ -344,8 +350,8 @@ func (w *astWalker) handleStruct(node *sitter.Node) {
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
 	ownerIdx := len(w.out) - 1
-	w.pushOwner(&w.out[ownerIdx])
-	w.scanSerdeAttributeRefs(node.ChildByFieldName("body"))
+	w.pushOwner(ownerIdx)
+	w.scanAttributeFnRefs(node.ChildByFieldName("body"))
 	w.popOwner()
 }
 
@@ -368,8 +374,8 @@ func (w *astWalker) handleEnum(node *sitter.Node) {
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
 	ownerIdx := len(w.out) - 1
-	w.pushOwner(&w.out[ownerIdx])
-	w.scanSerdeAttributeRefs(node.ChildByFieldName("body"))
+	w.pushOwner(ownerIdx)
+	w.scanAttributeFnRefs(node.ChildByFieldName("body"))
 	w.popOwner()
 }
 
@@ -460,12 +466,14 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 
 	w.out = append(w.out, f)
 	ownerIdx := len(w.out) - 1
-	w.pushOwner(&w.out[ownerIdx])
+	w.pushOwner(ownerIdx)
 
 	savedDecisions := w.decisions
 	w.decisions = 0
 	if body := node.ChildByFieldName("body"); body != nil {
+		w.modFnStack = append(w.modFnStack, collectFnNames(body, w.src))
 		w.walkForCalls(body)
+		w.modFnStack = w.modFnStack[:len(w.modFnStack)-1]
 	}
 	w.out[ownerIdx].Props["cyclomatic"] = 1 + w.decisions
 	w.decisions = savedDecisions
@@ -544,8 +552,7 @@ func (w *astWalker) handleConstOrStatic(node *sitter.Node, symbolKind string) {
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	}
 	w.out = append(w.out, f)
-	owner := &w.out[len(w.out)-1]
-	w.pushOwner(owner)
+	w.pushOwner(len(w.out) - 1)
 	if valueNode := node.ChildByFieldName("value"); valueNode != nil {
 		w.walkForCalls(valueNode)
 	}
@@ -712,25 +719,45 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 // `identifier` immediately followed by a parenthesized token_tree sibling.
 func (w *astWalker) scanTokenTreeCalls(node *sitter.Node) {
 	n := node.ChildCount()
-	for i := uint(0); i+1 < n; i++ {
+	for i := uint(0); i < n; i++ {
 		c := node.Child(i)
 		if c.Kind() != "identifier" {
 			continue
 		}
-		next := node.Child(i + 1)
-		if next.Kind() != "token_tree" || next.ChildCount() == 0 || next.Child(0).Kind() != "(" {
+		var next *sitter.Node
+		if i+1 < n {
+			next = node.Child(i + 1)
+		}
+		if next != nil && next.Kind() == "token_tree" && next.ChildCount() > 0 && next.Child(0).Kind() == "(" {
+			name := nodeText(c, w.src)
+			if isCapitalized(name) {
+				w.emitEdge(facts.RelInstantiates, name)
+				continue
+			}
+			if i > 0 && node.Child(i-1).Kind() == "." {
+				w.emitEdge(facts.RelCalls, name)
+				continue
+			}
+			if target := w.resolveCall(name); target != "" {
+				w.emitEdge(facts.RelCalls, target)
+			}
 			continue
 		}
-		name := nodeText(c, w.src)
-		if isCapitalized(name) {
-			w.emitEdge(facts.RelInstantiates, name)
-			continue
+		// Not applied as a call: may still be a function passed by name as a
+		// value nested inside a macro's own argument, e.g. Box::new(f) inside
+		// vec![...]. Skip path segments (preceded/followed by "."/"::") and
+		// attribute-style `key = value` pairs, already handled by scanAttribute.
+		if i > 0 {
+			if pk := node.Child(i - 1).Kind(); pk == "." || pk == "::" {
+				continue
+			}
 		}
-		if i > 0 && node.Child(i-1).Kind() == "." {
-			w.emitEdge(facts.RelCalls, name)
-			continue
+		if next != nil {
+			if nk := next.Kind(); nk == "::" || nk == "=" {
+				continue
+			}
 		}
-		if target := w.resolveCall(name); target != "" {
+		if target := w.resolveValueReference(nodeText(c, w.src)); target != "" {
 			w.emitEdge(facts.RelCalls, target)
 		}
 	}
@@ -833,23 +860,28 @@ func (w *astWalker) emitEdge(kind, target string) {
 	owner.Relations = append(owner.Relations, facts.Relation{Kind: kind, Target: target})
 }
 
-// serdeAttrFnKeys: serde options whose value is a string naming a function,
-// e.g. #[serde(default = "some_fn")] — resolved by serde's derive macro.
-var serdeAttrFnKeys = map[string]bool{
+// attrFnRefKeys: field-attribute options whose value names a function —
+// serde's #[serde(default = "some_fn")] (string) or clap's
+// #[arg(value_parser = some_fn)] (bare path) — resolved by that macro.
+var attrFnRefKeys = map[string]bool{
 	"default": true, "skip_serializing_if": true,
 	"serialize_with": true, "deserialize_with": true, "with": true,
+	"value_parser": true,
 }
 
-// scanSerdeAttributeRefs walks a struct/enum body for #[serde(...)]
+// attrFnRefMacros: attribute macro names worth scanning for attrFnRefKeys.
+var attrFnRefMacros = map[string]bool{"serde": true, "arg": true}
+
+// scanAttributeFnRefs walks a struct/enum body for #[serde(...)]/#[arg(...)]
 // attributes referencing a function by name.
-func (w *astWalker) scanSerdeAttributeRefs(body *sitter.Node) {
+func (w *astWalker) scanAttributeFnRefs(body *sitter.Node) {
 	if body == nil {
 		return
 	}
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
 		if n.Kind() == "attribute" {
-			w.scanSerdeAttribute(n)
+			w.scanAttribute(n)
 			return
 		}
 		for i := uint(0); i < uint(n.ChildCount()); i++ {
@@ -859,10 +891,10 @@ func (w *astWalker) scanSerdeAttributeRefs(body *sitter.Node) {
 	walk(body)
 }
 
-// scanSerdeAttribute scans one `serde(...)` attribute's token_tree for
-// `key = "value"` pairs keyed by serdeAttrFnKeys.
-func (w *astWalker) scanSerdeAttribute(attr *sitter.Node) {
-	if attr.NamedChildCount() == 0 || nodeText(attr.NamedChild(0), w.src) != "serde" {
+// scanAttribute scans one attribute's token_tree for `key = value` pairs
+// keyed by attrFnRefKeys, where value is a string literal or a bare path.
+func (w *astWalker) scanAttribute(attr *sitter.Node) {
+	if attr.NamedChildCount() == 0 || !attrFnRefMacros[nodeText(attr.NamedChild(0), w.src)] {
 		return
 	}
 	tree := findChildByKind(attr, "token_tree")
@@ -871,18 +903,21 @@ func (w *astWalker) scanSerdeAttribute(attr *sitter.Node) {
 	}
 	n := tree.ChildCount()
 	for i := uint(0); i+2 < n; i++ {
-		if !serdeAttrFnKeys[nodeText(tree.Child(i), w.src)] || tree.Child(i+1).Kind() != "=" {
+		if !attrFnRefKeys[nodeText(tree.Child(i), w.src)] || tree.Child(i+1).Kind() != "=" {
 			continue
 		}
-		lit := tree.Child(i + 2)
-		if lit.Kind() != "string_literal" {
+		name := ""
+		switch v := tree.Child(i + 2); v.Kind() {
+		case "string_literal":
+			if content := findChildByKind(v, "string_content"); content != nil {
+				name = nodeText(content, w.src)
+			}
+		case "identifier", "scoped_identifier":
+			name = nodeText(v, w.src)
+		}
+		if name == "" {
 			continue
 		}
-		content := findChildByKind(lit, "string_content")
-		if content == nil {
-			continue
-		}
-		name := nodeText(content, w.src)
 		if idx := strings.LastIndex(name, "::"); idx >= 0 {
 			name = name[idx+2:]
 		}
@@ -914,7 +949,7 @@ func (w *astWalker) resolveValueReference(name string) string {
 	if methods := w.currentMethods(); methods[name] {
 		return w.dir + "." + w.qualify(name)
 	}
-	if fns := w.currentModFns(); fns[name] {
+	if w.isKnownFn(name) {
 		return w.dir + "." + w.qualifyMod(name)
 	}
 	if target, ok := w.importMap[name]; ok {
