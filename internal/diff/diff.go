@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -40,6 +41,21 @@ type Edge struct {
 type FactChange struct {
 	Before facts.Fact `json:"before"`
 	After  facts.Fact `json:"after"`
+}
+
+// InsightChange records a finding present in BOTH snapshots under the same identity
+// whose content moved — its title metric, confidence, description or evidence.
+//
+// findingKey deliberately erases the numbers from a title (see normalizeTitle), so a
+// finding stays the same finding as its metrics drift. That is right for identity and
+// wrong as a conclusion: "the same finding" is not "an unchanged finding". Without this
+// bucket the dead-code rollup could go from "5621 more" to "3662 more" — a 1,959-symbol
+// swing — and land nowhere at all, while the diff printed "did not add, remove, or alter
+// any … findings". The diff is the loop's own collateral-damage instrument, so silence
+// is read as safety.
+type InsightChange struct {
+	Before facts.Insight `json:"before"`
+	After  facts.Insight `json:"after"`
 }
 
 // Comparability records whether the baseline and current snapshots were
@@ -91,6 +107,11 @@ type SnapshotDiff struct {
 	// regressions/improvements the change actually caused.
 	FindingsNewIncidental      []facts.Insight `json:"findings_new_incidental,omitempty"`
 	FindingsResolvedIncidental []facts.Insight `json:"findings_resolved_incidental,omitempty"`
+
+	// FindingsChanged are findings that survived under the same identity but whose
+	// content moved. Facts have had this since the beginning (FactsChanged); findings
+	// never did, so a content-only change was reported as no change at all.
+	FindingsChanged []InsightChange `json:"findings_changed,omitempty"`
 }
 
 // Compute returns the delta from baseline to current. A nil snapshot is treated
@@ -154,14 +175,15 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 		}
 	}
 
-	baseFind := make(map[string]facts.Insight, len(snapInsights(baseline)))
-	for _, in := range snapInsights(baseline) {
-		baseFind[findingKey(in)] = in
-	}
-	curFind := make(map[string]facts.Insight)
-	for _, in := range snapInsights(current) {
-		curFind[findingKey(in)] = in
-	}
+	// Grouped, not map[key]Insight. Findings collide: 78 of nan/nebenan-android-app's
+	// layer violations share the title "Layer violation: di -> ui" and differ only in
+	// their evidence, so a plain map kept ONE and silently dropped 77 — they could
+	// appear or vanish and the diff would report nothing. Evidence cannot go into the
+	// key (TestCompute_SummaryFindingDoesNotChurn forbids it), so group and pair
+	// positionally, exactly as groupByKey already does for facts (fixed/10, where the
+	// same collision hid 172 facts).
+	baseFind := groupInsightsByKey(snapInsights(baseline))
+	curFind := groupInsightsByKey(snapInsights(current))
 
 	// A finding only counts as a real regression/improvement if this change
 	// structurally touched something it cites — otherwise its appearance/clearance
@@ -170,24 +192,35 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 	// added/removed/altered, including edge endpoints (so a finding that flips
 	// because a NEW caller changed a symbol's fan-in is still counted as real).
 	touched := d.touchedNames()
-	for k, in := range curFind {
-		if _, ok := baseFind[k]; ok {
-			continue
-		}
-		if findingHasStructuralCause(in, touched) {
-			d.FindingsNew = append(d.FindingsNew, in)
-		} else {
-			d.FindingsNewIncidental = append(d.FindingsNewIncidental, in)
+	for k, curGroup := range curFind {
+		baseGroup := baseFind[k]
+		for i, in := range curGroup {
+			if i >= len(baseGroup) {
+				// Genuinely new: the current side has more findings under this identity.
+				if findingHasStructuralCause(in, touched) {
+					d.FindingsNew = append(d.FindingsNew, in)
+				} else {
+					d.FindingsNewIncidental = append(d.FindingsNewIncidental, in)
+				}
+				continue
+			}
+			// Present on both sides under the same identity. It is the SAME finding —
+			// but that says nothing about whether it is UNCHANGED, which is the
+			// conflation this bucket exists to undo.
+			if insightChanged(baseGroup[i], in) {
+				d.FindingsChanged = append(d.FindingsChanged, InsightChange{Before: baseGroup[i], After: in})
+			}
 		}
 	}
-	for k, in := range baseFind {
-		if _, ok := curFind[k]; ok {
-			continue
-		}
-		if findingHasStructuralCause(in, touched) {
-			d.FindingsResolved = append(d.FindingsResolved, in)
-		} else {
-			d.FindingsResolvedIncidental = append(d.FindingsResolvedIncidental, in)
+	for k, baseGroup := range baseFind {
+		curGroup := curFind[k]
+		for i := len(curGroup); i < len(baseGroup); i++ {
+			in := baseGroup[i]
+			if findingHasStructuralCause(in, touched) {
+				d.FindingsResolved = append(d.FindingsResolved, in)
+			} else {
+				d.FindingsResolvedIncidental = append(d.FindingsResolvedIncidental, in)
+			}
 		}
 	}
 
@@ -238,11 +271,50 @@ func compareMeta(base, cur facts.SnapshotMeta) Comparability {
 			"ignore globs differ between baseline and current — the set of files parsed changed, so some deltas may be exclusion changes rather than code changes")
 	}
 
+	// A `pinned` baseline persists on disk indefinitely — that is advertised as a
+	// feature, so it stays valid across several edit rounds. The failure mode is that it
+	// also stays valid across several WEEKS of unrelated repo drift, and nothing said so:
+	// GeneratedAt was printed on line 3 and never compared. An 11-day-old baseline from
+	// the same enola version with the same extractors yields Comparable:true, zero
+	// warnings, and a confident 24-regression report for a change that touched no facts.
+	if age, ok := baselineAgeDays(base.GeneratedAt, cur.GeneratedAt); ok && age >= staleBaselineDays {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"baseline is %d days older than the current snapshot — anything the repo itself changed in "+
+				"between will appear as part of this delta; re-pin the baseline (set_baseline) to compare only your change",
+			age))
+	}
+
 	c.Comparable = len(c.Warnings) == 0
 	return c
 }
 
 // missingFrom returns the elements of want that are absent from have, sorted.
+// staleBaselineDays is how far apart two snapshots may be before the delta is more
+// likely to describe the repo's own drift than the caller's change. Deliberately a
+// warning, not a refusal: a long-lived baseline is a legitimate way to measure a
+// multi-day refactor, and the caller is the only one who knows which they meant.
+const staleBaselineDays = 3
+
+// baselineAgeDays returns how many whole days older the baseline is than the current
+// snapshot. Both timestamps are RFC3339 UTC (facts.SnapshotMeta.GeneratedAt); an
+// unparseable or missing one yields ok=false, which is the pre-receipt baseline case
+// that already has its own warning.
+func baselineAgeDays(baseTS, curTS string) (int, bool) {
+	b, err := time.Parse(time.RFC3339, baseTS)
+	if err != nil {
+		return 0, false
+	}
+	c, err := time.Parse(time.RFC3339, curTS)
+	if err != nil {
+		return 0, false
+	}
+	d := c.Sub(b)
+	if d <= 0 {
+		return 0, false
+	}
+	return int(d.Hours() / 24), true
+}
+
 func missingFrom(want, have []string) []string {
 	set := make(map[string]struct{}, len(have))
 	for _, h := range have {
@@ -314,7 +386,8 @@ func (d *SnapshotDiff) Empty() bool {
 	return len(d.FactsAdded) == 0 && len(d.FactsRemoved) == 0 && len(d.FactsChanged) == 0 &&
 		len(d.EdgesAdded) == 0 && len(d.EdgesRemoved) == 0 &&
 		len(d.FindingsNew) == 0 && len(d.FindingsResolved) == 0 &&
-		len(d.FindingsNewIncidental) == 0 && len(d.FindingsResolvedIncidental) == 0
+		len(d.FindingsNewIncidental) == 0 && len(d.FindingsResolvedIncidental) == 0 &&
+		len(d.FindingsChanged) == 0
 }
 
 // Focused returns a copy of the diff narrowed to entries that reference focus
@@ -505,6 +578,58 @@ func normalizeTitle(s string) string {
 	return titleNumber.ReplaceAllString(s, "#")
 }
 
+// groupInsightsByKey buckets findings that share a findingKey, so a group of
+// identically-identified findings is compared member-for-member instead of collapsing
+// to one. Each bucket is sorted by intraInsightOrder so the two sides pair positionally
+// — the same contract groupByKey has for facts.
+func groupInsightsByKey(ins []facts.Insight) map[string][]facts.Insight {
+	groups := make(map[string][]facts.Insight, len(ins))
+	for _, in := range ins {
+		k := findingKey(in)
+		groups[k] = append(groups[k], in)
+	}
+	for _, g := range groups {
+		if len(g) > 1 {
+			sort.Slice(g, func(i, j int) bool { return intraInsightOrder(g[i]) < intraInsightOrder(g[j]) })
+		}
+	}
+	return groups
+}
+
+// intraInsightOrder totally orders findings that share a findingKey. Evidence comes
+// first because it is what actually separates them (78 layer violations share a title
+// and differ only in the module they cite); the title breaks the remaining ties.
+//
+// Like intraGroupOrder for facts, this participates ONLY in pairing within a group that
+// already shares an identity. It never enters findingKey, so evidence churn on a lone
+// finding is still not an identity change — see TestCompute_SummaryFindingDoesNotChurn.
+func intraInsightOrder(in facts.Insight) string {
+	return sortedEvidenceEntities(in) + "\x00" + in.Title
+}
+
+// insightChanged reports whether two findings under the same identity differ in
+// content. Deliberately excludes nothing: the title (whose embedded count is the
+// payload for the dead-code rollup), the confidence, the description and the evidence
+// all carry meaning a reader would want to know moved.
+func insightChanged(a, b facts.Insight) bool {
+	if a.Title != b.Title || a.Confidence != b.Confidence || a.Description != b.Description {
+		return true
+	}
+	return evidenceJSON(a.Evidence) != evidenceJSON(b.Evidence)
+}
+
+// evidenceJSON renders a finding's evidence order-stably for content comparison.
+func evidenceJSON(ev []facts.Evidence) string {
+	if len(ev) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // findingKey identifies an insight so a finding stays the SAME finding across
 // snapshots even as its metrics drift or a ranked list re-orders.
 //
@@ -632,16 +757,27 @@ func (d *SnapshotDiff) sortAll() {
 	})
 	sort.Slice(d.EdgesAdded, func(i, j int) bool { return edgeKey(d.EdgesAdded[i]) < edgeKey(d.EdgesAdded[j]) })
 	sort.Slice(d.EdgesRemoved, func(i, j int) bool { return edgeKey(d.EdgesRemoved[i]) < edgeKey(d.EdgesRemoved[j]) })
-	sort.Slice(d.FindingsNew, func(i, j int) bool { return findingKey(d.FindingsNew[i]) < findingKey(d.FindingsNew[j]) })
-	sort.Slice(d.FindingsResolved, func(i, j int) bool {
-		return findingKey(d.FindingsResolved[i]) < findingKey(d.FindingsResolved[j])
+	// findingKey alone is NOT a total order — findings collide under it (78 of
+	// nan/nebenan-android-app's layer violations share one key). Ties would sort
+	// arbitrarily and the diff would stop being byte-reproducible, which is the
+	// package's central promise. Break them with intraInsightOrder, exactly as the fact
+	// buckets break theirs with intraGroupOrder.
+	byFinding := func(s []facts.Insight) func(i, j int) bool {
+		return func(i, j int) bool { return findingSortKey(s[i]) < findingSortKey(s[j]) }
+	}
+	sort.Slice(d.FindingsNew, byFinding(d.FindingsNew))
+	sort.Slice(d.FindingsResolved, byFinding(d.FindingsResolved))
+	sort.Slice(d.FindingsNewIncidental, byFinding(d.FindingsNewIncidental))
+	sort.Slice(d.FindingsResolvedIncidental, byFinding(d.FindingsResolvedIncidental))
+	sort.Slice(d.FindingsChanged, func(i, j int) bool {
+		return findingSortKey(d.FindingsChanged[i].After) < findingSortKey(d.FindingsChanged[j].After)
 	})
-	sort.Slice(d.FindingsNewIncidental, func(i, j int) bool {
-		return findingKey(d.FindingsNewIncidental[i]) < findingKey(d.FindingsNewIncidental[j])
-	})
-	sort.Slice(d.FindingsResolvedIncidental, func(i, j int) bool {
-		return findingKey(d.FindingsResolvedIncidental[i]) < findingKey(d.FindingsResolvedIncidental[j])
-	})
+}
+
+// findingSortKey totally orders findings for deterministic rendering: identity first,
+// then whatever separates findings that share it.
+func findingSortKey(in facts.Insight) string {
+	return findingKey(in) + "\x00" + intraInsightOrder(in)
 }
 
 // KindCounts returns counts of facts by kind for the given slice, used by the

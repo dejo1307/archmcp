@@ -717,8 +717,18 @@ func (g *Graph) Reverse() map[string][]Edge {
 // (pkg/plugin/plugin.go). They are not part of the architectural coupling graph,
 // so counting them as dependents inflates god-class fan-in and hotspots
 // centrality and drifts the outlier threshold (GAP-XL-15).
+// A route joins them at v111. bindHTTPHandlers gives every HTTP route a handled_by
+// edge into the symbol that serves it — which is exactly what impact_analysis, orphans
+// and the performance analyzer need — but it also made a route a SOURCE of fan-in. On
+// fairwayhub/golf that added an edge to each of 1254 handlers at once, and 13 were
+// immediately reported as new "call-graph hotspots" whose fan-in was nothing but routes
+// and a test file. A handler ranked as a change-risk concentrator purely for being a
+// handler is a fabricated finding, and the uniform +1 also drifts the outlier threshold.
+//
+// A route is an entry-point declaration, not a symbol, so it is not architectural
+// coupling — the same reasoning that excludes test_ref and file_ref.
 func isReferenceOnlyKind(kind string) bool {
-	return kind == KindTestRef || kind == KindFileRef
+	return kind == KindTestRef || kind == KindFileRef || kind == KindRoute
 }
 
 // ArchitecturalReverse returns a reverse adjacency map restricted to edges whose

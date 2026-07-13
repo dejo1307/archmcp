@@ -386,7 +386,24 @@ import (
 // which on server-side Java is an inbound JAX-RS/Spring handler, not I/O; and there is
 // no transitive fixpoint (performs_io == io_direct), matching the Kotlin design. Cached
 // Java snapshots must re-extract (GAP-JV-02).
-const cacheVersion = "v110"
+// v111: the Go extractor now emits `http_handler: true` on any func or method whose
+// signature is exactly func(http.ResponseWriter, *http.Request) — net/http's handler
+// contract, decidable from the AST. It exists so a route can be bound to the symbol that
+// actually serves it: goextractor renders a route's `handler` prop from the REGISTRATION
+// site, so it is the receiver VARIABLE chain ("h.weatherHandler.GetDailyWeatherRange")
+// while the symbol is named by its receiver TYPE (".../weather.HandlerV2.GetDaily…").
+// The two key spaces are disjoint — on fairwayhub/golf, 1397 handler props intersect
+// 13482 symbol names exactly TWICE — so every consumer keyed on the handler (the
+// enterprise route-handler escalation, orphans' handler rescue) matched nothing, and 0 of
+// 1641 routes carried a handled_by edge. The method name is all the two sides share, and
+// it is ambiguous: golf has four GetDailyWeatherRange (the handler, a service, a mock, and
+// a null-object stub in the WIRING package where the routes are registered), so a
+// name-only or package-scoped binder resolves the route to the stub — and a wrong
+// handled_by edge feeds impact_analysis and find_path. The signature is the structural
+// discriminator that rejects the stub by construction. Consumed by the new engine pass
+// bindHTTPHandlers (post-extraction, outside the cache). Cached Go snapshots must
+// re-extract (new/18).
+const cacheVersion = "v111"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

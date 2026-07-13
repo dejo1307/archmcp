@@ -117,8 +117,18 @@ func TestCompute_PreexistingFindingIsSilent(t *testing.T) {
 }
 
 // TestCompute_FindingStableAcrossVolatileTitle verifies a finding about the same
-// entities stays identified even when its title/detail metrics change, so a
-// god-class whose fan-in ticked up does not churn as resolve+new.
+// entities stays IDENTIFIED even when its title/detail metrics change, so a god-class
+// whose fan-in ticked up does not churn as resolve+new.
+//
+// It used to additionally assert d.Empty() — that the diff say nothing at all. That was
+// an over-correction, and it is the bug new/53 reports: it conflated "this is the same
+// finding" (true, and what the number-normalized key is for) with "this finding is
+// unchanged" (false — it moved). Held to its literal wording, it certified silence for
+// the dead-code rollup swinging 5621 -> 3662, a 1,959-symbol change, in the very tool
+// the improvement loop uses to check for collateral damage.
+//
+// The identity guarantee is unchanged and still asserted. What is new: the drift is
+// reported, in a bucket of its own, instead of vanishing.
 func TestCompute_FindingStableAcrossVolatileTitle(t *testing.T) {
 	before := facts.Insight{Source: "god-class", Title: "God class Foo (fan-in 11)", Confidence: 0.6,
 		Evidence: []facts.Evidence{{Symbol: "Foo", Detail: "fan-in: 11"}}}
@@ -126,8 +136,17 @@ func TestCompute_FindingStableAcrossVolatileTitle(t *testing.T) {
 		Evidence: []facts.Evidence{{Symbol: "Foo", Detail: "fan-in: 13"}}}
 
 	d := Compute(snap(nil, []facts.Insight{before}), snap(nil, []facts.Insight{after}))
-	if !d.Empty() {
-		t.Fatalf("same-entity finding churned despite identity-stable key: %+v", d)
+
+	// The point of the number-normalized key: no churn.
+	if n := len(d.FindingsNew) + len(d.FindingsNewIncidental); n != 0 {
+		t.Errorf("finding churned as new (%d) despite identity-stable key", n)
+	}
+	if n := len(d.FindingsResolved) + len(d.FindingsResolvedIncidental); n != 0 {
+		t.Errorf("finding churned as resolved (%d) despite identity-stable key", n)
+	}
+	// And the honest part: it did change, and the diff says so.
+	if len(d.FindingsChanged) != 1 {
+		t.Fatalf("FindingsChanged = %d, want 1 — the fan-in moved 11 -> 13", len(d.FindingsChanged))
 	}
 }
 
@@ -191,8 +210,16 @@ func TestCompute_SummaryFindingDoesNotChurn(t *testing.T) {
 	cur := snap(nil, []facts.Insight{layers("a", "b", "c")})
 
 	d := Compute(base, cur)
-	if !d.Empty() {
-		t.Fatalf("summary finding churned on a module-count change: %+v", d)
+
+	// Identity holds: a whole-codebase summary finding must not resolve+reintroduce
+	// every time one module leaves its evidence list.
+	if n := len(d.FindingsNew) + len(d.FindingsNewIncidental) +
+		len(d.FindingsResolved) + len(d.FindingsResolvedIncidental); n != 0 {
+		t.Errorf("summary finding churned (%d entries) on a module-count change", n)
+	}
+	// But it did shrink from 4 modules to 3, and that is worth saying out loud.
+	if len(d.FindingsChanged) != 1 {
+		t.Fatalf("FindingsChanged = %d, want 1", len(d.FindingsChanged))
 	}
 }
 
@@ -396,5 +423,134 @@ func TestRenderSummary_OnlyDeltas(t *testing.T) {
 	// The pre-existing p→q cycle must not appear anywhere.
 	if strings.Contains(out, "p → q") {
 		t.Fatalf("pre-existing cycle leaked into report:\n%s", out)
+	}
+}
+
+// --- new/53: the diff was blind to two whole classes of finding change ---
+
+// TestCompute_FindingContentChangeIsReported is the reported bug. findingKey is
+// Source + normalizeTitle(Title), and normalizeTitle strips EVERY number — so the
+// dead-code rollup, whose title embeds a live count, kept the same key when its count
+// moved by 1,959 symbols. The finding was in neither map's difference, so it landed in
+// no bucket, Empty() was true, and diff_snapshot printed:
+//
+//	"No architectural changes detected. The change did not add, remove, or ALTER
+//	 any facts, edges, or findings."
+//
+// while insights.json's sha256 had changed. This is the loop's own collateral-damage
+// instrument, so a silent diff reads as "nothing broke".
+//
+// The key must NOT change — it is what stops a god-class fan-in ticking 11→13 from
+// churning as a spurious resolve+introduce pair (see the test below). The fix is a
+// bucket for "same identity, different content".
+func TestCompute_FindingContentChangeIsReported(t *testing.T) {
+	before := facts.Insight{Source: "dead-code", Confidence: 0.7,
+		Title: "Additional dead-code candidates: 5621 more (see find_orphans)"}
+	after := facts.Insight{Source: "dead-code", Confidence: 0.7,
+		Title: "Additional dead-code candidates: 3662 more (see find_orphans)"}
+
+	d := Compute(snap(nil, []facts.Insight{before}), snap(nil, []facts.Insight{after}))
+
+	if d.Empty() {
+		t.Fatal("a finding whose content changed was reported as no change at all")
+	}
+	if len(d.FindingsNew) != 0 || len(d.FindingsResolved) != 0 ||
+		len(d.FindingsNewIncidental) != 0 || len(d.FindingsResolvedIncidental) != 0 {
+		t.Errorf("identity must stay stable — the finding must not churn as resolve+new; got new=%d resolved=%d",
+			len(d.FindingsNew)+len(d.FindingsNewIncidental),
+			len(d.FindingsResolved)+len(d.FindingsResolvedIncidental))
+	}
+	if len(d.FindingsChanged) != 1 {
+		t.Fatalf("FindingsChanged = %d, want 1", len(d.FindingsChanged))
+	}
+	if !strings.Contains(d.FindingsChanged[0].Before.Title, "5621") ||
+		!strings.Contains(d.FindingsChanged[0].After.Title, "3662") {
+		t.Errorf("change does not carry before/after: %+v", d.FindingsChanged[0])
+	}
+}
+
+// TestCompute_CollidingFindingsAreAllVisible is the SECOND bug, which the report did
+// not name: Compute keyed findings into a map[string]facts.Insight — last writer wins.
+// On nan/nebenan-android-app, 78 layer violations share the identical title
+// "Layer violation: di -> ui" (they are distinguished only by their evidence), so 77 of
+// them were dropped from the diff map entirely and could appear or vanish in total
+// silence.
+//
+// This is exactly fixed/10's factKey collision (which hid 172 facts) on the findings
+// side, which never got the groupByKey treatment the facts side has. Evidence cannot go
+// into the key — TestCompute_SummaryFindingDoesNotChurn forbids it — so the fix is to
+// group and pair positionally, as groupByKey already does for facts.
+func TestCompute_CollidingFindingsAreAllVisible(t *testing.T) {
+	violation := func(mod string) facts.Insight {
+		return facts.Insight{Source: "layers", Title: "Layer violation: di -> ui", Confidence: 0.8,
+			Evidence: []facts.Evidence{{Fact: mod}}}
+	}
+	base := []facts.Insight{violation("a"), violation("b"), violation("c")}
+	cur := []facts.Insight{violation("a"), violation("b")} // one violation fixed
+
+	d := Compute(snap(nil, base), snap(nil, cur))
+
+	if d.Empty() {
+		t.Fatal("one of three identically-titled findings was removed and the diff saw nothing")
+	}
+	got := len(d.FindingsResolved) + len(d.FindingsResolvedIncidental)
+	if got != 1 {
+		t.Errorf("resolved = %d, want 1 — colliding findings are being dropped from the map", got)
+	}
+}
+
+// TestCompute_IdenticalFindingsStayEmpty is the control for both fixes above: a
+// snapshot pair with identical findings — including a colliding group — must still be
+// Empty(). If this fails, the altered bucket is manufacturing churn.
+func TestCompute_IdenticalFindingsStayEmpty(t *testing.T) {
+	violation := func(mod string) facts.Insight {
+		return facts.Insight{Source: "layers", Title: "Layer violation: di -> ui",
+			Evidence: []facts.Evidence{{Fact: mod}}}
+	}
+	ins := []facts.Insight{
+		violation("a"), violation("b"), violation("c"),
+		{Source: "god-class", Title: "High fan-in symbol: Foo (11 dependents)", Confidence: 0.6},
+	}
+	// Same content, different slice order — the pairing must be order-stable.
+	shuffled := []facts.Insight{ins[3], ins[2], ins[0], ins[1]}
+
+	if d := Compute(snap(nil, ins), snap(nil, shuffled)); !d.Empty() {
+		t.Fatalf("identical finding sets reported a change: %+v", d)
+	}
+}
+
+// TestCompareMeta_StaleBaselineWarns is the second hazard new/53 reports, and it is
+// real: a `pinned` baseline persists on disk indefinitely (that is advertised as a
+// feature), and BaselineGeneratedAt is PRINTED but never COMPARED. An 11-day-old
+// baseline — same enola version, same extractors, so Comparable:true and zero warnings
+// — produced a confident 24-regression / 215-improvement report, dominated by repo
+// drift, for a change that touched zero facts.
+//
+// The delta looks authoritative and the only signal is a timestamp on line 3 that the
+// reader has to diff in their head.
+func TestCompareMeta_StaleBaselineWarns(t *testing.T) {
+	meta := func(ts string) facts.SnapshotMeta {
+		return facts.SnapshotMeta{
+			RepoPath: "/repo", EnolaVersion: "dev", GeneratedAt: ts,
+			Extractors: []string{"go"},
+		}
+	}
+	stale := compareMeta(meta("2026-07-02T10:00:00Z"), meta("2026-07-13T10:00:00Z"))
+	var found bool
+	for _, w := range stale.Warnings {
+		if strings.Contains(w, "day") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("an 11-day-old baseline produced no staleness warning: %v", stale.Warnings)
+	}
+
+	// Same-day baselines are the normal case and must stay quiet.
+	fresh := compareMeta(meta("2026-07-13T09:00:00Z"), meta("2026-07-13T10:00:00Z"))
+	for _, w := range fresh.Warnings {
+		if strings.Contains(w, "day") {
+			t.Errorf("a one-hour-old baseline warned about staleness: %q", w)
+		}
 	}
 }

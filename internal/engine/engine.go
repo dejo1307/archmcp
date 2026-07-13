@@ -249,6 +249,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	e.linkCrossRepo()
 	e.flagUnmatchedRoutes()
 	e.bindGRPCHandlers()
+	e.bindHTTPHandlers()
 	tLink = time.Since(tStage)
 
 	// 3c. Build graph index for traversal queries

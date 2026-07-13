@@ -40,6 +40,7 @@ func (d *SnapshotDiff) RenderSummary() string {
 		sb.WriteString("\n")
 	}
 
+	d.writeAlteredFindings(&sb)
 	d.writeIncidentalShifts(&sb)
 	d.writeStructuralSummary(&sb)
 	return sb.String()
@@ -89,6 +90,7 @@ func (d *SnapshotDiff) RenderCompact() string {
 		sb.WriteString("\n")
 	}
 
+	d.writeAlteredFindings(&sb)
 	d.writeIncidentalShifts(&sb)
 	d.writeStructuralSummary(&sb)
 
@@ -275,4 +277,27 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// writeAlteredFindings reports findings that survived under the same identity but whose
+// content moved. Capped, because on a real code change many findings carry a drifting
+// count in their title (175 of 359 on nan/nebenan-android-app) and an uncapped list
+// would bury the regressions above it. The count is always stated: it is the number
+// the headline used to claim was zero.
+func (d *SnapshotDiff) writeAlteredFindings(sb *strings.Builder) {
+	if len(d.FindingsChanged) == 0 {
+		return
+	}
+	const sample = 10
+	fmt.Fprintf(sb, "## Findings altered (%d)\n\n", len(d.FindingsChanged))
+	sb.WriteString("_Same finding, changed content — a metric in the title, the confidence, or the evidence moved. " +
+		"Not a new or resolved finding; the subject is the same one._\n\n")
+	for i, c := range d.FindingsChanged {
+		if i >= sample {
+			fmt.Fprintf(sb, "- … and %d more (output_mode='full' for all)\n", len(d.FindingsChanged)-sample)
+			break
+		}
+		fmt.Fprintf(sb, "- [%s] %s\n    → %s\n", insightSource(c.After), oneLine(c.Before.Title), oneLine(c.After.Title))
+	}
+	sb.WriteString("\n")
 }

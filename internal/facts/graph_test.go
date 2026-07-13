@@ -977,3 +977,50 @@ func TestArchitecturalReverse_ExcludesReferenceKinds(t *testing.T) {
 		t.Errorf("surviving dependent = %q, want Caller (the symbol source)", arch[0].Target)
 	}
 }
+
+// TestArchitecturalReverse_ExcludesRouteSources pins collateral introduced by the
+// v111 handled_by binder (new/18) and caught by diff_snapshot, not by any test.
+//
+// bindHTTPHandlers made routes a SOURCE of edges into handler symbols, so on
+// fairwayhub/golf all 1254 bound handlers gained fan-in — and 13 of them were
+// immediately reported as new "call-graph hotspots". Inspecting one:
+//
+//	internal/adapters/http/plan.HandlerV2.UpdatePlan — fan-in 4:
+//	   [route]    --handled_by--> from /plans/{id:[0-9]+}
+//	   [route]    --handled_by--> from /plans/{id}
+//	   [test_ref] --calls-->      from handler_v2_test.go
+//
+// Not one real symbol caller. The handler was ranked a change-risk concentrator purely
+// because it is a handler — and every handler gained the same uniform +1, which also
+// drifts the mean+2σ threshold and pushed three genuine findings out.
+//
+// A route is not a symbol; it is an entry-point declaration. That is exactly what
+// isReferenceOnlyKind is for (GAP-XL-15). orphans, impact_analysis, traverse and
+// find_path keep the unfiltered Reverse() and still see handled_by — which is the whole
+// point of emitting it.
+func TestArchitecturalReverse_ExcludesRouteSources(t *testing.T) {
+	s := NewStore()
+	s.Add(Fact{Kind: KindSymbol, Name: "http/plan.HandlerV2.UpdatePlan", File: "http/plan/h.go"})
+	s.Add(Fact{Kind: KindSymbol, Name: "http/plan.HandlerV2.caller", File: "http/plan/h.go",
+		Relations: []Relation{{Kind: RelCalls, Target: "http/plan.HandlerV2.UpdatePlan"}}})
+	s.Add(Fact{Kind: KindRoute, Name: "/plans/{id}", File: "bootstrap/routes.go",
+		Relations: []Relation{{Kind: RelHandledBy, Target: "http/plan.HandlerV2.UpdatePlan"}}})
+	s.BuildGraph()
+	g := s.Graph()
+
+	// The architectural view counts the one real symbol caller, not the route.
+	if got := len(g.ArchitecturalReverse()["http/plan.HandlerV2.UpdatePlan"]); got != 1 {
+		t.Errorf("architectural fan-in = %d, want 1 — a route is not an architectural dependent", got)
+	}
+	// But the handled_by edge must still be there for everyone else: it is what lets
+	// impact_analysis walk a route to its handler, and the perf analyzer escalate it.
+	var sawRoute bool
+	for _, e := range g.Reverse()["http/plan.HandlerV2.UpdatePlan"] {
+		if e.Target == "/plans/{id}" && e.RelKind == RelHandledBy {
+			sawRoute = true
+		}
+	}
+	if !sawRoute {
+		t.Error("Reverse() lost the handled_by edge — impact_analysis and perf depend on it")
+	}
+}

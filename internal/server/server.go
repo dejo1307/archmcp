@@ -46,7 +46,7 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 		Name:    "enola",
 		Version: version.Version,
 	}, &mcp.ServerOptions{
-		Instructions: "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). To verify what a change did to the architecture, pin a baseline before editing and diff after: generate_snapshot → set_baseline → make changes → generate_snapshot → diff_snapshot. diff_snapshot is delta-only (it reports just what changed — new/resolved findings, new coupling, added/removed symbols — never pre-existing state), so prefer it over re-reading files to confirm a change. Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, and OpenAPI.",
+		Instructions: "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). To verify what a change did to the architecture, pin a baseline before editing and diff after: generate_snapshot → set_baseline → make changes → generate_snapshot → diff_snapshot. diff_snapshot is delta-only (it reports just what changed — new/resolved findings, new coupling, added/removed symbols — never pre-existing state), so prefer it over re-reading files to confirm a change. Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, gRPC/Protobuf, and OpenAPI.",
 	})
 
 	s.mcp = mcpServer
@@ -458,7 +458,7 @@ func (s *Server) registerTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "generate_snapshot",
 		Description: "Index a repository and extract its architecture as queryable facts. " +
-			"Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, and OpenAPI. " +
+			"Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, gRPC/Protobuf, and OpenAPI. " +
 			"Produces facts of kind: module, symbol, route, storage, dependency, service. " +
 			"Run this first before any other tool. Re-run after code changes. " +
 			"To VERIFY a change you are about to make, call set_baseline right after this first snapshot (BEFORE editing); " +

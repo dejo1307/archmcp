@@ -296,6 +296,25 @@ func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile
 		symbolFact.Props["receiver"] = receiver
 	}
 
+	// An HTTP handler is exactly func(http.ResponseWriter, *http.Request). Tag it, so a
+	// route can be bound to the symbol that actually serves it.
+	//
+	// The route's `handler` prop is rendered from the REGISTRATION site, so it names the
+	// receiver VARIABLE ("h.aiCoachHandler.GetInsight") while the symbol is named by its
+	// receiver TYPE (".../aicoach.HandlerV2.GetInsight"). The two key spaces are disjoint
+	// — on fairwayhub/golf, 1397 handler props intersect 13482 symbol names exactly twice
+	// — so any binder must resolve by method name, and a method name alone is ambiguous:
+	// the wiring package's NullWeatherService.GetDailyWeatherRange shares one with the
+	// real handler, and a name-only rule binds the route to the stub. A wrong handled_by
+	// edge feeds impact_analysis and find_path, which is worse than no edge.
+	//
+	// The signature is the structural discriminator, and it is free here: goextractor
+	// parses with go/ast, so fn.Type.Params is exact. Set only when true — a positive
+	// marker, so the goldens do not gain a line per function.
+	if isHTTPHandlerSignature(fn.Type) {
+		symbolFact.Props["http_handler"] = true
+	}
+
 	// Extract function calls and per-function complexity metrics in a single
 	// body walk. The metrics ride on Props (map[string]any) and feed the
 	// enterprise performance analyzer; they are parser-derived, never inferred.
@@ -949,6 +968,57 @@ func classifyImport(importPath, modulePath string) string {
 }
 
 // typeExprToString converts a type expression to a string representation.
+// isHTTPHandlerSignature reports whether a function's parameter list is exactly
+// (http.ResponseWriter, *http.Request) — net/http's handler contract.
+//
+// Deliberately NOT written with typeExprToString: that helper strips the pointer
+// (*ast.StarExpr recurses into X), so it renders `http.Request` and `*http.Request`
+// identically and would tag a by-value `func(http.ResponseWriter, http.Request)` as a
+// handler. The pointer is load-bearing here, so the star is matched explicitly.
+//
+// Param NAMES are irrelevant and never read: `func(rw http.ResponseWriter, req *http.Request)`
+// is a handler, and so is the unnamed `func(http.ResponseWriter, *http.Request)`.
+func isHTTPHandlerSignature(ft *ast.FuncType) bool {
+	if ft == nil || ft.Params == nil {
+		return false
+	}
+	// Count params, not fields: `func(w http.ResponseWriter, r *http.Request)` is two
+	// fields of one name each, while a grouped `func(a, b int)` is one field of two.
+	var params []ast.Expr
+	for _, field := range ft.Params.List {
+		n := len(field.Names)
+		if n == 0 {
+			n = 1 // unnamed parameter
+		}
+		for i := 0; i < n; i++ {
+			params = append(params, field.Type)
+		}
+	}
+	if len(params) != 2 {
+		return false
+	}
+	return isQualifiedType(params[0], "http", "ResponseWriter") && isPointerToQualifiedType(params[1], "http", "Request")
+}
+
+// isQualifiedType reports whether expr is the selector `pkg.name`.
+func isQualifiedType(expr ast.Expr, pkg, name string) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || sel.Sel.Name != name {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == pkg
+}
+
+// isPointerToQualifiedType reports whether expr is `*pkg.name`.
+func isPointerToQualifiedType(expr ast.Expr, pkg, name string) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	return isQualifiedType(star.X, pkg, name)
+}
+
 func typeExprToString(expr ast.Expr) string {
 	switch t := expr.(type) {
 	case *ast.Ident:

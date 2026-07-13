@@ -696,3 +696,80 @@ func (h *AuthHandler) Login() {}
 		t.Errorf("Login symbol_kind = %v, want method", m.Props["symbol_kind"])
 	}
 }
+
+// TestExtract_HTTPHandlerProp is the v111 prop, and the enabling half of new/18.
+//
+// A route's `handler` prop is built by exprToString from the REGISTRATION SITE, so it
+// is the receiver VARIABLE chain ("h.aiCoachHandler.GetInsight"), while the symbol is
+// named by its receiver TYPE ("internal/adapters/http/aicoach.HandlerV2.GetInsight").
+// The two key spaces are disjoint: on fairwayhub/golf, 1397 distinct handler props
+// intersect 13482 symbol names in exactly TWO places, and both are Python.
+//
+// Binding them by name alone mis-binds: the naive rule bound /api/weather/daily-range
+// to internal/bootstrap.NullWeatherService.GetDailyWeatherRange — a stub in the WIRING
+// package — because it shares the method name with the real handler. A wrong handled_by
+// edge feeds impact_analysis and find_path and is worse than no edge at all.
+//
+// An HTTP handler is exactly func(http.ResponseWriter, *http.Request), which is
+// decidable from the AST. That is a STRUCTURAL constraint, not a name heuristic, and it
+// is what lets the binder reject NullWeatherService (signature (ctx, string)) by
+// construction rather than by guessing.
+func TestExtract_HTTPHandlerProp(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"api/handler.go": `package api
+
+import (
+	"context"
+	"net/http"
+)
+
+type HandlerV2 struct{}
+
+// A real handler — method form, and the param names are deliberately NOT w/r.
+func (h *HandlerV2) GetThing(rw http.ResponseWriter, req *http.Request) {}
+
+// A real handler — plain func form, unnamed params.
+func Health(http.ResponseWriter, *http.Request) {}
+
+// NOT a handler: the wiring-package stub that the naive binder wrongly bound to.
+// It shares a method name with a handler but has a service signature.
+type NullService struct{}
+
+func (s *NullService) GetThing(ctx context.Context, date string) error { return nil }
+
+// NOT a handler: takes the request by value, not by pointer.
+func ByValue(rw http.ResponseWriter, req http.Request) {}
+
+// NOT a handler: middleware returns a handler, it is not one.
+func Middleware(next http.Handler) http.Handler { return next }
+`,
+	})
+
+	isHandler := func(name string) bool {
+		f, ok := findFact(ff, name)
+		if !ok {
+			t.Fatalf("symbol %q not extracted", name)
+		}
+		v, _ := f.Props["http_handler"].(bool)
+		return v
+	}
+
+	for _, name := range []string{"api.HandlerV2.GetThing", "api.Health"} {
+		if !isHandler(name) {
+			t.Errorf("%s has signature func(http.ResponseWriter, *http.Request) but http_handler is not set", name)
+		}
+	}
+	// The whole point: these must NOT be tagged, or the binder cannot tell them apart.
+	for _, name := range []string{"api.NullService.GetThing", "api.ByValue", "api.Middleware"} {
+		if isHandler(name) {
+			t.Errorf("%s is not an HTTP handler but was tagged http_handler — this is the mis-bind", name)
+		}
+	}
+
+	// The prop must be absent, not false, on non-handlers: it is a positive marker and
+	// the golden would otherwise gain a line for every Go function in every repo.
+	f, _ := findFact(ff, "api.Middleware")
+	if _, present := f.Props["http_handler"]; present {
+		t.Error("http_handler must be omitted on non-handlers, not set to false")
+	}
+}
