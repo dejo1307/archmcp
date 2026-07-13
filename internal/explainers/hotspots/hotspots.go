@@ -98,6 +98,14 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		if common.IsRubyFrameworkBaseSymbol(s.Name, s.File) {
 			continue
 		}
+		// Test-support code is not production architecture. See the god-class
+		// explainer for the full rationale: ArchitecturalReverse drops reference-only
+		// KINDS, but a Swift/Kotlin/Python test file is indexed as an ordinary symbol
+		// fact, so it needs a path gate too (GAP-XL-15). Candidate-only: the score and
+		// the outlier distribution stay whole.
+		if facts.IsTestPath(s.File) {
+			continue
+		}
 		in := len(reverse[s.Name])
 		out := len(forward[s.Name])
 		if in < minDegree || out < minDegree {

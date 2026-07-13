@@ -75,6 +75,14 @@ const (
 // extractors instead of re-implementing the heuristic.
 func ModuleRoleForPath(dir string) string { return internal.ModuleRoleForPath(dir) }
 
+// IsTestPath reports whether a repo-relative path is test or test-support code.
+// Re-exported so out-of-module consumers (the enterprise dead-code and performance
+// analyzers) share one definition with the OSS explainers instead of each carrying
+// its own copy — they previously carried three, which drifted in both directions.
+// See internal/facts for the full contract, in particular why it trusts the
+// directory and not the filename.
+func IsTestPath(p string) bool { return internal.IsTestPath(p) }
+
 // CanonicalSymbols collapses #if/#else conditional-compilation duplicates in a
 // symbol-fact slice, keeping non-conditional overloads intact. Re-exported so
 // out-of-module consumers that count symbols (package-metrics) apply the same rule

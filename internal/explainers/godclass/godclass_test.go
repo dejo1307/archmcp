@@ -340,3 +340,94 @@ func TestConfidenceMath(t *testing.T) {
 		}
 	}
 }
+
+// TestExplain_TestSupportSymbolExcluded pins the fix for the case where a repo's
+// tests are indexed as ordinary symbol facts — every Swift/Xcode repo, every
+// Gradle repo with an androidTest source set, every Python repo with a tests/
+// tree. An XCTest assertion helper is SUPPOSED to have a thousand callers, so
+// ranking it as the repo's #1 god class is noise that outranks (and, given the
+// maxInsights cap, evicts) real production findings.
+//
+// facts.ArchitecturalReverse only drops reference-only KINDS (test_ref/file_ref),
+// which is how the Ruby/Go/TS case is handled — their test files are ignored by
+// config and re-enter only as test_ref nodes. A Swift symbol under Tests/ is an
+// ordinary symbol fact and passes straight through, so the path gate is needed too.
+//
+// The production hub must still be reported with its fan-in INTACT: the gate is on
+// the candidate, not on the edges. Excluding test callers from the count instead
+// was measured against the corpus and rewrites the production report — on
+// python/superset it collapses the outlier threshold from 17.23 to 4.82.
+func TestExplain_TestSupportSymbolExcluded(t *testing.T) {
+	s := facts.NewStore()
+	// A test helper with high fan-in from other test files.
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "Tests/Testability/Sources.Assert",
+		File: "Tests/Testability/Sources/Assert.swift"})
+	// A production hub with high fan-in, some of it from tests.
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "Sources/Core.APIService",
+		File: "Sources/Core/APIService.swift"})
+	for i := 0; i < 12; i++ {
+		s.Add(facts.Fact{
+			Kind: facts.KindSymbol,
+			Name: fmt.Sprintf("Tests/CoreTests.SpecCase%d", i),
+			File: fmt.Sprintf("Tests/CoreTests/SpecCase%d.swift", i),
+			Relations: []facts.Relation{
+				{Kind: facts.RelCalls, Target: "Tests/Testability/Sources.Assert"},
+				{Kind: facts.RelCalls, Target: "Sources/Core.APIService"},
+			},
+		})
+	}
+	s.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	for _, in := range insights {
+		if strings.Contains(in.Title, "Assert") {
+			t.Errorf("test-support symbol reported as god class: %q", in.Title)
+		}
+	}
+	var sawAPI bool
+	for _, in := range insights {
+		if strings.Contains(in.Title, "APIService") {
+			sawAPI = true
+			// Fan-in must be the FULL count (12), not the production-only count.
+			if !strings.Contains(in.Title, "(12 dependents)") {
+				t.Errorf("production hub fan-in was altered by the test gate: %q", in.Title)
+			}
+		}
+	}
+	if !sawAPI {
+		t.Errorf("production hub should still be reported")
+	}
+}
+
+// TestExplain_ProductionABTestNotExcluded is the fixed/28 guard. A production
+// feature named like a test ("KindnessReminderABTest.swift") must stay in the
+// report — the test gate keys off the directory, never the filename.
+func TestExplain_ProductionABTestNotExcluded(t *testing.T) {
+	s := makeStore("Sources/Foundation.KindnessReminderABTest", manyCallers(12), nil)
+	// Re-file the hub onto its real production path.
+	s2 := facts.NewStore()
+	for _, f := range s.All() {
+		if f.Name == "Sources/Foundation.KindnessReminderABTest" {
+			f.File = "Sources/NebenanFoundation/Components/KindnessReminderABTest/KindnessReminderABTest.swift"
+		}
+		s2.Add(f)
+	}
+	s2.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), s2)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	var saw bool
+	for _, in := range insights {
+		if strings.Contains(in.Title, "KindnessReminderABTest") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("production A/B-test feature was wrongly gated out as test code")
+	}
+}

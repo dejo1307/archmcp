@@ -99,6 +99,24 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 		if common.IsRubyFrameworkBaseSymbol(s.Name, s.File) {
 			continue
 		}
+		// A test-support symbol is supposed to have high fan-in: an XCTest assertion
+		// helper called by every test case is doing its job, not concentrating change
+		// risk. ArchitecturalReverse above only drops reference-only KINDS, which
+		// covers the languages whose test files are config-ignored and re-enter as
+		// test_ref nodes (Ruby/Go/TS). Where test files are indexed as ordinary
+		// symbols — Swift, Kotlin/Java, Python, C/C++ — they arrive here as plain
+		// symbol facts, so they need a path gate as well (GAP-XL-15, the half
+		// fixed/40 could not reach).
+		//
+		// Gate the CANDIDATE only. The fan-in count and the outlier distribution
+		// above both stay whole: a test caller is still a caller, and editing a
+		// symbol that 400 tests depend on really does ripple to 400 places. Dropping
+		// test-sourced EDGES instead was prototyped against the corpus and rewrites
+		// the production report rather than de-noising it — on python/superset it
+		// collapses the threshold from 17.23 to 4.82 and churns 40 hotspot findings.
+		if facts.IsTestPath(s.File) {
+			continue
+		}
 		n := fanIn[s.Name]
 		if n < minFanIn || float64(n) <= threshold {
 			continue

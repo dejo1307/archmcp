@@ -297,3 +297,67 @@ func TestExplain_OrderedByScore(t *testing.T) {
 		}())
 	}
 }
+
+// TestExplain_TestSupportSymbolExcluded is the hotspots half of the same gate the
+// god-class explainer carries. See godclass_test.go for the full rationale: a
+// symbol under a test tree is an ordinary symbol fact (not a test_ref), so
+// ArchitecturalReverse cannot see it, and an XCTest helper with 1371 callers was
+// being ranked as the repo's most central symbol.
+//
+// The production hotspot must keep its fan-in intact — the gate is on the
+// candidate, not on the edges.
+func TestExplain_TestSupportSymbolExcluded(t *testing.T) {
+	s := facts.NewStore()
+	// Test helper: high fan-in AND high fan-out, so it clears both degree floors.
+	helperCalls := make([]facts.Relation, 0, 4)
+	for i := 0; i < 4; i++ {
+		tgt := fmt.Sprintf("Tests/Testability.Helper%d", i)
+		helperCalls = append(helperCalls, facts.Relation{Kind: facts.RelCalls, Target: tgt})
+		s.Add(facts.Fact{Kind: facts.KindSymbol, Name: tgt, File: "Tests/Testability/Sources/H.swift"})
+	}
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "Tests/Testability/Sources.Assert",
+		File: "Tests/Testability/Sources/Assert.swift", Relations: helperCalls})
+
+	// Production hotspot: high fan-in and fan-out.
+	prodCalls := make([]facts.Relation, 0, 4)
+	for i := 0; i < 4; i++ {
+		tgt := fmt.Sprintf("Sources/Core.Dep%d", i)
+		prodCalls = append(prodCalls, facts.Relation{Kind: facts.RelCalls, Target: tgt})
+		s.Add(facts.Fact{Kind: facts.KindSymbol, Name: tgt, File: "Sources/Core/Dep.swift"})
+	}
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "Sources/Core.APIService",
+		File: "Sources/Core/APIService.swift", Relations: prodCalls})
+
+	for i := 0; i < 12; i++ {
+		s.Add(facts.Fact{
+			Kind: facts.KindSymbol,
+			Name: fmt.Sprintf("Tests/CoreTests.SpecCase%d", i),
+			File: fmt.Sprintf("Tests/CoreTests/SpecCase%d.swift", i),
+			Relations: []facts.Relation{
+				{Kind: facts.RelCalls, Target: "Tests/Testability/Sources.Assert"},
+				{Kind: facts.RelCalls, Target: "Sources/Core.APIService"},
+			},
+		})
+	}
+	s.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	var sawAPI bool
+	for _, in := range insights {
+		if strings.Contains(in.Title, "Assert") {
+			t.Errorf("test-support symbol reported as hotspot: %q", in.Title)
+		}
+		if strings.Contains(in.Title, "APIService") {
+			sawAPI = true
+			if !strings.Contains(in.Title, "fan-in 12") {
+				t.Errorf("production hotspot fan-in was altered by the test gate: %q", in.Title)
+			}
+		}
+	}
+	if !sawAPI {
+		t.Errorf("production hotspot should still be reported")
+	}
+}
