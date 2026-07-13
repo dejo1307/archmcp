@@ -644,3 +644,137 @@ mod inner {
 		t.Errorf("expected a KindTestRef -> pkg.inner.helper, got %+v", refs)
 	}
 }
+
+func TestAST_CallInsideMacroArgument(t *testing.T) {
+	ff := extractAST(t, `
+fn caller() {
+    bail!(format_missing(&missing));
+}
+fn format_missing(names: &[String]) -> String { String::new() }
+`)
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	if !hasRelation(c, facts.RelCalls, "pkg.format_missing") {
+		t.Errorf("expected RelCalls -> pkg.format_missing, got %+v", c.Relations)
+	}
+}
+
+func TestAST_MatchesMacroGuardCall(t *testing.T) {
+	ff := extractAST(t, `
+fn caller(v: Option<u32>) -> bool {
+    matches!(v, Some(x) if !is_kw(x))
+}
+fn is_kw(x: u32) -> bool { false }
+`)
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	if !hasRelation(c, facts.RelCalls, "pkg.is_kw") {
+		t.Errorf("expected RelCalls -> pkg.is_kw, got %+v", c.Relations)
+	}
+}
+
+func TestAST_FunctionPassedAsCallbackArgument(t *testing.T) {
+	ff := extractAST(t, `
+fn caller(v: Result<u32, String>) {
+    v.map_err(handle_error);
+}
+fn handle_error(e: String) -> String { e }
+`)
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	if !hasRelation(c, facts.RelCalls, "pkg.handle_error") {
+		t.Errorf("expected RelCalls -> pkg.handle_error, got %+v", c.Relations)
+	}
+}
+
+func TestAST_OrdinaryArgument_NoPhantomReference(t *testing.T) {
+	ff := extractAST(t, `
+pub struct User { id: u32 }
+impl User {
+    pub fn new(id: u32) -> Self { User { id } }
+}
+pub fn get_user(user_id: u32) -> User {
+    User::new(user_id)
+}
+`)
+	f, ok := findFact(ff, "pkg.get_user")
+	if !ok {
+		t.Fatal("expected fact for pkg.get_user")
+	}
+	if hasRelation(f, facts.RelCalls, "pkg.user_id") {
+		t.Errorf("user_id is a plain parameter, not a function reference: %+v", f.Relations)
+	}
+}
+
+func TestAST_FunctionReferenceInStructField(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Config { diff_fn: fn(&str, &str) -> bool }
+fn make() -> Config {
+    Config { diff_fn: diff_names }
+}
+fn diff_names(a: &str, b: &str) -> bool { a == b }
+`)
+	m, ok := findFact(ff, "pkg.make")
+	if !ok {
+		t.Fatal("expected fact for pkg.make")
+	}
+	if !hasRelation(m, facts.RelCalls, "pkg.diff_names") {
+		t.Errorf("expected RelCalls -> pkg.diff_names, got %+v", m.Relations)
+	}
+}
+
+func TestAST_FunctionReferenceTakenByAddress(t *testing.T) {
+	ff := extractAST(t, `
+fn caller() {
+    let f = &helper;
+}
+fn helper(name: &str) -> Option<String> { None }
+`)
+	c, ok := findFact(ff, "pkg.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.caller")
+	}
+	if !hasRelation(c, facts.RelCalls, "pkg.helper") {
+		t.Errorf("expected RelCalls -> pkg.helper, got %+v", c.Relations)
+	}
+}
+
+func TestAST_SerdeDefaultAttribute_ReferencesFunction(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Node {
+    #[serde(default = "default_kind")]
+    kind: String,
+}
+fn default_kind() -> String { String::from("model") }
+`)
+	s, ok := findFact(ff, "pkg.Node")
+	if !ok {
+		t.Fatal("expected fact for pkg.Node")
+	}
+	if !hasRelation(s, facts.RelCalls, "default_kind") {
+		t.Errorf("expected RelCalls -> default_kind, got %+v", s.Relations)
+	}
+}
+
+func TestAST_SerdeSkipSerializingIfAttribute_ReferencesFunction(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Node {
+    #[serde(default, skip_serializing_if = "is_false")]
+    enabled: bool,
+}
+fn is_false(b: &bool) -> bool { !b }
+`)
+	s, ok := findFact(ff, "pkg.Node")
+	if !ok {
+		t.Fatal("expected fact for pkg.Node")
+	}
+	if !hasRelation(s, facts.RelCalls, "is_false") {
+		t.Errorf("expected RelCalls -> is_false, got %+v", s.Relations)
+	}
+}

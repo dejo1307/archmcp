@@ -434,13 +434,15 @@ import (
 // carries scanned_plugin=true (consumed by the enterprise dead-code detector as an
 // entry point). Both are new/changed facts, so cached Java snapshots must re-extract
 // (GAP-JV-08, new/60).
-// v114: adds the Rust extractor (fn/struct/enum/trait/type/const/static symbols; impl/trait
+// v115: adds the Rust extractor (fn/struct/enum/trait/type/const/static symbols; impl/trait
 // "implements" edges attached via a post-pass; use-based dependency facts classified
 // internal/external/stdlib; calls/instantiates edges; cyclomatic complexity; Axum route
-// facts). Rust is a new FileOwner, so its arrival also reshuffles which files count as
+// facts; calls inside a macro invocation's token_tree; a function passed by name as a
+// value — call argument, struct field, &f; serde default/skip_serializing_if attribute
+// strings). Rust is a new FileOwner, so its arrival also reshuffles which files count as
 // "shared" for every other cached extractor's key in a mixed-language repo. Cached
 // snapshots of any repo containing Rust files must re-extract.
-const cacheVersion = "v114"
+const cacheVersion = "v115"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

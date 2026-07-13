@@ -88,6 +88,10 @@ type astWalker struct {
 	typeStack   []string
 	methodStack []map[string]bool
 
+	// modFnStack[len-1]: function names declared directly in the enclosing
+	// mod/file scope, order-independent. Parallel to modStack.
+	modFnStack []map[string]bool
+
 	// decisions counts cyclomatic decision points in the function/method body
 	// currently being walked; saved/restored around nested function items.
 	decisions int
@@ -168,7 +172,16 @@ func (w *astWalker) currentMethods() map[string]bool {
 }
 
 func (w *astWalker) walkSourceFile(root *sitter.Node) {
+	w.modFnStack = append(w.modFnStack, collectFnNames(root, w.src))
 	w.walkItemsTrackingAttrs(root)
+	w.modFnStack = w.modFnStack[:len(w.modFnStack)-1]
+}
+
+func (w *astWalker) currentModFns() map[string]bool {
+	if len(w.modFnStack) == 0 {
+		return nil
+	}
+	return w.modFnStack[len(w.modFnStack)-1]
 }
 
 // walkItemsTrackingAttrs iterates parent's children like walkChild, but first
@@ -302,7 +315,9 @@ func (w *astWalker) handleMod(node *sitter.Node) {
 		name = nodeText(n, w.src)
 	}
 	w.modStack = append(w.modStack, name)
+	w.modFnStack = append(w.modFnStack, collectFnNames(body, w.src))
 	w.walkItemsTrackingAttrs(body)
+	w.modFnStack = w.modFnStack[:len(w.modFnStack)-1]
 	w.modStack = w.modStack[:len(w.modStack)-1]
 }
 
@@ -328,6 +343,10 @@ func (w *astWalker) handleStruct(node *sitter.Node) {
 		},
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
+	ownerIdx := len(w.out) - 1
+	w.pushOwner(&w.out[ownerIdx])
+	w.scanSerdeAttributeRefs(node.ChildByFieldName("body"))
+	w.popOwner()
 }
 
 func (w *astWalker) handleEnum(node *sitter.Node) {
@@ -348,6 +367,10 @@ func (w *astWalker) handleEnum(node *sitter.Node) {
 		},
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
+	ownerIdx := len(w.out) - 1
+	w.pushOwner(&w.out[ownerIdx])
+	w.scanSerdeAttributeRefs(node.ChildByFieldName("body"))
+	w.popOwner()
 }
 
 func (w *astWalker) handleTrait(node *sitter.Node) {
@@ -669,10 +692,80 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		w.handleCallExpression(node)
 	case "struct_expression":
 		w.handleStructExpression(node)
+	case "token_tree":
+		w.scanTokenTreeCalls(node)
+	case "arguments":
+		w.scanArgumentReferences(node)
+	case "field_initializer":
+		w.emitValueReference(node.ChildByFieldName("value"))
+	case "reference_expression":
+		w.emitValueReference(node.ChildByFieldName("value"))
 	}
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		w.walkChild(node.Child(i))
+	}
+}
+
+// scanTokenTreeCalls finds calls inside a macro's unparsed token_tree body
+// (e.g. `bail!(f(x))`), invisible to handleCallExpression otherwise: an
+// `identifier` immediately followed by a parenthesized token_tree sibling.
+func (w *astWalker) scanTokenTreeCalls(node *sitter.Node) {
+	n := node.ChildCount()
+	for i := uint(0); i+1 < n; i++ {
+		c := node.Child(i)
+		if c.Kind() != "identifier" {
+			continue
+		}
+		next := node.Child(i + 1)
+		if next.Kind() != "token_tree" || next.ChildCount() == 0 || next.Child(0).Kind() != "(" {
+			continue
+		}
+		name := nodeText(c, w.src)
+		if isCapitalized(name) {
+			w.emitEdge(facts.RelInstantiates, name)
+			continue
+		}
+		if i > 0 && node.Child(i-1).Kind() == "." {
+			w.emitEdge(facts.RelCalls, name)
+			continue
+		}
+		if target := w.resolveCall(name); target != "" {
+			w.emitEdge(facts.RelCalls, target)
+		}
+	}
+}
+
+// scanArgumentReferences checks each argument for a function passed by name
+// (`.map_err(f)`), which produces no call_expression since `f` isn't applied.
+func (w *astWalker) scanArgumentReferences(node *sitter.Node) {
+	for i := uint(0); i < node.NamedChildCount(); i++ {
+		w.emitValueReference(node.NamedChild(i))
+	}
+}
+
+// emitValueReference treats a bare identifier/generic-function/scoped-path
+// as a reference when passed as a value rather than called (`&f`, `diff_fn:
+// f`). A nested call like `foo(f())` is unaffected — f() isn't a leaf shape.
+func (w *astWalker) emitValueReference(v *sitter.Node) {
+	if v == nil {
+		return
+	}
+	switch v.Kind() {
+	case "identifier":
+		name := nodeText(v, w.src)
+		if isCapitalized(name) {
+			return
+		}
+		if target := w.resolveValueReference(name); target != "" {
+			w.emitEdge(facts.RelCalls, target)
+		}
+	case "generic_function":
+		w.emitValueReference(v.ChildByFieldName("function"))
+	case "scoped_identifier":
+		if nameNode := v.ChildByFieldName("name"); nameNode != nil {
+			w.emitEdge(facts.RelCalls, nodeText(nameNode, w.src))
+		}
 	}
 }
 
@@ -740,6 +833,63 @@ func (w *astWalker) emitEdge(kind, target string) {
 	owner.Relations = append(owner.Relations, facts.Relation{Kind: kind, Target: target})
 }
 
+// serdeAttrFnKeys: serde options whose value is a string naming a function,
+// e.g. #[serde(default = "some_fn")] — resolved by serde's derive macro.
+var serdeAttrFnKeys = map[string]bool{
+	"default": true, "skip_serializing_if": true,
+	"serialize_with": true, "deserialize_with": true, "with": true,
+}
+
+// scanSerdeAttributeRefs walks a struct/enum body for #[serde(...)]
+// attributes referencing a function by name.
+func (w *astWalker) scanSerdeAttributeRefs(body *sitter.Node) {
+	if body == nil {
+		return
+	}
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n.Kind() == "attribute" {
+			w.scanSerdeAttribute(n)
+			return
+		}
+		for i := uint(0); i < uint(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(body)
+}
+
+// scanSerdeAttribute scans one `serde(...)` attribute's token_tree for
+// `key = "value"` pairs keyed by serdeAttrFnKeys.
+func (w *astWalker) scanSerdeAttribute(attr *sitter.Node) {
+	if attr.NamedChildCount() == 0 || nodeText(attr.NamedChild(0), w.src) != "serde" {
+		return
+	}
+	tree := findChildByKind(attr, "token_tree")
+	if tree == nil {
+		return
+	}
+	n := tree.ChildCount()
+	for i := uint(0); i+2 < n; i++ {
+		if !serdeAttrFnKeys[nodeText(tree.Child(i), w.src)] || tree.Child(i+1).Kind() != "=" {
+			continue
+		}
+		lit := tree.Child(i + 2)
+		if lit.Kind() != "string_literal" {
+			continue
+		}
+		content := findChildByKind(lit, "string_content")
+		if content == nil {
+			continue
+		}
+		name := nodeText(content, w.src)
+		if idx := strings.LastIndex(name, "::"); idx >= 0 {
+			name = name[idx+2:]
+		}
+		w.emitEdge(facts.RelCalls, name)
+	}
+}
+
 // resolveCall maps a bare call name to a canonical symbol fact name, in order
 // of preference: a sibling method of the enclosing impl/trait block, a name
 // brought into scope by a `use` import (internal target, or "" to suppress an
@@ -756,6 +906,21 @@ func (w *astWalker) resolveCall(name string) string {
 		return ""
 	}
 	return w.dir + "." + w.qualifyMod(name)
+}
+
+// resolveValueReference is resolveCall without the final directory guess,
+// since a bare value is more often a variable than a function name.
+func (w *astWalker) resolveValueReference(name string) string {
+	if methods := w.currentMethods(); methods[name] {
+		return w.dir + "." + w.qualify(name)
+	}
+	if fns := w.currentModFns(); fns[name] {
+		return w.dir + "." + w.qualifyMod(name)
+	}
+	if target, ok := w.importMap[name]; ok {
+		return target
+	}
+	return ""
 }
 
 // calleeTrailing extracts a call_expression's callee simple name and reports
