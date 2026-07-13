@@ -83,6 +83,27 @@ func ModuleRoleForPath(dir string) string { return internal.ModuleRoleForPath(di
 // directory and not the filename.
 func IsTestPath(p string) bool { return internal.IsTestPath(p) }
 
+// MatchGlob reports which of the patterns matches a forward-slash relative path, and
+// MatchAnyGlob whether any does. Unlike path.Match / filepath.Match, these understand
+// `**`:
+//
+//	vendor/**                 anchored directory prefix
+//	**/build/**               a directory named "build" at any depth
+//	**/*_test.go              a basename glob at any depth
+//	**/spec/**/*_spec.rb      a basename glob under a directory named "spec"
+//
+// Re-exported so out-of-module consumers share the engine's matcher instead of
+// reaching for path.Match — which silently reads `**` as `*` and cannot cross a `/`,
+// so every documented `**` pattern quietly matches nothing.
+func MatchGlob(relPath string, patterns []string) (string, bool) {
+	return internal.MatchGlob(relPath, patterns)
+}
+
+// MatchAnyGlob reports whether relPath matches any of the patterns. See MatchGlob.
+func MatchAnyGlob(relPath string, patterns []string) bool {
+	return internal.MatchAnyGlob(relPath, patterns)
+}
+
 // CanonicalSymbols collapses #if/#else conditional-compilation duplicates in a
 // symbol-fact slice, keeping non-conditional overloads intact. Re-exported so
 // out-of-module consumers that count symbols (package-metrics) apply the same rule
