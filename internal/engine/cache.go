@@ -434,45 +434,29 @@ import (
 // carries scanned_plugin=true (consumed by the enterprise dead-code detector as an
 // entry point). Both are new/changed facts, so cached Java snapshots must re-extract
 // (GAP-JV-08, new/60).
-// v115: adds the Rust extractor (fn/struct/enum/trait/type/const/static symbols; impl/trait
-// "implements" edges attached via a post-pass; use-based dependency facts classified
-// internal/external/stdlib; calls/instantiates edges; cyclomatic complexity; Axum route
-// facts). Rust is a new FileOwner, so its arrival also reshuffles which files count as
+// v114: adds the Rust extractor — fn/struct/enum/trait/type/const/static symbols;
+// impl/trait "implements" edges attached via a post-pass; use-based dependency facts
+// classified internal/external/stdlib; cyclomatic complexity; Axum route facts; and
+// RelCalls/RelInstantiates edges covering calls inside a macro invocation's token_tree
+// (bail!/format!/matches! arguments, and an ordinary call embedded in any attribute
+// macro, e.g. thiserror's #[error("{}", helper(x))]), a function passed by name as a
+// value (call argument, struct field, &f, nested inside a macro argument like
+// vec![Box::new(f)], or a local fn declared earlier in the same body), serde/clap/merge
+// attribute strings and scoped paths (default, skip_serializing_if, value_parser,
+// strategy), an unprefixed `use foo::bar;` where foo is a body-less `mod foo;` in the
+// same file/mod scope (classified internal instead of external), calls/references made
+// in macro content with no enclosing symbol (a macro_rules! template body, or an
+// item-level macro invocation standing in for a whole function — recorded on a file_ref
+// fact instead of dropped), a scoped associated-function call (Type::new(),
+// some_mod::Type::from(x)), Type::Variant (bare value or match pattern), and a bare
+// capitalized identifier used as a plain value (unit struct argument/let-binding) — the
+// last three all recorded as RelInstantiates for Type, the dominant Rust construction
+// idioms beyond a struct literal. Drop::drop and Future::poll are tagged override
+// (compiler/runtime-invoked, never called by name), mirroring Kotlin/Swift's `override`
+// handling. Rust is a new FileOwner, so its arrival also reshuffles which files count as
 // "shared" for every other cached extractor's key in a mixed-language repo. Cached
 // snapshots of any repo containing Rust files must re-extract.
-// v116: Rust call-reference precision — calls inside a macro invocation's token_tree
-// (bail!/format!/matches! arguments), a function passed by name as a value (call
-// argument, struct field, &f, a local fn declared earlier in the same body), and
-// serde/clap attribute strings/paths (default, skip_serializing_if, value_parser) are
-// now tracked as references. Also fixes a latent bug where a nested item (a local `fn`
-// inside a function body) could reallocate the fact slice and silently drop the
-// enclosing function's own relations recorded afterward.
-// v117: Rust — a function reference nested inside a macro argument (vec![Box::new(f)])
-// is now tracked; the merge crate's #[merge(strategy = mod::path)] attribute (and any
-// other flattened scoped-path attribute value, previously mis-read as just its first
-// segment) resolves correctly; an unprefixed `use foo::bar;` where foo is a body-less
-// `mod foo;` in the same file/mod scope is now classified internal instead of external
-// (it shares its parent's directory, so classifyUsePath had nothing to match it
-// against); an attribute can embed an ordinary call — thiserror's #[error("{}",
-// helper(x))] — scanned the same way as a macro invocation regardless of macro name;
-// and calls/references made in macro content with no enclosing symbol (a macro_rules!
-// template body, or an item-level macro invocation standing in for a whole function
-// like `ffi_fn! { fn foo() { ... } }`) are now recorded on a file_ref fact instead of
-// silently dropped for lack of an owner.
-// v118: Rust tags Drop::drop and Future::poll methods with the override prop — they are
-// invoked exclusively by the compiler (scope exit) or the async runtime (.await), never
-// by their literal method name, so the dead-code detector now excludes them like any
-// other framework-dispatched override (mirrors Kotlin/Swift's `override` handling).
-// v119: Rust records a RelInstantiates edge for the leading type in a scoped associated-
-// function call (Type::new(), some_mod::Type::from(x)) — the most common Rust
-// constructor idiom, previously invisible to the graph since only a struct literal or a
-// bare capitalized tuple-call counted as "instantiated".
-// v120: Rust records Type::Variant (capitalized trailing segment) as instantiating Type,
-// whether it's a plain value (match-arm result) or inside a match pattern.
-// v121: Rust records a bare capitalized identifier used as a plain value (a unit struct
-// passed as an argument, a let-binding) as instantiating it — previously skipped since
-// it looked the same as an ordinary lowercase local/param.
-const cacheVersion = "v121"
+const cacheVersion = "v114"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
