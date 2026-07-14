@@ -862,13 +862,19 @@ func (w *astWalker) handleStructExpression(node *sitter.Node) {
 }
 
 func (w *astWalker) handleCallExpression(node *sitter.Node) {
-	name, form := w.calleeTrailing(node.ChildByFieldName("function"))
+	fn := node.ChildByFieldName("function")
+	name, form := w.calleeTrailing(fn)
 	if name == "" {
 		return
 	}
 	if isCapitalized(name) {
 		w.emitEdge(facts.RelInstantiates, name)
 		return
+	}
+	// Type::new() constructs Type via an associated fn, not a literal —
+	// record it, since nothing else would reference Type from this call.
+	if seg := scopedCalleeTypePrefix(fn, w.src); seg != "" {
+		w.emitEdge(facts.RelInstantiates, seg)
 	}
 	switch form {
 	case calleeBare:
@@ -1208,6 +1214,30 @@ func simpleTypeName(node *sitter.Node, src []byte) string {
 		t = t[i+2:]
 	}
 	return strings.TrimSpace(t)
+}
+
+// scopedCalleeTypePrefix returns the capitalized type name leading a scoped
+// call — "EventRecorder" in EventRecorder::new() — or "" if fn isn't a
+// scoped call, has no path, or the path's last segment isn't a type (a
+// module path, or literal "Self").
+func scopedCalleeTypePrefix(fn *sitter.Node, src []byte) string {
+	if fn == nil {
+		return ""
+	}
+	if fn.Kind() == "generic_function" {
+		fn = fn.ChildByFieldName("function")
+		if fn == nil {
+			return ""
+		}
+	}
+	if fn.Kind() != "scoped_identifier" {
+		return ""
+	}
+	seg := simpleTypeName(fn.ChildByFieldName("path"), src)
+	if seg == "" || seg == "Self" || !isCapitalized(seg) {
+		return ""
+	}
+	return seg
 }
 
 func isCapitalized(s string) bool {

@@ -240,28 +240,53 @@ fn helper() {}
 
 func TestAST_CapitalizedBareCall_Instantiates(t *testing.T) {
 	ff := extractAST(t, `
-pub struct Foo { n: u32 }
-fn make() -> Foo {
-    Foo::new()
-}
-`)
-	// Foo::new() is a scoped_identifier call whose leading path ("Foo") is not
-	// the enclosing type, so it falls to calleeOther; the trailing name "new"
-	// is lowercase, so this exercises the plain bare-constructor form instead.
-	ff2 := extractAST(t, `
 pub struct Bar;
 fn make() {
     let b = Bar();
 }
 `)
-	m, ok := findFact(ff2, "pkg.make")
+	m, ok := findFact(ff, "pkg.make")
 	if !ok {
 		t.Fatal("expected fact for pkg.make")
 	}
 	if !hasRelation(m, facts.RelInstantiates, "Bar") {
 		t.Errorf("expected RelInstantiates -> Bar, got %+v", m.Relations)
 	}
-	_ = ff
+}
+
+func TestAST_ScopedAssociatedFnCall_InstantiatesType(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Foo { n: u32 }
+fn make() -> Foo {
+    Foo::new()
+}
+`)
+	m, ok := findFact(ff, "pkg.make")
+	if !ok {
+		t.Fatal("expected fact for pkg.make")
+	}
+	if !hasRelation(m, facts.RelInstantiates, "Foo") {
+		t.Errorf("expected RelInstantiates -> Foo, got %+v", m.Relations)
+	}
+}
+
+func TestAST_ScopedAssociatedFnCall_SelfNotInstantiated(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Foo { n: u32 }
+impl Foo {
+    fn make() -> Self {
+        Self::new()
+    }
+    fn new() -> Self { Foo { n: 0 } }
+}
+`)
+	m, ok := findFact(ff, "pkg.Foo.make")
+	if !ok {
+		t.Fatal("expected fact for pkg.Foo.make")
+	}
+	if hasRelation(m, facts.RelInstantiates, "Self") {
+		t.Errorf("Self:: should not be recorded as an instantiate target: %+v", m.Relations)
+	}
 }
 
 func TestAST_StructLiteral_Instantiates(t *testing.T) {

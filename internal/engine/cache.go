@@ -463,7 +463,11 @@ import (
 // invoked exclusively by the compiler (scope exit) or the async runtime (.await), never
 // by their literal method name, so the dead-code detector now excludes them like any
 // other framework-dispatched override (mirrors Kotlin/Swift's `override` handling).
-const cacheVersion = "v118"
+// v119: Rust records a RelInstantiates edge for the leading type in a scoped associated-
+// function call (Type::new(), some_mod::Type::from(x)) — the most common Rust
+// constructor idiom, previously invisible to the graph since only a struct literal or a
+// bare capitalized tuple-call counted as "instantiated".
+const cacheVersion = "v119"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
