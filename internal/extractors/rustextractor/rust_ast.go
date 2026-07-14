@@ -759,6 +759,13 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		w.emitValueReference(node.ChildByFieldName("value"))
 	case "reference_expression":
 		w.emitValueReference(node.ChildByFieldName("value"))
+	case "scoped_identifier":
+		w.scanScopedVariantReference(node)
+		return // path segments hold nothing else worth walking
+	case "identifier":
+		if name := nodeText(node, w.src); isCapitalized(name) {
+			w.emitEdge(facts.RelInstantiates, name)
+		}
 	}
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
@@ -1238,6 +1245,23 @@ func scopedCalleeTypePrefix(fn *sitter.Node, src []byte) string {
 		return ""
 	}
 	return seg
+}
+
+// scanScopedVariantReference: Type::Variant (capitalized trailing segment)
+// marks Type used, whether it's a plain value or inside a match pattern.
+func (w *astWalker) scanScopedVariantReference(node *sitter.Node) {
+	nameNode := node.ChildByFieldName("name")
+	if nameNode == nil {
+		return
+	}
+	name := nodeText(nameNode, w.src)
+	if !isCapitalized(name) {
+		return
+	}
+	w.emitEdge(facts.RelInstantiates, name)
+	if seg := simpleTypeName(node.ChildByFieldName("path"), w.src); seg != "" && seg != "Self" && isCapitalized(seg) {
+		w.emitEdge(facts.RelInstantiates, seg)
+	}
 }
 
 func isCapitalized(s string) bool {

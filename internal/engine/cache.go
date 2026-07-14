@@ -467,7 +467,12 @@ import (
 // function call (Type::new(), some_mod::Type::from(x)) — the most common Rust
 // constructor idiom, previously invisible to the graph since only a struct literal or a
 // bare capitalized tuple-call counted as "instantiated".
-const cacheVersion = "v119"
+// v120: Rust records Type::Variant (capitalized trailing segment) as instantiating Type,
+// whether it's a plain value (match-arm result) or inside a match pattern.
+// v121: Rust records a bare capitalized identifier used as a plain value (a unit struct
+// passed as an argument, a let-binding) as instantiating it — previously skipped since
+// it looked the same as an ordinary lowercase local/param.
+const cacheVersion = "v121"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

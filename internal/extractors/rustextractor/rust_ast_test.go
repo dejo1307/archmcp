@@ -994,3 +994,103 @@ impl Cleaner for Sweeper {
 		t.Errorf("a custom trait's drop method (not std::ops::Drop) should not be tagged override, got %v", f.Props["override"])
 	}
 }
+
+func TestAST_BareScopedVariantValue_InstantiatesEnum(t *testing.T) {
+	ff := extractAST(t, `
+pub enum UDFKind { Aggregate, Table }
+fn classify(s: &str) -> UDFKind {
+    match s {
+        "Aggregate" => UDFKind::Aggregate,
+        _ => UDFKind::Table,
+    }
+}
+`)
+	f, ok := findFact(ff, "pkg.classify")
+	if !ok {
+		t.Fatal("expected fact for pkg.classify")
+	}
+	if !hasRelation(f, facts.RelInstantiates, "UDFKind") {
+		t.Errorf("expected RelInstantiates -> UDFKind, got %+v", f.Relations)
+	}
+}
+
+func TestAST_ScopedVariantInMatchPattern_InstantiatesEnum(t *testing.T) {
+	ff := extractAST(t, `
+pub enum HomebrewCmd { Render, Publish }
+pub enum Cmd { Homebrew(HomebrewCmd), Other }
+fn dispatch(cmd: Cmd) {
+    match cmd {
+        Cmd::Homebrew(HomebrewCmd::Render) => render(),
+        Cmd::Other => other(),
+    }
+}
+`)
+	f, ok := findFact(ff, "pkg.dispatch")
+	if !ok {
+		t.Fatal("expected fact for pkg.dispatch")
+	}
+	for _, want := range []string{"Cmd", "HomebrewCmd"} {
+		if !hasRelation(f, facts.RelInstantiates, want) {
+			t.Errorf("expected RelInstantiates -> %s, got %+v", want, f.Relations)
+		}
+	}
+}
+
+func TestAST_ScopedMethodCall_NotTreatedAsVariant(t *testing.T) {
+	ff := extractAST(t, `
+pub struct EventRecorder;
+impl EventRecorder {
+    pub fn new() -> Self { EventRecorder }
+}
+fn make() -> EventRecorder {
+    EventRecorder::new()
+}
+`)
+	f, ok := findFact(ff, "pkg.make")
+	if !ok {
+		t.Fatal("expected fact for pkg.make")
+	}
+	count := 0
+	for _, r := range f.Relations {
+		if r.Kind == facts.RelInstantiates && r.Target == "EventRecorder" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 RelInstantiates -> EventRecorder (not double-counted), got %d: %+v", count, f.Relations)
+	}
+}
+
+func TestAST_BareUnitStructValue_Instantiates(t *testing.T) {
+	ff := extractAST(t, `
+pub struct SqlCommentSanitizer;
+fn register(v: Vec<Box<dyn Sanitizer>>) -> Vec<Box<dyn Sanitizer>> {
+    let mut v = v;
+    v.push(Box::new(SqlCommentSanitizer));
+    v
+}
+`)
+	f, ok := findFact(ff, "pkg.register")
+	if !ok {
+		t.Fatal("expected fact for pkg.register")
+	}
+	if !hasRelation(f, facts.RelInstantiates, "SqlCommentSanitizer") {
+		t.Errorf("expected RelInstantiates -> SqlCommentSanitizer, got %+v", f.Relations)
+	}
+}
+
+func TestAST_BareUnitStructValue_LetBinding_Instantiates(t *testing.T) {
+	ff := extractAST(t, `
+pub struct SqlCommentSanitizer;
+fn make() {
+    let sanitizer = SqlCommentSanitizer;
+}
+`)
+	f, ok := findFact(ff, "pkg.make")
+	if !ok {
+		t.Fatal("expected fact for pkg.make")
+	}
+	if !hasRelation(f, facts.RelInstantiates, "SqlCommentSanitizer") {
+		t.Errorf("expected RelInstantiates -> SqlCommentSanitizer, got %+v", f.Relations)
+	}
+}
