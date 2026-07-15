@@ -1094,3 +1094,127 @@ fn make() {
 		t.Errorf("expected RelInstantiates -> SqlCommentSanitizer, got %+v", f.Relations)
 	}
 }
+
+func TestAST_TestFnAtFileRoot_NoSymbolFact(t *testing.T) {
+	ff := extractAST(t, `
+use super::*;
+
+#[test]
+fn approvals_reviewer_serializes_auto_review() {
+    assert_eq!(1, 1);
+}
+`)
+	if _, ok := findFact(ff, "pkg.approvals_reviewer_serializes_auto_review"); ok {
+		t.Error("a #[test] fn at file scope (e.g. a plain tests.rs) should not become a production symbol fact")
+	}
+}
+
+func TestAST_TestFnAtFileRoot_CreditsProductionCall(t *testing.T) {
+	ff := extractAST(t, `
+fn helper() {}
+
+#[test]
+fn calls_helper() {
+    helper();
+}
+`)
+	if _, ok := findFact(ff, "pkg.calls_helper"); ok {
+		t.Error("a #[test] fn should not become a symbol fact")
+	}
+	refs := findFactsByKind(ff, facts.KindTestRef)
+	if len(refs) != 1 || !hasRelation(refs[0], facts.RelCalls, "pkg.helper") {
+		t.Errorf("expected a KindTestRef -> pkg.helper, got %+v", refs)
+	}
+}
+
+func TestAST_FunctionPointerArrayLiteral_ReferencesEach(t *testing.T) {
+	ff := extractAST(t, `
+type Pass = fn(&mut Value);
+const PASSES: &[Pass] = &[strip_a, drop_b];
+fn strip_a(v: &mut Value) {}
+fn drop_b(v: &mut Value) {}
+`)
+	c, ok := findFact(ff, "pkg.PASSES")
+	if !ok {
+		t.Fatal("expected fact for pkg.PASSES")
+	}
+	for _, want := range []string{"pkg.strip_a", "pkg.drop_b"} {
+		if !hasRelation(c, facts.RelCalls, want) {
+			t.Errorf("expected RelCalls -> %s, got %+v", want, c.Relations)
+		}
+	}
+}
+
+func TestAST_SchemarsSchemaWithAttribute_ReferencesFunction(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Event {
+    #[schemars(schema_with = "event_name_schema")]
+    name: String,
+}
+fn event_name_schema(g: &mut SchemaGenerator) -> Schema { todo!() }
+`)
+	s, ok := findFact(ff, "pkg.Event")
+	if !ok {
+		t.Fatal("expected fact for pkg.Event")
+	}
+	if !hasRelation(s, facts.RelCalls, "event_name_schema") {
+		t.Errorf("expected RelCalls -> event_name_schema, got %+v", s.Relations)
+	}
+}
+
+func TestAST_SchemarsSchemaWithQualifiedPath_ReferencesFunction(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Features {
+    #[schemars(schema_with = "crate::schema::features_schema")]
+    flags: Vec<String>,
+}
+fn features_schema(g: &mut SchemaGenerator) -> Schema { todo!() }
+`)
+	s, ok := findFact(ff, "pkg.Features")
+	if !ok {
+		t.Fatal("expected fact for pkg.Features")
+	}
+	if !hasRelation(s, facts.RelCalls, "features_schema") {
+		t.Errorf("expected RelCalls -> features_schema, got %+v", s.Relations)
+	}
+}
+
+func TestAST_SelfCallAcrossSeparateImplBlocks_NotDropped(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Foo;
+impl Foo {
+    fn helper(&self) {}
+}
+impl Foo {
+    fn caller(&self) {
+        self.helper();
+    }
+}
+`)
+	f, ok := findFact(ff, "pkg.Foo.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.Foo.caller")
+	}
+	if !hasRelation(f, facts.RelCalls, "helper") {
+		t.Errorf("expected RelCalls -> helper, got %+v", f.Relations)
+	}
+}
+
+func TestAST_SelfCallWithinSameImplBlock_StillQualified(t *testing.T) {
+	ff := extractAST(t, `
+pub struct Foo;
+impl Foo {
+    fn helper(&self) {}
+    fn caller(&self) {
+        self.helper();
+    }
+}
+`)
+	f, ok := findFact(ff, "pkg.Foo.caller")
+	if !ok {
+		t.Fatal("expected fact for pkg.Foo.caller")
+	}
+	if !hasRelation(f, facts.RelCalls, "pkg.Foo.helper") {
+		t.Errorf("expected qualified RelCalls -> pkg.Foo.helper, got %+v", f.Relations)
+	}
+}

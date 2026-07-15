@@ -231,21 +231,46 @@ func (w *astWalker) isKnownSubmodule(name string) bool {
 // places a Rust test module can appear; impl/trait bodies never contain one.
 func (w *astWalker) walkItemsTrackingAttrs(parent *sitter.Node) {
 	sawCfgTest := false
+	sawTestAttr := false
 	for i := uint(0); i < uint(parent.ChildCount()); i++ {
 		c := parent.Child(i)
 		if c.Kind() == "attribute_item" {
-			if isCfgTestAttribute(nodeText(c, w.src)) {
+			text := nodeText(c, w.src)
+			if isCfgTestAttribute(text) {
 				sawCfgTest = true
+			}
+			if isTestAttribute(text) {
+				sawTestAttr = true
 			}
 			continue
 		}
-		if c.Kind() == "mod_item" && sawCfgTest {
+		switch {
+		case c.Kind() == "mod_item" && sawCfgTest:
 			w.enterTestMod(c)
-		} else {
+		case c.Kind() == "function_item" && sawTestAttr:
+			saved := w.inTestMod
+			w.inTestMod = true
+			w.walkTestItem(c)
+			w.inTestMod = saved
+		default:
 			w.walkChild(c)
 		}
 		sawCfgTest = false
+		sawTestAttr = false
 	}
+}
+
+// isTestAttribute reports whether an attribute_item marks its function as a
+// test (#[test], #[tokio::test], #[wasm_bindgen_test]) — catching a #[test]
+// fn wherever it lives (a plain tests.rs file, an un-gated mod tests {}),
+// not just inside a #[cfg(test)] module.
+func isTestAttribute(text string) bool {
+	inner := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(text), "#["), "]")
+	if i := strings.IndexAny(inner, "(["); i >= 0 {
+		inner = inner[:i]
+	}
+	inner = strings.TrimSpace(inner)
+	return inner == "test" || strings.HasSuffix(inner, "::test") || inner == "wasm_bindgen_test"
 }
 
 // isCfgTestAttribute reports whether an attribute_item's raw text is a
@@ -753,7 +778,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		w.handleStructExpression(node)
 	case "token_tree":
 		w.scanTokenTreeCalls(node)
-	case "arguments":
+	case "arguments", "array_expression":
 		w.scanArgumentReferences(node)
 	case "field_initializer":
 		w.emitValueReference(node.ChildByFieldName("value"))
@@ -822,8 +847,9 @@ func (w *astWalker) scanTokenTreeCalls(node *sitter.Node) {
 	}
 }
 
-// scanArgumentReferences checks each argument for a function passed by name
-// (`.map_err(f)`), which produces no call_expression since `f` isn't applied.
+// scanArgumentReferences checks each element (a call argument or array
+// literal item) for a function passed by name (`.map_err(f)`, `&[f, g]`
+// dispatch tables), which produces no call_expression since it isn't applied.
 func (w *astWalker) scanArgumentReferences(node *sitter.Node) {
 	for i := uint(0); i < node.NamedChildCount(); i++ {
 		w.emitValueReference(node.NamedChild(i))
@@ -891,7 +917,11 @@ func (w *astWalker) handleCallExpression(node *sitter.Node) {
 	case calleeSelfRef:
 		if methods := w.currentMethods(); methods[name] {
 			w.emitEdge(facts.RelCalls, w.dir+"."+w.qualify(name))
+			break
 		}
+		// Not a sibling of this impl block (another impl block, a trait
+		// default) — still unambiguously a method call, so fall back.
+		w.emitEdge(facts.RelCalls, name)
 	case calleeOther:
 		// Receiver/path type is unknown without full type inference. Emitting
 		// the bare member name still lets short-name dead-code matching mark
@@ -951,11 +981,11 @@ func (w *astWalker) ensureFileRefFact() int {
 var attrFnRefKeys = map[string]bool{
 	"default": true, "skip_serializing_if": true,
 	"serialize_with": true, "deserialize_with": true, "with": true,
-	"value_parser": true, "strategy": true,
+	"value_parser": true, "strategy": true, "schema_with": true,
 }
 
 // attrFnRefMacros: attribute macro names worth scanning for attrFnRefKeys.
-var attrFnRefMacros = map[string]bool{"serde": true, "arg": true, "merge": true}
+var attrFnRefMacros = map[string]bool{"serde": true, "arg": true, "merge": true, "schemars": true}
 
 // scanAttributeFnRefs walks a struct/enum body for #[serde(...)]/#[arg(...)]
 // attributes referencing a function by name.
@@ -1003,6 +1033,9 @@ func (w *astWalker) scanAttribute(attr *sitter.Node) {
 		case "string_literal":
 			if content := findChildByKind(v, "string_content"); content != nil {
 				name = nodeText(content, w.src)
+				if idx := strings.LastIndex(name, "::"); idx >= 0 {
+					name = name[idx+2:]
+				}
 			}
 		case "identifier":
 			// A scoped path (mod::path::fn) is flattened into separate

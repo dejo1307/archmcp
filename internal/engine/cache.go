@@ -456,7 +456,18 @@ import (
 // handling. Rust is a new FileOwner, so its arrival also reshuffles which files count as
 // "shared" for every other cached extractor's key in a mixed-language repo. Cached
 // snapshots of any repo containing Rust files must re-extract.
-const cacheVersion = "v114"
+// v115: Rust recognizes a #[test]/#[tokio::test]/#[wasm_bindgen_test] fn wherever it
+// lives — a plain tests.rs file, an un-gated mod tests {} — not just inside a
+// #[cfg(test)] module; it gets no symbol fact, and its calls into production code are
+// credited via a file_ref/test_ref fact instead of counted as dead production code.
+// Also records a function referenced bare inside an array literal (a `&[f, g]`
+// dispatch table) as used, and resolves the schemars crate's
+// #[schemars(schema_with = "fn")] attribute string (bare or crate::-qualified)
+// like serde's default/skip_serializing_if. Fixes a latent bug where
+// self.method() was silently dropped (no edge at all) whenever method wasn't
+// a sibling of the immediately enclosing impl block — e.g. a type with
+// several impl blocks, or a trait's own default method.
+const cacheVersion = "v115"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
