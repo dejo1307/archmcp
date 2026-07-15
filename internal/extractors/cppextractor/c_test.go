@@ -800,3 +800,56 @@ MACHINE_END
 		t.Errorf("probe should own the in-body probe_cb assignment, got %+v", p.Relations)
 	}
 }
+
+// TestCSyscallDefineBodyCall covers a static helper called only from inside a
+// SYSCALL_DEFINE / COMPAT_SYSCALL_DEFINE macro body. tree-sitter parses
+// `SYSCALL_DEFINE2(name, ...) { body }` as a detached call_expression PLUS a bare
+// top-level compound_statement, so the body's calls have no owning function and
+// were dropped entirely — making a static helper reached only from a syscall
+// handler look like dead code. The detached-body scan credits the body's
+// call-position identifiers to the module owner. -> cache.go v116
+func TestCSyscallDefineBodyCall(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/sys.c": `
+static int copy_helper(void *dst, const void *src) { return 0; }
+static int only_compat_helper(int fd) { return fd; }
+static int sigreturn_helper(void) { return 0; }
+static int dead_helper(void) { return 0; }
+
+/* Typed params: tree-sitter errors and leaves a detached top-level body. */
+SYSCALL_DEFINE2(mysys_settime, struct tv32 __user *, tv,
+		struct tz __user *, tz)
+{
+	int r = copy_helper(tv, tz);
+	if (r)
+		return -1;
+	return 0;
+}
+
+COMPAT_SYSCALL_DEFINE1(mysys_compat, int, fd)
+{
+	return only_compat_helper(fd);
+}
+
+/* Zero args: tree-sitter parses a clean function_definition whose declarator is a
+ * parenthesized_declarator (no function_declarator), so the body is credited via
+ * the handleFunctionDefinition fallback rather than the detached-body case. */
+SYSCALL_DEFINE0(mysys_sigreturn)
+{
+	return sigreturn_helper();
+}
+`,
+	})
+	mod := mustFact(t, ff, "src")
+	// Every helper reached only from a syscall body must be credited.
+	for _, fn := range []string{"src.copy_helper", "src.only_compat_helper", "src.sigreturn_helper"} {
+		if !hasRelation(mod, facts.RelCalls, fn) {
+			t.Errorf("module should reference %s called from a SYSCALL_DEFINE body, got %+v", fn, mod.Relations)
+		}
+	}
+	// Preservation (GAP §6): a static function called nowhere must NOT be credited,
+	// or the fix would hide genuinely dead code.
+	if hasRelation(mod, facts.RelCalls, "src.dead_helper") {
+		t.Errorf("dead_helper is called nowhere and must stay uncredited")
+	}
+}

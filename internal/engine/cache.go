@@ -467,7 +467,18 @@ import (
 // self.method() was silently dropped (no edge at all) whenever method wasn't
 // a sibling of the immediately enclosing impl block — e.g. a type with
 // several impl blocks, or a trait's own default method.
-const cacheVersion = "v115"
+// v116: the C/C++ extractor now credits calls inside a detached top-level
+// compound_statement — the body of a function defined by a name-carrying macro
+// (SYSCALL_DEFINE0-6, COMPAT_SYSCALL_DEFINE*, and kin) that tree-sitter parses as a
+// separate errored call_expression plus a loose `{ … }` block. Previously the body's
+// calls had no owning function_definition and were dropped, so a static helper
+// reached only from a syscall handler was mis-reported as dead code (find_orphans
+// high-confidence false positive). The body's function-position identifiers are now
+// hung off the module owner (same mechanism as a #define body); no symbol is emitted
+// for the macro-defined handler itself (a syscall is dispatched by table, never
+// called by name, so a handler symbol would be a fresh orphan FP). Cached C/C++
+// snapshots must re-extract.
+const cacheVersion = "v116"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

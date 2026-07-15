@@ -33,3 +33,28 @@ static int cfg_label_store(void) { return 0; }
 /* v13: expands (via the project-wide #define pre-pass) to a struct whose
  * .show/.store point at cfg_label_show / cfg_label_store. */
 ATTR(cfg_, label);
+
+/* v116: a static helper reached only from a SYSCALL_DEFINE handler. tree-sitter
+ * parses SYSCALL_DEFINE2(name, ...) { body } as a detached call_expression plus a
+ * bare compound_statement, so the body's calls have no owning function and were
+ * dropped — the helper looked dead. The detached-body scan credits syscall_helper
+ * to the module owner. dead_syscall_helper is called nowhere and stays dead. */
+static int syscall_helper(void *tv) { return tv ? 0 : -1; }
+static int sigreturn_helper(void) { return 0; }
+static int dead_syscall_helper(void) { return 0; }
+
+SYSCALL_DEFINE2(sample_settime, struct tv32 __user *, tv,
+		struct tz __user *, tz)
+{
+	int r = syscall_helper(tv);
+	if (r)
+		return -1;
+	return 0;
+}
+
+/* Zero-arg form parses as a clean function_definition (parenthesized_declarator),
+ * body credited via the handleFunctionDefinition fallback. */
+SYSCALL_DEFINE0(sample_sigreturn)
+{
+	return sigreturn_helper();
+}

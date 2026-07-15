@@ -463,6 +463,16 @@ func (w *astWalker) walkDecl(node *sitter.Node) {
 		// replacement list is opaque preproc_arg text — so the called function looks
 		// dead. Scan that text for call-position identifiers and record them.
 		w.handleMacroBodyCalls(node)
+	case "compound_statement":
+		// A bare `{ ... }` at file/namespace scope is illegal C/C++ — like the bare
+		// call_expression above, it is always the detached body of a function defined
+		// by a name-carrying macro: SYSCALL_DEFINE2(name, ...) { ... },
+		// COMPAT_SYSCALL_DEFINE*, and kin. tree-sitter renders the macro head as a
+		// separate (errored) call_expression and leaves this body loose, so its calls
+		// have no owning function_definition and would be dropped — making a static
+		// helper reached only from a syscall handler look dead. Credit the body's
+		// calls to the module owner.
+		w.handleDetachedBody(node)
 	case "preproc_if", "preproc_ifdef", "preproc_else", "preproc_elif",
 		"preproc_elifdef":
 		// Descend through #if/#ifdef guards: declarations inside them are direct
@@ -614,6 +624,17 @@ func (w *astWalker) handleEnum(node *sitter.Node) {
 func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 	fdecl := findFunctionDeclarator(node.ChildByFieldName("declarator"))
 	if fdecl == nil {
+		// A function_definition with no function_declarator is a name-carrying macro
+		// that tree-sitter parsed cleanly (rather than as an errored expression): a
+		// zero-argument SYSCALL_DEFINE0(rt_sigreturn) { … } renders as a
+		// function_definition whose declarator is a parenthesized_declarator around the
+		// bare syscall name, so there is no function_declarator to name a symbol from.
+		// We still credit the body's calls (a helper reached only from that handler
+		// would otherwise look dead) — the same crediting handleDetachedBody applies to
+		// the errored SYSCALL_DEFINE1-6 form parsed as a loose top-level block.
+		if body := node.ChildByFieldName("body"); body != nil {
+			w.handleDetachedBody(body)
+		}
 		return
 	}
 	nameNode := fdecl.ChildByFieldName("declarator")
@@ -1142,6 +1163,26 @@ func (w *astWalker) handleMacroBodyCalls(node *sitter.Node) {
 		return
 	}
 	body := w.src[val.StartByte():val.EndByte()]
+	w.pushOwner(w.moduleOwner())
+	for _, name := range macroFuncRefIdents(body) {
+		w.emitFuncPtrRef(name)
+	}
+	w.popOwner()
+}
+
+// handleDetachedBody credits the calls inside a bare top-level compound_statement
+// — the detached body of a function defined by a name-carrying macro that
+// tree-sitter cannot attach to a function_definition (SYSCALL_DEFINE2(name, ...)
+// { ... }, COMPAT_SYSCALL_DEFINE*, …). We deliberately do NOT emit a symbol for the
+// macro-defined handler: a syscall handler is dispatched through the syscall table,
+// never called by C name, so a symbol for it would itself be a false dead-code
+// orphan. We only credit the body's calls, so a static helper reached only from the
+// handler is no longer mis-reported as dead. Same mechanism as handleMacroBodyCalls
+// (scan the text for function-position identifiers, hang them off the module owner);
+// resolveFuncPtrRefs keeps only the names that are real functions, so keywords,
+// macros, and locals add no edge. -> cache.go v116
+func (w *astWalker) handleDetachedBody(node *sitter.Node) {
+	body := w.src[node.StartByte():node.EndByte()]
 	w.pushOwner(w.moduleOwner())
 	for _, name := range macroFuncRefIdents(body) {
 		w.emitFuncPtrRef(name)
