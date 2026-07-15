@@ -167,6 +167,15 @@ func classifyComponent(f *facts.Fact, name string, annotations []javaAnnotation,
 		f.Props["component"] = "service"
 	}
 
+	// Runtime classpath-scanned plugin annotations: the class is discovered and
+	// instantiated by the framework scanning for the annotation, never referenced by
+	// its own name in code — an entry point, not dead code. Currently ThingsBoard's
+	// @RuleNode (rule-engine nodes); the `scanned_plugin` prop is generic so other
+	// scanned-plugin annotations can join it.
+	if hasAnnotation(annotations, "RuleNode") {
+		f.Props["scanned_plugin"] = true
+	}
+
 	// Spring Data repository interface (extends JpaRepository/CrudRepository/...).
 	if isSpringDataRepository(supertypes) {
 		f.Props["framework"] = "spring"

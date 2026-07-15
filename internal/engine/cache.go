@@ -423,7 +423,18 @@ import (
 // N+1s and is why the TS detector was narrowed in the first place. Detection is gated on
 // the package.json dependency, so a class coincidentally decorated @Entity in a non-ORM
 // repo models nothing. Cached TypeScript snapshots must re-extract (GAP-XL-04, new/26).
-const cacheVersion = "v112"
+// v113: Java rescues framework-loaded classes that carry no in-code caller and were
+// reported as dead-code orphans. (1) SPI service-file fold — the extractor reads
+// META-INF/services/* (JDK ServiceLoader) and META-INF/dubbo/** (Dubbo SPI) files,
+// resolves each registered impl FQN to its in-repo canonical type, and emits a
+// KindFileRef fact whose RelCalls edges reference those impls (external entries
+// dropped) — so a Dubbo/JDK SPI extension registered only in a service file, with no
+// @Activate annotation, is no longer a false orphan. (2) @RuleNode — a class annotated
+// with a runtime classpath-scanned plugin annotation (ThingsBoard @RuleNode) now
+// carries scanned_plugin=true (consumed by the enterprise dead-code detector as an
+// entry point). Both are new/changed facts, so cached Java snapshots must re-extract
+// (GAP-JV-08, new/60).
+const cacheVersion = "v113"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

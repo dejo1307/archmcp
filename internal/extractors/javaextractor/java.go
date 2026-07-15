@@ -78,8 +78,13 @@ func (e *JavaExtractor) Extract(ctx context.Context, repoPath string, files []st
 	// external. Java→Java imports still resolve via the in-facts FQN index below;
 	// this only fills the cross-language gap.
 	packageIndex := jvmsrc.BuildPackageIndex(repoPath, files)
-	canonicalizeTargets(allFacts, packageIndex)
+	typeIndex := canonicalizeTargets(allFacts, packageIndex)
 	resolveTableConstants(allFacts)
+
+	// Fold Java/Dubbo SPI service-file registrations in as references so an impl
+	// loaded by name (ExtensionLoader/ServiceLoader) — never called in code — is not
+	// reported as dead code.
+	allFacts = append(allFacts, extractSPIRefs(repoPath, files, typeIndex)...)
 
 	for dir := range modules {
 		allFacts = append(allFacts, facts.Fact{
@@ -104,7 +109,10 @@ func (e *JavaExtractor) Extract(ctx context.Context, repoPath string, files []st
 //   - import dependency facts whose target FQN resolves to a declared type — or whose
 //     value names a known source package — are marked source="internal" and pointed at
 //     the owning module dir.
-func canonicalizeTargets(allFacts []facts.Fact, crossLangIndex map[string]string) {
+// canonicalizeTargets returns the FQN -> "<dir>.<Type>" index it builds, so callers
+// (e.g. the SPI service-file fold) can resolve implementation FQNs to canonical
+// fact names without rebuilding it.
+func canonicalizeTargets(allFacts []facts.Fact, crossLangIndex map[string]string) map[string]string {
 	typeIndex := make(map[string]string) // FQN -> "<dir>.<Type>" canonical name
 	typeDir := make(map[string]string)   // FQN -> dir
 	packageDir := make(map[string]string)
@@ -154,6 +162,69 @@ func canonicalizeTargets(allFacts []facts.Fact, crossLangIndex map[string]string
 			}
 		}
 	}
+	return typeIndex
+}
+
+// spiServiceFile reports whether relFile is a Java/Dubbo SPI service-registration
+// file — JDK ServiceLoader (META-INF/services/<iface-FQN>) or Dubbo SPI
+// (META-INF/dubbo[/internal]/<iface-FQN>). Each lists implementation classes loaded
+// by name, so their impls have no in-code caller.
+func spiServiceFile(relFile string) bool {
+	return strings.Contains(relFile, "META-INF/services/") ||
+		strings.Contains(relFile, "META-INF/dubbo/")
+}
+
+// extractSPIRefs reads SPI service files and emits one KindFileRef fact per file,
+// carrying a RelCalls edge to each registered implementation class that resolves to
+// an in-repo type via typeIndex (FQN -> "<dir>.<Type>"). Line format is Dubbo's
+// "key=FQN" or a bare "FQN" (JDK ServiceLoader); '#' comments and blank lines are
+// skipped, and entries that do not resolve to an in-repo type (external classes) are
+// dropped. The fact Name is the service-file path, which never equals a symbol name,
+// so it introduces no self-reference — matching the KindFileRef contract the orphan
+// detector folds in.
+func extractSPIRefs(repoPath string, files []string, typeIndex map[string]string) []facts.Fact {
+	var out []facts.Fact
+	for _, relFile := range files {
+		if !spiServiceFile(relFile) {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			continue
+		}
+		var rels []facts.Relation
+		seen := map[string]bool{}
+		for _, line := range strings.Split(string(src), "\n") {
+			if i := strings.IndexByte(line, '#'); i >= 0 {
+				line = line[:i] // strip whole-line or trailing comment
+			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if i := strings.IndexByte(line, '='); i >= 0 {
+				line = strings.TrimSpace(line[i+1:]) // Dubbo "key=FQN" -> FQN
+			}
+			canon, ok := typeIndex[line]
+			if !ok || seen[canon] {
+				continue // external class, or already recorded
+			}
+			seen[canon] = true
+			rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: canon})
+		}
+		if len(rels) == 0 {
+			continue
+		}
+		out = append(out, facts.Fact{
+			Kind:      facts.KindFileRef,
+			Name:      relFile,
+			File:      relFile,
+			Line:      1,
+			Props:     map[string]any{"language": "java"},
+			Relations: rels,
+		})
+	}
+	return out
 }
 
 func resolveImport(f *facts.Fact, typeDir, packageDir map[string]string) {
