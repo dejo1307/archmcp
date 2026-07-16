@@ -145,6 +145,174 @@ def create():
 	}
 }
 
+// --- Nested closure tests ---
+//
+// A function defined inside another function's body (a closure) must become its
+// own symbol whose own calls are walked, and — since indexNestedDefs folds it into
+// the same-module index — must be resolvable both as a caller and as a callee from
+// anywhere else in the file, the same as a top-level def.
+
+func TestAST_NestedClosureGetsOwnSymbolAndCallsSibling(t *testing.T) {
+	src := `
+def helper():
+    pass
+
+def spawn(pool):
+    def job():
+        return helper()
+    return pool.submit(job)
+`
+	files := map[string]string{"svc.py": src}
+	result := astExtractWithIndex(t, files, "svc.py", false)
+	idx := byName(result)
+
+	job, ok := idx["svc.job"]
+	if !ok {
+		t.Fatalf("missing svc.job (nested closure should get its own symbol); keys: %v", keys(idx))
+	}
+	if job.Props["symbol_kind"] != facts.SymbolFunc {
+		t.Errorf("svc.job symbol_kind = %v, want %q", job.Props["symbol_kind"], facts.SymbolFunc)
+	}
+	calls := relsByKind(job, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "svc.helper" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("svc.job: RelCalls = %v, want svc.helper (call made from inside the closure)", calls)
+	}
+}
+
+func TestAST_CallToNestedClosureResolves(t *testing.T) {
+	// Regression test: a callback passed by name to a call made later in the same
+	// enclosing function (e.g. signal.signal(SIGINT, _sighandler)) must resolve to
+	// the closure's own symbol, not silently drop the reference — otherwise the
+	// closure looks orphaned even though it is live.
+	src := `
+def install():
+    def handler(sig, frame):
+        pass
+    register(handler)
+`
+	files := map[string]string{"svc.py": src}
+	result := astExtractWithIndex(t, files, "svc.py", false)
+	idx := byName(result)
+
+	install, ok := idx["svc.install"]
+	if !ok {
+		t.Fatalf("missing svc.install; keys: %v", keys(idx))
+	}
+	refs := append(relsByKind(install, facts.RelCalls), relsByKind(install, facts.RelInstantiates)...)
+	found := false
+	for _, r := range refs {
+		if r == "svc.handler" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("svc.install: refs = %v, want a reference to svc.handler (passed by name to register())", refs)
+	}
+}
+
+func TestAST_RecursiveNestedClosure(t *testing.T) {
+	src := `
+def flatten(value):
+    def walk(obj):
+        if isinstance(obj, list):
+            for item in obj:
+                walk(item)
+    walk(value)
+`
+	files := map[string]string{"svc.py": src}
+	result := astExtractWithIndex(t, files, "svc.py", false)
+	idx := byName(result)
+
+	walk, ok := idx["svc.walk"]
+	if !ok {
+		t.Fatalf("missing svc.walk; keys: %v", keys(idx))
+	}
+	if walk.Props["recursive_self"] != true {
+		t.Errorf("svc.walk recursive_self = %v, want true (self-recursive nested closure)", walk.Props["recursive_self"])
+	}
+
+	flatten, ok := idx["svc.flatten"]
+	if !ok {
+		t.Fatalf("missing svc.flatten; keys: %v", keys(idx))
+	}
+	calls := relsByKind(flatten, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "svc.walk" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("svc.flatten: RelCalls = %v, want svc.walk", calls)
+	}
+}
+
+func TestAST_ClosureReentrancyDoesNotClobberOuterMetrics(t *testing.T) {
+	// Regression test: handleFunction used to set w.metrics/w.loopDepth/etc.
+	// unconditionally with no save/restore, so dispatching into a nested closure
+	// (now required so its own calls are walked) would corrupt the enclosing
+	// function's in-progress loop/complexity tracking. The outer function's own
+	// loop here must still be attributed to the outer function, not lost or mixed
+	// into the closure's metrics.
+	src := `
+def outer(items):
+    def helper(x):
+        return x
+
+    for item in items:
+        helper(item)
+`
+	files := map[string]string{"svc.py": src}
+	result := astExtractWithIndex(t, files, "svc.py", false)
+	idx := byName(result)
+
+	outer, ok := idx["svc.outer"]
+	if !ok {
+		t.Fatalf("missing svc.outer; keys: %v", keys(idx))
+	}
+	if outer.Props["loop_depth"] != 1 {
+		t.Errorf("svc.outer loop_depth = %v, want 1 (the outer for-loop, unaffected by the nested closure walk)", outer.Props["loop_depth"])
+	}
+
+	helper, ok := idx["svc.helper"]
+	if !ok {
+		t.Fatalf("missing svc.helper; keys: %v", keys(idx))
+	}
+	if _, has := helper.Props["loop_depth"]; has {
+		t.Errorf("svc.helper loop_depth = %v, want unset (closure has no loop of its own)", helper.Props["loop_depth"])
+	}
+}
+
+func TestAST_ClassBodyDoesNotDoubleDispatchMethods(t *testing.T) {
+	// Regression test: handleClass's extra walkForCalls scan over the class body
+	// (for field-default calls) used to stop at nested defs. Once walkForCalls was
+	// changed to dispatch nested defs (for the function-body case above), the same
+	// change applied unconditionally would re-dispatch every method walkBody already
+	// handled, emitting a duplicate symbol fact per method.
+	src := `
+class Service:
+    def run(self):
+        pass
+`
+	result := astExtract(t, "svc.py", src, false)
+
+	count := 0
+	for _, f := range result {
+		if f.Kind == facts.KindSymbol && f.Name == "svc.Service.run" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("svc.Service.run: got %d symbol facts, want exactly 1 (no duplicate dispatch)", count)
+	}
+}
+
 func TestAST_NoEdgeForBuiltins(t *testing.T) {
 	src := `
 def process(items):

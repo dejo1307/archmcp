@@ -94,6 +94,16 @@ type pyWalker struct {
 	repeatDepth int
 	selfName     string
 
+	// dispatchNestedDefs governs how walkForCalls treats a nested class/function
+	// definition it encounters. handleFunction's body walk sets this true, since
+	// nothing else visits a closure defined inside a function — walkForCalls must
+	// dispatch it (to handleFunction/handleClass/handleDecoratedDefinition) or its
+	// calls are silently dropped. handleClass's extra class-body walkForCalls scan
+	// (for field-default calls) sets this false: walkBody already dispatched every
+	// method/nested class in that body via walkStatement, so re-dispatching here
+	// would emit duplicate facts.
+	dispatchNestedDefs bool
+
 	// fileRefs accumulates RelCalls edges made in file-scope (module-level) code
 	// and by decorators — references with no enclosing symbol owner. They are
 	// emitted as a single KindFileRef fact per file, which the dead-code detector
@@ -788,10 +798,15 @@ func (w *pyWalker) handleClass(node *sitter.Node, decorators []string) {
 		w.walkBody(bodyNode)
 		// Walk class-body statements for call / value-reference edges (attrs/pydantic/
 		// SQLAlchemy field defaults, `x = Depends(dep)` class attrs). These run at
-		// class-definition time and are attributed to the class (the current owner);
-		// walkForCalls stops at nested defs, so methods keep their own owners. Metrics
-		// are nil here, so complexity is unaffected.
+		// class-definition time and are attributed to the class (the current owner).
+		// dispatchNestedDefs is forced off: walkBody above already dispatched every
+		// method/nested class in this body via walkStatement, so walkForCalls must not
+		// re-dispatch them here (it would emit duplicate facts) — it just stops at
+		// them, same as before. Metrics are nil here, so complexity is unaffected.
+		savedDispatchNestedDefs := w.dispatchNestedDefs
+		w.dispatchNestedDefs = false
 		w.walkForCalls(bodyNode)
+		w.dispatchNestedDefs = savedDispatchNestedDefs
 	}
 	w.popType()
 	w.popOwner()
@@ -857,6 +872,20 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 	w.out = append(w.out, f)
 	w.pushOwner(len(w.out) - 1)
 	if bodyNode := node.ChildByFieldName("body"); bodyNode != nil {
+		// Save the enclosing function's per-function state so this call is
+		// reentrant: a nested function_definition/decorated_definition found while
+		// walking a body (walkForCalls) dispatches back into handleFunction, and
+		// without save/restore that inner call would clobber the outer walk's
+		// in-progress metrics/loop counters/local scope.
+		savedLocalTypes := w.localTypes
+		savedLocalBound := w.localBound
+		savedMetrics := w.metrics
+		savedLoopDepth := w.loopDepth
+		savedScalingDepth := w.scalingDepth
+		savedRepeatDepth := w.repeatDepth
+		savedSelfName := w.selfName
+		savedDispatchNestedDefs := w.dispatchNestedDefs
+
 		// Register function-local (lazy) imports before resolving calls, so a call
 		// through a name imported inside the body (a common circular-import
 		// workaround) resolves to an edge. Must run before collectParamTypes/
@@ -873,7 +902,9 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		w.metrics = &pyBodyMetrics{}
 		w.loopDepth = 0
 		w.scalingDepth = 0
+		w.repeatDepth = 0
 		w.selfName = qualName
+		w.dispatchNestedDefs = true
 		w.walkForCalls(bodyNode)
 		props["cyclomatic"] = 1 + w.metrics.decisions
 		if w.metrics.loopDepth > 0 {
@@ -903,10 +934,14 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		if w.metrics.ioDirect {
 			props["io_direct"] = true
 		}
-		w.metrics = nil
-		w.selfName = ""
-		w.localTypes = nil
-		w.localBound = nil
+		w.localTypes = savedLocalTypes
+		w.localBound = savedLocalBound
+		w.metrics = savedMetrics
+		w.loopDepth = savedLoopDepth
+		w.scalingDepth = savedScalingDepth
+		w.repeatDepth = savedRepeatDepth
+		w.selfName = savedSelfName
+		w.dispatchNestedDefs = savedDispatchNestedDefs
 	}
 	// Walk parameter-default expressions (e.g. `body = Depends(parse_login_body)`)
 	// for call and value-reference edges. Metrics are already finalized/nil here, so
@@ -1222,9 +1257,27 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 		}
 	}
 
-	// Don't recurse into nested class/function definitions — they get their own owner.
+	// Nested class/function definitions get their own owner. When dispatchNestedDefs
+	// is set (walking a function body), they haven't been visited by anything else,
+	// so dispatch them to the same handlers used at module/class scope — a closure's
+	// calls must still be walked (see handleFunction's save/restore of per-function
+	// state, which makes this reentrant). When unset (walking a class body from
+	// handleClass), walkBody already dispatched them, so just stop recursing.
 	switch kind {
-	case "class_definition", "function_definition", "decorated_definition":
+	case "class_definition":
+		if w.dispatchNestedDefs {
+			w.handleClass(node, nil)
+		}
+		return
+	case "function_definition":
+		if w.dispatchNestedDefs {
+			w.handleFunction(node, nil)
+		}
+		return
+	case "decorated_definition":
+		if w.dispatchNestedDefs {
+			w.handleDecoratedDefinition(node)
+		}
 		return
 	}
 
@@ -2107,6 +2160,57 @@ func indexModuleDef(node *sitter.Node, src []byte, module string, idx *pySymbolI
 		idx.moduleDefs[module] = set
 	}
 	set[pyText(nameNode, src)] = true
+
+	// A function's own body may define nested closures (e.g. a signal handler or a
+	// sort-key helper), which walkForCalls dispatches to handleFunction/handleClass
+	// just like module-scope defs — so a call/value-ref to one, made anywhere else in
+	// the same file, needs the same same-module resolution as a top-level def. Indexed
+	// recursively so a closure defining its own helper still resolves. A nested class's
+	// body is deliberately NOT descended into here: its methods already resolve via the
+	// per-class method-set mechanism (currentMethods/idx.classes), and folding every
+	// method name into this flat, file-wide set would cause name collisions across
+	// unrelated classes (many classes define a `run` or `_check` method).
+	if node.Kind() == "function_definition" {
+		if body := node.ChildByFieldName("body"); body != nil {
+			indexNestedDefs(body, src, module, idx)
+		}
+	}
+}
+
+// indexNestedDefs walks a function body looking for nested function/class
+// definitions and indexes each one found (see indexModuleDef), recursing into a
+// nested function's own body for further nesting. It stops descending into a
+// nested class's body — see indexModuleDef's comment.
+func indexNestedDefs(node *sitter.Node, src []byte, module string, idx *pySymbolIndex) {
+	if node == nil {
+		return
+	}
+	switch node.Kind() {
+	case "function_definition":
+		indexModuleDef(node, src, module, idx)
+		return
+	case "class_definition":
+		indexClass(node, src, module, idx)
+		indexModuleDef(node, src, module, idx)
+		return
+	case "decorated_definition":
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			inner := node.Child(i)
+			if inner.Kind() == "class_definition" {
+				indexClass(inner, src, module, idx)
+				indexModuleDef(inner, src, module, idx)
+				return
+			}
+			if inner.Kind() == "function_definition" {
+				indexModuleDef(inner, src, module, idx)
+				return
+			}
+		}
+		return
+	}
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		indexNestedDefs(node.Child(i), src, module, idx)
+	}
 }
 
 // indexClass records a class from the index pass into idx.
