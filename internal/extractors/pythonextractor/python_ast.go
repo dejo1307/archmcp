@@ -1222,9 +1222,12 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 		}
 	}
 
-	// Don't recurse into nested class/function definitions — they get their own owner.
+	// Nested class/function definitions get no symbol of their own, so walk them
+	// in a shadowed scope that credits their references to the enclosing symbol
+	// (metrics suppressed) instead of dropping them — see walkNestedScope.
 	switch kind {
 	case "class_definition", "function_definition", "decorated_definition":
+		w.walkNestedScope(node)
 		return
 	}
 
@@ -1280,6 +1283,99 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 			w.repeatDepth--
 		}
 	}
+}
+
+// walkNestedScope walks a function/class definition nested inside a function
+// body, crediting its references (calls, decorators, value/string refs) to the
+// enclosing symbol. Nested defs get no symbol of their own, so without this
+// walk their calls are attributed to nobody and every helper reached only from
+// a closure reads as dead — the FastAPI router-factory pattern (`def
+// get_x_router(): @router.post(...) async def handler(): helper()`) being the
+// canonical false positive. Mirrors how lambdas have always been walked, with
+// two scope adjustments:
+//   - metrics are suppressed: a closure's branches and loops are not the
+//     enclosing function's complexity, and its calls must not seed the
+//     enclosing function's N+1 candidates (every metrics write and
+//     recordCallMetrics is nil-guarded);
+//   - the nested scope's bindings (its name, params, and body locals) extend
+//     the enclosing bound-name set, so bare calls through them cannot
+//     fabricate edges to same-named module-level defs.
+//
+// Decorators on the nested def are walked with the ENCLOSING scope's bindings
+// (Python evaluates them there), before the nested name shadows anything.
+func (w *pyWalker) walkNestedScope(node *sitter.Node) {
+	// Unwrap decorated_definition and walk its decorators in the current scope:
+	// a decorator applied inside a function body is a real reference (a bare
+	// @retry_on_exception as much as a @log_usage(...) call).
+	def := node
+	if node.Kind() == "decorated_definition" {
+		if d := node.ChildByFieldName("definition"); d != nil {
+			def = d
+		}
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			c := node.Child(i)
+			if c.Kind() != "decorator" {
+				continue
+			}
+			if call := firstChildOfKind(c, "call"); call != nil {
+				w.walkForCalls(call)
+			} else if ident := firstChildOfKind(c, "identifier"); ident != nil {
+				w.emitValueRef(ident)
+			}
+		}
+		if def == node {
+			return // malformed decorated_definition with no definition field
+		}
+	}
+
+	savedMetrics := w.metrics
+	savedBound := w.localBound
+	savedTypes := w.localTypes
+	savedLoop, savedScaling, savedRepeat := w.loopDepth, w.scalingDepth, w.repeatDepth
+	w.metrics = nil
+	w.loopDepth, w.scalingDepth, w.repeatDepth = 0, 0, 0
+
+	bound := make(map[string]bool, len(savedBound)+8)
+	for k := range savedBound {
+		bound[k] = true
+	}
+	pyBindTargets(def.ChildByFieldName("name"), w.src, bound)
+	body := def.ChildByFieldName("body")
+	if def.Kind() == "function_definition" {
+		params := def.ChildByFieldName("parameters")
+		pyParamBoundNames(params, w.src, bound)
+		if body != nil {
+			walkLocalBoundNames(body, w.src, bound)
+			// Function-local (lazy) imports resolve for this subtree, matching
+			// registerBodyImports' treatment of top-level function bodies.
+			w.registerBodyImports(body)
+		}
+		types := make(map[string]string, len(savedTypes)+4)
+		for k, v := range savedTypes {
+			types[k] = v
+		}
+		for k, v := range collectParamTypes(params, w.src, w.importMap, w.module) {
+			types[k] = v
+		}
+		if body != nil {
+			for k, v := range collectLocalTypes(body, w.src, w.importMap, w.module) {
+				types[k] = v
+			}
+		}
+		w.localTypes = types
+	}
+	w.localBound = bound
+
+	// Walk the definition subtree: parameter defaults and the body. Deeper
+	// nested defs re-enter walkNestedScope with a further-extended scope.
+	for i := uint(0); i < uint(def.ChildCount()); i++ {
+		w.walkForCalls(def.Child(i))
+	}
+
+	w.metrics = savedMetrics
+	w.localBound = savedBound
+	w.localTypes = savedTypes
+	w.loopDepth, w.scalingDepth, w.repeatDepth = savedLoop, savedScaling, savedRepeat
 }
 
 // walkComprehension handles list/set/dict comprehensions and generator
@@ -1669,7 +1765,20 @@ func walkLocalBoundNames(node *sitter.Node, src []byte, bound map[string]bool) {
 		return
 	}
 	switch node.Kind() {
-	case "function_definition", "class_definition", "decorated_definition", "lambda":
+	case "function_definition", "class_definition":
+		// The nested def's NAME is bound in this scope (its params/locals are
+		// not — they belong to the nested scope, which walkNestedScope rebinds).
+		// Without this, a closure named like a module-level def makes bare calls
+		// resolve to the module symbol — a fabricated edge that can rescue
+		// genuinely dead code.
+		pyBindTargets(node.ChildByFieldName("name"), src, bound)
+		return
+	case "decorated_definition":
+		if d := node.ChildByFieldName("definition"); d != nil {
+			pyBindTargets(d.ChildByFieldName("name"), src, bound)
+		}
+		return
+	case "lambda":
 		return
 	case "assignment", "augmented_assignment":
 		pyBindTargets(node.ChildByFieldName("left"), src, bound)

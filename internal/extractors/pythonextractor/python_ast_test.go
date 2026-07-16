@@ -1538,3 +1538,217 @@ def later_handler():
 		t.Errorf("build: RelCalls = %v, want [svc.later_handler]", calls)
 	}
 }
+
+// --- Pass 5: nested function/class scopes (v117) ---
+//
+// Nested defs get no symbol of their own, so their bodies' references are
+// credited to the enclosing symbol (as lambdas always were). Metrics stay
+// suppressed — a closure's branches and loops are not the enclosing function's
+// complexity — and nested bindings (name, params, locals) shadow same-named
+// module defs so bare calls through them cannot fabricate edges.
+
+func TestAST_NestedDefBodyCall_AttributedToEnclosing(t *testing.T) {
+	src := `
+def format_results(rows):
+    return rows
+
+async def search(query):
+    async def search_task(q):
+        return format_results(q)
+    return await search_task(query)
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	searchFact, ok := idx["svc.search"]
+	if !ok {
+		t.Fatalf("missing svc.search; keys: %v", keys(idx))
+	}
+	calls := relsByKind(searchFact, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "svc.format_results" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("search: RelCalls = %v, want svc.format_results (called only inside nested def)", calls)
+	}
+}
+
+func TestAST_NestedDefLazyImportResolves(t *testing.T) {
+	src := `
+def outer():
+    def task():
+        from pkg.util import helper
+        return helper()
+    return task
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	outerFact, ok := idx["svc.outer"]
+	if !ok {
+		t.Fatalf("missing svc.outer; keys: %v", keys(idx))
+	}
+	calls := relsByKind(outerFact, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "pkg.util.helper" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("outer: RelCalls = %v, want pkg.util.helper (lazy import inside nested def)", calls)
+	}
+}
+
+func TestAST_NestedDefDecoratorReference(t *testing.T) {
+	src := `
+def retry_on_exception(fn):
+    return fn
+
+def outer():
+    @retry_on_exception
+    def attempt():
+        pass
+    return attempt()
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	outerFact, ok := idx["svc.outer"]
+	if !ok {
+		t.Fatalf("missing svc.outer; keys: %v", keys(idx))
+	}
+	rels := append(relsByKind(outerFact, facts.RelCalls), relsByKind(outerFact, "instantiates")...)
+	found := false
+	for _, c := range rels {
+		if c == "svc.retry_on_exception" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("outer: relations = %v, want svc.retry_on_exception (decorator on nested def)", rels)
+	}
+}
+
+func TestAST_NestedDefParamShadow_NoFalseEdge(t *testing.T) {
+	src := `
+def helper():
+    pass
+
+def outer():
+    def task(helper):
+        return helper()
+    return task
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	outerFact, ok := idx["svc.outer"]
+	if !ok {
+		t.Fatalf("missing svc.outer; keys: %v", keys(idx))
+	}
+	for _, c := range relsByKind(outerFact, facts.RelCalls) {
+		if c == "svc.helper" {
+			t.Errorf("outer: fabricated RelCalls to svc.helper — nested param shadows the module def")
+		}
+	}
+}
+
+func TestAST_NestedDefNameShadow_NoFalseEdge(t *testing.T) {
+	src := `
+def helper():
+    pass
+
+def outer():
+    def helper():
+        return 1
+    return helper()
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	outerFact, ok := idx["svc.outer"]
+	if !ok {
+		t.Fatalf("missing svc.outer; keys: %v", keys(idx))
+	}
+	for _, c := range relsByKind(outerFact, facts.RelCalls) {
+		if c == "svc.helper" {
+			t.Errorf("outer: fabricated RelCalls to module-level svc.helper — the nested def shadows it")
+		}
+	}
+}
+
+func TestAST_NestedDefMetricsSuppressed(t *testing.T) {
+	src := `
+def sink(x):
+    return x
+
+def outer():
+    def worker(items):
+        if items:
+            for i in items:
+                sink(i)
+        return items
+    return worker
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	outerFact, ok := idx["svc.outer"]
+	if !ok {
+		t.Fatalf("missing svc.outer; keys: %v", keys(idx))
+	}
+	if cyc, _ := outerFact.Props["cyclomatic"].(int); cyc != 1 {
+		t.Errorf("outer: cyclomatic = %v, want 1 (nested def's branches are not the enclosing function's complexity)", outerFact.Props["cyclomatic"])
+	}
+	if _, has := outerFact.Props["loop_count"]; has {
+		t.Errorf("outer: loop_count = %v, want absent (loop lives in the nested def)", outerFact.Props["loop_count"])
+	}
+	if _, has := outerFact.Props["calls_in_loop"]; has {
+		t.Errorf("outer: calls_in_loop = %v, want absent (nested-def loops must not seed N+1 candidates)", outerFact.Props["calls_in_loop"])
+	}
+	// The reference itself must still be credited.
+	calls := relsByKind(outerFact, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "svc.sink" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("outer: RelCalls = %v, want svc.sink", calls)
+	}
+}
+
+func TestAST_NestedClassMethodBodyCall_AttributedToEnclosing(t *testing.T) {
+	src := `
+def helper():
+    pass
+
+def outer():
+    class Worker:
+        def run(self):
+            return helper()
+    return Worker
+`
+	result := astExtractIdx(t, "svc.py", src)
+	idx := byName(result)
+
+	outerFact, ok := idx["svc.outer"]
+	if !ok {
+		t.Fatalf("missing svc.outer; keys: %v", keys(idx))
+	}
+	calls := relsByKind(outerFact, facts.RelCalls)
+	found := false
+	for _, c := range calls {
+		if c == "svc.helper" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("outer: RelCalls = %v, want svc.helper (called from a method of a function-nested class)", calls)
+	}
+}

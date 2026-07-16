@@ -478,7 +478,20 @@ import (
 // for the macro-defined handler itself (a syscall is dispatched by table, never
 // called by name, so a handler symbol would be a fresh orphan FP). Cached C/C++
 // snapshots must re-extract.
-const cacheVersion = "v116"
+// v117: the Python extractor now walks function/class definitions nested inside
+// function bodies, crediting their references (calls, decorators on nested defs,
+// lazy imports, value/string refs) to the enclosing symbol — as lambdas always
+// were. Previously walkForCalls hard-stopped at nested defs, which own no symbol,
+// so every helper reached only from a closure was mis-reported dead (find_orphans
+// high-confidence FP; the FastAPI router-factory pattern `def get_x_router():
+// @router.post async def handler(): helper()` was the dominant bucket — ~80 of 326
+// high-confidence orphans across the Python corpus). Metrics stay suppressed in
+// nested scopes (a closure's loops are not the enclosing function's complexity and
+// must not seed its N+1 candidates), and nested-scope bindings — including the
+// nested def's own name, now also bound in the enclosing scope — shadow same-named
+// module defs so bare calls cannot fabricate edges. Cached Python snapshots must
+// re-extract.
+const cacheVersion = "v117"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
