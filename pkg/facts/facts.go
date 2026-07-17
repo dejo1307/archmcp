@@ -21,6 +21,25 @@ type (
 	Artifact = internal.Artifact
 )
 
+// Graph / impact-analysis types (aliases — identical to the internal types).
+// Re-exported so out-of-module consumers (the enterprise architecture validator)
+// can run reverse-dependency impact analysis over a snapshot's facts.
+type (
+	Graph         = internal.Graph
+	ImpactResult  = internal.ImpactResult
+	TraversalNode = internal.TraversalNode
+)
+
+// NewStore builds an empty fact store; callers Add() facts (e.g. those read from a
+// persisted baseline snapshot) to rebuild an in-memory store off the graph path.
+// NewGraph builds a dependency graph directly from a slice of facts. Both are
+// re-exported so out-of-module code can reconstruct a store/graph from a loaded
+// baseline snapshot without importing the internal package.
+var (
+	NewStore = internal.NewStore
+	NewGraph = internal.NewGraph
+)
+
 // Fact kind constants.
 const (
 	KindModule     = internal.KindModule
