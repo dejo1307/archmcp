@@ -767,6 +767,158 @@ def get_health():
 	}
 }
 
+func TestAST_TryExceptImportRegisters(t *testing.T) {
+	// Module-level imports guarded by try/except ImportError (the
+	// package-or-script dual-import idiom) must register like unguarded ones —
+	// previously walkStatement had no try_statement case, so every call through
+	// the guarded names was unresolvable and the callee read as dead (cognee-mcp's
+	// whole server_utils surface). The except-branch fallback must NOT clobber the
+	// try-branch binding: the relative form resolves to a real slash path at walk
+	// time, while the bare fallback resolves to nothing and its edge would be
+	// dropped by resolveCallTargets.
+	src := `
+try:
+    from .server_utils import format_search_results
+except ImportError:
+    from server_utils import format_search_results
+
+async def search(q):
+    return format_search_results(q)
+`
+	relFile := "pkg/server.py"
+	result := astExtract(t, relFile, src, false)
+	idx := byName(result)
+	if _, ok := idx[mod(relFile)+" -> .server_utils"]; !ok {
+		t.Errorf("missing dependency fact for the try-branch relative import; keys: %v", keys(idx))
+	}
+	fn, ok := idx[mod(relFile)+".search"]
+	if !ok {
+		t.Fatalf("missing %s.search; keys: %v", mod(relFile), keys(idx))
+	}
+	calls := relsByKind(fn, facts.RelCalls)
+	want := "pkg/server_utils.format_search_results"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("search: RelCalls = %v, want %q (try-branch relative binding must win over the bare except fallback)", calls, want)
+	}
+}
+
+func TestAST_MainGuardImportRegisters(t *testing.T) {
+	// A module-level `if __name__ == "__main__":` block is module scope at
+	// runtime: its imports must register so the calls in the block (already
+	// collected by walkTopLevelCalls) resolve to edges.
+	src := `
+if __name__ == "__main__":
+    from airflow.jobs.runner import run_job
+
+    run_job()
+`
+	result := astExtract(t, "main.py", src, false)
+	fr, ok := firstOfKind(result, facts.KindFileRef)
+	if !ok {
+		t.Fatal("expected a KindFileRef fact for the main-guard run_job() call, got none")
+	}
+	calls := relsByKind(fr, facts.RelCalls)
+	want := "airflow.jobs.runner.run_job"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("file_ref: RelCalls = %v, want %q (main-guard import must register)", calls, want)
+	}
+}
+
+func TestAST_GuardedDefsNotEmittedAsSymbols(t *testing.T) {
+	// A def/class guarded by a conditional (try/except ImportError, platform
+	// if/else, if TYPE_CHECKING) is almost always an intentional shim whose name
+	// is bound by a sibling branch — emitting a symbol for it only manufactures a
+	// dead-code false positive (airflow's setproctitle macOS fallback and
+	// lru_cache TYPE_CHECKING stubs were the corpus cases). We deliberately do
+	// NOT emit symbols for them; only the guarded imports register.
+	src := `
+try:
+    from functools import lru_cache
+except ImportError:
+    def lru_cache(maxsize=128):
+        def wrap(f):
+            return f
+        return wrap
+
+if TYPE_CHECKING:
+    class _StubOnly:
+        pass
+`
+	result := astExtractIdx(t, "shim.py", src)
+	idx := byName(result)
+	if _, ok := idx["shim.lru_cache"]; ok {
+		t.Errorf("shim.lru_cache should NOT be emitted (except-branch fallback shim); keys: %v", keys(idx))
+	}
+	if _, ok := idx["shim._StubOnly"]; ok {
+		t.Errorf("shim._StubOnly should NOT be emitted (TYPE_CHECKING typing stub); keys: %v", keys(idx))
+	}
+	// but the guarded import must still register as a dependency
+	if _, ok := idx["shim -> functools"]; !ok {
+		t.Errorf("missing dependency fact for the guarded functools import; keys: %v", keys(idx))
+	}
+}
+
+func TestAST_ModuleAssignmentRHSValueRef(t *testing.T) {
+	// A module-level assignment whose RHS is a bare module-def name is a use of
+	// that def (the click monkeypatch idiom: `click.echo = echo_to_stderr`).
+	// Without folding the RHS value-ref, surfacing the guarded def (v119) would
+	// flag a live, installed function as dead — a new false positive.
+	src := `
+def echo_to_stderr(*a, **k):
+    pass
+
+import click
+click.echo = echo_to_stderr
+`
+	result := astExtractIdx(t, "installer.py", src)
+	fr, ok := firstOfKind(result, facts.KindFileRef)
+	if !ok {
+		t.Fatal("expected a KindFileRef fact for the module-level assignment RHS, got none")
+	}
+	calls := relsByKind(fr, facts.RelCalls)
+	want := "installer.echo_to_stderr"
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("file_ref: RelCalls = %v, want a value-ref to %q (assignment RHS must fold)", calls, want)
+	}
+}
+
+func TestAST_TypeCheckingImportEmitsDependency(t *testing.T) {
+	// `if TYPE_CHECKING:` imports are real (type-level) coupling and must emit a
+	// dependency fact like any other module-level import.
+	src := `
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from airflow.models.dag import DAG
+
+def make(d: "DAG"):
+    pass
+`
+	result := astExtract(t, "factory.py", src, false)
+	idx := byName(result)
+	if _, ok := idx["factory -> airflow.models.dag"]; !ok {
+		t.Errorf("missing dependency fact for the TYPE_CHECKING-guarded import; keys: %v", keys(idx))
+	}
+}
+
 func TestAST_TopLevelCallEmitsFileRef(t *testing.T) {
 	src := `
 from airflow.api_fastapi.app import cached_app
@@ -1108,6 +1260,73 @@ def _restore_idx(table, conn, **kw):
 		if !targets[want] {
 			t.Errorf("missing registration self-edge to %q; got %v", want, targets)
 		}
+	}
+}
+
+func TestAST_MCPDecoratorsMarkUsed(t *testing.T) {
+	// MCP server handlers (FastMCP @mcp.tool/@mcp.resource/@mcp.prompt/
+	// @mcp.custom_route, and bare re-exported wrappers like @tool/@prompt) are
+	// registered with the server at import time and dispatched by the framework —
+	// they have no in-code caller by construction. Covers single-line, multi-line,
+	// and bare decorator forms. The @log_usage-only function is the negative case:
+	// a wrapper decorator alone registers nothing, so the function must NOT get a
+	// self-edge (it is genuinely dead until an @mcp.tool is added).
+	src := `
+@mcp.tool()
+async def list_datasets_json():
+    pass
+
+@mcp.tool(
+    name="cognify_file",
+    description="Turn a file into a knowledge graph",
+)
+@log_usage(function_name="MCP cognify_file", log_type="mcp_tool")
+async def cognify_file(path: str):
+    pass
+
+@mcp.resource("instance://metadata")
+def get_instance_metadata_resource() -> str:
+    pass
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    pass
+
+@prompt("quickstart")
+async def quickstart_prompt(user_type: str = "analyst") -> str:
+    pass
+
+@tool(name="list_users", tags=["extension"])
+def list_users():
+    pass
+
+@log_usage(function_name="MCP save_interaction", log_type="mcp_tool")
+async def save_interaction(data: str) -> list:
+    pass
+`
+	result := astExtractIdx(t, "mcp_server.py", src)
+	fr, ok := firstOfKind(result, facts.KindFileRef)
+	if !ok {
+		t.Fatal("expected a KindFileRef fact for MCP-decorated functions")
+	}
+	targets := map[string]bool{}
+	for _, r := range relsByKind(fr, facts.RelCalls) {
+		targets[r] = true
+	}
+	for _, want := range []string{
+		"mcp_server.list_datasets_json",
+		"mcp_server.cognify_file",
+		"mcp_server.get_instance_metadata_resource",
+		"mcp_server.health_check",
+		"mcp_server.quickstart_prompt",
+		"mcp_server.list_users",
+	} {
+		if !targets[want] {
+			t.Errorf("missing MCP registration self-edge to %q; got %v", want, targets)
+		}
+	}
+	if targets["mcp_server.save_interaction"] {
+		t.Errorf("@log_usage-only function save_interaction must NOT get a registration self-edge (it is unregistered dead code); got %v", targets)
 	}
 }
 

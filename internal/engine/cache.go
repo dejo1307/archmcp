@@ -491,7 +491,36 @@ import (
 // nested def's own name, now also bound in the enclosing scope — shadow same-named
 // module defs so bare calls cannot fabricate edges. Cached Python snapshots must
 // re-extract.
-const cacheVersion = "v117"
+// v118: the Python extractor's registration-decorator set now covers MCP servers —
+// FastMCP @mcp.tool / @mcp.resource / @mcp.prompt / @mcp.custom_route, and bare
+// re-exported wrappers (@tool, @prompt) that app cores build around FastMCP. These
+// decorators register the function as a protocol handler the server dispatches per
+// client request, so it has no in-code caller by construction; previously every
+// MCP tool/resource/prompt/health-route handler was mis-reported as dead code
+// (find_orphans high-confidence FP — the largest Python bucket, 18 of 234
+// high-confidence orphans across the Python corpus). Matching functions get the
+// existing registration self file-ref edge; functions carrying only wrapper
+// decorators (e.g. @log_usage) are untouched, so genuinely unregistered handlers
+// still flag. Cached Python snapshots must re-extract.
+// v119: the Python extractor now registers imports inside module-level try/if
+// compound statements — previously walkStatement had no case for them, so the
+// try/except ImportError dual-import idiom, `if __name__ == "__main__":` imports,
+// and `if TYPE_CHECKING:` imports registered no binding and emitted no dependency
+// fact. Calls through the guarded names were then unresolvable (or fabricated a
+// same-module target), so the callees read as dead (find_orphans high-confidence
+// FPs — cognee-mcp's entire server_utils surface, ~13 of 103 across the Python
+// corpus). Imports inside an except_clause register as fallbacks that never
+// clobber the try-branch binding (the relative form resolves to a real path; the
+// bare fallback would be dropped as external, deleting the edge). Separately, a
+// module-level assignment whose RHS is a bare def name (the
+// `click.echo = echo_to_stderr` monkeypatch / dispatch-table / alias-export
+// idiom) now folds a value-ref to that def, so a function installed by assignment
+// is not mis-flagged dead. Def/class definitions *guarded by a conditional* are
+// deliberately NOT emitted as symbols: they are almost always intentional shims
+// (a macOS-only fallback, a TYPE_CHECKING typing stub, an ImportError
+// alternative) whose name is bound by a sibling branch, so a symbol for one is a
+// dead-code false positive. Cached Python snapshots must re-extract.
+const cacheVersion = "v119"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

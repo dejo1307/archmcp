@@ -310,6 +310,11 @@ var (
 		"teardown_request": true, "teardown_appcontext": true,
 		"context_processor": true,
 		"template_filter":   true, "template_global": true, "template_test": true,
+		// MCP servers: FastMCP @mcp.tool / @mcp.resource / @mcp.prompt /
+		// @mcp.custom_route register the function as a protocol handler the server
+		// dispatches per client request — plus bare re-exported wrappers (@tool,
+		// @prompt) that app cores build around FastMCP.
+		"tool": true, "resource": true, "prompt": true, "custom_route": true,
 	}
 
 	// dottedPathRe matches a string literal that is an identifier-dotted symbol path

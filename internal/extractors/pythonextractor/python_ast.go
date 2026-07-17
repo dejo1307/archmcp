@@ -64,6 +64,13 @@ type pyWalker struct {
 	// importMap maps a local name to its canonical fact target (empty = external).
 	importMap map[string]string
 
+	// importFallback is set while walking an except_clause: its imports are the
+	// fallback arm of the try/except ImportError dual-import idiom and must not
+	// clobber the try-branch binding (the relative/canonical form resolves to a
+	// real path at walk time; the bare fallback would be dropped as external by
+	// resolveCallTargets, deleting the edge).
+	importFallback bool
+
 	// methodSets[i] is the set of methods declared directly in typeStack[i],
 	// used to resolve bare same-class calls.
 	methodSets []map[string]bool
@@ -234,6 +241,17 @@ func (w *pyWalker) walkTopLevelCalls(node *sitter.Node) {
 		if args := node.ChildByFieldName("arguments"); args != nil {
 			w.fileRefs = append(w.fileRefs, w.argRefRelations(args)...)
 		}
+	case "assignment":
+		// A module-level assignment whose RHS is a bare def name installs that
+		// symbol as a value (the click monkeypatch idiom `click.echo = handler`,
+		// dispatch-table entries, alias exports). Fold the RHS value-ref so the
+		// referenced def is not mis-flagged dead. resolveCall (via emitFileRefCall)
+		// gates on moduleDefs, so only real defs fold — a plain identifier that
+		// names a variable resolves to nothing. Nested calls in the RHS are still
+		// caught by the generic recursion below.
+		if rhs := node.ChildByFieldName("right"); rhs != nil && rhs.Kind() == "identifier" {
+			w.emitFileRefCall(rhs)
+		}
 	case "string":
 		if rel, ok := w.stringRefRelation(node); ok {
 			w.fileRefs = append(w.fileRefs, rel)
@@ -329,6 +347,20 @@ func (w *pyWalker) walkStatement(node *sitter.Node) {
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
 			w.walkStatement(node.Child(i))
 		}
+	case "try_statement", "if_statement":
+		// Module-level compound statements are module scope at runtime: the
+		// try/except ImportError dual-import idiom, `if __name__ == "__main__":`
+		// imports, and `if TYPE_CHECKING:` type-level imports all live here.
+		// registerBodyImports descends the whole subtree registering those
+		// imports (handling the except-branch fallback) and stops at nested
+		// def/class nodes — deliberately: a def/class guarded by a conditional is
+		// almost always an intentional shim (a macOS-only fallback, a
+		// TYPE_CHECKING typing stub, an ImportError alternative) whose name is
+		// bound by a sibling branch, so emitting a symbol for it only manufactures
+		// a dead-code false positive. Module-level *calls* and assignment value
+		// refs in these blocks are still collected by walkTopLevelCalls, which
+		// descends through compound statements.
+		w.registerBodyImports(node)
 	}
 }
 
@@ -464,6 +496,11 @@ func (w *pyWalker) setImport(local, target string) {
 	}
 	if w.importMap == nil {
 		w.importMap = make(map[string]string)
+	}
+	if w.importFallback {
+		if _, exists := w.importMap[local]; exists {
+			return
+		}
 	}
 	w.importMap[local] = target
 }
@@ -933,6 +970,16 @@ func (w *pyWalker) registerBodyImports(node *sitter.Node) {
 		return
 	case "import_from_statement":
 		w.handleFromImport(node)
+		return
+	case "except_clause":
+		// Same fallback rule as module scope: the except arm of a lazy
+		// try/except ImportError dual-import must not clobber the try binding.
+		prev := w.importFallback
+		w.importFallback = true
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			w.registerBodyImports(node.Child(i))
+		}
+		w.importFallback = prev
 		return
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
@@ -2200,6 +2247,10 @@ func buildFileIndex(src []byte, relFile string, idx *pySymbolIndex) {
 				}
 			}
 		}
+		// Conditional (try/if) blocks are deliberately NOT descended: a def/class
+		// guarded by a conditional is a shim we do not emit a symbol for (see
+		// walkStatement), so indexing its name would resolve a same-module call to
+		// a symbol that never exists — a fabricated edge.
 	}
 }
 
