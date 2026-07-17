@@ -281,7 +281,7 @@ func orDash(s string) string {
 
 // writeAlteredFindings reports findings that survived under the same identity but whose
 // content moved. Capped, because on a real code change many findings carry a drifting
-// count in their title (175 of 359 on nan/nebenan-android-app) and an uncapped list
+// count in their title (175 of 359 on a large Android app) and an uncapped list
 // would bury the regressions above it. The count is always stated: it is the number
 // the headline used to claim was zero.
 func (d *SnapshotDiff) writeAlteredFindings(sb *strings.Builder) {

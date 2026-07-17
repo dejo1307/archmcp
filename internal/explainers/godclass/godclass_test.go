@@ -403,15 +403,15 @@ func TestExplain_TestSupportSymbolExcluded(t *testing.T) {
 }
 
 // TestExplain_ProductionABTestNotExcluded is the fixed/28 guard. A production
-// feature named like a test ("KindnessReminderABTest.swift") must stay in the
+// feature named like a test ("FeatureRolloutABTest.swift") must stay in the
 // report — the test gate keys off the directory, never the filename.
 func TestExplain_ProductionABTestNotExcluded(t *testing.T) {
-	s := makeStore("Sources/Foundation.KindnessReminderABTest", manyCallers(12), nil)
+	s := makeStore("Sources/Foundation.FeatureRolloutABTest", manyCallers(12), nil)
 	// Re-file the hub onto its real production path.
 	s2 := facts.NewStore()
 	for _, f := range s.All() {
-		if f.Name == "Sources/Foundation.KindnessReminderABTest" {
-			f.File = "Sources/NebenanFoundation/Components/KindnessReminderABTest/KindnessReminderABTest.swift"
+		if f.Name == "Sources/Foundation.FeatureRolloutABTest" {
+			f.File = "Sources/ExampleFoundation/Components/FeatureRolloutABTest/FeatureRolloutABTest.swift"
 		}
 		s2.Add(f)
 	}
@@ -423,7 +423,7 @@ func TestExplain_ProductionABTestNotExcluded(t *testing.T) {
 	}
 	var saw bool
 	for _, in := range insights {
-		if strings.Contains(in.Title, "KindnessReminderABTest") {
+		if strings.Contains(in.Title, "FeatureRolloutABTest") {
 			saw = true
 		}
 	}

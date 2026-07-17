@@ -471,7 +471,7 @@ func TestCompute_FindingContentChangeIsReported(t *testing.T) {
 
 // TestCompute_CollidingFindingsAreAllVisible is the SECOND bug, which the report did
 // not name: Compute keyed findings into a map[string]facts.Insight — last writer wins.
-// On nan/nebenan-android-app, 78 layer violations share the identical title
+// On a large Android app, 78 layer violations share the identical title
 // "Layer violation: di -> ui" (they are distinguished only by their evidence), so 77 of
 // them were dropped from the diff map entirely and could appear or vanish in total
 // silence.

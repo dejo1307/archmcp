@@ -46,15 +46,15 @@ var testSegments = map[string]bool{
 // production code. Each of these was:
 //
 //   - Swift `Tests.swift`/`Test.swift` and Kotlin `Test.kt`/`Tests.kt`/`Spec.kt`.
-//     On nan/nebenan-iOS they matched 402 files, 393 already covered by a segment,
+//     On a large iOS app they matched 402 files, 393 already covered by a segment,
 //     and all 9 of the remainder were production A/B-test features
-//     (`KindnessReminderABTest.swift`, `Tracking+ShortenNameABTest.swift`, …). On
-//     nan/nebenan-android-app: 261 matched, 260 already covered, the 1 remainder a
+//     (`FeatureRolloutABTest.swift`, `Tracking+ExperimentABTest.swift`, …). On
+//     a large Android app: 261 matched, 260 already covered, the 1 remainder a
 //     production model (`api/…/model/ABTest.kt`). Neither SPM nor Gradle will build
 //     a test from a production target, so the real tests are always in the test
 //     tree and these rules had no true positives to contribute.
 //   - Ruby `_test.rb`. Across the whole corpus it uniquely claimed exactly one
-//     file: `app/jobs/hood_message/finish_kindness_reminder_ab_test.rb` — the
+//     file: `app/jobs/notification/finish_experiment_ab_test.rb` — the
 //     production ActiveJob that the identically-shaped `**/*_test.rb` ignore glob
 //     once deleted from the graph outright, and which is why that glob is now
 //     directory-scoped. Minitest files live in `test/`, which the segments claim.

@@ -171,8 +171,8 @@ func (e *SurfaceExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 // It used to carry its own segment list, lowercasing the module path to match it.
 // That covered `Tests/` (via `tests`) but not `androidTest` — which lowercases to
 // `androidtest` — nor `__tests__` nor the Kotlin-Multiplatform trees, so
-// nan/nebenan-android-app reported "Large public surface:
-// app/src/androidTest/java/…/ui/signup/compose" as a finding. Both questions now have
+// a large Android app reported "Large public surface:
+// app/src/androidTest/java/…/ui/feature/compose" as a finding. Both questions now have
 // exactly one owner each: facts.IsTestPath and mcputil.IsGeneratedPath. Note
 // IsTestPath is case-SENSITIVE and carries the real-world spellings (`Tests`,
 // `Mocks`, `androidTest`, `__tests__`), so the lowercasing is gone with the list.

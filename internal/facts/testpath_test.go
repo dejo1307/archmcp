@@ -12,8 +12,8 @@ func TestIsTestPath(t *testing.T) {
 		// (Xcode targets, Gradle source sets, pytest/rspec convention).
 		{"swift xcode test target", "Tests/Testability/Sources/Assert.swift", true},
 		{"swift xcode mock target", "Mocks/APIStub.swift", true},
-		{"gradle unit test source set", "app/src/test/java/de/nebenan/app/FooTest.kt", true},
-		{"gradle instrumented source set", "app/src/androidTest/java/de/nebenan/app/EspressoMocks.kt", true},
+		{"gradle unit test source set", "app/src/test/java/de/example/app/FooTest.kt", true},
+		{"gradle instrumented source set", "app/src/androidTest/java/de/example/app/EspressoMocks.kt", true},
 		{"kmp per-target test tree", "shared/src/commonTest/kotlin/Foo.kt", true},
 		{"jest colocated", "src/components/__tests__/Button.tsx", true},
 		{"rspec tree", "spec/models/user_spec.rb", true},
@@ -44,7 +44,7 @@ func TestIsTestPath(t *testing.T) {
 		{"minitest in test tree", "test/models/user_test.rb", true},
 		{"pytest prefix in tests tree", "tests/unit/test_date_parser.py", true},
 		{"swift test in test target", "Tests/CoreKitTests/CoreKitTests.swift", true},
-		{"kotlin test in source set", "app/src/test/java/de/nebenan/FooTest.kt", true},
+		{"kotlin test in source set", "app/src/test/java/de/example/FooTest.kt", true},
 
 		// --- Production code that MUST NOT be classified as test ---
 		//
@@ -52,16 +52,16 @@ func TestIsTestPath(t *testing.T) {
 		// wrongly claimed. This is the fixed/28 defect class: a name that merely
 		// LOOKS like a test. Suppressing production code from the analysis is
 		// silent, so the predicate errs toward keeping it.
-		{"swift production A/B feature", "Sources/NebenanFoundation/Components/KindnessReminderABTest/KindnessReminderABTest.swift", false},
-		{"swift production feature ending in Test", "Sources/NebenanFoundation/Components/PersonalisedFeedTest/PersonalisedFeedTest.swift", false},
-		{"swift production tracking ext", "Sources/NebenanFoundation/Components/Tracking/Tracking+ShortenNameABTest.swift", false},
-		{"swift production ending in Tests", "Sources/NebenanFoundation/Components/Settings/Settings.ABUserTests.swift", false},
-		{"kotlin production model ending in Test", "api/src/main/java/de/nebenan/app/api/model/ABTest.kt", false},
+		{"swift production A/B feature", "Sources/ExampleFoundation/Components/FeatureRolloutABTest/FeatureRolloutABTest.swift", false},
+		{"swift production feature ending in Test", "Sources/ExampleFoundation/Components/RecommendationTest/RecommendationTest.swift", false},
+		{"swift production tracking ext", "Sources/ExampleFoundation/Components/Tracking/Tracking+ExperimentABTest.swift", false},
+		{"swift production ending in Tests", "Sources/ExampleFoundation/Components/Settings/Settings.ExperimentTests.swift", false},
+		{"kotlin production model ending in Test", "api/src/main/java/de/example/app/api/model/ABTest.kt", false},
 		{"ruby production job named test_job", "app/jobs/test_job.rb", false},
 		{"ruby production job named test_fail_job", "app/jobs/test_fail_job.rb", false},
 		// The fixed/28 file itself: it genuinely ends in `_test.rb`, which is why a
 		// bare suffix rule can never be safe for Ruby.
-		{"ruby production ab-test job (fixed/28)", "app/jobs/hood_message/finish_kindness_reminder_ab_test.rb", false},
+		{"ruby production ab-test job (fixed/28)", "app/jobs/notification/finish_experiment_ab_test.rb", false},
 		// Production CLI/commands on python/superset that "test a DB connection".
 		{"python production cli test_db", "superset/cli/test_db.py", false},
 		{"python production test_connection command", "superset/commands/database/test_connection.py", false},
@@ -74,7 +74,7 @@ func TestIsTestPath(t *testing.T) {
 		{"protest is not a test dir", "src/protest/handler.go", false},
 
 		// Ordinary production paths.
-		{"plain source", "Sources/NebenanCore/APIService.swift", false},
+		{"plain source", "Sources/ExampleCore/APIService.swift", false},
 		{"plain go", "internal/facts/graph.go", false},
 		{"empty", "", false},
 	}

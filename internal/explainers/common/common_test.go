@@ -306,7 +306,7 @@ func TestBuildModuleGraph_UntaggedTestModuleExcluded(t *testing.T) {
 }
 
 // TestBuildModuleGraph_AuthoritativeRoleWins is the anti-regression guard, and the
-// reason new/55's own prescribed fix was refuted. nan/nebenan-android-app has a
+// reason new/55's own prescribed fix was refuted. A large Android app has a
 // production package literally named `app/src/main/java/.../ui/base/testing`. Gradle
 // says src/main, so the extractor tags it module_role=production — an AUTHORITATIVE
 // signal. The path heuristic must never override it, or a real production package is
@@ -316,19 +316,19 @@ func TestBuildModuleGraph_UntaggedTestModuleExcluded(t *testing.T) {
 // widening ModuleRoleForPath itself, which would have suppressed this package.
 func TestBuildModuleGraph_AuthoritativeRoleWins(t *testing.T) {
 	s := facts.NewStore()
-	s.Add(facts.Fact{Kind: facts.KindModule, Name: "app/src/main/java/de/nebenan/app/ui/base/testing",
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "app/src/main/java/de/example/app/ui/base/testing",
 		Props: map[string]any{facts.PropModuleRole: facts.ModuleRoleProduction}})
-	s.Add(facts.Fact{Kind: facts.KindModule, Name: "app/src/main/java/de/nebenan/app/ui",
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "app/src/main/java/de/example/app/ui",
 		Props: map[string]any{facts.PropModuleRole: facts.ModuleRoleProduction}})
-	s.Add(facts.Fact{Kind: facts.KindDependency, File: "app/src/main/java/de/nebenan/app/ui/f.kt",
-		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "app/src/main/java/de/nebenan/app/ui/base/testing"}}})
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "app/src/main/java/de/example/app/ui/f.kt",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "app/src/main/java/de/example/app/ui/base/testing"}}})
 
 	graph := BuildModuleGraph(s)
-	if _, ok := graph["app/src/main/java/de/nebenan/app/ui/base/testing"]; !ok {
+	if _, ok := graph["app/src/main/java/de/example/app/ui/base/testing"]; !ok {
 		t.Error("a module the extractor authoritatively tagged production must stay in the graph, " +
 			"even though its path contains a test segment")
 	}
-	if len(graph["app/src/main/java/de/nebenan/app/ui"]) != 1 {
+	if len(graph["app/src/main/java/de/example/app/ui"]) != 1 {
 		t.Error("the edge into it must survive")
 	}
 }

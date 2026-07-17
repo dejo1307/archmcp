@@ -97,7 +97,7 @@ func BuildModuleGraph(store *facts.Store) map[string][]string {
 // The extractor's `module_role` prop is AUTHORITATIVE where it exists: it comes from
 // a build file, not a guess — an SPM/Xcode target type, a Gradle source set. A module
 // the extractor tagged `production` stays in the graph even if its path looks like a
-// test tree, because the build system is right and the path is not. nan/nebenan-android-app
+// test tree, because the build system is right and the path is not. A large Android app
 // ships a real package called `app/src/main/java/…/ui/base/testing`; Gradle says
 // `src/main`, so it is production, and no path heuristic gets to overrule that.
 //

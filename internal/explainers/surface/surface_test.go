@@ -278,12 +278,12 @@ func TestExplain_MissingVisibilityIgnored(t *testing.T) {
 // excludedSegments lowercases the module path, so `Tests/` already matched its
 // `tests` entry — but `androidTest` lowercases to `androidtest`, which is not in the
 // set, and neither are `__tests__` or the Kotlin-Multiplatform trees. On
-// nan/nebenan-android-app that produced a real finding: "Large public surface:
-// app/src/androidTest/java/de/nebenan/app/ui/signup/compose". An instrumented-test
+// a large Android app that produced a real finding: "Large public surface:
+// app/src/androidTest/java/de/example/app/ui/feature/compose". An instrumented-test
 // source set is not a hand-maintained public API.
 func TestExplain_GradleAndJestTestModulesExcluded(t *testing.T) {
 	s := facts.NewStore()
-	addModuleSymbols(s, "app/src/androidTest/java/de/nebenan/app/ui/signup/compose", 30, 30)
+	addModuleSymbols(s, "app/src/androidTest/java/de/example/app/ui/feature/compose", 30, 30)
 	addModuleSymbols(s, "src/components/__tests__", 30, 30)
 	addModuleSymbols(s, "shared/src/commonTest/kotlin", 30, 30)
 	addModuleSymbols(s, "Tests/Testability/Sources", 30, 30)

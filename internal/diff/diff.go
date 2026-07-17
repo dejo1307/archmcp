@@ -175,7 +175,7 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 		}
 	}
 
-	// Grouped, not map[key]Insight. Findings collide: 78 of nan/nebenan-android-app's
+	// Grouped, not map[key]Insight. Findings collide: 78 of a large Android app's
 	// layer violations share the title "Layer violation: di -> ui" and differ only in
 	// their evidence, so a plain map kept ONE and silently dropped 77 — they could
 	// appear or vanish and the diff would report nothing. Evidence cannot go into the
@@ -758,7 +758,7 @@ func (d *SnapshotDiff) sortAll() {
 	sort.Slice(d.EdgesAdded, func(i, j int) bool { return edgeKey(d.EdgesAdded[i]) < edgeKey(d.EdgesAdded[j]) })
 	sort.Slice(d.EdgesRemoved, func(i, j int) bool { return edgeKey(d.EdgesRemoved[i]) < edgeKey(d.EdgesRemoved[j]) })
 	// findingKey alone is NOT a total order — findings collide under it (78 of
-	// nan/nebenan-android-app's layer violations share one key). Ties would sort
+	// a large Android app's layer violations share one key). Ties would sort
 	// arbitrarily and the diff would stop being byte-reproducible, which is the
 	// package's central promise. Break them with intraInsightOrder, exactly as the fact
 	// buckets break theirs with intraGroupOrder.
