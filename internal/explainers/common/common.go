@@ -199,10 +199,19 @@ func BuildModuleGraphExcluding(store *facts.Store, excludeKinds ...string) map[s
 				target = ResolveRelativeImport(sourceModule, target)
 			}
 
-			// A target is included only if it names a known internal module. This gate is
-			// authoritative; we deliberately do NOT pre-filter with IsExternalImport, which
-			// misclassifies single-segment internal modules (top-level "cmd", "config") as
-			// external and would drop real edges before this check.
+			// Resolve the target up to its enclosing module too. Extractors emit
+			// import targets at differing granularity — a bare module dir (Go/Rails),
+			// a module dir + symbol name (Kotlin/Java `import a.b.C` -> "a/b/C"), or a
+			// file stem (TypeScript) — so an exact module-name match drops every
+			// class-/file-suffixed target and silently loses those edges (e.g. all
+			// Kotlin-sourced cycles). Walking up mirrors package_metrics and the source
+			// resolution above; it is a no-op where the target is already a module.
+			target = nearestModule(target, moduleNames, testModules)
+
+			// A target is included only if it names a known internal PRODUCTION module.
+			// This gate is authoritative; we deliberately do NOT pre-filter with
+			// IsExternalImport, which misclassifies single-segment internal modules
+			// (top-level "cmd", "config") as external and would drop real edges here.
 			if moduleNames[target] {
 				graph[sourceModule] = append(graph[sourceModule], target)
 			}

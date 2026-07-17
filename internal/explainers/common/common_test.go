@@ -156,6 +156,40 @@ func TestBuildModuleGraph_NestedFileResolvesToModule(t *testing.T) {
 	}
 }
 
+// TestBuildModuleGraph_ClassSuffixedTargetResolves pins the fix for import
+// targets that carry a trailing symbol segment (Kotlin/Java `import a.b.C` is
+// emitted as target "a/b/C", where the module is "a/b"). A mutual pair of such
+// imports must still form a cycle — an exact module-name match would drop both.
+func TestBuildModuleGraph_ClassSuffixedTargetResolves(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"app/model", "app/common"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m})
+	}
+	// model imports a class in common; common imports a class in model.
+	s.Add(facts.Fact{
+		Kind:      facts.KindDependency,
+		File:      "app/model/User.kt",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "app/common/Pagination"}},
+	})
+	s.Add(facts.Fact{
+		Kind:      facts.KindDependency,
+		File:      "app/common/FlowUtils.kt",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "app/model/GidUtil"}},
+	})
+
+	graph := BuildModuleGraph(s)
+
+	if edges := graph["app/model"]; len(edges) != 1 || edges[0] != "app/common" {
+		t.Errorf("app/model edges = %v, want [app/common]", edges)
+	}
+	if edges := graph["app/common"]; len(edges) != 1 || edges[0] != "app/model" {
+		t.Errorf("app/common edges = %v, want [app/model]", edges)
+	}
+	if got := sccKey(StronglyConnectedComponents(graph)); got != "app/common,app/model" {
+		t.Errorf("SCC = %q, want the model<->common cycle", got)
+	}
+}
+
 func TestSymbolModule(t *testing.T) {
 	tests := []struct {
 		name string

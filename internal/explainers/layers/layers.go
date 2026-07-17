@@ -428,11 +428,14 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 	var violations []violation
 
 	for _, dep := range store.ByKind(facts.KindDependency) {
-		sourceModule := common.FileDir(dep.File)
-		sourceLayer, sourceOK := pattern.Modules[sourceModule]
+		// Resolve the importing file's directory up to its nearest classified module,
+		// so a file nested below the module root (Swift/Xcode) still attributes to a
+		// layer instead of being dropped.
+		sourceModule, sourceOK := resolveLayerModule(common.FileDir(dep.File), pattern.Modules)
 		if !sourceOK {
 			continue
 		}
+		sourceLayer := pattern.Modules[sourceModule]
 
 		for _, rel := range dep.Relations {
 			if rel.Kind != facts.RelImports {
@@ -444,10 +447,18 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 				target = common.ResolveRelativeImport(sourceModule, target)
 			}
 
-			targetLayer, targetOK := pattern.Modules[target]
+			// Resolve the target up to its enclosing classified module. Import targets
+			// carry differing granularity across extractors — a module dir + symbol
+			// name (Kotlin/Java `import a.b.C` -> "a/b/C") or a file stem (TypeScript) —
+			// so an exact module lookup silently drops every class-/file-suffixed
+			// target (which was hiding all Kotlin-sourced layer violations). Mirrors
+			// package_metrics' resolveToModule; a no-op for bare-module-dir targets.
+			targetModule, targetOK := resolveLayerModule(target, pattern.Modules)
 			if !targetOK {
 				continue
 			}
+			targetLayer := pattern.Modules[targetModule]
+			target = targetModule
 
 			sourceDef := pattern.Layers[sourceLayer]
 			targetDef := pattern.Layers[targetLayer]
@@ -499,6 +510,26 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 	}
 
 	return insights
+}
+
+// resolveLayerModule walks path up its directory segments until it names a
+// classified module (a key in modules), returning that module and true. If no
+// ancestor is classified it returns false. This absorbs the granularity
+// differences in extractor import targets (bare module dir, module dir + symbol
+// name, or file stem) and in nested source layouts, so a layer violation is not
+// missed just because the raw endpoint carried a trailing symbol/file segment.
+func resolveLayerModule(path string, modules map[string]string) (string, bool) {
+	cur := path
+	for {
+		if _, ok := modules[cur]; ok {
+			return cur, true
+		}
+		i := strings.LastIndex(cur, "/")
+		if i < 0 {
+			return "", false
+		}
+		cur = cur[:i]
+	}
 }
 
 // matchesLayer checks if a module path contains any of the given patterns.

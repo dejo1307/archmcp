@@ -413,6 +413,34 @@ func TestDetectViolations_InnerImportsOuter(t *testing.T) {
 	}
 }
 
+// TestDetectViolations_ResolvesNestedSourceAndSuffixedTarget pins the fix for
+// endpoint granularity: the source file sits BELOW its module directory
+// (Swift/Xcode nesting) and the import target carries a trailing symbol name
+// (Kotlin/Java `import a.b.C` -> "a/b/C"). Both must resolve up to their modules
+// or the inner→outer violation is silently dropped (which was hiding every
+// Kotlin-sourced layer violation).
+func TestDetectViolations_ResolvesNestedSourceAndSuffixedTarget(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"domain/entity", "presentation/views", "adapter/rest", "application/svc"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m})
+	}
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency,
+		File: "domain/entity/nested/Thing.kt", // FileDir = domain/entity/nested (not a module)
+		Relations: []facts.Relation{
+			{Kind: facts.RelImports, Target: "presentation/views/HomeView"}, // module dir + class name
+		},
+	})
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if got := countViolations(insights); got != 1 {
+		t.Fatalf("want 1 violation (domain nested -> presentation class-suffixed), got %d", got)
+	}
+}
+
 func TestDetectViolations_OuterImportsInner(t *testing.T) {
 	store := makeStore(
 		[]string{"domain/entity", "presentation/views", "adapter/rest", "application/svc"},
