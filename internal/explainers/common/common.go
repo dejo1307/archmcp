@@ -31,6 +31,26 @@ func FileDir(file string) string {
 	return strings.Join(parts[:len(parts)-1], "/")
 }
 
+// nearestModule walks dir up its path until it reaches a known production or test
+// module, and returns that module name. If nothing encloses dir it is returned
+// unchanged — so the result is identical to a raw FileDir wherever the file's
+// directory is itself the module (Go packages, Rails/TS directory-modules), and
+// only differs for nested layouts (Swift/Xcode targets) where the module lives
+// above the file's leaf directory. Mirrors package_metrics' resolveToModule.
+func nearestModule(dir string, prod, test map[string]bool) string {
+	cur := dir
+	for {
+		if prod[cur] || test[cur] {
+			return cur
+		}
+		i := strings.LastIndex(cur, "/")
+		if i < 0 {
+			return dir
+		}
+		cur = cur[:i]
+	}
+}
+
 // IsExternalImport reports whether an import target points outside the repo
 // (Go stdlib, third-party, or an npm package) rather than at an internal module.
 func IsExternalImport(path string) bool {
@@ -151,7 +171,15 @@ func BuildModuleGraphExcluding(store *facts.Store, excludeKinds ...string) map[s
 
 	deps := store.ByKind(facts.KindDependency)
 	for _, dep := range deps {
-		sourceModule := FileDir(dep.File)
+		// Attribute the edge to the file's nearest ENCLOSING module, not its raw
+		// leaf directory. Where files sit directly in the module directory (Go
+		// packages, Rails/TS directory-modules) these coincide; but in a nested
+		// layout — a Swift/Xcode target `Sources/Foo` with files under
+		// `Sources/Foo/Bar/…` — the leaf dir `Sources/Foo/Bar` is not a module, so a
+		// raw-FileDir source node never matched a module-name target and no cycle or
+		// edge could form (which silently zeroed cycle detection on such projects).
+		// Resolving up keeps this graph consistent with package_metrics.
+		sourceModule := nearestModule(FileDir(dep.File), moduleNames, testModules)
 		if testModules[sourceModule] {
 			continue // edge out of a test bundle — not production architecture
 		}

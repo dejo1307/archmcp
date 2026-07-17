@@ -115,6 +115,47 @@ func TestBuildModuleGraph(t *testing.T) {
 	}
 }
 
+// TestBuildModuleGraph_NestedFileResolvesToModule pins the fix for nested module
+// layouts (e.g. a Swift/Xcode target Sources/Foo with files under Sources/Foo/Bar/…):
+// a dependency whose File sits BELOW the module root must attribute to the module,
+// not the leaf directory — otherwise the source node never matches a module-name
+// target and a real cycle (Foo <-> Bar) is silently missed.
+func TestBuildModuleGraph_NestedFileResolvesToModule(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"Sources/Foo", "Sources/Bar"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m})
+	}
+	// Foo imports Bar (from a file nested under Sources/Foo/Sub) and Bar imports Foo
+	// (from a file nested under Sources/Bar/Deeper/Nested) — a 2-module cycle.
+	s.Add(facts.Fact{
+		Kind:      facts.KindDependency,
+		File:      "Sources/Foo/Sub/Thing.swift",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "Sources/Bar"}},
+	})
+	s.Add(facts.Fact{
+		Kind:      facts.KindDependency,
+		File:      "Sources/Bar/Deeper/Nested/Other.swift",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "Sources/Foo"}},
+	})
+
+	graph := BuildModuleGraph(s)
+
+	if edges := graph["Sources/Foo"]; len(edges) != 1 || edges[0] != "Sources/Bar" {
+		t.Errorf("Sources/Foo edges = %v, want [Sources/Bar]", edges)
+	}
+	if edges := graph["Sources/Bar"]; len(edges) != 1 || edges[0] != "Sources/Foo" {
+		t.Errorf("Sources/Bar edges = %v, want [Sources/Foo]", edges)
+	}
+	// The leaf directories must NOT appear as their own graph nodes.
+	if _, ok := graph["Sources/Foo/Sub"]; ok {
+		t.Error("leaf dir Sources/Foo/Sub leaked as a graph node")
+	}
+	// And the two modules form a strongly-connected component (a real cycle).
+	if got := sccKey(StronglyConnectedComponents(graph)); got != "Sources/Bar,Sources/Foo" {
+		t.Errorf("SCC = %q, want the Foo<->Bar cycle", got)
+	}
+}
+
 func TestSymbolModule(t *testing.T) {
 	tests := []struct {
 		name string
