@@ -771,8 +771,8 @@ func TestAST_TryExceptImportRegisters(t *testing.T) {
 	// Module-level imports guarded by try/except ImportError (the
 	// package-or-script dual-import idiom) must register like unguarded ones —
 	// previously walkStatement had no try_statement case, so every call through
-	// the guarded names was unresolvable and the callee read as dead (cognee-mcp's
-	// whole server_utils surface). The except-branch fallback must NOT clobber the
+	// the guarded names was unresolvable and the callee read as dead (a Python MCP
+	// server's whole server-utils surface). The except-branch fallback must NOT clobber the
 	// try-branch binding: the relative form resolves to a real slash path at walk
 	// time, while the bare fallback resolves to nothing and its edge would be
 	// dropped by resolveCallTargets.

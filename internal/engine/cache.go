@@ -508,8 +508,8 @@ import (
 // and `if TYPE_CHECKING:` imports registered no binding and emitted no dependency
 // fact. Calls through the guarded names were then unresolvable (or fabricated a
 // same-module target), so the callees read as dead (find_orphans high-confidence
-// FPs — cognee-mcp's entire server_utils surface, ~13 of 103 across the Python
-// corpus). Imports inside an except_clause register as fallbacks that never
+// FPs — a Python MCP server's entire server-utils surface, ~13 of 103 across the
+// Python corpus). Imports inside an except_clause register as fallbacks that never
 // clobber the try-branch binding (the relative form resolves to a real path; the
 // bare fallback would be dropped as external, deleting the edge). Separately, a
 // module-level assignment whose RHS is a bare def name (the
