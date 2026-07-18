@@ -115,6 +115,26 @@ type astWalker struct {
 	// currently being walked; saved/restored around nested function items.
 	decisions int
 
+	// Loop/IO complexity state, mirroring the Python/Kotlin extractors so the
+	// enterprise performance analyzer works for Rust too. The walk-time depth
+	// counters track the loop nesting at the current node; the fn-prefixed
+	// accumulators collect the per-function peak/collection that becomes the
+	// symbol's loop_depth/scaling_loop_depth/calls_in_loop/... props. All are
+	// saved/zeroed/restored around each function body alongside `decisions`.
+	loopDepth    int // syntactic loop nesting (for/while/loop)
+	scalingDepth int // nesting of loops with a data-dependent (non-constant) trip count
+
+	fnMaxLoop       int             // peak loopDepth seen in the current function
+	fnMaxScaling    int             // peak scalingDepth seen in the current function
+	fnLoopCount     int             // number of loop constructs in the current function
+	fnCallsInLoop   []string        // resolved callees invoked at loopDepth > 0
+	fnCallsInScaling []string       // resolved callees invoked at repeatDepth > 0 (scaling subset)
+	fnInLoopSeen    map[string]bool // dedup set for fnCallsInLoop
+	fnInScalingSeen map[string]bool // dedup set for fnCallsInScaling
+	fnIODirect      bool            // the current function makes a direct I/O call
+	fnRecursive     bool            // the current function calls itself
+	fnSelfName      string          // canonical name of the current function (for recursion)
+
 	// importMap maps a `use`-imported simple name to its canonical symbol fact
 	// name (e.g. "run" -> "src/helper.run") when the import resolved to a known
 	// internal directory, or to "" when it resolved to an external/stdlib crate
@@ -534,17 +554,64 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	ownerIdx := len(w.out) - 1
 	w.pushOwner(ownerIdx)
 
+	// Save/zero the cyclomatic + loop/IO state around this body so a nested
+	// `fn` item does not leak its metrics into the enclosing function.
 	savedDecisions := w.decisions
+	savedLoopDepth, savedScaling := w.loopDepth, w.scalingDepth
+	savedMaxLoop, savedMaxScaling, savedLoopCount := w.fnMaxLoop, w.fnMaxScaling, w.fnLoopCount
+	savedCIL, savedCIS := w.fnCallsInLoop, w.fnCallsInScaling
+	savedILSeen, savedISSeen := w.fnInLoopSeen, w.fnInScalingSeen
+	savedIO, savedRec, savedSelf := w.fnIODirect, w.fnRecursive, w.fnSelfName
 	w.decisions = 0
+	w.loopDepth, w.scalingDepth = 0, 0
+	w.fnMaxLoop, w.fnMaxScaling, w.fnLoopCount = 0, 0, 0
+	w.fnCallsInLoop, w.fnCallsInScaling = nil, nil
+	w.fnInLoopSeen, w.fnInScalingSeen = nil, nil
+	w.fnIODirect, w.fnRecursive = false, false
+	w.fnSelfName = f.Name
+
 	if body := node.ChildByFieldName("body"); body != nil {
 		w.modFnStack = append(w.modFnStack, collectFnNames(body, w.src))
 		w.walkForCalls(body)
 		w.modFnStack = w.modFnStack[:len(w.modFnStack)-1]
 	}
 	w.out[ownerIdx].Props["cyclomatic"] = 1 + w.decisions
+	// Emit the loop/IO props using the identical string keys the Python/Kotlin
+	// extractors and enterprise perf.go already consume. The scaling values and
+	// call collections are emitted whenever the function contains any loop (even
+	// when the scaling subset is empty) so the consumer can tell "all bounded"
+	// from "no loop signal at all".
+	if w.fnLoopCount > 0 {
+		w.out[ownerIdx].Props["loop_depth"] = w.fnMaxLoop
+		w.out[ownerIdx].Props["loop_count"] = w.fnLoopCount
+		w.out[ownerIdx].Props["scaling_loop_depth"] = w.fnMaxScaling
+		w.out[ownerIdx].Props["calls_in_loop"] = nonNilStrings(w.fnCallsInLoop)
+		w.out[ownerIdx].Props["calls_in_scaling_loop"] = nonNilStrings(w.fnCallsInScaling)
+	}
+	if w.fnRecursive {
+		w.out[ownerIdx].Props["recursive_self"] = true
+	}
+	if w.fnIODirect {
+		w.out[ownerIdx].Props["io_direct"] = true
+	}
+
 	w.decisions = savedDecisions
+	w.loopDepth, w.scalingDepth = savedLoopDepth, savedScaling
+	w.fnMaxLoop, w.fnMaxScaling, w.fnLoopCount = savedMaxLoop, savedMaxScaling, savedLoopCount
+	w.fnCallsInLoop, w.fnCallsInScaling = savedCIL, savedCIS
+	w.fnInLoopSeen, w.fnInScalingSeen = savedILSeen, savedISSeen
+	w.fnIODirect, w.fnRecursive, w.fnSelfName = savedIO, savedRec, savedSelf
 
 	w.popOwner()
+}
+
+// nonNilStrings returns s, or an empty (non-nil) slice when s is nil, so a
+// prop marked "present but empty" survives JSON round-trips as [] not null.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // handleFunctionSignature emits a symbol fact for a trait method declared
@@ -765,9 +832,12 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		return
 	}
 	switch node.Kind() {
-	case "if_expression", "match_arm", "while_expression", "for_expression",
-		"loop_expression", "try_expression":
+	case "if_expression", "match_arm", "try_expression":
 		w.decisions++
+	case "while_expression", "for_expression", "loop_expression":
+		w.decisions++
+		w.walkLoop(node)
+		return // walkLoop brackets its own child recursion with depth tracking
 	case "binary_expression":
 		if rustBooleanOp(node) {
 			w.decisions++
@@ -796,6 +866,97 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		w.walkChild(node.Child(i))
 	}
+}
+
+// walkLoop brackets the child recursion of a for/while/loop node with loop-depth
+// tracking, mirroring the Python extractor's walkForCalls loop handling. It
+// peak-tracks the per-function loop/scaling depth *before* descending, increments
+// the walk-time depth counters, recurses, then restores them. A "bounded" loop
+// (a constant-trip `for` over a literal range/array, or an infinite `loop {}`/
+// `while true`) contributes to loop_depth but not to scaling_loop_depth: it adds
+// no data-dependent Big-O factor, so an in-loop call is not counted as N+1.
+func (w *astWalker) walkLoop(node *sitter.Node) {
+	bounded := w.rustLoopBounded(node)
+
+	w.fnLoopCount++
+	if w.loopDepth+1 > w.fnMaxLoop {
+		w.fnMaxLoop = w.loopDepth + 1
+	}
+	if !bounded && w.scalingDepth+1 > w.fnMaxScaling {
+		w.fnMaxScaling = w.scalingDepth + 1
+	}
+
+	w.loopDepth++
+	if !bounded {
+		w.scalingDepth++
+	}
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		w.walkChild(node.Child(i))
+	}
+	w.loopDepth--
+	if !bounded {
+		w.scalingDepth--
+	}
+}
+
+// rustLoopBounded reports whether a loop has a constant (data-independent) trip
+// count and so introduces no Big-O factor. A `for` over a literal integer range
+// (`0..10`) or an array/tuple literal is constant; `loop {}` and `while true`
+// are infinite (their exponent doesn't scale with input size — a daemon poll,
+// not an N+1); everything else (`for x in items`, `while cond`) scales.
+func (w *astWalker) rustLoopBounded(node *sitter.Node) bool {
+	switch node.Kind() {
+	case "for_expression":
+		return rustConstIterable(node.ChildByFieldName("value"), w.src)
+	case "while_expression":
+		return rustCondIsTrue(node.ChildByFieldName("condition"), w.src)
+	case "loop_expression":
+		return true
+	}
+	return false
+}
+
+// rustConstIterable reports whether a `for` loop's iterable has a compile-time
+// constant length: a literal integer range (`0..10`) or an array/tuple literal.
+// A range with a non-literal bound (`0..items.len()`) or any other expression
+// (`for x in items`) scales with the data and is not constant.
+func rustConstIterable(val *sitter.Node, src []byte) bool {
+	if val == nil {
+		return false
+	}
+	switch val.Kind() {
+	case "range_expression":
+		return rustRangeLiteralBounds(val, src)
+	case "array_expression", "tuple_expression":
+		return true
+	}
+	return false
+}
+
+// rustRangeLiteralBounds reports whether every bound operand of a range
+// expression is an integer literal (so the trip count is a constant).
+func rustRangeLiteralBounds(node *sitter.Node, src []byte) bool {
+	saw := false
+	for i := uint(0); i < uint(node.ChildCount()); i++ {
+		c := node.Child(i)
+		switch c.Kind() {
+		case "..", "..=", "...":
+			continue // the range operator itself
+		case "integer_literal":
+			saw = true
+		default:
+			return false // a non-literal bound (e.g. items.len()) — scales
+		}
+	}
+	return saw
+}
+
+// rustCondIsTrue reports whether a `while` condition is the literal `true`.
+func rustCondIsTrue(cond *sitter.Node, src []byte) bool {
+	if cond == nil {
+		return false
+	}
+	return cond.Kind() == "true" || nodeText(cond, src) == "true"
 }
 
 // scanTokenTreeCalls finds calls inside a macro's unparsed token_tree body
@@ -896,6 +1057,9 @@ func (w *astWalker) handleStructExpression(node *sitter.Node) {
 
 func (w *astWalker) handleCallExpression(node *sitter.Node) {
 	fn := node.ChildByFieldName("function")
+	if rustIsIODirectCall(fn, w.src) {
+		w.fnIODirect = true
+	}
 	name, form := w.calleeTrailing(fn)
 	if name == "" {
 		return
@@ -950,6 +1114,9 @@ func (w *astWalker) emitEdge(kind, target string) {
 		w.testRefRels = append(w.testRefRels, facts.Relation{Kind: facts.RelCalls, Target: target})
 		return
 	}
+	if kind == facts.RelCalls {
+		w.recordCallMetrics(target)
+	}
 	owner := w.currentOwner()
 	if owner == nil {
 		idx := w.ensureFileRefFact()
@@ -957,6 +1124,34 @@ func (w *astWalker) emitEdge(kind, target string) {
 		return
 	}
 	owner.Relations = append(owner.Relations, facts.Relation{Kind: kind, Target: target})
+}
+
+// recordCallMetrics attributes a resolved production call to the current
+// function's loop/recursion metrics: it feeds calls_in_loop (any enclosing
+// loop), the calls_in_scaling_loop subset (a data-dependent loop only), and
+// recursive_self (a call whose target is the function itself).
+func (w *astWalker) recordCallMetrics(target string) {
+	if w.fnSelfName != "" && target == w.fnSelfName {
+		w.fnRecursive = true
+	}
+	if w.loopDepth > 0 {
+		if w.fnInLoopSeen == nil {
+			w.fnInLoopSeen = make(map[string]bool)
+		}
+		if !w.fnInLoopSeen[target] {
+			w.fnInLoopSeen[target] = true
+			w.fnCallsInLoop = append(w.fnCallsInLoop, target)
+		}
+	}
+	if w.scalingDepth > 0 {
+		if w.fnInScalingSeen == nil {
+			w.fnInScalingSeen = make(map[string]bool)
+		}
+		if !w.fnInScalingSeen[target] {
+			w.fnInScalingSeen[target] = true
+			w.fnCallsInScaling = append(w.fnCallsInScaling, target)
+		}
+	}
 }
 
 // ensureFileRefFact returns the index of this file's lazily-created
@@ -1146,6 +1341,76 @@ func rustBooleanOp(node *sitter.Node) bool {
 	switch op.Kind() {
 	case "&&", "||":
 		return true
+	}
+	return false
+}
+
+// rustIOMethods are distinctive method names that unambiguously perform I/O in
+// idiomatic Rust — database driver query/execute methods (sqlx/diesel/tokio-
+// postgres), file read/write, directory listing, and the reqwest request
+// terminator. Ambiguous bare verbs (`get`/`read`/`write`) are deliberately
+// excluded (they collide with in-memory accessors), mirroring the Python
+// extractor's curated I/O set.
+var rustIOMethods = map[string]bool{
+	"execute": true, "fetch_one": true, "fetch_all": true, "fetch_optional": true,
+	"query_as": true, "read_to_string": true, "read_to_end": true,
+	"write_all": true, "read_dir": true, "send": true,
+}
+
+// rustIsIODirectCall reports whether a call_expression's callee node is a direct
+// I/O primitive: a method call whose method segment is in rustIOMethods, or a
+// scoped path to a filesystem/HTTP primitive (File::open, fs::read*, fs::write*,
+// reqwest::get/post/...). Type inference isn't available, so this keys off the
+// syntactic callee shape only, like Python's pyIsIODirectCall.
+func rustIsIODirectCall(fn *sitter.Node, src []byte) bool {
+	if fn == nil {
+		return false
+	}
+	switch fn.Kind() {
+	case "field_expression":
+		if f := fn.ChildByFieldName("field"); f != nil && f.Kind() == "field_identifier" {
+			return rustIOMethods[nodeText(f, src)]
+		}
+	case "scoped_identifier":
+		name, path := "", ""
+		if n := fn.ChildByFieldName("name"); n != nil {
+			name = nodeText(n, src)
+		}
+		if p := fn.ChildByFieldName("path"); p != nil {
+			path = nodeText(p, src)
+		}
+		if rustIOMethods[name] {
+			return true
+		}
+		return rustIOScopedPrimitive(path, name)
+	case "generic_function":
+		return rustIsIODirectCall(fn.ChildByFieldName("function"), src)
+	}
+	return false
+}
+
+// rustIOScopedPrimitive reports whether a scoped call `<path>::<name>` names a
+// filesystem or HTTP I/O primitive, keyed off the last path segment (so both
+// `File::open` and `std::fs::File::open` match) plus the callee name.
+func rustIOScopedPrimitive(path, name string) bool {
+	leaf := path
+	if i := strings.LastIndex(path, "::"); i >= 0 {
+		leaf = path[i+2:]
+	}
+	switch leaf {
+	case "File":
+		return name == "open" || name == "create"
+	case "fs":
+		switch name {
+		case "read", "write", "read_to_string", "read_to_end",
+			"read_dir", "remove_file", "copy", "create_dir", "create_dir_all":
+			return true
+		}
+	case "reqwest":
+		switch name {
+		case "get", "post", "put", "delete", "patch":
+			return true
+		}
 	}
 	return false
 }

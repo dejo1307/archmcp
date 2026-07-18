@@ -529,7 +529,16 @@ import (
 // markup had zero incoming edges and read as dead (find_orphans medium-confidence
 // FP; ~136 of 229 medium orphans across the Svelte corpus). Cached Svelte snapshots
 // must re-extract.
-const cacheVersion = "v120"
+//
+// v121: the Rust extractor now emits the loop/IO complexity metadata every other
+// extractor already emits — loop_depth, scaling_loop_depth, loop_count,
+// calls_in_loop, calls_in_scaling_loop (syntactic for/while/loop with a
+// constant-trip-vs-scaling distinction), io_direct (direct filesystem/DB/HTTP
+// primitives on the callee), performs_io (transitive fixpoint over the call
+// graph), and recursive_self. Previously Rust symbols carried only cyclomatic, so
+// the performance analyzer produced nothing for Rust regardless of nesting depth
+// or I/O. Cached Rust snapshots must re-extract to gain the new props.
+const cacheVersion = "v121"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
