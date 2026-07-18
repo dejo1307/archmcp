@@ -244,6 +244,11 @@ func NewServer(eng *Engine, cfg *config.Config) (*Server, error) {
 
 // AutoLoadSnapshot loads an existing snapshot from disk if available.
 // This allows queries to work immediately without a generate_snapshot call.
+//
+// It mutates the engine's initially-published (empty) store in place and then
+// republishes it via SetSnapshot. This is safe ONLY because it runs single-threaded
+// at startup, before the MCP server begins serving tool calls — no reader can
+// observe the store mid-load. Callers must keep it strictly before Server.Run.
 func AutoLoadSnapshot(eng *Engine, cfg *config.Config) {
 	repoPath, err := filepath.Abs(cfg.Repo)
 	if err != nil {

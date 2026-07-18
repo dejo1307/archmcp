@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/enola-labs/enola/internal/config"
@@ -20,18 +22,34 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// toolCallbackFunc is invoked once per tool call with the tool name and the repo
+// the call operated on. Stored behind an atomic.Pointer so SetToolCallback and the
+// per-call fireToolCallback are race-free regardless of call ordering.
+type toolCallbackFunc func(tool, repo string)
+
 // Server wraps the MCP server and connects it to the snapshot engine.
 type Server struct {
-	mcp          *mcp.Server
-	eng          *engine.Engine
-	cfg          *config.Config
-	startTime    time.Time
-	toolCallback func(tool, repo string)
+	mcp       *mcp.Server
+	eng       *engine.Engine
+	cfg       *config.Config
+	startTime time.Time
+
+	// toolCallback is read on every tool-call goroutine via fireToolCallback and
+	// written by SetToolCallback; the atomic pointer makes that race-free.
+	toolCallback atomic.Pointer[toolCallbackFunc]
+
+	// genMu serializes the entire generate_snapshot handler (the auto-append
+	// heuristic's reads of the current snapshot, GenerateSnapshot, the
+	// snapshotsGenerated flag, and the artifact/receipt writes). Two generates can
+	// no longer interleave and corrupt session state. Read-only tools never take
+	// genMu, so they stay concurrent and lock-free against the published bundle.
+	genMu sync.Mutex
 
 	// snapshotsGenerated records whether generate_snapshot has run at least once
 	// in this session. It distinguishes a user-driven multi-repo session from a
 	// store that was merely pre-populated by AutoLoadSnapshot at startup, so the
-	// auto-append heuristic never fires on top of auto-loaded-only state.
+	// auto-append heuristic never fires on top of auto-loaded-only state. Guarded
+	// by genMu (only read/written inside the locked generate_snapshot handler).
 	snapshotsGenerated bool
 }
 
@@ -67,13 +85,15 @@ func (s *Server) Run(ctx context.Context) error {
 // operated on (the active snapshot's repo, or the target repo for
 // generate_snapshot). It is safe to call before Run().
 func (s *Server) SetToolCallback(cb func(tool, repo string)) {
-	s.toolCallback = cb
+	fn := toolCallbackFunc(cb)
+	s.toolCallback.Store(&fn)
 }
 
-// fireToolCallback invokes the tool callback if set.
+// fireToolCallback invokes the tool callback if set. Safe to call concurrently
+// from multiple tool-call goroutines.
 func (s *Server) fireToolCallback(tool, repo string) {
-	if s.toolCallback != nil {
-		s.toolCallback(tool, repo)
+	if cbp := s.toolCallback.Load(); cbp != nil {
+		(*cbp)(tool, repo)
 	}
 }
 
@@ -484,6 +504,14 @@ func (s *Server) registerTools() {
 		if args.Fresh && args.Append {
 			return errorResult("fresh and append are mutually exclusive: fresh forces a single-repo reset; append adds to the existing store. Pick one."), nil, nil
 		}
+
+		// Serialize the whole write side against any other generate_snapshot: the
+		// auto-append heuristic reads the current snapshot/store, then GenerateSnapshot
+		// rebuilds and publishes, then snapshotsGenerated/WriteArtifacts/WriteGlobalReceipt
+		// run — all of which must be atomic w.r.t. a second concurrent generate. Held
+		// for the rest of the handler. Read-only tools do not take genMu.
+		s.genMu.Lock()
+		defer s.genMu.Unlock()
 
 		// Auto-enable append mode when switching to a different repo while facts
 		// from another repo are already loaded — but only once this session has

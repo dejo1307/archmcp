@@ -156,9 +156,9 @@ func TestWriteGlobalReceipt_SingleRepoFallbackAndPersistence(t *testing.T) {
 		facts.Fact{Kind: facts.KindModule, Name: "m1", Repo: "myrepo"},
 		facts.Fact{Kind: facts.KindSymbol, Name: "s1", Repo: "myrepo"},
 	)
-	eng.snapshot = &facts.Snapshot{Meta: facts.SnapshotMeta{
+	eng.SetSnapshot(&facts.Snapshot{Meta: facts.SnapshotMeta{
 		RepoPath: filepath.Join("/tmp", "some", "myrepo"), SnapshotID: "sha256:abc", FactCount: 2, InsightCount: 0,
-	}}
+	}})
 
 	if err := eng.WriteGlobalReceipt(); err != nil {
 		t.Fatalf("WriteGlobalReceipt: %v", err)
@@ -181,7 +181,7 @@ func TestWriteGlobalReceipt_SingleRepoFallbackAndPersistence(t *testing.T) {
 	firstAdded := first.Repos[0].AddedAt
 
 	// Regenerate and rewrite: added_at must be preserved (repo did not re-enter).
-	eng.snapshot.Meta.SnapshotID = "sha256:def"
+	eng.Snapshot().Meta.SnapshotID = "sha256:def"
 	if err := eng.WriteGlobalReceipt(); err != nil {
 		t.Fatalf("WriteGlobalReceipt (2nd): %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/enola-labs/enola/internal/config"
@@ -27,16 +28,35 @@ import (
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
+// snapshotBundle is the immutable, reader-visible snapshot state. GenerateSnapshot
+// builds a brand-new store off to the side and publishes a fresh bundle in a single
+// atomic swap; once published, none of its fields are ever mutated again. Readers
+// (Store/Snapshot/RepoPaths/ResolveFactFile) Load the current bundle lock-free and
+// use it for as long as they like — a concurrent regeneration builds a different
+// store and swaps the pointer, leaving the bundle an in-flight reader holds intact.
+type snapshotBundle struct {
+	store     *facts.Store      // immutable once published
+	snapshot  *facts.Snapshot   // may be nil (no snapshot generated yet)
+	repoPaths map[string]string // repo label -> absolute path; immutable once published, may be nil
+}
+
 // Engine orchestrates the snapshot generation pipeline.
 type Engine struct {
-	mu         sync.Mutex // serializes GenerateSnapshot calls
+	mu         sync.Mutex // serializes GenerateSnapshot calls and guards the build-scratch store
 	cfg        *config.Config
 	extractors *extractors.Registry
 	explainers *explainers.Registry
 	renderers  *renderers.Registry
-	store      *facts.Store
-	snapshot   *facts.Snapshot
-	repoPaths  map[string]string // repo label -> absolute path (populated in append mode)
+
+	// store is BUILD SCRATCH: it is reassigned to a fresh store at the top of each
+	// GenerateSnapshot and read only by the pipeline helpers, all under mu. It is
+	// NOT the reader-visible store — that lives in `current` and is only swapped in
+	// atomically once the build is complete. Never expose e.store to readers.
+	store *facts.Store
+
+	// current holds the published, immutable {store, snapshot, repoPaths} bundle.
+	// Readers Load it lock-free; GenerateSnapshot Stores a new bundle to publish.
+	current atomic.Pointer[snapshotBundle]
 
 	// persistCache controls whether the per-extractor cache is written back to
 	// disk after a snapshot. The read path is always active when caching is
@@ -47,14 +67,20 @@ type Engine struct {
 // New creates a new Engine with the given config.
 // Extractors, explainers, and renderers must be registered after creation.
 func New(cfg *config.Config) (*Engine, error) {
-	return &Engine{
+	// The build-scratch store and the initial published store are the same empty
+	// store, so AutoLoadSnapshot (which mutates Store() in place before serving)
+	// and the first generate both start from a consistent, non-nil bundle.
+	st := facts.NewStore()
+	e := &Engine{
 		cfg:          cfg,
 		extractors:   extractors.NewRegistry(),
 		explainers:   explainers.NewRegistry(),
 		renderers:    renderers.NewRegistry(),
-		store:        facts.NewStore(),
+		store:        st,
 		persistCache: true,
-	}, nil
+	}
+	e.current.Store(&snapshotBundle{store: st})
+	return e, nil
 }
 
 // SetPersistCache controls whether the per-extractor cache is written to disk
@@ -77,14 +103,17 @@ func (e *Engine) RegisterRenderer(rnd renderers.Renderer) {
 	e.renderers.Register(rnd)
 }
 
-// Store returns the fact store.
+// Store returns the published fact store. The returned store is immutable for as
+// long as the caller uses it: a concurrent regeneration builds a different store
+// and swaps the published bundle, so it never mutates the store handed out here.
 func (e *Engine) Store() *facts.Store {
-	return e.store
+	return e.current.Load().store
 }
 
-// Snapshot returns the last generated snapshot, or nil.
+// Snapshot returns the last published snapshot, or nil. Lock-free: the returned
+// snapshot is immutable once published.
 func (e *Engine) Snapshot() *facts.Snapshot {
-	return e.snapshot
+	return e.current.Load().snapshot
 }
 
 // Config returns the engine config.
@@ -92,23 +121,29 @@ func (e *Engine) Config() *config.Config {
 	return e.cfg
 }
 
-// SetRepoPaths sets the repo label -> absolute path mapping (used in tests).
+// SetRepoPaths sets the repo label -> absolute path mapping (used in tests). It
+// republishes the bundle preserving the current store and snapshot.
 func (e *Engine) SetRepoPaths(paths map[string]string) {
-	e.repoPaths = paths
+	b := e.current.Load()
+	e.current.Store(&snapshotBundle{store: b.store, snapshot: b.snapshot, repoPaths: paths})
 }
 
-// SetSnapshot sets the snapshot (used in tests).
+// SetSnapshot sets the snapshot (used in tests, and by AutoLoadSnapshot at
+// startup). It republishes the bundle preserving the current store and repoPaths.
 func (e *Engine) SetSnapshot(snap *facts.Snapshot) {
-	e.snapshot = snap
+	b := e.current.Load()
+	e.current.Store(&snapshotBundle{store: b.store, snapshot: snap, repoPaths: b.repoPaths})
 }
 
-// RepoPaths returns the repo label -> absolute path mapping (populated in append mode).
+// RepoPaths returns a copy of the repo label -> absolute path mapping (populated in
+// append mode). Lock-free bundle load; the copy lets callers retain it safely.
 func (e *Engine) RepoPaths() map[string]string {
-	if e.repoPaths == nil {
+	b := e.current.Load()
+	if b.repoPaths == nil {
 		return nil
 	}
-	cp := make(map[string]string, len(e.repoPaths))
-	for k, v := range e.repoPaths {
+	cp := make(map[string]string, len(b.repoPaths))
+	for k, v := range b.repoPaths {
 		cp[k] = v
 	}
 	return cp
@@ -119,18 +154,21 @@ func (e *Engine) RepoPaths() map[string]string {
 // corresponding repo root. In single-repo mode it falls back to the snapshot's
 // RepoPath.
 func (e *Engine) ResolveFactFile(f *facts.Fact) string {
+	// Load the bundle once so repoPaths and snapshot are read as a consistent pair.
+	b := e.current.Load()
+
 	// Multi-repo: if the fact has a Repo label that maps to a known path,
 	// strip the repo prefix from f.File and join with the absolute root.
-	if f.Repo != "" && e.repoPaths != nil {
-		if absRoot, ok := e.repoPaths[f.Repo]; ok {
+	if f.Repo != "" && b.repoPaths != nil {
+		if absRoot, ok := b.repoPaths[f.Repo]; ok {
 			rel := strings.TrimPrefix(f.File, f.Repo+"/")
 			return filepath.Join(absRoot, rel)
 		}
 	}
 
 	// Single-repo fallback.
-	if e.snapshot != nil {
-		return filepath.Join(e.snapshot.Meta.RepoPath, f.File)
+	if b.snapshot != nil {
+		return filepath.Join(b.snapshot.Meta.RepoPath, f.File)
 	}
 	return f.File
 }
@@ -155,30 +193,49 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 	repoLabel := filepath.Base(absRepo)
 
+	// Build into a BRAND-NEW store off to the side. The currently-published bundle
+	// (prev) is never mutated, so any in-flight reader keeps iterating a consistent,
+	// frozen snapshot while we regenerate. We publish the new store atomically at the
+	// end (see e.current.Store below), which is the single linearization point.
+	prev := e.current.Load()
+	work := facts.NewStore()
+	var workRepoPaths map[string]string
+
 	if appendMode {
-		// Track repo label -> absolute path for multi-repo resolution.
-		if e.repoPaths == nil {
-			e.repoPaths = make(map[string]string)
+		// Carry prior repos forward. All() returns an independent COPY, so mutating
+		// `work` (TagUntagged/TagRange/SetRepoRange) can never touch prev.store, which
+		// stays published and readable until we swap. This is the transient ~1x
+		// fact-set memory cost of lock-free reads in append mode.
+		workRepoPaths = make(map[string]string, len(prev.repoPaths)+1)
+		for k, v := range prev.repoPaths {
+			workRepoPaths[k] = v
 		}
-		e.repoPaths[repoLabel] = absRepo
+		if prev.store != nil {
+			work.Add(prev.store.All()...)
+		}
+
+		// Track repo label -> absolute path for multi-repo resolution.
+		workRepoPaths[repoLabel] = absRepo
 
 		// Retroactively tag facts from a prior single-repo snapshot so they
 		// are filterable by repo alongside the newly appended facts.
-		if e.snapshot != nil && e.store.Count() > 0 {
-			prevLabel := filepath.Base(e.snapshot.Meta.RepoPath)
-			if _, alreadyTracked := e.repoPaths[prevLabel]; !alreadyTracked {
-				tagged := e.store.TagUntagged(prevLabel, prevLabel+"/")
+		if prev.snapshot != nil && work.Count() > 0 {
+			prevLabel := filepath.Base(prev.snapshot.Meta.RepoPath)
+			if _, alreadyTracked := workRepoPaths[prevLabel]; !alreadyTracked {
+				tagged := work.TagUntagged(prevLabel, prevLabel+"/")
 				if tagged > 0 {
-					e.repoPaths[prevLabel] = e.snapshot.Meta.RepoPath
+					workRepoPaths[prevLabel] = prev.snapshot.Meta.RepoPath
 					log.Printf("[engine] retroactively tagged %d existing facts with repo label %q", tagged, prevLabel)
 				}
 			}
 		}
-	} else {
-		// Clear previous state (default single-repo behaviour).
-		e.store.Clear()
-		e.repoPaths = nil
 	}
+	// Non-append: `work` stays empty and workRepoPaths stays nil — the prior bundle
+	// is left intact for in-flight readers until the swap (no in-place Clear()).
+
+	// Point the build-scratch store at `work` so the pipeline helpers (which read
+	// e.store under e.mu) operate on the new store with no signature changes.
+	e.store = work
 
 	// Per-stage timing breakdown (logged at the end). Snapshotting is
 	// extraction-dominated, so this makes it obvious where time goes.
@@ -325,11 +382,12 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			HeuristicInsights: countHeuristicInsights(allInsights),
 			Coverage:          coverageSummary(e.store),
 		},
-		// FactsRef aliases the store's slice rather than copying it: this snapshot
-		// is the live one (e.snapshot) and its Facts are only ever read (renderers,
-		// diff, query_insights), so a second full copy of every fact would just
-		// double steady-state RSS for a large repo. Baselines, which must stay
-		// immutable as the store regenerates, still use the copying All().
+		// FactsRef aliases the store's slice rather than copying it. This is safe:
+		// `work` is published (below) and then NEVER mutated again — the next
+		// regeneration builds a different store — so a reader iterating snapshot.Facts
+		// iterates a frozen backing array. Copying every fact would just double
+		// steady-state RSS for a large repo. Baselines, which must stay immutable as
+		// the store regenerates, still use the copying All().
 		Facts:    e.store.FactsRef(),
 		Insights: allInsights,
 	}
@@ -344,7 +402,9 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	snapshot.Meta.Renderers = usedRenderers
 	log.Printf("[engine] produced %d artifacts using %d renderers", len(snapshot.Artifacts), len(usedRenderers))
 
-	e.snapshot = snapshot
+	// Publish atomically. This single Store() is the linearization point: before it
+	// readers see the prior bundle, after it the new one — never a half-built store.
+	e.current.Store(&snapshotBundle{store: work, snapshot: snapshot, repoPaths: workRepoPaths})
 	log.Printf("[engine] snapshot generated in %s", duration)
 	log.Printf("[engine] timings: walk=%s hash=%s extract=%s link=%s graph=%s explain=%s render=%s",
 		tWalk.Round(time.Millisecond), tHash.Round(time.Millisecond), tExtract.Round(time.Millisecond),
@@ -713,7 +773,11 @@ func (e *Engine) runRenderers(ctx context.Context, snapshot *facts.Snapshot) ([]
 // WriteArtifacts writes all snapshot artifacts to the output directory,
 // including facts.jsonl, insights.json, and snapshot.meta.json.
 func (e *Engine) WriteArtifacts(repoPath string) error {
-	if e.snapshot == nil {
+	// Load the published bundle once and read only from it. The bundle is immutable,
+	// so serializing facts/insights/meta here is race-free even if another generate
+	// publishes a newer bundle meanwhile.
+	b := e.current.Load()
+	if b.snapshot == nil {
 		return fmt.Errorf("no snapshot generated")
 	}
 
@@ -735,7 +799,7 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	outputHashes := make(map[string]string)
 
 	// Write renderer artifacts (e.g. llm_context.md)
-	for _, a := range e.snapshot.Artifacts {
+	for _, a := range b.snapshot.Artifacts {
 		path := filepath.Join(outDir, a.Name)
 		if err := os.WriteFile(path, a.Content, 0o644); err != nil {
 			return fmt.Errorf("writing %s: %w", a.Name, err)
@@ -746,7 +810,7 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 
 	// Write facts.jsonl (serialize to a buffer first so we can hash the exact bytes)
 	var factsBuf bytes.Buffer
-	if err := e.store.WriteJSONL(&factsBuf); err != nil {
+	if err := b.store.WriteJSONL(&factsBuf); err != nil {
 		return fmt.Errorf("serializing facts.jsonl: %w", err)
 	}
 	factsPath := filepath.Join(outDir, "facts.jsonl")
@@ -757,7 +821,7 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	log.Printf("[engine] wrote %s", factsPath)
 
 	// Write insights.json
-	insightsJSON, err := json.MarshalIndent(e.snapshot.Insights, "", "  ")
+	insightsJSON, err := json.MarshalIndent(b.snapshot.Insights, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling insights: %w", err)
 	}
@@ -768,11 +832,14 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	outputHashes["insights.json"] = hashBytes(insightsJSON)
 	log.Printf("[engine] wrote %s (%d bytes)", insightsPath, len(insightsJSON))
 
-	// Record the output hashes on the snapshot meta before serializing it.
-	e.snapshot.Meta.OutputHashes = outputHashes
+	// Record the output hashes on a COPY of the meta rather than mutating the
+	// published (shared, immutable) snapshot in place. SnapshotMeta is a value type,
+	// so this copy shares its slices but overrides only OutputHashes.
+	meta := b.snapshot.Meta
+	meta.OutputHashes = outputHashes
 
 	// Write snapshot.meta.json (the internal superset, incl. per-file hashes)
-	metaJSON, err := json.MarshalIndent(e.snapshot.Meta, "", "  ")
+	metaJSON, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling meta: %w", err)
 	}
@@ -783,7 +850,7 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	log.Printf("[engine] wrote %s (%d bytes)", metaPath, len(metaJSON))
 
 	// Write receipt.json (the compact provenance + quality manifest)
-	receiptJSON, err := json.MarshalIndent(e.snapshot.Meta.Receipt(), "", "  ")
+	receiptJSON, err := json.MarshalIndent(meta.Receipt(), "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling receipt: %w", err)
 	}
@@ -792,6 +859,18 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 		return fmt.Errorf("writing receipt.json: %w", err)
 	}
 	log.Printf("[engine] wrote %s (%d bytes)", receiptPath, len(receiptJSON))
+
+	// Republish so in-memory receipt tools (snapshot_receipt/compare_receipts) reflect
+	// the output hashes, WITHOUT mutating the snapshot we just read. Only publish if
+	// the bundle hasn't been superseded by a concurrent generate in the meantime —
+	// generate-vs-generate is serialized (e.mu) and the server serializes the whole
+	// generate handler (genMu), so under normal use this always succeeds; the guard
+	// just avoids clobbering a newer snapshot in any unexpected interleaving.
+	if e.current.Load() == b {
+		snapCopy := *b.snapshot
+		snapCopy.Meta = meta
+		e.current.CompareAndSwap(b, &snapshotBundle{store: b.store, snapshot: &snapCopy, repoPaths: b.repoPaths})
+	}
 
 	return nil
 }
@@ -804,25 +883,26 @@ func hashBytes(b []byte) string {
 
 // GetArtifact returns the content of a named artifact, or the generated JSONL/JSON files.
 func (e *Engine) GetArtifact(name string) ([]byte, error) {
-	if e.snapshot == nil {
+	b := e.current.Load()
+	if b.snapshot == nil {
 		return nil, fmt.Errorf("no snapshot generated")
 	}
 
 	switch name {
 	case "facts.jsonl":
 		var buf bytes.Buffer
-		if err := e.store.WriteJSONL(&buf); err != nil {
+		if err := b.store.WriteJSONL(&buf); err != nil {
 			return nil, err
 		}
 		return buf.Bytes(), nil
 	case "insights.json":
-		return json.MarshalIndent(e.snapshot.Insights, "", "  ")
+		return json.MarshalIndent(b.snapshot.Insights, "", "  ")
 	case "snapshot.meta.json":
-		return json.MarshalIndent(e.snapshot.Meta, "", "  ")
+		return json.MarshalIndent(b.snapshot.Meta, "", "  ")
 	case "receipt.json":
-		return json.MarshalIndent(e.snapshot.Meta.Receipt(), "", "  ")
+		return json.MarshalIndent(b.snapshot.Meta.Receipt(), "", "  ")
 	default:
-		for _, a := range e.snapshot.Artifacts {
+		for _, a := range b.snapshot.Artifacts {
 			if a.Name == name {
 				return a.Content, nil
 			}

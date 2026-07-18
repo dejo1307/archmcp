@@ -37,15 +37,16 @@ func globalReceiptPath() (string, error) {
 // per repo via gitInfo (nil for non-git dirs) and fact counts come from the store's
 // byRepo index. AddedAt/CommitChangedAt are left to the merge step; InGraphFor is
 // derived at write time. Entries are sorted by Label for stable output.
-func (e *Engine) repoEntries() []facts.GraphRepoEntry {
-	// label -> absolute path for every repo in the graph.
-	repos := e.RepoPaths()
+func (e *Engine) repoEntries(b *snapshotBundle) []facts.GraphRepoEntry {
+	// label -> absolute path for every repo in the graph, read from the passed
+	// bundle so all counts come from one consistent published snapshot.
+	repos := b.repoPaths
 	if len(repos) == 0 {
-		// Single-repo graph: RepoPaths() is nil until a repo is appended.
-		if e.snapshot == nil || e.snapshot.Meta.RepoPath == "" {
+		// Single-repo graph: repoPaths is nil until a repo is appended.
+		if b.snapshot == nil || b.snapshot.Meta.RepoPath == "" {
 			return nil
 		}
-		abs := e.snapshot.Meta.RepoPath
+		abs := b.snapshot.Meta.RepoPath
 		repos = map[string]string{filepath.Base(abs): abs}
 	}
 
@@ -55,7 +56,7 @@ func (e *Engine) repoEntries() []facts.GraphRepoEntry {
 			Label:     label,
 			Path:      abs,
 			Git:       gitInfo(abs),
-			FactCount: e.store.CountByRepo(label),
+			FactCount: b.store.CountByRepo(label),
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Label < entries[j].Label })
@@ -83,10 +84,10 @@ func crossRepoEdgeCount(store *facts.Store) int {
 // assembleGraphReceipt builds a GraphReceipt describing the current graph state.
 // Membership timestamps (AddedAt/CommitChangedAt) are set to their first-write
 // defaults here; WriteGlobalReceipt merges forward from any prior receipt.
-func (e *Engine) assembleGraphReceipt(now time.Time) facts.GraphReceipt {
+func (e *Engine) assembleGraphReceipt(b *snapshotBundle, now time.Time) facts.GraphReceipt {
 	nowStr := now.UTC().Format(time.RFC3339)
 
-	entries := e.repoEntries()
+	entries := e.repoEntries(b)
 	for i := range entries {
 		entries[i].AddedAt = nowStr
 		entries[i].InGraphFor = "0s"
@@ -95,15 +96,15 @@ func (e *Engine) assembleGraphReceipt(now time.Time) facts.GraphReceipt {
 	gr := facts.GraphReceipt{
 		GeneratedAt:        nowStr,
 		EnolaVersion:       version.Version,
-		ServiceCount:       len(e.store.ByKind(facts.KindService)),
-		CrossRepoEdgeCount: crossRepoEdgeCount(e.store),
-		Coverage:           coverageSummary(e.store),
+		ServiceCount:       len(b.store.ByKind(facts.KindService)),
+		CrossRepoEdgeCount: crossRepoEdgeCount(b.store),
+		Coverage:           coverageSummary(b.store),
 		Repos:              entries,
 	}
-	if e.snapshot != nil {
-		gr.SnapshotID = e.snapshot.Meta.SnapshotID
-		gr.FactCount = e.snapshot.Meta.FactCount
-		gr.InsightCount = e.snapshot.Meta.InsightCount
+	if b.snapshot != nil {
+		gr.SnapshotID = b.snapshot.Meta.SnapshotID
+		gr.FactCount = b.snapshot.Meta.FactCount
+		gr.InsightCount = b.snapshot.Meta.InsightCount
 	}
 	return gr
 }
@@ -114,7 +115,10 @@ func (e *Engine) assembleGraphReceipt(now time.Time) facts.GraphReceipt {
 // then atomically replaces the file. It never aborts a snapshot: a missing home dir
 // is logged and skipped, and a corrupt prior receipt is treated as no prior state.
 func (e *Engine) WriteGlobalReceipt() error {
-	if e.snapshot == nil {
+	// Load the published bundle once; everything below reads from it, so the receipt
+	// reflects a single consistent snapshot even if a generate republishes meanwhile.
+	b := e.current.Load()
+	if b.snapshot == nil {
 		return fmt.Errorf("no snapshot generated")
 	}
 
@@ -128,7 +132,7 @@ func (e *Engine) WriteGlobalReceipt() error {
 	}
 
 	now := time.Now().UTC()
-	gr := e.assembleGraphReceipt(now)
+	gr := e.assembleGraphReceipt(b, now)
 
 	// Merge forward membership timestamps from the prior receipt, if any. Repos
 	// present in the prior receipt but absent now are simply omitted: the receipt
