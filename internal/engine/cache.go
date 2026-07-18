@@ -520,7 +520,16 @@ import (
 // (a macOS-only fallback, a TYPE_CHECKING typing stub, an ImportError
 // alternative) whose name is bound by a sibling branch, so a symbol for one is a
 // dead-code false positive. Cached Python snapshots must re-extract.
-const cacheVersion = "v119"
+// v120: the Svelte extractor now scans a SFC's template/markup for identifiers
+// referenced only from there — event-handler attributes (on:click={fn},
+// onclick={fn}), mustache expressions ({fn(x)}), and bind:/use: directives —
+// folding them into a KindFileRef fact, mirroring the TS extractor's JSX file-ref
+// pass. Previously extractSvelteSFC fed only the <script> block to the parser and
+// discarded the template outright, so any handler/action/binding wired solely from
+// markup had zero incoming edges and read as dead (find_orphans medium-confidence
+// FP; ~136 of 229 medium orphans across the Svelte corpus). Cached Svelte snapshots
+// must re-extract.
+const cacheVersion = "v120"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

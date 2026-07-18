@@ -327,6 +327,130 @@ func TestExtract_SvelteKit_LibAlias(t *testing.T) {
 	}
 }
 
+// --- Markup reference pass (KindFileRef) ---
+//
+// A Svelte SFC's template is never fed to the tree-sitter script parser, so a
+// function referenced only from markup — an event-handler attribute, a mustache
+// call expression, or a bind:/use: directive — has no incoming edge and reads as
+// dead to find_orphans. These assert the markup pass folds such references in via
+// a KindFileRef fact, exactly like the TS extractor's JSX file-ref pass.
+
+func TestExtractSvelteMarkupRefs_EventHandlerAttribute(t *testing.T) {
+	ff := extractSvelte(t, map[string]string{
+		"src/Button.svelte": `<script lang="ts">
+  function handleClick() {
+    console.log('clicked');
+  }
+</script>
+
+<button on:click={handleClick}>Click</button>
+`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/Button.svelte")
+	if !hasTarget(targets, "handleClick") {
+		t.Errorf("Button.svelte file_ref should reference handleClick via on:click; got %v", targets)
+	}
+}
+
+func TestExtractSvelteMarkupRefs_Svelte5EventAttribute(t *testing.T) {
+	ff := extractSvelte(t, map[string]string{
+		"src/Nav.svelte": `<script lang="ts">
+  function closeDrawer() {
+    isOpen = false;
+  }
+  let isOpen = false;
+</script>
+
+<button onclick={closeDrawer}>Close</button>
+`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/Nav.svelte")
+	if !hasTarget(targets, "closeDrawer") {
+		t.Errorf("Nav.svelte file_ref should reference closeDrawer via onclick; got %v", targets)
+	}
+}
+
+func TestExtractSvelteMarkupRefs_MustacheCallExpression(t *testing.T) {
+	ff := extractSvelte(t, map[string]string{
+		"src/Entry.svelte": `<script lang="ts">
+  const formatDate = (d: string) => d;
+  export let date = '';
+</script>
+
+<span>{formatDate(date)}</span>
+`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/Entry.svelte")
+	if !hasTarget(targets, "formatDate") {
+		t.Errorf("Entry.svelte file_ref should reference formatDate via mustache call; got %v", targets)
+	}
+}
+
+func TestExtractSvelteMarkupRefs_BindDirectiveShorthand(t *testing.T) {
+	ff := extractSvelte(t, map[string]string{
+		"src/Dialog.svelte": `<script lang="ts">
+  export let close: () => void;
+</script>
+
+<DialogContainer bind:close>
+</DialogContainer>
+`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/Dialog.svelte")
+	if !hasTarget(targets, "close") {
+		t.Errorf("Dialog.svelte file_ref should reference close via bind:close shorthand; got %v", targets)
+	}
+}
+
+func TestExtractSvelteMarkupRefs_UseActionDirective(t *testing.T) {
+	ff := extractSvelte(t, map[string]string{
+		"src/Tooltip.svelte": `<script lang="ts">
+  function tooltip(node: HTMLElement) {
+    return {};
+  }
+</script>
+
+<div use:tooltip>Hover me</div>
+`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/Tooltip.svelte")
+	if !hasTarget(targets, "tooltip") {
+		t.Errorf("Tooltip.svelte file_ref should reference tooltip via use:tooltip; got %v", targets)
+	}
+}
+
+// A style block must never leak identifiers into the markup ref pass (CSS
+// selectors/properties share no namespace with script symbols, but a naive scan
+// could still tokenize them).
+func TestExtractSvelteMarkupRefs_StyleBlockNotScanned(t *testing.T) {
+	ff := extractSvelte(t, map[string]string{
+		"src/Card.svelte": `<script lang="ts">
+  function unusedHelper() {
+    return 1;
+  }
+</script>
+
+<div class="scroll">hi</div>
+
+<style>
+  .scroll {
+    overflow: scroll;
+  }
+</style>
+`,
+	}, false)
+
+	targets := fileRefTargets(ff, "src/Card.svelte")
+	if hasTarget(targets, "scroll") {
+		t.Errorf("Card.svelte file_ref should not pick up CSS tokens from <style>; got %v", targets)
+	}
+}
+
 func TestIsSvelteFile(t *testing.T) {
 	tests := []struct {
 		path string

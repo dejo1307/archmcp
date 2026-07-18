@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -146,6 +148,173 @@ func isSvelteFile(path string) bool {
 	return strings.ToLower(filepath.Ext(path)) == ".svelte"
 }
 
+// svelteJSKeywords are excluded from markup identifier scanning — they can appear
+// inside a mustache expression (`{#if x}`, `{x ? a : b}`) but never name a script
+// symbol, so capturing them would be a wasted no-op at best.
+var svelteJSKeywords = map[string]bool{
+	"if": true, "else": true, "each": true, "as": true, "await": true, "then": true,
+	"catch": true, "true": true, "false": true, "null": true, "undefined": true,
+	"this": true, "new": true, "typeof": true, "in": true, "of": true, "async": true,
+	"return": true, "const": true, "let": true, "var": true, "function": true,
+	"void": true, "delete": true, "instanceof": true, "yield": true, "from": true,
+}
+
+var (
+	svelteIdentRe     = regexp.MustCompile(`[A-Za-z_$][A-Za-z0-9_$]*`)
+	svelteDirectiveRe = regexp.MustCompile(`\b(?:bind|use):([A-Za-z_$][A-Za-z0-9_$]*)`)
+)
+
+// findTagBlockSpans returns the byte ranges [start,end) of every `<tag ...>...
+// </tag>` element (case-insensitive) in src, so callers can exclude them from a
+// markup scan. Mirrors extractSvelteScriptBlocks' tag-finding but is reusable for
+// any tag name (here: script and style).
+func findTagBlockSpans(src []byte, tag string) [][2]int {
+	var spans [][2]int
+	pos := 0
+	openTag := []byte("<" + tag)
+	closeTag := []byte("</" + tag + ">")
+	for {
+		remaining := src[pos:]
+		idx := indexCaseInsensitive(remaining, openTag)
+		if idx < 0 {
+			break
+		}
+		tagStart := pos + idx
+
+		tagEnd := bytes.IndexByte(src[tagStart:], '>')
+		if tagEnd < 0 {
+			break
+		}
+		tagEnd += tagStart
+
+		closeIdx := indexCaseInsensitive(src[tagEnd+1:], closeTag)
+		if closeIdx < 0 {
+			break
+		}
+		closeIdx += tagEnd + 1
+
+		end := closeIdx + len(closeTag)
+		spans = append(spans, [2]int{tagStart, end})
+		pos = end
+	}
+	return spans
+}
+
+// svelteMarkupOnly returns the SFC source with every <script> and <style> block
+// removed, leaving only the template/markup portion for reference scanning.
+func svelteMarkupOnly(src []byte) []byte {
+	spans := append(findTagBlockSpans(src, "script"), findTagBlockSpans(src, "style")...)
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+
+	var out []byte
+	pos := 0
+	for _, sp := range spans {
+		if sp[0] < pos {
+			continue // overlapping/out-of-order tag match, skip rather than corrupt output
+		}
+		out = append(out, src[pos:sp[0]]...)
+		pos = sp[1]
+	}
+	out = append(out, src[pos:]...)
+	return out
+}
+
+// scanMustacheExpressions returns the raw byte content of every top-level {...}
+// mustache expression in markup — event-handler attribute values (on:click={fn}),
+// bind:/use: expression forms (bind:x={fn}), and text/attribute interpolations
+// ({fn(x)}) are all syntactically a brace group at this level. It tracks brace
+// depth and skips over '/" string literals so a brace inside a string literal
+// can't unbalance the scan; backtick template literals are not string-skipped
+// (so a nested ${...} is still walked as an expression, which is what we want),
+// at the cost of not perfectly balancing a stray literal '{' or '}' inside one.
+func scanMustacheExpressions(markup []byte) [][]byte {
+	var exprs [][]byte
+	depth := 0
+	start := 0
+	var quote byte
+	for i := 0; i < len(markup); i++ {
+		c := markup[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			if depth > 0 {
+				quote = c
+			}
+		case '{':
+			if depth == 0 {
+				start = i + 1
+			}
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth == 0 {
+					exprs = append(exprs, markup[start:i])
+				}
+			}
+		}
+	}
+	return exprs
+}
+
+// extractSvelteMarkupRefs scans a Svelte SFC's template for identifiers referenced
+// only from markup — event-handler attributes (on:click={fn}, onclick={fn}),
+// mustache expressions ({fn()}), and bind:/use: directives — that the script-only
+// AST walk in extractSvelteScriptBlock can never see (extractSvelteSFC only feeds
+// <script> content to the parser; the template is otherwise discarded). It emits a
+// single KindFileRef fact per file, exactly like the TS extractor's JSX file-ref
+// pass (collectTSFileRefs in ts.go), so these references fold into find_orphans'
+// usage graph downstream by short-name matching. The pass only ever ADDS
+// references — it can hide a real orphan but never invent a false one.
+func extractSvelteMarkupRefs(rawSrc []byte, relFile string) *facts.Fact {
+	markup := svelteMarkupOnly(rawSrc)
+
+	seen := make(map[string]bool)
+	var targets []string
+	add := func(name string) {
+		if name == "" || svelteJSKeywords[name] || seen[name] {
+			return
+		}
+		seen[name] = true
+		targets = append(targets, name)
+	}
+
+	for _, expr := range scanMustacheExpressions(markup) {
+		for _, m := range svelteIdentRe.FindAll(expr, -1) {
+			add(string(m))
+		}
+	}
+	for _, m := range svelteDirectiveRe.FindAllSubmatch(markup, -1) {
+		add(string(m[1]))
+	}
+
+	if len(targets) == 0 {
+		return nil
+	}
+
+	rels := make([]facts.Relation, 0, len(targets))
+	for _, t := range targets {
+		rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: t})
+	}
+	return &facts.Fact{
+		Kind:      facts.KindFileRef,
+		Name:      relFile,
+		File:      relFile,
+		Line:      1,
+		Props:     map[string]any{"language": "typescript"},
+		Relations: rels,
+	}
+}
+
 // extractSvelteSFC extracts architectural facts from a Svelte Single File Component.
 func (e *TSExtractor) extractSvelteSFC(rawSrc []byte, relFile string, isSvelteKit bool, aliases map[string]string) []facts.Fact {
 	var result []facts.Fact
@@ -153,6 +322,10 @@ func (e *TSExtractor) extractSvelteSFC(rawSrc []byte, relFile string, isSvelteKi
 
 	for _, block := range blocks {
 		result = append(result, e.extractSvelteScriptBlock(block, relFile, isSvelteKit, aliases)...)
+	}
+
+	if ref := extractSvelteMarkupRefs(rawSrc, relFile); ref != nil {
+		result = append(result, *ref)
 	}
 
 	dir := filepath.Dir(relFile)
