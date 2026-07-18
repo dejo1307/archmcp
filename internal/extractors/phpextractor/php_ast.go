@@ -76,6 +76,7 @@ type phpBodyMetrics struct {
 	callsInScalingLoop []string        // distinct targets invoked inside a repeating loop (N+1 candidates)
 	inScalingSeen      map[string]bool // dedup set for callsInScalingLoop
 	recursive          bool            // body directly calls the enclosing callable
+	ioDirect           bool            // body makes a direct filesystem/DB/HTTP call
 }
 
 // --- program / namespace ---
@@ -361,6 +362,9 @@ func (w *phpWalker) handleCallable(node *sitter.Node, isMethod bool) {
 	if w.metrics.recursive {
 		props["recursive_self"] = true
 	}
+	if w.metrics.ioDirect {
+		props["io_direct"] = true
+	}
 	w.metrics = nil
 }
 
@@ -427,6 +431,7 @@ func (w *phpWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[strin
 			target := w.resolveRef(phpText(fn, w.src))
 			w.addCall(ownerIdx, seen, target)
 			w.recordCallMetrics(target)
+			w.recordIODirect(lastNsSegment(phpText(fn, w.src)), phpIOGlobalFuncs)
 		}
 		w.walkChildrenExcept(node, ownerIdx, seen, fn)
 		return
@@ -437,6 +442,7 @@ func (w *phpWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[strin
 			target := w.resolveRef(phpText(scope, w.src)) + "::" + phpText(method, w.src)
 			w.addCall(ownerIdx, seen, target)
 			w.recordCallMetrics(target)
+			w.recordIODirect(phpText(method, w.src), phpIOMethods)
 		}
 		w.walkChildrenExcept(node, ownerIdx, seen, method)
 		return
@@ -449,6 +455,9 @@ func (w *phpWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[strin
 			target := phpText(method, w.src)
 			w.addCall(ownerIdx, seen, target)
 			w.recordCallMetrics(target)
+			// $wpdb->get_results(...) / PDO->fetchAll() — the receiver type is unknown,
+			// so a distinctive DB round-trip method name is our only I/O signal.
+			w.recordIODirect(target, phpIOMethods)
 		}
 		w.walkChildrenExcept(node, ownerIdx, seen, method)
 		return
@@ -543,6 +552,37 @@ func (w *phpWalker) recordCallMetrics(target string) {
 			w.metrics.inScalingSeen[target] = true
 			w.metrics.callsInScalingLoop = append(w.metrics.callsInScalingLoop, target)
 		}
+	}
+}
+
+// phpIOGlobalFuncs are global functions that perform a direct filesystem / DB /
+// HTTP round-trip. Matched against the trailing segment of a resolved call name,
+// so it is not affected by a leading "\" or a namespace prefix.
+var phpIOGlobalFuncs = map[string]bool{
+	"file_get_contents": true, "file_put_contents": true, "fopen": true,
+	"fread": true, "fwrite": true, "fgets": true, "readfile": true,
+	"curl_exec": true, "fsockopen": true,
+	"mysqli_query": true, "mysqli_connect": true, "mysql_query": true, "pg_query": true,
+	"wp_remote_get": true, "wp_remote_post": true, "wp_remote_request": true, "wp_remote_head": true,
+}
+
+// phpIOMethods are distinctive instance/static method names that unambiguously
+// perform a DB round-trip. The receiver type is unknown at parse time, so only
+// names that are I/O across the common drivers are listed — WordPress `$wpdb`
+// (get_results/get_row/get_var/get_col), PDO/mysqli (fetch_all/fetchAll/
+// fetch_assoc, query, execute). Ambiguous accessors (get/read/load) are excluded.
+var phpIOMethods = map[string]bool{
+	"get_results": true, "get_row": true, "get_var": true, "get_col": true,
+	"fetch_all": true, "fetchAll": true, "fetch_assoc": true,
+	"query": true, "execute": true,
+}
+
+// recordIODirect flags the current callable as performing direct I/O when name is
+// in set. Keyed off the syntactic callee (global-function name or method segment),
+// mirroring the Rust/Python extractors' io_direct detection.
+func (w *phpWalker) recordIODirect(name string, set map[string]bool) {
+	if w.metrics != nil && set[name] {
+		w.metrics.ioDirect = true
 	}
 }
 

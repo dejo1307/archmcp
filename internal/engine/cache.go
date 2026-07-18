@@ -538,7 +538,15 @@ import (
 // graph), and recursive_self. Previously Rust symbols carried only cyclomatic, so
 // the performance analyzer produced nothing for Rust regardless of nesting depth
 // or I/O. Cached Rust snapshots must re-extract to gain the new props.
-const cacheVersion = "v121"
+//
+// v122: the PHP extractor now emits io_direct (direct filesystem/DB/HTTP primitives
+// on the callee — file_get_contents/fopen/curl_exec/mysqli_*/wp_remote_*, and
+// distinctive DB methods $wpdb->get_results/get_row/get_var/get_col, PDO/mysqli
+// fetch_all/query/execute) and performs_io (transitive fixpoint over the call
+// graph). Previously PHP emitted loop metadata but no I/O signal, so an in-loop
+// call to a DB/HTTP wrapper was not recognized as an N+1. Cached PHP snapshots must
+// re-extract to gain the new props.
+const cacheVersion = "v122"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
