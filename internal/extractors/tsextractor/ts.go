@@ -209,17 +209,18 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 // extractCtx bundles the per-file state threaded through declaration extraction
 // so symbols can be enriched with React/Next.js semantic classification.
 type extractCtx struct {
-	src        []byte
-	relFile    string
-	dir        string
-	isTSX      bool
-	isNextJS   bool
-	isVue      bool
-	isNuxt     bool
-	orms       ormFlags
-	importMap  map[string]string
-	ioBindings map[string]bool // local names bound to imports from a network module (I/O sinks)
-	knownFiles map[string]bool // repo-relative (slash) paths of all indexed TS/JS files
+	src         []byte
+	relFile     string
+	dir         string
+	isTSX       bool
+	isNextJS    bool
+	isVue       bool
+	isNuxt      bool
+	isSvelteKit bool
+	orms        ormFlags
+	importMap   map[string]string
+	ioBindings  map[string]bool // local names bound to imports from a network module (I/O sinks)
+	knownFiles  map[string]bool // repo-relative (slash) paths of all indexed TS/JS files
 }
 
 func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit bool, orms ormFlags, aliases map[string]string, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
@@ -265,17 +266,18 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	result = append(result, e.extractImports(root, src, relFile, aliases)...)
 
 	ctx := &extractCtx{
-		src:        src,
-		relFile:    relFile,
-		dir:        filepath.Dir(relFile),
-		isTSX:      isTSX,
-		isNextJS:   isNextJS,
-		isVue:      isVue,
-		isNuxt:     isNuxt,
-		orms:       orms,
-		importMap:  buildImportSymbols(root, src, relFile, aliases),
-		ioBindings: buildIOImportBindings(root, src),
-		knownFiles: knownFiles,
+		src:         src,
+		relFile:     relFile,
+		dir:         filepath.Dir(relFile),
+		isTSX:       isTSX,
+		isNextJS:    isNextJS,
+		isVue:       isVue,
+		isNuxt:      isNuxt,
+		isSvelteKit: isSvelteKit,
+		orms:        orms,
+		importMap:   buildImportSymbols(root, src, relFile, aliases),
+		ioBindings:  buildIOImportBindings(root, src),
+		knownFiles:  knownFiles,
 	}
 	decls := e.extractDeclarations(root, ctx)
 
@@ -1021,6 +1023,32 @@ func classifySymbol(f *facts.Fact, name string, body *sitter.Node, ctx *extractC
 		f.Props["framework"] = "nextjs"
 		return
 	}
+	// SvelteKit `load` export: +page.ts/+layout.ts/+page.server.ts/+layout.server.ts
+	// under routes/. Invoked by SvelteKit's router for every navigation/render,
+	// never by an in-repo call — same shape as the Next.js case above.
+	if symbolKind == facts.SymbolFunc && name == "load" && ctx.isSvelteKit &&
+		isUnderRoutesDir(ctx.relFile) && svelteKitLoadFileBasenames[svelteKitFileBasename(ctx.relFile)] {
+		f.Props["web_component"] = "route_handler"
+		f.Props["framework"] = "sveltekit"
+		return
+	}
+	// SvelteKit +server.ts HTTP-method export (GET/POST/...) under routes/.
+	if symbolKind == facts.SymbolFunc && reactHTTPMethods[name] && ctx.isSvelteKit &&
+		isUnderRoutesDir(ctx.relFile) && svelteKitFileBasename(ctx.relFile) == "+server" {
+		f.Props["web_component"] = "route_handler"
+		f.Props["method"] = name
+		f.Props["framework"] = "sveltekit"
+		return
+	}
+	// SvelteKit hooks.server.ts hooks (handle/handleError/handleFetch) — invoked by
+	// SvelteKit by file/export-name convention, never by an in-repo call. Same
+	// precedent as Python's framework-hook-name exclusion (gunicorn/ASGI lifespan).
+	if symbolKind == facts.SymbolFunc && svelteKitHookNames[name] && ctx.isSvelteKit &&
+		svelteKitFileBasename(ctx.relFile) == "hooks.server" {
+		f.Props["web_component"] = "route_handler"
+		f.Props["framework"] = "sveltekit"
+		return
+	}
 	// Composable (Vue/Nuxt) or hook (React): a useXxx function.
 	if symbolKind == facts.SymbolFunc && isHookName(name) {
 		if ctx.isVue || ctx.isNuxt {
@@ -1079,6 +1107,39 @@ func isAppRouteFile(relFile string) bool {
 		}
 	}
 	return false
+}
+
+// svelteKitLoadFileBasenames are +page/+layout (client or server) file basenames
+// (extension stripped) whose exported `load` function is invoked by SvelteKit's
+// router for every navigation/render — never by an in-repo call.
+var svelteKitLoadFileBasenames = map[string]bool{
+	"+page": true, "+layout": true,
+	"+page.server": true, "+layout.server": true,
+}
+
+// svelteKitHookNames are the hooks.server.ts exports SvelteKit invokes by
+// file/export-name convention (request handling, error reporting, outbound
+// fetch interception) — never by an in-repo call.
+var svelteKitHookNames = map[string]bool{
+	"handle": true, "handleError": true, "handleFetch": true,
+}
+
+// isUnderRoutesDir reports whether relFile has a "routes" path segment, mirroring
+// detectSvelteKitRoute's own directory check (svelte.go).
+func isUnderRoutesDir(relFile string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(relFile), "/") {
+		if seg == "routes" {
+			return true
+		}
+	}
+	return false
+}
+
+// svelteKitFileBasename returns relFile's basename with its .ts/.js extension
+// stripped, e.g. "+page.server.ts" -> "+page.server", "hooks.server.ts" -> "hooks.server".
+func svelteKitFileBasename(relFile string) string {
+	base := filepath.Base(filepath.ToSlash(relFile))
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
 // containsJSX reports whether the subtree rooted at node contains a JSX element.
@@ -2087,8 +2148,8 @@ type tsBodyWalker struct {
 	// differs from scalingDepth for `while (true)`, which adds no factor of n but whose
 	// body still runs many times — so a query inside it is still an N+1 candidate.
 	repeatDepth int
-	rels                []facts.Relation
-	seen                map[string]bool
+	rels        []facts.Relation
+	seen        map[string]bool
 }
 
 func (w *tsBodyWalker) recordCall(target string) {

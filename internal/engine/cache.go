@@ -555,7 +555,19 @@ import (
 // via member calls is not detectable (dropped upstream). Previously C++ emitted
 // loop metadata but no I/O signal, so an in-loop file/socket wrapper call was not
 // recognized as an N+1. Cached C/C++ snapshots must re-extract to gain the new props.
-const cacheVersion = "v123"
+//
+// v124: the TS extractor now classifies SvelteKit's file/export-name-convention
+// entry points as route_handler — `load` in +page.ts/+layout.ts/+page.server.ts/
+// +layout.server.ts (under routes/), GET/POST/... in +server.ts (under routes/),
+// and handle/handleError/handleFetch in hooks.server.ts — reusing the existing
+// web_component=="route_handler" exclusion classifySymbol already applies to
+// Next.js App Router handlers. detectSvelteKitRoute only ever ran for .svelte SFCs,
+// so these plain-.ts framework entry points got no route fact and no symbol
+// classification at all; their exports read as find_orphans false positives
+// (11 of 80 remaining medium orphans across the Svelte corpus after v120). No
+// enterprise-side change: the route_handler consumer already existed. Cached
+// TypeScript/Svelte snapshots must re-extract.
+const cacheVersion = "v124"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

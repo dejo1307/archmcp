@@ -734,6 +734,136 @@ export const useUser = () => null`,
 	}
 }
 
+// extractAllSvelteKit is extractAll's SvelteKit counterpart: it drops a
+// svelte.config.js into the temp project so detectSvelteKit(dir) is true, then
+// extracts the given plain .ts files (route/hook files, not .svelte SFCs) through
+// the normal extractFile path.
+func extractAllSvelteKit(t *testing.T, files map[string]string) []facts.Fact {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tsconfig.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "svelte.config.js"), []byte(`export default {}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for relPath, content := range files {
+		absPath := filepath.Join(dir, relPath)
+		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var relFiles []string
+	for f := range files {
+		relFiles = append(relFiles, f)
+	}
+	ext := New()
+	result, err := ext.Extract(context.Background(), dir, relFiles)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	return result
+}
+
+func TestExtract_SvelteKitLoadClassification(t *testing.T) {
+	ff := extractAllSvelteKit(t, map[string]string{
+		"src/routes/+page.ts": `export const load = async ({ params }) => { return {}; }`,
+	})
+	f, ok := findFact(ff, "src/routes.load")
+	if !ok {
+		t.Fatalf("expected fact src/routes.load; got %v", factNames(ff))
+	}
+	if f.Props["web_component"] != "route_handler" {
+		t.Errorf("load web_component = %v, want route_handler", f.Props["web_component"])
+	}
+	if f.Props["framework"] != "sveltekit" {
+		t.Errorf("load framework = %v, want sveltekit", f.Props["framework"])
+	}
+}
+
+func TestExtract_SvelteKitServerLoadClassification(t *testing.T) {
+	ff := extractAllSvelteKit(t, map[string]string{
+		"src/routes/+page.server.ts":   `export const load = async () => { return {}; }`,
+		"src/routes/+layout.server.ts": `export const load = async () => { return {}; }`,
+	})
+	for _, name := range []string{"src/routes.load"} {
+		f, ok := findFact(ff, name)
+		if !ok {
+			t.Fatalf("expected fact %s; got %v", name, factNames(ff))
+		}
+		if f.Props["web_component"] != "route_handler" {
+			t.Errorf("%s web_component = %v, want route_handler", name, f.Props["web_component"])
+		}
+	}
+}
+
+func TestExtract_SvelteKitServerRouteClassification(t *testing.T) {
+	ff := extractAllSvelteKit(t, map[string]string{
+		"src/routes/api/users/+server.ts": `export async function GET() { return new Response(); }
+export async function POST() { return new Response(); }`,
+	})
+	get, ok := findFact(ff, "src/routes/api/users.GET")
+	if !ok {
+		t.Fatalf("expected fact src/routes/api/users.GET; got %v", factNames(ff))
+	}
+	if get.Props["web_component"] != "route_handler" {
+		t.Errorf("GET web_component = %v, want route_handler", get.Props["web_component"])
+	}
+	if get.Props["method"] != "GET" {
+		t.Errorf("GET method = %v, want GET", get.Props["method"])
+	}
+	if get.Props["framework"] != "sveltekit" {
+		t.Errorf("GET framework = %v, want sveltekit", get.Props["framework"])
+	}
+	post, ok := findFact(ff, "src/routes/api/users.POST")
+	if !ok {
+		t.Fatalf("expected fact src/routes/api/users.POST")
+	}
+	if post.Props["web_component"] != "route_handler" {
+		t.Errorf("POST web_component = %v, want route_handler", post.Props["web_component"])
+	}
+}
+
+func TestExtract_SvelteKitHooksServerClassification(t *testing.T) {
+	ff := extractAllSvelteKit(t, map[string]string{
+		"src/hooks.server.ts": `export const handle = async ({ event, resolve }) => resolve(event);
+export const handleError = async ({ error }) => { console.error(error); };
+export const handleFetch = async ({ request, fetch }) => fetch(request);`,
+	})
+	for _, name := range []string{"src.handle", "src.handleError", "src.handleFetch"} {
+		f, ok := findFact(ff, name)
+		if !ok {
+			t.Fatalf("expected fact %s; got %v", name, factNames(ff))
+		}
+		if f.Props["web_component"] != "route_handler" {
+			t.Errorf("%s web_component = %v, want route_handler", name, f.Props["web_component"])
+		}
+		if f.Props["framework"] != "sveltekit" {
+			t.Errorf("%s framework = %v, want sveltekit", name, f.Props["framework"])
+		}
+	}
+}
+
+// A plain .ts file exporting a function named "load" outside routes/ (or in a
+// SvelteKit project that isn't actually routing this file) must NOT be tagged —
+// the classification is scoped to the file-name+directory construct, not the name
+// alone, or a coincidental helper named "load" would be hidden from find_orphans.
+func TestExtract_SvelteKitLoad_ScopedToRoutesDir(t *testing.T) {
+	ff := extractAllSvelteKit(t, map[string]string{
+		"src/lib/loader.ts": `export const load = async () => { return {}; }`,
+	})
+	f, ok := findFact(ff, "src/lib.load")
+	if !ok {
+		t.Fatalf("expected fact src/lib.load; got %v", factNames(ff))
+	}
+	if f.Props["web_component"] == "route_handler" {
+		t.Error("load outside routes/ must not be classified as route_handler")
+	}
+}
+
 func TestExtract_RouteHandlerClassification(t *testing.T) {
 	ff := extractAll(t, map[string]string{
 		"src/app/api/users/route.ts": `export async function GET() { return Response.json([]) }
