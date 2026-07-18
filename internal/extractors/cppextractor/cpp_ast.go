@@ -174,6 +174,7 @@ type cppBodyMetrics struct {
 	callsInScalingLoop []string        // distinct targets invoked inside a repeating loop (N+1 candidates)
 	inScalingSeen      map[string]bool // dedup set for callsInScalingLoop
 	recursive          bool            // body directly calls the enclosing function
+	ioDirect           bool            // body makes a direct file/socket I/O call
 }
 
 // cppStlIterators are <algorithm>/<numeric> functions whose lambda/functor argument
@@ -320,6 +321,19 @@ var cppCheapMethods = map[string]bool{
 	"push": true, "pop": true, "emplace": true, "reserve": true,
 	"first": true, "second": true, "count": true, "capacity": true,
 	"str": true, "get": true, "set": true, "key": true, "value": true,
+}
+
+// cppIODirect are distinctive C/C++ primitives that perform a direct file or
+// socket DATA transfer — the seed for io_direct/performs_io. Deliberately narrow:
+// only unambiguous data-I/O free functions. Console/logging primitives
+// (printf/fprintf/fputs) are excluded (they would mark every Msg::-style logger as
+// I/O and turn ordinary logging-in-a-loop into false N+1s), as are the ambiguous
+// socket verbs (bind = std::bind, connect = Qt signal, send/recv/accept). C++
+// <fstream> stream I/O (ifs.read(), operator>>) is not detectable here — member
+// calls on non-`this` receivers and std::-qualified names are dropped upstream.
+var cppIODirect = map[string]bool{
+	"fopen": true, "freopen": true, "fread": true, "fwrite": true,
+	"socket": true, "recvfrom": true, "sendto": true,
 }
 
 // cppBooleanOp reports whether a binary_expression's operator is a short-circuit
@@ -746,6 +760,9 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 	}
 	if m.recursive {
 		props["recursive_self"] = true
+	}
+	if m.ioDirect {
+		props["io_direct"] = true
 	}
 	w.metrics, w.loopDepth = savedMetrics, savedDepth
 	w.scalingDepth, w.repeatDepth = savedScaling, savedRepeat
@@ -1631,6 +1648,13 @@ func (w *astWalker) handleCall(node *sitter.Node) {
 
 	callee := node.ChildByFieldName("function")
 	name, kind, root := calleeInfo(callee, w.src)
+	// io_direct: a direct file/socket data-transfer primitive called as a free or
+	// namespaced function (fopen/fread/… , not an obj->method()). Kept deliberately
+	// narrow — console/logging primitives (fprintf/fputs) and the ambiguous socket
+	// verbs (bind/connect/send) are excluded to avoid mass false positives.
+	if kind != calleeField && w.metrics != nil && cppIODirect[name] {
+		w.metrics.ioDirect = true
+	}
 	switch {
 	case name == "":
 		// unresolved (call through pointer, etc.)

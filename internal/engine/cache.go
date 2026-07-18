@@ -546,7 +546,16 @@ import (
 // graph). Previously PHP emitted loop metadata but no I/O signal, so an in-loop
 // call to a DB/HTTP wrapper was not recognized as an N+1. Cached PHP snapshots must
 // re-extract to gain the new props.
-const cacheVersion = "v122"
+//
+// v123: the C++ extractor now emits io_direct (a narrow, unambiguous set of direct
+// file/socket data-transfer primitives on a free/namespaced call — fopen/freopen/
+// fread/fwrite/socket/recvfrom/sendto; console/logging fprintf and the ambiguous
+// socket verbs bind/connect/send are deliberately excluded to avoid mass FPs) and
+// performs_io (transitive fixpoint over the call graph). C++ <fstream> stream I/O
+// via member calls is not detectable (dropped upstream). Previously C++ emitted
+// loop metadata but no I/O signal, so an in-loop file/socket wrapper call was not
+// recognized as an N+1. Cached C/C++ snapshots must re-extract to gain the new props.
+const cacheVersion = "v123"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

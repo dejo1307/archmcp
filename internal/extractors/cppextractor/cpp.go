@@ -219,10 +219,76 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 	// Canonicalise bare edge targets to "<dir>.<...>".
 	canonicalizeTargets(allFacts, typeIndex)
 
+	// Propagate the direct-I/O signal transitively over the (now-canonical) call
+	// graph, so a function reaching a file/socket primitive through a wrapper is
+	// also performs_io — lets the performance analyzer flag an in-loop wrapper call
+	// as an N+1.
+	computeCppPerformsIO(allFacts)
+
 	// Resolve quoted #include targets to module dirs.
 	resolveIncludeDependencies(allFacts, headerIndex)
 
 	return allFacts, nil
+}
+
+// computeCppPerformsIO seeds performs_io from io_direct and propagates it over
+// RelCalls edges whose target is a known symbol Name, via a monotone false->true
+// fixpoint (a port of the Python/Rust/PHP extractors' pass). Call targets are
+// canonical "<dir>.<name>" after canonicalizeTargets, matching symbol Names, so a
+// same- or cross-directory resolved call propagates the flag.
+func computeCppPerformsIO(allFacts []facts.Fact) {
+	exists := make(map[string]bool)
+	for i := range allFacts {
+		if allFacts[i].Kind == facts.KindSymbol {
+			exists[allFacts[i].Name] = true
+		}
+	}
+
+	io := make(map[string]bool)      // name -> performs I/O (directly or transitively)
+	adj := make(map[string][]string) // name -> called names that are known symbols
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
+		}
+		if b, _ := f.Props["io_direct"].(bool); b {
+			io[f.Name] = true
+		}
+		seen := make(map[string]bool)
+		for _, r := range f.Relations {
+			if r.Kind != facts.RelCalls || r.Target == f.Name || seen[r.Target] || !exists[r.Target] {
+				continue
+			}
+			seen[r.Target] = true
+			adj[f.Name] = append(adj[f.Name], r.Target)
+		}
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for name, callees := range adj {
+			if io[name] {
+				continue
+			}
+			for _, c := range callees {
+				if io[c] {
+					io[name] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind == facts.KindSymbol && io[f.Name] {
+			if f.Props == nil {
+				f.Props = map[string]any{}
+			}
+			f.Props["performs_io"] = true
+		}
+	}
 }
 
 // dedupeSymbols merges duplicate symbol facts that share a canonical name — most
