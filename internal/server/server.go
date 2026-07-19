@@ -60,11 +60,15 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 		cfg: cfg,
 	}
 
+	instructions := "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). To verify what a change did to the architecture, pin a baseline before editing and diff after: generate_snapshot → set_baseline → make changes → generate_snapshot → diff_snapshot. diff_snapshot is delta-only (it reports just what changed — new/resolved findings, new coupling, added/removed symbols — never pre-existing state), so prefer it over re-reading files to confirm a change. Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, gRPC/Protobuf, and OpenAPI."
+	if cfg != nil && cfg.ChangeVerifyHint != "" {
+		instructions += " " + cfg.ChangeVerifyHint
+	}
 	mcpServer := mcp.NewServer(&mcp.Implementation{
 		Name:    "enola",
 		Version: version.Version,
 	}, &mcp.ServerOptions{
-		Instructions: "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). To verify what a change did to the architecture, pin a baseline before editing and diff after: generate_snapshot → set_baseline → make changes → generate_snapshot → diff_snapshot. diff_snapshot is delta-only (it reports just what changed — new/resolved findings, new coupling, added/removed symbols — never pre-existing state), so prefer it over re-reading files to confirm a change. Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, gRPC/Protobuf, and OpenAPI.",
+		Instructions: instructions,
 	})
 
 	s.mcp = mcpServer
@@ -1453,13 +1457,19 @@ func fileSuffix(file string) string {
 // exists it points at diff_snapshot (to see what changed). This makes the
 // edit-verify loop self-guiding without the agent having to know it up front.
 func (s *Server) loopHint(absRepo string) string {
+	// extra is optional host/wrapper guidance (e.g. an additional change-verification
+	// tool) appended to whichever branch fires — see config.Config.ChangeVerifyHint.
+	extra := ""
+	if s.cfg != nil && s.cfg.ChangeVerifyHint != "" {
+		extra = " " + s.cfg.ChangeVerifyHint
+	}
 	baselineFacts := filepath.Join(s.eng.OutputDir(absRepo), engine.BaselineSubdir, "facts.jsonl")
 	if _, err := os.Stat(baselineFacts); err == nil {
 		return "\n\n**Verify your change:** a baseline is pinned — call diff_snapshot to see exactly what changed since set_baseline " +
-			"(new/resolved findings, new coupling, added/removed symbols). Re-pin from here with set_baseline if you're starting a new change."
+			"(new/resolved findings, new coupling, added/removed symbols). Re-pin from here with set_baseline if you're starting a new change." + extra
 	}
 	return "\n\n**About to change code?** Call set_baseline now to freeze this snapshot as the baseline, then after editing re-run " +
-		"generate_snapshot and diff_snapshot to see exactly what your change did — no need to re-read files to confirm it."
+		"generate_snapshot and diff_snapshot to see exactly what your change did — no need to re-read files to confirm it." + extra
 }
 
 // currentRepoPath returns the absolute repo path of the live snapshot, falling
