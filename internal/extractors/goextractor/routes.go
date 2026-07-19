@@ -18,7 +18,7 @@ type routeInfo struct {
 }
 
 // extractRoutes walks function bodies in a Go file looking for HTTP route registrations.
-func extractRoutes(fset *token.FileSet, f *ast.File, relFile, pkgDir string) []facts.Fact {
+func extractRoutes(fset *token.FileSet, f *ast.File, relFile, pkgDir string, index routePrefixIndex) []facts.Fact {
 	var result []facts.Fact
 
 	// Detect which router framework is imported
@@ -33,15 +33,36 @@ func extractRoutes(fset *token.FileSet, f *ast.File, relFile, pkgDir string) []f
 			continue
 		}
 
-		// Track subrouter prefix assignments: varName -> prefix
-		prefixes := make(map[string]string)
-
-		for _, stmt := range fn.Body.List {
-			extractRoutesFromStmt(fset, stmt, prefixes, framework, relFile, pkgDir, &result)
+		// Seed this function's prefix map from the interprocedural index: when its
+		// router parameter is mounted under one or more prefixes (a subrouter passed
+		// in from a caller), emit its routes once per distinct prefix. A function
+		// absent from the index (a root/unreached/simple function that owns its
+		// router) gets a single empty seed — byte-for-byte today's behavior.
+		paramName, seeds := seedsFor(index, funcKeyFor(fn, pkgDir))
+		for _, seed := range seeds {
+			prefixes := make(map[string]string)
+			if paramName != "" && seed != "" {
+				prefixes[paramName] = seed
+			}
+			for _, stmt := range fn.Body.List {
+				extractRoutesFromStmt(fset, stmt, prefixes, framework, relFile, pkgDir, &result)
+			}
 		}
 	}
 
 	return result
+}
+
+// seedsFor returns the router-parameter name and the sorted seed prefixes for a
+// function, defaulting to a single empty seed (today's behavior) when the index
+// has no entry for it.
+func seedsFor(index routePrefixIndex, key string) (string, []string) {
+	if index != nil {
+		if e := index[key]; e != nil && len(e.seeds) > 0 {
+			return e.paramName, e.seeds
+		}
+	}
+	return "", []string{""}
 }
 
 // detectRouterFramework checks imports to determine which router framework is used.
@@ -87,18 +108,7 @@ func extractRoutesFromStmt(fset *token.FileSet, stmt ast.Stmt, prefixes map[stri
 
 	case *ast.AssignStmt:
 		// Track subrouter assignments: apiRouter := router.PathPrefix("/api").Subrouter()
-		if len(s.Lhs) == 1 && len(s.Rhs) == 1 {
-			if ident, ok := s.Lhs[0].(*ast.Ident); ok {
-				if prefix := extractSubrouterPrefix(s.Rhs[0]); prefix != "" {
-					// Resolve parent prefix
-					parentVar := extractReceiverVar(s.Rhs[0])
-					if parentPrefix, ok := prefixes[parentVar]; ok {
-						prefix = parentPrefix + prefix
-					}
-					prefixes[ident.Name] = prefix
-				}
-			}
-		}
+		applySubrouterAssign(s, prefixes)
 		// Also check for route registrations in assignments (e.g. _ = router.HandleFunc(...))
 		for _, rhs := range s.Rhs {
 			if call, ok := rhs.(*ast.CallExpr); ok {
@@ -335,6 +345,29 @@ func extractHandleFuncCall(fset *token.FileSet, call *ast.CallExpr, prefixes map
 		handler: handler,
 		line:    fset.Position(call.Pos()).Line,
 	}
+}
+
+// applySubrouterAssign records the prefix of a subrouter variable assigned by
+// `x := parent.PathPrefix("/p").Subrouter()`, composing the parent router's known
+// prefix. It is the single source of truth for subrouter-prefix composition,
+// shared by route-fact emission (extractRoutesFromStmt) and the interprocedural
+// pre-pass (analyzeRouterFunc) so the two can never drift.
+func applySubrouterAssign(s *ast.AssignStmt, prefixes map[string]string) {
+	if len(s.Lhs) != 1 || len(s.Rhs) != 1 {
+		return
+	}
+	ident, ok := s.Lhs[0].(*ast.Ident)
+	if !ok {
+		return
+	}
+	prefix := extractSubrouterPrefix(s.Rhs[0])
+	if prefix == "" {
+		return
+	}
+	if parentPrefix, ok := prefixes[extractReceiverVar(s.Rhs[0])]; ok {
+		prefix = parentPrefix + prefix
+	}
+	prefixes[ident.Name] = prefix
 }
 
 // extractSubrouterPrefix extracts the path prefix from a PathPrefix(...).Subrouter() chain.

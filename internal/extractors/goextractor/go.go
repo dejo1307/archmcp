@@ -137,6 +137,12 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	}
 	grpcStubs := buildGoGRPCStubIndex(allParsed)
 
+	// Pass 2d: module-wide interprocedural route-prefix index. Resolves the mount
+	// prefix a router parameter carries at its call sites, so routes registered on
+	// a subrouter passed into a per-file/per-package function are stored at their
+	// true runtime path (e.g. "/api/settings/courses", not the bare "/courses").
+	routePrefixes := buildRoutePrefixIndex(parsedPkgs, modulePath, pkgNames, globalFieldTypes)
+
 	// Pass 3: extract facts per package using the global field types.
 	for pkgDir, pp := range parsedPkgs {
 		select {
@@ -147,14 +153,14 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		if pp.pkgName == "" {
 			continue
 		}
-		pkgFacts := e.extractPackage(fset, pkgDir, pp, modulePath, globalFieldTypes, pkgNames, grpcStubs)
+		pkgFacts := e.extractPackage(fset, pkgDir, pp, modulePath, globalFieldTypes, pkgNames, grpcStubs, routePrefixes)
 		allFacts = append(allFacts, pkgFacts...)
 	}
 
 	return allFacts, nil
 }
 
-func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *parsedPkg, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex) []facts.Fact {
+func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *parsedPkg, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex, routePrefixes routePrefixIndex) []facts.Fact {
 	var result []facts.Fact
 
 	// Package-scoped map of top-level `var x = NewXxxClient(...)` bindings, so a
@@ -172,7 +178,7 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *par
 		if !ok {
 			continue
 		}
-		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames, grpcStubs, pkgVarClients, baseURLLits)...)
+		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames, grpcStubs, pkgVarClients, baseURLLits, routePrefixes)...)
 	}
 
 	moduleFact := facts.Fact{
@@ -194,7 +200,7 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *par
 	return result
 }
 
-func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex, pkgVarClients map[string]string, baseURLLits map[string][]string) []facts.Fact {
+func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex, pkgVarClients map[string]string, baseURLLits map[string][]string, routePrefixes routePrefixIndex) []facts.Fact {
 	var result []facts.Fact
 
 	// Build per-file import alias map for call resolution.
@@ -242,7 +248,7 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 	}
 
 	// Extract route registrations
-	result = append(result, extractRoutes(fset, f, relFile, pkgDir)...)
+	result = append(result, extractRoutes(fset, f, relFile, pkgDir, routePrefixes)...)
 
 	// Extract outbound HTTP-client calls
 	result = append(result, extractHTTPClientFacts(fset, f, relFile, pkgDir, baseURLLits)...)

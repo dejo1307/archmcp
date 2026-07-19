@@ -567,7 +567,21 @@ import (
 // (11 of 80 remaining medium orphans across the Svelte corpus after v120). No
 // enterprise-side change: the route_handler consumer already existed. Cached
 // TypeScript/Svelte snapshots must re-extract.
-const cacheVersion = "v124"
+//
+// v125: the Go route extractor now composes gorilla/mux (and chi) subrouter
+// PathPrefix mounts INTERPROCEDURALLY. Previously it composed prefixes only within
+// a single function, so a real backend that creates `apiRouter :=
+// router.PathPrefix("/api").Subrouter()` and passes it into a per-file/per-package
+// registration function (`func RegisterX(r *mux.Router){ r.HandleFunc("/courses",…) }`)
+// stored the bare leaf "/courses" instead of the true runtime "/api/courses". A
+// module-wide fixpoint (buildRoutePrefixIndex) now propagates the prefix a router
+// argument carries at each call site — including receiver-method registrations
+// (`h.RegisterRoutes(sub)`, `app.Handler.RegisterRoutes(sub)`), resolved via the
+// shared resolveChain type resolver — to the callee's router parameter, seeding
+// extractRoutes so routes are stored at their full mounted path. This corrects
+// cross-repo client↔route matching (unused-routes false positives) and route
+// facts consumed by impact_analysis/traverse. Cached Go snapshots must re-extract.
+const cacheVersion = "v125"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
