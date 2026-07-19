@@ -773,3 +773,145 @@ func Middleware(next http.Handler) http.Handler { return next }
 		t.Error("http_handler must be omitted on non-handlers, not set to false")
 	}
 }
+
+// A struct used only as a composite literal must get a RelInstantiates edge so it
+// is not mis-reported as dead code (type usage is otherwise not edge-tracked).
+func TestExtract_StructUsage_CompositeLiteral(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"internal/app/app.go": `package app
+
+import "bytes"
+
+type Config struct{ Name string }
+
+func build() Config {
+	_ = bytes.Buffer{}   // external type: must NOT get an edge
+	return Config{Name: "x"}
+}
+`,
+	})
+
+	sym, ok := findFact(ff, "internal/app.build")
+	if !ok {
+		t.Fatal("missing symbol internal/app.build")
+	}
+	if !hasRelation(sym, facts.RelInstantiates, "internal/app.Config") {
+		t.Errorf("want RelInstantiates internal/app.Config on build; relations = %v", sym.Relations)
+	}
+	// The external stdlib type must not be emitted as an instantiates target.
+	for _, r := range sym.Relations {
+		if r.Kind == facts.RelInstantiates && r.Target == "bytes.Buffer" {
+			t.Errorf("must not emit instantiates edge to external type bytes.Buffer")
+		}
+	}
+}
+
+// A pure-data struct referenced only as another struct's field type must get a
+// RelInstantiates edge from the owning struct.
+func TestExtract_StructUsage_FieldType(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"internal/app/app.go": `package app
+
+type Inner struct{ V int }
+
+type Outer struct {
+	inner Inner
+}
+`,
+	})
+
+	sym, ok := findFact(ff, "internal/app.Outer")
+	if !ok {
+		t.Fatal("missing symbol internal/app.Outer")
+	}
+	if !hasRelation(sym, facts.RelInstantiates, "internal/app.Inner") {
+		t.Errorf("want RelInstantiates internal/app.Inner on Outer; relations = %v", sym.Relations)
+	}
+}
+
+// scalingLoopDepthOf returns the scaling_loop_depth prop of a symbol, or -1.
+func scalingLoopDepthOf(ff []facts.Fact, name string) int {
+	for _, f := range ff {
+		if f.Kind == facts.KindSymbol && f.Name == name {
+			if v, ok := f.Props["scaling_loop_depth"].(int); ok {
+				return v
+			}
+			return 0 // present symbol, no scaling loops emitted
+		}
+	}
+	return -1
+}
+
+// A hierarchical nest (each inner collection reached through the outer loop var)
+// visits each element once → scaling_loop_depth 1, not 3.
+func TestExtract_ScalingDepth_HierarchicalIsLinear(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"internal/app/walk.go": `package app
+
+type File struct{ Decls []int }
+type Pkg struct{ Files []File }
+
+func walk(pkgs []Pkg) int {
+	total := 0
+	for _, pkg := range pkgs {
+		for _, f := range pkg.Files {
+			for _, d := range f.Decls {
+				total += d
+			}
+		}
+	}
+	return total
+}
+`,
+	})
+
+	if got := scalingLoopDepthOf(ff, "internal/app.walk"); got != 1 {
+		t.Errorf("hierarchical walk scaling_loop_depth = %d, want 1", got)
+	}
+}
+
+// An all-pairs nest over the same collection is genuinely quadratic → depth 2.
+func TestExtract_ScalingDepth_AllPairsIsQuadratic(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"internal/app/pairs.go": `package app
+
+func pairs(xs []int) int {
+	n := 0
+	for i := range xs {
+		for j := range xs {
+			n += i + j
+		}
+	}
+	return n
+}
+`,
+	})
+
+	if got := scalingLoopDepthOf(ff, "internal/app.pairs"); got != 2 {
+		t.Errorf("all-pairs scaling_loop_depth = %d, want 2", got)
+	}
+}
+
+// Indexing through the outer loop var (pkgs[i].Files) is also hierarchical.
+func TestExtract_ScalingDepth_IndexThroughOuterVarIsLinear(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"internal/app/idx.go": `package app
+
+type P struct{ Items []int }
+
+func walkIdx(ps []P) int {
+	total := 0
+	for i := range ps {
+		for _, item := range ps[i].Items {
+			total += item
+		}
+	}
+	return total
+}
+`,
+	})
+
+	if got := scalingLoopDepthOf(ff, "internal/app.walkIdx"); got != 1 {
+		t.Errorf("index-through-outer-var scaling_loop_depth = %d, want 1", got)
+	}
+}

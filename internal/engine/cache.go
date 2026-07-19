@@ -581,7 +581,21 @@ import (
 // extractRoutes so routes are stored at their full mounted path. This corrects
 // cross-repo client↔route matching (unused-routes false positives) and route
 // facts consumed by impact_analysis/traverse. Cached Go snapshots must re-extract.
-const cacheVersion = "v125"
+//
+// v126: three Go-extractor accuracy fixes. (a) Collection-root routes registered
+// as `subrouter.HandleFunc("", h)` are no longer dropped by the empty-path guard
+// that fired before subrouter-prefix composition — an empty STRING LITERAL is now
+// composed to the subrouter prefix (e.g. "/api/settings/courses"), while a dynamic
+// (non-literal) path arg still drops; same relaxation in chi/net-http. (b) A struct
+// used as a composite literal (`T{}`/`&T{}`) or as another struct's named field
+// type now emits a RelInstantiates edge (internal types only), so a struct used
+// only as a value/field is no longer a dead-code false positive — matching the
+// Swift/Rust convention. (c) scaling_loop_depth now discounts HIERARCHICAL nested
+// loops: a loop whose ranged collection is reached through an enclosing loop
+// variable (`range pkg.Files`, `range pkgs[i]…`) visits each element once and adds
+// no factor of n, so a tree/AST walk no longer reads as O(n²+); all-pairs over an
+// independent/same collection still counts. Cached Go snapshots must re-extract.
+const cacheVersion = "v126"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -251,13 +251,16 @@ func extractChiRoutes(fset *token.FileSet, call *ast.CallExpr, prefixes map[stri
 	}
 
 	path := extractStringArg(call, 0)
-	if path == "" {
+	if path == "" && !isStaticStringArg(call.Args[0]) {
 		return nil
 	}
 
 	receiverVar := identName(sel.X)
 	if prefix, ok := prefixes[receiverVar]; ok {
 		path = prefix + path
+	}
+	if path == "" {
+		path = "/"
 	}
 
 	handler := ""
@@ -291,8 +294,11 @@ func extractNetHTTPRoutes(fset *token.FileSet, call *ast.CallExpr) []routeInfo {
 	}
 
 	path := extractStringArg(call, 0)
-	if path == "" {
+	if path == "" && !isStaticStringArg(call.Args[0]) {
 		return nil
+	}
+	if path == "" {
+		path = "/"
 	}
 
 	handler := ""
@@ -325,7 +331,11 @@ func extractHandleFuncCall(fset *token.FileSet, call *ast.CallExpr, prefixes map
 	}
 
 	path := extractStringArg(call, 0)
-	if path == "" {
+	// An empty path from a static string literal ("") is an intentional
+	// collection-root registration on a subrouter (e.g. coursesRouter.HandleFunc("",
+	// list)) whose real path is the subrouter's prefix. Only drop when the path is
+	// empty because the argument is dynamic/unresolvable, not a literal.
+	if path == "" && !isStaticStringArg(call.Args[0]) {
 		return nil
 	}
 
@@ -333,6 +343,11 @@ func extractHandleFuncCall(fset *token.FileSet, call *ast.CallExpr, prefixes map
 	receiverVar := identName(sel.X)
 	if prefix, ok := prefixes[receiverVar]; ok {
 		path = prefix + path
+	}
+	// A composed-empty path means an empty registration on a prefix-less router —
+	// the runtime root.
+	if path == "" {
+		path = "/"
 	}
 
 	handler := ""
@@ -345,6 +360,21 @@ func extractHandleFuncCall(fset *token.FileSet, call *ast.CallExpr, prefixes map
 		handler: handler,
 		line:    fset.Position(call.Pos()).Line,
 	}
+}
+
+// isStaticStringArg reports whether expr is a statically-known string path — a
+// string literal (possibly empty) or a concatenation of them — versus a dynamic
+// argument whose path can't be determined. An empty path from a static literal is
+// an intentional collection-root registration; an empty path from a non-static
+// arg means the path is unknown and the route must be dropped.
+func isStaticStringArg(expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		return e.Kind == token.STRING
+	case *ast.BinaryExpr:
+		return e.Op == token.ADD && (isStaticStringArg(e.X) || isStaticStringArg(e.Y))
+	}
+	return false
 }
 
 // applySubrouterAssign records the prefix of a subrouter variable assigned by

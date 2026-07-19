@@ -243,7 +243,7 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 		case *ast.FuncDecl:
 			result = append(result, e.extractFunc(fset, d, relFile, pkgDir, modulePath, fileImports, fieldTypes)...)
 		case *ast.GenDecl:
-			result = append(result, e.extractGenDecl(fset, d, relFile, pkgDir)...)
+			result = append(result, e.extractGenDecl(fset, d, relFile, pkgDir, modulePath, fileImports)...)
 		}
 	}
 
@@ -341,6 +341,12 @@ func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile
 				Target: call,
 			})
 		}
+		for _, inst := range m.instantiates {
+			symbolFact.Relations = append(symbolFact.Relations, facts.Relation{
+				Kind:   facts.RelInstantiates,
+				Target: inst,
+			})
+		}
 		// Only emit non-trivial metrics so existing snapshots and facts from
 		// other extractors (which don't compute these) stay clean.
 		symbolFact.Props["cyclomatic"] = m.cyclomatic
@@ -374,41 +380,48 @@ func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile
 	return result
 }
 
-func (e *GoExtractor) extractGenDecl(fset *token.FileSet, gd *ast.GenDecl, relFile, pkgDir string) []facts.Fact {
+func (e *GoExtractor) extractGenDecl(fset *token.FileSet, gd *ast.GenDecl, relFile, pkgDir, modulePath string, fileImports map[string]string) []facts.Fact {
 	var result []facts.Fact
 
 	for _, spec := range gd.Specs {
 		switch s := spec.(type) {
 		case *ast.TypeSpec:
-			result = append(result, e.extractTypeSpec(fset, gd, s, relFile, pkgDir)...)
+			result = append(result, e.extractTypeSpec(fset, gd, s, relFile, pkgDir, modulePath, fileImports)...)
 		}
 	}
 
 	return result
 }
 
-func (e *GoExtractor) extractTypeSpec(fset *token.FileSet, gd *ast.GenDecl, ts *ast.TypeSpec, relFile, pkgDir string) []facts.Fact {
+func (e *GoExtractor) extractTypeSpec(fset *token.FileSet, gd *ast.GenDecl, ts *ast.TypeSpec, relFile, pkgDir, modulePath string, fileImports map[string]string) []facts.Fact {
 	var result []facts.Fact
 
 	name := ts.Name.Name
 	exported := ts.Name.IsExported()
 	qualifiedName := pkgDir + "." + name
+	ctx := resolveCtx{pkgDir: pkgDir, modulePath: modulePath, imports: fileImports}
 
 	var kind string
 	var implements []string
 
+	var instantiates []string
 	switch t := ts.Type.(type) {
 	case *ast.StructType:
 		kind = facts.SymbolStruct
-		// Extract embedded types (potential interface implementations)
 		if t.Fields != nil {
 			for _, field := range t.Fields.List {
 				if len(field.Names) == 0 {
-					// Embedded type
-					embeddedName := typeExprToString(field.Type)
-					if embeddedName != "" {
+					// Embedded type — a potential interface implementation.
+					if embeddedName := typeExprToString(field.Type); embeddedName != "" {
 						implements = append(implements, embeddedName)
 					}
+					continue
+				}
+				// A named field of an internal struct type USES that type. Emit a
+				// usage edge so a struct referenced only as a field type is not a
+				// dead-code false positive (type usage is otherwise not edge-tracked).
+				if target := resolveTypeName(typeExprToString(field.Type), ctx); target != "" && isInternalTypeTarget(target, pkgDir) {
+					instantiates = append(instantiates, target)
 				}
 			}
 		}
@@ -439,6 +452,12 @@ func (e *GoExtractor) extractTypeSpec(fset *token.FileSet, gd *ast.GenDecl, ts *
 			Target: impl,
 		})
 	}
+	for _, inst := range instantiates {
+		symbolFact.Relations = append(symbolFact.Relations, facts.Relation{
+			Kind:   facts.RelInstantiates,
+			Target: inst,
+		})
+	}
 
 	result = append(result, symbolFact)
 	return result
@@ -459,6 +478,7 @@ type resolveCtx struct {
 // derived from a single walk of a function body.
 type bodyMetrics struct {
 	calls              []string // resolved call targets, deduped, in source order
+	instantiates       []string // resolved internal struct types constructed as composite literals, deduped
 	callsInLoop        []string // subset of calls invoked at loop nesting depth >= 1
 	callsInScalingLoop []string // subset of calls invoked at scaling (unbounded) nesting depth >= 1
 	loopDepth          int      // max nesting depth of for/range loops
@@ -481,6 +501,7 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 	var m bodyMetrics
 	decisions := 0
 	seen := make(map[string]bool)
+	instSeen := make(map[string]bool)
 	inLoopSeen := make(map[string]bool)
 	inScalingSeen := make(map[string]bool)
 	var loopEnds []token.Pos // end positions of enclosing loops
@@ -494,6 +515,12 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 	// candidate (a parent-chain walk doing one SELECT per level). Only a range over a
 	// composite literal is excluded here. Scaling and repeating are not the same property.
 	var repeatEnds []token.Pos
+	// loopScopes tracks the loop variables introduced by every enclosing loop, so an
+	// inner loop whose ranged collection is reached THROUGH an outer loop variable
+	// (a hierarchical walk like `range pkg.Files`) can be told from one over an
+	// independent/same collection (all-pairs). A hierarchical loop visits each element
+	// once across the whole nest, so it adds no factor of n to the Big-O exponent.
+	var loopScopes []loopScope
 
 	ast.Inspect(body, func(n ast.Node) bool {
 		if n == nil {
@@ -508,6 +535,9 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 		}
 		for len(repeatEnds) > 0 && n.Pos() >= repeatEnds[len(repeatEnds)-1] {
 			repeatEnds = repeatEnds[:len(repeatEnds)-1]
+		}
+		for len(loopScopes) > 0 && n.Pos() >= loopScopes[len(loopScopes)-1].end {
+			loopScopes = loopScopes[:len(loopScopes)-1]
 		}
 		switch x := n.(type) {
 		case *ast.ForStmt:
@@ -525,6 +555,7 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 			}
 			// A `for {}` is infinite, not constant: it repeats.
 			repeatEnds = append(repeatEnds, x.End())
+			loopScopes = append(loopScopes, loopScope{end: x.End(), vars: forLoopVars(x)})
 		case *ast.RangeStmt:
 			m.loopCount++
 			decisions++
@@ -533,12 +564,21 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 				m.loopDepth = len(loopEnds)
 			}
 			if !goRangeBounded(x) {
-				scalingEnds = append(scalingEnds, x.End())
-				if len(scalingEnds) > m.scalingLoopDepth {
-					m.scalingLoopDepth = len(scalingEnds)
+				// A hierarchical loop — one whose ranged collection is reached THROUGH
+				// an enclosing loop variable (`range pkg.Files`, `range pkgs[pkgDir]…`)
+				// — visits each element once across the whole nest, so it adds no factor
+				// of n to the scaling exponent. Only a loop over an independent or same
+				// collection (all-pairs) multiplies. Derived loops still repeat, so they
+				// stay N+1 candidates (repeatEnds) — only the scaling depth is spared.
+				if !referencesLoopVar(x.X, loopScopes) {
+					scalingEnds = append(scalingEnds, x.End())
+					if len(scalingEnds) > m.scalingLoopDepth {
+						m.scalingLoopDepth = len(scalingEnds)
+					}
 				}
 				repeatEnds = append(repeatEnds, x.End())
 			}
+			loopScopes = append(loopScopes, loopScope{end: x.End(), vars: rangeLoopVars(x)})
 		case *ast.IfStmt:
 			decisions++
 		case *ast.CaseClause:
@@ -581,11 +621,100 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 			if resolved == selfName {
 				m.recursiveSelf = true
 			}
+		case *ast.CompositeLit:
+			// A composite literal `T{...}` / `&T{...}` uses (instantiates) type T.
+			// Type usage is otherwise not edge-tracked, so an internal struct used
+			// only as a literal reads as a dead-code false positive. Emit a usage
+			// edge, guarded to module-internal types so we never point at stdlib or
+			// third-party types (which would create phantom "used" marks).
+			if t := compositeLitType(x, ctx); t != "" && isInternalTypeTarget(t, ctx.pkgDir) && !instSeen[t] {
+				instSeen[t] = true
+				m.instantiates = append(m.instantiates, t)
+			}
 		}
 		return true
 	})
 	m.cyclomatic = 1 + decisions
 	return m
+}
+
+// loopScope records the variables an enclosing loop introduces, with the loop's
+// end position so it can be popped by the position-based nesting walk.
+type loopScope struct {
+	end  token.Pos
+	vars []string
+}
+
+// rangeLoopVars returns the key/value variable names a range loop introduces.
+func rangeLoopVars(x *ast.RangeStmt) []string {
+	var vs []string
+	if id, ok := x.Key.(*ast.Ident); ok {
+		vs = append(vs, id.Name)
+	}
+	if id, ok := x.Value.(*ast.Ident); ok {
+		vs = append(vs, id.Name)
+	}
+	return vs
+}
+
+// forLoopVars returns the variable names declared in a for-loop init clause
+// (`for i := 0; …`).
+func forLoopVars(x *ast.ForStmt) []string {
+	var vs []string
+	if as, ok := x.Init.(*ast.AssignStmt); ok && as.Tok == token.DEFINE {
+		for _, l := range as.Lhs {
+			if id, ok := l.(*ast.Ident); ok {
+				vs = append(vs, id.Name)
+			}
+		}
+	}
+	return vs
+}
+
+// referencesLoopVar reports whether expr references any variable introduced by an
+// enclosing loop — i.e. the collection is reached through an outer loop element
+// (a hierarchical walk) rather than being independent of the outer loops.
+func referencesLoopVar(expr ast.Expr, scopes []loopScope) bool {
+	vars := map[string]bool{}
+	for _, s := range scopes {
+		for _, v := range s.vars {
+			if v != "" && v != "_" {
+				vars[v] = true
+			}
+		}
+	}
+	if len(vars) == 0 {
+		return false
+	}
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if id, ok := n.(*ast.Ident); ok && vars[id.Name] {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// isInternalTypeTarget reports whether a resolved type target (pkg.Type) names a
+// module-internal type — either the same package, or an internal subpackage whose
+// path segment contains "/" but no domain "." (excluding stdlib single-segment
+// packages like "bytes" and third-party paths like "github.com/x/y"). Conservative:
+// it may miss an internal package located at a single-segment repo-root dir, which
+// only forgoes an edge (never creates a wrong one).
+func isInternalTypeTarget(resolved, pkgDir string) bool {
+	i := strings.LastIndex(resolved, ".")
+	if i < 0 {
+		return false
+	}
+	pkg := resolved[:i]
+	if pkg == pkgDir {
+		return true
+	}
+	return strings.Contains(pkg, "/") && !strings.Contains(pkg, ".")
 }
 
 // goForBounded reports whether a for-statement's trip count is independent of the input

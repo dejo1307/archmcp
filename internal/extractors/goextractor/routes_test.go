@@ -298,3 +298,95 @@ func (h *Handler) GetFeature(w http.ResponseWriter, r *http.Request) {}
 		t.Error("expected route fact for GET /api/feature inside if block")
 	}
 }
+
+// A collection-root route registered as HandleFunc("", h) on a subrouter must be
+// emitted at the subrouter's prefix — not dropped by the empty-path guard.
+func TestExtractRoutes_GorillaMux_EmptyPathCollectionRoot(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"internal/server/routes.go": `package server
+
+import (
+	"net/http"
+	"github.com/gorilla/mux"
+)
+
+func SetupRoutes() {
+	router := mux.NewRouter()
+	coursesRouter := router.PathPrefix("/api/courses").Subrouter()
+	coursesRouter.HandleFunc("", GetAllCourses).Methods("GET")
+	coursesRouter.HandleFunc("", CreateCourse).Methods("POST")
+	coursesRouter.HandleFunc("/{id}", GetCourse).Methods("GET")
+	_ = router
+}
+
+func GetAllCourses(w http.ResponseWriter, r *http.Request) {}
+func CreateCourse(w http.ResponseWriter, r *http.Request)  {}
+func GetCourse(w http.ResponseWriter, r *http.Request)      {}
+`,
+	})
+
+	if !hasRoute(ff, "/api/courses", "GET") {
+		t.Errorf("want collection-root GET /api/courses; routes = %v", routeNames(ff, "GET"))
+	}
+	if !hasRoute(ff, "/api/courses", "POST") {
+		t.Errorf("want collection-root POST /api/courses; routes = %v", routeNames(ff, "POST"))
+	}
+	if !hasRoute(ff, "/api/courses/{id}", "GET") {
+		t.Errorf("want GET /api/courses/{id}; routes = %v", routeNames(ff, "GET"))
+	}
+}
+
+// An empty-path registration on a prefix-less router normalizes to the root "/".
+func TestExtractRoutes_GorillaMux_EmptyPathRoot(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"internal/server/routes.go": `package server
+
+import (
+	"net/http"
+	"github.com/gorilla/mux"
+)
+
+func SetupRoutes() {
+	router := mux.NewRouter()
+	router.HandleFunc("", Home).Methods("GET")
+	_ = router
+}
+
+func Home(w http.ResponseWriter, r *http.Request) {}
+`,
+	})
+
+	if !hasRoute(ff, "/", "GET") {
+		t.Errorf("want root GET /; routes = %v", routeNames(ff, "GET"))
+	}
+}
+
+// A dynamic (non-literal) first argument yields an unknown path and must still be
+// dropped — the empty-path relaxation only applies to static string literals.
+func TestExtractRoutes_GorillaMux_DynamicPathDropped(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"internal/server/routes.go": `package server
+
+import (
+	"net/http"
+	"github.com/gorilla/mux"
+)
+
+func SetupRoutes(pathVar string) {
+	router := mux.NewRouter()
+	router.HandleFunc(pathVar, Dyn).Methods("GET")
+	_ = router
+}
+
+func Dyn(w http.ResponseWriter, r *http.Request) {}
+`,
+	})
+
+	// pathVar is not statically known → no route emitted (and definitely not "/").
+	routes := findFactsByKind(ff, facts.KindRoute)
+	for _, r := range routes {
+		if r.Props["method"] == "GET" {
+			t.Errorf("expected no GET route for dynamic path arg, got %q", r.Name)
+		}
+	}
+}
