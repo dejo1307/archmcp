@@ -97,7 +97,10 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		if handler := pairString(args, "to", rw.src); handler != "" {
 			props["handler"] = handler
 		}
-		rw.emit(prefix+path, line(call), props)
+		// A Rails optional segment `foo(/:bar)` serves two paths; emit both.
+		for _, p := range expandOptionalSegments(path) {
+			rw.emit(prefix+p, line(call), props)
+		}
 
 	case "root":
 		handler := pairString(args, "to", rw.src)
@@ -125,12 +128,15 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 
 		// A resource nested inside a *plural* `resources` block nests under the parent
 		// member (`/widgets/:widget_id/...`); the parent supplies that param via the
-		// enclosing scope's memberParam.
+		// enclosing scope's memberParam. parentScopePrefix is the parent resource's own
+		// path segment, needed to compute the shallow path below.
 		parentMember := ""
+		parentScopePrefix := ""
 		if len(stack) > 0 {
 			if p := stack[len(stack)-1].memberParam; p != "" {
 				parentMember = "/:" + p
 			}
+			parentScopePrefix = stack[len(stack)-1].pathPrefix
 		}
 		// `path:` overrides the URL segment while the resource name still drives the
 		// props and the nested member param (Rails derives `:name_id` from the name).
@@ -141,12 +147,24 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		segment := parentMember + "/" + segmentName
 		resourcePath := prefix + segment
 
+		// Rails `shallow: true` serves a nested plural resource's MEMBER routes
+		// (show/edit/update/destroy) at a shallow path — the parent resource segment
+		// and its member param are dropped — while the collection routes
+		// (index/create/new) stay nested. shallowBase is the prefix with the parent
+		// resource segment stripped, plus this resource's own segment.
+		shallow := !singular && parentMember != "" && pairBool(args, "shallow", rw.src)
+		shallowBase := strings.TrimSuffix(prefix, parentScopePrefix) + "/" + segmentName
+
 		actions := restfulActions(only, except)
 		if singular {
 			actions = restfulActionsSingular(only, except)
 		}
 		for _, a := range actions {
-			rw.emit(resourcePath+a.suffix, line(call), map[string]any{
+			routePath := resourcePath + a.suffix
+			if shallow && strings.HasPrefix(a.suffix, "/:id") {
+				routePath = shallowBase + a.suffix
+			}
+			rw.emit(routePath, line(call), map[string]any{
 				"method":    a.method,
 				"framework": "rails",
 				"language":  "ruby",
@@ -188,7 +206,9 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 			if handler != "" {
 				props["handler"] = handler
 			}
-			rw.emit(prefix+path, line(call), props)
+			for _, p := range expandOptionalSegments(path) {
+				rw.emit(prefix+p, line(call), props)
+			}
 		}
 
 	case "namespace":
@@ -295,6 +315,46 @@ func (rw *routeWalker) emit(name string, lineNum int, props map[string]any) {
 }
 
 // --- keyword-argument helpers ---
+
+// pairBool reports whether args contains a `key: true` pair (e.g. `shallow: true`).
+func pairBool(args *sitter.Node, key string, src []byte) bool {
+	v := findPairValue(args, key, src)
+	return v != nil && rubyText(v, src) == "true"
+}
+
+// expandOptionalSegments expands a Rails optional route segment `foo(/:bar)` into
+// the concrete paths it serves — one with the optional groups omitted and one with
+// them included: `email_subscriptions(/:key)` → ["/email_subscriptions",
+// "/email_subscriptions/:key"]. A path with no optional group is returned as-is.
+// (Multiple optional groups collapse to the all-omitted and all-included variants,
+// which covers the trailing-optional idiom without an exponential blow-up.)
+func expandOptionalSegments(path string) []string {
+	if !strings.Contains(path, "(") {
+		return []string{path}
+	}
+	included := strings.NewReplacer("(", "", ")", "").Replace(path)
+	var b strings.Builder
+	depth := 0
+	for _, r := range path {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 {
+				b.WriteRune(r)
+			}
+		}
+	}
+	omitted := b.String()
+	if omitted == included {
+		return []string{included}
+	}
+	return []string{omitted, included}
+}
 
 // pairString returns the string content of a `key: "value"` pair.
 func pairString(args *sitter.Node, key string, src []byte) string {

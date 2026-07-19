@@ -595,7 +595,18 @@ import (
 // variable (`range pkg.Files`, `range pkgs[i]…`) visits each element once and adds
 // no factor of n, so a tree/AST walk no longer reads as O(n²+); all-pairs over an
 // independent/same collection still counts. Cached Go snapshots must re-extract.
-const cacheVersion = "v126"
+//
+// v127: two Rails route-extractor accuracy fixes. (a) `resources :x, shallow: true`
+// nested under a parent resource now emits its MEMBER routes (show/edit/update/
+// destroy) at the shallow path — the parent segment and its :parent_id are dropped
+// (e.g. /api/v3/replies/:id, not /api/v3/posts/:post_id/replies/:id) — while
+// collection routes (index/create/new) stay nested, mirroring Rails. (b) An optional
+// route segment `foo(/:bar)` now expands to both concrete paths it serves
+// (/foo and /foo/:bar) instead of one literal that matched nothing. (c) The
+// hash-rocket route form `get 'path' => 'ctrl#action'` (path as the string hash
+// key, not a `to:` keyword) is now extracted — previously the path was skipped
+// entirely and the route was never emitted. Cached Ruby snapshots must re-extract.
+const cacheVersion = "v127"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

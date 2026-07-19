@@ -3,6 +3,7 @@ package rubyextractor
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1978,11 +1979,11 @@ func TestIsRubySourceFile(t *testing.T) {
 		rel  string
 		want bool
 	}{
-		{"scripts/foo.rb", true},        // extension match
-		{"scripts/new-intent", true},    // extensionless ruby shebang
-		{"scripts/deploy", false},       // extensionless bash shebang
-		{"bin/plastic.js", false},       // non-ruby extension
-		{"scripts/missing", false},      // extensionless, unreadable → false
+		{"scripts/foo.rb", true},     // extension match
+		{"scripts/new-intent", true}, // extensionless ruby shebang
+		{"scripts/deploy", false},    // extensionless bash shebang
+		{"bin/plastic.js", false},    // non-ruby extension
+		{"scripts/missing", false},   // extensionless, unreadable → false
 	}
 	for _, c := range cases {
 		if got := isRubySourceFile(dir, c.rel); got != c.want {
@@ -2016,5 +2017,80 @@ func TestHasRubyShebang(t *testing.T) {
 	}
 	if hasRubyShebang(filepath.Join(dir, "does-not-exist")) {
 		t.Errorf("hasRubyShebang(missing) = true, want false")
+	}
+}
+
+// A nested plural resource with `shallow: true` serves its MEMBER routes at the
+// shallow path (parent segment + :parent_id dropped) while collection routes stay
+// nested — mirroring Rails.
+func TestRoutes_ShallowResource(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  namespace :v3 do
+    resources :posts do
+      resources :replies, only: [:index, :create, :show, :update, :destroy], shallow: true
+    end
+  end
+end
+`
+	names := routeMethods(parseRouteFileAST([]byte(src), "config/routes.rb"))
+
+	// Collection routes stay nested.
+	if names["/v3/posts/:post_id/replies"] == nil {
+		t.Errorf("missing nested collection /v3/posts/:post_id/replies; got %v", keysMM(names))
+	}
+	// Member routes are shallow.
+	if names["/v3/replies/:id"] == nil {
+		t.Errorf("missing shallow member /v3/replies/:id; got %v", keysMM(names))
+	}
+	// The fully-nested member path must NOT be emitted.
+	if names["/v3/posts/:post_id/replies/:id"] != nil {
+		t.Errorf("shallow member must not be emitted at the nested path /v3/posts/:post_id/replies/:id")
+	}
+}
+
+// A Rails optional route segment `foo(/:bar)` expands to both concrete paths.
+func TestRoutes_OptionalSegment(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  namespace :v2 do
+    get 'email_subscriptions(/:key)', to: 'subs#update'
+  end
+end
+`
+	names := routeMethods(parseRouteFileAST([]byte(src), "config/routes.rb"))
+	for _, want := range []string{"/v2/email_subscriptions", "/v2/email_subscriptions/:key"} {
+		if names[want] == nil {
+			t.Errorf("missing expanded optional route %q; got %v", want, keysMM(names))
+		}
+	}
+}
+
+// keysMM returns the sorted keys of a name->methods map for error messages.
+func keysMM(m map[string]map[string]bool) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// The Rails hash-rocket route form `get 'path' => 'ctrl#action'` (path as the
+// string key) is extracted — including with an optional segment, as nebenan uses.
+func TestRoutes_HashRocketPath(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  namespace :v2 do
+    get 'email_subscriptions(/:key)' => 'email_subscriptions#index', as: :email_subscriptions_index
+    put 'settings' => 'settings#update'
+  end
+end
+`
+	names := routeMethods(parseRouteFileAST([]byte(src), "config/routes.rb"))
+	for _, want := range []string{"/v2/email_subscriptions", "/v2/email_subscriptions/:key", "/v2/settings"} {
+		if names[want] == nil {
+			t.Errorf("missing hash-rocket route %q; got %v", want, keysMM(names))
+		}
+	}
+	if names["/v2/settings"] != nil && !names["/v2/settings"]["PUT"] {
+		t.Errorf("/v2/settings method = %v, want PUT", names["/v2/settings"])
 	}
 }

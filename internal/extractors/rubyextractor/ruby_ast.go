@@ -180,7 +180,7 @@ var rubyIterators = map[string]bool{
 	"filter_map": true, "reject": true, "reject!": true,
 	"detect": true, "find": true, "find_all": true, "find_index": true,
 	"find_each": true,
-	"reduce": true, "inject": true, "min_by": true, "max_by": true,
+	"reduce":    true, "inject": true, "min_by": true, "max_by": true,
 	"sort_by": true, "group_by": true, "partition": true, "chunk_while": true,
 	"zip": true, "cycle": true, "times": true, "upto": true, "downto": true,
 	"step": true, "loop": true, "all?": true, "any?": true, "none?": true,
@@ -1700,6 +1700,17 @@ func firstPositionalPath(args *sitter.Node, src []byte) string {
 			}
 		case "simple_symbol":
 			return strings.TrimPrefix(rubyText(c, src), ":")
+		case "pair":
+			// Rails hash-rocket route form: `get 'path' => 'ctrl#action'`. The path is
+			// the STRING key of the pair. A `to:`/`as:` keyword pair has a symbol/label
+			// key (hash_key_symbol), not a string, so it is not treated as a path.
+			if k := c.ChildByFieldName("key"); k != nil && k.Kind() == "string" {
+				for j := uint(0); j < k.ChildCount(); j++ {
+					if k.Child(j).Kind() == "string_content" {
+						return rubyText(k.Child(j), src)
+					}
+				}
+			}
 		}
 	}
 	return ""
