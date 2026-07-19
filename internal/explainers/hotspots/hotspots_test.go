@@ -361,3 +361,34 @@ func TestExplain_TestSupportSymbolExcluded(t *testing.T) {
 		t.Errorf("production hotspot should still be reported")
 	}
 }
+
+// A ubiquitous DATA struct constructed at many sites (RelInstantiates fan-in
+// only, no calls) is not a call-graph hotspot — instantiate edges are excluded
+// from fan-in, so its score drops below threshold.
+func TestExplain_ExcludesInstantiateFanIn(t *testing.T) {
+	s := facts.NewStore()
+	const hub = "facts.Fact"
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: hub, File: "facts/fact.go",
+		Props: map[string]any{"symbol_kind": facts.SymbolStruct}})
+	for i := 0; i < 12; i++ {
+		s.Add(facts.Fact{
+			Kind: facts.KindSymbol, Name: fmt.Sprintf("pkg/c%d.build", i),
+			File:      fmt.Sprintf("pkg/c%d.go", i),
+			Relations: []facts.Relation{{Kind: facts.RelInstantiates, Target: hub}},
+		})
+	}
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "leaf.A", File: "leaf/a.go"})
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "leaf.B", File: "leaf/b.go"})
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "leaf.C", File: "leaf/c.go"})
+	s.BuildGraph()
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	for _, ins := range insights {
+		if strings.Contains(ins.Title, hub) {
+			t.Errorf("data struct with only instantiate fan-in must not be a hotspot; got %q", ins.Title)
+		}
+	}
+}

@@ -1024,3 +1024,45 @@ func TestArchitecturalReverse_ExcludesRouteSources(t *testing.T) {
 		t.Error("Reverse() lost the handled_by edge — impact_analysis and perf depend on it")
 	}
 }
+
+// ArchitecturalReverse must drop RelInstantiates edges (a data struct built at
+// many sites is not architectural coupling), while Reverse keeps them and
+// Forward keeps the constructing side — so traversal/impact/orphans are
+// unaffected and the god-class/hotspots fan-in is corrected.
+func TestArchitecturalReverse_ExcludesInstantiate(t *testing.T) {
+	s := NewStore()
+	s.Add(Fact{Kind: KindSymbol, Name: "pkg.Data", File: "pkg/data.go"})
+	s.Add(Fact{Kind: KindSymbol, Name: "pkg.build", File: "pkg/build.go",
+		Relations: []Relation{{Kind: RelInstantiates, Target: "pkg.Data"}}})
+	s.Add(Fact{Kind: KindSymbol, Name: "pkg.call", File: "pkg/call.go",
+		Relations: []Relation{{Kind: RelCalls, Target: "pkg.Data"}}})
+	s.BuildGraph()
+	g := s.Graph()
+
+	countSrc := func(m map[string][]Edge, target, src string) bool {
+		for _, e := range m[target] {
+			if e.Target == src {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Raw Reverse keeps both the instantiate and the call source.
+	rev := g.Reverse()
+	if !countSrc(rev, "pkg.Data", "pkg.build") || !countSrc(rev, "pkg.Data", "pkg.call") {
+		t.Errorf("Reverse should keep both instantiate and call sources; got %v", rev["pkg.Data"])
+	}
+	// ArchitecturalReverse drops the instantiate source, keeps the call source.
+	arch := g.ArchitecturalReverse()
+	if countSrc(arch, "pkg.Data", "pkg.build") {
+		t.Errorf("ArchitecturalReverse must exclude the RelInstantiates source; got %v", arch["pkg.Data"])
+	}
+	if !countSrc(arch, "pkg.Data", "pkg.call") {
+		t.Errorf("ArchitecturalReverse must keep the RelCalls source; got %v", arch["pkg.Data"])
+	}
+	// Forward keeps the constructing side (fan-out is unaffected).
+	if !countSrc(g.Forward(), "pkg.build", "pkg.Data") {
+		t.Errorf("Forward must keep the instantiate edge; got %v", g.Forward()["pkg.build"])
+	}
+}

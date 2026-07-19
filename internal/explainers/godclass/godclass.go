@@ -101,8 +101,8 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 		}
 		// A test-support symbol is supposed to have high fan-in: an XCTest assertion
 		// helper called by every test case is doing its job, not concentrating change
-		// risk. ArchitecturalReverse above only drops reference-only KINDS, which
-		// covers the languages whose test files are config-ignored and re-enter as
+		// risk. ArchitecturalReverse above drops reference-only KINDS (and
+		// RelInstantiates edges), which covers the languages whose test files are config-ignored and re-enter as
 		// test_ref nodes (Ruby/Go/TS). Where test files are indexed as ordinary
 		// symbols — Swift, Kotlin/Java, Python, C/C++ — they arrive here as plain
 		// symbol facts, so they need a path gate as well (GAP-XL-15, the half

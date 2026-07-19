@@ -731,13 +731,14 @@ func isReferenceOnlyKind(kind string) bool {
 	return kind == KindTestRef || kind == KindFileRef || kind == KindRoute
 }
 
-// ArchitecturalReverse returns a reverse adjacency map restricted to edges whose
-// SOURCE fact is part of the architectural coupling graph — i.e. excluding
-// reference-only kinds (test_ref/file_ref). The outlier explainers (god-class,
-// hotspots) use this instead of Reverse() so their fan-in/centrality and the
-// distribution they threshold over count only real symbol coupling. orphans,
-// impact_analysis, traverse and find_path keep using the unfiltered Reverse()
-// index — they intentionally surface those references. (GAP-XL-15)
+// ArchitecturalReverse returns a reverse adjacency map restricted to edges that
+// represent architectural coupling — excluding reference-only SOURCE kinds
+// (test_ref/file_ref/route) and RelInstantiates edges (struct construction /
+// field-type usage). The outlier explainers (god-class, hotspots) use this
+// instead of Reverse() so their fan-in/centrality and the distribution they
+// threshold over count only real symbol coupling. orphans, impact_analysis,
+// traverse and find_path keep using the unfiltered Reverse() index — they
+// intentionally surface those references. (GAP-XL-15)
 func (g *Graph) ArchitecturalReverse() map[string][]Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -745,6 +746,14 @@ func (g *Graph) ArchitecturalReverse() map[string][]Edge {
 	for target, edges := range g.reverse {
 		kept := make([]Edge, 0, len(edges))
 		for _, e := range edges {
+			// RelInstantiates keeps ubiquitous DATA structs out of the dead-code
+			// report, but it is not change-risk coupling: a data struct built at many
+			// sites is not a god class or a call-graph hotspot. Exclude it from fan-in
+			// / centrality (and the outlier distribution). Traversal, impact_analysis,
+			// find_path and orphans read the raw Reverse() index and still see it.
+			if e.RelKind == RelInstantiates {
+				continue
+			}
 			// In a reverse edge, e.Target holds the SOURCE fact name.
 			if idx, ok := g.factIdx[e.Target]; ok && idx < len(g.facts) &&
 				isReferenceOnlyKind(g.facts[idx].Kind) {
