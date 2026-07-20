@@ -51,6 +51,13 @@ type Server struct {
 	// auto-append heuristic never fires on top of auto-loaded-only state. Guarded
 	// by genMu (only read/written inside the locked generate_snapshot handler).
 	snapshotsGenerated bool
+
+	// Freshness-banner cache. freshnessBanner() shells out to git per repo, so the
+	// result is memoized for freshTTL to keep that cost off the hot path of
+	// back-to-back read tools. Guarded by freshMu.
+	freshMu     sync.Mutex
+	freshBanner string
+	freshAt     time.Time
 }
 
 // New creates a new MCP server wired to the given engine.
@@ -73,6 +80,11 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 
 	s.mcp = mcpServer
 	s.registerTools()
+
+	// Prepend a freshness warning to tool results when the loaded graph looks
+	// stale. Registered once here so it also covers the license-gated enterprise
+	// tools, which register on this same MCP server after New returns.
+	s.mcp.AddReceivingMiddleware(s.freshnessMiddleware)
 
 	return s, nil
 }
@@ -98,6 +110,85 @@ func (s *Server) SetToolCallback(cb func(tool, repo string)) {
 func (s *Server) fireToolCallback(tool, repo string) {
 	if cbp := s.toolCallback.Load(); cbp != nil {
 		(*cbp)(tool, repo)
+	}
+}
+
+// freshTTL bounds how often the freshness banner recomputes. The banner shells out
+// to git per repo, so caching it for a short window keeps that cost off the hot
+// path of back-to-back read tools without letting the warning go badly stale.
+const freshTTL = 30 * time.Second
+
+// bannerSuppressed lists the tools that must NOT get the freshness banner
+// prepended: generate_snapshot (which just refreshed the graph) and set_baseline (a
+// mutation, not a query). Every other tool result is fair game for the nudge.
+func bannerSuppressed(tool string) bool {
+	return tool == "generate_snapshot" || tool == "set_baseline"
+}
+
+// freshnessMiddleware prepends a staleness warning to successful tool-call results
+// when the loaded graph looks out of date (older than 24h, or a repo's code moved
+// since its snapshot). It is warn-only: it never blocks or regenerates. Registered
+// once, it also covers the enterprise tools that share this MCP server.
+func (s *Server) freshnessMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		result, err := next(ctx, method, req)
+		if err != nil || method != "tools/call" {
+			return result, err
+		}
+		params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
+		if !ok || bannerSuppressed(params.Name) {
+			return result, err
+		}
+		ctr, ok := result.(*mcp.CallToolResult)
+		if !ok || ctr == nil || ctr.IsError {
+			return result, err
+		}
+		banner := s.freshnessBanner()
+		if banner == "" {
+			return result, err
+		}
+		ctr.Content = append([]mcp.Content{&mcp.TextContent{Text: banner + "\n\n"}}, ctr.Content...)
+		return result, err
+	}
+}
+
+// freshnessBanner returns a one-line staleness warning for the loaded graph, or ""
+// when it is fresh. Results are memoized for freshTTL because the underlying check
+// shells out to git per repo.
+func (s *Server) freshnessBanner() string {
+	s.freshMu.Lock()
+	defer s.freshMu.Unlock()
+	if !s.freshAt.IsZero() && time.Since(s.freshAt) < freshTTL {
+		return s.freshBanner
+	}
+
+	st := s.eng.Staleness(24*time.Hour, time.Now())
+	banner := ""
+	if st.Stale() {
+		var parts []string
+		if st.TooOld {
+			parts = append(parts, fmt.Sprintf("graph is %s old", humanizeDuration(st.Age)))
+		}
+		for _, c := range st.Changed {
+			parts = append(parts, fmt.Sprintf("%s (%s)", c.Label, c.Reason))
+		}
+		banner = "⚠️ Snapshot may be stale: " + strings.Join(parts, "; ") + ". Run generate_snapshot to refresh."
+	}
+
+	s.freshBanner = banner
+	s.freshAt = time.Now()
+	return banner
+}
+
+// humanizeDuration renders a coarse, human-friendly age (minutes/hours/days).
+func humanizeDuration(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
 }
 

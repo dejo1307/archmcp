@@ -31,6 +31,28 @@ func globalReceiptPath() (string, error) {
 	return filepath.Join(home, globalReceiptDirName, globalReceiptFileName), nil
 }
 
+// LoadGlobalReceipt reads and parses ~/.enola/receipt.json — the graph-wide
+// multi-repo registry describing which repositories currently compose the graph
+// and where they live on disk. It is the counterpart to WriteGlobalReceipt and the
+// source of truth a restart uses to reload the whole graph (not just one repo).
+// Returns an error when the home dir is unavailable, the file is missing, or its
+// contents cannot be parsed, so callers can fall back to a single-repo restore.
+func LoadGlobalReceipt() (*facts.GraphReceipt, error) {
+	path, err := globalReceiptPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading global receipt: %w", err)
+	}
+	var gr facts.GraphReceipt
+	if err := json.Unmarshal(data, &gr); err != nil {
+		return nil, fmt.Errorf("parsing global receipt %s: %w", path, err)
+	}
+	return &gr, nil
+}
+
 // repoEntries returns one GraphRepoEntry per repository currently in the graph.
 // In multi-repo (append) mode it iterates RepoPaths(); in single-repo mode it
 // falls back to the sole primary repo from the snapshot meta. Git state is captured

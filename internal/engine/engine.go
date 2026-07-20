@@ -135,6 +135,61 @@ func (e *Engine) SetSnapshot(snap *facts.Snapshot) {
 	e.current.Store(&snapshotBundle{store: b.store, snapshot: snap, repoPaths: b.repoPaths})
 }
 
+// RestoreFromDir rebuilds and publishes the snapshot bundle from a persisted
+// snapshot directory (facts.jsonl plus, when present, insights.json and
+// snapshot.meta.json) WITHOUT re-running any extractor. It is the restart-restore
+// counterpart to GenerateSnapshot: it reads facts into a brand-new store off to the
+// side, builds the graph, then publishes a fresh bundle in one atomic swap — so no
+// reader can ever observe a half-built store.
+//
+// repoPaths is the graph's label -> absolute-path map (one entry for a single-repo
+// graph). When singleRepoLabel is non-empty, any untagged facts are labeled with it
+// (a single-repo facts.jsonl carries no repo label); a multi-repo facts.jsonl is
+// already tagged, so pass an empty singleRepoLabel to preserve the baked-in labels.
+//
+// Missing insights/meta are tolerated (a partial restore still serves facts); a
+// missing facts.jsonl is an error. It MUST run single-threaded at startup, before
+// Server.Run begins serving — like SetSnapshot, it publishes a new bundle.
+func (e *Engine) RestoreFromDir(dir string, repoPaths map[string]string, singleRepoLabel string) error {
+	factsPath := filepath.Join(dir, "facts.jsonl")
+	if _, err := os.Stat(factsPath); err != nil {
+		return fmt.Errorf("no snapshot at %s: %w", dir, err)
+	}
+
+	work := facts.NewStore()
+	if err := work.ReadJSONLFile(factsPath); err != nil {
+		return fmt.Errorf("reading facts from %s: %w", factsPath, err)
+	}
+	if singleRepoLabel != "" {
+		// Tags only facts whose Repo is empty, so a pre-tagged file is left intact.
+		work.SetRepoRange(0, singleRepoLabel)
+	}
+	work.BuildGraph()
+
+	// Default the primary repo path from the dir; snapshot.meta.json (loaded below)
+	// overrides it when present.
+	snap := &facts.Snapshot{Meta: facts.SnapshotMeta{RepoPath: filepath.Dir(dir)}}
+	if data, err := os.ReadFile(filepath.Join(dir, "insights.json")); err == nil {
+		var ins []facts.Insight
+		if err := json.Unmarshal(data, &ins); err == nil {
+			snap.Insights = ins
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "snapshot.meta.json")); err == nil {
+		var meta facts.SnapshotMeta
+		if err := json.Unmarshal(data, &meta); err == nil {
+			snap.Meta = meta
+		}
+	}
+	// FactsRef aliases the store's slice (never copied): `work` is published here and
+	// then never mutated again, so a reader iterating snap.Facts sees a frozen array.
+	snap.Facts = work.FactsRef()
+
+	e.current.Store(&snapshotBundle{store: work, snapshot: snap, repoPaths: repoPaths})
+	log.Printf("[engine] restored %d facts, %d insights from %s", work.Count(), len(snap.Insights), dir)
+	return nil
+}
+
 // RepoPaths returns a copy of the repo label -> absolute path mapping (populated in
 // append mode). Lock-free bundle load; the copy lets callers retain it safely.
 func (e *Engine) RepoPaths() map[string]string {

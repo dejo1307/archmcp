@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -68,6 +69,11 @@ func (e *Engine) ActiveRepo() string {
 // SetSnapshot sets the snapshot (used when auto-loading from disk).
 func (e *Engine) SetSnapshot(snap *facts.Snapshot) {
 	e.eng.SetSnapshot(snap)
+}
+
+// RestoreFromDir restores a persisted snapshot into the engine (see engine.RestoreFromDir).
+func (e *Engine) RestoreFromDir(dir string, repoPaths map[string]string, singleRepoLabel string) error {
+	return e.eng.RestoreFromDir(dir, repoPaths, singleRepoLabel)
 }
 
 // SetPersistCache controls whether the per-extractor cache is written to disk.
@@ -242,35 +248,130 @@ func NewServer(eng *Engine, cfg *config.Config) (*Server, error) {
 	return &Server{srv: srv}, nil
 }
 
-// AutoLoadSnapshot loads an existing snapshot from disk if available.
-// This allows queries to work immediately without a generate_snapshot call.
+// AutoLoadSnapshot restores an existing snapshot from disk if available, so queries
+// (and the enterprise tools) work immediately after a restart WITHOUT a
+// generate_snapshot call.
 //
-// It mutates the engine's initially-published (empty) store in place and then
-// republishes it via SetSnapshot. This is safe ONLY because it runs single-threaded
-// at startup, before the MCP server begins serving tool calls — no reader can
-// observe the store mid-load. Callers must keep it strictly before Server.Run.
+// It prefers the graph-wide registry at ~/.enola/receipt.json: that lists every
+// repo currently in the graph and their paths, so a restart restores the WHOLE
+// multi-repo graph — not just cfg.Repo — with no extractor runs. If that is
+// unavailable it falls back to a single-repo restore of cfg.Repo. Either way it
+// restores facts + insights + the snapshot meta (incl. generated_at, which the
+// freshness check needs), unlike the old facts-only load.
+//
+// It publishes a fresh bundle via engine.RestoreFromDir. This is safe ONLY because
+// it runs single-threaded at startup, before the MCP server begins serving tool
+// calls — no reader can observe a half-built store. Callers must keep it strictly
+// before Server.Run.
 func AutoLoadSnapshot(eng *Engine, cfg *config.Config) {
+	// Preferred path: reload the full multi-repo graph from the global registry.
+	if gr, err := engine.LoadGlobalReceipt(); err == nil && len(gr.Repos) > 0 {
+		if restoreFromGlobalReceipt(eng, cfg, gr) {
+			return
+		}
+		log.Printf("[bootstrap] global receipt present but multi-repo restore incomplete; falling back to single-repo")
+	}
+
+	// Fallback: single-repo restore of cfg.Repo.
 	repoPath, err := filepath.Abs(cfg.Repo)
 	if err != nil {
 		return
 	}
-
-	factsPath := filepath.Join(repoPath, cfg.Output.Dir, "facts.jsonl")
-	if _, err := os.Stat(factsPath); err != nil {
+	dir := filepath.Join(repoPath, cfg.Output.Dir)
+	if _, err := os.Stat(filepath.Join(dir, "facts.jsonl")); err != nil {
+		return // nothing on disk; start empty
+	}
+	label := filepath.Base(repoPath)
+	if err := eng.RestoreFromDir(dir, map[string]string{label: repoPath}, label); err != nil {
+		log.Printf("[bootstrap] warning: failed to restore snapshot from %s: %v", dir, err)
 		return
 	}
+	log.Printf("[bootstrap] restored single-repo snapshot for %s", label)
+}
 
-	log.Printf("[bootstrap] loading existing snapshot from %s", factsPath)
-	if err := eng.Store().ReadJSONLFile(factsPath); err != nil {
-		log.Printf("[bootstrap] warning: failed to load existing facts: %v", err)
-		return
+// restoreFromGlobalReceipt reloads the complete multi-repo graph named by the
+// global receipt. In append/multi-repo mode WriteArtifacts writes the ENTIRE
+// in-memory store to each repo's .enola, so the most-recently-generated repo dir
+// holds every repo's facts; that dir is loaded once (facts are already tagged with
+// their repo labels). Returns false if it cannot find a complete snapshot dir, so
+// the caller can fall back. repoPaths comes from the receipt so multi-repo file
+// resolution works after restore.
+func restoreFromGlobalReceipt(eng *Engine, cfg *config.Config, gr *facts.GraphReceipt) bool {
+	repoPaths := make(map[string]string, len(gr.Repos))
+	for _, r := range gr.Repos {
+		if r.Path != "" {
+			repoPaths[r.Label] = r.Path
+		}
+	}
+	if len(repoPaths) == 0 {
+		return false
 	}
 
-	repoLabel := filepath.Base(repoPath)
-	eng.Store().SetRepoRange(0, repoLabel)
-	eng.Store().BuildGraph()
-	eng.SetSnapshot(&facts.Snapshot{
-		Meta: facts.SnapshotMeta{RepoPath: repoPath},
-	})
-	log.Printf("[bootstrap] loaded %d facts from existing snapshot", eng.Store().Count())
+	completeDir, ok := newestSnapshotDir(gr.Repos, cfg.Output.Dir)
+	if !ok {
+		return false
+	}
+
+	// Single-repo graph: the file may be untagged, so pass its label; a genuine
+	// multi-repo file is already tagged and SetRepoRange leaves it untouched.
+	singleLabel := ""
+	if len(repoPaths) == 1 {
+		for l := range repoPaths {
+			singleLabel = l
+		}
+	}
+
+	if err := eng.RestoreFromDir(completeDir, repoPaths, singleLabel); err != nil {
+		log.Printf("[bootstrap] warning: multi-repo restore from %s failed: %v", completeDir, err)
+		return false
+	}
+	if got := eng.Store().Count(); gr.FactCount > 0 && got != gr.FactCount {
+		log.Printf("[bootstrap] note: restored %d facts but global receipt records %d (partial restore from %s)", got, gr.FactCount, completeDir)
+	}
+	log.Printf("[bootstrap] restored graph of %d repo(s) from %s", len(repoPaths), completeDir)
+	return true
+}
+
+// newestSnapshotDir picks the repo snapshot directory with the newest generated_at
+// among the graph's repos — the one whose facts.jsonl holds the complete store.
+// Returns false when no repo dir has a readable snapshot timestamp.
+func newestSnapshotDir(repos []facts.GraphRepoEntry, outDir string) (string, bool) {
+	var bestDir string
+	var bestTS time.Time
+	found := false
+	for _, r := range repos {
+		if r.Path == "" {
+			continue
+		}
+		dir := filepath.Join(r.Path, outDir)
+		ts, ok := snapshotGeneratedAt(dir)
+		if !ok {
+			continue
+		}
+		if !found || ts.After(bestTS) {
+			bestTS, bestDir, found = ts, dir, true
+		}
+	}
+	return bestDir, found
+}
+
+// snapshotGeneratedAt reads the generated_at timestamp from a snapshot dir,
+// preferring snapshot.meta.json and falling back to receipt.json.
+func snapshotGeneratedAt(dir string) (time.Time, bool) {
+	for _, name := range []string{"snapshot.meta.json", "receipt.json"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var m struct {
+			GeneratedAt string `json:"generated_at"`
+		}
+		if err := json.Unmarshal(data, &m); err != nil || m.GeneratedAt == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, m.GeneratedAt); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }

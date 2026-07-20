@@ -96,8 +96,11 @@ func TestNewEngine_SmokeGenerate(t *testing.T) {
 }
 
 // TestAutoLoadSnapshot verifies that an existing .enola/facts.jsonl is loaded
-// into the engine without a generate call.
+// into the engine without a generate call. HOME is isolated so no real global
+// receipt exists, exercising the single-repo fallback path.
 func TestAutoLoadSnapshot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{
 		ConfigPath: filepath.Join(t.TempDir(), "no-such-config.yaml"),
 	})
@@ -130,6 +133,53 @@ func TestAutoLoadSnapshot(t *testing.T) {
 	}
 	if eng.Snapshot() == nil {
 		t.Error("expected snapshot to be set after AutoLoadSnapshot")
+	}
+}
+
+// TestAutoLoadSnapshot_FromGlobalReceipt verifies the multi-repo restore path: a
+// prior session's ~/.enola/receipt.json is used to reload the graph on a fresh
+// engine, even when cfg.Repo points somewhere with no snapshot. HOME is isolated so
+// the receipt written by WriteGlobalReceipt is the only one seen.
+func TestAutoLoadSnapshot_FromGlobalReceipt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Session 1: generate a snapshot and record it in the global receipt.
+	repo := writeGoRepo(t)
+	eng1, cfg, err := bootstrap.NewEngine(bootstrap.Options{
+		ConfigPath: filepath.Join(t.TempDir(), "no-such-config.yaml"),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	snap, err := eng1.GenerateSnapshot(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf("GenerateSnapshot: %v", err)
+	}
+	if err := eng1.WriteArtifacts(repo); err != nil {
+		t.Fatalf("WriteArtifacts: %v", err)
+	}
+	if err := eng1.WriteGlobalReceipt(); err != nil {
+		t.Fatalf("WriteGlobalReceipt: %v", err)
+	}
+
+	// Session 2 (restart): a brand-new engine whose cfg.Repo has NO snapshot, so a
+	// successful restore can only have come from the global receipt.
+	eng2, cfg2, err := bootstrap.NewEngine(bootstrap.Options{
+		ConfigPath: filepath.Join(t.TempDir(), "no-such-config.yaml"),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine 2: %v", err)
+	}
+	_ = cfg
+	cfg2.Repo = t.TempDir() // empty dir, no .enola
+	bootstrap.AutoLoadSnapshot(eng2, cfg2)
+
+	if got := eng2.Store().Count(); got != snap.Meta.FactCount {
+		t.Errorf("restored %d facts, want %d", got, snap.Meta.FactCount)
+	}
+	restored := eng2.Snapshot()
+	if restored == nil || restored.Meta.GeneratedAt == "" {
+		t.Fatalf("expected a restored snapshot with generated_at, got %+v", restored)
 	}
 }
 
