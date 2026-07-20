@@ -100,19 +100,25 @@ func (e *RustExtractor) Extract(ctx context.Context, repoPath string, files []st
 			log.Printf("[rust-extractor] error reading %s: %v", relFile, err)
 			return fileResult{}
 		}
-		ff, impls := extractFileAST(src, relFile, crates, moduleDirs)
-		return fileResult{facts: ff, impls: impls}
+		ff, impls, builders := extractFileASTFull(src, relFile, crates, moduleDirs)
+		return fileResult{facts: ff, impls: impls, builders: builders}
 	})
 
 	var allFacts []facts.Fact
 	var allImpls []implPair
+	var allBuilders []axumBuilder
 	for _, r := range perFileFacts {
 		allFacts = append(allFacts, r.facts...)
 		allImpls = append(allImpls, r.impls...)
+		allBuilders = append(allBuilders, r.builders...)
 	}
 
 	applyImplements(allFacts, allImpls)
 	computeRustPerformsIO(allFacts)
+	// Compose `.nest(prefix, module::router())` mount prefixes onto Axum route
+	// facts interprocedurally, so a route registered on a sub-router is stored at
+	// its true runtime path for cross-repo client↔route matching.
+	allFacts = composeAxumPrefixes(allFacts, allBuilders, crates)
 
 	for dir := range moduleDirs {
 		props := map[string]any{"language": "rust"}
@@ -196,6 +202,7 @@ func computeRustPerformsIO(allFacts []facts.Fact) {
 // fileResult holds one file's extracted facts plus its impl-block
 // observations, returned together from the parallel per-file walk.
 type fileResult struct {
-	facts []facts.Fact
-	impls []implPair
+	facts    []facts.Fact
+	impls    []implPair
+	builders []axumBuilder
 }

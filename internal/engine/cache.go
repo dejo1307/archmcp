@@ -630,7 +630,19 @@ import (
 // two different literals in the file is ambiguous and left unstripped; an
 // injected/env/absolute base (not a "/"-rooted literal) still falls back to the
 // suffix, as before. Cached TypeScript snapshots must re-extract.
-const cacheVersion = "v129"
+// v130: the Rust/Axum route extractor now composes `.nest(prefix, module::router())`
+// mount prefixes INTERPROCEDURALLY. A router built by `pub fn router() -> Router` in
+// one file (registering bare in-router paths like "/status", "/{id}/data") mounted
+// by a parent via `.nest("/api/v1/datasets", routers::datasets::router())` in another
+// file is now stored at its true runtime path ("/api/v1/datasets/status"). A crate-
+// wide fixpoint resolves each nest to its callee builder (by fn name + module/file
+// stem, same-crate preferred) and propagates prefixes from root builders; a router
+// mounted at several prefixes emits each route once per prefix, and a root or
+// unresolvable mount keeps the bare path so composition never drops a route — the
+// Axum analog of the Go gorilla/mux+chi subrouter composition (v125). This fixes
+// cross-repo client↔route matching (unused-routes / coverage FPs) and the route
+// facts consumed by impact_analysis/traverse. Cached Rust snapshots must re-extract.
+const cacheVersion = "v130"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

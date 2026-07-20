@@ -17,11 +17,19 @@ import (
 // complexity, and (Axum) route facts. impl-trait observations are returned
 // separately (see implPair) because attaching them requires the full, merged
 // fact set.
+// extractFileAST is the two-value form used by tests; production code calls
+// extractFileASTFull to also receive the file's Axum router-builder observations
+// (consumed by composeAxumPrefixes in the crate-wide pass).
 func extractFileAST(src []byte, relFile string, crates []crateInfo, moduleDirs map[string]bool) ([]facts.Fact, []implPair) {
+	ff, impls, _ := extractFileASTFull(src, relFile, crates, moduleDirs)
+	return ff, impls
+}
+
+func extractFileASTFull(src []byte, relFile string, crates []crateInfo, moduleDirs map[string]bool) ([]facts.Fact, []implPair, []axumBuilder) {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(rust.Language())); err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	tree := parser.Parse(src, nil)
@@ -56,7 +64,7 @@ func extractFileAST(src []byte, relFile string, crates []crateInfo, moduleDirs m
 
 	w.out = append(w.out, extractAxumRoutes(root, src, relFile, dir)...)
 
-	return w.out, w.impls
+	return w.out, w.impls, collectAxumBuilders(root, src, relFile)
 }
 
 type astWalker struct {
