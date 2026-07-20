@@ -118,3 +118,92 @@ func TestExtractHTTPClientFacts(t *testing.T) {
 		t.Errorf("external URL should have been skipped: %+v", byName)
 	}
 }
+
+// TestExtractHTTPClientFacts_PrefetchNotMatched covers the left word-boundary on
+// the fetch()/makeRequest() matcher: a call whose name merely ends in "fetch"
+// (router.prefetch / query.refetch — navigation and cache primitives) must NOT be
+// captured, while a genuine `window.fetch(` / member `this.makeRequest(` still is.
+func TestExtractHTTPClientFacts_PrefetchNotMatched(t *testing.T) {
+	src := "function onFocus() {\n" +
+		"  router.prefetch('/dashboard/premium');\n" + // navigation, not HTTP
+		"  router.prefetch('/dashboard/maintenance');\n" +
+		"  query.refetch('/api/should-not-appear');\n" + // react-query cache, not HTTP
+		"  window.fetch('/api/real/thing');\n" + // genuine fetch -> kept
+		"}\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "src/app/login/page.tsx"))
+
+	for _, junk := range []string{"/dashboard/premium", "/dashboard/maintenance", "/api/should-not-appear"} {
+		if _, found := got[junk]; found {
+			t.Errorf("prefetch/refetch target %q must not be detected: %+v", junk, got)
+		}
+	}
+	if got["/api/real/thing"] != "GET" {
+		t.Errorf("window.fetch should still be detected: %+v", got)
+	}
+}
+
+// TestExtractHTTPClientFacts_SEOMetadataNotRequest covers Pass 3's tightened
+// request-descriptor test: a Next.js `openGraph` block carries a `url:` and a
+// non-verb `type: 'website'` but no request-payload key, so it is metadata, not an
+// outbound call. A sibling request object with a real verb still resolves.
+func TestExtractHTTPClientFacts_SEOMetadataNotRequest(t *testing.T) {
+	src := "export const metadata = {\n" +
+		"  openGraph: {\n" +
+		"    type: 'website',\n" +
+		"    url: `${baseUrl}/journal`,\n" +
+		"    siteName: 'FairwayHub',\n" +
+		"    locale: 'en_US',\n" +
+		"  },\n" +
+		"};\n" +
+		"const call = request({ url: '/api/settings/app', type: 'post', payload: {} });\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "src/app/journal/layout.tsx"))
+
+	if _, found := got["/journal"]; found {
+		t.Errorf("openGraph SEO url (type:'website') must not be detected as a call: %+v", got)
+	}
+	if got["/api/settings/app"] != "POST" {
+		t.Errorf("a real request object with a verb should still resolve: %+v", got)
+	}
+}
+
+// TestExtractHTTPClientFacts_NonPathLiteralSkipped covers cleanTSPath's leading-"/"
+// requirement: a non-path string literal reaching the matcher (e.g. an analysis
+// script's own source scanning for `fetch(`) must not become a phantom route.
+func TestExtractHTTPClientFacts_NonPathLiteralSkipped(t *testing.T) {
+	src := "const markers = [ 'fetch(', ',' ];\n" + // fetch(',' -> URL literal is ","
+		"if (line.includes('fetch(')) { hasAPICall = true; }\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "fitness-functions.js"))
+
+	for name := range got {
+		if len(name) == 0 || name[0] != '/' {
+			t.Errorf("non-path literal %q must be skipped, got routes: %+v", name, got)
+		}
+	}
+}
+
+// TestExtractHTTPClientFacts_GluedQueryPlaceholderStripped covers cleanTSPath's
+// query-string-placeholder strip: a `${queryParams}` fused to the final segment
+// collapses to a trailing "{}" glued to text, which must be dropped so the path
+// matches its server route — while an own-segment "/{}" path param is preserved.
+func TestExtractHTTPClientFacts_GluedQueryPlaceholderStripped(t *testing.T) {
+	src := "class A {\n" +
+		"  a() { return this.makeRequest(`/api/settings/analytics/role-distribution${queryParams}`); }\n" +
+		"  b() { return this.makeRequest(`${this.baseUrl}/api/settings/vat-rates/active${qs}`); }\n" +
+		"  c() { return this.makeRequest(`/api/settings/files/${id}`); }\n" + // real path param -> keep {}
+		"  d() { return this.makeRequest(`/api/settings/files/${id}/versions`); }\n" + // {} mid-path -> keep
+		"}\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "src/lib/api/analyticsApi.ts"))
+
+	if _, found := got["/api/settings/analytics/role-distribution"]; !found {
+		t.Errorf("glued query placeholder should be stripped to a clean path: %+v", got)
+	}
+	if _, found := got["/api/settings/vat-rates/active"]; !found {
+		t.Errorf("glued query placeholder after a base-URL token should be stripped: %+v", got)
+	}
+	if _, found := got["/api/settings/files/{}"]; !found {
+		t.Errorf("own-segment /{} path param must be preserved: %+v", got)
+	}
+	if _, found := got["/api/settings/files/{}/versions"]; !found {
+		t.Errorf("mid-path {} param must be preserved: %+v", got)
+	}
+}

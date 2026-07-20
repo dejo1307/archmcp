@@ -11,12 +11,17 @@ import (
 )
 
 // httpClientCall matches a fetch()/makeRequest() call whose first argument is a
-// string or template literal, capturing the URL literal into one of three
-// groups (double-quote, single-quote, or backtick — RE2 has no backreferences).
-// e.g. this.makeRequest<T>('/api/settings/feedback', { method: 'POST' })
+// string or template literal. Group 1 is the verb name; the URL literal is
+// captured into one of groups 2-4 (double-quote, single-quote, or backtick — RE2
+// has no backreferences). e.g. this.makeRequest<T>('/api/settings/feedback', { method: 'POST' })
 //
 //	fetch(`${API_BASE_URL}/api/user/current`, { method: 'GET' })
-var httpClientCall = regexp.MustCompile("(?:fetch|makeRequest)\\s*(?:<[^>]*>)?\\s*\\(\\s*(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`)")
+//
+// The leading `(?:^|[^\w])` is a left word-boundary: it keeps member forms like
+// `window.fetch(` / `this.makeRequest(` (preceded by `.`) while rejecting calls
+// whose name merely ENDS in "fetch" — `router.prefetch(...)`, `query.refetch(...)`
+// — which are navigation/cache primitives, not outbound HTTP.
+var httpClientCall = regexp.MustCompile("(?:^|[^\\w])(fetch|makeRequest)\\s*(?:<[^>]*>)?\\s*\\(\\s*(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`)")
 
 // httpClientMethod matches a `method: 'POST'` option within a call's options
 // object.
@@ -45,11 +50,14 @@ var urlProperty = regexp.MustCompile("\\burl\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|`
 // (query/post/put/delete); mapClientVerb reconciles both.
 var requestVerbProperty = regexp.MustCompile(`\b(?:type|method)\s*:\s*['"]([A-Za-z]+)['"]`)
 
-// requestDescriptorKey marks an object literal as an HTTP request descriptor
-// (rather than a plain link/href object): it carries a verb or a request-payload
-// sibling key. Requiring one of these next to a `url:` keeps router links and
-// config objects from being mistaken for outbound calls.
-var requestDescriptorKey = regexp.MustCompile(`\b(?:type|method|token|payload|pagination|signal|headers|body|query|params)\s*:`)
+// requestPayloadKey marks an object literal as an HTTP request descriptor by a
+// request-payload sibling key (not a verb). Requiring one of these — or a
+// verb-valued `type:`/`method:`, checked separately — next to a `url:` keeps
+// router links, config objects, and SEO metadata (a Next.js `openGraph: { url,
+// type: 'website', siteName, … }` block, JSON-LD) from being mistaken for
+// outbound calls: those carry a `type:` whose value is not an HTTP verb and none
+// of these payload keys.
+var requestPayloadKey = regexp.MustCompile(`\b(?:token|payload|pagination|signal|headers|body|query|params)\s*:`)
 
 // tsInterpolation matches a template-literal interpolation, e.g. ${id}.
 var tsInterpolation = regexp.MustCompile(`\$\{[^}]*\}`)
@@ -107,8 +115,11 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 	}
 
 	// Pass 1 — positional fetch()/makeRequest(), method from a nearby `method:`.
+	// Group 1 is the verb, so the URL literal is in groups 2-4 and the reported
+	// offset is the verb start (m[2]) — not m[0], which now includes the leading
+	// word-boundary char and would mis-count the line when that char is a newline.
 	for _, m := range httpClientCall.FindAllSubmatchIndex(src, -1) {
-		raw := firstNonEmptyGroup(src, m, 1, 2, 3)
+		raw := firstNonEmptyGroup(src, m, 2, 3, 4)
 		method := "GET"
 		end := m[1] + httpMethodWindow
 		if end > len(src) {
@@ -117,7 +128,7 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 		if mm := httpClientMethod.FindSubmatch(src[m[1]:end]); mm != nil {
 			method = strings.ToUpper(string(mm[1]))
 		}
-		add(raw, method, "fetch", m[0])
+		add(raw, method, "fetch", m[2])
 	}
 
 	// Pass 2 — verb-named generated-client calls; the method is the call name.
@@ -133,14 +144,23 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 	// a neighbouring object's verb cannot bleed in.
 	for _, m := range urlProperty.FindAllSubmatchIndex(src, -1) {
 		window := enclosingObject(src, m[0], m[1])
-		if window == nil || !requestDescriptorKey.Match(window) {
-			continue // no enclosing object, or a plain link/config object
+		if window == nil {
+			continue // no enclosing object literal
 		}
+		// The object is an outbound request only if it carries a real HTTP verb
+		// (type:/method: whose value maps to a verb) or a request-payload key. An
+		// object whose only descriptor signal is a non-verb type: — SEO openGraph
+		// { url, type: 'website' }, JSON-LD — is metadata, not a call.
 		method := "GET"
+		haveVerb := false
 		if vm := requestVerbProperty.FindSubmatch(window); vm != nil {
 			if v := mapClientVerb(string(vm[1])); v != "" {
 				method = v
+				haveVerb = true
 			}
+		}
+		if !haveVerb && !requestPayloadKey.Match(window) {
+			continue // a plain link / config / SEO-metadata object
 		}
 		raw := firstNonEmptyGroup(src, m, 1, 2, 3)
 		add(raw, method, "request-options", m[0])
@@ -240,7 +260,25 @@ func cleanTSPath(raw string) (string, bool) {
 	}
 	p = tsInterpolation.ReplaceAllString(p, "{}")
 	p = strings.TrimSpace(p)
+	// Strip a query-string placeholder fused to the final segment. A `${queryParams}`
+	// / `${queryString}` appended to a path collapses (above) to a `{}` glued to the
+	// segment tail, e.g. ".../role-distribution{}" or "/overview{}" — the real `?`
+	// lives inside the variable so the query strip never saw it. A genuine path
+	// param is always its own "/{}" segment, never fused to text, so a trailing
+	// "<text>{}" is a query string: drop it. "/files/{}" and "/items/{}.json" are
+	// untouched (own-segment param / non-{}-suffixed tail).
+	if strings.HasSuffix(p, "{}") && !strings.HasSuffix(p, "/{}") {
+		p = strings.TrimSuffix(p, "{}")
+	}
+	p = strings.TrimSpace(p)
 	if p == "" || p == "/" {
+		return "", false
+	}
+	// A backend path is rooted at "/". Requiring a leading slash drops non-path
+	// string literals that reach here — a lone ",", a fragment of an analysis
+	// script's own source (fitness-functions.js scanning for "fetch(") — which
+	// otherwise pass the concrete-segment check below and become phantom routes.
+	if !strings.HasPrefix(p, "/") {
 		return "", false
 	}
 	// Require at least one concrete (non-placeholder) segment so a fully dynamic

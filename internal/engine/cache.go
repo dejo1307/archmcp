@@ -606,7 +606,21 @@ import (
 // hash-rocket route form `get 'path' => 'ctrl#action'` (path as the string hash
 // key, not a `to:` keyword) is now extracted — previously the path was skipped
 // entirely and the route was never emitted. Cached Ruby snapshots must re-extract.
-const cacheVersion = "v127"
+// v128: four TS HTTP-client extractor precision fixes that cut false cross-repo
+// "unresolved edges" from a frontend. (a) The fetch()/makeRequest() matcher gained
+// a left word-boundary, so a call whose name merely ENDS in "fetch"
+// (router.prefetch(...), query.refetch(...) — navigation/cache primitives) is no
+// longer captured as an outbound call. (b) An options-object `url:` is a request
+// only when the object carries a real HTTP verb or a request-payload key; a Next.js
+// SEO block (openGraph { url, type:'website', siteName }) / JSON-LD, whose only
+// signal is a non-verb type:, is no longer mis-read as a call. (c) cleanTSPath now
+// requires a leading "/", dropping non-path literals (a lone ",", a fragment of an
+// analysis script scanning for "fetch(") that became phantom routes. (d) cleanTSPath
+// strips a query-string placeholder fused to the final segment (`${queryParams}` →
+// ".../role-distribution{}" → ".../role-distribution"), which a real `?` inside the
+// interpolated variable hid from the query strip; own-segment "/{}" path params are
+// untouched. Cached TypeScript snapshots must re-extract.
+const cacheVersion = "v128"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
