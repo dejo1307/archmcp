@@ -151,7 +151,7 @@ func TestExtractHTTPClientFacts_SEOMetadataNotRequest(t *testing.T) {
 		"  openGraph: {\n" +
 		"    type: 'website',\n" +
 		"    url: `${baseUrl}/journal`,\n" +
-		"    siteName: 'FairwayHub',\n" +
+		"    siteName: 'Example',\n" +
 		"    locale: 'en_US',\n" +
 		"  },\n" +
 		"};\n" +

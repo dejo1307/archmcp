@@ -301,8 +301,8 @@ import (
 // string-literal index (const/var/assignment/composite-field bindings) and, when
 // every binding is an absolute http(s) URL, tags the route external=true (plus a
 // host prop when the bindings agree on one host). Before this, a service calling
-// only third-party APIs — golf, calling ZeptoMail and MailerLite via base-URL
-// concats — accumulated phantom "unresolved internal edges" and was misclassified
+// only third-party APIs via base-URL concats accumulated phantom "unresolved
+// internal edges" and was misclassified
 // coverage_gap. A config-injected base (options.BaseURL, no literal binding) stays
 // an internal client route. Route facts gain external/host props, so cached Go
 // snapshots must re-extract. (The paired linker change — matching a client route
@@ -390,13 +390,13 @@ import (
 // signature is exactly func(http.ResponseWriter, *http.Request) — net/http's handler
 // contract, decidable from the AST. It exists so a route can be bound to the symbol that
 // actually serves it: goextractor renders a route's `handler` prop from the REGISTRATION
-// site, so it is the receiver VARIABLE chain ("h.weatherHandler.GetDailyWeatherRange")
-// while the symbol is named by its receiver TYPE (".../weather.HandlerV2.GetDaily…").
-// The two key spaces are disjoint — on fairwayhub/golf, 1397 handler props intersect
-// 13482 symbol names exactly TWICE — so every consumer keyed on the handler (the
-// enterprise route-handler escalation, orphans' handler rescue) matched nothing, and 0 of
-// 1641 routes carried a handled_by edge. The method name is all the two sides share, and
-// it is ambiguous: golf has four GetDailyWeatherRange (the handler, a service, a mock, and
+// site, so it is the receiver VARIABLE chain ("h.fooHandler.DoThing")
+// while the symbol is named by its receiver TYPE (".../foo.HandlerV2.DoThing").
+// The two key spaces are disjoint — in a real service the handler props barely
+// intersected the symbol names at all — so every consumer keyed on the handler (the
+// enterprise route-handler escalation, orphans' handler rescue) matched nothing, and
+// almost no routes carried a handled_by edge. The method name is all the two sides share, and
+// it is ambiguous: a service can have several same-named methods (the handler, a service, a mock, and
 // a null-object stub in the WIRING package where the routes are registered), so a
 // name-only or package-scoped binder resolves the route to the stub — and a wrong
 // handled_by edge feeds impact_analysis and find_path. The signature is the structural

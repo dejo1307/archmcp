@@ -658,6 +658,24 @@ var genericTypeNames = map[string]bool{
 	"request": true, "response": true, "status": true, "value": true,
 }
 
+// frameworkConventionNames are type identities a framework's own convention or
+// generator makes essentially EVERY app of that framework declare identically, so
+// two apps sharing one is not evidence of shared code — the cross-repo analog of
+// genericTypeNames, but for framework boilerplate rather than generic words. These
+// are matched exactly (case-sensitive) and rejected even when namespace-qualified.
+// Seeded with Rails (Application* base classes, ActionCable base classes) and
+// CanCanCan (Ability); extend as other frameworks' conventions surface.
+var frameworkConventionNames = map[string]bool{
+	"ApplicationController":        true,
+	"ApplicationRecord":            true,
+	"ApplicationJob":               true,
+	"ApplicationMailer":            true,
+	"ApplicationHelper":            true,
+	"ApplicationCable::Connection": true,
+	"ApplicationCable::Channel":    true,
+	"Ability":                      true,
+}
+
 // linkSharedSymbols connects repos that declare enough of the same distinctive
 // types. The relationship is symmetric (shared/vendored code, not a one-way
 // dependency), so qualifying pairs get a bidirectional pair of edges.
@@ -670,6 +688,9 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 	for _, f := range all {
 		if f.Kind != facts.KindSymbol || f.Repo == "" || !isTypeSymbol(f) {
 			continue
+		}
+		if isNonContractSharedFile(f.File) {
+			continue // auto-generated class, not portable contract surface
 		}
 		id := typeIdentity(f.Name, repoModules[f.Repo])
 		if !isDistinctiveIdentity(id) {
@@ -788,6 +809,11 @@ func isDistinctiveIdentity(id string) bool {
 	if id == "" {
 		return false
 	}
+	// Framework-convention boilerplate is checked before the namespace bypass so a
+	// qualified convention name (ApplicationCable::Connection) is excluded too.
+	if frameworkConventionNames[id] {
+		return false
+	}
 	if isNamespaceQualified(id) {
 		return true
 	}
@@ -795,6 +821,15 @@ func isDistinctiveIdentity(id string) bool {
 		return false
 	}
 	return !genericTypeNames[strings.ToLower(id)]
+}
+
+// isNonContractSharedFile reports whether a file holds auto-generated classes that
+// are not portable contract surface for the shared-symbol signal. Rails migrations
+// (db/migrate/) get generator-derived class names (InitSchema, CreateFooBars) that
+// coincide across apps that ran the same migration — parallel schema history, not
+// shared code — so they must not fabricate or inflate a cross-repo edge.
+func isNonContractSharedFile(file string) bool {
+	return strings.Contains(file, "/db/migrate/") || strings.HasPrefix(file, "db/migrate/")
 }
 
 // isNamespaceQualified reports whether a type identity carries a namespace (only

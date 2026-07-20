@@ -195,9 +195,9 @@ func TestComputeLinks_HTTPMatch(t *testing.T) {
 // cross-repo edge — while internal calls still resolve/unresolve as before.
 func TestComputeLinks_ExternalClientBucketed(t *testing.T) {
 	in := []facts.Fact{
-		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),                                   // resolves to svc-beta
-		clientRoute("svc-alpha", "/rest/api/2/issue", "POST", map[string]any{"external": true}),    // external third party
-		clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil),                                  // internal, no server -> unresolved
+		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),                                 // resolves to svc-beta
+		clientRoute("svc-alpha", "/rest/api/2/issue", "POST", map[string]any{"external": true}), // external third party
+		clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil),                               // internal, no server -> unresolved
 		serverRoute("svc-beta", "/api/items/{itemId}", "GET"),
 	}
 	out := ComputeLinks(in)
@@ -222,11 +222,11 @@ func TestComputeLinks_ExternalClientBucketed(t *testing.T) {
 func TestUnmatchedClientRouteKeys(t *testing.T) {
 	in := []facts.Fact{
 		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),                                 // resolves
-		clientRoute("svc-alpha", "/api/items/{id}", "DELETE", nil),                               // path exists, wrong verb -> method_mismatch
-		clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil),                                // no server serves path -> path_unknown
-		clientRoute("svc-alpha", "/health", "GET", nil),                                          // 1 segment -> generic_path
-		clientRoute("svc-alpha", "/api/things/{id}", "", nil),                                     // no verb -> no_method
-		clientRoute("svc-alpha", "/rest/api/2/issue", "POST", map[string]any{"external": true}),  // external -> omitted
+		clientRoute("svc-alpha", "/api/items/{id}", "DELETE", nil),                              // path exists, wrong verb -> method_mismatch
+		clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil),                               // no server serves path -> path_unknown
+		clientRoute("svc-alpha", "/health", "GET", nil),                                         // 1 segment -> generic_path
+		clientRoute("svc-alpha", "/api/things/{id}", "", nil),                                   // no verb -> no_method
+		clientRoute("svc-alpha", "/rest/api/2/issue", "POST", map[string]any{"external": true}), // external -> omitted
 		serverRoute("svc-beta", "/api/items/{itemId}", "GET"),
 	}
 	got := UnmatchedClientRouteKeys(in)
@@ -683,6 +683,84 @@ func TestComputeLinks_SharedSymbolsGenericNamesIgnored(t *testing.T) {
 	}
 }
 
+func TestComputeLinks_SharedSymbolsFrameworkConventionIgnored(t *testing.T) {
+	// Two Rails apps sharing only framework-convention base classes (which every
+	// Rails app declares identically) must not link — that is boilerplate, not
+	// shared code. Ability (CanCanCan) and the namespaced ApplicationCable::* are
+	// excluded too.
+	in := []facts.Fact{
+		module("svc-a", "app"),
+		typeSym("svc-a", "app.ApplicationController", facts.SymbolClass),
+		typeSym("svc-a", "app.ApplicationRecord", facts.SymbolClass),
+		typeSym("svc-a", "app.ApplicationJob", facts.SymbolClass),
+		typeSym("svc-a", "app.Ability", facts.SymbolClass),
+		typeSym("svc-a", "app.ApplicationCable::Connection", facts.SymbolClass),
+		module("svc-b", "app"),
+		typeSym("svc-b", "app.ApplicationController", facts.SymbolClass),
+		typeSym("svc-b", "app.ApplicationRecord", facts.SymbolClass),
+		typeSym("svc-b", "app.ApplicationJob", facts.SymbolClass),
+		typeSym("svc-b", "app.Ability", facts.SymbolClass),
+		typeSym("svc-b", "app.ApplicationCable::Connection", facts.SymbolClass),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("framework-convention boilerplate should not link: %+v", edges)
+	}
+}
+
+// migrationSym is a class symbol declared in a Rails migration file.
+func migrationSym(repo, name string) facts.Fact {
+	f := typeSym(repo, name, facts.SymbolClass)
+	f.File = repo + "/db/migrate/20230101000000_" + name + ".rb"
+	return f
+}
+
+func TestComputeLinks_SharedSymbolsMigrationsIgnored(t *testing.T) {
+	// Auto-generated migration classes coincide when two apps ran the same
+	// migration (parallel schema history), not shared code — no link.
+	in := []facts.Fact{
+		module("svc-a", "db/migrate"),
+		migrationSym("svc-a", "CreateWidgets"),
+		migrationSym("svc-a", "AddIndexToWidgets"),
+		migrationSym("svc-a", "InitSchema"),
+		module("svc-b", "db/migrate"),
+		migrationSym("svc-b", "CreateWidgets"),
+		migrationSym("svc-b", "AddIndexToWidgets"),
+		migrationSym("svc-b", "InitSchema"),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("shared migration class names should not link: %+v", edges)
+	}
+}
+
+func TestComputeLinks_SharedSymbolsGenuineSurvivesBoilerplate(t *testing.T) {
+	// Boilerplate + migrations mixed with >=3 genuine distinctive shared types: the
+	// edge is still drawn, and symbol_count reflects ONLY the genuine types.
+	in := []facts.Fact{
+		module("svc-a", "app"),
+		typeSym("svc-a", "app.ApplicationController", facts.SymbolClass), // excluded
+		typeSym("svc-a", "app.Ability", facts.SymbolClass),               // excluded
+		migrationSym("svc-a", "InitSchema"),                              // excluded
+		typeSym("svc-a", "app.WidgetRegistry", facts.SymbolClass),        // genuine
+		typeSym("svc-a", "app.PaymentLedger", facts.SymbolClass),         // genuine
+		typeSym("svc-a", "app.RetryPolicy", facts.SymbolClass),           // genuine
+		module("svc-b", "app"),
+		typeSym("svc-b", "app.ApplicationController", facts.SymbolClass),
+		typeSym("svc-b", "app.Ability", facts.SymbolClass),
+		migrationSym("svc-b", "InitSchema"),
+		typeSym("svc-b", "app.WidgetRegistry", facts.SymbolClass),
+		typeSym("svc-b", "app.PaymentLedger", facts.SymbolClass),
+		typeSym("svc-b", "app.RetryPolicy", facts.SymbolClass),
+	}
+	out := ComputeLinks(in)
+	e := findEdge(out, "svc-a", "svc-b")
+	if e == nil {
+		t.Fatalf("genuine shared types should still link; out=%+v", out)
+	}
+	if c, _ := e.Props["symbol_count"].(int); c != 3 {
+		t.Errorf("symbol_count = %v, want 3 (only genuine types, boilerplate/migrations excluded)", c)
+	}
+}
+
 func TestComputeLinks_SharedSymbolsNonTypesIgnored(t *testing.T) {
 	// Functions/methods/variables are not the contract surface; sharing them
 	// (even many) must not link repos.
@@ -929,7 +1007,7 @@ func TestUnmatchedServerRouteKeys_BasicSetDifference(t *testing.T) {
 	in := []facts.Fact{
 		// golf-ui calls one of golf's two routes.
 		clientRoute("golf-ui", "/api/items/{id}", "GET", nil),
-		serverRoute("golf", "/api/items/{id}", "GET"),     // called → matched
+		serverRoute("golf", "/api/items/{id}", "GET"),      // called → matched
 		serverRoute("golf", "/api/secret/cleanup", "POST"), // no caller → unmatched
 	}
 	keys := UnmatchedServerRouteKeys(in)
@@ -970,8 +1048,8 @@ func TestUnmatchedServerRouteKeys_ConsumerOwnRoutesNotFlagged(t *testing.T) {
 		// golf-ui calls golf's API (making golf a provider) and serves its own page.
 		clientRoute("golf-ui", "/api/items/{id}", "GET", nil),
 		serverRoute("golf-ui", "/dashboard/settings", "GET"), // golf-ui's own page, no caller
-		serverRoute("golf", "/api/items/{id}", "GET"),         // called by golf-ui
-		serverRoute("golf", "/api/secret/cleanup", "POST"),    // no caller
+		serverRoute("golf", "/api/items/{id}", "GET"),        // called by golf-ui
+		serverRoute("golf", "/api/secret/cleanup", "POST"),   // no caller
 	}
 	keys := UnmatchedServerRouteKeys(in)
 	if hasRouteKey(keys, "golf-ui", "GET", "/dashboard/settings") {
