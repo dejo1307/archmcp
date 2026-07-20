@@ -257,10 +257,13 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 	// Emit XcodeGen target module facts + declared inter-target dependency edges.
 	allFacts = append(allFacts, emitXcodeGenFacts(resolver, xp, spmRoots, dirToFile)...)
 
-	// Emit module facts for leaf directories not already described by an XcodeGen
-	// or SPM target identity (files that fell back to leaf-directory grouping).
+	// Emit module facts for leaf directories not already described by an SPM target
+	// or a WHOLE XcodeGen target identity (files that fell back to leaf-directory
+	// grouping, plus the per-directory packages of subdivided app targets). A
+	// subdivided target's own root identity is deliberately NOT suppressed: files
+	// sitting directly at the target root form a real per-directory package.
 	for dir := range modules {
-		if manifestModules[dir] || resolver.identities[dir] {
+		if manifestModules[dir] || (resolver.identities[dir] && !resolver.subdivided[dir]) {
 			continue
 		}
 		allFacts = append(allFacts, facts.Fact{
@@ -308,9 +311,14 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		// because it resolves bare short names through a collision-prone index, is
 		// the sole source of impossible back-edges (e.g. a Foundation-level target
 		// "importing" a feature target) that SPM's acyclic-target guarantee forbids.
-		// Skip it for target-resolved files; keep it only for loose Swift projects
-		// where a file falls back to leaf-directory grouping and has no target graph.
-		if _, resolved := resolver.moduleFor(relFile); resolved {
+		// Skip it for WHOLE target-resolved files (framework/SPM/test); keep it for
+		// loose Swift projects AND for the per-directory packages of a SUBDIVIDED app
+		// target — within one Swift module nothing is imported, so type references are
+		// the only source of the directory→directory coupling those sub-packages need.
+		// (Intra-app cycles are legitimate, so the acyclic-graph concern above, which
+		// motivated the skip across SPM targets, does not apply here; the typeAmbiguous
+		// guard still drops collision-prone bare names.)
+		if _, resolved := resolver.moduleFor(relFile); resolved && !resolver.subdividesFile(relFile) {
 			continue
 		}
 

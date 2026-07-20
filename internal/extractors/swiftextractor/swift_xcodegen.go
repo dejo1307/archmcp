@@ -237,17 +237,38 @@ type moduleEntry struct {
 	excludes  []string // exclude globs, relative to prefix
 	identity  string   // owning module identity (the target's primary source root)
 	priority  int      // product-type priority; higher wins ties
+	subdivide bool     // application/app-extension: split into per-directory packages
 }
 
 // moduleResolver maps a repo-relative Swift file to its owning target module.
 type moduleResolver struct {
 	entries []moduleEntry
-	// identities is the set of module identities produced by moduleFor, used by
-	// the caller to suppress duplicate leaf-directory module facts.
+	// identities is the set of target source-root identities, used by the caller to
+	// suppress duplicate leaf-directory module facts for WHOLE targets.
 	identities map[string]bool
-	// targetIdentity maps an XcodeGen target name to its module identity, for
-	// resolving `dependencies: target:` edges.
+	// subdivided is the subset of identities belonging to application/app-extension
+	// targets that are split into per-directory packages. Their root identity is NOT
+	// suppressed from leaf emission (files at the target root form a real package),
+	// and their files run the intra-target type-reference pass.
+	subdivided map[string]bool
+	// targetIdentity maps a WHOLE (non-subdivided) XcodeGen target name to its module
+	// identity, for resolving `dependencies: target:` edges and emitting its module
+	// fact. Subdivided targets are intentionally absent (they are never import units).
 	targetIdentity map[string]string
+}
+
+// subdividable reports whether an XcodeGen target type is split into per-directory
+// packages instead of collapsed to one module. Only application and app-extension
+// targets qualify: they are never `import` units (so subdividing them cannot dangle
+// a cross-target import edge) and tend to be catch-all monoliths whose internal
+// structure would otherwise be invisible. Frameworks are import units and stay whole;
+// test bundles stay collapsed per bundle.
+func subdividable(targetType string) bool {
+	switch targetType {
+	case "application", "app-extension":
+		return true
+	}
+	return false
 }
 
 // targetPriority ranks target types so that, on the rare overlap, an app or
@@ -304,6 +325,7 @@ func primarySourceRoot(t xcodeTarget, projectDir string) string {
 func buildModuleResolver(xp *xcodeProject, spmRoots map[string]string) *moduleResolver {
 	r := &moduleResolver{
 		identities:     map[string]bool{},
+		subdivided:     map[string]bool{},
 		targetIdentity: map[string]string{},
 	}
 
@@ -333,15 +355,23 @@ func buildModuleResolver(xp *xcodeProject, spmRoots map[string]string) *moduleRe
 			if r.identities[identity] {
 				continue
 			}
-			r.targetIdentity[name] = identity
 			r.identities[identity] = true
+			sub := subdividable(t.Type)
+			if sub {
+				// A subdivided target has no single flat module and is never imported
+				// by name, so it is kept out of targetIdentity (no flat module fact, no
+				// declared-dependency edges — its per-file imports cover those).
+				r.subdivided[identity] = true
+			} else {
+				r.targetIdentity[name] = identity
+			}
 
 			for _, s := range t.Sources {
 				if s.resource || s.path == "" {
 					continue
 				}
 				p := path.Join(xp.projectDir, filepath.ToSlash(s.path))
-				e := moduleEntry{excludes: s.excludes, identity: identity, priority: prio}
+				e := moduleEntry{excludes: s.excludes, identity: identity, priority: prio, subdivide: sub}
 				if isLikelyFile(p) {
 					e.exactFile = p
 				} else {
@@ -378,20 +408,21 @@ func isLikelyFile(p string) bool {
 	return false
 }
 
-// moduleFor returns the owning target module identity for a repo-relative Swift
-// file. ok is false when no product target covers the file (caller falls back to
-// the leaf directory) or when the best match is ambiguously shared by multiple
-// equal-priority targets.
-func (r *moduleResolver) moduleFor(relFile string) (string, bool) {
+// resolveTarget returns the winning target identity for a repo-relative Swift file,
+// whether that target is subdivided, and whether any product target matched. ok is
+// false when no target covers the file (caller falls back to the leaf directory) or
+// when the best match is ambiguously shared by multiple equal-priority targets.
+func (r *moduleResolver) resolveTarget(relFile string) (identity string, subdivide bool, ok bool) {
 	if r == nil {
-		return "", false
+		return "", false, false
 	}
 	rel := filepath.ToSlash(relFile)
 
 	type cand struct {
-		identity string
-		priority int
-		specific int // match specificity; higher is more specific
+		identity  string
+		priority  int
+		specific  int // match specificity; higher is more specific
+		subdivide bool
 	}
 	var cands []cand
 	for _, e := range r.entries {
@@ -401,20 +432,20 @@ func (r *moduleResolver) moduleFor(relFile string) (string, bool) {
 				continue
 			}
 			// Exact-file entries are the most specific possible match.
-			cands = append(cands, cand{e.identity, e.priority, len(rel) + 1})
+			cands = append(cands, cand{e.identity, e.priority, len(rel) + 1, e.subdivide})
 		case e.prefix != "":
 			if rel != e.prefix && !strings.HasPrefix(rel, e.prefix+"/") {
 				continue
 			}
-			sub := strings.TrimPrefix(strings.TrimPrefix(rel, e.prefix), "/")
-			if matchExcludes(sub, e.excludes) {
+			subPath := strings.TrimPrefix(strings.TrimPrefix(rel, e.prefix), "/")
+			if matchExcludes(subPath, e.excludes) {
 				continue
 			}
-			cands = append(cands, cand{e.identity, e.priority, len(e.prefix)})
+			cands = append(cands, cand{e.identity, e.priority, len(e.prefix), e.subdivide})
 		}
 	}
 	if len(cands) == 0 {
-		return "", false
+		return "", false, false
 	}
 
 	// Winner: highest priority, then most specific match. If several distinct
@@ -433,9 +464,35 @@ func (r *moduleResolver) moduleFor(relFile string) (string, bool) {
 		}
 	}
 	if len(distinct) != 1 {
-		return "", false // shared across equal-priority targets
+		return "", false, false // shared across equal-priority targets
 	}
-	return best.identity, true
+	return best.identity, best.subdivide, true
+}
+
+// moduleFor returns the owning module identity for a repo-relative Swift file. For a
+// subdivided application/app-extension target it is the file's LEAF DIRECTORY, giving
+// Go/Ruby-style per-directory packages; for any other resolved target it is the flat
+// target source-root identity. ok is false when no target covers the file (caller
+// falls back to the leaf directory).
+func (r *moduleResolver) moduleFor(relFile string) (string, bool) {
+	identity, subdivide, ok := r.resolveTarget(relFile)
+	if !ok {
+		return "", false
+	}
+	if subdivide {
+		return path.Dir(filepath.ToSlash(relFile)), true
+	}
+	return identity, true
+}
+
+// subdividesFile reports whether a file belongs to a subdivided (application/
+// app-extension) target. Callers use it to run the type-reference dependency pass
+// INTRA-target: files within one Swift module never `import` one another, so type
+// references are the only source of the directory→directory coupling edges that give
+// the per-directory sub-packages meaningful Ca/Ce.
+func (r *moduleResolver) subdividesFile(relFile string) bool {
+	_, subdivide, ok := r.resolveTarget(relFile)
+	return ok && subdivide
 }
 
 // matchExcludes reports whether sub (a path relative to a source prefix) matches

@@ -176,27 +176,46 @@ func TestModuleResolver_SharedSourceRootCollapses(t *testing.T) {
 	}
 	r := buildModuleResolver(xp, nil)
 
-	if got, ok := r.targetIdentity["App"]; !ok || got != "App" {
-		t.Errorf(`targetIdentity["App"] = (%q, %v), want ("App", true)`, got, ok)
+	// App is an application target → subdivided (per-directory packages), so it owns
+	// its root identity but is deliberately kept OUT of targetIdentity (it is never an
+	// import unit and emits no flat module fact — its per-directory modules and imports
+	// carry its structure).
+	if !r.subdivided["App"] {
+		t.Error(`subdivided["App"] = false, want true (application target)`)
 	}
+	if !r.identities["App"] {
+		t.Error(`identities["App"] = false, want true`)
+	}
+	if _, ok := r.targetIdentity["App"]; ok {
+		t.Error("subdivided App must not be in targetIdentity")
+	}
+	// The preview/test-host shadow targets sharing the "App" root collapse away.
 	for _, shadow := range []string{"AppPreview", "AppUnitTest"} {
 		if _, ok := r.targetIdentity[shadow]; ok {
 			t.Errorf("shadow target %q should not own an identity", shadow)
 		}
 	}
 
-	ff := emitXcodeGenFacts(r, xp, nil, map[string]string{"App": "App/Main.swift"})
-	appModules := 0
+	// emitXcodeGenFacts emits the whole Core framework module, but NOT a flat App
+	// module (App is subdivided into per-directory modules elsewhere).
+	ff := emitXcodeGenFacts(r, xp, nil, map[string]string{"Sources/Core": "Sources/Core/Core.swift"})
+	coreModules, appModules := 0, 0
 	for _, f := range ff {
-		if f.Kind == facts.KindModule && f.Name == "App" {
+		if f.Kind != facts.KindModule {
+			continue
+		}
+		switch f.Name {
+		case "Sources/Core":
+			coreModules++
+		case "App":
 			appModules++
-			if f.Props["xcode_target"] != "App" {
-				t.Errorf("App module xcode_target = %v, want App", f.Props["xcode_target"])
-			}
 		}
 	}
-	if appModules != 1 {
-		t.Errorf("emitted %d App module facts, want exactly 1", appModules)
+	if coreModules != 1 {
+		t.Errorf("emitted %d Sources/Core module facts, want exactly 1", coreModules)
+	}
+	if appModules != 0 {
+		t.Errorf("emitted %d flat App module facts, want 0 (App is subdivided)", appModules)
 	}
 }
 

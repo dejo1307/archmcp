@@ -642,7 +642,16 @@ import (
 // Axum analog of the Go gorilla/mux+chi subrouter composition (v125). This fixes
 // cross-repo client↔route matching (unused-routes / coverage FPs) and the route
 // facts consumed by impact_analysis/traverse. Cached Rust snapshots must re-extract.
-const cacheVersion = "v130"
+// v131: the Swift extractor now sub-divides an XcodeGen application/app-extension
+// target into per-directory packages (Go/Ruby-style leaf-directory modules) instead
+// of collapsing the whole target to a single module, and runs the type-reference pass
+// INTRA-target to synthesize the directory→directory coupling edges that files within
+// one Swift module never express via `import`. Framework and SPM targets are kept
+// whole (they are import units addressed by name); test bundles still collapse per
+// bundle. A monolithic iOS app target now surfaces its internal structure in
+// package_metrics (per-directory Ca/Ce/abstractness) instead of appearing as one
+// 400+-type package. Cached Swift snapshots must re-extract.
+const cacheVersion = "v131"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
