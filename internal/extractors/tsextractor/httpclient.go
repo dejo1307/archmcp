@@ -62,6 +62,39 @@ var requestPayloadKey = regexp.MustCompile(`\b(?:token|payload|pagination|signal
 // tsInterpolation matches a template-literal interpolation, e.g. ${id}.
 var tsInterpolation = regexp.MustCompile(`\$\{[^}]*\}`)
 
+// baseLiteralDecl binds an identifier to a "/"-rooted string literal: a const/let/
+// var, a class field (with optional modifiers preceding the name), or a constructor
+// default parameter. Group 1 is the identifier; groups 2-4 are the literal
+// (single/double/backtick — the backtick form excludes "{" so a template base that
+// carries its own ${…} is not treated as a static base). Only "/"-rooted values are
+// matched, so an absolute (http…) or env-derived base is deliberately not captured.
+var baseLiteralDecl = regexp.MustCompile("(\\w+)\\s*(?::[\\w<>\\[\\].,| ]*)?=\\s*(?:'(/[^']*)'|\"(/[^\"]*)\"|`(/[^`{]*)`)")
+
+// fileBaseLiterals maps an identifier to the "/"-rooted base-path literal it is
+// bound to in this file (e.g. basePath -> "/api/settings/pricing"), so a client call
+// written as `${this.basePath}/calculate` can be reconstructed to its full path
+// instead of collapsing to the single-segment suffix "/calculate". An identifier
+// bound to two different literals in the same file is ambiguous and dropped, so the
+// resolver never guesses.
+func fileBaseLiterals(src []byte) map[string]string {
+	out := map[string]string{}
+	ambiguous := map[string]bool{}
+	for _, m := range baseLiteralDecl.FindAllSubmatchIndex(src, -1) {
+		id := string(src[m[2]:m[3]])
+		lit := firstNonEmptyGroup(src, m, 2, 3, 4)
+		if lit == "" || ambiguous[id] {
+			continue
+		}
+		if prev, ok := out[id]; ok && prev != lit {
+			delete(out, id) // conflicting bindings -> unresolvable
+			ambiguous[id] = true
+			continue
+		}
+		out[id] = lit
+	}
+	return out
+}
+
 // httpMethodWindow is how many bytes after the URL literal to scan for the
 // request's method option.
 const httpMethodWindow = 200
@@ -81,13 +114,14 @@ const objectScanCap = 4096
 func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 	dir := filepath.ToSlash(filepath.Dir(relFile))
 	api := tsAPIHint(relFile)
+	bases := fileBaseLiterals(src)
 
 	var out []facts.Fact
 	seen := map[string]bool{}
 	// add appends a client-route fact, de-duplicating on method+path+line so the
 	// three passes below cannot double-emit the same call site.
 	add := func(rawPath, method, framework string, off int) {
-		path, ok := cleanTSPath(rawPath)
+		path, ok := cleanTSPath(rawPath, bases)
 		if !ok {
 			return
 		}
@@ -243,12 +277,25 @@ func firstNonEmptyGroup(src []byte, m []int, groups ...int) string {
 // or returns ok=false when it is not a backend path (fully dynamic, external,
 // or empty). It strips a leading ${...} base-URL token, drops the query string,
 // and collapses interpolations to the {} placeholder.
-func cleanTSPath(raw string) (string, bool) {
+func cleanTSPath(raw string, bases map[string]string) (string, bool) {
 	p := strings.TrimSpace(raw)
-	// Strip a leading ${...} base-URL token (e.g. ${API_BASE_URL}).
+	// A leading ${...} token is the base URL. Prefer to RESOLVE it against a
+	// file-local "/"-rooted literal (e.g. ${this.basePath} -> "/api/settings/pricing")
+	// so the full path is reconstructed and can match its server route; fall back to
+	// stripping it when the base is not a known literal (an injected/env/absolute
+	// base we cannot know statically).
 	if strings.HasPrefix(p, "${") {
 		if i := strings.IndexByte(p, '}'); i >= 0 {
-			p = p[i+1:]
+			token := p[2:i] // inside ${...}
+			rest := p[i+1:]
+			if dot := strings.LastIndexByte(token, '.'); dot >= 0 {
+				token = token[dot+1:] // this.basePath -> basePath
+			}
+			if base, ok := bases[strings.TrimSpace(token)]; ok {
+				p = base + rest
+			} else {
+				p = rest
+			}
 		}
 	}
 	// A remaining absolute URL points at a third-party API, not our backend.

@@ -620,7 +620,17 @@ import (
 // ".../role-distribution{}" → ".../role-distribution"), which a real `?` inside the
 // interpolated variable hid from the query strip; own-segment "/{}" path params are
 // untouched. Cached TypeScript snapshots must re-extract.
-const cacheVersion = "v128"
+// v129: the TS http-client extractor now resolves a file-local base-URL literal
+// interpolated at the head of a call path. A client call written as
+// `${this.basePath}/calculate`, where `basePath = '/api/settings/pricing'` is a
+// const/class-field/ctor-default "/"-rooted string literal in the same file, is
+// reconstructed to its full path ("/api/settings/pricing/calculate") instead of
+// collapsing to the single-segment suffix "/calculate" that the cross-repo matcher
+// skips — so these real calls resolve to their server route. An identifier bound to
+// two different literals in the file is ambiguous and left unstripped; an
+// injected/env/absolute base (not a "/"-rooted literal) still falls back to the
+// suffix, as before. Cached TypeScript snapshots must re-extract.
+const cacheVersion = "v129"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

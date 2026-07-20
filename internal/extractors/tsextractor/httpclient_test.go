@@ -207,3 +207,75 @@ func TestExtractHTTPClientFacts_GluedQueryPlaceholderStripped(t *testing.T) {
 		t.Errorf("mid-path {} param must be preserved: %+v", got)
 	}
 }
+
+// TestExtractHTTPClientFacts_BaseLiteralResolved covers file-local base-URL
+// resolution: a leading `${...}` base interpolated at the head of a call path is
+// rebuilt from a "/"-rooted literal declared in the same file — as a class field,
+// a file-scope const, or a constructor default param — so the full path (which
+// matches the server route) is emitted instead of a bare single-segment suffix.
+func TestExtractHTTPClientFacts_BaseLiteralResolved(t *testing.T) {
+	// GET calls are placed last so the method-scan window (200 bytes after the URL)
+	// cannot pick up a later call's `method:` option and mis-label them.
+	src := "const ROOT = '/api/v2/things';\n" +
+		"class PricingApi {\n" +
+		"  private readonly basePath = '/api/settings/pricing';\n" +
+		"  constructor(private baseUrl: string = '/api/settings/engagement') {}\n" +
+		"  calc() { return this.makeRequest(`${this.basePath}/calculate`, { method: 'POST' }); }\n" +
+		"  send() { return this.makeRequest(`${this.baseUrl}/send`, { method: 'POST' }); }\n" +
+		"  list() { return fetch(`${ROOT}/list`); }\n" +
+		"}\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "src/lib/api/pricingEngine.ts"))
+
+	if got["/api/settings/pricing/calculate"] != "POST" {
+		t.Errorf("class-field base should resolve to full path: %+v", got)
+	}
+	if got["/api/v2/things/list"] != "GET" {
+		t.Errorf("file-const base should resolve to full path: %+v", got)
+	}
+	if got["/api/settings/engagement/send"] != "POST" {
+		t.Errorf("constructor-default base should resolve to full path: %+v", got)
+	}
+	if _, found := got["/calculate"]; found {
+		t.Errorf("bare suffix must not survive once the base resolves: %+v", got)
+	}
+}
+
+// TestExtractHTTPClientFacts_BaseLiteralUnresolvedFallsBackToSuffix covers the
+// fallback: a base that is not a known "/"-rooted literal (injected via a
+// non-defaulted param, or an absolute/env base) is still stripped, yielding the
+// suffix exactly as before — the resolver never fabricates a base.
+func TestExtractHTTPClientFacts_BaseLiteralUnresolvedFallsBackToSuffix(t *testing.T) {
+	src := "class A {\n" +
+		"  constructor(private baseURL: string) {}\n" + // injected, no literal
+		"  ext = 'https://third.party/v1';\n" + // absolute -> not "/"-rooted, not captured
+		"  a() { return fetch(`${this.baseURL}/quick-action-preferences`); }\n" +
+		"  b() { return fetch(`${this.ext}/thing`); }\n" +
+		"}\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "src/lib/api/quickActionPreferences.ts"))
+
+	if _, found := got["/quick-action-preferences"]; !found {
+		t.Errorf("injected base should fall back to the stripped suffix: %+v", got)
+	}
+	if _, found := got["/thing"]; !found {
+		t.Errorf("absolute base is not a resolvable literal; suffix kept: %+v", got)
+	}
+}
+
+// TestExtractHTTPClientFacts_BaseLiteralAmbiguousNotResolved covers the ambiguity
+// guard: an identifier bound to two different literals in the same file is dropped
+// from the base map, so the resolver falls back to stripping rather than guessing.
+func TestExtractHTTPClientFacts_BaseLiteralAmbiguousNotResolved(t *testing.T) {
+	src := "const base = '/api/one';\n" +
+		"const base = '/api/two';\n" + // conflicting binding -> ambiguous
+		"function go() { return fetch(`${base}/x`); }\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "src/lib/api/thing.ts"))
+
+	if _, found := got["/x"]; !found {
+		t.Errorf("ambiguous base must fall back to the suffix: %+v", got)
+	}
+	for _, bad := range []string{"/api/one/x", "/api/two/x"} {
+		if _, found := got[bad]; found {
+			t.Errorf("ambiguous base must not resolve to %q: %+v", bad, got)
+		}
+	}
+}
