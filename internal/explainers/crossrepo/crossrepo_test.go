@@ -138,3 +138,77 @@ func TestExplain_AllZeroCountsFallback(t *testing.T) {
 		t.Errorf("expected generic fallback detail, got %q", insights[0].Description)
 	}
 }
+
+func TestExplain_SharedCodeIsSeparateHedgedInsight(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(
+		facts.Fact{
+			Kind: facts.KindDependency, Name: "svc-alpha -> svc-beta", Repo: "svc-alpha",
+			Props: map[string]any{
+				"type": facts.TypeCrossRepo, "synthetic": "crossrepo",
+				"via": []string{"http"}, "endpoint_count": 3,
+			},
+		},
+		facts.Fact{
+			Kind: facts.KindDependency, Name: "fork-a <-> fork-b", Repo: "fork-a",
+			Props: map[string]any{
+				"type": facts.TypeCrossRepoSharedCode, "synthetic": "crossrepo",
+				"via": []string{"shared_symbols"}, "repos": []string{"fork-a", "fork-b"},
+				"symbol_count": 39,
+			},
+		},
+	)
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain error: %v", err)
+	}
+	if len(insights) != 2 {
+		t.Fatalf("insights = %d, want 2 (dependencies + shared code)", len(insights))
+	}
+
+	// The dependency insight must count ONLY real edges: a shared-code pair is not one.
+	dep := insights[0]
+	if !strings.Contains(dep.Title, "1 edges") {
+		t.Errorf("dependency title = %q, want it to count only the 1 real edge", dep.Title)
+	}
+	if strings.Contains(dep.Description, "fork-a") {
+		t.Errorf("shared-code pair leaked into the dependency insight: %q", dep.Description)
+	}
+
+	shared := insights[1]
+	if !strings.Contains(shared.Title, "1 pair(s)") {
+		t.Errorf("shared-code title = %q, want it to mention 1 pair", shared.Title)
+	}
+	if !strings.Contains(shared.Description, "39 shared type name(s)") {
+		t.Errorf("shared-code description should carry the symbol count: %q", shared.Description)
+	}
+	// The wording must state plainly that this is not a dependency and not traversable,
+	// since that is the whole reason it is reported separately.
+	for _, want := range []string{"NOT a dependency", "no graph edge", "find_path"} {
+		if !strings.Contains(shared.Description, want) {
+			t.Errorf("shared-code description missing %q: %q", want, shared.Description)
+		}
+	}
+	if shared.Confidence >= dep.Confidence {
+		t.Errorf("shared-code confidence (%v) must be lower than dependency confidence (%v): names alone cannot confirm shared code",
+			shared.Confidence, dep.Confidence)
+	}
+}
+
+func TestExplain_NoSharedCodeInsightWhenNonePresent(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency, Name: "svc-alpha -> svc-beta", Repo: "svc-alpha",
+		Props: map[string]any{
+			"type": facts.TypeCrossRepo, "synthetic": "crossrepo", "via": []string{"http"},
+		},
+	})
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain error: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("insights = %d, want 1 (no shared-code pairs, so no second insight)", len(insights))
+	}
+}

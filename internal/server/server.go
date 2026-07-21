@@ -691,7 +691,7 @@ func (s *Server) registerTools() {
 
 			// Report the cross-repo "graph of graphs" links derived from this set.
 			crossEdges, _ := s.eng.Store().QueryAdvanced(facts.QueryOpts{
-				Kind: facts.KindDependency, Prop: "type", PropValue: "cross_repo", Limit: 500,
+				Kind: facts.KindDependency, Prop: "type", PropValue: facts.TypeCrossRepo, Limit: 500,
 			})
 			services := s.eng.Store().ByKind(facts.KindService)
 			summary += fmt.Sprintf(
@@ -700,6 +700,20 @@ func (s *Server) registerTools() {
 					"query_facts(kind=\"service\") or query_facts(prop=\"type\", prop_value=\"cross_repo\").",
 				len(services), len(crossEdges), repoLabel,
 			)
+			// Shared-code pairs are NOT edges (no depends_on relation, so traversal never
+			// follows them). Surfaced separately so the signal is discoverable without
+			// being mistaken for a dependency.
+			sharedCode, _ := s.eng.Store().QueryAdvanced(facts.QueryOpts{
+				Kind: facts.KindDependency, Prop: "type", PropValue: facts.TypeCrossRepoSharedCode, Limit: 500,
+			})
+			if len(sharedCode) > 0 {
+				summary += fmt.Sprintf(
+					"\n- **Shared code:** %d repo pair(s) declare many of the same type names with no "+
+						"import or call between them — a maintenance signal, not a dependency, so they carry "+
+						"no graph edge. List them with query_facts(prop=\"type\", prop_value=%q).",
+					len(sharedCode), facts.TypeCrossRepoSharedCode,
+				)
+			}
 		} else {
 			// Single-repo edit-verify loop guidance, tailored to whether a baseline
 			// is already pinned: nudge set_baseline before the agent edits, then

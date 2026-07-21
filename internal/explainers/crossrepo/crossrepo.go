@@ -28,17 +28,35 @@ func (e *CrossRepoExplainer) Name() string {
 // store and emits one summarizing insight describing how the repositories
 // depend on each other. It returns nothing for single-repo snapshots.
 func (e *CrossRepoExplainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
-	deps, _ := store.QueryAdvanced(facts.QueryOpts{
+	var out []facts.Insight
+	if in := dependencyInsight(store); in != nil {
+		out = append(out, *in)
+	}
+	if in := sharedCodeInsight(store); in != nil {
+		out = append(out, *in)
+	}
+	return out, nil
+}
+
+// queryByType fetches the cross-repo dependency facts of one type, name-sorted.
+func queryByType(store *facts.Store, typ string) []facts.Fact {
+	ff, _ := store.QueryAdvanced(facts.QueryOpts{
 		Kind:      facts.KindDependency,
 		Prop:      "type",
-		PropValue: "cross_repo",
+		PropValue: typ,
 		Limit:     500,
 	})
-	if len(deps) == 0 {
-		return nil, nil
-	}
+	sort.Slice(ff, func(i, j int) bool { return ff[i].Name < ff[j].Name })
+	return ff
+}
 
-	sort.Slice(deps, func(i, j int) bool { return deps[i].Name < deps[j].Name })
+// dependencyInsight summarizes the real, directional cross-repo edges — the ones whose
+// depends_on relations traversal can follow.
+func dependencyInsight(store *facts.Store) *facts.Insight {
+	deps := queryByType(store, facts.TypeCrossRepo)
+	if len(deps) == 0 {
+		return nil
+	}
 
 	evidence := make([]facts.Evidence, 0, len(deps))
 	var lines []string
@@ -51,7 +69,7 @@ func (e *CrossRepoExplainer) Explain(ctx context.Context, store *facts.Store) ([
 		lines = append(lines, d.Name+" ("+detail+")")
 	}
 
-	insight := facts.Insight{
+	return &facts.Insight{
 		Title: fmt.Sprintf("Cross-repo dependencies (%d edges)", len(deps)),
 		Description: "These service-to-service dependencies span repositories: " +
 			strings.Join(lines, "; ") + ". Traverse from a repo label (service node) " +
@@ -59,7 +77,39 @@ func (e *CrossRepoExplainer) Explain(ctx context.Context, store *facts.Store) ([
 		Confidence: 0.9,
 		Evidence:   evidence,
 	}
-	return []facts.Insight{insight}, nil
+}
+
+// sharedCodeInsight reports repo pairs that declare many of the same distinctive type
+// names without any import or call between them. Confidence is deliberately moderate
+// and the wording deliberately hedged: the linker compares NAMES, never file contents,
+// so it cannot tell code copied and kept in sync from code that has since diverged, or
+// from two teams independently modelling one domain with the same vocabulary.
+func sharedCodeInsight(store *facts.Store) *facts.Insight {
+	pairs := queryByType(store, facts.TypeCrossRepoSharedCode)
+	if len(pairs) == 0 {
+		return nil
+	}
+
+	evidence := make([]facts.Evidence, 0, len(pairs))
+	var lines []string
+	for _, p := range pairs {
+		detail := fmt.Sprintf("%d shared type name(s)", propInt(p, "symbol_count"))
+		evidence = append(evidence, facts.Evidence{Fact: p.Name, Detail: detail})
+		lines = append(lines, p.Name+" ("+detail+")")
+	}
+
+	return &facts.Insight{
+		Title: fmt.Sprintf("Shared code between repos (%d pair(s))", len(pairs)),
+		Description: "These repo pairs declare many of the same distinctive type names, " +
+			"which usually means copied or vendored code, or a common ancestor: " +
+			strings.Join(lines, "; ") + ". This is NOT a dependency — neither repo imports " +
+			"or calls the other — so these pairs carry no graph edge and do not appear in " +
+			"traverse, find_path or impact_analysis. Treat it as a maintenance signal: a fix " +
+			"in one may be needed in the other. Matching names do not prove the code is still " +
+			"shared, so diff the declarations before relying on it.",
+		Confidence: 0.5,
+		Evidence:   evidence,
+	}
 }
 
 // edgeDetail renders a short description of what justifies a cross-repo edge.

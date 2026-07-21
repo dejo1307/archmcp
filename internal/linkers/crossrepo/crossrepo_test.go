@@ -83,13 +83,56 @@ func serviceNodes(out []facts.Fact) []string {
 // the actual cross-repo edges. Service nodes (which now exist for every loaded
 // repo) are excluded, so this measures "did a link form?".
 func crossRepoEdges(out []facts.Fact) []facts.Fact {
-	var edges []facts.Fact
+	return depFactsOfType(out, facts.TypeCrossRepo)
+}
+
+// sharedCodeFacts returns the symmetric shared-code coupling facts — pairs that share
+// type names with no import or call between them. These are deliberately NOT edges, so
+// they must be counted separately from crossRepoEdges: lumping them together would let
+// a "must not link" test pass while the linker was in fact emitting a coupling.
+func sharedCodeFacts(out []facts.Fact) []facts.Fact {
+	return depFactsOfType(out, facts.TypeCrossRepoSharedCode)
+}
+
+func depFactsOfType(out []facts.Fact, typ string) []facts.Fact {
+	var ff []facts.Fact
 	for _, f := range out {
-		if f.Kind == facts.KindDependency {
-			edges = append(edges, f)
+		if f.Kind == facts.KindDependency && f.Props["type"] == typ {
+			ff = append(ff, f)
 		}
 	}
-	return edges
+	return ff
+}
+
+// findSharedCode returns the coupling fact for the unordered pair {a, b}, or nil.
+func findSharedCode(out []facts.Fact, a, b string) *facts.Fact {
+	if a > b {
+		a, b = b, a
+	}
+	want := a + " <-> " + b
+	for i := range out {
+		if out[i].Kind == facts.KindDependency && out[i].Name == want &&
+			out[i].Props["type"] == facts.TypeCrossRepoSharedCode {
+			return &out[i]
+		}
+	}
+	return nil
+}
+
+// anyServiceEdge reports whether ANY service node carries a depends_on relation — the
+// check that a coupling stayed out of the traversable graph.
+func anyServiceEdge(out []facts.Fact) bool {
+	for _, f := range out {
+		if f.Kind != facts.KindService {
+			continue
+		}
+		for _, rel := range f.Relations {
+			if rel.Kind == facts.RelDependsOn {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // httpCoverageOf returns the http_client coverage counts attached to a service
@@ -619,8 +662,10 @@ func typeSym(repo, name, kind string) facts.Fact {
 
 func TestComputeLinks_SharedSymbolsMatch(t *testing.T) {
 	// getdp and gmsh both declare the vendored onelab/GmshSocket types, under
-	// different directory prefixes (src/common vs Common). Enough distinctive
-	// shared types must link them, bidirectionally and via shared_symbols.
+	// different directory prefixes (src/common vs Common). Enough distinctive shared
+	// types must record a SYMMETRIC coupling — but no dependency edge: neither repo
+	// imports or calls the other, and a depends_on relation would let traversal
+	// compose a path through the pair that does not exist.
 	in := []facts.Fact{
 		module("getdp", "src/common"),
 		typeSym("getdp", "src/common.GmshClient", facts.SymbolClass),
@@ -633,20 +678,24 @@ func TestComputeLinks_SharedSymbolsMatch(t *testing.T) {
 	}
 	out := ComputeLinks(in)
 
-	for _, pair := range [][2]string{{"getdp", "gmsh"}, {"gmsh", "getdp"}} {
-		e := findEdge(out, pair[0], pair[1])
-		if e == nil {
-			t.Fatalf("missing shared-symbol edge %s -> %s; out=%+v", pair[0], pair[1], out)
-		}
-		if via, _ := e.Props["via"].([]string); !reflect.DeepEqual(via, []string{"shared_symbols"}) {
-			t.Errorf("via = %v, want [shared_symbols]", e.Props["via"])
-		}
-		if c, _ := e.Props["symbol_count"].(int); c != 3 {
-			t.Errorf("symbol_count = %v, want 3", e.Props["symbol_count"])
-		}
-		if !hasServiceEdge(out, pair[0], pair[1]) {
-			t.Errorf("%s service node missing depends_on %s", pair[0], pair[1])
-		}
+	sc := findSharedCode(out, "getdp", "gmsh")
+	if sc == nil {
+		t.Fatalf("missing shared-code coupling for getdp/gmsh; out=%+v", out)
+	}
+	if via, _ := sc.Props["via"].([]string); !reflect.DeepEqual(via, []string{"shared_symbols"}) {
+		t.Errorf("via = %v, want [shared_symbols]", sc.Props["via"])
+	}
+	if c, _ := sc.Props["symbol_count"].(int); c != 3 {
+		t.Errorf("symbol_count = %v, want 3", sc.Props["symbol_count"])
+	}
+	if repos, _ := sc.Props["repos"].([]string); !reflect.DeepEqual(repos, []string{"getdp", "gmsh"}) {
+		t.Errorf("repos = %v, want [getdp gmsh] (canonical, lexicographic)", sc.Props["repos"])
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
+		t.Errorf("shared code alone must not create a dependency edge: %+v", edges)
+	}
+	if anyServiceEdge(out) {
+		t.Error("shared code alone must not attach a depends_on relation to any service node")
 	}
 }
 
@@ -658,7 +707,11 @@ func TestComputeLinks_SharedSymbolsBelowThreshold(t *testing.T) {
 		module("beta", "lib"),
 		typeSym("beta", "lib.WidgetRegistry", facts.SymbolClass),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("single shared type should not link: %+v", edges)
 	}
 }
@@ -678,7 +731,11 @@ func TestComputeLinks_SharedSymbolsGenericNamesIgnored(t *testing.T) {
 		typeSym("beta", "lib.Node", facts.SymbolClass),
 		typeSym("beta", "lib.Item", facts.SymbolClass),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("generic shared names should not link: %+v", edges)
 	}
 }
@@ -702,7 +759,11 @@ func TestComputeLinks_SharedSymbolsFrameworkConventionIgnored(t *testing.T) {
 		typeSym("svc-b", "app.Ability", facts.SymbolClass),
 		typeSym("svc-b", "app.ApplicationCable::Connection", facts.SymbolClass),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("framework-convention boilerplate should not link: %+v", edges)
 	}
 }
@@ -727,7 +788,11 @@ func TestComputeLinks_SharedSymbolsMigrationsIgnored(t *testing.T) {
 		migrationSym("svc-b", "AddIndexToWidgets"),
 		migrationSym("svc-b", "InitSchema"),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("shared migration class names should not link: %+v", edges)
 	}
 }
@@ -752,11 +817,11 @@ func TestComputeLinks_SharedSymbolsGenuineSurvivesBoilerplate(t *testing.T) {
 		typeSym("svc-b", "app.RetryPolicy", facts.SymbolClass),
 	}
 	out := ComputeLinks(in)
-	e := findEdge(out, "svc-a", "svc-b")
-	if e == nil {
-		t.Fatalf("genuine shared types should still link; out=%+v", out)
+	sc := findSharedCode(out, "svc-a", "svc-b")
+	if sc == nil {
+		t.Fatalf("genuine shared types should still couple the pair; out=%+v", out)
 	}
-	if c, _ := e.Props["symbol_count"].(int); c != 3 {
+	if c, _ := sc.Props["symbol_count"].(int); c != 3 {
 		t.Errorf("symbol_count = %v, want 3 (only genuine types, boilerplate/migrations excluded)", c)
 	}
 }
@@ -774,7 +839,11 @@ func TestComputeLinks_SharedSymbolsNonTypesIgnored(t *testing.T) {
 		typeSym("beta", "lib.parseHeader", facts.SymbolFunc),
 		typeSym("beta", "lib.computeChecksum", facts.SymbolFunc),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("shared non-type symbols should not link: %+v", edges)
 	}
 }
@@ -800,7 +869,11 @@ func TestComputeLinks_SharedSymbolsCrossLanguageUnqualifiedSkipped(t *testing.T)
 		typeSymLang("ios", "Sources.FeedItem", facts.SymbolClass, "swift"),
 		typeSymLang("ios", "Sources.AccountViewModel", facts.SymbolClass, "swift"),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("unqualified domain types shared across languages must not link: %+v", edges)
 	}
 }
@@ -819,8 +892,8 @@ func TestComputeLinks_SharedSymbolsSameLanguageUnqualifiedLinks(t *testing.T) {
 		typeSymLang("svc-b", "lib.PaymentLedger", facts.SymbolClass, "go"),
 		typeSymLang("svc-b", "lib.RetryPolicy", facts.SymbolClass, "go"),
 	}
-	if findEdge(ComputeLinks(in), "svc-a", "svc-b") == nil {
-		t.Errorf("same-language repos sharing distinctive types should still link")
+	if findSharedCode(ComputeLinks(in), "svc-a", "svc-b") == nil {
+		t.Errorf("same-language repos sharing distinctive types should still couple")
 	}
 }
 
@@ -838,8 +911,8 @@ func TestComputeLinks_SharedSymbolsQualifiedCrossLanguageLinks(t *testing.T) {
 		typeSymLang("repo-b", "vendor.onelab::clientB", facts.SymbolClass, "c"),
 		typeSymLang("repo-b", "vendor.onelab::clientC", facts.SymbolClass, "c"),
 	}
-	if findEdge(ComputeLinks(in), "repo-a", "repo-b") == nil {
-		t.Errorf("qualified shared identities should link even across languages")
+	if findSharedCode(ComputeLinks(in), "repo-a", "repo-b") == nil {
+		t.Errorf("qualified shared identities should couple even across languages")
 	}
 }
 
@@ -858,7 +931,11 @@ func TestComputeLinks_SharedSymbolsCrossLanguageNestedTypesSkipped(t *testing.T)
 		typeSymLang("ios", "Sources.HandicapAnalytics.DifferentialEntry", facts.SymbolClass, "swift"),
 		typeSymLang("ios", "Sources.FullAnalysisDataBuilder.TimeWindow", facts.SymbolClass, "swift"),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("nested types shared across languages must not link: %+v", edges)
 	}
 }
@@ -878,8 +955,8 @@ func TestComputeLinks_SharedSymbolsSameLanguageNestedTypesLink(t *testing.T) {
 		typeSymLang("app-b", "lib.HandicapAnalytics.DifferentialEntry", facts.SymbolClass, "kotlin"),
 		typeSymLang("app-b", "lib.FullAnalysisDataBuilder.TimeWindow", facts.SymbolClass, "kotlin"),
 	}
-	if findEdge(ComputeLinks(in), "app-a", "app-b") == nil {
-		t.Errorf("same-language repos sharing distinctive nested types should still link")
+	if findSharedCode(ComputeLinks(in), "app-a", "app-b") == nil {
+		t.Errorf("same-language repos sharing distinctive nested types should still couple")
 	}
 }
 
@@ -902,7 +979,11 @@ func TestComputeLinks_SharedSymbolsFleetVocabularyNotLinked(t *testing.T) {
 			in = append(in, typeSymLang(repo, "app."+name, facts.SymbolClass, "go"))
 		}
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("fleet-wide shared vocabulary must not link any pair: %+v", edges)
 	}
 }
@@ -927,17 +1008,17 @@ func TestComputeLinks_SharedSymbolsPairSpecificSurvivesFleetVocabulary(t *testin
 		in = append(in, typeSymLang("svc-2", "app."+name, facts.SymbolClass, "go"))
 	}
 	out := ComputeLinks(in)
-	e := findEdge(out, "svc-1", "svc-2")
-	if e == nil {
-		t.Fatalf("pair-specific distinctive types should link svc-1 <-> svc-2; edges=%+v", crossRepoEdges(out))
+	sc := findSharedCode(out, "svc-1", "svc-2")
+	if sc == nil {
+		t.Fatalf("pair-specific distinctive types should couple svc-1/svc-2; got=%+v", sharedCodeFacts(out))
 	}
-	if c, _ := e.Props["symbol_count"].(int); c != 3 {
+	if c, _ := sc.Props["symbol_count"].(int); c != 3 {
 		t.Errorf("symbol_count = %v, want 3 (only pair-specific types; fleet vocabulary dropped)", c)
 	}
-	// Shared code is symmetric, so the one real pair is two directed edges — and
+	// Shared code is symmetric, so the one real pair is a SINGLE coupling fact — and
 	// nothing else, since every other overlap is ubiquitous vocabulary.
-	if edges := crossRepoEdges(out); len(edges) != 2 {
-		t.Errorf("only the svc-1/svc-2 pair should link (2 directed edges), got %d: %+v", len(edges), edges)
+	if sc := sharedCodeFacts(out); len(sc) != 1 {
+		t.Errorf("only the svc-1/svc-2 pair should couple, got %d: %+v", len(sc), sc)
 	}
 }
 
@@ -956,7 +1037,7 @@ func TestComputeLinks_SharedSymbolsSmallRepoSetVocabularyFilterOff(t *testing.T)
 	}
 	out := ComputeLinks(in)
 	for _, pair := range [][2]string{{"svc-a", "svc-b"}, {"svc-a", "svc-c"}, {"svc-b", "svc-c"}} {
-		if findEdge(out, pair[0], pair[1]) == nil {
+		if findSharedCode(out, pair[0], pair[1]) == nil {
 			t.Errorf("with only 3 repos the vocabulary filter must stay off; missing %s <-> %s", pair[0], pair[1])
 		}
 	}
@@ -980,7 +1061,11 @@ func TestComputeLinks_SharedSymbolsGeneratedCodeIgnored(t *testing.T) {
 	for _, name := range []string{"GetCountersResponse", "CounterBatchRequest", "EventCounterModel", "CountersClientWithResponses"} {
 		in = append(in, genTypeSym("svc-a", name), genTypeSym("svc-b", name))
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("generated client structs from a shared API must not link consumers: %+v", edges)
 	}
 }
@@ -998,9 +1083,9 @@ func TestComputeLinks_SharedSymbolsGeneratedExcludedFromCount(t *testing.T) {
 			typeSymLang("svc-a", "internal."+name, facts.SymbolClass, "go"),
 			typeSymLang("svc-b", "internal."+name, facts.SymbolClass, "go"))
 	}
-	e := findEdge(ComputeLinks(in), "svc-a", "svc-b")
+	e := findSharedCode(ComputeLinks(in), "svc-a", "svc-b")
 	if e == nil {
-		t.Fatalf("hand-written distinctive shared types should still link")
+		t.Fatalf("hand-written distinctive shared types should still couple")
 	}
 	if c, _ := e.Props["symbol_count"].(int); c != 3 {
 		t.Errorf("symbol_count = %v, want 3 (generated stubs excluded)", c)
@@ -1322,10 +1407,12 @@ func TestComputeLinks_SharedSymbolsRespectsHTTPDirection(t *testing.T) {
 	}
 }
 
-// TestComputeLinks_SharedSymbolsStaySymmetricWithoutDirection pins that the gate only
-// fires when a direction is actually known. Sibling forks and vendored code have no
-// import or HTTP edge either way, and for them the symmetric reading is correct.
-func TestComputeLinks_SharedSymbolsStaySymmetricWithoutDirection(t *testing.T) {
+// TestComputeLinks_SharedSymbolsCoupleWithoutDirection pins what happens when no
+// direction is known at all. Sibling forks have no import or HTTP edge either way, so
+// there is nothing for the shared symbols to annotate: the pair is recorded as ONE
+// symmetric coupling fact, not as two directed edges asserting a mutual dependency
+// that does not exist.
+func TestComputeLinks_SharedSymbolsCoupleWithoutDirection(t *testing.T) {
 	in := []facts.Fact{
 		module("fork-a", "client"),
 		typeSym("fork-a", "client.WidgetRegistry", facts.SymbolClass),
@@ -1337,10 +1424,17 @@ func TestComputeLinks_SharedSymbolsStaySymmetricWithoutDirection(t *testing.T) {
 		typeSym("fork-b", "client.RetryPolicy", facts.SymbolClass),
 	}
 	out := ComputeLinks(in)
-	for _, pair := range [][2]string{{"fork-a", "fork-b"}, {"fork-b", "fork-a"}} {
-		if findEdge(out, pair[0], pair[1]) == nil {
-			t.Errorf("missing symmetric edge %s -> %s; out=%+v", pair[0], pair[1], out)
-		}
+	if findSharedCode(out, "fork-a", "fork-b") == nil {
+		t.Fatalf("missing shared-code coupling for the fork pair; out=%+v", out)
+	}
+	if sc := sharedCodeFacts(out); len(sc) != 1 {
+		t.Errorf("a symmetric pair must yield exactly one coupling fact, got %d: %+v", len(sc), sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
+		t.Errorf("a fork pair has no dependency in either direction: %+v", edges)
+	}
+	if anyServiceEdge(out) {
+		t.Error("a fork pair must not attach a depends_on relation to any service node")
 	}
 }
 
@@ -1362,15 +1456,19 @@ func TestComputeLinks_SharedSymbolsComponentConventionIgnored(t *testing.T) {
 		typeSym("web-b", "libs.FormHeaderProps", facts.SymbolInterface),
 		typeSym("web-b", "libs.Layout", facts.SymbolClass),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("component-convention names should not link: %+v", edges)
 	}
 }
 
 // TestComputeLinks_SharedSymbolsDistinctiveComponentNamesSurvive is the guard against
 // over-filtering: a "<Component>Props" name whose component is NOT generic vocabulary
-// still names real shared code and must keep linking. Each case here was verified to
-// be genuinely migrated/vendored between the repos.
+// still names real shared code and must keep coupling the pair. Each case here was
+// verified to be genuinely migrated/vendored between the repos.
 func TestComputeLinks_SharedSymbolsDistinctiveComponentNamesSurvive(t *testing.T) {
 	in := []facts.Fact{
 		module("web-a", "client"),
@@ -1385,9 +1483,9 @@ func TestComputeLinks_SharedSymbolsDistinctiveComponentNamesSurvive(t *testing.T
 		typeSym("web-b", "libs.AdSlot", facts.SymbolInterface),
 	}
 	out := ComputeLinks(in)
-	e := findEdge(out, "web-a", "web-b")
+	e := findSharedCode(out, "web-a", "web-b")
 	if e == nil {
-		t.Fatalf("distinctive component names must still link; out=%+v", out)
+		t.Fatalf("distinctive component names must still couple the pair; out=%+v", out)
 	}
 	if c, _ := e.Props["symbol_count"].(int); c != 4 {
 		t.Errorf("symbol_count = %v, want 4", c)
@@ -1481,7 +1579,88 @@ func TestComputeLinks_SharedSymbolsStoryAndTestFilesIgnored(t *testing.T) {
 		storySym("web-b", "client.WidgetRegistry", "client/widget/widget.test.ts"),
 		storySym("web-b", "client.PaymentLedger", "client/__mocks__/ledger.ts"),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	out := ComputeLinks(in)
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("must not couple the repos either: %+v", sc)
+	}
+	if edges := crossRepoEdges(out); len(edges) != 0 {
 		t.Errorf("story/test/mock declarations should not link: %+v", edges)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsRespectsGRPCDirection covers a gap the first version of
+// the direction gate had: it enumerated the directional evidence kinds and omitted
+// "grpc", so a pair whose only real dependency was a gRPC call still had the reverse
+// edge fabricated from shared symbols. The gate now tests for "any via that is not
+// shared_symbols", which cannot miss a signal added later.
+func TestComputeLinks_SharedSymbolsRespectsGRPCDirection(t *testing.T) {
+	in := []facts.Fact{
+		module("client", "internal"),
+		clientRoute("client", "/pkg.Svc/Method", "POST", map[string]any{"framework": "grpc"}),
+		typeSym("client", "internal.WidgetRegistry", facts.SymbolClass),
+		typeSym("client", "internal.PaymentLedger", facts.SymbolClass),
+		typeSym("client", "internal.RetryPolicy", facts.SymbolClass),
+		module("server", "internal"),
+		serverRoute("server", "/pkg.Svc/Method", "POST"),
+		typeSym("server", "internal.WidgetRegistry", facts.SymbolClass),
+		typeSym("server", "internal.PaymentLedger", facts.SymbolClass),
+		typeSym("server", "internal.RetryPolicy", facts.SymbolClass),
+	}
+	out := ComputeLinks(in)
+
+	e := findEdge(out, "client", "server")
+	if e == nil {
+		t.Fatalf("missing client -> server gRPC edge; out=%+v", out)
+	}
+	if via, _ := e.Props["via"].([]string); !reflect.DeepEqual(via, []string{"grpc", "shared_symbols"}) {
+		t.Errorf("via = %v, want [grpc shared_symbols] (shared symbols annotate the gRPC edge)", e.Props["via"])
+	}
+	if rev := findEdge(out, "server", "client"); rev != nil {
+		t.Errorf("gRPC direction is known, so no reverse edge may be fabricated: %+v", rev)
+	}
+	// Direction was established, so this is a real dependency — not a coupling.
+	if sc := sharedCodeFacts(out); len(sc) != 0 {
+		t.Errorf("a directional pair must not also be reported as shared-code coupling: %+v", sc)
+	}
+}
+
+// TestComputeLinks_SharedCodeDoesNotCompose is the regression test for the failure that
+// motivated demoting this signal. A caller reaching one side of a copy-paste pair must
+// NOT thereby reach the other side: dependency edges compose across hops, shared code
+// does not. Concretely this is the shape "web --(http)--> api" alongside "api <shares
+// code with> twin"; web must gain no route to twin.
+func TestComputeLinks_SharedCodeDoesNotCompose(t *testing.T) {
+	in := []facts.Fact{
+		module("web", "client"),
+		clientRoute("web", "/api/widgets/registry", "GET", nil),
+		module("api", "app"),
+		serverRoute("api", "/api/widgets/registry", "GET"),
+		typeSym("api", "app.WidgetRegistry", facts.SymbolClass),
+		typeSym("api", "app.PaymentLedger", facts.SymbolClass),
+		typeSym("api", "app.RetryPolicy", facts.SymbolClass),
+		// A sibling fork of api: same distinctive types, no import and no route.
+		module("twin", "app"),
+		typeSym("twin", "app.WidgetRegistry", facts.SymbolClass),
+		typeSym("twin", "app.PaymentLedger", facts.SymbolClass),
+		typeSym("twin", "app.RetryPolicy", facts.SymbolClass),
+	}
+	out := ComputeLinks(in)
+
+	if findEdge(out, "web", "api") == nil {
+		t.Fatalf("the real HTTP dependency must survive; out=%+v", out)
+	}
+	if findSharedCode(out, "api", "twin") == nil {
+		t.Errorf("the api/twin shared code should still be reported as a coupling")
+	}
+	// The only edge in the graph is web -> api. If api <-> twin were edges, "twin"
+	// would become reachable from "web" in two hops.
+	edges := crossRepoEdges(out)
+	if len(edges) != 1 {
+		t.Errorf("expected exactly one dependency edge (web -> api), got %d: %+v", len(edges), edges)
+	}
+	for _, r := range []string{"api", "twin"} {
+		if hasServiceEdge(out, r, "twin") {
+			t.Errorf("%s must not carry a depends_on to twin — shared code is not a dependency", r)
+		}
 	}
 }

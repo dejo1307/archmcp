@@ -15,14 +15,21 @@
 //   - Shared symbol surface: when two repos declare enough of the same
 //     distinctive types (a vendored/shared protocol header, e.g. the onelab
 //     GmshClient/GmshServer classes copied between repos), they are coupled.
-//     This signal is symmetric, so it is emitted as a bidirectional pair of
-//     edges marked via="shared_symbols".
+//     This signal is symmetric and says nothing about direction, so it only
+//     ANNOTATES an edge one of the signals above already established
+//     (via="shared_symbols"). On its own it is not a dependency: neither repo
+//     imports or calls the other, so such a pair is recorded as a symmetric
+//     coupling fact (type="cross_repo_shared_code") that carries no relation and
+//     stays out of the traversable graph.
 //
 // The result is expressed as synthetic facts: one KindService node per repo and
-// one KindDependency edge per (consumer -> provider) pair. Because these are
+// one KindDependency fact per pair. Only the directional ones (type="cross_repo")
+// attach a depends_on relation to the consumer's service node; because these are
 // ordinary facts, they flow into Store.BuildGraph and make every traversal tool
 // (traverse, find_path, impact_analysis, query_facts) cross-repo aware with no
-// per-tool changes.
+// per-tool changes. Keeping the symmetric signal out of that relation matters:
+// traversal composes depends_on across hops, and shared code does not compose —
+// a repo calling one side of a copy-paste pair does not thereby reach the other.
 package crossrepo
 
 import (
@@ -58,6 +65,20 @@ type edge struct {
 	imports    map[string]bool // sample import targets
 	symbols    map[string]bool // sample shared type identities
 	confidence string          // "verified" or "probable" — max over HTTP endpoints
+}
+
+// coupling records a SYMMETRIC shared-code relationship between two repos that have
+// no directional evidence in either direction. It is deliberately not an edge: neither
+// repo imports, calls, or reaches the other, so a depends_on relation would assert a
+// dependency that does not exist — and, because traversal composes depends_on across
+// hops, would let an unrelated repo appear to reach one of these through the other.
+// Shared type names are also only a proxy for shared code: the linker sees names, never
+// file contents, so it cannot tell copied code from a shared vocabulary. The pair is
+// reported as a coupling finding instead, where that uncertainty can be stated.
+type coupling struct {
+	repoA   string // lexicographically first, so the pair has one canonical form
+	repoB   string
+	symbols map[string]bool
 }
 
 // httpCoverage tallies, per consumer repo, how many HTTP-client call sites were
@@ -99,12 +120,15 @@ func ComputeLinks(all []facts.Fact) []facts.Fact {
 	}
 
 	edges := map[string]*edge{}
+	couplings := map[string]*coupling{}
 	cov := map[string]*httpCoverage{}
 	linkHTTP(all, edges, cov)
 	linkImports(all, normToLabel, edges)
-	linkSharedSymbols(all, edges)
+	// Runs last: it consults the edges the directional linkers have already drawn to
+	// decide whether a shared-symbol signal annotates a real dependency or stands alone.
+	linkSharedSymbols(all, edges, couplings)
 
-	return materialize(edges, repoLabels(normToLabel), cov)
+	return materialize(edges, couplings, repoLabels(normToLabel), cov)
 }
 
 // repoLabels returns the actual repo labels (the values of the
@@ -786,7 +810,7 @@ func splitCamelCase(s string) []string {
 // linkSharedSymbols connects repos that declare enough of the same distinctive
 // types. The relationship is symmetric (shared/vendored code, not a one-way
 // dependency), so qualifying pairs get a bidirectional pair of edges.
-func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
+func linkSharedSymbols(all []facts.Fact, edges map[string]*edge, couplings map[string]*coupling) {
 	repoModules := moduleNamesByRepo(all)
 	repoLang := primaryLanguageByRepo(all)
 	repoCount := len(repoLabelLookup(all))
@@ -862,9 +886,23 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 			continue
 		}
 		a, b, _ := strings.Cut(key, "\x00")
-		for _, pair := range directedSharedPairs(edges, a, b) {
+		pairs, directional := directedSharedPairs(edges, a, b)
+		if !directional {
+			// Nothing to annotate: the repos share type names and nothing else. Record
+			// a symmetric coupling rather than manufacturing a dependency edge.
+			c, ok := couplings[key]
+			if !ok {
+				c = &coupling{repoA: a, repoB: b, symbols: map[string]bool{}}
+				couplings[key] = c
+			}
+			for id := range ids {
+				c.symbols[id] = true
+			}
+			continue
+		}
+		for _, pair := range pairs {
 			e := edgeFor(edges, pair[0], pair[1])
-			e.note("shared_symbols")
+			e.note(viaSharedSymbols)
 			if e.symbols == nil {
 				e.symbols = map[string]bool{}
 			}
@@ -875,20 +913,24 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 	}
 }
 
-// directionalVias are the evidence kinds that establish a real one-way dependency:
-// consumer imports provider, or consumer calls provider over HTTP. "shared_symbols"
-// is deliberately absent — it is the symmetric signal this gate arbitrates.
-var directionalVias = [...]string{"import", "http-client", "http"}
+// viaSharedSymbols is the one evidence kind that does NOT establish a direction:
+// two repos declaring the same type names says nothing about which depends on which.
+// Every other via — import, http, http-client, grpc, and any signal added later — is
+// directional by construction, so the gate below tests for "anything but this" rather
+// than enumerating the directional kinds. An enumeration silently mis-classified new
+// signals: it omitted "grpc", so a pair linked only by gRPC calls still got a
+// fabricated reverse edge.
+const viaSharedSymbols = "shared_symbols"
 
 // hasDirectionalEvidence reports whether a consumer -> provider edge already exists
-// and is backed by directional (non-shared-symbol) evidence.
+// and is backed by evidence that establishes a direction.
 func hasDirectionalEvidence(edges map[string]*edge, consumer, provider string) bool {
 	e, ok := edges[consumer+"\x00"+provider]
 	if !ok {
 		return false
 	}
-	for _, via := range directionalVias {
-		if e.via[via] {
+	for via := range e.via {
+		if via != viaSharedSymbols {
 			return true
 		}
 	}
@@ -896,21 +938,24 @@ func hasDirectionalEvidence(edges map[string]*edge, consumer, provider string) b
 }
 
 // directedSharedPairs returns the (consumer, provider) orderings a shared-symbol
-// signal between repos a and b should be recorded against. When exactly one
-// direction already carries directional evidence, only that direction is returned,
-// so the shared symbols annotate the established edge instead of fabricating its
-// inverse. When both or neither direction is directional the signal stays symmetric,
-// which is the correct reading for sibling forks and vendored code.
-func directedSharedPairs(edges map[string]*edge, a, b string) [][2]string {
+// signal between repos a and b should be recorded against, and whether the pair has
+// any direction at all. When exactly one direction carries directional evidence, only
+// that direction is returned, so the shared symbols annotate the established edge
+// instead of fabricating its inverse. When both directions are directional the signal
+// annotates both. When NEITHER is, there is no dependency to annotate: ok is false and
+// the caller records a symmetric coupling instead of inventing a pair of edges.
+func directedSharedPairs(edges map[string]*edge, a, b string) (pairs [][2]string, ok bool) {
 	abDirectional := hasDirectionalEvidence(edges, a, b)
 	baDirectional := hasDirectionalEvidence(edges, b, a)
 	switch {
 	case abDirectional && !baDirectional:
-		return [][2]string{{a, b}}
+		return [][2]string{{a, b}}, true
 	case baDirectional && !abDirectional:
-		return [][2]string{{b, a}}
+		return [][2]string{{b, a}}, true
+	case abDirectional && baDirectional:
+		return [][2]string{{a, b}, {b, a}}, true
 	default:
-		return [][2]string{{a, b}, {b, a}}
+		return nil, false
 	}
 }
 
@@ -1089,7 +1134,7 @@ func covFor(cov map[string]*httpCoverage, repo string) *httpCoverage {
 	return c
 }
 
-func materialize(edges map[string]*edge, allRepos []string, cov map[string]*httpCoverage) []facts.Fact {
+func materialize(edges map[string]*edge, couplings map[string]*coupling, allRepos []string, cov map[string]*httpCoverage) []facts.Fact {
 	// Stable order over edges.
 	keys := make([]string, 0, len(edges))
 	for k := range edges {
@@ -1113,7 +1158,7 @@ func materialize(edges map[string]*edge, allRepos []string, cov map[string]*http
 		providers[e.consumer] = append(providers[e.consumer], e.provider)
 
 		props := map[string]any{
-			"type":      "cross_repo",
+			"type":      facts.TypeCrossRepo,
 			"synthetic": SyntheticMarker,
 			"via":       sortedKeys(e.via),
 		}
@@ -1141,6 +1186,33 @@ func materialize(edges map[string]*edge, allRepos []string, cov map[string]*http
 			Name:  fmt.Sprintf("%s -> %s", e.consumer, e.provider),
 			Repo:  e.consumer,
 			Props: props,
+		})
+	}
+
+	// Shared-code couplings are emitted as evidence facts only. They are NOT added to
+	// providers, so no depends_on relation is created and they stay out of the
+	// traversable graph — the whole point of separating them from edges. The name uses
+	// "<->" because the relationship is symmetric; there is no consumer or provider.
+	couplingKeys := make([]string, 0, len(couplings))
+	for k := range couplings {
+		couplingKeys = append(couplingKeys, k)
+	}
+	sort.Strings(couplingKeys)
+	for _, k := range couplingKeys {
+		c := couplings[k]
+		syms := sortedKeys(c.symbols)
+		depFacts = append(depFacts, facts.Fact{
+			Kind: facts.KindDependency,
+			Name: fmt.Sprintf("%s <-> %s", c.repoA, c.repoB),
+			Repo: c.repoA,
+			Props: map[string]any{
+				"type":           facts.TypeCrossRepoSharedCode,
+				"synthetic":      SyntheticMarker,
+				"via":            []string{viaSharedSymbols},
+				"repos":          []string{c.repoA, c.repoB},
+				"symbol_count":   len(syms),
+				"symbol_samples": cap25(syms),
+			},
 		})
 	}
 

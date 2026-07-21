@@ -46,6 +46,22 @@ const (
 	KindFileRef = "file_ref"
 )
 
+// Cross-repo dependency-fact "type" prop values. Both the linker that writes these
+// facts and every reader (explainers, renderers, the MCP server) key off them, so they
+// live here rather than being duplicated as literals on each side.
+const (
+	// TypeCrossRepo marks a real, DIRECTIONAL cross-repo edge: one repo imports or
+	// calls the other. Only these attach a depends_on relation to the consumer's
+	// service node, so only these are traversable.
+	TypeCrossRepo = "cross_repo"
+	// TypeCrossRepoSharedCode marks a SYMMETRIC shared-code coupling: two repos declare
+	// many of the same distinctive type names but neither imports or calls the other.
+	// It is queryable evidence with no relation attached, so it never appears in
+	// traverse/find_path/impact_analysis — shared code is not a dependency, and unlike
+	// a dependency it does not compose across hops.
+	TypeCrossRepoSharedCode = "cross_repo_shared_code"
+)
+
 // Relation kind constants.
 const (
 	RelDeclares     = "declares"
