@@ -81,8 +81,9 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Flag: "--generate", Desc: "Generate a snapshot and exit (do not start MCP server)"},
 			{Flag: "--explain [path]", Desc: "Print a human-readable repository statistics report and exit"},
 			{Flag: "--list", Desc: "List the MCP tools this build can serve"},
-			{Flag: "--status", Desc: "Show MCP server status: uptime, tool usage and estimated value,\naggregated across every repo the server has served."},
+			{Flag: "--status", Desc: "Show MCP server status: uptime, tool usage and estimated value,\naggregated across every repo the server has served. While the server\nis running this also prints the dashboard URL."},
 			{Flag: "--status --all", Desc: "Show the per-repo breakdown instead (from ~/.enola/usage/)"},
+			{Flag: "--no-dashboard", Desc: "Do not start the localhost dashboard alongside the MCP server"},
 			{Flag: "--version", Desc: "Print version information"},
 			{Flag: "--help, -h", Desc: "Show this help message"},
 		},
@@ -98,9 +99,23 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Comment: "Check version", Command: bin.Name + " --version"},
 		},
 		Sections: []Section{
+			dashboardSection(),
 			mcpConfigSection(bin),
 			buildSection(bin),
 		},
+	}
+}
+
+// dashboardSection documents the read-only HTTP dashboard served alongside the
+// MCP server.
+func dashboardSection() Section {
+	return Section{
+		Title: "DASHBOARD",
+		Body: `  When the MCP server starts, a read-only HTTP dashboard is served on a free
+  localhost port (127.0.0.1). It shows the same status data plus the snapshot and
+  graph receipts, and refreshes every 30 seconds. Run "--status" while the server
+  is up to get its URL, or pass "--no-dashboard" to skip it entirely.
+`,
 	}
 }
 

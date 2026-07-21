@@ -217,7 +217,7 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 
 ---
 
-## The CLI surface (`pkg/cli` and `pkg/status`)
+## The CLI surface (`pkg/cli`, `pkg/status` and `pkg/dashboard`)
 
 `--help`, `--list` and `--status` are served from two public packages, for the same reason as `pkg/explain`: a wrapper binary must be able to print *its* version of each without restating the shared text. Both extension points are plain data, so nothing a wrapper adds is known here.
 
@@ -229,6 +229,14 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 **[`pkg/status`](pkg/status)** is the usage tracker behind `--status`. `Tracker.OnToolCall` is registered as the server's tool callback (`bootstrap.Server.SetToolCallback`) and attributes each call to the repo it actually operated on, not to a fixed one. Counters live in `~/.enola/usage/<repo-base>-<hash8>.json` — outside the repo, so they survive both a restart and deleting `.enola/` — and each file carries the lifetime total plus the current run's session counts. `AggregateServer` collapses every file into the one server view `PrintStatus` renders; `AggregateUsage` produces the per-repo breakdown for `--status --all`.
 
 The value estimate is a deliberately simple model in [`pkg/status/value.go`](pkg/status/value.go): one weight per tool (the number of manual lookups a call replaces) times two conversion constants (seconds and tokens per lookup). `RegisterToolWeights` lets a wrapper price the tools it adds instead of letting them fall through to the default weight; it is guarded by a mutex because registration happens at startup while reads come from the tool callback.
+
+**[`pkg/dashboard`](pkg/dashboard)** serves the read-only page described in the README, on a loopback port bound at startup (`--no-dashboard` skips it). It is **strictly a viewer**: `buildPage` runs per request and every source is read through an accessor the MCP tools already use — `status.ServerSnapshot()`, the engine's published store, and the receipt/insight artifacts (preferring the in-memory copy, falling back to the last-written file on disk, since `AutoLoadSnapshot` restores facts without full receipt metadata). Nothing it does mutates server state, and every source degrades to an explanatory note rather than an error page.
+
+The page reads receipts into the engine's own `facts.Receipt` / `facts.GraphReceipt` types, re-exported from `pkg/facts` precisely so a consumer never hand-writes a JSON mirror that drifts.
+
+**The insight allowlist.** `insightLabels` in [`pkg/dashboard/insights.go`](pkg/dashboard/insights.go) maps explainer id → display label, one entry per explainer `bootstrap.NewEngine` registers, and it doubles as an admission list: `insightDetails` drops any insight whose `Source` is absent from it, and excludes it from the structural/candidate counts. This matters because both binaries share a repo's `.enola/insights.json` — without the filter, a file written by a build with extra explainers would surface findings this engine cannot produce. For the same reason the clickable insight counters render the *filtered* total rather than the receipt's raw `insight_count`, so the number you click always matches the list you get.
+
+**The overlay.** A wrapper adds panels through `Options` rather than by forking the page. `Overlay` is a template fragment redefining any of the blocks `OverlayBlocks()` publishes — `extra-styles`, `extra-cards`, `extra-modals`, `extra-scripts` — each of which is passed the page root, so the fragment reaches its own data as `{{.Extra}}`, computed per request by `Options.Extra(store)`. `InsightLabels` widens the allowlist above (a wrapper that registers explainers *must* use it, or its own findings are filtered out of its own dashboard) and `Title` names the product. Two tests hold the contract from both ends: `TestOverlayBlocksExistInPage` here, and a matching check in the wrapper that its fragment defines only published names. Note that every server gets its own `Clone` of the base template even without an overlay — `html/template` refuses to clone a template that has already executed, so rendering straight from the package-level base would break the *next* dashboard's construction.
 
 ---
 

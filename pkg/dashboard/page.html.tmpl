@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} — dashboard</title>
+  <style>
+    :root {
+      --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --border: #e2e2e2;
+      --card: #f7f7f8; --accent: #2563eb; --ok: #16a34a; --off: #b91c1c;
+      --warn: #b45309; --th: #efeff1;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16181d; --fg: #e6e6e6; --muted: #9aa0aa; --border: #2c2f36;
+        --card: #1e2127; --accent: #6ea8fe; --ok: #4ade80; --off: #f87171;
+        --warn: #fbbf24; --th: #242832;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 2rem 1.25rem; background: var(--bg); color: var(--fg);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem; margin-bottom: .25rem; }
+    h1 { font-size: 1.4rem; margin: 0; }
+    h2 { font-size: 1.05rem; margin: 2rem 0 .6rem; border-bottom: 1px solid var(--border); padding-bottom: .35rem; }
+    .refresh { color: var(--muted); font-size: .85rem; margin-bottom: 1.25rem; }
+    .badge { font-size: .8rem; font-weight: 600; padding: .1rem .5rem; border-radius: 999px; }
+    .badge.on { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+    .badge.off { background: color-mix(in srgb, var(--off) 18%, transparent); color: var(--off); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: .75rem .9rem; }
+    .card .k { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; }
+    .card .v { font-size: 1.15rem; font-weight: 600; margin-top: .15rem; word-break: break-word; }
+    .table-scroll { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+    th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    th { background: var(--th); font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+    td.num, th.num { text-align: right; }
+    tr.total td { font-weight: 700; border-top: 2px solid var(--border); }
+    .note { color: var(--muted); font-style: italic; }
+    .chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .2rem; }
+    .chip { background: var(--th); border: 1px solid var(--border); border-radius: 6px; padding: .05rem .45rem; font-size: .8rem; }
+    footer { margin-top: 2.5rem; color: var(--muted); font-size: .8rem; }
+    code { background: var(--th); padding: .05rem .3rem; border-radius: 4px; }
+    .count-link {
+      background: none; border: 0; padding: 0; margin: 0; cursor: pointer;
+      color: var(--accent); font: inherit; font-weight: 600; text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .modal {
+      display: none; position: fixed; inset: 0; z-index: 50;
+      align-items: center; justify-content: center; padding: 1.25rem;
+      background: color-mix(in srgb, #000 55%, transparent);
+    }
+    .modal.open { display: flex; }
+    .modal-panel {
+      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 12px; width: 100%; max-width: 560px; max-height: 80vh;
+      overflow: auto; padding: 1.1rem 1.25rem; box-shadow: 0 10px 40px rgba(0,0,0,.35);
+    }
+    .modal-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: .75rem; }
+    .modal-head h3 { margin: 0; font-size: 1.05rem; }
+    .modal-close {
+      background: none; border: 0; cursor: pointer; color: var(--muted);
+      font-size: 1.4rem; line-height: 1; padding: 0;
+    }
+    .modal-close:hover { color: var(--fg); }
+    .modal-panel.wide { max-width: 720px; }
+    .modal-head-actions { display: flex; align-items: center; gap: .55rem; }
+    .view-toggle {
+      background: none; border: 1px solid var(--border); border-radius: 6px;
+      cursor: pointer; color: var(--muted); padding: .2rem .3rem; line-height: 0;
+      display: inline-flex; align-items: center;
+    }
+    .view-toggle:hover { color: var(--fg); border-color: var(--muted); }
+    .view-toggle .vt-icon { fill: currentColor; stroke: currentColor; }
+    .edges-view[hidden] { display: none; }
+    .edge-graph { display: block; width: 100%; height: auto; max-height: 62vh; }
+    .edge-graph .edge-line { fill: none; stroke: var(--muted); stroke-width: 1.5; opacity: .5; }
+    .edge-graph #edge-arrow path { fill: var(--muted); }
+    .edge-graph .node circle { fill: var(--accent); }
+    .edge-graph .node text { fill: var(--fg); font-size: 12px; dominant-baseline: middle; }
+    .insight-summary { color: var(--muted); font-size: .85rem; margin: -.25rem 0 .6rem; }
+    .insight-filter { display: flex; align-items: center; gap: .5rem; margin: 0 0 .9rem; font-size: .85rem; }
+    .insight-filter label { color: var(--muted); }
+    .insight-filter select {
+      font: inherit; color: var(--fg); background: var(--card);
+      border: 1px solid var(--border); border-radius: 6px; padding: .2rem .4rem;
+    }
+    .insight-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: .5rem; overflow: hidden; }
+    .insight-group > summary {
+      list-style: none; cursor: pointer; display: flex; align-items: center; gap: .6rem;
+      padding: .5rem .7rem; background: var(--card);
+    }
+    .insight-group > summary::-webkit-details-marker { display: none; }
+    .insight-group > summary::before {
+      content: "▸"; color: var(--muted); font-size: .8rem; transition: transform .12s ease;
+    }
+    .insight-group[open] > summary::before { transform: rotate(90deg); }
+    .ig-label { flex: 0 0 auto; font-weight: 600; min-width: 8.5rem; }
+    .bar-track { flex: 1 1 auto; height: 8px; background: var(--th); border-radius: 999px; overflow: hidden; }
+    .bar-fill { height: 100%; min-width: 3px; background: var(--accent); border-radius: 999px; }
+    .ig-count { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3ch; text-align: right; }
+    .insight-group .table-scroll { padding: .1rem .3rem .4rem; }
+    td.title { white-space: normal; }
+    .structural-chip { margin-left: .4rem; font-size: .72rem; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 .35rem; }
+    {{/* extra-styles: extension slot — see pkg/dashboard.Options.Overlay */}}
+    {{block "extra-styles" $}}{{end}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>{{.Title}}</h1>
+    {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">not running</span>{{end}}
+  </header>
+  <div class="refresh">This page refreshes automatically every {{.RefreshSeconds}} seconds. Served on <code>http://127.0.0.1:{{.Port}}</code>.</div>
+
+  <div class="grid">
+    <div class="card"><div class="k">Server</div><div class="v">{{if .Running}}PID {{.PID}}{{else}}stopped{{end}}</div></div>
+    {{if .Uptime}}<div class="card"><div class="k">Uptime</div><div class="v">{{.Uptime}}</div></div>{{end}}
+    {{if .StartedAt}}<div class="card"><div class="k">Started</div><div class="v">{{.StartedAt}}</div></div>{{end}}
+    {{if .TrackingSince}}<div class="card"><div class="k">Tracking since</div><div class="v">{{.TrackingSince}}</div></div>{{end}}
+    <div class="card"><div class="k">Repos tracked</div><div class="v">{{.ReposTracked}}</div></div>
+    <div class="card"><div class="k">Dashboard port</div><div class="v">{{.Port}}</div></div>
+  </div>
+
+  <h2>Tool usage</h2>
+  {{if .Tools}}
+  <div class="table-scroll"><table>
+    <thead><tr><th>Tool</th><th class="num">Session</th><th class="num">Total</th></tr></thead>
+    <tbody>
+      {{range .Tools}}<tr><td>{{.Name}}</td><td class="num">{{.Session}}</td><td class="num">{{.Total}}</td></tr>{{end}}
+    </tbody>
+  </table></div>
+  {{else}}<p class="note">No tool calls recorded yet.</p>{{end}}
+
+  <h2>Value estimate <span class="note">(approximate)</span></h2>
+  {{if .Values}}
+  <div class="table-scroll"><table>
+    <thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">~Time saved</th><th class="num">~Tokens saved</th></tr></thead>
+    <tbody>
+      {{range .Values}}<tr><td>{{.Label}}</td><td class="num">{{.Calls}}</td><td class="num">{{.TimeSaved}}</td><td class="num">{{.TokensSaved}}</td></tr>{{end}}
+      <tr class="total"><td>{{.ValueTotal.Label}}</td><td class="num">{{.ValueTotal.Calls}}</td><td class="num">{{.ValueTotal.TimeSaved}}</td><td class="num">{{.ValueTotal.TokensSaved}}</td></tr>
+    </tbody>
+  </table></div>
+  {{else}}<p class="note">No value recorded yet.</p>{{end}}
+
+  <h2>Current snapshot receipt</h2>
+  {{if .HasReceipt}}{{with .Receipt}}
+  <div class="grid">
+    <div class="card"><div class="k">Snapshot ID</div><div class="v">{{.SnapshotID}}</div></div>
+    <div class="card"><div class="k">enola version</div><div class="v">{{.EnolaVersion}}</div></div>
+    <div class="card"><div class="k">Generated at</div><div class="v">{{.GeneratedAt}}</div></div>
+    <div class="card"><div class="k">Duration</div><div class="v">{{.Duration}}</div></div>
+    <div class="card"><div class="k">Facts</div><div class="v">{{.FactCount}}</div></div>
+    <div class="card"><div class="k">Insights</div><div class="v">{{if $.Insights}}<button type="button" class="count-link" onclick="openModal('insights-modal')">{{$.InsightTotal}}</button>{{else}}{{.InsightCount}}{{end}}</div></div>
+    {{/* extra-cards: extension slot — see pkg/dashboard.Options.Overlay */}}
+    {{block "extra-cards" $}}{{end}}
+    {{if .Git}}<div class="card"><div class="k">Git</div><div class="v">{{.Git.Ref}}{{if .Git.Commit}} @ {{.Git.Commit}}{{end}}{{if .Git.Dirty}} (dirty){{end}}</div></div>{{end}}
+  </div>
+  <div class="card" style="margin-top:.75rem"><div class="k">Repo path</div><div class="v">{{.RepoPath}}</div></div>
+  {{if .Extractors}}<div style="margin-top:.75rem"><div class="k">Extractors</div><div class="chips">{{range .Extractors}}<span class="chip">{{.}}</span>{{end}}</div></div>{{end}}
+  {{if .Explainers}}<div style="margin-top:.6rem"><div class="k">Explainers</div><div class="chips">{{range .Explainers}}<span class="chip">{{.}}</span>{{end}}</div></div>{{end}}
+
+  <h3 style="margin:1.25rem 0 .5rem;font-size:.95rem">Extraction quality</h3>
+  <div class="grid">
+    <div class="card"><div class="k">Files seen</div><div class="v">{{.Quality.FilesSeen}}</div></div>
+    <div class="card"><div class="k">Files parsed</div><div class="v">{{.Quality.FilesParsed}}</div></div>
+    <div class="card"><div class="k">Files skipped</div><div class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.Quality.FilesSkipped}}</button>{{else}}{{.Quality.FilesSkipped}}{{end}}</div></div>
+    <div class="card"><div class="k">Dirs skipped</div><div class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.Quality.DirsSkipped}}</button>{{else}}{{.Quality.DirsSkipped}}{{end}}</div></div>
+    <div class="card"><div class="k">Parse errors</div><div class="v">{{if $.ParseErrors}}<button type="button" class="count-link" onclick="openModal('parse-errors-modal')">{{.Quality.ParseErrors}}</button>{{else}}{{.Quality.ParseErrors}}{{end}}</div></div>
+    {{if .Quality.Coverage}}{{with .Quality.Coverage}}
+    <div class="card"><div class="k">Services</div><div class="v">{{if $.Coverage}}<button type="button" class="count-link" onclick="openModal('coverage-modal')">{{.ServicesTotal}}</button>{{else}}{{.ServicesTotal}}{{end}}</div></div>
+    <div class="card"><div class="k">Coverage gaps</div><div class="v">{{if $.Coverage}}<button type="button" class="count-link" onclick="openModal('coverage-modal')">{{.CoverageGaps}}</button>{{else}}{{.CoverageGaps}}{{end}}</div></div>
+    <div class="card"><div class="k">Unresolved edges</div><div class="v">{{if $.UnresolvedRoutes}}<button type="button" class="count-link" onclick="openModal('coverage-unresolved-modal')">{{.UnresolvedEdges}}</button>{{else}}{{.UnresolvedEdges}}{{end}}</div></div>
+    {{end}}{{end}}
+  </div>
+  {{end}}{{else}}<p class="note">{{.ReceiptNote}}</p>{{end}}
+
+  <h2>Graph receipt <span class="note">(~/.enola/receipt.json)</span></h2>
+  {{if .HasGraph}}{{with .Graph}}
+  <div class="grid">
+    <div class="card"><div class="k">Snapshot ID</div><div class="v">{{.SnapshotID}}</div></div>
+    <div class="card"><div class="k">enola version</div><div class="v">{{.EnolaVersion}}</div></div>
+    <div class="card"><div class="k">Generated at</div><div class="v">{{.GeneratedAt}}</div></div>
+    <div class="card"><div class="k">Facts</div><div class="v">{{.FactCount}}</div></div>
+    <div class="card"><div class="k">Insights</div><div class="v">{{if $.Insights}}<button type="button" class="count-link" onclick="openModal('insights-modal')">{{$.InsightTotal}}</button>{{else}}{{.InsightCount}}{{end}}</div></div>
+    <div class="card"><div class="k">Services</div><div class="v">{{if $.Services}}<button type="button" class="count-link" onclick="openModal('services-modal')">{{.ServiceCount}}</button>{{else}}{{.ServiceCount}}{{end}}</div></div>
+    <div class="card"><div class="k">Cross-repo edges</div><div class="v">{{if $.CrossRepoEdges}}<button type="button" class="count-link" onclick="openModal('edges-modal')">{{.CrossRepoEdgeCount}}</button>{{else}}{{.CrossRepoEdgeCount}}{{end}}</div></div>
+  </div>
+  {{if .Repos}}
+  <h3 style="margin:1.25rem 0 .5rem;font-size:.95rem">Repos in graph</h3>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Label</th><th>Path</th><th>Added</th><th>In graph for</th><th class="num">Facts</th></tr></thead>
+    <tbody>
+      {{range .Repos}}<tr><td>{{.Label}}</td><td>{{.Path}}</td><td>{{.AddedAt}}</td><td>{{.InGraphFor}}</td><td class="num">{{.FactCount}}</td></tr>{{end}}
+    </tbody>
+  </table></div>
+  {{end}}
+  {{end}}{{else}}<p class="note">{{.GraphNote}}</p>{{end}}
+
+  <footer>{{.Title}} dashboard · read-only · localhost only</footer>
+</div>
+
+{{if .Services}}
+<div class="modal" id="services-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Services">
+    <div class="modal-head">
+      <h3>Services <span class="note">({{len .Services}})</span></h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+    </div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Service</th><th class="num">Depends on</th></tr></thead>
+      <tbody>
+        {{range .Services}}<tr><td>{{.Name}}</td><td class="num">{{.DependsOn}}</td></tr>{{end}}
+      </tbody>
+    </table></div>
+  </div>
+</div>
+{{end}}
+
+{{if .CrossRepoEdges}}
+<div class="modal" id="edges-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="Cross-repo edges">
+    <div class="modal-head">
+      <h3>Cross-repo edges <span class="note">({{len .CrossRepoEdges}})</span></h3>
+      <div class="modal-head-actions">
+        {{if .EdgeDiagram}}
+        <button type="button" id="edges-view-toggle" class="view-toggle" aria-label="Switch to table view" aria-pressed="true" title="Toggle diagram / table view" onclick="toggleEdgesView()">
+          <svg class="vt-icon vt-to-table" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="2.2" rx="1"/><rect x="1.5" y="6.9" width="13" height="2.2" rx="1"/><rect x="1.5" y="11.3" width="13" height="2.2" rx="1"/></svg>
+          <svg class="vt-icon vt-to-diagram" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" hidden><circle cx="3.2" cy="3.2" r="2.1"/><circle cx="12.8" cy="4.6" r="2.1"/><circle cx="7.5" cy="12.6" r="2.1"/><path d="M4.6 4.2 11 4.2 M4.4 4.9 6.6 11 M11.4 6 8.4 11.2" stroke-width="1.3" fill="none"/></svg>
+        </button>
+        {{end}}
+        <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+      </div>
+    </div>
+    {{if .EdgeDiagram}}
+    <div id="edges-diagram" class="edges-view">
+      <svg class="edge-graph" viewBox="0 0 {{.EdgeDiagram.Width}} {{.EdgeDiagram.Height}}" role="img" aria-label="Cross-repo edge diagram">
+        <defs>
+          <marker id="edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z"/>
+          </marker>
+        </defs>
+        {{range .EdgeDiagram.Edges}}<path class="edge-line" d="M{{.X1}},{{.Y1}} Q{{.CX}},{{.CY}} {{.X2}},{{.Y2}}" marker-end="url(#edge-arrow)"/>{{end}}
+        {{range .EdgeDiagram.Nodes}}<g class="node"><circle cx="{{.X}}" cy="{{.Y}}" r="5"/><text x="{{.LabelX}}" y="{{.Y}}" text-anchor="{{.Anchor}}">{{.Name}}</text></g>{{end}}
+      </svg>
+    </div>
+    {{end}}
+    <div id="edges-table" class="edges-view"{{if .EdgeDiagram}} hidden{{end}}>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Consumer</th><th></th><th>Provider</th></tr></thead>
+        <tbody>
+          {{range .CrossRepoEdges}}<tr><td>{{.Consumer}}</td><td class="note">&rarr;</td><td>{{.Provider}}</td></tr>{{end}}
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{if .Insights}}
+<div class="modal" id="insights-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="Insights">
+    <div class="modal-head">
+      <h3>Insights</h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+    </div>
+    <div class="insight-summary">{{.InsightStructural}} structural &middot; {{.InsightCandidate}} candidate{{if ne .InsightCandidate 1}}s{{end}} &mdash; grouped by explainer, click a row to expand</div>
+    <div class="insight-filter">
+      <label for="insight-band">Confidence</label>
+      <select id="insight-band" onchange="filterInsights(this.value)">
+        <option value="all">All</option>
+        <option value="structural">Structural (100%)</option>
+        <option value="high">High (85&ndash;99%)</option>
+        <option value="medium">Medium (65&ndash;84%)</option>
+        <option value="low">Low (&lt;65%)</option>
+      </select>
+      <span class="note"><span id="insight-shown">{{.InsightTotal}}</span> shown</span>
+    </div>
+    {{range .Insights}}
+    <details class="insight-group">
+      <summary>
+        <span class="ig-label">{{.Label}}</span>
+        <span class="bar-track"><span class="bar-fill" style="width:{{.BarPct}}%"></span></span>
+        <span class="ig-count">{{.Count}}</span>
+      </summary>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Title</th><th class="num">Confidence</th><th>Evidence</th></tr></thead>
+        <tbody>
+          {{range .Items}}<tr data-conf="{{.Confidence}}"><td class="title">{{.Title}}</td><td class="num">{{.Confidence}}%{{if .Structural}}<span class="structural-chip">structural</span>{{end}}</td><td>{{.Evidence}}</td></tr>{{end}}
+        </tbody>
+      </table></div>
+    </details>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{if .Coverage}}
+<div class="modal" id="coverage-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="Cross-repo coverage">
+    <div class="modal-head">
+      <h3>Cross-repo coverage <span class="note">({{len .Coverage}} services)</span></h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+    </div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Service</th><th class="num">Resolved</th><th class="num">Detected</th><th class="num">Unresolved</th><th class="num">External</th><th>Status</th></tr></thead>
+      <tbody>
+        {{range .Coverage}}<tr><td>{{.Service}}</td><td class="num">{{.Resolved}}</td><td class="num">{{.Detected}}</td><td class="num">{{.Unresolved}}</td><td class="num">{{.External}}</td><td>{{.Status}}</td></tr>{{end}}
+      </tbody>
+    </table></div>
+  </div>
+</div>
+{{end}}
+
+{{if .UnresolvedRoutes}}
+<div class="modal" id="coverage-unresolved-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="Unresolved edges">
+    <div class="modal-head">
+      <h3>Unresolved edges <span class="note">({{len .UnresolvedRoutes}})</span></h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+    </div>
+    <div class="insight-summary">Client call sites for which no loaded server route matched.</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Method</th><th>Path</th><th>Repo</th><th>Reason</th></tr></thead>
+      <tbody>
+        {{range .UnresolvedRoutes}}<tr><td>{{.Method}}</td><td class="title">{{.Path}}</td><td>{{.Repo}}</td><td>{{.Reason}}</td></tr>{{end}}
+      </tbody>
+    </table></div>
+  </div>
+</div>
+{{end}}
+
+{{if .SkippedSample}}
+<div class="modal" id="skipped-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Skipped">
+    <div class="modal-head">
+      <h3>Skipped <span class="note">(sample, up to 20)</span></h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+    </div>
+    <div class="insight-summary">Files and directories the walker ignored; each names the glob that matched it.</div>
+    <div class="chips">{{range .SkippedSample}}<span class="chip">{{.}}</span>{{end}}</div>
+  </div>
+</div>
+{{end}}
+
+{{if .ParseErrors}}
+<div class="modal" id="parse-errors-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="Parse errors">
+    <div class="modal-head">
+      <h3>Parse errors <span class="note">(sample, up to 20)</span></h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+    </div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Extractor</th><th>File</th><th>Message</th></tr></thead>
+      <tbody>
+        {{range .ParseErrors}}<tr><td>{{.Extractor}}</td><td>{{.File}}</td><td class="title">{{.Msg}}</td></tr>{{end}}
+      </tbody>
+    </table></div>
+  </div>
+</div>
+{{end}}
+
+{{/* extra-modals: extension slot — see pkg/dashboard.Options.Overlay */}}
+{{block "extra-modals" $}}{{end}}
+
+<script>
+  // JS-driven auto-refresh (replaces the old <meta refresh>) so it can be paused
+  // while a modal is open — otherwise a reload would close the modal mid-read.
+  var refreshMs = {{.RefreshSeconds}} * 1000;
+  var reloadTimer = null;
+  function startRefresh() { stopRefresh(); reloadTimer = setTimeout(function () { location.reload(); }, refreshMs); }
+  function stopRefresh() { if (reloadTimer !== null) { clearTimeout(reloadTimer); reloadTimer = null; } }
+  function openModal(id) {
+    var m = document.getElementById(id);
+    if (!m) return;
+    stopRefresh();
+    m.classList.add('open');
+    if (id === 'insights-modal') {
+      var sel = document.getElementById('insight-band');
+      if (sel) { sel.value = 'all'; filterInsights('all'); } // reopen starts unfiltered
+    }
+  }
+
+  // insightBandMatch reports whether a row's confidence percent falls in the band.
+  function insightBandMatch(band, c) {
+    switch (band) {
+      case 'structural': return c >= 100;
+      case 'high':       return c >= 85 && c < 100;
+      case 'medium':     return c >= 65 && c < 85;
+      case 'low':        return c < 65;
+      default:           return true; // all
+    }
+  }
+  // filterInsights shows only rows in the chosen confidence band, then rescales each
+  // explainer group's count and bar to the visible rows and hides emptied groups.
+  function filterInsights(band) {
+    var modal = document.getElementById('insights-modal');
+    if (!modal) return;
+    var groups = modal.querySelectorAll('.insight-group');
+    var visibleCounts = [];
+    var maxVisible = 1;
+    groups.forEach(function (g) {
+      var n = 0;
+      g.querySelectorAll('tbody tr').forEach(function (r) {
+        var show = insightBandMatch(band, parseInt(r.getAttribute('data-conf'), 10));
+        r.style.display = show ? '' : 'none';
+        if (show) n++;
+      });
+      visibleCounts.push(n);
+      if (n > maxVisible) maxVisible = n;
+    });
+    var total = 0;
+    groups.forEach(function (g, i) {
+      var n = visibleCounts[i];
+      g.style.display = n ? '' : 'none';
+      var count = g.querySelector('.ig-count');
+      if (count) count.textContent = n;
+      var bar = g.querySelector('.bar-fill');
+      if (bar) bar.style.width = Math.round(n / maxVisible * 100) + '%';
+      total += n;
+    });
+    var shown = document.getElementById('insight-shown');
+    if (shown) shown.textContent = total;
+  }
+  // toggleEdgesView flips the Cross-repo edges modal between the node-link diagram
+  // and the consumer→provider table, updating the header toggle's icon and state.
+  function toggleEdgesView() {
+    var diagram = document.getElementById('edges-diagram');
+    var table = document.getElementById('edges-table');
+    var btn = document.getElementById('edges-view-toggle');
+    if (!diagram || !table) return;
+    var showTable = !diagram.hidden; // diagram currently visible → switch to table
+    diagram.hidden = showTable;
+    table.hidden = !showTable;
+    if (btn) {
+      btn.setAttribute('aria-pressed', showTable ? 'false' : 'true');
+      btn.setAttribute('aria-label', showTable ? 'Switch to diagram view' : 'Switch to table view');
+      var toTable = btn.querySelector('.vt-to-table');
+      var toDiagram = btn.querySelector('.vt-to-diagram');
+      if (toTable) toTable.hidden = showTable;
+      if (toDiagram) toDiagram.hidden = !showTable;
+    }
+  }
+  {{/* extra-scripts: extension slot — see pkg/dashboard.Options.Overlay */}}
+  {{block "extra-scripts" $}}{{end}}
+  function closeModal(el) {
+    var m = el && el.closest ? el.closest('.modal') : el;
+    if (m && m.classList) m.classList.remove('open');
+    startRefresh();
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      var open = document.querySelector('.modal.open');
+      if (open) closeModal(open);
+    }
+  });
+  startRefresh();
+</script>
+</body>
+</html>

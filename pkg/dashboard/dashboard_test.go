@@ -1,0 +1,730 @@
+package dashboard
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/enola-labs/enola/pkg/facts"
+)
+
+// fakeArtifacts is a stub engineView for handler tests. activeRepo/outputDir
+// drive the on-disk receipt fallback (empty by default → no fallback). store is
+// nil by default, so graphDetails yields empty lists and the counters render as
+// plain (non-clickable) numbers.
+type fakeArtifacts struct {
+	receipt    []byte
+	insights   []byte
+	err        error
+	activeRepo string
+	outputDir  string
+	store      *facts.Store
+}
+
+func (f fakeArtifacts) GetArtifact(name string) ([]byte, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if name == "insights.json" {
+		return f.insights, nil
+	}
+	return f.receipt, nil
+}
+
+func (f fakeArtifacts) ActiveRepo() string { return f.activeRepo }
+
+func (f fakeArtifacts) OutputDir(repoPath string) string { return f.outputDir }
+
+func (f fakeArtifacts) Store() *facts.Store { return f.store }
+
+// newTestServer builds a Server exactly as Start does — parsed template and
+// merged insight labels included — but without binding a port. Constructing the
+// struct literally instead would leave those nil, so a handler test would panic
+// rather than exercise what the real server renders.
+func newTestServer(port int, eng engineView, opts ...Options) *Server {
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	tmpl, err := buildTemplate(o.Overlay)
+	if err != nil {
+		panic(err)
+	}
+	return &Server{port: port, eng: eng, opts: o, tmpl: tmpl, labels: mergedLabels(o.InsightLabels), title: titleOr(o.Title)}
+}
+
+// isolateHome points HOME at an empty temp dir so status.ServerSnapshot (which
+// reads ~/.enola/usage) and the graph-receipt read (~/.enola/receipt.json) are
+// deterministic and start empty.
+func isolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	return home
+}
+
+func TestHandlerDegradesGracefully(t *testing.T) {
+	isolateHome(t)
+	s := newTestServer(54321, fakeArtifacts{err: errors.New("no snapshot generated")})
+
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("content-type = %q, want text/html", ct)
+	}
+	body := rec.Body.String()
+	wantContains := []string{
+		"location.reload()",                // JS-driven auto-refresh mechanism
+		"refreshes automatically every 30", // stated on the page
+		"127.0.0.1:54321",                  // the dashboard port/URL
+		"No snapshot loaded yet",           // degraded current receipt
+		"No graph receipt yet",             // degraded graph receipt
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandlerRendersReceipts(t *testing.T) {
+	home := isolateHome(t)
+
+	receipt := facts.Receipt{
+		SnapshotID:   "snap-abc123",
+		EnolaVersion: "9.9.9",
+		Extractors:   []string{"goextractor", "tsextractor"},
+		FactCount:    4242,
+	}
+	rb, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a graph receipt into the isolated ~/.enola/receipt.json.
+	graph := facts.GraphReceipt{
+		SnapshotID:   "graph-xyz",
+		ServiceCount: 7,
+		Repos:        []facts.GraphRepoEntry{{Label: "backend", Path: "/x/backend", FactCount: 100}},
+	}
+	gb, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".enola")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), gb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newTestServer(8080, fakeArtifacts{receipt: rb})
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"snap-abc123", "goextractor", "tsextractor", "4242", // current receipt
+		"graph-xyz", "backend", "/x/backend", // graph receipt + repos table
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+// TestReceiptDiskFallback covers the server-restart case: the in-memory receipt
+// is blank (auto-loaded facts only), so the dashboard must fall back to the
+// last-written <repo>/.enola/receipt.json on disk.
+func TestReceiptDiskFallback(t *testing.T) {
+	isolateHome(t)
+	repo := t.TempDir()
+	outDir := filepath.Join(repo, ".enola")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	diskReceipt := facts.Receipt{SnapshotID: "sha256:ondisk", FactCount: 77}
+	db, err := json.Marshal(diskReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "receipt.json"), db, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// In-memory receipt is blank (only RepoPath set, SnapshotID empty), mimicking
+	// AutoLoadSnapshot; ActiveRepo/OutputDir point at the on-disk receipt.
+	blank, err := json.Marshal(facts.Receipt{RepoPath: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServer(9, fakeArtifacts{receipt: blank, activeRepo: repo, outputDir: outDir})
+
+	rv := s.currentReceipt()
+	if rv == nil || rv.SnapshotID != "sha256:ondisk" || rv.FactCount != 77 {
+		t.Fatalf("currentReceipt = %+v, want the on-disk receipt", rv)
+	}
+}
+
+func TestHandlerNotFound(t *testing.T) {
+	isolateHome(t)
+	s := newTestServer(1, fakeArtifacts{err: errors.New("no snapshot generated")})
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/other", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestStartBindsLoopbackPort(t *testing.T) {
+	s, err := Start(nil, Options{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if s.Port() <= 0 {
+		t.Errorf("port = %d, want > 0", s.Port())
+	}
+	if want := "http://127.0.0.1:"; !strings.HasPrefix(s.URL(), want) {
+		t.Errorf("URL = %q, want prefix %q", s.URL(), want)
+	}
+}
+
+func TestToolRows(t *testing.T) {
+	total := map[string]int{"explore": 10, "query_facts": 5}
+	session := map[string]int{"explore": 2}
+	rows := toolRows(total, session)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	// Sorted by name: explore, query_facts.
+	if rows[0].Name != "explore" || rows[0].Session != 2 || rows[0].Total != 10 {
+		t.Errorf("row0 = %+v", rows[0])
+	}
+	if rows[1].Name != "query_facts" || rows[1].Session != 0 || rows[1].Total != 5 {
+		t.Errorf("row1 = %+v", rows[1])
+	}
+}
+
+// TestGraphDetails covers the store-backed enumeration directly: services sorted
+// by name with their depends_on counts, one edge per depends_on relation sorted
+// by consumer→provider, and empty lists for a nil store.
+func TestGraphDetails(t *testing.T) {
+	if s, e := graphDetails(nil); s != nil || e != nil {
+		t.Fatalf("graphDetails(nil) = (%v, %v), want (nil, nil)", s, e)
+	}
+
+	st := facts.NewStore()
+	st.Add(facts.Fact{Kind: facts.KindService, Name: "frontend", Relations: []facts.Relation{
+		{Kind: facts.RelDependsOn, Target: "backend"},
+		{Kind: facts.RelImports, Target: "ignored"}, // non-edge relation is skipped
+	}})
+	st.Add(facts.Fact{Kind: facts.KindService, Name: "backend"})
+
+	services, edges := graphDetails(st)
+	if len(services) != 2 || services[0].Name != "backend" || services[1].Name != "frontend" {
+		t.Fatalf("services = %+v, want [backend, frontend]", services)
+	}
+	if services[0].DependsOn != 0 || services[1].DependsOn != 1 {
+		t.Errorf("depends-on counts = %d/%d, want 0/1", services[0].DependsOn, services[1].DependsOn)
+	}
+	if len(edges) != 1 || edges[0].Consumer != "frontend" || edges[0].Provider != "backend" {
+		t.Fatalf("edges = %+v, want [frontend→backend]", edges)
+	}
+}
+
+// TestHandlerRendersModals verifies the clickable counters and modal contents are
+// rendered when the store holds service facts. The clickable count buttons live in
+// the graph-receipt cards, so a graph receipt must exist on disk for them to render.
+func TestHandlerRendersModals(t *testing.T) {
+	home := isolateHome(t)
+
+	graph := facts.GraphReceipt{SnapshotID: "graph-xyz", ServiceCount: 2, CrossRepoEdgeCount: 1}
+	gb, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".enola")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), gb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := facts.NewStore()
+	st.Add(facts.Fact{Kind: facts.KindService, Name: "frontend", Relations: []facts.Relation{
+		{Kind: facts.RelDependsOn, Target: "backend"},
+	}})
+	st.Add(facts.Fact{Kind: facts.KindService, Name: "backend"})
+
+	s := newTestServer(8080, fakeArtifacts{err: errors.New("no receipt"), store: st})
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="services-modal"`,                   // services modal container
+		`id="edges-modal"`,                      // edges modal container
+		`onclick="openModal('services-modal')"`, // clickable services count
+		`onclick="openModal('edges-modal')"`,    // clickable edges count
+		"frontend", "backend",                   // service names / edge endpoints
+		// Diagram view + header toggle for the edges modal.
+		`id="edges-diagram"`,          // diagram view container
+		`<svg class="edge-graph"`,     // inline SVG node-link diagram
+		`id="edges-view-toggle"`,      // header toggle control
+		`onclick="toggleEdgesView()"`, // toggle handler
+		`id="edges-table"`,            // table view container (now a sibling)
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+// TestBuildEdgeDiagram covers the node-link layout: one node per service placed on
+// the ring, one edge per drawable relation, all coordinates inside the viewBox, a
+// deterministic result, and graceful handling of empty and unknown-endpoint inputs.
+func TestBuildEdgeDiagram(t *testing.T) {
+	if buildEdgeDiagram(nil, nil) != nil {
+		t.Fatal("empty input should yield a nil diagram")
+	}
+	svcs := []serviceRow{{Name: "backend"}, {Name: "frontend"}, {Name: "mobile"}}
+	edges := []edgeRow{
+		{Consumer: "frontend", Provider: "backend"},
+		{Consumer: "mobile", Provider: "backend"},
+		{Consumer: "frontend", Provider: "ghost"},  // unknown provider → skipped
+		{Consumer: "backend", Provider: "backend"}, // self-loop → skipped
+	}
+	d := buildEdgeDiagram(svcs, edges)
+	if d == nil {
+		t.Fatal("expected a diagram")
+	}
+	if len(d.Nodes) != 3 {
+		t.Errorf("nodes = %d, want 3", len(d.Nodes))
+	}
+	if len(d.Edges) != 2 {
+		t.Errorf("edges = %d, want 2 (unknown endpoint + self-loop dropped)", len(d.Edges))
+	}
+	for _, n := range d.Nodes {
+		if n.X < 0 || n.X > d.Width || n.Y < 0 || n.Y > d.Height {
+			t.Errorf("node %q at (%.1f,%.1f) outside viewBox %gx%g", n.Name, n.X, n.Y, d.Width, d.Height)
+		}
+		if n.Anchor != "start" && n.Anchor != "end" {
+			t.Errorf("node %q anchor = %q, want start|end", n.Name, n.Anchor)
+		}
+	}
+	// Deterministic: same inputs → identical layout.
+	if d2 := buildEdgeDiagram(svcs, edges); !reflect.DeepEqual(d, d2) {
+		t.Error("buildEdgeDiagram is not deterministic")
+	}
+}
+
+// TestInsightDetails covers the store-independent grouping: groups sorted by count
+// desc, items within a group sorted by confidence desc, the largest group's bar at
+// 100%, the structural/candidate split, evidence extraction, and nil → empty.
+func TestInsightDetails(t *testing.T) {
+	labels := mergedLabels(nil)
+
+	if g, s, c := insightDetails(nil, labels); g != nil || s != 0 || c != 0 {
+		t.Fatalf("insightDetails(nil) = (%v, %d, %d), want empty", g, s, c)
+	}
+
+	ins := []facts.Insight{
+		{Source: "hotspots", Title: "Hot symbol", Confidence: 0.65, Evidence: []facts.Evidence{{File: "a.go"}}},
+		{Source: "hotspots", Title: "Alloc in loop", Confidence: 0.85},
+		{Source: "hotspots", Title: "Boxing", Confidence: 0.65},
+		{Source: "cycles", Title: "Import cycle", Confidence: 1.0, Evidence: []facts.Evidence{{Symbol: "foo"}}},
+	}
+	groups, structural, candidate := insightDetails(ins, labels)
+
+	if len(groups) != 2 {
+		t.Fatalf("groups = %d, want 2", len(groups))
+	}
+	// hotspots (3) ranks before cycles (1).
+	if groups[0].Source != "hotspots" || groups[0].Count != 3 || groups[0].BarPct != 100 {
+		t.Errorf("group0 = %+v, want hotspots/3/100%%", groups[0])
+	}
+	if groups[0].Label != "Hotspots" {
+		t.Errorf("group0 label = %q, want Hotspots", groups[0].Label)
+	}
+	// Within hotspots, highest confidence first (85, 65, 65 by title).
+	if groups[0].Items[0].Title != "Alloc in loop" || groups[0].Items[0].Confidence != 85 {
+		t.Errorf("hotspots item0 = %+v, want Alloc in loop/85", groups[0].Items[0])
+	}
+	if groups[1].Source != "cycles" || groups[1].BarPct != 33 {
+		t.Errorf("group1 = %+v, want cycles/33%%", groups[1])
+	}
+	if !groups[1].Items[0].Structural || groups[1].Items[0].Evidence != "foo" {
+		t.Errorf("cycles item = %+v, want structural + evidence foo", groups[1].Items[0])
+	}
+	if structural != 1 || candidate != 3 {
+		t.Errorf("split = %d structural / %d candidate, want 1/3", structural, candidate)
+	}
+}
+
+// Both binaries share a repo's .enola/insights.json, so a file written by a build
+// with extra explainers must not leak findings this engine cannot produce — the
+// dropped insights must not reach the groups OR the structural/candidate counts.
+func TestInsightDetailsFiltersUnknownSources(t *testing.T) {
+	ins := []facts.Insight{
+		{Source: "cycles", Title: "Import cycle", Confidence: 1.0},
+		{Source: "performance", Title: "Slow loop", Confidence: 0.65},
+		{Source: "dead-code", Title: "Unused func", Confidence: 1.0},
+		{Source: "", Title: "Unstamped", Confidence: 0.5},
+	}
+
+	groups, structural, candidate := insightDetails(ins, mergedLabels(nil))
+	if len(groups) != 1 || groups[0].Source != "cycles" {
+		t.Fatalf("groups = %+v, want only cycles", groups)
+	}
+	if structural != 1 || candidate != 0 {
+		t.Errorf("split = %d/%d, want 1 structural / 0 candidate — dropped insights must not be counted", structural, candidate)
+	}
+
+	// A wrapper admits its own explainers by labelling them.
+	groups, structural, candidate = insightDetails(ins, mergedLabels(map[string]string{
+		"performance": "Performance",
+		"dead-code":   "Dead code",
+	}))
+	if len(groups) != 3 {
+		t.Fatalf("groups = %d, want 3 once the wrapper's labels are registered", len(groups))
+	}
+	if structural != 2 || candidate != 1 {
+		t.Errorf("split = %d/%d, want 2 structural / 1 candidate", structural, candidate)
+	}
+	for _, g := range groups {
+		if g.Source == "" {
+			t.Error("an unstamped source must stay filtered even for a wrapper")
+		}
+	}
+}
+
+// mergedLabels must copy, so one dashboard's wrapper labels never bleed into the
+// package map (and thus into another dashboard in the same process).
+func TestMergedLabelsDoesNotMutatePackageMap(t *testing.T) {
+	before := len(insightLabels)
+	m := mergedLabels(map[string]string{"performance": "Performance"})
+
+	if len(insightLabels) != before {
+		t.Errorf("insightLabels grew to %d, want %d — mergedLabels must copy", len(insightLabels), before)
+	}
+	if _, leaked := insightLabels["performance"]; leaked {
+		t.Error("wrapper label leaked into the package map")
+	}
+	if m["performance"] != "Performance" || m["cycles"] != "Dependency cycles" {
+		t.Errorf("merged map lost an entry: %+v", m)
+	}
+}
+
+// TestHandlerRendersInsightsModal verifies the clickable Insights counter and the
+// modal's grouped bars render when insights.json is available via GetArtifact. A
+// graph receipt is written to disk so the graph card (which hosts one clickable
+// counter) renders.
+func TestHandlerRendersInsightsModal(t *testing.T) {
+	home := isolateHome(t)
+
+	graph := facts.GraphReceipt{SnapshotID: "graph-xyz", InsightCount: 2}
+	gb, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".enola")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), gb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	insights := []facts.Insight{
+		{Source: "god-class", Title: "UserService is a god class", Confidence: 0.9},
+		{Source: "cycles", Title: "Import cycle a → b → a", Confidence: 1.0},
+	}
+	ib, err := json.Marshal(insights)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := newTestServer(8080, fakeArtifacts{insights: ib})
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="insights-modal"`,                   // modal container
+		`onclick="openModal('insights-modal')"`, // clickable counter
+		"God classes", "Dependency cycles",      // friendly labels
+		"UserService is a god class", // an insight title
+		"90%", "100%",                // confidence rendering
+		"structural",   // structural chip on the 100% insight
+		"1 structural", // header split
+		// confidence-band filter wiring
+		`id="insight-band"`,
+		"Structural (100%)",
+		`onchange="filterInsights(this.value)"`,
+		`data-conf="90"`,
+		`id="insight-shown"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+// TestCoverageDetails covers the store-backed coverage enumeration: per-service
+// classification, the unmatched-route list, sort order, and nil → empty.
+func TestCoverageDetails(t *testing.T) {
+	if s, u := coverageDetails(nil); s != nil || u != nil {
+		t.Fatalf("coverageDetails(nil) = (%v, %v), want (nil, nil)", s, u)
+	}
+
+	st := facts.NewStore()
+	// A connected service (one resolved depends_on edge).
+	st.Add(facts.Fact{Kind: facts.KindService, Name: "frontend",
+		Props: map[string]any{"edge_coverage": []map[string]any{
+			{"detected": 139, "resolved": 131, "external": 0, "unresolved": 8},
+		}},
+		Relations: []facts.Relation{{Kind: facts.RelDependsOn, Target: "backend"}},
+	})
+	// A coverage-gap service: outbound detected but nothing resolved.
+	st.Add(facts.Fact{Kind: facts.KindService, Name: "app",
+		Props: map[string]any{"edge_coverage": []map[string]any{
+			{"detected": 5, "resolved": 0, "external": 0, "unresolved": 5},
+		}},
+	})
+	st.Add(facts.Fact{Kind: facts.KindRoute, Name: "/v2/hide.json", Repo: "frontend",
+		File: "a.jsx", Line: 18,
+		Props: map[string]any{"method": "POST", "unmatched_by_server": true, "unmatched_reason": "path_unknown"}})
+	st.Add(facts.Fact{Kind: facts.KindRoute, Name: "/matched", Repo: "frontend",
+		Props: map[string]any{"method": "GET"}}) // not unmatched → excluded
+
+	services, unresolved := coverageDetails(st)
+	if len(services) != 2 || services[0].Service != "app" || services[1].Service != "frontend" {
+		t.Fatalf("services = %+v, want [app, frontend]", services)
+	}
+	if services[0].Status != svcCoverageGap {
+		t.Errorf("app status = %q, want %q", services[0].Status, svcCoverageGap)
+	}
+	if services[1].Status != svcConnected || services[1].Resolved != 1 || services[1].Unresolved != 8 {
+		t.Errorf("frontend row = %+v, want connected/resolved 1/unresolved 8", services[1])
+	}
+	if len(unresolved) != 1 || unresolved[0].Path != "/v2/hide.json" || unresolved[0].Method != "POST" || unresolved[0].Reason != "path_unknown" {
+		t.Fatalf("unresolved = %+v, want one POST /v2/hide.json path_unknown", unresolved)
+	}
+}
+
+// TestHandlerRendersQualityModals verifies the clickable Extraction-quality cards
+// and their modals render from the receipt samples and the live store.
+func TestHandlerRendersQualityModals(t *testing.T) {
+	isolateHome(t)
+
+	receipt := facts.Receipt{
+		SnapshotID: "snap-q",
+		Quality: facts.ReceiptQuality{
+			FilesSkipped:     0,
+			DirsSkipped:      1,
+			SkippedSample:    []string{".git/ (glob: .git/**)"},
+			ParseErrors:      1,
+			ParseErrorSample: []facts.ParseError{{Extractor: "goextractor", File: "bad.go", Msg: "syntax error near EOF"}},
+			Coverage:         &facts.CoverageSummary{ServicesTotal: 1, UnresolvedEdges: 1},
+		},
+	}
+	rb, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st := facts.NewStore()
+	st.Add(facts.Fact{Kind: facts.KindService, Name: "frontend",
+		Props:     map[string]any{"edge_coverage": []map[string]any{{"detected": 9, "resolved": 8, "external": 0, "unresolved": 1}}},
+		Relations: []facts.Relation{{Kind: facts.RelDependsOn, Target: "backend"}}})
+	st.Add(facts.Fact{Kind: facts.KindRoute, Name: "/v2/hide.json", Repo: "frontend",
+		Props: map[string]any{"method": "POST", "unmatched_by_server": true, "unmatched_reason": "path_unknown"}})
+
+	s := newTestServer(8080, fakeArtifacts{receipt: rb, store: st})
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="coverage-modal"`, `id="coverage-unresolved-modal"`, `id="skipped-modal"`, `id="parse-errors-modal"`,
+		`onclick="openModal('coverage-modal')"`,
+		`onclick="openModal('coverage-unresolved-modal')"`,
+		`onclick="openModal('skipped-modal')"`,
+		`onclick="openModal('parse-errors-modal')"`,
+		".git/ (glob: .git/**)", // skipped sample entry
+		"syntax error near EOF", // parse-error message
+		"/v2/hide.json",         // unmatched route path
+		"path_unknown",          // unmatched reason
+		"connected",             // service status
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestValueRowsHasTotal(t *testing.T) {
+	rows, total := valueRows(map[string]int{"explore": 3})
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0].Label != "explore" || rows[0].Calls != 3 {
+		t.Errorf("row = %+v", rows[0])
+	}
+	if total.Label != "TOTAL" || total.Calls != 3 {
+		t.Errorf("total = %+v", total)
+	}
+}
+
+// The overlay is the whole contract a wrapper binary builds its extra panels on:
+// each of the four blocks must render, reach the wrapper's own data through
+// {{.Extra}}, and land inside the right part of the page.
+func TestOverlayRendersExtraBlocks(t *testing.T) {
+	isolateHome(t)
+
+	receipt, err := json.Marshal(facts.Receipt{SnapshotID: "snap-1", FactCount: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const overlay = `
+{{define "extra-styles"}}.wrapper-panel { color: hotpink; }{{end}}
+{{define "extra-cards"}}{{if .Extra}}<div class="card" id="wrapper-card">{{.Extra.Label}}</div>{{end}}{{end}}
+{{define "extra-modals"}}{{if .Extra}}<div class="modal" id="wrapper-modal">{{.Extra.Count}} things</div>{{end}}{{end}}
+{{define "extra-scripts"}}function wrapperFn() { return 1; }{{end}}`
+
+	type extra struct {
+		Label string
+		Count int
+	}
+	s := newTestServer(8080, fakeArtifacts{receipt: receipt}, Options{
+		Overlay: overlay,
+		Extra:   func(*facts.Store) any { return extra{Label: "Wrapper panel", Count: 7} },
+	})
+
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		".wrapper-panel { color: hotpink; }", // extra-styles
+		`id="wrapper-card"`, "Wrapper panel", // extra-cards, reading .Extra
+		`id="wrapper-modal"`, "7 things", // extra-modals
+		"function wrapperFn()", // extra-scripts
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("overlay output missing %q", want)
+		}
+	}
+
+	// Each block must land in its own region: styles inside <style>, scripts inside
+	// <script>, and the card inside the receipt card grid rather than after it.
+	if head := body[:strings.Index(body, "</style>")]; !strings.Contains(head, ".wrapper-panel") {
+		t.Error("extra-styles rendered outside the <style> block")
+	}
+	if card, grid := strings.Index(body, `id="wrapper-card"`), strings.Index(body, `id="wrapper-modal"`); card > grid {
+		t.Error("extra-cards should render before extra-modals")
+	}
+}
+
+// A wrapper that supplies no Extra (e.g. an unlicensed feature) must render a
+// clean page, not a half-built panel.
+func TestOverlayWithoutExtraDataRendersNothing(t *testing.T) {
+	isolateHome(t)
+
+	s := newTestServer(8080, fakeArtifacts{err: errors.New("no snapshot")}, Options{
+		Overlay: `{{define "extra-modals"}}{{if .Extra}}<div id="wrapper-modal"></div>{{end}}{{end}}`,
+	})
+
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if body := rec.Body.String(); strings.Contains(body, "wrapper-modal") {
+		t.Error("a nil Extra must render no panel")
+	}
+}
+
+// A broken overlay must fail at Start, where a wrapper author sees it — not
+// silently drop every panel from every page.
+func TestStartRejectsInvalidOverlay(t *testing.T) {
+	if _, err := Start(nil, Options{Overlay: `{{define "extra-cards"}}{{.Unclosed`}); err == nil {
+		t.Fatal("Start accepted a malformed overlay")
+	}
+}
+
+// html/template refuses to Clone a template that has already executed, so a
+// server must never render straight from the package-level base. Starting a
+// plain dashboard and then an overlay one in the same process is exactly the
+// order that regressed.
+func TestSecondServerCanStartAfterFirstHasRendered(t *testing.T) {
+	isolateHome(t)
+
+	first := newTestServer(1, fakeArtifacts{err: errors.New("no snapshot")})
+	first.handleIndex(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if _, err := buildTemplate(`{{define "extra-cards"}}<div id="late"></div>{{end}}`); err != nil {
+		t.Fatalf("overlay template after a render: %v", err)
+	}
+	if _, err := buildTemplate(""); err != nil {
+		t.Fatalf("plain template after a render: %v", err)
+	}
+}
+
+// OverlayBlocks is the published half of the overlay contract, so every name it
+// promises must actually be a block in the page — otherwise a wrapper's panel
+// parses cleanly and then renders nowhere.
+func TestOverlayBlocksExistInPage(t *testing.T) {
+	names := OverlayBlocks()
+	if len(names) == 0 {
+		t.Fatal("OverlayBlocks is empty")
+	}
+	for _, name := range names {
+		if baseTmpl.Lookup(name) == nil {
+			t.Errorf("OverlayBlocks names %q, but the page defines no such block", name)
+		}
+	}
+
+	// And the page must not carry extension blocks it never told wrappers about.
+	declared := make(map[string]bool, len(names))
+	for _, n := range names {
+		declared[n] = true
+	}
+	for _, tpl := range baseTmpl.Templates() {
+		if n := tpl.Name(); strings.HasPrefix(n, "extra-") && !declared[n] {
+			t.Errorf("page defines block %q, which OverlayBlocks does not list", n)
+		}
+	}
+}
+
+// The page is branded per binary, so a wrapper can name its own product without
+// forking the template — and the default must never be a wrapper's name.
+func TestTitleDefaultsAndOverrides(t *testing.T) {
+	isolateHome(t)
+	req := func() *http.Request { return httptest.NewRequest(http.MethodGet, "/", nil) }
+
+	rec := httptest.NewRecorder()
+	newTestServer(1, fakeArtifacts{err: errors.New("none")}).handleIndex(rec, req())
+	if body := rec.Body.String(); !strings.Contains(body, "<title>enola — dashboard</title>") {
+		t.Error("default title is not the engine's own name")
+	}
+
+	rec = httptest.NewRecorder()
+	newTestServer(1, fakeArtifacts{err: errors.New("none")}, Options{Title: "wrapper build"}).handleIndex(rec, req())
+	body := rec.Body.String()
+	for _, want := range []string{"<title>wrapper build — dashboard</title>", "<h1>wrapper build</h1>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}

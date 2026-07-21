@@ -35,10 +35,11 @@ func TestDefaultHelp_MentionsEveryFlag(t *testing.T) {
 }
 
 // The shared help is what the OSS binary prints verbatim, so it must never
-// describe anything only a wrapper provides.
+// describe anything only a wrapper provides. (The dashboard is not in this list:
+// both binaries serve one, so DefaultHelp documents it.)
 func TestDefaultHelp_NoWrapperConcepts(t *testing.T) {
 	out := strings.ToLower(renderDefault(t))
-	for _, term := range []string{"license", "activate", "dashboard", "enterprise"} {
+	for _, term := range []string{"license", "activate", "enterprise"} {
 		if strings.Contains(out, term) {
 			t.Errorf("default help must not mention %q:\n%s", term, out)
 		}

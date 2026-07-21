@@ -13,6 +13,7 @@ import (
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/cli"
+	"github.com/enola-labs/enola/pkg/dashboard"
 	"github.com/enola-labs/enola/pkg/explain"
 	"github.com/enola-labs/enola/pkg/status"
 )
@@ -34,6 +35,7 @@ func main() {
 	explainMode := false
 	statusMode := false
 	statusAll := false
+	noDashboard := false
 	cfgPath := "mcp-arch.yaml"
 	explainRepo := "" // optional positional repo path for --explain
 
@@ -56,6 +58,8 @@ func main() {
 			statusMode = true
 		case "--all":
 			statusAll = true
+		case "--no-dashboard":
+			noDashboard = true
 		default:
 			// In --explain mode the positional argument is the repository path;
 			// otherwise it is the config file path.
@@ -137,6 +141,21 @@ func main() {
 	tracker := status.NewTracker(repoPath)
 	tracker.SetStartTime(time.Now())
 	srv.SetToolCallback(tracker.OnToolCall)
+
+	// Start the localhost HTTP dashboard alongside the MCP server. It binds a
+	// free loopback port and serves a read-only, auto-refreshing view of the same
+	// data as --status plus the snapshot/graph receipts. Non-fatal: a dashboard
+	// failure must never stop the MCP server. The port is recorded on the tracker
+	// BEFORE the startup write, so a separate --status invocation can print the
+	// URL even before the first tool call.
+	if !noDashboard {
+		if dash, err := dashboard.Start(eng, dashboard.Options{}); err != nil {
+			log.Printf("dashboard: not started: %v (continuing without it)", err)
+		} else {
+			tracker.SetDashboardPort(dash.Port())
+			fmt.Fprintf(os.Stderr, "Dashboard: %s (auto-refreshes every 30s)\n", dash.URL())
+		}
+	}
 	tracker.PersistStartup()
 
 	if err := srv.Run(ctx); err != nil {

@@ -21,6 +21,20 @@ type (
 	Artifact = internal.Artifact
 )
 
+// Receipt / provenance types (aliases — identical to the internal types).
+// Re-exported so consumers that read a receipt back — the dashboard, and any
+// out-of-module tool checking provenance or extraction quality — unmarshal into
+// the engine's own shapes instead of hand-written JSON mirrors that drift.
+type (
+	Receipt         = internal.Receipt
+	ReceiptQuality  = internal.ReceiptQuality
+	GraphReceipt    = internal.GraphReceipt
+	GraphRepoEntry  = internal.GraphRepoEntry
+	CoverageSummary = internal.CoverageSummary
+	ParseError      = internal.ParseError
+	GitInfo         = internal.GitInfo
+)
+
 // Graph / impact-analysis types (aliases — identical to the internal types).
 // Re-exported so out-of-module consumers (the enterprise architecture validator)
 // can run reverse-dependency impact analysis over a snapshot's facts.

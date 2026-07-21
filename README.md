@@ -472,11 +472,24 @@ Run `enola --help` for the full text. With no flags, enola starts the MCP server
 | `--list` | List the MCP tools this build serves, with one-line summaries. |
 | `--status` | Show the MCP server's activity: uptime, per-tool call counts (this session and lifetime), and an estimate of the time and context those calls saved. |
 | `--status --all` | The same usage, broken down per repository. |
+| `--no-dashboard` | Start the MCP server without the localhost dashboard. |
 | `--version` | Print the build version. |
 | `--help`, `-h` | Show usage. |
 | `upgrade` | Download and install the latest release over the running binary. |
 
 Usage counters are recorded per repository under `~/.enola/usage/`, so they survive both server restarts and deleting a repo's `.enola/` directory — and `--status` works from any directory, not just a snapshotted one. The value estimate is exactly that: a static per-tool model of how many manual lookups (open a file, grep, read) one call replaces, converted to time and tokens.
+
+### The dashboard
+
+Starting the MCP server also starts a **read-only dashboard** on a free loopback port (`127.0.0.1`), printed to stderr on startup — run `enola --status` while the server is up to get the URL again. It refreshes every 30 seconds and shows, in one page:
+
+- the same activity and value data as `--status`;
+- the **snapshot receipt** — snapshot ID, enola version, git ref, extractors, fact/insight counts;
+- the **graph receipt** (`~/.enola/receipt.json`) with the repos currently in the graph, and clickable counters listing the services and cross-repo edges — the edges also render as a node-link diagram;
+- the **insights** grouped by explainer, filterable by confidence band, so you can see what each finding is and how certain it is;
+- **extraction quality** — per-service coverage, unresolved routes, and samples of skipped files and parse errors, which is where you look when a snapshot seems thin.
+
+It is strictly a viewer: every request reads through the same concurrency-safe accessors the MCP tools use and never mutates server state. It binds loopback only and serves nothing but that one page. Pass `--no-dashboard` to skip it.
 
 ---
 
