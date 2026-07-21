@@ -13,7 +13,7 @@ type Graph struct {
 	forward  map[string][]Edge   // fact name → outgoing edges
 	reverse  map[string][]Edge   // fact name → incoming edges
 	facts    []Fact              // reference to the store's facts (for metadata lookups)
-	factIdx  map[string]int      // fact name → first index in facts slice
+	factIdx  map[string][]int    // fact name → every index in facts slice declaring that name
 	edgeSeen map[string]struct{} // deduplication: "source\x00kind\x00target"
 }
 
@@ -44,6 +44,13 @@ type TraversalNode struct {
 	// or calls into packages that weren't analyzed). The edge is real; the
 	// destination symbol just isn't in the graph.
 	Unresolved bool `json:"unresolved,omitempty"`
+	// Conflated lists the distinct fact kinds sharing this node's name, when more
+	// than one does. Graph nodes are keyed by name, so same-named facts merge into
+	// one node and their edges are unioned. Kind/File/Repo above describe whichever
+	// fact best fits the relation that reached the node; this field admits that the
+	// node also stands for others, so a walk through it is not read as more precise
+	// than it is.
+	Conflated []string `json:"conflated,omitempty"`
 }
 
 // TraversalEdge is an edge traversed during traversal.
@@ -100,7 +107,7 @@ func NewGraph(ff []Fact) *Graph {
 		forward:  make(map[string][]Edge),
 		reverse:  make(map[string][]Edge),
 		facts:    ff,
-		factIdx:  make(map[string]int, len(ff)),
+		factIdx:  make(map[string][]int, len(ff)),
 		edgeSeen: make(map[string]struct{}),
 	}
 
@@ -109,9 +116,10 @@ func NewGraph(ff []Fact) *Graph {
 	modulePaths := make(map[string]struct{}) // Go module paths for cross-repo normalisation
 	for i, f := range ff {
 		if f.Name != "" {
-			if _, exists := g.factIdx[f.Name]; !exists {
-				g.factIdx[f.Name] = i
-			}
+			// Every fact declaring the name is recorded, not just the first: which
+			// one a node means depends on the edge that reaches it, and that is not
+			// known until traversal time.
+			g.factIdx[f.Name] = append(g.factIdx[f.Name], i)
 		}
 		if f.Kind == KindModule {
 			moduleNames[f.Name] = true
@@ -194,8 +202,10 @@ func (g *Graph) methodOwner(name string) string {
 		return ""
 	}
 	owner := name[:dot]
-	idx, ok := g.factIdx[owner]
-	if !ok || idx >= len(g.facts) {
+	// A method's owner is a symbol, so resolve with that context rather than the
+	// bare name — a type sharing a name with a module must still find the type.
+	idx, ok := g.factIndexFor(owner, RelHasMethod)
+	if !ok {
 		return ""
 	}
 	of := g.facts[idx]
@@ -281,7 +291,7 @@ func (g *Graph) traverseFrom(starts []string, direction string, relKinds, nodeKi
 		}
 		visited[start] = true
 		queue = append(queue, queueItem{name: start, depth: 0})
-		result.Nodes = append(result.Nodes, g.nodeFor(start, 0))
+		result.Nodes = append(result.Nodes, g.nodeFor(start, 0, ""))
 	}
 
 	truncated := false
@@ -331,7 +341,7 @@ func (g *Graph) traverseFrom(starts []string, direction string, relKinds, nodeKi
 				maxDepthReached = newDepth
 			}
 
-			node := g.nodeFor(e.Target, newDepth)
+			node := g.nodeFor(e.Target, newDepth, e.RelKind)
 
 			// Apply node kind filter
 			if kindSet != nil {
@@ -398,7 +408,7 @@ func (g *Graph) FindPath(from, to string, relKinds []string, maxDepth int) PathR
 			From:  from,
 			To:    to,
 			Found: true,
-			Path:  []TraversalNode{g.nodeFor(from, 0)},
+			Path:  []TraversalNode{g.nodeFor(from, 0, "")},
 		}
 	}
 
@@ -464,7 +474,9 @@ func (g *Graph) FindPath(from, to string, relKinds []string, maxDepth int) PathR
 	}
 
 	for i, name := range path {
-		result.Path = append(result.Path, g.nodeFor(name, i))
+		// The origin has no incoming edge; every later hop is identified by the
+		// relation that reached it.
+		result.Path = append(result.Path, g.nodeFor(name, i, parentEdge[name].RelKind))
 	}
 
 	// Reconstruct edges along the path
@@ -557,7 +569,7 @@ func (g *Graph) ImpactSet(target string, maxDepth, maxNodes int, includeForward 
 func (g *Graph) repoOf(name string) string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if idx, ok := g.factIdx[name]; ok && idx < len(g.facts) {
+	if idx, ok := g.factIndexFor(name, ""); ok {
 		return g.facts[idx].Repo
 	}
 	return ""
@@ -574,8 +586,11 @@ func (g *Graph) impactSeeds(target string) []string {
 	defer g.mu.RUnlock()
 
 	seeds := []string{target}
-	idx, ok := g.factIdx[target]
-	if !ok || idx >= len(g.facts) {
+	// Seed expansion only applies to type symbols, so resolve with symbol context:
+	// a type sharing a name with a module or service must still expand its methods.
+	// When no symbol declares the name the kind check below returns the bare target.
+	idx, ok := g.factIndexFor(target, RelHasMethod)
+	if !ok {
 		return seeds
 	}
 	if g.facts[idx].Kind != KindSymbol {
@@ -689,7 +704,7 @@ func (g *Graph) ReverseFacts(targetName, relKind string) []Fact {
 			continue
 		}
 		seen[sourceName] = struct{}{}
-		if idx, ok := g.factIdx[sourceName]; ok && idx < len(g.facts) {
+		if idx, ok := g.factIndexFor(sourceName, e.RelKind); ok {
 			result = append(result, g.facts[idx])
 		}
 	}
@@ -755,7 +770,7 @@ func (g *Graph) ArchitecturalReverse() map[string][]Edge {
 				continue
 			}
 			// In a reverse edge, e.Target holds the SOURCE fact name.
-			if idx, ok := g.factIdx[e.Target]; ok && idx < len(g.facts) &&
+			if idx, ok := g.factIndexFor(e.Target, e.RelKind); ok &&
 				isReferenceOnlyKind(g.facts[idx].Kind) {
 				continue
 			}
@@ -786,14 +801,113 @@ func (g *Graph) EdgeCount() int {
 	return count
 }
 
-func (g *Graph) nodeFor(name string, depth int) TraversalNode {
+// kindForRel maps the relation that reached a node to the fact kind that relation
+// naturally targets. A node's name alone cannot identify it when several facts share
+// that name — module names are repo-root-relative, so any top-level directory whose
+// name matches a repo label collides with that repo's service node — but the edge used
+// to arrive says which one was meant: only a service is the target of depends_on, only
+// a module of imports.
+var kindForRel = map[string]string{
+	RelDependsOn:    KindService,
+	RelImports:      KindModule,
+	RelCalls:        KindSymbol,
+	RelImplements:   KindSymbol,
+	RelHasMethod:    KindSymbol,
+	RelInstantiates: KindSymbol,
+	RelInjects:      KindSymbol,
+	RelDeclares:     KindSymbol,
+	RelHandledBy:    KindRoute,
+}
+
+// kindRank orders fact kinds for picking among same-named facts when there is no edge
+// context — a traversal origin, or a relation whose natural kind is absent. Lower wins.
+// Services rank first because they are synthetic whole-repo nodes: if a name is both a
+// repo label and something else, the repo is the more meaningful node in the graph
+// queries (traverse/find_path/impact) that reach it.
+var kindRank = map[string]int{
+	KindService:    0,
+	KindModule:     1,
+	KindSymbol:     2,
+	KindRoute:      3,
+	KindStorage:    4,
+	KindDependency: 5,
+}
+
+func rankOf(kind string) int {
+	if r, ok := kindRank[kind]; ok {
+		return r
+	}
+	return len(kindRank) // unknown kinds sort last, deterministically
+}
+
+// factIndexFor picks which of the facts named name represents the node, preferring the
+// kind natural for viaRel (the relation that reached the node; "" when there is none)
+// and otherwise falling back to kindRank. Returns false when no fact backs the name.
+func (g *Graph) factIndexFor(name, viaRel string) (int, bool) {
+	idxs := g.factIdx[name]
+	if len(idxs) == 0 {
+		return 0, false
+	}
+	if len(idxs) == 1 {
+		if idxs[0] >= len(g.facts) {
+			return 0, false
+		}
+		return idxs[0], true
+	}
+
+	want := kindForRel[viaRel]
+	best, found := 0, false
+	for _, idx := range idxs {
+		if idx >= len(g.facts) {
+			continue
+		}
+		if want != "" && g.facts[idx].Kind == want {
+			return idx, true // exact edge-context match: nothing can beat it
+		}
+		if !found || rankOf(g.facts[idx].Kind) < rankOf(g.facts[best].Kind) {
+			best, found = idx, true
+		}
+	}
+	return best, found
+}
+
+// conflatedKinds returns the distinct kinds sharing name, sorted, when more than one
+// fact declares it — the honest signal that this graph node merges several facts and
+// their edges. Returns nil for the common single-fact case.
+func (g *Graph) conflatedKinds(name string) []string {
+	idxs := g.factIdx[name]
+	if len(idxs) < 2 {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, idx := range idxs {
+		if idx < len(g.facts) {
+			seen[g.facts[idx].Kind] = true
+		}
+	}
+	if len(seen) < 2 {
+		return nil // several facts, but all the same kind — not a cross-kind conflation
+	}
+	kinds := make([]string, 0, len(seen))
+	for k := range seen {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	return kinds
+}
+
+// nodeFor builds the traversal node for name. viaRel is the relation kind that reached
+// it, or "" for a traversal/path origin; it disambiguates which fact the node means
+// when a name is shared.
+func (g *Graph) nodeFor(name string, depth int, viaRel string) TraversalNode {
 	node := TraversalNode{Name: name, Depth: depth}
-	if idx, ok := g.factIdx[name]; ok && idx < len(g.facts) {
+	if idx, ok := g.factIndexFor(name, viaRel); ok {
 		f := g.facts[idx]
 		node.Kind = f.Kind
 		node.File = f.File
 		node.Line = f.Line
 		node.Repo = f.Repo
+		node.Conflated = g.conflatedKinds(name)
 	} else {
 		// No backing fact: this is a dangling edge target (e.g. an inferred call
 		// into an unanalyzed package or an interface method). Mark it honestly

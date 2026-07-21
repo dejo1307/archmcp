@@ -1131,3 +1131,233 @@ func TestUnmatchedReasonConstants(t *testing.T) {
 		}
 	}
 }
+
+// --- (C2) shared-symbol direction and convention-name gating ---
+
+// TestComputeLinks_SharedSymbolsRespectsImportDirection covers the library-monorepo
+// false positive: an app declares copies of types its published library also declares
+// (a vendored/migrated component), so the symmetric shared-symbol signal fires — but
+// the app's npm dependency on the library already fixed the direction. Materializing
+// the reverse edge would make the library depend on its own consumer, which then
+// fabricates paths like library -> app -> app's backend.
+func TestComputeLinks_SharedSymbolsRespectsImportDirection(t *testing.T) {
+	in := []facts.Fact{
+		module("app", "client"),
+		importDep("app", "@lib/ui"),
+		typeSym("app", "client.PinMarkerProps", facts.SymbolClass),
+		typeSym("app", "client.LikeProps", facts.SymbolClass),
+		typeSym("app", "client.AdSlot", facts.SymbolClass),
+		module("lib", "libs/ui"),
+		typeSym("lib", "libs/ui.PinMarkerProps", facts.SymbolClass),
+		typeSym("lib", "libs/ui.LikeProps", facts.SymbolClass),
+		typeSym("lib", "libs/ui.AdSlot", facts.SymbolClass),
+	}
+	out := ComputeLinks(in)
+
+	e := findEdge(out, "app", "lib")
+	if e == nil {
+		t.Fatalf("missing app -> lib edge; out=%+v", out)
+	}
+	if via, _ := e.Props["via"].([]string); !reflect.DeepEqual(via, []string{"import", "shared_symbols"}) {
+		t.Errorf("via = %v, want [import shared_symbols]", e.Props["via"])
+	}
+	if c, _ := e.Props["symbol_count"].(int); c != 3 {
+		t.Errorf("symbol_count = %v, want 3 (shared symbols annotate the directional edge)", c)
+	}
+	if rev := findEdge(out, "lib", "app"); rev != nil {
+		t.Errorf("library must not depend on its consumer; got reverse edge %+v", rev)
+	}
+	if hasServiceEdge(out, "lib", "app") {
+		t.Errorf("lib service node must not carry depends_on app")
+	}
+}
+
+// TestComputeLinks_SharedSymbolsRespectsHTTPDirection is the same gate for the other
+// directional signal: a frontend calling a backend's HTTP API while also sharing type
+// names with it must not make the backend depend on the frontend.
+func TestComputeLinks_SharedSymbolsRespectsHTTPDirection(t *testing.T) {
+	in := []facts.Fact{
+		module("web", "client"),
+		clientRoute("web", "/api/widgets/registry", "GET", nil),
+		typeSym("web", "client.WidgetRegistry", facts.SymbolClass),
+		typeSym("web", "client.PaymentLedger", facts.SymbolClass),
+		typeSym("web", "client.RetryPolicy", facts.SymbolClass),
+		module("api", "app"),
+		serverRoute("api", "/api/widgets/registry", "GET"),
+		typeSym("api", "app.WidgetRegistry", facts.SymbolClass),
+		typeSym("api", "app.PaymentLedger", facts.SymbolClass),
+		typeSym("api", "app.RetryPolicy", facts.SymbolClass),
+	}
+	out := ComputeLinks(in)
+
+	if e := findEdge(out, "web", "api"); e == nil {
+		t.Fatalf("missing web -> api edge; out=%+v", out)
+	}
+	if rev := findEdge(out, "api", "web"); rev != nil {
+		t.Errorf("backend must not depend on its client; got reverse edge %+v", rev)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsStaySymmetricWithoutDirection pins that the gate only
+// fires when a direction is actually known. Sibling forks and vendored code have no
+// import or HTTP edge either way, and for them the symmetric reading is correct.
+func TestComputeLinks_SharedSymbolsStaySymmetricWithoutDirection(t *testing.T) {
+	in := []facts.Fact{
+		module("fork-a", "client"),
+		typeSym("fork-a", "client.WidgetRegistry", facts.SymbolClass),
+		typeSym("fork-a", "client.PaymentLedger", facts.SymbolClass),
+		typeSym("fork-a", "client.RetryPolicy", facts.SymbolClass),
+		module("fork-b", "client"),
+		typeSym("fork-b", "client.WidgetRegistry", facts.SymbolClass),
+		typeSym("fork-b", "client.PaymentLedger", facts.SymbolClass),
+		typeSym("fork-b", "client.RetryPolicy", facts.SymbolClass),
+	}
+	out := ComputeLinks(in)
+	for _, pair := range [][2]string{{"fork-a", "fork-b"}, {"fork-b", "fork-a"}} {
+		if findEdge(out, pair[0], pair[1]) == nil {
+			t.Errorf("missing symmetric edge %s -> %s; out=%+v", pair[0], pair[1], out)
+		}
+	}
+}
+
+// TestComputeLinks_SharedSymbolsComponentConventionIgnored covers the React/TS analog
+// of the Rails-boilerplate false positive: "<Component>Props" is a naming convention,
+// so when the component name is itself generic vocabulary the identity says nothing
+// about shared code. The three names here were confirmed false positives with zero
+// field overlap between their declarations.
+func TestComputeLinks_SharedSymbolsComponentConventionIgnored(t *testing.T) {
+	in := []facts.Fact{
+		module("web-a", "client"),
+		typeSym("web-a", "client.FooterProps", facts.SymbolInterface),
+		typeSym("web-a", "client.ModalProps", facts.SymbolInterface),
+		typeSym("web-a", "client.FormHeaderProps", facts.SymbolInterface),
+		typeSym("web-a", "client.Layout", facts.SymbolClass),
+		module("web-b", "libs"),
+		typeSym("web-b", "libs.FooterProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.ModalProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.FormHeaderProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.Layout", facts.SymbolClass),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("component-convention names should not link: %+v", edges)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsDistinctiveComponentNamesSurvive is the guard against
+// over-filtering: a "<Component>Props" name whose component is NOT generic vocabulary
+// still names real shared code and must keep linking. Each case here was verified to
+// be genuinely migrated/vendored between the repos.
+func TestComputeLinks_SharedSymbolsDistinctiveComponentNamesSurvive(t *testing.T) {
+	in := []facts.Fact{
+		module("web-a", "client"),
+		typeSym("web-a", "client.PinMarkerProps", facts.SymbolInterface), // Pin is distinctive
+		typeSym("web-a", "client.LikeProps", facts.SymbolInterface),      // core "Like" is only 4 chars
+		typeSym("web-a", "client.EListItem", facts.SymbolEnum),           // single-char prefix + generic words
+		typeSym("web-a", "client.AdSlot", facts.SymbolInterface),
+		module("web-b", "libs"),
+		typeSym("web-b", "libs.PinMarkerProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.LikeProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.EListItem", facts.SymbolEnum),
+		typeSym("web-b", "libs.AdSlot", facts.SymbolInterface),
+	}
+	out := ComputeLinks(in)
+	e := findEdge(out, "web-a", "web-b")
+	if e == nil {
+		t.Fatalf("distinctive component names must still link; out=%+v", out)
+	}
+	if c, _ := e.Props["symbol_count"].(int); c != 4 {
+		t.Errorf("symbol_count = %v, want 4", c)
+	}
+}
+
+func TestIsConventionalComponentName(t *testing.T) {
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{
+		{"FooterProps", true},
+		{"ModalProps", true},
+		{"FormHeaderProps", true}, // every segment generic
+		{"Layout", true},
+		{"CardHeaderState", true},
+		{"LikeProps", false},      // core shorter than the length floor, still meaningful
+		{"PinMarkerProps", false}, // "Pin" is not generic vocabulary
+		{"AdSlot", false},
+		{"EListItem", false}, // single-char prefix must not be read as generic
+		{"TestNames", false}, // "Names" is not generic vocabulary
+		{"WidgetRegistry", false},
+		{"HTTPServerProps", false}, // acronym segment kept intact
+	} {
+		if got := isConventionalComponentName(tc.id); got != tc.want {
+			t.Errorf("isConventionalComponentName(%q) = %v, want %v", tc.id, got, tc.want)
+		}
+	}
+}
+
+func TestSplitCamelCase(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{"FormHeader", []string{"Form", "Header"}},
+		{"Footer", []string{"Footer"}},
+		{"EListItem", []string{"E", "List", "Item"}},
+		{"HTTPServer", []string{"HTTP", "Server"}},
+		{"", nil},
+	} {
+		if got := splitCamelCase(tc.in); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("splitCamelCase(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestIsNonContractSharedFile(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		want bool
+	}{
+		{"db/migrate/20230101_create_widgets.rb", true},
+		{"svc/db/migrate/20230101_create_widgets.rb", true},
+		{"libs/ui/src/lib/Gallery/Gallery.stories.tsx", true},
+		{"client/components/feed/feed.test.tsx", true},
+		{"client/components/feed/feed.spec.ts", true},
+		{"internal/linkers/crossrepo/crossrepo_test.go", true},
+		{"spec/support/matchers/jwt_including_matcher.rb", true},
+		{"app/__mocks__/api.ts", true},
+		{"app/__tests__/feed.tsx", true},
+		{"spec/factories/users.rb", true},
+		{"test/fixtures/payload.json", true},
+		{"libs/ui/src/lib/Gallery/Gallery.tsx", false},
+		{"app/models/widget.rb", false},
+		{"client/components/latest/index.tsx", false}, // "test" inside a word must not match
+		{"", false},
+	} {
+		if got := isNonContractSharedFile(tc.file); got != tc.want {
+			t.Errorf("isNonContractSharedFile(%q) = %v, want %v", tc.file, got, tc.want)
+		}
+	}
+}
+
+// TestComputeLinks_SharedSymbolsStoryAndTestFilesIgnored pins that declarations in
+// stories/tests/mocks are not portable contract surface: a throwaway local type in a
+// Storybook story is routinely given the same obvious name in every repo.
+func TestComputeLinks_SharedSymbolsStoryAndTestFilesIgnored(t *testing.T) {
+	storySym := func(repo, name, file string) facts.Fact {
+		f := typeSym(repo, name, facts.SymbolInterface)
+		f.File = file
+		return f
+	}
+	in := []facts.Fact{
+		module("web-a", "libs"),
+		storySym("web-a", "libs.AdSlot", "libs/Gallery/Gallery.stories.tsx"),
+		storySym("web-a", "libs.WidgetRegistry", "libs/widget/widget.test.ts"),
+		storySym("web-a", "libs.PaymentLedger", "libs/__mocks__/ledger.ts"),
+		module("web-b", "client"),
+		storySym("web-b", "client.AdSlot", "client/Gallery/Gallery.stories.tsx"),
+		storySym("web-b", "client.WidgetRegistry", "client/widget/widget.test.ts"),
+		storySym("web-b", "client.PaymentLedger", "client/__mocks__/ledger.ts"),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("story/test/mock declarations should not link: %+v", edges)
+	}
+}

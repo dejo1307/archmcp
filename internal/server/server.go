@@ -3214,6 +3214,18 @@ func writeCandidateList(sb *strings.Builder, res *nameResolution) {
 	}
 }
 
+// otherKinds returns the conflated kinds except the one already displayed, so the
+// annotation adds information instead of repeating the node's own kind.
+func otherKinds(conflated []string, shown string) []string {
+	out := make([]string, 0, len(conflated))
+	for _, k := range conflated {
+		if k != shown {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // compactNodeLine formats a single traversal node as a markdown list item.
 func compactNodeLine(n facts.TraversalNode) string {
 	s := "- " + n.Name
@@ -3222,6 +3234,11 @@ func compactNodeLine(n facts.TraversalNode) string {
 	}
 	if n.Unresolved {
 		s += " [unresolved]"
+	}
+	if len(n.Conflated) > 1 {
+		// The node's name is shared by facts of several kinds, so it merges them.
+		// Say so rather than letting the single kind above read as precise.
+		s += " [also: " + strings.Join(otherKinds(n.Conflated, n.Kind), ", ") + "]"
 	}
 	if n.File != "" {
 		s += " — " + n.File

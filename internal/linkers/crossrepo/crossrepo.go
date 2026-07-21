@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -676,6 +677,83 @@ var frameworkConventionNames = map[string]bool{
 	"Ability":                      true,
 }
 
+// genericComponentNames are the vocabulary of UI-component naming: words so many
+// components are built from that a type named only out of them identifies a role,
+// not a shared implementation. Two frontends each declaring a "FooterProps" or a
+// "ModalProps" is convention, not shared code — their field sets typically have no
+// overlap at all. Checked against the camelCase segments of an identity once its
+// convention suffix is stripped, so "FormHeaderProps" (all-generic) is rejected while
+// "PinMarkerProps" (Pin is not generic) survives.
+var genericComponentNames = map[string]bool{
+	"footer": true, "header": true, "layout": true, "modal": true, "card": true,
+	"button": true, "list": true, "container": true, "wrapper": true,
+	"panel": true, "page": true, "form": true, "icon": true, "badge": true,
+	"avatar": true, "banner": true, "dialog": true, "menu": true, "nav": true,
+	"sidebar": true, "tooltip": true, "spinner": true, "overlay": true,
+	"toast": true, "section": true, "row": true, "cell": true, "label": true,
+	"title": true,
+}
+
+// conventionSuffixes are the trailing words a framework's naming convention appends
+// to a component name to derive a companion type. They carry no information of their
+// own, so they are stripped before an identity's segments are judged.
+var conventionSuffixes = [...]string{"Props", "Types", "Type", "State"}
+
+// isConventionalComponentName reports whether an identity is built purely from the
+// generic UI-component vocabulary — a name every app of the framework produces for
+// its own unrelated component. It strips one convention suffix ("FooterProps" ->
+// "Footer"), splits the remainder on camelCase boundaries, and rejects the identity
+// only when EVERY segment is generic vocabulary.
+//
+// A single distinctive segment is enough to save a name, which is what keeps a
+// disambiguating prefix meaningful: "EListItem" splits to E/List/Item, and though
+// List and Item are generic, the deliberate "E" enum prefix is not — so the identity
+// survives, as it should, because such a name really is shared code rather than a
+// coincidence. The stripped core is also deliberately NOT re-checked against the
+// minimum-length rule: "LikeProps" reduces to a 4-character "Like" yet names real
+// shared code.
+func isConventionalComponentName(id string) bool {
+	core := id
+	for _, suffix := range conventionSuffixes {
+		if len(core) > len(suffix) && strings.HasSuffix(core, suffix) {
+			core = core[:len(core)-len(suffix)]
+			break
+		}
+	}
+	segments := splitCamelCase(core)
+	if len(segments) == 0 {
+		return false
+	}
+	for _, seg := range segments {
+		lower := strings.ToLower(seg)
+		if !genericComponentNames[lower] && !genericTypeNames[lower] {
+			return false
+		}
+	}
+	return true
+}
+
+// splitCamelCase breaks an identifier on lower-to-upper transitions, so "FormHeader"
+// yields ["Form", "Header"]. Runs of capitals stay together ("HTTPServer" -> ["HTTP",
+// "Server"]) so an acronym is not shredded into single letters.
+func splitCamelCase(s string) []string {
+	runes := []rune(s)
+	var out []string
+	start := 0
+	for i := 1; i < len(runes); i++ {
+		boundary := unicode.IsUpper(runes[i]) &&
+			(!unicode.IsUpper(runes[i-1]) || (i+1 < len(runes) && unicode.IsLower(runes[i+1])))
+		if boundary {
+			out = append(out, string(runes[start:i]))
+			start = i
+		}
+	}
+	if start < len(runes) {
+		out = append(out, string(runes[start:]))
+	}
+	return out
+}
+
 // linkSharedSymbols connects repos that declare enough of the same distinctive
 // types. The relationship is symmetric (shared/vendored code, not a one-way
 // dependency), so qualifying pairs get a bidirectional pair of edges.
@@ -737,13 +815,18 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 		}
 	}
 
-	// Materialize a bidirectional edge for each pair over the threshold.
+	// Materialize an edge for each pair over the threshold. Shared code is
+	// inherently symmetric, so the default is a bidirectional pair — but when an
+	// earlier linker has already established a DIRECTION for this pair (an import
+	// or HTTP call one way and not the other), that direction is authoritative and
+	// the reverse edge would contradict it. A library monorepo whose types a
+	// consuming app also declares must not come out depending on that app.
 	for key, ids := range pairShared {
 		if len(ids) < minSharedSymbols {
 			continue
 		}
 		a, b, _ := strings.Cut(key, "\x00")
-		for _, pair := range [2][2]string{{a, b}, {b, a}} {
+		for _, pair := range directedSharedPairs(edges, a, b) {
 			e := edgeFor(edges, pair[0], pair[1])
 			e.note("shared_symbols")
 			if e.symbols == nil {
@@ -753,6 +836,45 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 				e.symbols[id] = true
 			}
 		}
+	}
+}
+
+// directionalVias are the evidence kinds that establish a real one-way dependency:
+// consumer imports provider, or consumer calls provider over HTTP. "shared_symbols"
+// is deliberately absent — it is the symmetric signal this gate arbitrates.
+var directionalVias = [...]string{"import", "http-client", "http"}
+
+// hasDirectionalEvidence reports whether a consumer -> provider edge already exists
+// and is backed by directional (non-shared-symbol) evidence.
+func hasDirectionalEvidence(edges map[string]*edge, consumer, provider string) bool {
+	e, ok := edges[consumer+"\x00"+provider]
+	if !ok {
+		return false
+	}
+	for _, via := range directionalVias {
+		if e.via[via] {
+			return true
+		}
+	}
+	return false
+}
+
+// directedSharedPairs returns the (consumer, provider) orderings a shared-symbol
+// signal between repos a and b should be recorded against. When exactly one
+// direction already carries directional evidence, only that direction is returned,
+// so the shared symbols annotate the established edge instead of fabricating its
+// inverse. When both or neither direction is directional the signal stays symmetric,
+// which is the correct reading for sibling forks and vendored code.
+func directedSharedPairs(edges map[string]*edge, a, b string) [][2]string {
+	abDirectional := hasDirectionalEvidence(edges, a, b)
+	baDirectional := hasDirectionalEvidence(edges, b, a)
+	switch {
+	case abDirectional && !baDirectional:
+		return [][2]string{{a, b}}
+	case baDirectional && !abDirectional:
+		return [][2]string{{b, a}}
+	default:
+		return [][2]string{{a, b}, {b, a}}
 	}
 }
 
@@ -820,16 +942,40 @@ func isDistinctiveIdentity(id string) bool {
 	if len(id) < 5 {
 		return false
 	}
-	return !genericTypeNames[strings.ToLower(id)]
+	if genericTypeNames[strings.ToLower(id)] {
+		return false
+	}
+	// A name assembled purely from generic component vocabulary ("FooterProps",
+	// "FormHeaderProps") is naming convention rather than shared code.
+	return !isConventionalComponentName(id)
 }
 
-// isNonContractSharedFile reports whether a file holds auto-generated classes that
-// are not portable contract surface for the shared-symbol signal. Rails migrations
-// (db/migrate/) get generator-derived class names (InitSchema, CreateFooBars) that
-// coincide across apps that ran the same migration — parallel schema history, not
-// shared code — so they must not fabricate or inflate a cross-repo edge.
+// nonContractPathMarkers are path fragments identifying files whose declarations are
+// scaffolding rather than portable contract surface: Rails migrations (generator-
+// derived names like InitSchema/CreateFooBars that coincide across apps that ran the
+// same migration), and the test/story/mock/fixture tree, where a throwaway local type
+// is routinely declared with the same obvious name in every repo.
+var nonContractPathMarkers = [...]string{
+	"/db/migrate/",
+	"/spec/support/", "/__mocks__/", "/__tests__/", "/fixtures/", "/factories/",
+	".stories.", ".test.", ".spec.", "_test.", "_spec.",
+}
+
+// isNonContractSharedFile reports whether a file holds declarations that are not
+// portable contract surface for the shared-symbol signal, so they must not fabricate
+// or inflate a cross-repo edge. Directory markers are matched against a
+// leading-slash-normalised path so they also hit a repo-root-relative path.
 func isNonContractSharedFile(file string) bool {
-	return strings.Contains(file, "/db/migrate/") || strings.HasPrefix(file, "db/migrate/")
+	rooted := file
+	if !strings.HasPrefix(rooted, "/") {
+		rooted = "/" + rooted
+	}
+	for _, marker := range nonContractPathMarkers {
+		if strings.Contains(rooted, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // isNamespaceQualified reports whether a type identity carries a namespace (only

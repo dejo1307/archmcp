@@ -1066,3 +1066,143 @@ func TestArchitecturalReverse_ExcludesInstantiate(t *testing.T) {
 		t.Errorf("Forward must keep the instantiate edge; got %v", g.Forward()["pkg.build"])
 	}
 }
+
+// --- name-collision disambiguation ---
+
+// buildCollisionGraph mirrors the real multi-repo shape that exposed the bug: a repo
+// labelled "svc" (a synthetic service node) and, in a DIFFERENT repo, a top-level
+// directory also called "svc". Module fact names are repo-root-relative and not
+// repo-prefixed, so the two collide on the name "svc".
+//
+// The service fact is added LAST on purpose: synthetic cross-repo facts are appended
+// after every repo's own facts, so a first-fact-wins index always picks the module and
+// never the service.
+func buildCollisionGraph() *Graph {
+	s := NewStore()
+	s.Add(
+		// "client" repo: a module that imports the colliding name.
+		Fact{Kind: KindModule, Name: "client/app", File: "client/app", Repo: "client",
+			Relations: []Relation{{Kind: RelImports, Target: "svc"}}},
+		// "other" repo: a top-level directory that happens to be named "svc".
+		Fact{Kind: KindModule, Name: "svc", File: "other/svc", Repo: "other"},
+		// Synthetic service nodes, appended last.
+		Fact{Kind: KindService, Name: "web", Relations: []Relation{
+			{Kind: RelDependsOn, Target: "svc"},
+		}},
+		Fact{Kind: KindService, Name: "svc", Relations: []Relation{
+			{Kind: RelDependsOn, Target: "db"},
+		}},
+		Fact{Kind: KindService, Name: "db"},
+	)
+	s.BuildGraph()
+	return s.Graph()
+}
+
+// TestNodeFor_PrefersKindMatchingIncomingRelation pins the core fix: the relation used
+// to reach a node decides which of the same-named facts it means. Reached by
+// depends_on it is the service; reached by imports it is the module.
+func TestNodeFor_PrefersKindMatchingIncomingRelation(t *testing.T) {
+	g := buildCollisionGraph()
+
+	svcNode := g.nodeFor("svc", 1, RelDependsOn)
+	if svcNode.Kind != KindService {
+		t.Errorf("via depends_on: kind = %q, want %q", svcNode.Kind, KindService)
+	}
+	if svcNode.File != "" || svcNode.Repo != "" {
+		t.Errorf("via depends_on: got file=%q repo=%q, want the service fact's empty metadata",
+			svcNode.File, svcNode.Repo)
+	}
+
+	modNode := g.nodeFor("svc", 1, RelImports)
+	if modNode.Kind != KindModule {
+		t.Errorf("via imports: kind = %q, want %q", modNode.Kind, KindModule)
+	}
+	if modNode.File != "other/svc" {
+		t.Errorf("via imports: file = %q, want other/svc", modNode.File)
+	}
+}
+
+// TestNodeFor_FallsBackToKindRank covers a node with no edge context (a traversal or
+// path origin): the choice must still be deterministic, and service outranks module.
+func TestNodeFor_FallsBackToKindRank(t *testing.T) {
+	g := buildCollisionGraph()
+	if got := g.nodeFor("svc", 0, "").Kind; got != KindService {
+		t.Errorf("no via-relation: kind = %q, want %q", got, KindService)
+	}
+	// An unknown relation has no natural kind and must fall back the same way.
+	if got := g.nodeFor("svc", 0, "no_such_relation").Kind; got != KindService {
+		t.Errorf("unknown via-relation: kind = %q, want %q", got, KindService)
+	}
+}
+
+// TestNodeFor_ConflatedReportsSharedKinds pins the honesty signal: a node whose name is
+// shared says so, and an ordinary node stays silent.
+func TestNodeFor_ConflatedReportsSharedKinds(t *testing.T) {
+	g := buildCollisionGraph()
+
+	got := g.nodeFor("svc", 1, RelDependsOn).Conflated
+	if want := []string{KindModule, KindService}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Conflated = %v, want %v (sorted)", got, want)
+	}
+	if got := g.nodeFor("db", 1, RelDependsOn).Conflated; got != nil {
+		t.Errorf("single-fact node Conflated = %v, want nil", got)
+	}
+}
+
+// TestNodeFor_UnresolvedStillMarked guards the pre-existing behaviour for a name with
+// no backing fact at all.
+func TestNodeFor_UnresolvedStillMarked(t *testing.T) {
+	g := buildCollisionGraph()
+	n := g.nodeFor("nowhere", 1, RelCalls)
+	if !n.Unresolved {
+		t.Error("expected Unresolved for a name with no backing fact")
+	}
+	if n.Kind != "" || n.Conflated != nil {
+		t.Errorf("unresolved node should carry no kind/conflation, got kind=%q conflated=%v",
+			n.Kind, n.Conflated)
+	}
+}
+
+// TestTraverse_ServiceFilterKeepsCollidingServiceNode is the regression test for the
+// user-visible symptom: filtering a service-to-service walk by node_kinds=["service"]
+// used to DROP the colliding hop, because it was labelled a module. The node must now
+// survive the filter and the walk must still reach the far side.
+func TestTraverse_ServiceFilterKeepsCollidingServiceNode(t *testing.T) {
+	g := buildCollisionGraph()
+	res := g.Traverse("web", "forward", []string{RelDependsOn}, []string{KindService}, 3, 100)
+
+	var names []string
+	for _, n := range res.Nodes {
+		if n.Depth > 0 {
+			names = append(names, n.Name)
+		}
+	}
+	want := []string{"svc", "db"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("service-filtered traversal = %v, want %v (the colliding hop must not be filtered out)", names, want)
+	}
+}
+
+// TestFindPath_LabelsHopsByTraversingRelation is the regression test for the reported
+// find_path output, where the middle hop of a service-to-service path was reported as
+// an unrelated module in another repo.
+func TestFindPath_LabelsHopsByTraversingRelation(t *testing.T) {
+	g := buildCollisionGraph()
+	res := g.FindPath("web", "db", nil, 5)
+	if !res.Found {
+		t.Fatalf("expected a path web -> svc -> db, got %+v", res)
+	}
+	if len(res.Path) != 3 {
+		t.Fatalf("path length = %d, want 3; path=%+v", len(res.Path), res.Path)
+	}
+	mid := res.Path[1]
+	if mid.Name != "svc" || mid.Kind != KindService {
+		t.Errorf("middle hop = %s (%s), want svc (service)", mid.Name, mid.Kind)
+	}
+	if mid.Repo != "" {
+		t.Errorf("middle hop repo = %q, want empty (it is the service, not the other repo's module)", mid.Repo)
+	}
+	if len(mid.Conflated) != 2 {
+		t.Errorf("middle hop should report conflation, got %v", mid.Conflated)
+	}
+}
