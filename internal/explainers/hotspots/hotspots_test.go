@@ -105,7 +105,7 @@ func TestExplain_RubyBaseClassExcluded(t *testing.T) {
 				File: "caller.rb", Relations: []facts.Relation{{Kind: facts.RelCalls, Target: name}}})
 		}
 	}
-	addHub("NotifierBase", "app/notifiers/notifier_base.rb")
+	addHub("MessengerBase", "app/messengers/messenger_base.rb")
 	addHub("User", "app/models/user.rb")
 	s.BuildGraph()
 
@@ -115,7 +115,7 @@ func TestExplain_RubyBaseClassExcluded(t *testing.T) {
 	}
 	var sawBase, sawUser bool
 	for _, in := range insights {
-		if strings.Contains(in.Title, "NotifierBase") {
+		if strings.Contains(in.Title, "MessengerBase") {
 			sawBase = true
 		}
 		if strings.Contains(in.Title, "User") {

@@ -231,7 +231,7 @@ var rubyFrameworkBaseClasses = map[string]bool{
 }
 
 // rubyBaseClassSuffixes are naming conventions for user-defined base classes
-// (NotifierBase, ApiBaseController, Pusher::Base, ...). A class named like this is
+// (MessengerBase, ApiBaseController, Widget::Base, ...). A class named like this is
 // a base others inherit from, so its inbound degree is inheritance, not coupling.
 var rubyBaseClassSuffixes = []string{
 	"BaseController", "BaseJob", "BaseService", "BaseMailer", "BaseSerializer",

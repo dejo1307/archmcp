@@ -358,7 +358,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	// synthetic facts are dropped first) so it stays idempotent across appends.
 	tStage = time.Now()
 	e.resolvePyGRPCClientRoutes()
-	e.linkCrossRepo()
+	e.linkCrossRepo(workRepoPaths)
 	e.flagUnmatchedRoutes()
 	e.bindGRPCHandlers()
 	e.bindHTTPHandlers()
@@ -481,10 +481,53 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	return snapshot, nil
 }
 
+// sourceReaderFor builds the crossrepo.SourceReader used to verify shared type names
+// against the code behind them. It mirrors ResolveFactFile's repo-prefix-strip-and-join,
+// but reads from the passed-in map rather than the published bundle (see linkCrossRepo).
+// Returns nil when no repo paths are known, which turns verification off rather than
+// silently comparing nothing. Files are read at most once per snapshot.
+func sourceReaderFor(repoPaths map[string]string) crossrepo.SourceReader {
+	if len(repoPaths) == 0 {
+		return nil
+	}
+	cache := map[string]string{}
+	missing := map[string]bool{}
+	return func(f facts.Fact) (string, bool) {
+		if f.File == "" || f.Repo == "" {
+			return "", false
+		}
+		if text, ok := cache[f.File]; ok {
+			return text, true
+		}
+		if missing[f.File] {
+			return "", false
+		}
+		root, ok := repoPaths[f.Repo]
+		if !ok {
+			missing[f.File] = true
+			return "", false
+		}
+		abs := filepath.Join(root, strings.TrimPrefix(f.File, f.Repo+"/"))
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			missing[f.File] = true
+			return "", false
+		}
+		cache[f.File] = string(data)
+		return cache[f.File], true
+	}
+}
+
 // linkCrossRepo drops any previously-synthesized cross-repo facts and recomputes
 // them over the full fact set, adding service nodes and consumer→provider edges.
 // It is a no-op for single-repo snapshots (no cross-repo matches exist).
-func (e *Engine) linkCrossRepo() {
+//
+// repoPaths must be the IN-FLIGHT label -> absolute path map, not the published
+// bundle's: this runs mid-snapshot, before the new bundle is stored, so
+// ResolveFactFile would not yet know the repo currently being appended. It is used to
+// read source for shared-symbol verification; a nil or incomplete map degrades that
+// check to name-only matching rather than failing.
+func (e *Engine) linkCrossRepo(repoPaths map[string]string) {
 	e.store.RemoveWhere(func(f facts.Fact) bool {
 		if f.Props == nil {
 			return false
@@ -492,7 +535,7 @@ func (e *Engine) linkCrossRepo() {
 		return f.Props["synthetic"] == crossrepo.SyntheticMarker
 	})
 
-	links := crossrepo.ComputeLinks(e.store.All())
+	links := crossrepo.ComputeLinks(e.store.All(), sourceReaderFor(repoPaths))
 	if len(links) == 0 {
 		return
 	}

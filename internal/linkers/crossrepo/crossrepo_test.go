@@ -3,6 +3,7 @@ package crossrepo
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -210,7 +211,7 @@ func TestComputeLinks_HTTPMatch(t *testing.T) {
 		serverRoute("svc-beta", "/api/items/{itemId}", "GET"),
 		serverRoute("svc-beta", "/api/items/{itemId}", "POST"), // method mismatch — ignored
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	if got, want := serviceNodes(out), []string{"svc-alpha", "svc-beta"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("service nodes = %v, want %v", got, want)
@@ -243,7 +244,7 @@ func TestComputeLinks_ExternalClientBucketed(t *testing.T) {
 		clientRoute("svc-alpha", "/api/unknown/{id}", "GET", nil),                               // internal, no server -> unresolved
 		serverRoute("svc-beta", "/api/items/{itemId}", "GET"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	ec := edgeCoverageOf(out, "svc-alpha")
 	if ec == nil {
@@ -317,7 +318,7 @@ func TestComputeLinks_HTTPGatewayPath(t *testing.T) {
 		clientRoute("svc-alpha", "/api/catalogue/items/{id}", "GET", nil),
 		server,
 	}
-	if findEdge(ComputeLinks(in), "svc-alpha", "svc-beta") == nil {
+	if findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta") == nil {
 		t.Errorf("expected gateway-path match to produce an edge")
 	}
 }
@@ -330,7 +331,7 @@ func TestComputeLinks_HTTPClientPrefixMatch(t *testing.T) {
 		clientRoute("golf-ui", "/api/settings/tickets/{id}/resolve", "POST", nil),
 		serverRoute("golf", "/tickets/{id:[0-9]+}/resolve", "POST"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if !hasServiceEdge(out, "golf-ui", "golf") {
 		t.Fatalf("client prefix path did not resolve to server; got %+v", out)
 	}
@@ -347,7 +348,7 @@ func TestComputeLinks_HTTPNextjsDynamicSegment(t *testing.T) {
 		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),
 		serverRoute("svc-beta", "/api/items/[id]", "GET"),
 	}
-	if !hasServiceEdge(ComputeLinks(in), "svc-alpha", "svc-beta") {
+	if !hasServiceEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta") {
 		t.Errorf("Next.js [id] server segment did not match client {} placeholder")
 	}
 }
@@ -360,7 +361,7 @@ func TestComputeLinks_HTTPFormatSuffixMatch(t *testing.T) {
 		clientRoute("android", "v2/devices/{id}.json", "DELETE", nil),
 		serverRoute("golf", "/devices/:id", "DELETE"),
 	}
-	if !hasServiceEdge(ComputeLinks(in), "android", "golf") {
+	if !hasServiceEdge(ComputeLinks(in, nil), "android", "golf") {
 		t.Errorf("client .json path did not match server route without the suffix")
 	}
 }
@@ -370,7 +371,7 @@ func TestComputeLinks_HTTPGenericPathSkipped(t *testing.T) {
 		clientRoute("svc-alpha", "/health", "GET", nil),
 		serverRoute("svc-beta", "/health", "GET"),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	if edges := crossRepoEdges(ComputeLinks(in, nil)); len(edges) != 0 {
 		t.Errorf("generic path produced edges: %+v", edges)
 	}
 }
@@ -380,7 +381,7 @@ func TestComputeLinks_HTTPSelfLinkSkipped(t *testing.T) {
 		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),
 		serverRoute("svc-alpha", "/api/items/{id}", "GET"),
 	}
-	if out := ComputeLinks(in); len(out) != 0 {
+	if out := ComputeLinks(in, nil); len(out) != 0 {
 		t.Errorf("self-link produced links: %+v", out)
 	}
 }
@@ -391,7 +392,7 @@ func TestComputeLinks_HTTPAmbiguousResolvedByHint(t *testing.T) {
 		serverRoute("svc-beta", "/api/items/{id}", "GET"),
 		serverRoute("svc-other", "/api/items/{id}", "GET"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if findEdge(out, "svc-alpha", "svc-beta") == nil {
 		t.Errorf("hint did not resolve to svc-beta: %+v", out)
 	}
@@ -406,7 +407,7 @@ func TestComputeLinks_HTTPAmbiguousNoHintSkipped(t *testing.T) {
 		serverRoute("svc-beta", "/api/items/{id}", "GET"),
 		serverRoute("svc-other", "/api/items/{id}", "GET"),
 	}
-	for _, f := range ComputeLinks(in) {
+	for _, f := range ComputeLinks(in, nil) {
 		if f.Kind == facts.KindDependency {
 			t.Errorf("ambiguous match without hint produced edge: %+v", f)
 		}
@@ -425,7 +426,7 @@ func TestComputeLinks_CoverageBlindSpot(t *testing.T) {
 		clientRoute("svc-gamma", "/api/items/{id}", "GET", nil),
 		serverRoute("svc-beta", "/api/items/{id}", "GET"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	// svc-alpha: detected but unresolved, and no outbound edge formed.
 	if hasServiceEdge(out, "svc-alpha", "svc-beta") {
@@ -461,7 +462,7 @@ func TestComputeLinks_ImportMatch(t *testing.T) {
 		importDep("app-web-app", "@app-web/lib-api/api-client-util"),
 		facts.Fact{Kind: facts.KindModule, Name: "lib-api", Repo: "app-web"},
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	e := findEdge(out, "app-web-app", "app-web")
 	if e == nil {
 		t.Fatalf("missing import edge; got %+v", out)
@@ -479,7 +480,7 @@ func TestComputeLinks_ImportRubyStyle(t *testing.T) {
 		importDep("svc-alpha", "lib-core/money/converter"),
 		facts.Fact{Kind: facts.KindModule, Name: "money", Repo: "lib-core"},
 	}
-	if findEdge(ComputeLinks(in), "svc-alpha", "lib-core") == nil {
+	if findEdge(ComputeLinks(in, nil), "svc-alpha", "lib-core") == nil {
 		t.Errorf("expected svc-alpha -> lib-core import edge")
 	}
 }
@@ -490,7 +491,7 @@ func TestComputeLinks_ImportRelativeAndSelfIgnored(t *testing.T) {
 		importDep("svc-alpha", "svc-alpha/inner"), // self — skip
 		facts.Fact{Kind: facts.KindModule, Name: "x", Repo: "lib-core"},
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	if edges := crossRepoEdges(ComputeLinks(in, nil)); len(edges) != 0 {
 		t.Errorf("relative/self imports produced edges: %+v", edges)
 	}
 }
@@ -512,7 +513,7 @@ func TestComputeLinks_ImportIntraRepoNamespaceSkipped(t *testing.T) {
 		importDep("mobile", "github.com/x/go-auth/adapters"),
 		module("go-auth", "adapters"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if findEdge(out, "mobile", "backend") != nil {
 		t.Errorf("intra-repo namespace path must not link to a same-named repo; got edge to backend")
 	}
@@ -531,7 +532,7 @@ func TestComputeLinks_ImportSelfNamedTargetSkipped(t *testing.T) {
 		importDep("app-ios", "acme"),
 		serverRoute("acme", "/api/items/{id}", "GET"),
 	}
-	if findEdge(ComputeLinks(in), "app-ios", "acme") != nil {
+	if findEdge(ComputeLinks(in, nil), "app-ios", "acme") != nil {
 		t.Errorf("importing the app's own same-named module must not link to the backend repo")
 	}
 }
@@ -545,7 +546,7 @@ func TestComputeLinks_MergedViaAndDeterministic(t *testing.T) {
 		importDep("svc-alpha", "svc-beta/client"),
 		facts.Fact{Kind: facts.KindModule, Name: "client", Repo: "svc-beta"},
 	}
-	out1 := ComputeLinks(in)
+	out1 := ComputeLinks(in, nil)
 	e := findEdge(out1, "svc-alpha", "svc-beta")
 	if e == nil {
 		t.Fatalf("missing merged edge: %+v", out1)
@@ -555,7 +556,7 @@ func TestComputeLinks_MergedViaAndDeterministic(t *testing.T) {
 	}
 
 	// Deterministic: identical input yields identical output.
-	out2 := ComputeLinks(in)
+	out2 := ComputeLinks(in, nil)
 	if !reflect.DeepEqual(out1, out2) {
 		t.Errorf("ComputeLinks not deterministic:\n%+v\n%+v", out1, out2)
 	}
@@ -566,7 +567,7 @@ func TestComputeLinks_SingleRepoNoLinks(t *testing.T) {
 		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),
 		serverRoute("svc-alpha", "/api/items/{id}", "GET"),
 	}
-	if out := ComputeLinks(in); out != nil {
+	if out := ComputeLinks(in, nil); out != nil {
 		t.Errorf("single repo produced links: %+v", out)
 	}
 }
@@ -582,7 +583,7 @@ func TestComputeLinks_HTTPSuffixMatch(t *testing.T) {
 		clientRoute("android", "/api/settings/entitlements/definitions", "GET", nil),
 		clientRoute("golf-ui", "/settings/entitlements/definitions", "GET", nil), // leading slash, no /api
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	for _, consumer := range []string{"ios", "android", "golf-ui"} {
 		if findEdge(out, consumer, "golf") == nil {
 			t.Errorf("%s did not link to golf via suffix match; out=%+v", consumer, out)
@@ -599,7 +600,7 @@ func TestComputeLinks_HTTPSuffixMinSegments(t *testing.T) {
 		serverRoute("golf", "/api/settings/definitions", "GET"),
 		clientRoute("ios", "definitions", "GET", nil),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	if edges := crossRepoEdges(ComputeLinks(in, nil)); len(edges) != 0 {
 		t.Errorf("single-segment suffix should not link: %+v", edges)
 	}
 }
@@ -609,7 +610,7 @@ func TestComputeLinks_HTTPSuffixMethodMismatch(t *testing.T) {
 		serverRoute("golf", "/api/settings/feedback", "GET"),
 		clientRoute("golf-ui", "settings/feedback", "POST", nil),
 	}
-	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+	if edges := crossRepoEdges(ComputeLinks(in, nil)); len(edges) != 0 {
 		t.Errorf("method mismatch should not link: %+v", edges)
 	}
 }
@@ -627,7 +628,7 @@ func TestComputeLinks_PerRepoServiceNodes(t *testing.T) {
 		facts.Fact{Kind: facts.KindModule, Name: "app", Repo: "android"},
 		facts.Fact{Kind: facts.KindModule, Name: "App", Repo: "ios"},
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	got := serviceNodes(out)
 	want := []string{"android", "go-auth", "golf", "golf-ui", "ios"}
@@ -676,7 +677,7 @@ func TestComputeLinks_SharedSymbolsMatch(t *testing.T) {
 		typeSym("gmsh", "Common.GmshServer", facts.SymbolClass),
 		typeSym("gmsh", "Common.onelab::remoteNetworkClient", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	sc := findSharedCode(out, "getdp", "gmsh")
 	if sc == nil {
@@ -707,7 +708,7 @@ func TestComputeLinks_SharedSymbolsBelowThreshold(t *testing.T) {
 		module("beta", "lib"),
 		typeSym("beta", "lib.WidgetRegistry", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -731,7 +732,7 @@ func TestComputeLinks_SharedSymbolsGenericNamesIgnored(t *testing.T) {
 		typeSym("beta", "lib.Node", facts.SymbolClass),
 		typeSym("beta", "lib.Item", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -759,7 +760,7 @@ func TestComputeLinks_SharedSymbolsFrameworkConventionIgnored(t *testing.T) {
 		typeSym("svc-b", "app.Ability", facts.SymbolClass),
 		typeSym("svc-b", "app.ApplicationCable::Connection", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -788,7 +789,7 @@ func TestComputeLinks_SharedSymbolsMigrationsIgnored(t *testing.T) {
 		migrationSym("svc-b", "AddIndexToWidgets"),
 		migrationSym("svc-b", "InitSchema"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -816,7 +817,7 @@ func TestComputeLinks_SharedSymbolsGenuineSurvivesBoilerplate(t *testing.T) {
 		typeSym("svc-b", "app.PaymentLedger", facts.SymbolClass),
 		typeSym("svc-b", "app.RetryPolicy", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	sc := findSharedCode(out, "svc-a", "svc-b")
 	if sc == nil {
 		t.Fatalf("genuine shared types should still couple the pair; out=%+v", out)
@@ -839,7 +840,7 @@ func TestComputeLinks_SharedSymbolsNonTypesIgnored(t *testing.T) {
 		typeSym("beta", "lib.parseHeader", facts.SymbolFunc),
 		typeSym("beta", "lib.computeChecksum", facts.SymbolFunc),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -869,7 +870,7 @@ func TestComputeLinks_SharedSymbolsCrossLanguageUnqualifiedSkipped(t *testing.T)
 		typeSymLang("ios", "Sources.FeedItem", facts.SymbolClass, "swift"),
 		typeSymLang("ios", "Sources.AccountViewModel", facts.SymbolClass, "swift"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -892,7 +893,7 @@ func TestComputeLinks_SharedSymbolsSameLanguageUnqualifiedLinks(t *testing.T) {
 		typeSymLang("svc-b", "lib.PaymentLedger", facts.SymbolClass, "go"),
 		typeSymLang("svc-b", "lib.RetryPolicy", facts.SymbolClass, "go"),
 	}
-	if findSharedCode(ComputeLinks(in), "svc-a", "svc-b") == nil {
+	if findSharedCode(ComputeLinks(in, nil), "svc-a", "svc-b") == nil {
 		t.Errorf("same-language repos sharing distinctive types should still couple")
 	}
 }
@@ -911,7 +912,7 @@ func TestComputeLinks_SharedSymbolsQualifiedCrossLanguageLinks(t *testing.T) {
 		typeSymLang("repo-b", "vendor.onelab::clientB", facts.SymbolClass, "c"),
 		typeSymLang("repo-b", "vendor.onelab::clientC", facts.SymbolClass, "c"),
 	}
-	if findSharedCode(ComputeLinks(in), "repo-a", "repo-b") == nil {
+	if findSharedCode(ComputeLinks(in, nil), "repo-a", "repo-b") == nil {
 		t.Errorf("qualified shared identities should couple even across languages")
 	}
 }
@@ -931,7 +932,7 @@ func TestComputeLinks_SharedSymbolsCrossLanguageNestedTypesSkipped(t *testing.T)
 		typeSymLang("ios", "Sources.HandicapAnalytics.DifferentialEntry", facts.SymbolClass, "swift"),
 		typeSymLang("ios", "Sources.FullAnalysisDataBuilder.TimeWindow", facts.SymbolClass, "swift"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -955,7 +956,7 @@ func TestComputeLinks_SharedSymbolsSameLanguageNestedTypesLink(t *testing.T) {
 		typeSymLang("app-b", "lib.HandicapAnalytics.DifferentialEntry", facts.SymbolClass, "kotlin"),
 		typeSymLang("app-b", "lib.FullAnalysisDataBuilder.TimeWindow", facts.SymbolClass, "kotlin"),
 	}
-	if findSharedCode(ComputeLinks(in), "app-a", "app-b") == nil {
+	if findSharedCode(ComputeLinks(in, nil), "app-a", "app-b") == nil {
 		t.Errorf("same-language repos sharing distinctive nested types should still couple")
 	}
 }
@@ -979,7 +980,7 @@ func TestComputeLinks_SharedSymbolsFleetVocabularyNotLinked(t *testing.T) {
 			in = append(in, typeSymLang(repo, "app."+name, facts.SymbolClass, "go"))
 		}
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -1007,7 +1008,7 @@ func TestComputeLinks_SharedSymbolsPairSpecificSurvivesFleetVocabulary(t *testin
 		in = append(in, typeSymLang("svc-1", "app."+name, facts.SymbolClass, "go"))
 		in = append(in, typeSymLang("svc-2", "app."+name, facts.SymbolClass, "go"))
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	sc := findSharedCode(out, "svc-1", "svc-2")
 	if sc == nil {
 		t.Fatalf("pair-specific distinctive types should couple svc-1/svc-2; got=%+v", sharedCodeFacts(out))
@@ -1035,7 +1036,7 @@ func TestComputeLinks_SharedSymbolsSmallRepoSetVocabularyFilterOff(t *testing.T)
 			in = append(in, typeSymLang(repo, "app."+name, facts.SymbolClass, "go"))
 		}
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	for _, pair := range [][2]string{{"svc-a", "svc-b"}, {"svc-a", "svc-c"}, {"svc-b", "svc-c"}} {
 		if findSharedCode(out, pair[0], pair[1]) == nil {
 			t.Errorf("with only 3 repos the vocabulary filter must stay off; missing %s <-> %s", pair[0], pair[1])
@@ -1061,7 +1062,7 @@ func TestComputeLinks_SharedSymbolsGeneratedCodeIgnored(t *testing.T) {
 	for _, name := range []string{"GetCountersResponse", "CounterBatchRequest", "EventCounterModel", "CountersClientWithResponses"} {
 		in = append(in, genTypeSym("svc-a", name), genTypeSym("svc-b", name))
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -1083,7 +1084,7 @@ func TestComputeLinks_SharedSymbolsGeneratedExcludedFromCount(t *testing.T) {
 			typeSymLang("svc-a", "internal."+name, facts.SymbolClass, "go"),
 			typeSymLang("svc-b", "internal."+name, facts.SymbolClass, "go"))
 	}
-	e := findSharedCode(ComputeLinks(in), "svc-a", "svc-b")
+	e := findSharedCode(ComputeLinks(in, nil), "svc-a", "svc-b")
 	if e == nil {
 		t.Fatalf("hand-written distinctive shared types should still couple")
 	}
@@ -1099,7 +1100,7 @@ func TestComputeLinks_HTTPClientViaTag(t *testing.T) {
 		clientRoute("svc-alpha", "/api/items/list", "GET", map[string]any{"source": "go-http-client"}),
 		serverRoute("svc-beta", "/api/items/list", "GET"),
 	}
-	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	e := findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta")
 	if e == nil {
 		t.Fatal("missing svc-alpha -> svc-beta edge")
 	}
@@ -1113,7 +1114,7 @@ func TestComputeLinks_OpenAPIViaStaysHTTP(t *testing.T) {
 		clientRoute("svc-alpha", "/api/items/list", "GET", map[string]any{"source": "openapi"}),
 		serverRoute("svc-beta", "/api/items/list", "GET"),
 	}
-	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	e := findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta")
 	if e == nil {
 		t.Fatal("missing edge")
 	}
@@ -1128,7 +1129,7 @@ func TestComputeLinks_ConfidenceVerified(t *testing.T) {
 		clientRoute("svc-alpha", "/api/items/list", "GET", nil),
 		serverRoute("svc-beta", "/api/items/list", "GET"),
 	}
-	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	e := findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta")
 	if e == nil || e.Props["confidence"] != "verified" {
 		t.Errorf("confidence = %v, want verified", e.Props["confidence"])
 	}
@@ -1140,7 +1141,7 @@ func TestComputeLinks_ConfidenceProbableSuffixOnly(t *testing.T) {
 		clientRoute("svc-alpha", "settings/feedback", "POST", nil),
 		serverRoute("svc-beta", "/api/settings/feedback", "POST"),
 	}
-	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	e := findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta")
 	if e == nil || e.Props["confidence"] != "probable" {
 		t.Errorf("confidence = %v, want probable", e.Props["confidence"])
 	}
@@ -1151,7 +1152,7 @@ func TestComputeLinks_ConfidenceProbableInferred(t *testing.T) {
 		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),
 		serverRoute("svc-beta", "/api/items/{id}", "GET"),
 	}
-	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	e := findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta")
 	if e == nil || e.Props["confidence"] != "probable" {
 		t.Errorf("confidence = %v, want probable (inferred {})", e.Props["confidence"])
 	}
@@ -1164,14 +1165,14 @@ func TestComputeLinks_ConfidenceProbableHintDisambiguated(t *testing.T) {
 		serverRoute("svc-beta", "/api/items/list", "GET"),
 		serverRoute("svc-other", "/api/items/list", "GET"),
 	}
-	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	e := findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta")
 	if e == nil {
 		t.Fatal("missing svc-alpha -> svc-beta edge")
 	}
 	if e.Props["confidence"] != "probable" {
 		t.Errorf("confidence = %v, want probable", e.Props["confidence"])
 	}
-	if findEdge(ComputeLinks(in), "svc-alpha", "svc-other") != nil {
+	if findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-other") != nil {
 		t.Error("should not link to svc-other")
 	}
 }
@@ -1184,7 +1185,7 @@ func TestComputeLinks_ConfidenceMixedIsVerified(t *testing.T) {
 		serverRoute("svc-beta", "/api/items/list", "GET"),
 		serverRoute("svc-beta", "/api/settings/feedback", "POST"),
 	}
-	e := findEdge(ComputeLinks(in), "svc-alpha", "svc-beta")
+	e := findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta")
 	if e == nil || e.Props["confidence"] != "verified" {
 		t.Errorf("confidence = %v, want verified", e.Props["confidence"])
 	}
@@ -1197,7 +1198,7 @@ func TestComputeLinks_TargetHintResolvesProvider(t *testing.T) {
 		serverRoute("svc-checkout", "/api/purchase/build", "POST"),
 		serverRoute("svc-other", "/api/purchase/build", "POST"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if findEdge(out, "core", "svc-checkout") == nil {
 		t.Error("target_hint should resolve provider svc-checkout")
 	}
@@ -1304,7 +1305,7 @@ func TestComputeLinks_ExternalClientStillMatchesLoadedServer(t *testing.T) {
 		// a genuinely third-party external call: no server serves it -> external bucket.
 		clientRoute("consumer", "/v1/widgets", "GET", map[string]any{"external": true, "host": "api.example.com"}),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	if !hasServiceEdge(out, "consumer", "api") {
 		t.Errorf("external-tagged client route to a loaded server must produce an edge; got %+v", serviceNodes(out))
@@ -1353,15 +1354,15 @@ func TestComputeLinks_SharedSymbolsRespectsImportDirection(t *testing.T) {
 	in := []facts.Fact{
 		module("app", "client"),
 		importDep("app", "@lib/ui"),
-		typeSym("app", "client.PinMarkerProps", facts.SymbolClass),
-		typeSym("app", "client.LikeProps", facts.SymbolClass),
-		typeSym("app", "client.AdSlot", facts.SymbolClass),
+		typeSym("app", "client.GaugePanelProps", facts.SymbolClass),
+		typeSym("app", "client.TileProps", facts.SymbolClass),
+		typeSym("app", "client.ProbeSlot", facts.SymbolClass),
 		module("lib", "libs/ui"),
-		typeSym("lib", "libs/ui.PinMarkerProps", facts.SymbolClass),
-		typeSym("lib", "libs/ui.LikeProps", facts.SymbolClass),
-		typeSym("lib", "libs/ui.AdSlot", facts.SymbolClass),
+		typeSym("lib", "libs/ui.GaugePanelProps", facts.SymbolClass),
+		typeSym("lib", "libs/ui.TileProps", facts.SymbolClass),
+		typeSym("lib", "libs/ui.ProbeSlot", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	e := findEdge(out, "app", "lib")
 	if e == nil {
@@ -1397,7 +1398,7 @@ func TestComputeLinks_SharedSymbolsRespectsHTTPDirection(t *testing.T) {
 		typeSym("api", "app.PaymentLedger", facts.SymbolClass),
 		typeSym("api", "app.RetryPolicy", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	if e := findEdge(out, "web", "api"); e == nil {
 		t.Fatalf("missing web -> api edge; out=%+v", out)
@@ -1423,7 +1424,7 @@ func TestComputeLinks_SharedSymbolsCoupleWithoutDirection(t *testing.T) {
 		typeSym("fork-b", "client.PaymentLedger", facts.SymbolClass),
 		typeSym("fork-b", "client.RetryPolicy", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if findSharedCode(out, "fork-a", "fork-b") == nil {
 		t.Fatalf("missing shared-code coupling for the fork pair; out=%+v", out)
 	}
@@ -1446,17 +1447,17 @@ func TestComputeLinks_SharedSymbolsCoupleWithoutDirection(t *testing.T) {
 func TestComputeLinks_SharedSymbolsComponentConventionIgnored(t *testing.T) {
 	in := []facts.Fact{
 		module("web-a", "client"),
-		typeSym("web-a", "client.FooterProps", facts.SymbolInterface),
-		typeSym("web-a", "client.ModalProps", facts.SymbolInterface),
-		typeSym("web-a", "client.FormHeaderProps", facts.SymbolInterface),
+		typeSym("web-a", "client.SidebarProps", facts.SymbolInterface),
+		typeSym("web-a", "client.DialogProps", facts.SymbolInterface),
+		typeSym("web-a", "client.PanelSectionProps", facts.SymbolInterface),
 		typeSym("web-a", "client.Layout", facts.SymbolClass),
 		module("web-b", "libs"),
-		typeSym("web-b", "libs.FooterProps", facts.SymbolInterface),
-		typeSym("web-b", "libs.ModalProps", facts.SymbolInterface),
-		typeSym("web-b", "libs.FormHeaderProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.SidebarProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.DialogProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.PanelSectionProps", facts.SymbolInterface),
 		typeSym("web-b", "libs.Layout", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -1472,17 +1473,17 @@ func TestComputeLinks_SharedSymbolsComponentConventionIgnored(t *testing.T) {
 func TestComputeLinks_SharedSymbolsDistinctiveComponentNamesSurvive(t *testing.T) {
 	in := []facts.Fact{
 		module("web-a", "client"),
-		typeSym("web-a", "client.PinMarkerProps", facts.SymbolInterface), // Pin is distinctive
-		typeSym("web-a", "client.LikeProps", facts.SymbolInterface),      // core "Like" is only 4 chars
-		typeSym("web-a", "client.EListItem", facts.SymbolEnum),           // single-char prefix + generic words
-		typeSym("web-a", "client.AdSlot", facts.SymbolInterface),
+		typeSym("web-a", "client.GaugePanelProps", facts.SymbolInterface), // Pin is distinctive
+		typeSym("web-a", "client.TileProps", facts.SymbolInterface),       // core "Like" is only 4 chars
+		typeSym("web-a", "client.TListRow", facts.SymbolEnum),             // single-char prefix + generic words
+		typeSym("web-a", "client.ProbeSlot", facts.SymbolInterface),
 		module("web-b", "libs"),
-		typeSym("web-b", "libs.PinMarkerProps", facts.SymbolInterface),
-		typeSym("web-b", "libs.LikeProps", facts.SymbolInterface),
-		typeSym("web-b", "libs.EListItem", facts.SymbolEnum),
-		typeSym("web-b", "libs.AdSlot", facts.SymbolInterface),
+		typeSym("web-b", "libs.GaugePanelProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.TileProps", facts.SymbolInterface),
+		typeSym("web-b", "libs.TListRow", facts.SymbolEnum),
+		typeSym("web-b", "libs.ProbeSlot", facts.SymbolInterface),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	e := findSharedCode(out, "web-a", "web-b")
 	if e == nil {
 		t.Fatalf("distinctive component names must still couple the pair; out=%+v", out)
@@ -1497,16 +1498,16 @@ func TestIsConventionalComponentName(t *testing.T) {
 		id   string
 		want bool
 	}{
-		{"FooterProps", true},
-		{"ModalProps", true},
-		{"FormHeaderProps", true}, // every segment generic
+		{"SidebarProps", true},
+		{"DialogProps", true},
+		{"PanelSectionProps", true}, // every segment generic
 		{"Layout", true},
 		{"CardHeaderState", true},
-		{"LikeProps", false},      // core shorter than the length floor, still meaningful
-		{"PinMarkerProps", false}, // "Pin" is not generic vocabulary
-		{"AdSlot", false},
-		{"EListItem", false}, // single-char prefix must not be read as generic
-		{"TestNames", false}, // "Names" is not generic vocabulary
+		{"TileProps", false},       // core shorter than the length floor, still meaningful
+		{"GaugePanelProps", false}, // "Pin" is not generic vocabulary
+		{"ProbeSlot", false},
+		{"TListRow", false},     // single-char prefix must not be read as generic
+		{"TestRegistry", false}, // "Names" is not generic vocabulary
 		{"WidgetRegistry", false},
 		{"HTTPServerProps", false}, // acronym segment kept intact
 	} {
@@ -1521,9 +1522,9 @@ func TestSplitCamelCase(t *testing.T) {
 		in   string
 		want []string
 	}{
-		{"FormHeader", []string{"Form", "Header"}},
+		{"PanelSection", []string{"Panel", "Section"}},
 		{"Footer", []string{"Footer"}},
-		{"EListItem", []string{"E", "List", "Item"}},
+		{"TListRow", []string{"T", "List", "Row"}},
 		{"HTTPServer", []string{"HTTP", "Server"}},
 		{"", nil},
 	} {
@@ -1571,15 +1572,15 @@ func TestComputeLinks_SharedSymbolsStoryAndTestFilesIgnored(t *testing.T) {
 	}
 	in := []facts.Fact{
 		module("web-a", "libs"),
-		storySym("web-a", "libs.AdSlot", "libs/Gallery/Gallery.stories.tsx"),
+		storySym("web-a", "libs.ProbeSlot", "libs/Gallery/Gallery.stories.tsx"),
 		storySym("web-a", "libs.WidgetRegistry", "libs/widget/widget.test.ts"),
 		storySym("web-a", "libs.PaymentLedger", "libs/__mocks__/ledger.ts"),
 		module("web-b", "client"),
-		storySym("web-b", "client.AdSlot", "client/Gallery/Gallery.stories.tsx"),
+		storySym("web-b", "client.ProbeSlot", "client/Gallery/Gallery.stories.tsx"),
 		storySym("web-b", "client.WidgetRegistry", "client/widget/widget.test.ts"),
 		storySym("web-b", "client.PaymentLedger", "client/__mocks__/ledger.ts"),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 	if sc := sharedCodeFacts(out); len(sc) != 0 {
 		t.Errorf("must not couple the repos either: %+v", sc)
 	}
@@ -1606,7 +1607,7 @@ func TestComputeLinks_SharedSymbolsRespectsGRPCDirection(t *testing.T) {
 		typeSym("server", "internal.PaymentLedger", facts.SymbolClass),
 		typeSym("server", "internal.RetryPolicy", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	e := findEdge(out, "client", "server")
 	if e == nil {
@@ -1644,7 +1645,7 @@ func TestComputeLinks_SharedCodeDoesNotCompose(t *testing.T) {
 		typeSym("twin", "app.PaymentLedger", facts.SymbolClass),
 		typeSym("twin", "app.RetryPolicy", facts.SymbolClass),
 	}
-	out := ComputeLinks(in)
+	out := ComputeLinks(in, nil)
 
 	if findEdge(out, "web", "api") == nil {
 		t.Fatalf("the real HTTP dependency must survive; out=%+v", out)
@@ -1661,6 +1662,273 @@ func TestComputeLinks_SharedCodeDoesNotCompose(t *testing.T) {
 	for _, r := range []string{"api", "twin"} {
 		if hasServiceEdge(out, r, "twin") {
 			t.Errorf("%s must not carry a depends_on to twin — shared code is not a dependency", r)
+		}
+	}
+}
+
+// --- (C3) source verification of shared type names ---
+
+// fakeSource serves file contents by fact file path, standing in for reading the repo.
+func fakeSource(files map[string]string) SourceReader {
+	return func(f facts.Fact) (string, bool) {
+		text, ok := files[f.File]
+		return text, ok
+	}
+}
+
+// symInFile is a type symbol that records which file declared it, so verification has
+// something to compare.
+func symInFile(repo, name, file string) facts.Fact {
+	f := typeSym(repo, name, facts.SymbolClass)
+	f.File = file
+	return f
+}
+
+const bodyAlpha = `class WidgetRegistry
+  def register(widget)
+    @widgets << widget
+    recompute_index
+  end
+  def recompute_index
+    @index = @widgets.group_by(&:kind)
+  end
+end`
+
+// bodyAlphaReformatted is the same code with blank lines and indentation churn: a copy
+// that drifted only in formatting must still verify.
+const bodyAlphaReformatted = `class WidgetRegistry
+
+    def register(widget)
+        @widgets << widget
+        recompute_index
+    end
+
+    def recompute_index
+        @index = @widgets.group_by(&:kind)
+    end
+end`
+
+// bodyBeta shares the class NAME with bodyAlpha and nothing else — the population the
+// verification exists to reject.
+const bodyBeta = `class WidgetRegistry
+  belongs_to :account
+  validates :slug, presence: true, uniqueness: { scope: :account_id }
+  scope :active, -> { where(archived_at: nil) }
+  def to_param
+    slug
+  end
+end`
+
+// TestComputeLinks_SharedSymbolsVerifiedAgainstSource is the core of the change: three
+// names match in both repos, but only the ones whose files actually match count. Here
+// one pair is genuinely copied and two merely share a name, so the verified total falls
+// below minSharedSymbols and no coupling is reported at all.
+func TestComputeLinks_SharedSymbolsVerifiedAgainstSource(t *testing.T) {
+	in := []facts.Fact{
+		module("svc-a", "app"),
+		symInFile("svc-a", "app.WidgetRegistry", "svc-a/app/widget_registry.rb"),
+		symInFile("svc-a", "app.PaymentLedger", "svc-a/app/payment_ledger.rb"),
+		symInFile("svc-a", "app.RetryPolicy", "svc-a/app/retry_policy.rb"),
+		module("svc-b", "app"),
+		symInFile("svc-b", "app.WidgetRegistry", "svc-b/app/widget_registry.rb"),
+		symInFile("svc-b", "app.PaymentLedger", "svc-b/app/payment_ledger.rb"),
+		symInFile("svc-b", "app.RetryPolicy", "svc-b/app/retry_policy.rb"),
+	}
+	src := fakeSource(map[string]string{
+		// Copied.
+		"svc-a/app/widget_registry.rb": bodyAlpha,
+		"svc-b/app/widget_registry.rb": bodyAlpha,
+		// Same name, unrelated code.
+		"svc-a/app/payment_ledger.rb": bodyAlpha,
+		"svc-b/app/payment_ledger.rb": bodyBeta,
+		"svc-a/app/retry_policy.rb":   bodyAlpha,
+		"svc-b/app/retry_policy.rb":   bodyBeta,
+	})
+
+	if sc := sharedCodeFacts(ComputeLinks(in, src)); len(sc) != 0 {
+		t.Errorf("only 1 of 3 names is backed by shared code, below the threshold — no coupling expected: %+v", sc)
+	}
+	// Without a reader the same input still couples on names alone, which is what the
+	// verification is an improvement over.
+	if sc := sharedCodeFacts(ComputeLinks(in, nil)); len(sc) != 1 {
+		t.Errorf("name-only matching (nil reader) should still couple the pair, got %+v", sc)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsVerifiedReportsBothCounts covers the surviving case:
+// enough names are backed by real shared code, and the fact records both the verified
+// count and how many matched by name alone.
+func TestComputeLinks_SharedSymbolsVerifiedReportsBothCounts(t *testing.T) {
+	in := []facts.Fact{
+		module("svc-a", "app"),
+		symInFile("svc-a", "app.WidgetRegistry", "svc-a/app/widget_registry.rb"),
+		symInFile("svc-a", "app.PaymentLedger", "svc-a/app/payment_ledger.rb"),
+		symInFile("svc-a", "app.RetryPolicy", "svc-a/app/retry_policy.rb"),
+		symInFile("svc-a", "app.InvoiceReconciler", "svc-a/app/invoice_reconciler.rb"),
+		module("svc-b", "app"),
+		symInFile("svc-b", "app.WidgetRegistry", "svc-b/app/widget_registry.rb"),
+		symInFile("svc-b", "app.PaymentLedger", "svc-b/app/payment_ledger.rb"),
+		symInFile("svc-b", "app.RetryPolicy", "svc-b/app/retry_policy.rb"),
+		symInFile("svc-b", "app.InvoiceReconciler", "svc-b/app/invoice_reconciler.rb"),
+	}
+	src := fakeSource(map[string]string{
+		"svc-a/app/widget_registry.rb": bodyAlpha,
+		"svc-b/app/widget_registry.rb": bodyAlpha,
+		"svc-a/app/payment_ledger.rb":  bodyAlpha,
+		// Reformatted copy: must still verify.
+		"svc-b/app/payment_ledger.rb": bodyAlphaReformatted,
+		"svc-a/app/retry_policy.rb":   bodyAlpha,
+		"svc-b/app/retry_policy.rb":   bodyAlpha,
+		// Name-only match: must be dropped from the count.
+		"svc-a/app/invoice_reconciler.rb": bodyAlpha,
+		"svc-b/app/invoice_reconciler.rb": bodyBeta,
+	})
+
+	sc := findSharedCode(ComputeLinks(in, src), "svc-a", "svc-b")
+	if sc == nil {
+		t.Fatalf("3 verified shared types should still couple the pair")
+	}
+	if c, _ := sc.Props["symbol_count"].(int); c != 3 {
+		t.Errorf("symbol_count = %v, want 3 (verified only)", sc.Props["symbol_count"])
+	}
+	if n, _ := sc.Props["name_match_count"].(int); n != 4 {
+		t.Errorf("name_match_count = %v, want 4 (pre-verification total)", sc.Props["name_match_count"])
+	}
+	if syms, _ := sc.Props["symbol_samples"].([]string); len(syms) != 3 {
+		t.Errorf("samples should list only verified identities, got %v", syms)
+	} else {
+		for _, s := range syms {
+			if s == "InvoiceReconciler" {
+				t.Errorf("name-only match leaked into samples: %v", syms)
+			}
+		}
+	}
+}
+
+// TestComputeLinks_SharedSymbolsNameMatchCountOmittedWhenEqual keeps the fact lean: with
+// no reader (or when nothing was filtered) the two counts are identical and the extra
+// prop would be noise.
+func TestComputeLinks_SharedSymbolsNameMatchCountOmittedWhenEqual(t *testing.T) {
+	in := []facts.Fact{
+		module("svc-a", "app"),
+		symInFile("svc-a", "app.WidgetRegistry", "svc-a/app/a.rb"),
+		symInFile("svc-a", "app.PaymentLedger", "svc-a/app/a.rb"),
+		symInFile("svc-a", "app.RetryPolicy", "svc-a/app/a.rb"),
+		module("svc-b", "app"),
+		symInFile("svc-b", "app.WidgetRegistry", "svc-b/app/a.rb"),
+		symInFile("svc-b", "app.PaymentLedger", "svc-b/app/a.rb"),
+		symInFile("svc-b", "app.RetryPolicy", "svc-b/app/a.rb"),
+	}
+	sc := findSharedCode(ComputeLinks(in, nil), "svc-a", "svc-b")
+	if sc == nil {
+		t.Fatalf("name-only matching should couple the pair")
+	}
+	if _, present := sc.Props["name_match_count"]; present {
+		t.Errorf("name_match_count must be omitted when verification did not narrow anything: %+v", sc.Props)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsUnreadableSourceDropsIdentity pins the failure mode: a
+// file that cannot be read is not evidence of shared code, so the identity does not
+// count. Silently trusting the name here would reintroduce exactly what verification
+// exists to prevent.
+func TestComputeLinks_SharedSymbolsUnreadableSourceDropsIdentity(t *testing.T) {
+	in := []facts.Fact{
+		module("svc-a", "app"),
+		symInFile("svc-a", "app.WidgetRegistry", "svc-a/app/widget_registry.rb"),
+		symInFile("svc-a", "app.PaymentLedger", "svc-a/app/payment_ledger.rb"),
+		symInFile("svc-a", "app.RetryPolicy", "svc-a/app/retry_policy.rb"),
+		module("svc-b", "app"),
+		symInFile("svc-b", "app.WidgetRegistry", "svc-b/app/widget_registry.rb"),
+		symInFile("svc-b", "app.PaymentLedger", "svc-b/app/payment_ledger.rb"),
+		symInFile("svc-b", "app.RetryPolicy", "svc-b/app/retry_policy.rb"),
+	}
+	// Only one side readable for every identity.
+	src := fakeSource(map[string]string{
+		"svc-a/app/widget_registry.rb": bodyAlpha,
+		"svc-a/app/payment_ledger.rb":  bodyAlpha,
+		"svc-a/app/retry_policy.rb":    bodyAlpha,
+	})
+	if sc := sharedCodeFacts(ComputeLinks(in, src)); len(sc) != 0 {
+		t.Errorf("unreadable source must not count as verified: %+v", sc)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsVerificationAppliesToAnnotatedEdges confirms the same
+// filter governs the shared-symbol annotation on a real (directional) edge, so a
+// dependency edge cannot carry an inflated symbol count either. The import edge itself
+// must survive regardless — verification governs the annotation, not the dependency.
+func TestComputeLinks_SharedSymbolsVerificationAppliesToAnnotatedEdges(t *testing.T) {
+	in := []facts.Fact{
+		module("app", "client"),
+		importDep("app", "@lib/ui"),
+		symInFile("app", "client.WidgetRegistry", "app/client/widget_registry.ts"),
+		symInFile("app", "client.PaymentLedger", "app/client/payment_ledger.ts"),
+		symInFile("app", "client.RetryPolicy", "app/client/retry_policy.ts"),
+		module("lib", "libs/ui"),
+		symInFile("lib", "libs/ui.WidgetRegistry", "lib/libs/ui/widget_registry.ts"),
+		symInFile("lib", "libs/ui.PaymentLedger", "lib/libs/ui/payment_ledger.ts"),
+		symInFile("lib", "libs/ui.RetryPolicy", "lib/libs/ui/retry_policy.ts"),
+	}
+	src := fakeSource(map[string]string{
+		"app/client/widget_registry.ts":  bodyAlpha,
+		"lib/libs/ui/widget_registry.ts": bodyBeta, // name only
+		"app/client/payment_ledger.ts":   bodyAlpha,
+		"lib/libs/ui/payment_ledger.ts":  bodyBeta, // name only
+		"app/client/retry_policy.ts":     bodyAlpha,
+		"lib/libs/ui/retry_policy.ts":    bodyBeta, // name only
+	})
+
+	out := ComputeLinks(in, src)
+	e := findEdge(out, "app", "lib")
+	if e == nil {
+		t.Fatalf("the import edge must survive; out=%+v", out)
+	}
+	if via, _ := e.Props["via"].([]string); !reflect.DeepEqual(via, []string{"import"}) {
+		t.Errorf("via = %v, want [import] — no name-only shared_symbols annotation", e.Props["via"])
+	}
+	if _, present := e.Props["symbol_count"]; present {
+		t.Errorf("edge must carry no shared-symbol count when none verified: %+v", e.Props)
+	}
+}
+
+func TestJaccardAndTokenSet(t *testing.T) {
+	if got := jaccard(tokenSet(bodyAlpha), tokenSet(bodyAlphaReformatted)); got != 1.0 {
+		t.Errorf("reformatted copy similarity = %v, want 1.0 (whitespace normalized away)", got)
+	}
+	if got := jaccard(tokenSet(bodyAlpha), tokenSet(bodyBeta)); got >= minFileSimilarity {
+		t.Errorf("same-name-different-code similarity = %v, want < %v", got, minFileSimilarity)
+	}
+	if got := jaccard(tokenSet(""), tokenSet(bodyAlpha)); got != 0 {
+		t.Errorf("empty file similarity = %v, want 0", got)
+	}
+	// Tokens, not lines: a copy whose lines were each edited slightly is still a copy.
+	// Whole-line comparison scored this kind of drift as a near-total mismatch, which
+	// was the metric's main failure mode on real repos.
+	edited := strings.ReplaceAll(bodyAlpha, "widget", "item")
+	if got := jaccard(tokenSet(bodyAlpha), tokenSet(edited)); got < minFileSimilarity {
+		t.Errorf("within-line drift similarity = %v, want >= %v", got, minFileSimilarity)
+	}
+}
+
+// TestFileComparer_ReadsEachFileOnce pins the memoization: several shared identities
+// usually resolve to the same file pair, and link time should not scale with them.
+func TestFileComparer_ReadsEachFileOnce(t *testing.T) {
+	reads := map[string]int{}
+	fc := newFileComparer(func(f facts.Fact) (string, bool) {
+		reads[f.File]++
+		return bodyAlpha, true
+	})
+	a := symInFile("svc-a", "app.X", "svc-a/app/shared.rb")
+	b := symInFile("svc-b", "app.X", "svc-b/app/shared.rb")
+	for i := 0; i < 5; i++ {
+		if !fc.similar(a, b) {
+			t.Fatal("identical files should be similar")
+		}
+	}
+	for file, n := range reads {
+		if n != 1 {
+			t.Errorf("file %s read %d times, want 1", file, n)
 		}
 	}
 }

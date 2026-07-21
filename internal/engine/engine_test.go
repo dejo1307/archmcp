@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -358,7 +359,7 @@ func TestLinkCrossRepo_ConnectsServicesInGraph(t *testing.T) {
 		},
 	)
 
-	eng.linkCrossRepo()
+	eng.linkCrossRepo(nil)
 
 	if got := eng.Store().ByKind(facts.KindService); len(got) != 2 {
 		t.Fatalf("service nodes = %d, want 2", len(got))
@@ -390,7 +391,7 @@ func TestLinkCrossRepo_ConnectsServicesInGraph(t *testing.T) {
 
 	// Idempotent: re-running linking keeps exactly one service node per repo
 	// and one edge (no duplicates).
-	eng.linkCrossRepo()
+	eng.linkCrossRepo(nil)
 	if got := eng.Store().ByKind(facts.KindService); len(got) != 2 {
 		t.Errorf("after relink, service nodes = %d, want 2", len(got))
 	}
@@ -419,7 +420,7 @@ func TestLinkCrossRepo_CoverageGapInsight(t *testing.T) {
 			Props: map[string]any{"method": "GET", "role": "server"},
 		},
 	)
-	eng.linkCrossRepo()
+	eng.linkCrossRepo(nil)
 
 	// The svc-alpha service node carries edge_coverage with an unresolved call site.
 	var alpha *facts.Fact
@@ -478,5 +479,47 @@ func TestGenerateSnapshot_ConcurrentCallsSerialized(t *testing.T) {
 		if err != nil {
 			t.Logf("goroutine %d error (expected): %v", i, err)
 		}
+	}
+}
+
+// TestSourceReaderFor_ResolvesRepoPrefixedPaths covers the timing trap in
+// linkCrossRepo: it runs mid-snapshot, before the new bundle is published, so the
+// reader must resolve paths from the in-flight map rather than ResolveFactFile. Facts
+// carry repo-prefixed paths in append mode, which the reader has to strip.
+func TestSourceReaderFor_ResolvesRepoPrefixedPaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := "class Widget\nend\n"
+	if err := os.WriteFile(filepath.Join(root, "app", "widget.rb"), []byte(want), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	read := sourceReaderFor(map[string]string{"svc": root})
+	if read == nil {
+		t.Fatal("expected a reader for a non-empty repo path map")
+	}
+
+	got, ok := read(facts.Fact{Repo: "svc", File: "svc/app/widget.rb"})
+	if !ok || got != want {
+		t.Errorf("read(repo-prefixed) = %q, %v; want %q, true", got, ok, want)
+	}
+	if _, ok := read(facts.Fact{Repo: "svc", File: "svc/app/missing.rb"}); ok {
+		t.Error("missing file should report not-ok, not an empty success")
+	}
+	if _, ok := read(facts.Fact{Repo: "unknown", File: "unknown/app/widget.rb"}); ok {
+		t.Error("unknown repo label should report not-ok")
+	}
+}
+
+// TestSourceReaderFor_NilWithoutRepoPaths: no known paths means verification is off,
+// not that every comparison silently sees empty files.
+func TestSourceReaderFor_NilWithoutRepoPaths(t *testing.T) {
+	if sourceReaderFor(nil) != nil {
+		t.Error("nil repo paths should yield a nil reader (verification disabled)")
+	}
+	if sourceReaderFor(map[string]string{}) != nil {
+		t.Error("empty repo paths should yield a nil reader (verification disabled)")
 	}
 }

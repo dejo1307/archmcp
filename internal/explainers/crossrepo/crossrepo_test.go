@@ -180,8 +180,16 @@ func TestExplain_SharedCodeIsSeparateHedgedInsight(t *testing.T) {
 	if !strings.Contains(shared.Title, "1 pair(s)") {
 		t.Errorf("shared-code title = %q, want it to mention 1 pair", shared.Title)
 	}
-	if !strings.Contains(shared.Description, "39 shared type name(s)") {
+	if !strings.Contains(shared.Description, "39 shared type(s)") {
 		t.Errorf("shared-code description should carry the symbol count: %q", shared.Description)
+	}
+	// Without name_match_count nothing was verified, so the wording must stay cautious
+	// and the confidence low.
+	if !strings.Contains(shared.Description, "do not prove") {
+		t.Errorf("unverified shared code must keep the cautious caveat: %q", shared.Description)
+	}
+	if shared.Confidence != 0.5 {
+		t.Errorf("unverified confidence = %v, want 0.5", shared.Confidence)
 	}
 	// The wording must state plainly that this is not a dependency and not traversable,
 	// since that is the whole reason it is reported separately.
@@ -210,5 +218,39 @@ func TestExplain_NoSharedCodeInsightWhenNonePresent(t *testing.T) {
 	}
 	if len(insights) != 1 {
 		t.Fatalf("insights = %d, want 1 (no shared-code pairs, so no second insight)", len(insights))
+	}
+}
+
+// TestExplain_SharedCodeVerifiedRaisesConfidence pins the difference between a count
+// inferred from names and one measured against the files: when the linker recorded a
+// name_match_count larger than the verified symbol_count, the insight must say so and
+// carry higher confidence.
+func TestExplain_SharedCodeVerifiedRaisesConfidence(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency, Name: "fork-a <-> fork-b", Repo: "fork-a",
+		Props: map[string]any{
+			"type": facts.TypeCrossRepoSharedCode, "synthetic": "crossrepo",
+			"via": []string{"shared_symbols"}, "repos": []string{"fork-a", "fork-b"},
+			"symbol_count": 11, "name_match_count": 39,
+		},
+	})
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain error: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("insights = %d, want 1", len(insights))
+	}
+	got := insights[0]
+	if !strings.Contains(got.Description, "11 of 39 shared type name(s) backed by near-identical files") {
+		t.Errorf("verified description should report both counts: %q", got.Description)
+	}
+	if got.Confidence != 0.8 {
+		t.Errorf("verified confidence = %v, want 0.8 (measured, not inferred)", got.Confidence)
+	}
+	if strings.Contains(got.Description, "do not prove") {
+		t.Errorf("verified insight must drop the name-only caveat: %q", got.Description)
 	}
 }

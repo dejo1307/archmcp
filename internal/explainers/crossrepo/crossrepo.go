@@ -92,22 +92,38 @@ func sharedCodeInsight(store *facts.Store) *facts.Insight {
 
 	evidence := make([]facts.Evidence, 0, len(pairs))
 	var lines []string
+	verified := false
 	for _, p := range pairs {
-		detail := fmt.Sprintf("%d shared type name(s)", propInt(p, "symbol_count"))
+		count := propInt(p, "symbol_count")
+		detail := fmt.Sprintf("%d shared type(s)", count)
+		// name_match_count is only set when source verification narrowed the set, so
+		// its presence is what tells us the counts were measured rather than inferred.
+		if names := propInt(p, "name_match_count"); names > count {
+			detail = fmt.Sprintf("%d of %d shared type name(s) backed by near-identical files", count, names)
+			verified = true
+		}
 		evidence = append(evidence, facts.Evidence{Fact: p.Name, Detail: detail})
 		lines = append(lines, p.Name+" ("+detail+")")
 	}
 
+	// A verified count is a measurement of the files, not an inference from names, so
+	// it earns materially higher confidence than the name-only fallback.
+	confidence, caveat := 0.5, "Matching names do not prove the code is still shared, so diff the declarations before relying on it."
+	if verified {
+		confidence = 0.8
+		caveat = "Counts are verified by comparing the declaring files, not by name alone; " +
+			"names that matched without matching code were dropped."
+	}
+
 	return &facts.Insight{
 		Title: fmt.Sprintf("Shared code between repos (%d pair(s))", len(pairs)),
-		Description: "These repo pairs declare many of the same distinctive type names, " +
+		Description: "These repo pairs declare the same distinctive types, " +
 			"which usually means copied or vendored code, or a common ancestor: " +
 			strings.Join(lines, "; ") + ". This is NOT a dependency — neither repo imports " +
 			"or calls the other — so these pairs carry no graph edge and do not appear in " +
 			"traverse, find_path or impact_analysis. Treat it as a maintenance signal: a fix " +
-			"in one may be needed in the other. Matching names do not prove the code is still " +
-			"shared, so diff the declarations before relying on it.",
-		Confidence: 0.5,
+			"in one may be needed in the other. " + caveat,
+		Confidence: confidence,
 		Evidence:   evidence,
 	}
 }
