@@ -461,6 +461,25 @@ For interactive per-module blast-radius queries with configurable depth, see the
 
 ---
 
+## Command-line reference
+
+Run `enola --help` for the full text. With no flags, enola starts the MCP server on stdio.
+
+| Flag | What it does |
+|------|--------------|
+| `--generate [config_path]` | Generate a snapshot and exit — no MCP server. Artifacts go to `output.dir` (default `.enola/`). |
+| `--explain [repo_path]` | Print the statistics report above and exit. Read-only: nothing is written to `.enola/`. |
+| `--list` | List the MCP tools this build serves, with one-line summaries. |
+| `--status` | Show the MCP server's activity: uptime, per-tool call counts (this session and lifetime), and an estimate of the time and context those calls saved. |
+| `--status --all` | The same usage, broken down per repository. |
+| `--version` | Print the build version. |
+| `--help`, `-h` | Show usage. |
+| `upgrade` | Download and install the latest release over the running binary. |
+
+Usage counters are recorded per repository under `~/.enola/usage/`, so they survive both server restarts and deleting a repo's `.enola/` directory — and `--status` works from any directory, not just a snapshotted one. The value estimate is exactly that: a static per-tool model of how many manual lookups (open a file, grep, read) one call replaces, converted to time and tokens.
+
+---
+
 ## Learn more
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — the concept, the fact model, the pipeline, and the full tool reference.

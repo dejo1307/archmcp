@@ -6,12 +6,15 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/upgrade"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
+	"github.com/enola-labs/enola/pkg/cli"
 	"github.com/enola-labs/enola/pkg/explain"
+	"github.com/enola-labs/enola/pkg/status"
 )
 
 func main() {
@@ -29,6 +32,8 @@ func main() {
 
 	generateMode := false
 	explainMode := false
+	statusMode := false
+	statusAll := false
 	cfgPath := "mcp-arch.yaml"
 	explainRepo := "" // optional positional repo path for --explain
 
@@ -37,10 +42,20 @@ func main() {
 		case "--version":
 			fmt.Fprintf(os.Stderr, "enola version %s\n", version.Version)
 			os.Exit(0)
+		case "--help", "-h":
+			cli.RenderHelp(os.Stderr, helpSpec())
+			os.Exit(0)
+		case "--list":
+			fmt.Fprint(os.Stderr, cli.RenderToolList(cli.ToolListSpec{}))
+			os.Exit(0)
 		case "--generate":
 			generateMode = true
 		case "--explain":
 			explainMode = true
+		case "--status":
+			statusMode = true
+		case "--all":
+			statusAll = true
 		default:
 			// In --explain mode the positional argument is the repository path;
 			// otherwise it is the config file path.
@@ -50,6 +65,17 @@ func main() {
 				cfgPath = arg
 			}
 		}
+	}
+
+	// --status reads only the recorded usage under ~/.enola/usage/, so it runs
+	// before the engine is built and never touches the repo.
+	if statusMode {
+		if statusAll {
+			status.PrintStatusAll()
+		} else {
+			status.PrintStatus()
+		}
+		os.Exit(0)
 	}
 
 	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{
@@ -102,9 +128,36 @@ func main() {
 		log.Fatalf("failed to create server: %v", err)
 	}
 
+	// Record per-tool usage so a later `enola --status` has something to report.
+	// Per-repo counters are loaded lazily from ~/.enola/usage/ on first touch, so
+	// they survive restarts; the config's repo is the fallback for calls made
+	// before any snapshot is loaded. srv.StartTime() is only set once Run() is
+	// called, so stamp the start time here to get a correct uptime.
+	repoPath, _ := filepath.Abs(cfg.Repo)
+	tracker := status.NewTracker(repoPath)
+	tracker.SetStartTime(time.Now())
+	srv.SetToolCallback(tracker.OnToolCall)
+	tracker.PersistStartup()
+
 	if err := srv.Run(ctx); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// helpSpec is the `--help` text for this binary: the shared engine help with
+// the OSS-only `upgrade` command documented on top.
+func helpSpec() cli.HelpSpec {
+	spec := cli.DefaultHelp(cli.Binary{
+		Name:       "enola",
+		CmdPackage: "./cmd/enola",
+		VersionVar: "github.com/enola-labs/enola/internal/version.Version",
+	})
+	spec.Usage = append(spec.Usage, "enola upgrade")
+	spec.Commands = append(spec.Commands, cli.FlagDoc{
+		Flag: "upgrade",
+		Desc: "Download and install the latest enola release, replacing the\nrunning binary in place.",
+	})
+	return spec
 }
 
 // runExplain indexes the given repository (defaulting to the configured repo)

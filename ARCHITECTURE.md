@@ -186,7 +186,7 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 
 ## The explain package (`pkg/explain`)
 
-`pkg/explain` ([`pkg/explain/explain.go`](pkg/explain/explain.go)) is a **public** package rather than `internal/` for one reason: `enola-enterprise` imports it to append its own license-gated sections (dead code, package metrics) to the base `Report` before rendering. It is the only package in the OSS codebase with that cross-module consumer.
+`pkg/explain` ([`pkg/explain/explain.go`](pkg/explain/explain.go)) is a **public** package rather than `internal/` for one reason: `enola-enterprise` imports it to append its own license-gated sections (dead code, package metrics) to the base `Report` before rendering. It is one of several `pkg/` packages that exist for that cross-module consumer — see [The CLI surface](#the-cli-surface-pkgcli-and-pkgstatus) for the two that back `--help`, `--list` and `--status`.
 
 ### `Report` and `Compute()`
 
@@ -214,6 +214,21 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 ### Output format
 
 `Render()` produces plain aligned text (not Markdown), designed to read well in a terminal without paging. Sections are separated by `═` rule lines (60 characters). Key-value pairs use `fmt.Fprintf` with a 20-character label width; tables (hotspots) use fixed-width column formats. No color codes — output is safe to pipe or capture in CI.
+
+---
+
+## The CLI surface (`pkg/cli` and `pkg/status`)
+
+`--help`, `--list` and `--status` are served from two public packages, for the same reason as `pkg/explain`: a wrapper binary must be able to print *its* version of each without restating the shared text. Both extension points are plain data, so nothing a wrapper adds is known here.
+
+**[`pkg/cli`](pkg/cli)** renders what a binary prints about itself.
+
+- `OSSTools()` is the `--list` catalogue: name plus a one-line summary. It is hand-written on purpose — the descriptions registered with `mcp.AddTool` are multi-paragraph agent prompts, unusable in a terminal. `TestE2E_ToolCatalogueMatchesRegisteredTools` ([`internal/server/e2e_test.go`](internal/server/e2e_test.go)) asserts set equality against the tools the running server actually registers, so the two cannot drift. `RenderToolList(ToolListSpec)` renders it; a wrapper passes its own tools in `Extra` (or an unlock note via `ExtraLocked`/`LockedNote`), and with a zero spec the output never mentions that a wrapper exists.
+- `DefaultHelp(Binary)` returns the `HelpSpec` shared by every enola binary — usage, flags, config path, examples, MCP configuration, build — with the binary's name, command package and version ldflag substituted in. A wrapper appends to `Commands`/`Flags`/`Sections`, qualifies a shared flag with `AppendFlagNote`, and places its own blocks precisely with `InsertSectionsBefore`. `RenderHelp` does the layout (a 22-column description gutter, with continuation lines aligned to it).
+
+**[`pkg/status`](pkg/status)** is the usage tracker behind `--status`. `Tracker.OnToolCall` is registered as the server's tool callback (`bootstrap.Server.SetToolCallback`) and attributes each call to the repo it actually operated on, not to a fixed one. Counters live in `~/.enola/usage/<repo-base>-<hash8>.json` — outside the repo, so they survive both a restart and deleting `.enola/` — and each file carries the lifetime total plus the current run's session counts. `AggregateServer` collapses every file into the one server view `PrintStatus` renders; `AggregateUsage` produces the per-repo breakdown for `--status --all`.
+
+The value estimate is a deliberately simple model in [`pkg/status/value.go`](pkg/status/value.go): one weight per tool (the number of manual lookups a call replaces) times two conversion constants (seconds and tokens per lookup). `RegisterToolWeights` lets a wrapper price the tools it adds instead of letting them fall through to the default weight; it is guarded by a mutex because registration happens at startup while reads come from the tool callback.
 
 ---
 

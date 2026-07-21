@@ -21,6 +21,7 @@ import (
 
 	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/pkg/bootstrap"
+	"github.com/enola-labs/enola/pkg/cli"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -139,6 +140,41 @@ func TestE2E_ListTools(t *testing.T) {
 	for _, name := range expectedTools {
 		if !got[name] {
 			t.Errorf("expected tool %q to be registered; registered: %v", name, keys(got))
+		}
+	}
+}
+
+// The `--list` catalogue in pkg/cli is hand-written (the registered MCP
+// descriptions are multi-paragraph agent prompts, unusable in a terminal list),
+// so nothing but this test keeps it honest: registering a tool without
+// cataloguing it — or cataloguing one that was renamed away — fails here.
+func TestE2E_ToolCatalogueMatchesRegisteredTools(t *testing.T) {
+	s := startInMemory(t)
+	res, err := s.cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	registered := map[string]bool{}
+	for _, tool := range res.Tools {
+		registered[tool.Name] = true
+	}
+	catalogued := map[string]bool{}
+	for _, entry := range cli.OSSTools() {
+		if entry.Description == "" {
+			t.Errorf("catalogue entry %q has no description", entry.Name)
+		}
+		catalogued[entry.Name] = true
+	}
+
+	for name := range registered {
+		if !catalogued[name] {
+			t.Errorf("tool %q is registered but missing from cli.OSSTools()", name)
+		}
+	}
+	for name := range catalogued {
+		if !registered[name] {
+			t.Errorf("tool %q is in cli.OSSTools() but not registered by the server", name)
 		}
 	}
 }
