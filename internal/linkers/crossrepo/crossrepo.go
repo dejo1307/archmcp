@@ -647,6 +647,35 @@ func importCandidates(target string) []string {
 // between repos) shares many.
 const minSharedSymbols = 3
 
+// maxVocabRepoShare bounds how widely an unqualified type identity may be
+// declared before it is read as shared domain vocabulary rather than evidence
+// that any specific pair shares code. Vendored/shared source (an onelab protocol
+// header) lands in the handful of repos that copied it; a domain type every
+// service in a fleet independently models ("Translation", "Category", "Filter")
+// lands in most of them. An identity declared in more than this fraction of all
+// loaded repos is the latter, so it is dropped as a pairwise coupling signal —
+// otherwise a fleet of same-language services fabricates a near-complete mesh of
+// edges from parallel modeling alone.
+const maxVocabRepoShare = 0.5
+
+// minReposForVocabFilter guards the vocabulary filter so it only applies once
+// enough repos are loaded that "a majority of repos" is a meaningful bar. With
+// two or three repos a genuinely vendored header can legitimately appear in most
+// of them, so below this count the filter stays off and the small-repo-set
+// behavior (including every 2-repo test fixture) is preserved unchanged.
+const minReposForVocabFilter = 4
+
+// isUbiquitousIdentity reports whether an unqualified identity declared in
+// declaringRepos of totalRepos loaded repos is too widespread to be a pairwise
+// coupling signal — see maxVocabRepoShare. Namespace-qualified identities never
+// reach here: "::" is a strong shared-source marker and bypasses the filter.
+func isUbiquitousIdentity(declaringRepos, totalRepos int) bool {
+	if totalRepos < minReposForVocabFilter {
+		return false
+	}
+	return float64(declaringRepos) > maxVocabRepoShare*float64(totalRepos)
+}
+
 // genericTypeNames are common unqualified type names too generic to link on by
 // themselves. Namespaced identities (e.g. "onelab::number") bypass this list —
 // sharing a namespace across repos is itself meaningful.
@@ -760,6 +789,7 @@ func splitCamelCase(s string) []string {
 func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 	repoModules := moduleNamesByRepo(all)
 	repoLang := primaryLanguageByRepo(all)
+	repoCount := len(repoLabelLookup(all))
 
 	// identity -> set of repos that declare a type with that identity.
 	idToRepos := map[string]map[string]bool{}
@@ -788,7 +818,10 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 	// apps written in different languages sharing a plain domain type name (e.g.
 	// Kotlin and Swift both declaring "LoginViewModel", or both nesting
 	// "RegisterUseCase.ValidationError") is parallel modeling of the same product,
-	// not shared code, and must not fabricate a dependency.
+	// not shared code, and must not fabricate a dependency. A bare name is dropped
+	// entirely when it is declared across too much of the fleet (isUbiquitousIdentity):
+	// a distinctive type most services in a large multi-repo set independently model
+	// is shared vocabulary, not evidence that any specific pair shares code.
 	// pairShared["a\x00b"] (a<b) -> set of shared identities.
 	pairShared := map[string]map[string]bool{}
 	for id, repos := range idToRepos {
@@ -796,6 +829,9 @@ func linkSharedSymbols(all []facts.Fact, edges map[string]*edge) {
 			continue
 		}
 		qualified := isNamespaceQualified(id)
+		if !qualified && isUbiquitousIdentity(len(repos), repoCount) {
+			continue // shared domain vocabulary across the fleet, not pairwise coupling
+		}
 		rs := make([]string, 0, len(repos))
 		for r := range repos {
 			rs = append(rs, r)
@@ -953,12 +989,20 @@ func isDistinctiveIdentity(id string) bool {
 // nonContractPathMarkers are path fragments identifying files whose declarations are
 // scaffolding rather than portable contract surface: Rails migrations (generator-
 // derived names like InitSchema/CreateFooBars that coincide across apps that ran the
-// same migration), and the test/story/mock/fixture tree, where a throwaway local type
-// is routinely declared with the same obvious name in every repo.
+// same migration); the test/story/mock/fixture tree, where a throwaway local type
+// is routinely declared with the same obvious name in every repo; and generated
+// code — client/model/mock stubs a codegen tool (oapi-codegen, protoc, mockery)
+// derives from a shared contract. Two services that consume the SAME upstream API
+// each generate identically-named client and model types, so those coincide across
+// every consumer of that API. That is shared upstream contract, not shared code
+// between the consumers, and the real dependency (each consumer -> that API) is
+// already captured by HTTP/import linking; counting the generated stubs only
+// fabricates a spurious edge between the consumers themselves.
 var nonContractPathMarkers = [...]string{
 	"/db/migrate/",
-	"/spec/support/", "/__mocks__/", "/__tests__/", "/fixtures/", "/factories/",
+	"/spec/support/", "/__mocks__/", "/__tests__/", "/fixtures/", "/factories/", "/mocks/",
 	".stories.", ".test.", ".spec.", "_test.", "_spec.",
+	".gen.", ".pb.", "_pb2.", ".generated.",
 }
 
 // isNonContractSharedFile reports whether a file holds declarations that are not

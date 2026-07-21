@@ -883,6 +883,130 @@ func TestComputeLinks_SharedSymbolsSameLanguageNestedTypesLink(t *testing.T) {
 	}
 }
 
+// fleetRepos is a set of same-language repo labels large enough (>=
+// minReposForVocabFilter) to trigger the shared-vocabulary filter.
+var fleetRepos = []string{"svc-1", "svc-2", "svc-3", "svc-4", "svc-5", "svc-6", "svc-7", "svc-8"}
+
+// TestComputeLinks_SharedSymbolsFleetVocabularyNotLinked covers the multi-repo
+// fleet false positive: a set of same-language services that each independently
+// model the same distinctive domain types (TranslationBundle, CategoryTree,
+// FilterFacet) share those names across most of the fleet. That is parallel
+// modeling, not shared code, so no pair may be linked on ubiquitous vocabulary
+// alone — even though each name is distinctive enough to link a bare 2-repo pair.
+func TestComputeLinks_SharedSymbolsFleetVocabularyNotLinked(t *testing.T) {
+	vocab := []string{"TranslationBundle", "CategoryTree", "FilterFacet"}
+	var in []facts.Fact
+	for _, repo := range fleetRepos {
+		in = append(in, module(repo, "app"))
+		for _, name := range vocab {
+			in = append(in, typeSymLang(repo, "app."+name, facts.SymbolClass, "go"))
+		}
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("fleet-wide shared vocabulary must not link any pair: %+v", edges)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsPairSpecificSurvivesFleetVocabulary confirms the
+// vocabulary filter is surgical: amid fleet-wide vocabulary (dropped), two
+// services that additionally share distinctive types declared by no other repo
+// are still linked, the symbol_count reflects only those pair-specific types, and
+// no other pair is fabricated.
+func TestComputeLinks_SharedSymbolsPairSpecificSurvivesFleetVocabulary(t *testing.T) {
+	vocab := []string{"TranslationBundle", "CategoryTree", "FilterFacet"}
+	pairOnly := []string{"InvoiceReconciler", "ShipmentManifest", "LoyaltyLedger"}
+	var in []facts.Fact
+	for _, repo := range fleetRepos {
+		in = append(in, module(repo, "app"))
+		for _, name := range vocab {
+			in = append(in, typeSymLang(repo, "app."+name, facts.SymbolClass, "go"))
+		}
+	}
+	for _, name := range pairOnly {
+		in = append(in, typeSymLang("svc-1", "app."+name, facts.SymbolClass, "go"))
+		in = append(in, typeSymLang("svc-2", "app."+name, facts.SymbolClass, "go"))
+	}
+	out := ComputeLinks(in)
+	e := findEdge(out, "svc-1", "svc-2")
+	if e == nil {
+		t.Fatalf("pair-specific distinctive types should link svc-1 <-> svc-2; edges=%+v", crossRepoEdges(out))
+	}
+	if c, _ := e.Props["symbol_count"].(int); c != 3 {
+		t.Errorf("symbol_count = %v, want 3 (only pair-specific types; fleet vocabulary dropped)", c)
+	}
+	// Shared code is symmetric, so the one real pair is two directed edges — and
+	// nothing else, since every other overlap is ubiquitous vocabulary.
+	if edges := crossRepoEdges(out); len(edges) != 2 {
+		t.Errorf("only the svc-1/svc-2 pair should link (2 directed edges), got %d: %+v", len(edges), edges)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsSmallRepoSetVocabularyFilterOff confirms the guard:
+// below minReposForVocabFilter the filter never fires, so a type shared across all
+// of a small repo set still links (a vendored header may legitimately appear in
+// every one of just three repos).
+func TestComputeLinks_SharedSymbolsSmallRepoSetVocabularyFilterOff(t *testing.T) {
+	types := []string{"WidgetRegistry", "PaymentLedger", "RetryPolicy"}
+	var in []facts.Fact
+	for _, repo := range []string{"svc-a", "svc-b", "svc-c"} {
+		in = append(in, module(repo, "app"))
+		for _, name := range types {
+			in = append(in, typeSymLang(repo, "app."+name, facts.SymbolClass, "go"))
+		}
+	}
+	out := ComputeLinks(in)
+	for _, pair := range [][2]string{{"svc-a", "svc-b"}, {"svc-a", "svc-c"}, {"svc-b", "svc-c"}} {
+		if findEdge(out, pair[0], pair[1]) == nil {
+			t.Errorf("with only 3 repos the vocabulary filter must stay off; missing %s <-> %s", pair[0], pair[1])
+		}
+	}
+}
+
+// genTypeSym is a struct declared in a generated client/model file (the stub a
+// codegen tool emits from an upstream contract).
+func genTypeSym(repo, name string) facts.Fact {
+	f := typeSymLang(repo, "internal."+name, facts.SymbolClass, "go")
+	f.File = repo + "/internal/clients/eventcountersapi/event_counters_client.gen.go"
+	return f
+}
+
+// TestComputeLinks_SharedSymbolsGeneratedCodeIgnored covers the shared-upstream-
+// contract false positive: two services that generate a client for the SAME API
+// each emit identically-named generated structs. Those coincide across every
+// consumer of that API but are not shared code between the consumers, so they must
+// not fabricate a cross-repo edge — even many of them, in the same language.
+func TestComputeLinks_SharedSymbolsGeneratedCodeIgnored(t *testing.T) {
+	in := []facts.Fact{module("svc-a", "internal"), module("svc-b", "internal")}
+	for _, name := range []string{"GetCountersResponse", "CounterBatchRequest", "EventCounterModel", "CountersClientWithResponses"} {
+		in = append(in, genTypeSym("svc-a", name), genTypeSym("svc-b", name))
+	}
+	if edges := crossRepoEdges(ComputeLinks(in)); len(edges) != 0 {
+		t.Errorf("generated client structs from a shared API must not link consumers: %+v", edges)
+	}
+}
+
+// TestComputeLinks_SharedSymbolsGeneratedExcludedFromCount confirms the exclusion is
+// surgical: generated stubs are dropped, but hand-written distinctive shared types in
+// the same repos still link, and symbol_count reflects only those hand-written types.
+func TestComputeLinks_SharedSymbolsGeneratedExcludedFromCount(t *testing.T) {
+	in := []facts.Fact{module("svc-a", "internal"), module("svc-b", "internal")}
+	for _, name := range []string{"GetCountersResponse", "CounterBatchRequest", "EventCounterModel"} {
+		in = append(in, genTypeSym("svc-a", name), genTypeSym("svc-b", name))
+	}
+	for _, name := range []string{"WidgetRegistry", "PaymentLedger", "RetryPolicy"} {
+		in = append(in,
+			typeSymLang("svc-a", "internal."+name, facts.SymbolClass, "go"),
+			typeSymLang("svc-b", "internal."+name, facts.SymbolClass, "go"))
+	}
+	e := findEdge(ComputeLinks(in), "svc-a", "svc-b")
+	if e == nil {
+		t.Fatalf("hand-written distinctive shared types should still link")
+	}
+	if c, _ := e.Props["symbol_count"].(int); c != 3 {
+		t.Errorf("symbol_count = %v, want 3 (generated stubs excluded)", c)
+	}
+}
+
 // --- via: http-client tag and confidence ---
 
 func TestComputeLinks_HTTPClientViaTag(t *testing.T) {
