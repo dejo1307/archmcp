@@ -75,6 +75,15 @@ var fixtures = []fixture{
 	// external, a hardcoded INTERNAL host still resolves to its loaded repo, and a
 	// config-injected base URL stays an unresolved internal edge.
 	{name: "go_httpclient_multirepo", subRepos: []string{"api", "consumer"}},
+	// Two Go services coupled ONLY by Kafka topics — no import, no call, no HTTP
+	// route between them. Pins the async linking signal (v132) end-to-end, which the
+	// unit tests cannot: the topic name the extractor emits has to resolve against
+	// the repo label the ENGINE assigns (the directory basename). Covers all four
+	// outcomes — a consumed topic owned by a loaded repo draws the edge (including
+	// one the producer declares no fact for, so it resolves from the consumer side
+	// alone), an own topic and an unowned topic draw nothing, and an in-process event
+	// bus emits no topic fact at all.
+	{name: "go_kafka_multirepo", subRepos: []string{"svc-orders", "svc-billing"}},
 	{name: "py_grpc_multirepo", subRepos: []string{"server", "client"}},
 	// Two different-language repos sharing only nested type names. The linker must
 	// draw no shared_symbols edge between them; see GAP-LK-03.

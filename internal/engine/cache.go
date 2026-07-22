@@ -651,7 +651,19 @@ import (
 // bundle. A monolithic iOS app target now surfaces its internal structure in
 // package_metrics (per-directory Ca/Ce/abstractness) instead of appearing as one
 // 400+-type package. Cached Swift snapshots must re-extract.
-const cacheVersion = "v131"
+// v132: the Go extractor emits a topic-reference fact (KindStorage,
+// storage_kind=topic, messaging=kafka) for the two ways a Kafka topic string reaches
+// Go code without a literal at the call site — an envconfig `default:` tag on a
+// *Topic-suffixed config field, and env.Get("<KEY>_TOPIC", "<default>"). Both anchor
+// on an explicit topic marker, so an in-process event bus (whose Subscribe takes a Go
+// event symbol, not a topic string) emits nothing by construction. The cross-repo
+// linker gained a matching signal that binds consumer -> producer by the topic name's
+// owning-service prefix (the same leading-segment-to-repo resolution the import linker
+// uses), making asynchronous coupling visible where no import, call, or route exists;
+// a repo's own topic and a topic owned by no loaded repo draw no edge. Go does not
+// participate in the extractor cache, so this bump documents the behavior change
+// rather than invalidating anything.
+const cacheVersion = "v132"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
