@@ -574,6 +574,29 @@ func TestComputeLinks_SingleRepoNoLinks(t *testing.T) {
 
 // --- (A) suffix-aware HTTP matching ---
 
+// TestComputeLinks_HTTPWildcardServerMethod covers a programmatic servlet (or verb-less
+// mapping) server route, emitted with method=facts.MethodAny because it serves every
+// verb: a concrete-method client call must resolve to it. This is the linker half of
+// the JVM programmatic-route fix — the Kotlin extractor emits such routes for the
+// .addServlet("/path", handler) DSL, and without this a GET caller would not bind.
+func TestComputeLinks_HTTPWildcardServerMethod(t *testing.T) {
+	in := []facts.Fact{
+		serverRoute("svc-beta", "/v1/widgets/details", facts.MethodAny),
+		clientRoute("svc-alpha", "v1/widgets/details", "GET", nil),
+	}
+	out := ComputeLinks(in, nil)
+	e := findEdge(out, "svc-alpha", "svc-beta")
+	if e == nil {
+		t.Fatalf("GET client should resolve to a wildcard-method server route; edges=%+v", crossRepoEdges(out))
+	}
+	if via, _ := e.Props["via"].([]string); len(via) == 0 || via[0] != "http" {
+		t.Errorf("via = %v, want [http]", e.Props["via"])
+	}
+	if !hasServiceEdge(out, "svc-alpha", "svc-beta") {
+		t.Errorf("svc-alpha service node missing depends_on svc-beta")
+	}
+}
+
 func TestComputeLinks_HTTPSuffixMatch(t *testing.T) {
 	// golf serves the full /api/settings path; consumers call it with varying
 	// prefixes (Swift base-relative, Kotlin/TS with /api). All must link to golf.

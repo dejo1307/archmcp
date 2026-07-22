@@ -75,6 +75,15 @@ const (
 	RelHandledBy    = "handled_by"   // A route/endpoint is served by target (e.g. a gRPC RPC route → its Go handler method). Added post-extraction.
 )
 
+// MethodAny is the HTTP-method value for a server route that handles every verb
+// rather than one specific method — a raw servlet (doGet/doPost/…) or a mapping
+// declared without a verb. The cross-repo HTTP linker treats it as a wildcard that
+// a client call of any concrete method matches. Extractors that cannot attribute a
+// route to a single verb emit this instead of guessing one (which would create a
+// spurious method mismatch) or omitting the method (which drops the route from
+// matching entirely).
+const MethodAny = "*"
+
 // Symbol kind property values.
 const (
 	SymbolFunc      = "function"

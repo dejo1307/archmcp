@@ -28,10 +28,14 @@ func (e *KotlinExtractor) Name() string {
 }
 
 // Detect returns true if the repository looks like a Kotlin or Android project.
+// It recognizes Kotlin regardless of build tool: Gradle (build.gradle[.kts]) and
+// Maven (pom.xml declaring the Kotlin plugin/dependency). Build files pin the
+// language authoritatively; when none match, a Kotlin source tree under the
+// conventional src/main/kotlin root is a sufficient fallback so a repo with an
+// unrecognized build setup is still extracted rather than silently skipped.
 func (e *KotlinExtractor) Detect(repoPath string) (bool, error) {
 	for _, name := range []string{"build.gradle.kts", "build.gradle"} {
-		path := filepath.Join(repoPath, name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(filepath.Join(repoPath, name))
 		if err != nil {
 			continue
 		}
@@ -39,6 +43,21 @@ func (e *KotlinExtractor) Detect(repoPath string) (bool, error) {
 		if strings.Contains(content, "kotlin") || strings.Contains(content, "android") {
 			return true, nil
 		}
+	}
+	// Maven: a Kotlin project declares the kotlin-maven-plugin / org.jetbrains.kotlin
+	// dependency and typically a src/main/kotlin sourceDirectory in its pom.xml.
+	if data, err := os.ReadFile(filepath.Join(repoPath, "pom.xml")); err == nil {
+		content := string(data)
+		if strings.Contains(content, "org.jetbrains.kotlin") ||
+			strings.Contains(content, "kotlin-maven-plugin") ||
+			strings.Contains(content, "src/main/kotlin") {
+			return true, nil
+		}
+	}
+	// Fallback: a conventional Kotlin source root exists even without a recognized
+	// build file. Cheap stat, no directory walk.
+	if fi, err := os.Stat(filepath.Join(repoPath, "src", "main", "kotlin")); err == nil && fi.IsDir() {
+		return true, nil
 	}
 	return false, nil
 }
@@ -78,7 +97,8 @@ func (e *KotlinExtractor) Extract(ctx context.Context, repoPath string, files []
 			return nil
 		}
 		ff := extractFileAST(src, relFile, isAndroid, sourceRoot, basePackage, packageIndex)
-		return append(ff, extractRetrofitFacts(src, relFile)...)
+		ff = append(ff, extractRetrofitFacts(src, relFile)...)
+		return append(ff, extractServletRouteFacts(src, relFile)...)
 	})
 
 	modules := make(map[string]bool)

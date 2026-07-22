@@ -25,6 +25,36 @@ func writeKotlinRepo(t *testing.T, files map[string]string) (string, []string) {
 	return dir, rel
 }
 
+// TestDetect covers build-tool-agnostic Kotlin detection: Gradle, Maven (the
+// regression that left a Kotlin-on-Maven service entirely unextracted), a bare
+// src/main/kotlin fallback, and a non-Kotlin repo.
+func TestDetect(t *testing.T) {
+	e := New()
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"gradle-kotlin", map[string]string{"build.gradle.kts": `plugins { kotlin("jvm") }`}, true},
+		{"maven-kotlin-plugin", map[string]string{"pom.xml": `<project><build><plugins><plugin><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-maven-plugin</artifactId></plugin></plugins></build></project>`}, true},
+		{"maven-source-dir", map[string]string{"pom.xml": `<project><build><sourceDirectory>src/main/kotlin</sourceDirectory></build></project>`}, true},
+		{"source-root-fallback", map[string]string{"src/main/kotlin/App.kt": "package x"}, true},
+		{"plain-maven-java", map[string]string{"pom.xml": `<project><groupId>com.acme</groupId></project>`}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _ := writeKotlinRepo(t, tc.files)
+			got, err := e.Detect(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("Detect = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDetectSourceRoot_IgnoresTestSourceSets is the regression guard for the
 // coupling-collapse bug: when a test-source-set file is walked first, source-root
 // detection must still pick the production (main) root, not the androidTest one.

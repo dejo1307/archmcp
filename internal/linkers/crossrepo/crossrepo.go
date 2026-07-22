@@ -1567,10 +1567,19 @@ func pathSuffixes(normPath string) []string {
 func lookupClientMatches(server map[string][]routeRef, clientPath, method string) ([]routeRef, string) {
 	sufs := pathSuffixes(clientPath)
 	if len(sufs) == 0 {
-		return server[routeKey(clientPath, method)], clientPath
+		if m := server[routeKey(clientPath, method)]; len(m) > 0 {
+			return m, clientPath
+		}
+		return server[routeKey(clientPath, facts.MethodAny)], clientPath
 	}
 	for _, suf := range sufs {
+		// Prefer an exact-verb server route at this suffix, then fall back to a
+		// wildcard route (facts.MethodAny — a servlet or verb-less mapping that serves
+		// every method), so a concrete client call still resolves to it.
 		if m := server[routeKey(suf, method)]; len(m) > 0 {
+			return m, suf
+		}
+		if m := server[routeKey(suf, facts.MethodAny)]; len(m) > 0 {
 			return m, suf
 		}
 	}
