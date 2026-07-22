@@ -75,6 +75,23 @@ const (
 	RelHandledBy    = "handled_by"   // A route/endpoint is served by target (e.g. a gRPC RPC route → its Go handler method). Added post-extraction.
 )
 
+// StorageKindTopic is the storage_kind prop value for a KindStorage fact that
+// represents a messaging topic reference (e.g. a Kafka topic a service produces to
+// or consumes from), as opposed to a database table or object store. The cross-repo
+// async linker keys producer/consumer binding on it. The topic name is the fact's
+// Name; the messaging_role prop (MessagingRole*) records the side when known, and is
+// otherwise inferred by the linker from topic-name ownership.
+const StorageKindTopic = "topic"
+
+// Messaging role property values (the messaging_role prop) for a topic storage fact:
+// which side of a topic a reference represents. Left unset when only a bare topic
+// reference is seen, in which case the linker infers direction from the topic name's
+// owning-service prefix.
+const (
+	MessagingRoleProducer = "producer"
+	MessagingRoleConsumer = "consumer"
+)
+
 // MethodAny is the HTTP-method value for a server route that handles every verb
 // rather than one specific method — a raw servlet (doGet/doPost/…) or a mapping
 // declared without a verb. The cross-repo HTTP linker treats it as a wildcard that

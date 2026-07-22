@@ -259,6 +259,9 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 	// Extract storage patterns
 	result = append(result, extractStorage(fset, f, relFile, pkgDir)...)
 
+	// Extract Kafka topic references (produced/consumed), for async cross-repo links
+	result = append(result, extractKafkaFacts(fset, f, relFile, pkgDir)...)
+
 	return result
 }
 

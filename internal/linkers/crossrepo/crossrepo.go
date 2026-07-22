@@ -61,9 +61,10 @@ const minSharedSegments = 2
 type edge struct {
 	consumer   string
 	provider   string
-	via        map[string]bool // "http", "http-client", "import", "shared_symbols"
+	via        map[string]bool // "http", "http-client", "import", "kafka", "shared_symbols"
 	endpoints  map[string]bool // "METHOD /path"
 	imports    map[string]bool // sample import targets
+	topics     map[string]bool // shared Kafka topic names (consumer references producer's topic)
 	symbols    map[string]bool // shared type identities, verified against source when available
 	confidence string          // "verified" or "probable" — max over HTTP endpoints
 	// nameMatches is how many identities matched by NAME before source verification
@@ -139,6 +140,7 @@ func ComputeLinks(all []facts.Fact, src SourceReader) []facts.Fact {
 	cov := map[string]*httpCoverage{}
 	linkHTTP(all, edges, cov)
 	linkImports(all, normToLabel, edges)
+	linkKafka(all, normToLabel, edges)
 	// Runs last: it consults the edges the directional linkers have already drawn to
 	// decide whether a shared-symbol signal annotates a real dependency or stands alone.
 	linkSharedSymbols(all, edges, couplings, src)
@@ -573,6 +575,54 @@ func repoFromIdentity(id string) string {
 		return id[:i]
 	}
 	return id
+}
+
+// --- signal (D): Kafka topic producer/consumer binding ---
+
+// topicOwner returns the owning-service segment of a Kafka topic name: the part
+// before the first ".". By convention a topic is named "<owning-service>.<...>"
+// (e.g. "svc-orders.order_placed" -> "svc-orders",
+// "core.items.item_uploaded" -> "core"), so the leading segment identifies the
+// producer even when that repo's producer code cannot be parsed.
+func topicOwner(topic string) string {
+	topic = strings.TrimSpace(topic)
+	if i := strings.IndexByte(topic, '.'); i >= 0 {
+		return topic[:i]
+	}
+	return topic
+}
+
+// linkKafka binds asynchronous coupling: a repo that references a Kafka topic owned
+// by ANOTHER loaded repo consumes that repo's events, so it depends on it. The edge
+// is drawn consumer -> producer (mirroring HTTP client -> server), keyed on the
+// topic name's owning-service prefix — the same leading-segment-to-repo resolution
+// linkImports uses, and robust to the producer side being unparsed. A repo's
+// reference to its OWN topic (owner == repo) is intra-repo and draws no edge, and a
+// topic owned by no loaded repo (an export sink, a third-party service) is simply
+// left unlinked.
+func linkKafka(all []facts.Fact, normToLabel map[string]string, edges map[string]*edge) {
+	for _, f := range all {
+		if f.Repo == "" || f.Kind != facts.KindStorage {
+			continue
+		}
+		if propString(f, "storage_kind") != facts.StorageKindTopic {
+			continue
+		}
+		owner := topicOwner(f.Name)
+		if owner == "" {
+			continue
+		}
+		label, ok := normToLabel[normalizeLabel(owner)]
+		if !ok || label == f.Repo {
+			continue // owner not loaded, or the repo's own topic (it is the producer)
+		}
+		e := edgeFor(edges, f.Repo, label)
+		e.note("kafka")
+		if e.topics == nil {
+			e.topics = map[string]bool{}
+		}
+		e.topics[f.Name] = true
+	}
 }
 
 // --- signal (B): import / shared-lib references ---
@@ -1342,6 +1392,11 @@ func materialize(edges map[string]*edge, couplings map[string]*coupling, allRepo
 			imps := sortedKeys(e.imports)
 			props["import_count"] = len(imps)
 			props["import_samples"] = cap25(imps)
+		}
+		if len(e.topics) > 0 {
+			tps := sortedKeys(e.topics)
+			props["topic_count"] = len(tps)
+			props["topic_samples"] = cap25(tps)
 		}
 		if len(e.symbols) > 0 {
 			syms := sortedKeys(e.symbols)

@@ -597,6 +597,48 @@ func TestComputeLinks_HTTPWildcardServerMethod(t *testing.T) {
 	}
 }
 
+// topicFact builds a Kafka topic-reference fact as the extractors emit it.
+func topicFact(repo, topic string) facts.Fact {
+	return facts.Fact{
+		Kind: facts.KindStorage,
+		Name: topic,
+		Repo: repo,
+		Props: map[string]any{
+			"storage_kind": facts.StorageKindTopic,
+			"messaging":    "kafka",
+		},
+	}
+}
+
+// TestComputeLinks_Kafka covers async binding: a repo referencing another loaded
+// repo's topic (identified by the topic name's owning-service prefix) depends on it;
+// a repo's own topic and a topic owned by no loaded repo draw no edge.
+func TestComputeLinks_Kafka(t *testing.T) {
+	in := []facts.Fact{
+		module("svc-alpha", "app"), // consumer
+		module("svc-beta", "app"),  // producer / owner
+		topicFact("svc-alpha", "svc-beta.things_updated"),       // alpha consumes beta's topic
+		topicFact("svc-alpha", "svc-alpha.cache.v1.evictions"),  // alpha's own topic — no edge
+		topicFact("svc-alpha", "sink.third_party.user_state"),   // owner not loaded — no edge
+	}
+	out := ComputeLinks(in, nil)
+
+	e := findEdge(out, "svc-alpha", "svc-beta")
+	if e == nil {
+		t.Fatalf("svc-alpha should depend on svc-beta via kafka; edges=%+v", crossRepoEdges(out))
+	}
+	if via, _ := e.Props["via"].([]string); len(via) == 0 || via[0] != "kafka" {
+		t.Errorf("via = %v, want [kafka]", e.Props["via"])
+	}
+	if !hasServiceEdge(out, "svc-alpha", "svc-beta") {
+		t.Errorf("svc-alpha service node missing depends_on svc-beta")
+	}
+	// Only svc-alpha -> svc-beta: the self-topic and unloaded-owner topic draw nothing.
+	if edges := crossRepoEdges(out); len(edges) != 1 {
+		t.Errorf("expected exactly 1 kafka edge, got %d: %+v", len(edges), edges)
+	}
+}
+
 func TestComputeLinks_HTTPSuffixMatch(t *testing.T) {
 	// golf serves the full /api/settings path; consumers call it with varying
 	// prefixes (Swift base-relative, Kotlin/TS with /api). All must link to golf.
