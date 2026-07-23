@@ -17,6 +17,10 @@ type Config struct {
 	Renderers  []string     `yaml:"renderers"`
 	Output     OutputConfig `yaml:"output"`
 
+	// Dashboard configures the localhost dashboard served alongside the MCP
+	// server. Optional: the zero value keeps the built-in defaults.
+	Dashboard DashboardConfig `yaml:"dashboard"`
+
 	// Incremental enables per-extractor caching: an extractor's facts are reused
 	// across snapshots when the files it owns (and the repo's shared config files)
 	// are unchanged. Defaults to true. Set `incremental: false` to force a full
@@ -35,6 +39,17 @@ type Config struct {
 // IncrementalEnabled reports whether per-extractor caching is on (the default).
 func (c *Config) IncrementalEnabled() bool {
 	return c.Incremental == nil || *c.Incremental
+}
+
+// DashboardConfig controls the localhost dashboard.
+//
+// Port is the fixed "shared URL" port every server competes for, so there is one
+// address worth bookmarking even though each server also listens on an ephemeral
+// port of its own. Zero means the built-in default; a negative value turns the
+// shared URL off, leaving only the ephemeral port. The ENOLA_DASHBOARD_PORT
+// environment variable overrides it.
+type DashboardConfig struct {
+	Port int `yaml:"port"`
 }
 
 // OutputConfig controls where and how output artifacts are generated.

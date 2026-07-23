@@ -72,26 +72,41 @@ func AggregateUsage(dir string) (Aggregate, error) {
 	return agg, nil
 }
 
-// ServerStatus is the aggregated view of a single MCP server's activity across
-// every repo it has served: the historical grand total plus the current
-// session. This is what plain --status renders — it is not tied to any cwd.
+// ServerStatus is the aggregated view of enola activity across every repo that
+// has been served: the historical grand total plus what the currently-running
+// servers have done. This is what plain --status renders — it is not tied to any
+// cwd.
+//
+// Several servers commonly run at once (one per agent terminal), so Instances
+// is the authoritative list and the scalar PID/StartTime/DashboardPort/Alive
+// fields describe only the *primary* instance — this process when the caller is
+// itself a server, otherwise the most recently started live one. Anything that
+// must describe a specific process (a dashboard naming itself) should read
+// Tracker.Self or Instances rather than these.
 type ServerStatus struct {
 	GrandTotal    map[string]int // sum of ToolCounts across all repos (lifetime)
-	Session       map[string]int // sum of SessionCounts for the current server run
-	StartTime     time.Time      // newest StartTime seen (the current/most-recent run)
-	PID           int            // PID of that run
-	DashboardPort int            // localhost HTTP dashboard port of that run (0 if none)
-	Alive         bool           // whether that PID is still running
+	Session       map[string]int // sum of SessionCounts across live instances
+	Instances     []Instance     // every server running right now, oldest first
+	StartTime     time.Time      // primary instance's start time
+	PID           int            // primary instance's PID
+	DashboardPort int            // primary instance's dashboard port (0 if none)
+	Alive         bool           // whether any server is running
 	TrackingSince time.Time      // earliest TrackingSince across all repos
 	Repos         int            // number of repos with recorded usage
 	Found         bool           // false if no usage files exist
 }
 
 // AggregateServer collapses all per-repo usage files in dir into one server
-// view. The grand total sums every file; the session sums only files written by
-// the current server run — identified as those sharing the newest StartTime, so
-// stale session counts from a previous run (files not re-touched yet) are
-// excluded. Best-effort: unreadable/malformed files are skipped.
+// view, and overlays the live-instance registry.
+//
+// The grand total sums every usage file. Live process state — which servers are
+// running, their PIDs, dashboard ports and session counts — comes from the
+// registry (see instance.go), because the usage files are shared by every
+// process and their per-process fields are whatever the last writer happened to
+// stamp. When the registry is empty (no server running, or records written by an
+// older build) it falls back to the previous heuristic: treat the file with the
+// newest StartTime as the server, and count sessions only from files sharing it.
+// Best-effort: unreadable/malformed files are skipped.
 func AggregateServer(dir string) ServerStatus {
 	ss := ServerStatus{
 		GrandTotal: make(map[string]int),
@@ -124,22 +139,39 @@ func AggregateServer(dir string) ServerStatus {
 	ss.Found = true
 	ss.Repos = len(infos)
 
-	// First pass: grand total, newest StartTime, earliest TrackingSince.
+	// Lifetime totals and the tracking window come from the shared usage files.
 	for _, info := range infos {
 		for k, v := range info.ToolCounts {
 			ss.GrandTotal[k] += v
-		}
-		if info.StartTime.After(ss.StartTime) {
-			ss.StartTime = info.StartTime
-			ss.PID = info.PID
-			ss.DashboardPort = info.DashboardPort
 		}
 		if !info.TrackingSince.IsZero() && (ss.TrackingSince.IsZero() || info.TrackingSince.Before(ss.TrackingSince)) {
 			ss.TrackingSince = info.TrackingSince
 		}
 	}
 
-	// Second pass: session counts only from files belonging to the current run.
+	// Live process state comes from the registry when it has anything to say.
+	if ss.Instances = LiveInstances(); len(ss.Instances) > 0 {
+		for _, inst := range ss.Instances {
+			for k, v := range inst.SessionCounts {
+				ss.Session[k] += v
+			}
+		}
+		primary := primaryInstance(ss.Instances)
+		ss.PID = primary.PID
+		ss.StartTime = primary.StartTime
+		ss.DashboardPort = primary.DashboardPort
+		ss.Alive = true
+		return ss
+	}
+
+	// No registry: fall back to the newest-StartTime heuristic over usage files.
+	for _, info := range infos {
+		if info.StartTime.After(ss.StartTime) {
+			ss.StartTime = info.StartTime
+			ss.PID = info.PID
+			ss.DashboardPort = info.DashboardPort
+		}
+	}
 	for _, info := range infos {
 		if info.StartTime.Equal(ss.StartTime) {
 			for k, v := range info.SessionCounts {
@@ -150,6 +182,20 @@ func AggregateServer(dir string) ServerStatus {
 
 	ss.Alive = isProcessAlive(ss.PID)
 	return ss
+}
+
+// primaryInstance picks the instance the scalar ServerStatus fields describe:
+// this process when the caller is itself a running server (so a server never
+// reports a sibling as itself), otherwise the most recently started one.
+// instances must be non-empty and sorted oldest-first, as LiveInstances returns.
+func primaryInstance(instances []Instance) Instance {
+	self := os.Getpid()
+	for _, inst := range instances {
+		if inst.PID == self {
+			return inst
+		}
+	}
+	return instances[len(instances)-1]
 }
 
 // PrintStatusAll renders the cross-repo aggregate to stderr. Because the stats

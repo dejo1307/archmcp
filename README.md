@@ -470,7 +470,7 @@ Run `enola --help` for the full text. With no flags, enola starts the MCP server
 | `--generate [config_path]` | Generate a snapshot and exit — no MCP server. Artifacts go to `output.dir` (default `.enola/`). |
 | `--explain [repo_path]` | Print the statistics report above and exit. Read-only: nothing is written to `.enola/`. |
 | `--list` | List the MCP tools this build serves, with one-line summaries. |
-| `--status` | Show the MCP server's activity: uptime, per-tool call counts (this session and lifetime), and an estimate of the time and context those calls saved. |
+| `--status` | List every enola server running right now — PID, repos, uptime, calls, dashboard URL — plus per-tool call counts and an estimate of the time and context those calls saved. |
 | `--status --all` | The same usage, broken down per repository. |
 | `--no-dashboard` | Start the MCP server without the localhost dashboard. |
 | `--version` | Print the build version. |
@@ -483,13 +483,25 @@ Usage counters are recorded per repository under `~/.enola/usage/`, so they surv
 
 Starting the MCP server also starts a **read-only dashboard** on a free loopback port (`127.0.0.1`), printed to stderr on startup — run `enola --status` while the server is up to get the URL again. It refreshes every 30 seconds and shows, in one page:
 
-- the same activity and value data as `--status`;
+- **this server** — its PID, binary, uptime, the repos *it* has loaded, and the directory it was launched from;
+- **every enola server running right now**, with a link to each one's dashboard, so you can switch between them;
+- the same activity and value data as `--status`, split into what this server has served and the lifetime total across all of them;
 - the **snapshot receipt** — snapshot ID, enola version, git ref, extractors, fact/insight counts;
-- the **graph receipt** (`~/.enola/receipt.json`) with the repos currently in the graph, and clickable counters listing the services and cross-repo edges — the edges also render as a node-link diagram;
+- the **graph receipt** — the repos in this server's graph, and clickable counters listing the services and cross-repo edges (the edges also render as a node-link diagram);
 - the **insights** grouped by explainer, filterable by confidence band, so you can see what each finding is and how certain it is;
 - **extraction quality** — per-service coverage, unresolved routes, and samples of skipped files and parse errors, which is where you look when a snapshot seems thin.
 
 It is strictly a viewer: every request reads through the same concurrency-safe accessors the MCP tools use and never mutates server state. It binds loopback only and serves nothing but that one page. Pass `--no-dashboard` to skip it.
+
+#### Several servers at once
+
+Agent tooling starts one enola server per session, so opening four terminals means four servers — each with its own graph, its own dashboard, and its own ephemeral port. Two things keep that legible.
+
+**One bookmarkable URL.** Besides its own port, every server competes for a fixed **shared URL**, `http://127.0.0.1:7171` by default. The first to start wins it; when that one exits another takes over within a few seconds, so the address keeps working for as long as any server is up. Whichever server answers there lists all the others. Set `ENOLA_DASHBOARD_PORT` (or `dashboard.port` in the config) to move it, or `ENOLA_DASHBOARD_PORT=off` to keep only the ephemeral ports.
+
+**Every page describes its own server.** The PID, uptime, repos and per-server call counts on a page belong to the process serving it — never to whichever server happened to start last. If a page shows a graph you did not expect, the switcher tells you which server holds the one you want.
+
+Running servers register themselves under `~/.enola/instances/`; a record is removed on exit, and one left behind by a hard-killed process is cleaned up by the next reader. Each workspace also keeps its own graph receipt under `~/.enola/graphs/`, so restarting a server in one repo restores *that* repo's graph rather than whatever another terminal snapshotted last.
 
 ---
 

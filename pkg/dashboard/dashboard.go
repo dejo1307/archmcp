@@ -25,6 +25,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/enola-labs/enola/pkg/bootstrap"
@@ -77,6 +80,20 @@ type Options struct {
 	// Title names the product in the page title, heading and footer. Defaults to
 	// defaultTitle.
 	Title string
+
+	// Tracker is this process's usage tracker, and the ONLY source the page uses
+	// to describe the server it is served by — PID, uptime, dashboard port, the
+	// graph loaded, and this process's own tool counts. Without it the page can
+	// only render the cross-process aggregate, which with several servers running
+	// would attribute a sibling's identity to this one.
+	Tracker *status.Tracker
+
+	// StablePort is an optional fixed loopback port this dashboard also listens
+	// on, in addition to its own ephemeral one, so there is a URL worth
+	// bookmarking. The first server to claim it becomes the "front door"; the
+	// others retry in the background and take it over when that server exits.
+	// Zero disables it.
+	StablePort int
 }
 
 // defaultTitle is the product name shown when Options.Title is empty.
@@ -99,6 +116,12 @@ type engineView interface {
 	// service and cross-repo-edge lists behind the graph-receipt counters (the
 	// receipt itself stores only the counts). Reads are concurrency-safe.
 	Store() *facts.Store
+	// GraphReceipt describes the graph THIS engine holds, assembled in memory.
+	// It is what the graph panel renders, so that panel and the store-derived
+	// panels below it can never describe different repo sets — which reading the
+	// machine-wide ~/.enola/receipt.json would allow whenever a second server is
+	// running. Nil when no snapshot is loaded.
+	GraphReceipt() *facts.GraphReceipt
 }
 
 // Server is a running dashboard HTTP server bound to a loopback port.
@@ -109,6 +132,11 @@ type Server struct {
 	tmpl   *template.Template
 	labels map[string]string // insight-source allowlist + display labels
 	title  string            // product name in the page title/heading/footer
+	mux    *http.ServeMux
+
+	// frontDoor is set once this server claims the stable port. Read from every
+	// request handler and written by the claim goroutine, hence atomic.
+	frontDoor atomic.Bool
 }
 
 // Start binds a free ephemeral port on 127.0.0.1, serves the dashboard from a
@@ -137,16 +165,96 @@ func Start(eng *bootstrap.Engine, opts Options) (*Server, error) {
 		title:  titleOr(opts.Title),
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleIndex)
+	s.mux = http.NewServeMux()
+	s.mux.HandleFunc("/", s.handleIndex)
 
 	go func() {
-		if err := http.Serve(ln, mux); err != nil {
+		if err := http.Serve(ln, s.mux); err != nil {
 			log.Printf("dashboard: serve stopped: %v", err)
 		}
 	}()
 
+	if opts.StablePort > 0 {
+		go s.claimStablePort(opts.StablePort)
+	}
+
 	return s, nil
+}
+
+// DefaultStablePort is the shared, bookmarkable dashboard port used when neither
+// the config nor the environment names one.
+const DefaultStablePort = 7171
+
+// StablePortEnv overrides the configured shared-URL port. Set it to "0" or "off"
+// to disable the shared URL and keep only this server's ephemeral port.
+const StablePortEnv = "ENOLA_DASHBOARD_PORT"
+
+// ResolveStablePort decides which fixed port the dashboard should also listen on:
+// ENOLA_DASHBOARD_PORT if set, else the configured port, else DefaultStablePort.
+// Zero (from either source, or "off" in the environment) disables it; a negative
+// configured value does the same. An unparseable environment value is reported and
+// ignored rather than silently dropping the feature.
+func ResolveStablePort(configured int) int {
+	if v, ok := os.LookupEnv(StablePortEnv); ok {
+		v = strings.TrimSpace(v)
+		if v == "off" || v == "none" {
+			return 0
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			log.Printf("dashboard: ignoring %s=%q: not a port number", StablePortEnv, v)
+		} else {
+			return max(n, 0)
+		}
+	}
+	switch {
+	case configured < 0:
+		return 0
+	case configured == 0:
+		return DefaultStablePort
+	default:
+		return configured
+	}
+}
+
+// stableRetryInterval is how often a server that lost the race for the stable
+// port re-tries it, so the bookmarkable URL is picked up again within seconds of
+// the owning server exiting.
+const stableRetryInterval = 5 * time.Second
+
+// claimStablePort keeps trying to bind the stable loopback port and serves the
+// same page from it once it succeeds. Exactly one server can hold the port at a
+// time — the OS decides the race — and every server keeps retrying until it wins,
+// so the URL survives the front-door terminal closing.
+//
+// It runs for the life of the process: if the listener ever fails, the loop
+// resumes trying. Failures are logged at most once per state change; a port held
+// by another server is the normal case, not an error.
+func (s *Server) claimStablePort(port int) {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	for {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			time.Sleep(stableRetryInterval)
+			continue
+		}
+
+		s.frontDoor.Store(true)
+		if s.opts.Tracker != nil {
+			s.opts.Tracker.SetFrontDoor(true)
+		}
+		log.Printf("dashboard: serving the shared URL http://%s", addr)
+
+		// Serve blocks until the listener breaks; then this server is no longer
+		// the front door and the loop goes back to competing for the port.
+		err = http.Serve(ln, s.mux)
+		s.frontDoor.Store(false)
+		if s.opts.Tracker != nil {
+			s.opts.Tracker.SetFrontDoor(false)
+		}
+		log.Printf("dashboard: shared URL listener stopped: %v", err)
+		time.Sleep(stableRetryInterval)
+	}
 }
 
 // Port returns the loopback port the dashboard is listening on.
@@ -202,11 +310,44 @@ func buildTemplate(overlay string) (*template.Template, error) {
 	return t, nil
 }
 
-// toolRow is one row of the tool-usage table (session vs lifetime total).
+// toolRow is one row of the tool-usage table (this server vs lifetime total).
 type toolRow struct {
 	Name    string
 	Session int
 	Total   int
+}
+
+// instanceRow is one row of the instances table: another enola server running
+// right now, with the URL of its dashboard. Self marks the one serving this page.
+type instanceRow struct {
+	PID       int
+	Binary    string
+	Repos     string
+	Uptime    string
+	Calls     int
+	URL       string
+	Self      bool
+	FrontDoor bool
+}
+
+// instanceRows projects the live-instance registry into table rows. selfPID is
+// the process serving this page, which is highlighted rather than hidden — a
+// user comparing two dashboards needs to see which row is the page they are on.
+func instanceRows(instances []status.Instance, selfPID int, now time.Time) []instanceRow {
+	rows := make([]instanceRow, 0, len(instances))
+	for _, inst := range instances {
+		rows = append(rows, instanceRow{
+			PID:       inst.PID,
+			Binary:    inst.Binary,
+			Repos:     inst.RepoLabels(),
+			Uptime:    formatDuration(now.Sub(inst.StartTime)),
+			Calls:     inst.SessionCalls(),
+			URL:       inst.URL(),
+			Self:      inst.PID == selfPID,
+			FrontDoor: inst.FrontDoor,
+		})
+	}
+	return rows
 }
 
 // valueRow is one row of the value-estimate table (pre-formatted for display).
@@ -222,6 +363,8 @@ type pageData struct {
 	RefreshSeconds int
 	Title          string
 
+	// This server's own identity. Never sourced from the cross-process aggregate:
+	// with several agent terminals open, that would name a sibling process.
 	Running       bool
 	PID           int
 	Port          int
@@ -229,6 +372,20 @@ type pageData struct {
 	StartedAt     string
 	TrackingSince string
 	ReposTracked  int
+	Binary        string
+	ConfigPath    string
+	WorkDir       string
+	ReposLoaded   string
+	SessionCalls  int
+
+	// FrontDoor is true when this server currently owns the stable URL, and
+	// StableURL names it (empty when the feature is off).
+	FrontDoor bool
+	StableURL string
+
+	// Instances is every enola server running right now, this one included, so a
+	// user with several terminals open can see them all and switch between them.
+	Instances []instanceRow
 
 	Tools      []toolRow
 	Values     []valueRow
@@ -281,22 +438,50 @@ func (s *Server) buildPage() pageData {
 		Port:           s.port,
 	}
 
+	now := time.Now()
+
+	// Identity comes from THIS process's tracker. A user running one server per
+	// agent terminal must be able to tell, from the page alone, which one they are
+	// looking at — so nothing here may come from the cross-process aggregate.
+	var self status.Instance
+	if s.opts.Tracker != nil {
+		self = s.opts.Tracker.Self()
+		data.Running = true
+		data.PID = self.PID
+		data.Binary = self.Binary
+		if self.Version != "" {
+			data.Binary += " " + self.Version
+		}
+		data.ConfigPath = self.ConfigPath
+		data.WorkDir = self.WorkDir
+		data.ReposLoaded = self.RepoLabels()
+		data.SessionCalls = self.SessionCalls()
+		if !self.StartTime.IsZero() {
+			data.StartedAt = self.StartTime.Format("2006-01-02 15:04:05")
+			data.Uptime = formatDuration(now.Sub(self.StartTime))
+		}
+		data.Tools = toolRows(nil, self.SessionCounts) // totals filled in below
+	}
+
+	data.FrontDoor = s.frontDoor.Load()
+	if s.opts.StablePort > 0 {
+		data.StableURL = fmt.Sprintf("http://127.0.0.1:%d", s.opts.StablePort)
+	}
+
+	// Lifetime totals and the per-repo tracking window are genuinely cross-process
+	// figures, and are labelled as such on the page.
 	ss := status.ServerSnapshot()
 	if ss.Found {
-		data.Running = ss.Alive
-		data.PID = ss.PID
 		data.ReposTracked = ss.Repos
-		if !ss.StartTime.IsZero() {
-			data.StartedAt = ss.StartTime.Format("2006-01-02 15:04:05")
-			if ss.Alive {
-				data.Uptime = formatDuration(time.Since(ss.StartTime))
-			}
-		}
 		if !ss.TrackingSince.IsZero() {
 			data.TrackingSince = ss.TrackingSince.Format("2006-01-02 15:04:05")
 		}
-		data.Tools = toolRows(ss.GrandTotal, ss.Session)
+		data.Tools = toolRows(ss.GrandTotal, self.SessionCounts)
 		data.Values, data.ValueTotal = valueRows(ss.GrandTotal)
+		data.Instances = instanceRows(ss.Instances, self.PID, now)
+	}
+	if len(data.Instances) == 0 {
+		data.Instances = instanceRows(status.LiveInstances(), self.PID, now)
 	}
 
 	// Current-snapshot receipt: prefer the live in-memory receipt, falling back
@@ -311,12 +496,15 @@ func (s *Server) buildPage() pageData {
 		data.ReceiptNote = "No snapshot loaded yet — run generate_snapshot to populate this."
 	}
 
-	// Graph-wide receipt: ~/.enola/receipt.json on disk.
-	if gv, err := readGraphReceipt(); err != nil {
-		data.GraphNote = "No graph receipt yet — it is written to ~/.enola/receipt.json when a snapshot is generated."
-	} else {
+	// Graph receipt: assembled from THIS engine's live graph, so the repo list
+	// always describes the same store as the services/insights/coverage panels
+	// below it. Reading the shared ~/.enola/receipt.json here would show whichever
+	// repos another running server snapshotted last.
+	if gv := s.eng.GraphReceipt(); gv != nil {
 		data.HasGraph = true
 		data.Graph = gv
+	} else {
+		data.GraphNote = "No graph loaded in this server yet — run generate_snapshot to populate this."
 	}
 
 	// Service and cross-repo-edge lists from the live store, backing the clickable
@@ -398,24 +586,7 @@ func (s *Server) currentInsights() []facts.Insight {
 	return ins
 }
 
-// readGraphReceipt reads and parses the graph-wide receipt at ~/.enola/receipt.json.
-func readGraphReceipt() (*facts.GraphReceipt, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	b, err := os.ReadFile(filepath.Join(home, ".enola", "receipt.json"))
-	if err != nil {
-		return nil, err
-	}
-	var gv facts.GraphReceipt
-	if err := json.Unmarshal(b, &gv); err != nil {
-		return nil, err
-	}
-	return &gv, nil
-}
-
-// toolRows builds the sorted union of tool-usage rows (session and lifetime).
+// toolRows builds the sorted union of tool-usage rows (this server and lifetime).
 func toolRows(total, session map[string]int) []toolRow {
 	set := make(map[string]struct{}, len(total)+len(session))
 	for k := range total {

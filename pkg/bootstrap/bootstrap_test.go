@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 )
@@ -38,6 +39,42 @@ func writeGoRepo(t *testing.T) string {
 	}
 	write("go.mod", "module example.com/smoke\n\ngo 1.25\n")
 	write("main.go", "package main\n\nfunc Greet() string { return \"hi\" }\n\nfunc main() { _ = Greet() }\n")
+	return dir
+}
+
+// engineFor builds an engine whose configured workspace is repo — the equivalent
+// of one agent terminal launching a server there. The returned config is the same
+// pointer the engine holds, as bootstrap.NewEngine hands out.
+func engineFor(t *testing.T, repo string) (*bootstrap.Engine, *config.Config) {
+	t.Helper()
+	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{
+		ConfigPath: filepath.Join(t.TempDir(), "no-such-config.yaml"),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	cfg.Repo = repo
+	return eng, cfg
+}
+
+// writeBiggerGoRepo creates a Go module with more symbols than writeGoRepo, so a
+// restore that picked up the wrong workspace is detectable by fact count alone.
+func writeBiggerGoRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/bigger\n\ngo 1.25\n")
+	write("main.go", "package main\n\nfunc main() { _ = Alpha() }\n")
+	write("alpha/alpha.go", "package alpha\n\ntype Alpha struct{}\n\nfunc (a Alpha) One() int { return 1 }\n\nfunc (a Alpha) Two() int { return 2 }\n")
+	write("beta/beta.go", "package beta\n\ntype Beta struct{}\n\nfunc (b Beta) Three() int { return 3 }\n\nfunc Helper() {}\n")
 	return dir
 }
 
@@ -137,49 +174,138 @@ func TestAutoLoadSnapshot(t *testing.T) {
 }
 
 // TestAutoLoadSnapshot_FromGlobalReceipt verifies the multi-repo restore path: a
-// prior session's ~/.enola/receipt.json is used to reload the graph on a fresh
-// engine, even when cfg.Repo points somewhere with no snapshot. HOME is isolated so
-// the receipt written by WriteGlobalReceipt is the only one seen.
+// prior session's graph receipt reloads the WHOLE graph — every repo appended to
+// it — and not merely cfg.Repo's own snapshot dir.
+//
+// The proof is that cfg.Repo's own .enola is deleted before the restart, so the
+// single-repo fallback cannot be the source; only the receipt, which points at the
+// appended repo's dir holding the complete store, can supply the facts. HOME is
+// isolated so the receipt written here is the only one seen.
 func TestAutoLoadSnapshot_FromGlobalReceipt(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	// Session 1: generate a snapshot and record it in the global receipt.
+	// Session 1: snapshot the workspace, then append a second repo to the graph.
 	repo := writeGoRepo(t)
-	eng1, cfg, err := bootstrap.NewEngine(bootstrap.Options{
-		ConfigPath: filepath.Join(t.TempDir(), "no-such-config.yaml"),
-	})
-	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
-	}
-	snap, err := eng1.GenerateSnapshot(context.Background(), repo, false)
-	if err != nil {
+	appended := writeBiggerGoRepo(t)
+	eng1, cfg1 := engineFor(t, repo)
+	if _, err := eng1.GenerateSnapshot(context.Background(), repo, false); err != nil {
 		t.Fatalf("GenerateSnapshot: %v", err)
 	}
-	if err := eng1.WriteArtifacts(repo); err != nil {
+	snap, err := eng1.GenerateSnapshot(context.Background(), appended, true)
+	if err != nil {
+		t.Fatalf("GenerateSnapshot (append): %v", err)
+	}
+	// In append mode WriteArtifacts writes the entire store, so the appended
+	// repo's dir holds every repo's facts.
+	if err := eng1.WriteArtifacts(appended); err != nil {
 		t.Fatalf("WriteArtifacts: %v", err)
 	}
 	if err := eng1.WriteGlobalReceipt(); err != nil {
 		t.Fatalf("WriteGlobalReceipt: %v", err)
 	}
 
-	// Session 2 (restart): a brand-new engine whose cfg.Repo has NO snapshot, so a
-	// successful restore can only have come from the global receipt.
-	eng2, cfg2, err := bootstrap.NewEngine(bootstrap.Options{
-		ConfigPath: filepath.Join(t.TempDir(), "no-such-config.yaml"),
-	})
-	if err != nil {
-		t.Fatalf("NewEngine 2: %v", err)
+	// Remove the workspace's own artifacts so a single-repo restore is impossible.
+	if err := os.RemoveAll(filepath.Join(repo, cfg1.Output.Dir)); err != nil {
+		t.Fatal(err)
 	}
-	_ = cfg
-	cfg2.Repo = t.TempDir() // empty dir, no .enola
+
+	// Session 2 (restart) in the same workspace.
+	eng2, cfg2 := engineFor(t, repo)
 	bootstrap.AutoLoadSnapshot(eng2, cfg2)
 
 	if got := eng2.Store().Count(); got != snap.Meta.FactCount {
-		t.Errorf("restored %d facts, want %d", got, snap.Meta.FactCount)
+		t.Errorf("restored %d facts, want %d (the whole multi-repo graph)", got, snap.Meta.FactCount)
+	}
+	if len(eng2.RepoPaths()) != 2 {
+		t.Errorf("restored %d repo paths, want 2", len(eng2.RepoPaths()))
 	}
 	restored := eng2.Snapshot()
 	if restored == nil || restored.Meta.GeneratedAt == "" {
 		t.Fatalf("expected a restored snapshot with generated_at, got %+v", restored)
+	}
+}
+
+// TestAutoLoadSnapshot_PrefersOwnWorkspace is the cross-terminal regression test.
+// A user typically runs one server per agent terminal; the machine-wide receipt
+// describes only whichever generated last. A restart in workspace A must come back
+// holding A's graph, not the graph the other terminal happened to snapshot.
+func TestAutoLoadSnapshot_PrefersOwnWorkspace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Terminal 1 snapshots workspace A.
+	repoA := writeGoRepo(t)
+	engA, cfgA := engineFor(t, repoA)
+	snapA, err := engA.GenerateSnapshot(context.Background(), repoA, false)
+	if err != nil {
+		t.Fatalf("GenerateSnapshot(A): %v", err)
+	}
+	if err := engA.WriteArtifacts(repoA); err != nil {
+		t.Fatalf("WriteArtifacts(A): %v", err)
+	}
+	if err := engA.WriteGlobalReceipt(); err != nil {
+		t.Fatalf("WriteGlobalReceipt(A): %v", err)
+	}
+
+	// Terminal 2 then snapshots a much larger workspace B, becoming the last
+	// writer of ~/.enola/receipt.json.
+	repoB := writeBiggerGoRepo(t)
+	engB, _ := engineFor(t, repoB)
+	snapB, err := engB.GenerateSnapshot(context.Background(), repoB, false)
+	if err != nil {
+		t.Fatalf("GenerateSnapshot(B): %v", err)
+	}
+	if err := engB.WriteArtifacts(repoB); err != nil {
+		t.Fatalf("WriteArtifacts(B): %v", err)
+	}
+	if err := engB.WriteGlobalReceipt(); err != nil {
+		t.Fatalf("WriteGlobalReceipt(B): %v", err)
+	}
+	if snapA.Meta.FactCount == snapB.Meta.FactCount {
+		t.Fatalf("test setup: both workspaces have %d facts, so the restore cannot be told apart", snapA.Meta.FactCount)
+	}
+
+	// Terminal 1 restarts. It must come back with A's graph.
+	restarted, cfgRestart := engineFor(t, cfgA.Repo)
+	bootstrap.AutoLoadSnapshot(restarted, cfgRestart)
+
+	if got := restarted.Store().Count(); got != snapA.Meta.FactCount {
+		t.Errorf("restored %d facts, want %d (workspace A); %d would be workspace B's graph",
+			got, snapA.Meta.FactCount, snapB.Meta.FactCount)
+	}
+	if snap := restarted.Snapshot(); snap == nil || snap.Meta.RepoPath != snapA.Meta.RepoPath {
+		t.Errorf("restored repo path = %+v, want %s", snap, snapA.Meta.RepoPath)
+	}
+}
+
+// TestAutoLoadSnapshot_IgnoresForeignGlobalReceipt covers the second half of the
+// same cross-talk: a workspace with no receipt of its own must NOT adopt the
+// machine-wide one when that receipt describes someone else's repo. Restoring it
+// would silently hand this server another agent terminal's graph — answering
+// every query about the wrong codebase.
+func TestAutoLoadSnapshot_IgnoresForeignGlobalReceipt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Another terminal snapshots its workspace and writes the machine-wide receipt.
+	foreign := writeBiggerGoRepo(t)
+	engForeign, _ := engineFor(t, foreign)
+	if _, err := engForeign.GenerateSnapshot(context.Background(), foreign, false); err != nil {
+		t.Fatalf("GenerateSnapshot(foreign): %v", err)
+	}
+	if err := engForeign.WriteArtifacts(foreign); err != nil {
+		t.Fatalf("WriteArtifacts(foreign): %v", err)
+	}
+	if err := engForeign.WriteGlobalReceipt(); err != nil {
+		t.Fatalf("WriteGlobalReceipt(foreign): %v", err)
+	}
+
+	// A server starts in a never-snapshotted workspace. It must come up empty
+	// rather than inheriting the foreign graph.
+	mine, cfg := engineFor(t, t.TempDir())
+	bootstrap.AutoLoadSnapshot(mine, cfg)
+
+	if got := mine.Store().Count(); got != 0 {
+		t.Errorf("restored %d facts into a workspace that has no snapshot; "+
+			"the machine-wide receipt of another server was adopted", got)
 	}
 }
 

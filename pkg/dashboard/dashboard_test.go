@@ -25,6 +25,7 @@ type fakeArtifacts struct {
 	activeRepo string
 	outputDir  string
 	store      *facts.Store
+	graph      *facts.GraphReceipt
 }
 
 func (f fakeArtifacts) GetArtifact(name string) ([]byte, error) {
@@ -42,6 +43,8 @@ func (f fakeArtifacts) ActiveRepo() string { return f.activeRepo }
 func (f fakeArtifacts) OutputDir(repoPath string) string { return f.outputDir }
 
 func (f fakeArtifacts) Store() *facts.Store { return f.store }
+
+func (f fakeArtifacts) GraphReceipt() *facts.GraphReceipt { return f.graph }
 
 // newTestServer builds a Server exactly as Start does — parsed template and
 // merged insight labels included — but without binding a port. Constructing the
@@ -88,7 +91,7 @@ func TestHandlerDegradesGracefully(t *testing.T) {
 		"refreshes automatically every 30", // stated on the page
 		"127.0.0.1:54321",                  // the dashboard port/URL
 		"No snapshot loaded yet",           // degraded current receipt
-		"No graph receipt yet",             // degraded graph receipt
+		"No graph loaded in this server",   // degraded graph receipt
 	}
 	for _, want := range wantContains {
 		if !strings.Contains(body, want) {
@@ -111,13 +114,19 @@ func TestHandlerRendersReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write a graph receipt into the isolated ~/.enola/receipt.json.
-	graph := facts.GraphReceipt{
+	// The graph panel must come from THIS engine. To prove it does, plant a
+	// different graph in the machine-wide ~/.enola/receipt.json — the file another
+	// running server would have overwritten — and assert none of it reaches the page.
+	graph := &facts.GraphReceipt{
 		SnapshotID:   "graph-xyz",
 		ServiceCount: 7,
 		Repos:        []facts.GraphRepoEntry{{Label: "backend", Path: "/x/backend", FactCount: 100}},
 	}
-	gb, err := json.Marshal(graph)
+	foreign := facts.GraphReceipt{
+		SnapshotID: "graph-from-another-server",
+		Repos:      []facts.GraphRepoEntry{{Label: "someone-elses-repo", Path: "/x/elsewhere"}},
+	}
+	fb, err := json.Marshal(foreign)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,11 +134,11 @@ func TestHandlerRendersReceipts(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), gb, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), fb, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	s := newTestServer(8080, fakeArtifacts{receipt: rb})
+	s := newTestServer(8080, fakeArtifacts{receipt: rb, graph: graph})
 	rec := httptest.NewRecorder()
 	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -140,6 +149,12 @@ func TestHandlerRendersReceipts(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{"graph-from-another-server", "someone-elses-repo"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("body contains %q — the graph panel must render THIS engine's graph, "+
+				"not the machine-wide receipt another server may have written", unwanted)
 		}
 	}
 }
@@ -245,22 +260,11 @@ func TestGraphDetails(t *testing.T) {
 
 // TestHandlerRendersModals verifies the clickable counters and modal contents are
 // rendered when the store holds service facts. The clickable count buttons live in
-// the graph-receipt cards, so a graph receipt must exist on disk for them to render.
+// the graph-receipt cards, so the engine must report a graph for them to render.
 func TestHandlerRendersModals(t *testing.T) {
-	home := isolateHome(t)
+	isolateHome(t)
 
-	graph := facts.GraphReceipt{SnapshotID: "graph-xyz", ServiceCount: 2, CrossRepoEdgeCount: 1}
-	gb, err := json.Marshal(graph)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(home, ".enola")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), gb, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	graph := &facts.GraphReceipt{SnapshotID: "graph-xyz", ServiceCount: 2, CrossRepoEdgeCount: 1}
 
 	st := facts.NewStore()
 	st.Add(facts.Fact{Kind: facts.KindService, Name: "frontend", Relations: []facts.Relation{
@@ -268,7 +272,7 @@ func TestHandlerRendersModals(t *testing.T) {
 	}})
 	st.Add(facts.Fact{Kind: facts.KindService, Name: "backend"})
 
-	s := newTestServer(8080, fakeArtifacts{err: errors.New("no receipt"), store: st})
+	s := newTestServer(8080, fakeArtifacts{err: errors.New("no receipt"), store: st, graph: graph})
 	rec := httptest.NewRecorder()
 	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -428,24 +432,13 @@ func TestMergedLabelsDoesNotMutatePackageMap(t *testing.T) {
 }
 
 // TestHandlerRendersInsightsModal verifies the clickable Insights counter and the
-// modal's grouped bars render when insights.json is available via GetArtifact. A
-// graph receipt is written to disk so the graph card (which hosts one clickable
-// counter) renders.
+// modal's grouped bars render when insights.json is available via GetArtifact. The
+// engine reports a graph so the graph card (which hosts one clickable counter)
+// renders.
 func TestHandlerRendersInsightsModal(t *testing.T) {
-	home := isolateHome(t)
+	isolateHome(t)
 
-	graph := facts.GraphReceipt{SnapshotID: "graph-xyz", InsightCount: 2}
-	gb, err := json.Marshal(graph)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(home, ".enola")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "receipt.json"), gb, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	graph := &facts.GraphReceipt{SnapshotID: "graph-xyz", InsightCount: 2}
 
 	insights := []facts.Insight{
 		{Source: "god-class", Title: "UserService is a god class", Confidence: 0.9},
@@ -456,7 +449,7 @@ func TestHandlerRendersInsightsModal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := newTestServer(8080, fakeArtifacts{insights: ib})
+	s := newTestServer(8080, fakeArtifacts{insights: ib, graph: graph})
 	rec := httptest.NewRecorder()
 	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 

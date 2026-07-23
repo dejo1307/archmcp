@@ -40,6 +40,8 @@
     th { background: var(--th); font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
     td.num, th.num { text-align: right; }
     tr.total td { font-weight: 700; border-top: 2px solid var(--border); }
+    tr.self-row td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    a { color: var(--accent); }
     .note { color: var(--muted); font-style: italic; }
     .chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .2rem; }
     .chip { background: var(--th); border: 1px solid var(--border); border-radius: 6px; padding: .05rem .45rem; font-size: .8rem; }
@@ -117,25 +119,50 @@
     <h1>{{.Title}}</h1>
     {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">not running</span>{{end}}
   </header>
-  <div class="refresh">This page refreshes automatically every {{.RefreshSeconds}} seconds. Served on <code>http://127.0.0.1:{{.Port}}</code>.</div>
+  <div class="refresh">This page refreshes automatically every {{.RefreshSeconds}} seconds. Served on <code>http://127.0.0.1:{{.Port}}</code>{{if .FrontDoor}} and on the shared URL <code>{{.StableURL}}</code>{{end}}.</div>
 
+  <h2>This server</h2>
+  <p class="note">Everything on this page describes this one process and the graph it holds. Other servers are listed below.</p>
   <div class="grid">
-    <div class="card"><div class="k">Server</div><div class="v">{{if .Running}}PID {{.PID}}{{else}}stopped{{end}}</div></div>
+    <div class="card"><div class="k">Process</div><div class="v">PID {{.PID}}</div></div>
+    {{if .Binary}}<div class="card"><div class="k">Binary</div><div class="v">{{.Binary}}</div></div>{{end}}
     {{if .Uptime}}<div class="card"><div class="k">Uptime</div><div class="v">{{.Uptime}}</div></div>{{end}}
     {{if .StartedAt}}<div class="card"><div class="k">Started</div><div class="v">{{.StartedAt}}</div></div>{{end}}
-    {{if .TrackingSince}}<div class="card"><div class="k">Tracking since</div><div class="v">{{.TrackingSince}}</div></div>{{end}}
-    <div class="card"><div class="k">Repos tracked</div><div class="v">{{.ReposTracked}}</div></div>
-    <div class="card"><div class="k">Dashboard port</div><div class="v">{{.Port}}</div></div>
+    {{if .ReposLoaded}}<div class="card"><div class="k">Repos loaded</div><div class="v">{{.ReposLoaded}}</div></div>{{end}}
+    <div class="card"><div class="k">Calls served</div><div class="v">{{.SessionCalls}}</div></div>
+    <div class="card"><div class="k">Dashboard port</div><div class="v">{{.Port}}{{if .FrontDoor}} <span class="badge on">shared URL</span>{{end}}</div></div>
   </div>
+  {{if .WorkDir}}<div class="card" style="margin-top:.75rem"><div class="k">Launched from</div><div class="v">{{.WorkDir}}{{if .ConfigPath}} <span class="note" style="font-size:.85rem;font-weight:400">(config: {{.ConfigPath}})</span>{{end}}</div></div>{{end}}
+
+  {{if .Instances}}
+  <h2>Servers running <span class="note">({{len .Instances}})</span></h2>
+  <p class="note">One enola server runs per agent session, each with its own graph. Follow a link to inspect another one.</p>
+  <div class="table-scroll"><table>
+    <thead><tr><th>PID</th><th>Binary</th><th>Repos</th><th class="num">Uptime</th><th class="num">Calls</th><th>Dashboard</th></tr></thead>
+    <tbody>
+      {{range .Instances}}<tr{{if .Self}} class="self-row"{{end}}>
+        <td>{{.PID}}{{if .Self}} <span class="badge on">this page</span>{{end}}</td>
+        <td>{{.Binary}}</td>
+        <td>{{.Repos}}</td>
+        <td class="num">{{.Uptime}}</td>
+        <td class="num">{{.Calls}}</td>
+        <td>{{if .URL}}<a href="{{.URL}}">{{.URL}}</a>{{if .FrontDoor}} <span class="chip">shared</span>{{end}}{{else}}<span class="note">none</span>{{end}}</td>
+      </tr>{{end}}
+    </tbody>
+  </table></div>
+  {{end}}
 
   <h2>Tool usage</h2>
   {{if .Tools}}
   <div class="table-scroll"><table>
-    <thead><tr><th>Tool</th><th class="num">Session</th><th class="num">Total</th></tr></thead>
+    <thead><tr><th>Tool</th><th class="num">This server</th><th class="num">All servers, lifetime</th></tr></thead>
     <tbody>
       {{range .Tools}}<tr><td>{{.Name}}</td><td class="num">{{.Session}}</td><td class="num">{{.Total}}</td></tr>{{end}}
     </tbody>
   </table></div>
+  <p class="note">
+    "This server" counts only the calls this process has served{{if .TrackingSince}}; the lifetime column sums every repo on this machine since {{.TrackingSince}}{{end}}{{if .ReposTracked}} ({{.ReposTracked}} repo(s) tracked){{end}}.
+  </p>
   {{else}}<p class="note">No tool calls recorded yet.</p>{{end}}
 
   <h2>Value estimate <span class="note">(approximate)</span></h2>
@@ -181,7 +208,7 @@
   </div>
   {{end}}{{else}}<p class="note">{{.ReceiptNote}}</p>{{end}}
 
-  <h2>Graph receipt <span class="note">(~/.enola/receipt.json)</span></h2>
+  <h2>Graph receipt <span class="note">(this server's graph)</span></h2>
   {{if .HasGraph}}{{with .Graph}}
   <div class="grid">
     <div class="card"><div class="k">Snapshot ID</div><div class="v">{{.SnapshotID}}</div></div>

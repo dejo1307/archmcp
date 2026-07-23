@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/enola-labs/enola/internal/config"
@@ -37,6 +38,7 @@ import (
 	"github.com/enola-labs/enola/internal/renderers/llmcontext"
 	"github.com/enola-labs/enola/internal/server"
 	"github.com/enola-labs/enola/pkg/plugin"
+	"github.com/enola-labs/enola/pkg/status"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -106,9 +108,18 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	return e.eng.WriteArtifacts(repoPath)
 }
 
-// WriteGlobalReceipt refreshes the graph-wide receipt at ~/.enola/receipt.json.
+// WriteGlobalReceipt refreshes the graph-wide receipt at ~/.enola/receipt.json
+// and this workspace's own copy under ~/.enola/graphs/.
 func (e *Engine) WriteGlobalReceipt() error {
 	return e.eng.WriteGlobalReceipt()
+}
+
+// GraphReceipt returns the receipt for the graph THIS engine currently holds,
+// assembled in memory. A viewer with several servers running must use this
+// rather than reading ~/.enola/receipt.json, which describes whichever process
+// generated a snapshot last. Nil when no snapshot is loaded.
+func (e *Engine) GraphReceipt() *facts.GraphReceipt {
+	return e.eng.GraphReceipt()
 }
 
 // SetBaseline pins the current on-disk snapshot as the diff baseline.
@@ -248,24 +259,83 @@ func NewServer(eng *Engine, cfg *config.Config) (*Server, error) {
 	return &Server{srv: srv}, nil
 }
 
+// GraphStateFunc returns a callback reporting what this engine currently holds,
+// for status.Tracker.SetGraphFunc. It is what lets a user with several servers
+// running tell them apart — each instance record then names the repos, snapshot
+// and fact counts of its own process rather than of whichever one wrote last.
+//
+// The callback is invoked on every status write, so it only reads the published
+// (immutable) snapshot bundle and never blocks on IO.
+func GraphStateFunc(eng *Engine) status.GraphFunc {
+	return func() status.GraphState {
+		g := status.GraphState{PrimaryRepo: eng.ActiveRepo()}
+
+		snap := eng.Snapshot()
+		if snap != nil {
+			g.SnapshotID = snap.Meta.SnapshotID
+			if t, err := time.Parse(time.RFC3339, snap.Meta.GeneratedAt); err == nil {
+				g.SnapshotAt = t
+			}
+			g.FactCount = snap.Meta.FactCount
+			g.InsightCount = snap.Meta.InsightCount
+		}
+
+		store := eng.Store()
+		repos := eng.RepoPaths()
+		if len(repos) == 0 && snap != nil && snap.Meta.RepoPath != "" {
+			// Single-repo graph: RepoPaths stays empty until a repo is appended.
+			repos = map[string]string{filepath.Base(snap.Meta.RepoPath): snap.Meta.RepoPath}
+		}
+		for label, path := range repos {
+			r := status.InstanceRepo{Label: label, Path: path}
+			if store != nil {
+				r.FactCount = store.CountByRepo(label)
+			}
+			g.Repos = append(g.Repos, r)
+		}
+		sort.Slice(g.Repos, func(i, j int) bool { return g.Repos[i].Label < g.Repos[j].Label })
+		return g
+	}
+}
+
 // AutoLoadSnapshot restores an existing snapshot from disk if available, so queries
 // (and the enterprise tools) work immediately after a restart WITHOUT a
 // generate_snapshot call.
 //
-// It prefers the graph-wide registry at ~/.enola/receipt.json: that lists every
-// repo currently in the graph and their paths, so a restart restores the WHOLE
-// multi-repo graph — not just cfg.Repo — with no extractor runs. If that is
-// unavailable it falls back to a single-repo restore of cfg.Repo. Either way it
-// restores facts + insights + the snapshot meta (incl. generated_at, which the
-// freshness check needs), unlike the old facts-only load.
+// It prefers a graph registry listing every repo in the graph and their paths, so
+// a restart restores the WHOLE multi-repo graph — not just cfg.Repo — with no
+// extractor runs. Two registries exist and are tried in order:
+//
+//  1. ~/.enola/graphs/<workspace>.json — the receipt for THIS workspace (cfg.Repo).
+//  2. ~/.enola/receipt.json — the machine-wide receipt, describing whichever
+//     server generated a snapshot last.
+//
+// The workspace file comes first because a user typically runs several servers at
+// once, one per agent terminal: reading the shared file would restore a sibling
+// terminal's repo set into this process. The shared file remains the fallback for
+// graphs snapshotted before the workspace receipt existed. Failing both, it falls
+// back to a single-repo restore of cfg.Repo. Either way it restores facts +
+// insights + the snapshot meta (incl. generated_at, which the freshness check
+// needs), unlike the old facts-only load.
 //
 // It publishes a fresh bundle via engine.RestoreFromDir. This is safe ONLY because
 // it runs single-threaded at startup, before the MCP server begins serving tool
 // calls — no reader can observe a half-built store. Callers must keep it strictly
 // before Server.Run.
 func AutoLoadSnapshot(eng *Engine, cfg *config.Config) {
-	// Preferred path: reload the full multi-repo graph from the global registry.
-	if gr, err := engine.LoadGlobalReceipt(); err == nil && len(gr.Repos) > 0 {
+	// Preferred path: this workspace's own graph.
+	if gr, err := engine.LoadWorkspaceReceipt(cfg.Repo); err == nil && len(gr.Repos) > 0 {
+		if restoreFromGlobalReceipt(eng, cfg, gr) {
+			return
+		}
+		log.Printf("[bootstrap] workspace receipt present but multi-repo restore incomplete; trying the machine-wide receipt")
+	}
+
+	// Fallback: the machine-wide registry — but only when it actually describes
+	// this workspace. It is written by every server on the machine, so adopting it
+	// blindly would restore a graph another agent terminal snapshotted, which is
+	// the cross-talk the workspace receipt above exists to prevent.
+	if gr, err := engine.LoadGlobalReceipt(); err == nil && len(gr.Repos) > 0 && receiptCovers(gr, cfg.Repo) {
 		if restoreFromGlobalReceipt(eng, cfg, gr) {
 			return
 		}
@@ -287,6 +357,30 @@ func AutoLoadSnapshot(eng *Engine, cfg *config.Config) {
 		return
 	}
 	log.Printf("[bootstrap] restored single-repo snapshot for %s", label)
+}
+
+// receiptCovers reports whether a graph receipt includes the given workspace
+// repo, i.e. whether restoring it would give this server its OWN graph. Paths are
+// compared canonically (absolute, symlinks resolved) because a receipt records
+// the path as the writing server resolved it.
+func receiptCovers(gr *facts.GraphReceipt, repo string) bool {
+	want, err := filepath.Abs(repo)
+	if err != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(want); err == nil {
+		want = resolved
+	}
+	for _, r := range gr.Repos {
+		got := r.Path
+		if resolved, err := filepath.EvalSymlinks(got); err == nil {
+			got = resolved
+		}
+		if got == want {
+			return true
+		}
+	}
+	return false
 }
 
 // restoreFromGlobalReceipt reloads the complete multi-repo graph named by the

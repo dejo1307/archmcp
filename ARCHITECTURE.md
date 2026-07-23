@@ -228,11 +228,30 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 - `OSSTools()` is the `--list` catalogue: name plus a one-line summary. It is hand-written on purpose — the descriptions registered with `mcp.AddTool` are multi-paragraph agent prompts, unusable in a terminal. `TestE2E_ToolCatalogueMatchesRegisteredTools` ([`internal/server/e2e_test.go`](internal/server/e2e_test.go)) asserts set equality against the tools the running server actually registers, so the two cannot drift. `RenderToolList(ToolListSpec)` renders it; a wrapper passes its own tools in `Extra` (or an unlock note via `ExtraLocked`/`LockedNote`), and with a zero spec the output never mentions that a wrapper exists.
 - `DefaultHelp(Binary)` returns the `HelpSpec` shared by every enola binary — usage, flags, config path, examples, MCP configuration, build — with the binary's name, command package and version ldflag substituted in. A wrapper appends to `Commands`/`Flags`/`Sections`, qualifies a shared flag with `AppendFlagNote`, and places its own blocks precisely with `InsertSectionsBefore`. `RenderHelp` does the layout (a 22-column description gutter, with continuation lines aligned to it).
 
-**[`pkg/status`](pkg/status)** is the usage tracker behind `--status`. `Tracker.OnToolCall` is registered as the server's tool callback (`bootstrap.Server.SetToolCallback`) and attributes each call to the repo it actually operated on, not to a fixed one. Counters live in `~/.enola/usage/<repo-base>-<hash8>.json` — outside the repo, so they survive both a restart and deleting `.enola/` — and each file carries the lifetime total plus the current run's session counts. `AggregateServer` collapses every file into the one server view `PrintStatus` renders; `AggregateUsage` produces the per-repo breakdown for `--status --all`.
+**[`pkg/status`](pkg/status)** is the usage tracker behind `--status`. `Tracker.OnToolCall` is registered as the server's tool callback (`bootstrap.Server.SetToolCallback`) and attributes each call to the repo it actually operated on, not to a fixed one. Counters live in `~/.enola/usage/<repo-base>-<hash8>.json` — outside the repo, so they survive both a restart and deleting `.enola/`. `AggregateServer` collapses every file into the server view `PrintStatus` renders; `AggregateUsage` produces the per-repo breakdown for `--status --all`.
+
+### Many servers, one home directory
+
+Agent tooling starts one MCP server per session, so several run concurrently — different repos, sometimes the same repo, both binaries — and they all share `~/.enola`. Two mechanisms keep that from turning into cross-talk.
+
+**Shared files are merged, not overwritten.** A repo's usage file has many writers. `Tracker.flush` therefore holds a cross-process lock ([`filelock_unix.go`](pkg/status/filelock_unix.go) / [`filelock_windows.go`](pkg/status/filelock_windows.go)), re-reads the file, and adds only the increments this process has not yet flushed. Writing `baseline + ownSession` instead — as it once did — silently discarded whatever a sibling had recorded in between.
+
+**Per-process state lives in files with one writer.** Everything that describes a *process* rather than a repo — PID, uptime, dashboard port, the repos it holds, its own call counts — is published to `~/.enola/instances/<pid>-<startNano>.json` ([`instance.go`](pkg/status/instance.go)), refreshed on every tool call and by a 30s heartbeat, and removed by `Tracker.Close`. `LiveInstances` reads them, and reaps records whose process is gone (or whose PID is live but long unrefreshed — a PID-reuse guard), so a hard-killed server disappears at the next read. The start-time suffix means a recycled PID cannot resurrect a dead record.
+
+That registry is what lets `--status` list every running server with its own URL, and what lets a dashboard name the process serving it instead of guessing from the newest usage file — a guess that, with several terminals open, was usually a different process.
 
 The value estimate is a deliberately simple model in [`pkg/status/value.go`](pkg/status/value.go): one weight per tool (the number of manual lookups a call replaces) times two conversion constants (seconds and tokens per lookup). `RegisterToolWeights` lets a wrapper price the tools it adds instead of letting them fall through to the default weight; it is guarded by a mutex because registration happens at startup while reads come from the tool callback.
 
-**[`pkg/dashboard`](pkg/dashboard)** serves the read-only page described in the README, on a loopback port bound at startup (`--no-dashboard` skips it). It is **strictly a viewer**: `buildPage` runs per request and every source is read through an accessor the MCP tools already use — `status.ServerSnapshot()`, the engine's published store, and the receipt/insight artifacts (preferring the in-memory copy, falling back to the last-written file on disk, since `AutoLoadSnapshot` restores facts without full receipt metadata). Nothing it does mutates server state, and every source degrades to an explanatory note rather than an error page.
+**[`pkg/dashboard`](pkg/dashboard)** serves the read-only page described in the README, on a loopback port bound at startup (`--no-dashboard` skips it). It is **strictly a viewer**: `buildPage` runs per request and every source is read through an accessor the MCP tools already use — `Options.Tracker`, the engine's published store, and the receipt/insight artifacts (preferring the in-memory copy, falling back to the last-written file on disk, since `AutoLoadSnapshot` restores facts without full receipt metadata). Nothing it does mutates server state, and every source degrades to an explanatory note rather than an error page.
+
+**Whose data is on the page.** Each figure has exactly one legitimate source, and mixing them is what made the page misleading when several servers ran at once:
+
+- *This process* — PID, uptime, binary, workdir, repos loaded, calls served — comes from `Options.Tracker.Self()`. Never from `status.ServerSnapshot()`, whose scalar fields describe only one arbitrary instance.
+- *This process's graph* — the repo list and counts — comes from `bootstrap.Engine.GraphReceipt()`, assembled in memory. Reading the machine-wide `~/.enola/receipt.json` here (as it once did) let the repo list describe one server's graph while the services, insights and coverage panels below it described another's.
+- *Genuinely cross-process* figures — the lifetime tool totals and the tracked-repo count — still come from `ServerSnapshot()`, and the page labels them as such.
+- *The other servers* come from `status.LiveInstances()`, rendered as a table of links so any dashboard is an entry point to all of them.
+
+**The shared URL.** Each server binds its own ephemeral port, then competes for a fixed one (`DefaultStablePort`, overridable via `ENOLA_DASHBOARD_PORT` or `dashboard.port`; see `ResolveStablePort`). The winner serves the same mux from both and flags itself `FrontDoor` in the registry; the losers retry every few seconds, so when the holder exits another picks the port up and the bookmark survives. There is no coordination beyond the OS refusing the second bind.
 
 The page reads receipts into the engine's own `facts.Receipt` / `facts.GraphReceipt` types, re-exported from `pkg/facts` precisely so a consumer never hand-writes a JSON mirror that drifts.
 
@@ -538,6 +557,7 @@ The bundled [`mcp-arch.yaml`](mcp-arch.yaml) ships a much fuller `ignore` list (
 | `renderers` | Enabled renderers | `["llm_context"]` |
 | `output.dir` | Output directory for artifacts | `".enola"` |
 | `output.max_context_tokens` | Token budget for `llm_context.md` | `16000` |
+| `dashboard.port` | The fixed **shared URL** port every server competes for, in addition to its own ephemeral one. A negative value serves only the ephemeral port. `ENOLA_DASHBOARD_PORT` overrides it (`off` disables). | `7171` |
 | `incremental` | Reuse each extractor's cached facts across snapshots when its files are unchanged; set `false` to force full re-extraction every run | `true` |
 
 ---
@@ -624,6 +644,17 @@ After `generate_snapshot`, these are written to the output directory (default `.
   The two skip counters mean different things, and a bad ignore glob is usually a *directory* glob. `files_skipped` counts ignored files the walker **visited** and dropped — those matched by a file glob like `**/*.test.ts`. An ignored directory is pruned whole (`filepath.SkipDir`), so its contents are never visited and appear in no count: it is tallied once, as one entry in `dirs_skipped`. Each `skipped_sample` entry names the glob that matched it, so *"why is this file missing from the graph?"* is a lookup rather than an investigation; directories appear there with a trailing slash.
 
 Because the receipt fields live in `snapshot.meta.json`, they ride into every pinned/`previous` baseline, and `diff_snapshot` reads them to add a **comparability guard**: it warns (above the delta) when the baseline and current snapshots were *not* generated over equivalent inputs — a different repo, enola version, extractor set, or ignore-glob set — since a diff across a mismatched extractor set would report every one of that language's facts as spurious churn. `compare_receipts` surfaces the same verdict plus the metric deltas directly.
+
+#### The graph receipt, and why each workspace keeps its own
+
+Alongside the per-snapshot receipt in `.enola/`, a snapshot writes a **graph receipt** describing the whole graph the server holds — every repo in it, where each lives, its git state and fact count. That is what a restart reads (`bootstrap.AutoLoadSnapshot`) to reload a *multi-repo* graph without re-running any extractor: the per-repo `.enola/` dirs alone cannot say which repos were appended.
+
+It is written to two places ([`internal/engine/global_receipt.go`](internal/engine/global_receipt.go)):
+
+- `~/.enola/graphs/<repo-base>-<hash8>.json` — keyed by the repo the server was *launched for* (`cfg.Repo`), stable across appends.
+- `~/.enola/receipt.json` — the machine-wide copy, kept for tooling that already reads it.
+
+The machine-wide file necessarily describes only whichever server generated last, so with one server per agent terminal it is the wrong thing to restore from: a server launched in repo A would come back holding the repos another terminal had snapshotted, then answer every query about the wrong codebase. `AutoLoadSnapshot` therefore prefers this workspace's own receipt, falls back to the machine-wide one **only when it actually covers `cfg.Repo`** (`receiptCovers`), and otherwise restores just `cfg.Repo` — or nothing, leaving the agent to run `generate_snapshot`. Starting empty is recoverable and visible; starting with someone else's graph is neither.
 
 #### Relation to the issue #60 proposal
 

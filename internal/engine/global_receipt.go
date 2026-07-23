@@ -1,12 +1,15 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -31,6 +34,87 @@ func globalReceiptPath() (string, error) {
 	return filepath.Join(home, globalReceiptDirName, globalReceiptFileName), nil
 }
 
+// A user commonly runs several enola servers at once, one per agent terminal,
+// each holding a different graph. ~/.enola/receipt.json can only ever describe
+// one of them — whichever process generated last — so each workspace also gets
+// its OWN receipt under ~/.enola/graphs/, keyed by the repo the server was
+// launched for. That is the file a restart reads, so a server started in repo A
+// restores A's graph instead of whatever a sibling terminal happened to load.
+const graphsDirName = "graphs"
+
+// workspaceKey derives a stable, human-readable filename stem for a workspace
+// from its absolute repo path: the sanitized base name plus a short hash of the
+// full path, so two repos sharing a base name do not collide. It mirrors the key
+// scheme pkg/status uses for usage files; duplicated rather than shared so
+// internal/engine keeps depending on nothing outside the engine.
+func workspaceKey(absRepoPath string) string {
+	sum := sha256.Sum256([]byte(absRepoPath))
+	short := hex.EncodeToString(sum[:])[:8]
+
+	base := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '-', r == '_', r == '.':
+			return r
+		default:
+			return '_'
+		}
+	}, filepath.Base(absRepoPath))
+	if base == "" {
+		base = "repo"
+	}
+	return base + "-" + short
+}
+
+// canonicalRepoPath normalizes a repo path so the same workspace always maps to
+// the same key regardless of how it was referenced — absolute, with symlinks
+// resolved (e.g. macOS /var → /private/var).
+func canonicalRepoPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = p
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// WorkspaceReceiptPath resolves ~/.enola/graphs/<key>.json for a workspace repo.
+func WorkspaceReceiptPath(repoPath string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home dir: %w", err)
+	}
+	return filepath.Join(home, globalReceiptDirName, graphsDirName, workspaceKey(canonicalRepoPath(repoPath))+".json"), nil
+}
+
+// LoadWorkspaceReceipt reads the graph receipt for one workspace — the repo a
+// server was launched for. It is the per-workspace counterpart to
+// LoadGlobalReceipt and the file a restart should prefer, since the global one
+// describes whichever process wrote last.
+func LoadWorkspaceReceipt(repoPath string) (*facts.GraphReceipt, error) {
+	path, err := WorkspaceReceiptPath(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	return readGraphReceiptFile(path)
+}
+
+// readGraphReceiptFile reads and parses a graph receipt from an explicit path.
+func readGraphReceiptFile(path string) (*facts.GraphReceipt, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading graph receipt: %w", err)
+	}
+	var gr facts.GraphReceipt
+	if err := json.Unmarshal(data, &gr); err != nil {
+		return nil, fmt.Errorf("parsing graph receipt %s: %w", path, err)
+	}
+	return &gr, nil
+}
+
 // LoadGlobalReceipt reads and parses ~/.enola/receipt.json — the graph-wide
 // multi-repo registry describing which repositories currently compose the graph
 // and where they live on disk. It is the counterpart to WriteGlobalReceipt and the
@@ -42,15 +126,7 @@ func LoadGlobalReceipt() (*facts.GraphReceipt, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading global receipt: %w", err)
-	}
-	var gr facts.GraphReceipt
-	if err := json.Unmarshal(data, &gr); err != nil {
-		return nil, fmt.Errorf("parsing global receipt %s: %w", path, err)
-	}
-	return &gr, nil
+	return readGraphReceiptFile(path)
 }
 
 // repoEntries returns one GraphRepoEntry per repository currently in the graph.
@@ -170,7 +246,74 @@ func (e *Engine) WriteGlobalReceipt() error {
 		return fmt.Errorf("writing global receipt: %w", err)
 	}
 	log.Printf("[engine] wrote %s (%d repos)", path, len(gr.Repos))
+
+	// Also write this workspace's own receipt. The global file above is shared by
+	// every enola process on the machine and describes whichever generated last;
+	// this one is keyed by the repo this server was launched for, so a restart
+	// restores THIS graph rather than a sibling terminal's. Non-fatal — the
+	// global receipt is still a usable fallback.
+	if err := e.writeWorkspaceReceipt(b, data); err != nil {
+		log.Printf("[engine] warning: workspace receipt not written: %v", err)
+	}
 	return nil
+}
+
+// writeWorkspaceReceipt persists the same receipt bytes under
+// ~/.enola/graphs/<workspace>.json. The workspace is the engine's configured
+// repo — stable across appends, unlike the snapshot's most-recent repo — so the
+// key does not move when a second repo is appended to the graph.
+func (e *Engine) writeWorkspaceReceipt(b *snapshotBundle, data []byte) error {
+	repo := e.workspaceRepo(b)
+	if repo == "" {
+		return nil
+	}
+	path, err := WorkspaceReceiptPath(repo)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating graphs dir: %w", err)
+	}
+	if err := writeFileAtomic(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing workspace receipt: %w", err)
+	}
+	log.Printf("[engine] wrote %s", path)
+	return nil
+}
+
+// workspaceRepo returns the repo this engine's graph belongs to: the configured
+// repo when set, otherwise the snapshot's primary repo.
+func (e *Engine) workspaceRepo(b *snapshotBundle) string {
+	if e.cfg != nil && e.cfg.Repo != "" {
+		return canonicalRepoPath(e.cfg.Repo)
+	}
+	if b.snapshot != nil && b.snapshot.Meta.RepoPath != "" {
+		return canonicalRepoPath(b.snapshot.Meta.RepoPath)
+	}
+	return ""
+}
+
+// GraphReceipt returns the receipt for the graph this engine holds RIGHT NOW,
+// assembled in memory from the published snapshot bundle. It exists so a viewer
+// (the dashboard) can describe its own process's graph instead of reading the
+// shared ~/.enola/receipt.json, which any other running server may have
+// overwritten with a different repo set.
+//
+// Membership timestamps are merged forward from this workspace's receipt on
+// disk, so "added at" / "in graph for" survive a restart. Returns nil when no
+// snapshot is loaded.
+func (e *Engine) GraphReceipt() *facts.GraphReceipt {
+	b := e.current.Load()
+	if b.snapshot == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	gr := e.assembleGraphReceipt(b, now)
+
+	if path, err := WorkspaceReceiptPath(e.workspaceRepo(b)); err == nil {
+		gr.Repos = mergeRepoEntries(gr.Repos, readPriorGraphReceipt(path), now)
+	}
+	return &gr
 }
 
 // mergeRepoEntries carries per-repo membership state forward from a prior receipt

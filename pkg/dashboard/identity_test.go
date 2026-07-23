@@ -1,0 +1,182 @@
+package dashboard
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/enola-labs/enola/pkg/facts"
+	"github.com/enola-labs/enola/pkg/status"
+)
+
+// TestPageDescribesItsOwnServer is the regression test for the complaint that
+// started this work: with one enola server per agent terminal, the dashboard used
+// to fill its Server/PID/uptime cards from the cross-process aggregate, which
+// picks whichever process started last. A page served by this process would then
+// announce a sibling's PID.
+//
+// Here a foreign instance is registered with a NEWER start time — exactly the
+// case that used to win — and the page must still describe this process.
+func TestPageDescribesItsOwnServer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	const foreignPID = 999999 // never a live PID, so it must not be picked
+	registerForeign(t, status.Instance{
+		PID:           foreignPID,
+		StartTime:     time.Now().Add(time.Hour),
+		Heartbeat:     time.Now().Add(time.Hour),
+		Binary:        "enola",
+		DashboardPort: 59999,
+	})
+
+	tr := status.NewTracker("/tmp/my-repo")
+	tr.SetStartTime(time.Now().Add(-5 * time.Minute))
+	tr.SetIdentity(status.Identity{Binary: "enola-enterprise", Version: "4.2.0", WorkDir: "/tmp/my-workspace"})
+	tr.SetGraphFunc(func() status.GraphState {
+		return status.GraphState{Repos: []status.InstanceRepo{{Label: "my-repo", Path: "/tmp/my-repo"}}}
+	})
+	tr.PersistStartup()
+	defer tr.Close()
+
+	s := newTestServer(8080, fakeArtifacts{}, Options{Tracker: tr})
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		"PID " + strconv.Itoa(os.Getpid()), // this process, not the newer sibling
+		"enola-enterprise 4.2.0",           // which binary is serving the page
+		"/tmp/my-workspace",                // which terminal launched it
+		"my-repo",                          // what THIS server has loaded
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q — the page must describe the process serving it", want)
+		}
+	}
+	if strings.Contains(body, "PID "+strconv.Itoa(foreignPID)) {
+		t.Error("body names another server's PID as its own")
+	}
+}
+
+// TestPageListsLiveInstances covers the switcher: a user with several agent
+// terminals open must be able to reach every other server's dashboard from any
+// one of them, and see at a glance which page they are on.
+func TestPageListsLiveInstances(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// A sibling that is genuinely alive (this test's own process, under a start
+	// time far enough back to be a distinct record) would collide with the
+	// tracker's record, so use the parent process: alive, and not us.
+	sibling := os.Getppid()
+	registerForeign(t, status.Instance{
+		PID:           sibling,
+		StartTime:     time.Now().Add(-time.Minute),
+		Heartbeat:     time.Now(),
+		Binary:        "enola",
+		DashboardPort: 54545,
+		FrontDoor:     true,
+		Repos:         []status.InstanceRepo{{Label: "other-repo", Path: "/tmp/other"}},
+	})
+
+	tr := status.NewTracker("/tmp/my-repo")
+	tr.SetStartTime(time.Now())
+	tr.SetDashboardPort(8080)
+	tr.SetIdentity(status.Identity{Binary: "enola"})
+	tr.PersistStartup()
+	defer tr.Close()
+
+	s := newTestServer(8080, fakeArtifacts{}, Options{Tracker: tr})
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		"Servers running",
+		"http://127.0.0.1:54545", // a clickable link to the sibling's dashboard
+		"other-repo",             // what the sibling has loaded
+		"this page",              // the row marking the current dashboard
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+// TestPageWithoutTrackerStillRenders guards the zero-Options path: a caller that
+// supplies no tracker (as the tests and any minimal embedder do) must still get a
+// page rather than a nil dereference.
+func TestPageWithoutTrackerStillRenders(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	s := newTestServer(8080, fakeArtifacts{graph: &facts.GraphReceipt{SnapshotID: "g1"}})
+	rec := httptest.NewRecorder()
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "g1") {
+		t.Error("body missing the graph receipt")
+	}
+}
+
+func TestResolveStablePort(t *testing.T) {
+	tests := []struct {
+		name       string
+		env        string
+		setEnv     bool
+		configured int
+		want       int
+	}{
+		{name: "default when unset", want: DefaultStablePort},
+		{name: "configured port wins over default", configured: 9000, want: 9000},
+		{name: "negative config disables", configured: -1, want: 0},
+		{name: "env overrides config", env: "9100", setEnv: true, configured: 9000, want: 9100},
+		{name: "env off disables", env: "off", setEnv: true, configured: 9000, want: 0},
+		{name: "env zero disables", env: "0", setEnv: true, want: 0},
+		{name: "unparseable env falls back to config", env: "banana", setEnv: true, configured: 9000, want: 9000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setEnv {
+				t.Setenv(StablePortEnv, tt.env)
+			} else if err := os.Unsetenv(StablePortEnv); err != nil {
+				t.Fatal(err)
+			}
+			if got := ResolveStablePort(tt.configured); got != tt.want {
+				t.Errorf("ResolveStablePort(%d) = %d, want %d", tt.configured, got, tt.want)
+			}
+		})
+	}
+}
+
+// registerForeign plants another server's record in the isolated registry,
+// standing in for a second agent terminal's enola process. It writes the file
+// directly — the on-disk layout is the registry's cross-process contract, and
+// pkg/status offers no way for one process to register another.
+func registerForeign(t *testing.T, inst status.Instance) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".enola", "instances")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("%d-%d.json", inst.PID, inst.StartTime.UnixNano())
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

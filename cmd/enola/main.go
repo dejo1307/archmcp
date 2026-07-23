@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/enola-labs/enola/internal/config"
@@ -22,7 +24,11 @@ func main() {
 	log.SetOutput(os.Stderr)
 	bootstrap.ConfigureRuntime()
 
-	ctx := context.Background()
+	// A terminated server must still tidy up after itself — remove its instance
+	// record and flush its counters — so cancel the server's context on a signal
+	// instead of dying mid-run. Run returns, and the deferred cleanup happens.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 
 	if len(os.Args) > 1 && os.Args[1] == "upgrade" {
 		if err := upgrade.Run(ctx, version.Version); err != nil {
@@ -140,25 +146,49 @@ func main() {
 	repoPath, _ := filepath.Abs(cfg.Repo)
 	tracker := status.NewTracker(repoPath)
 	tracker.SetStartTime(time.Now())
+	// Identity + graph state make this process distinguishable in the instance
+	// registry — a user typically runs one server per agent terminal, and every
+	// dashboard and --status listing is built from these records.
+	wd, _ := os.Getwd()
+	tracker.SetIdentity(status.Identity{
+		Binary:     "enola",
+		Version:    version.Version,
+		ConfigPath: cfgPath,
+		WorkDir:    wd,
+	})
+	tracker.SetGraphFunc(bootstrap.GraphStateFunc(eng))
+	// Deregister on the way out so the registry reflects the shutdown at once
+	// rather than waiting for a reader to reap a dead PID.
+	defer tracker.Close()
 	srv.SetToolCallback(tracker.OnToolCall)
 
 	// Start the localhost HTTP dashboard alongside the MCP server. It binds a
-	// free loopback port and serves a read-only, auto-refreshing view of the same
-	// data as --status plus the snapshot/graph receipts. Non-fatal: a dashboard
+	// free loopback port — plus the shared, bookmarkable one if it can claim it —
+	// and serves a read-only, auto-refreshing view of THIS server's graph and
+	// activity, with links to every other server running. Non-fatal: a dashboard
 	// failure must never stop the MCP server. The port is recorded on the tracker
 	// BEFORE the startup write, so a separate --status invocation can print the
 	// URL even before the first tool call.
 	if !noDashboard {
-		if dash, err := dashboard.Start(eng, dashboard.Options{}); err != nil {
+		opts := dashboard.Options{
+			Tracker:    tracker,
+			StablePort: dashboard.ResolveStablePort(cfg.Dashboard.Port),
+		}
+		if dash, err := dashboard.Start(eng, opts); err != nil {
 			log.Printf("dashboard: not started: %v (continuing without it)", err)
 		} else {
 			tracker.SetDashboardPort(dash.Port())
 			fmt.Fprintf(os.Stderr, "Dashboard: %s (auto-refreshes every 30s)\n", dash.URL())
+			if opts.StablePort > 0 {
+				fmt.Fprintf(os.Stderr, "Shared URL: http://127.0.0.1:%d (whichever server holds it lists all the others)\n", opts.StablePort)
+			}
 		}
 	}
 	tracker.PersistStartup()
 
 	if err := srv.Run(ctx); err != nil {
+		// Deregister explicitly: log.Fatalf exits without running deferred calls.
+		tracker.Close()
 		log.Fatalf("server error: %v", err)
 	}
 }
