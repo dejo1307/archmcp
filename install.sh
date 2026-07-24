@@ -60,7 +60,7 @@ fi
 INSTALL_DIR="${ENOLA_INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$INSTALL_DIR"
 
-cp "$TMPDIR/$BIN_NAME" "$INSTALL_DIR/enola"
+install -m 755 "$TMPDIR/$BIN_NAME" "$INSTALL_DIR/enola"
 
 echo "==> enola v${VERSION} installed to $INSTALL_DIR/enola"
 echo ""
