@@ -740,7 +740,19 @@ import (
 // class segment moves into the symbol part. A multi-segment symbol part is only
 // accepted if it names a symbol the snapshot actually has; unconfirmed candidates
 // stay dotted rather than minting a plausible-but-wrong edge.
-const cacheVersion = "v138"
+// v139: two new signals that let the dead-code detector drop findings it can never
+// act on. Facts from a file carrying a codegen banner ("DO NOT EDIT", "generated
+// by", "@generated" — matched against the file head, so it works for any generator
+// and any language) gain generated=true; a generator emits a whole API surface
+// regardless of how much the project calls, so its unreferenced half is guaranteed
+// noise. Python functions registered with a framework by decorator (FastAPI
+// @app.exception_handler/@app.middleware/@app.on_event/@router.websocket, Modal
+// @app.local_entrypoint and — gated on the file importing modal, since the names
+// alone are far too generic — @app.function/@app.cls) gain
+// framework_registered=true, the same treatment click/Typer commands already got.
+// Facts are flagged, never dropped: callers of generated code must still resolve,
+// so only the dead-code judgement changes.
+const cacheVersion = "v139"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

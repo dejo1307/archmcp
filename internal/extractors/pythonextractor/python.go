@@ -453,7 +453,7 @@ func isDataHolderBase(last string) bool {
 // applyDecoratorProps sets structural boolean props on a symbol based on a
 // decorator name. Only well-known structural decorators produce props; unknown
 // decorators are silently ignored.
-func applyDecoratorProps(props map[string]any, decoratorName string) {
+func applyDecoratorProps(props map[string]any, decoratorName string, importsModal bool) {
 	// Use the last dot-separated component: "functools.cached_property" → "cached_property".
 	last := decoratorName
 	if idx := strings.LastIndex(decoratorName, "."); idx >= 0 {
@@ -485,6 +485,24 @@ func applyDecoratorProps(props map[string]any, decoratorName string) {
 		// shared_task is Celery-specific; bare @task is used by Airflow, Prefect, Luigi, etc.
 		props["task"] = true
 		props["framework"] = "celery"
+	case "exception_handler", "middleware", "on_event", "websocket":
+		// FastAPI/Starlette registration decorators (@app.exception_handler(Err),
+		// @app.middleware("http"), @app.on_event("startup")). The framework invokes
+		// the handler for a matching event; nothing calls it by name, so it has no
+		// incoming call edge by construction — an entry point, not dead code. These
+		// names are distinctive enough to match without a framework guard.
+		props["framework_registered"] = true
+	case "local_entrypoint":
+		// Modal's CLI entry point — distinctive, no guard needed.
+		props["framework_registered"] = true
+	case "function", "cls":
+		// Modal's remote-function decorators (@app.function(...), @app.cls(...)).
+		// Unlike the names above these are far too generic to match on their own —
+		// "function" would swallow any @x.function-decorated symbol in any codebase —
+		// so they count only in a file that imports modal.
+		if importsModal {
+			props["framework_registered"] = true
+		}
 	}
 	// @attr.s is the legacy attrs data-class decorator; its last component "s" is
 	// too generic to switch on, so match the full "attr.s" path explicitly.

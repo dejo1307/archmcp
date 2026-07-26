@@ -73,6 +73,13 @@ type pyWalker struct {
 	// importMap maps a local name to its canonical fact target (empty = external).
 	importMap map[string]string
 
+	// importsModal records whether the file imports Modal. Modal registers remote
+	// functions with @app.function()/@app.cls(), decorator names far too generic to
+	// match on their own — "function" would swallow any @x.function-decorated symbol
+	// in any codebase. The import is the discriminator. Set during the walk, so it is
+	// reliable for the module-level imports that precede the definitions it guards.
+	importsModal bool
+
 	// importFallback is set while walking an except_clause: its imports are the
 	// fallback arm of the try/except ImportError dual-import idiom and must not
 	// clobber the try-branch binding (the relative/canonical form resolves to a
@@ -411,6 +418,7 @@ func (w *pyWalker) handleImport(node *sitter.Node) {
 			} else {
 				name = pyText(c, w.src)
 			}
+			w.noteModalImport(name)
 			target := w.module + " -> " + name
 			w.out = append(w.out, facts.Fact{
 				Kind:  facts.KindDependency,
@@ -445,6 +453,7 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 		return
 	}
 	moduleName := pyText(moduleNode, w.src)
+	w.noteModalImport(moduleName)
 
 	// Determine if this is an intra-project import (relative or same-tree dotted).
 	isRelative := strings.HasPrefix(moduleName, ".") ||
@@ -515,6 +524,14 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 
 	if len(reexported) > 0 {
 		depProps["reexports"] = reexported
+	}
+}
+
+// noteModalImport records that this file imports Modal, gating the generic
+// @app.function()/@app.cls() decorators (see pyWalker.importsModal).
+func (w *pyWalker) noteModalImport(module string) {
+	if module == "modal" || strings.HasPrefix(module, "modal.") {
+		w.importsModal = true
 	}
 }
 
@@ -837,7 +854,7 @@ func (w *pyWalker) handleClass(node *sitter.Node, decorators []string) {
 	}
 
 	for _, dec := range decorators {
-		applyDecoratorProps(props, dec)
+		applyDecoratorProps(props, dec, w.importsModal)
 	}
 
 	// Django classification.
@@ -943,7 +960,7 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 	}
 
 	for _, dec := range decorators {
-		applyDecoratorProps(props, dec)
+		applyDecoratorProps(props, dec, w.importsModal)
 	}
 
 	rels := []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}}

@@ -1616,3 +1616,35 @@ requires = ["hatchling"]
 		}
 	}
 }
+
+// Decorator-registered handlers are invoked by the framework on a matching event,
+// never by a static call, so they must be flagged as entry points rather than read
+// as dead code. FastAPI's names are distinctive enough to match outright.
+func TestApplyDecoratorProps_FrameworkRegistered(t *testing.T) {
+	for _, dec := range []string{"app.exception_handler", "app.middleware", "app.on_event", "router.websocket", "app.local_entrypoint"} {
+		props := map[string]any{}
+		applyDecoratorProps(props, dec, false)
+		if props["framework_registered"] != true {
+			t.Errorf("%s: framework_registered = %v, want true", dec, props["framework_registered"])
+		}
+	}
+}
+
+// Modal's @app.function/@app.cls are far too generic to match on the decorator name
+// alone — "function" would swallow any @x.function-decorated symbol in any codebase
+// — so they count only where the file imports modal.
+func TestApplyDecoratorProps_ModalNeedsImportGuard(t *testing.T) {
+	for _, dec := range []string{"app.function", "app.cls"} {
+		unguarded := map[string]any{}
+		applyDecoratorProps(unguarded, dec, false)
+		if unguarded["framework_registered"] != nil {
+			t.Errorf("%s without a modal import must NOT be flagged, got %v", dec, unguarded["framework_registered"])
+		}
+
+		guarded := map[string]any{}
+		applyDecoratorProps(guarded, dec, true)
+		if guarded["framework_registered"] != true {
+			t.Errorf("%s with a modal import: framework_registered = %v, want true", dec, guarded["framework_registered"])
+		}
+	}
+}

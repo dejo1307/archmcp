@@ -341,6 +341,10 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	newCount := e.store.Count()
 	log.Printf("[engine] extracted %d facts using %d extractors", newCount, len(usedExtractors))
 
+	// Flag facts from codegen output before the file paths are repo-prefixed below,
+	// while f.File is still resolvable against repoPath.
+	e.markGeneratedFacts(absRepo, preCount)
+
 	// Always set Repo on newly extracted facts so the repo filter works
 	// even in single-repo mode.
 	e.store.SetRepoRange(preCount, repoLabel)

@@ -542,6 +542,28 @@ func (s *Store) TagRange(startIdx int, repo, filePrefix string) {
 	}
 }
 
+// SetPropRange sets a prop on every fact added at indices [startIdx, current
+// length) whose File satisfies match, and returns how many it touched. match is
+// called once per distinct file by the caller's own memoization, so it may be
+// expensive (the engine reads file headers through it).
+func (s *Store) SetPropRange(startIdx int, key string, value any, match func(file string) bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for i := startIdx; i < len(s.facts); i++ {
+		f := &s.facts[i]
+		if f.File == "" || !match(f.File) {
+			continue
+		}
+		if f.Props == nil {
+			f.Props = map[string]any{}
+		}
+		f.Props[key] = value
+		n++
+	}
+	return n
+}
+
 func (s *Store) removeFromIndex(idx map[string][]int, key string, target int) {
 	indices := idx[key]
 	for j, v := range indices {
