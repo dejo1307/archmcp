@@ -386,6 +386,33 @@ func TestComputeLinks_HTTPSelfLinkSkipped(t *testing.T) {
 	}
 }
 
+// A repo that serves a path AND calls it is calling its own backend. Another
+// loaded repo serving an API-compatible surface (a rewrite, a second
+// implementation) must not capture the call: the nearest explanation wins.
+func TestComputeLinks_HTTPSelfServedPreferredOverOtherRepo(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),
+		serverRoute("svc-alpha", "/api/items/{id}", "GET"),
+		serverRoute("svc-rewrite", "/api/items/{id}", "GET"),
+	}
+	out := ComputeLinks(in, nil)
+	if e := findEdge(out, "svc-alpha", "svc-rewrite"); e != nil {
+		t.Errorf("client bound to an API-compatible other repo: %+v", e)
+	}
+}
+
+// The preference is for the client's OWN repo only — an unrelated third repo
+// serving the same path still leaves the two genuine candidates ambiguous.
+func TestComputeLinks_HTTPSelfPreferenceDoesNotSuppressOthers(t *testing.T) {
+	in := []facts.Fact{
+		clientRoute("svc-alpha", "/api/items/{id}", "GET", nil),
+		serverRoute("svc-beta", "/api/items/{id}", "GET"),
+	}
+	if findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta") == nil {
+		t.Errorf("a genuine cross-repo call was suppressed")
+	}
+}
+
 func TestComputeLinks_HTTPAmbiguousResolvedByHint(t *testing.T) {
 	in := []facts.Fact{
 		clientRoute("svc-alpha", "/api/items/{id}", "GET", map[string]any{"api": "svc-beta"}),
@@ -534,6 +561,47 @@ func TestComputeLinks_ImportSelfNamedTargetSkipped(t *testing.T) {
 	}
 	if findEdge(ComputeLinks(in, nil), "app-ios", "acme") != nil {
 		t.Errorf("importing the app's own same-named module must not link to the backend repo")
+	}
+}
+
+// moduleWithPackage is a module fact carrying the npm package its directory
+// belongs to, as the TypeScript extractor emits it.
+func moduleWithPackage(repo, name, pkg string) facts.Fact {
+	return facts.Fact{
+		Kind:  facts.KindModule,
+		Name:  name,
+		Repo:  repo,
+		Props: map[string]any{"package_name": pkg},
+	}
+}
+
+// A repo that publishes under @cognee importing @cognee/neon-darwin-arm64 is
+// pulling in a sibling package of its own — not depending on a repo that happens
+// to be labeled "cognee". The scope is a namespace, so it never appears among the
+// repo's source directories and the ownDirs guard cannot see it.
+func TestComputeLinks_ImportOwnScopeSkipped(t *testing.T) {
+	in := []facts.Fact{
+		moduleWithPackage("cognee-rs", "ts/src", "@cognee/cognee-ts"),
+		importDep("cognee-rs", "@cognee/neon-darwin-arm64"),
+		module("cognee", "api"),
+		serverRoute("cognee", "/api/items/{id}", "GET"),
+	}
+	if e := findEdge(ComputeLinks(in, nil), "cognee-rs", "cognee"); e != nil {
+		t.Errorf("importing a package under the repo's own scope linked to another repo: %+v", e)
+	}
+}
+
+// The guard is per consumer: a repo that does NOT publish under @app-web still
+// gets an edge from importing that scope, which is the monorepo-org case the
+// import signal exists for.
+func TestComputeLinks_ImportForeignScopeStillLinks(t *testing.T) {
+	in := []facts.Fact{
+		moduleWithPackage("app-ios", "src", "@app-ios/mobile"),
+		importDep("app-ios", "@app-web/lib-api"),
+		module("app-web", "lib-api"),
+	}
+	if findEdge(ComputeLinks(in, nil), "app-ios", "app-web") == nil {
+		t.Errorf("import of another repo's scope must still link")
 	}
 }
 

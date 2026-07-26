@@ -299,12 +299,23 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge, cov map[string]*httpCove
 // returns (repo, true); with several it uses the client's service hint
 // (target_hint / api / spec basename) to disambiguate, returning (repo, false),
 // and ("", false) when still ambiguous.
+//
+// A call its OWN repo serves resolves to that repo: the nearest explanation for
+// "this frontend calls /v1/search" is the backend sitting beside it, not an
+// API-compatible reimplementation in some other loaded repo. Returning the self
+// repo counts the call resolved for coverage while the caller's provider !=
+// f.Repo guard keeps it from drawing an edge. Without this, a repo that both
+// serves and calls a path is the one candidate that can never win, and any repo
+// whose own routes extract thinly hands its whole client surface to a neighbour.
+// The trade-off is a genuine BFF that proxies a path it also serves: its edge is
+// dropped — a miss, in a linker that everywhere prefers missing to fabricating.
 func pickProvider(client facts.Fact, matches []routeRef) (string, bool) {
 	providers := map[string]bool{}
 	for _, m := range matches {
-		if m.repo != client.Repo {
-			providers[m.repo] = true
+		if m.repo == client.Repo {
+			return client.Repo, true
 		}
+		providers[m.repo] = true
 	}
 	switch len(providers) {
 	case 0:
@@ -629,6 +640,7 @@ func linkKafka(all []facts.Fact, normToLabel map[string]string, edges map[string
 
 func linkImports(all []facts.Fact, normToLabel map[string]string, edges map[string]*edge) {
 	ownDirs := repoTopDirs(all)
+	ownScopes := repoOwnScopes(all)
 	for _, f := range all {
 		if f.Repo == "" || f.Kind == facts.KindService {
 			continue
@@ -637,7 +649,7 @@ func linkImports(all []facts.Fact, normToLabel map[string]string, edges map[stri
 			if rel.Kind != facts.RelImports && rel.Kind != facts.RelDependsOn {
 				continue
 			}
-			provider := importProvider(rel.Target, f.Repo, normToLabel, ownDirs[f.Repo])
+			provider := importProvider(rel.Target, f.Repo, normToLabel, ownDirs[f.Repo], ownScopes[f.Repo])
 			if provider == "" {
 				continue
 			}
@@ -662,7 +674,15 @@ func linkImports(all []facts.Fact, normToLabel map[string]string, edges map[stri
 // candidate matching — this is what keeps a repo's own files from fabricating a
 // cross-repo edge, while still allowing genuine deep import paths (e.g. a Go
 // "github.com/org/repo/pkg", whose leading "github.com" is not a source dir).
-func importProvider(target, consumer string, normToLabel map[string]string, ownDirs map[string]bool) string {
+//
+// ownScopes is the set of npm @scopes the consumer repo itself publishes under.
+// A scope is a namespace, not a directory, so it never appears in ownDirs — yet
+// "@acme/x" imported from the repo that publishes "@acme/y" is a sibling package
+// of the same project, not a dependency on a repo that happens to be labeled
+// "acme". Checked only for scoped targets, so a Go "github.com/org/repo/pkg" is
+// untouched. The trade-off is two loaded repos publishing under one shared
+// scope: an import between them is missed, the direction this linker always errs.
+func importProvider(target, consumer string, normToLabel map[string]string, ownDirs, ownScopes map[string]bool) string {
 	target = strings.TrimSpace(target)
 	// Skip relative / absolute filesystem imports — they are intra-repo.
 	if target == "" || strings.HasPrefix(target, ".") || strings.HasPrefix(target, "/") {
@@ -670,6 +690,11 @@ func importProvider(target, consumer string, normToLabel map[string]string, ownD
 	}
 	if head := leadingSegment(target); head != "" && ownDirs[normalizeLabel(head)] {
 		return "" // intra-repo self-reference, not a cross-repo dependency
+	}
+	if strings.HasPrefix(target, "@") {
+		if scope := leadingSegment(target); scope != "" && ownScopes[normalizeLabel(scope)] {
+			return "" // a sibling package the consumer repo publishes itself
+		}
 	}
 	for _, cand := range importCandidates(target) {
 		if label, ok := normToLabel[normalizeLabel(cand)]; ok && label != consumer {
@@ -708,6 +733,32 @@ func repoTopDirs(all []facts.Fact) map[string]map[string]bool {
 			out[f.Repo] = map[string]bool{}
 		}
 		out[f.Repo][normalizeLabel(head)] = true
+	}
+	return out
+}
+
+// repoOwnScopes returns, per repo, the set of normalized npm @scopes it publishes
+// under, read from the package_name prop the TypeScript extractor puts on module
+// facts. Only scoped names contribute: an unscoped package name is a bare
+// identifier that would over-suppress if treated as a namespace.
+func repoOwnScopes(all []facts.Fact) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, f := range all {
+		if f.Kind != facts.KindModule || f.Repo == "" {
+			continue
+		}
+		name := propString(f, "package_name")
+		if !strings.HasPrefix(name, "@") {
+			continue
+		}
+		scope := leadingSegment(name)
+		if scope == "" {
+			continue
+		}
+		if out[f.Repo] == nil {
+			out[f.Repo] = map[string]bool{}
+		}
+		out[f.Repo][normalizeLabel(scope)] = true
 	}
 	return out
 }

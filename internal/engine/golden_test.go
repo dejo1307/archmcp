@@ -85,6 +85,16 @@ var fixtures = []fixture{
 	// bus emits no topic fact at all.
 	{name: "go_kafka_multirepo", subRepos: []string{"svc-orders", "svc-billing"}},
 	{name: "py_grpc_multirepo", subRepos: []string{"server", "client"}},
+	// A FastAPI backend with its own frontend, beside an API-compatible rewrite
+	// that also publishes npm packages under an @acme scope. Pins v133 end-to-end,
+	// which the unit tests cannot: (a) routes declared on a factory-built router
+	// resolve to their mounted path ("/api/v1/search/results", not "/results"),
+	// (b) the frontend's calls bind to the backend IN ITS OWN REPO rather than to
+	// the rewrite that serves the same shapes, and (c) acme-rs importing
+	// "@acme/native-darwin-arm64" — a package under the scope it publishes itself —
+	// draws no import edge to the repo labeled "acme". Both cross-repo edges here
+	// are false positives the linker used to emit; the golden pins their absence.
+	{name: "py_fastapi_multirepo", subRepos: []string{"acme", "acme-rs"}},
 	// Two different-language repos sharing only nested type names. The linker must
 	// draw no shared_symbols edge between them; see GAP-LK-03.
 	{name: "kotlin_swift_multirepo", subRepos: []string{"android", "ios"}},

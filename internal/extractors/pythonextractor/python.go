@@ -116,25 +116,37 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 
 	// Pass 2: extract facts using the populated symbol index (read-only here, so
 	// the per-file work is fully independent and parallel-safe).
-	perFileFacts := parallel.MapFiles(ctx, pyFiles, func(relFile string) []facts.Fact {
+	type pyFileResult struct {
+		ff   []facts.Fact
+		topo pyRouterTopology
+	}
+	perFileFacts := parallel.MapFiles(ctx, pyFiles, func(relFile string) pyFileResult {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[python-extractor] error reading %s: %v", relFile, err)
-			return nil
+			return pyFileResult{}
 		}
-		ff := extractFileAST(src, relFile, isDjango, isFlask, isFastAPI, idx)
+		ff, topo := extractFileAST(src, relFile, isDjango, isFlask, isFastAPI, idx)
 		// gRPC client call sites (stub.Method(...)) become client-role routes,
 		// detected from source since generated *_pb2_grpc.py stubs are typically
 		// not committed. Names are provisional (short service) and resolved to the
 		// fully-qualified wire path by the engine before cross-repo linking.
 		ff = append(ff, extractPyGRPCClientFacts(src, relFile)...)
-		return ff
+		return pyFileResult{ff: ff, topo: topo}
 	})
 
 	var allFacts []facts.Fact
+	var routerTopos []pyRouterTopology
 	modules := make(map[string]bool)
-	for i, ff := range perFileFacts {
-		allFacts = append(allFacts, ff...)
+	for i, r := range perFileFacts {
+		// Route refs index into the file's own slice; rebase them onto the
+		// repo-wide one now that this file's offset is known.
+		base := len(allFacts)
+		for j := range r.topo.routes {
+			r.topo.routes[j].idx += base
+		}
+		allFacts = append(allFacts, r.ff...)
+		routerTopos = append(routerTopos, r.topo)
 		modules[filepath.Dir(pyFiles[i])] = true
 	}
 
@@ -158,6 +170,12 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 		fileModules[strings.TrimSuffix(f, ".py")] = true
 	}
 	resolveCallTargets(allFacts, fileModules)
+
+	// Fold FastAPI include_router mount prefixes onto the bare decorator paths, so
+	// a route reads as the path it actually serves ("/api/v1/cognify") rather than
+	// the leaf its router declares ("/"). Runs last among the index-based passes:
+	// it rebuilds the fact slice, invalidating the route indices it consumes.
+	allFacts = composeRouterPrefixes(allFacts, routerTopos, fileModules)
 
 	// Propagate the walk-time io_direct flag transitively across the (now canonical)
 	// call graph into performs_io, so a function that reaches DB/network I/O only through

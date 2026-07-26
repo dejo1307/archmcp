@@ -4,7 +4,7 @@
 {"kind":"file_ref","name":"src/index.ts","file":"src/index.ts","line":1,"repo":"ts_sample","props":{"language":"typescript"},"relations":[{"kind":"calls","target":"src.Repo"},{"kind":"calls","target":"src.Service"}]}
 {"kind":"file_ref","name":"src/repo.ts","file":"src/repo.ts","line":1,"repo":"ts_sample","props":{"language":"typescript"},"relations":[{"kind":"calls","target":"src.c"},{"kind":"calls","target":"src.id"},{"kind":"calls","target":"src.lookup"}]}
 {"kind":"file_ref","name":"src/svc.ts","file":"src/svc.ts","line":1,"repo":"ts_sample","props":{"language":"typescript"},"relations":[{"kind":"calls","target":"src.Repo"}]}
-{"kind":"module","name":"src","file":"src","repo":"ts_sample","props":{"language":"typescript"}}
+{"kind":"module","name":"src","file":"src","repo":"ts_sample","props":{"language":"typescript","package_name":"ts-sample"}}
 {"kind":"symbol","name":"src.Repo","file":"src/repo.ts","line":2,"repo":"ts_sample","props":{"exported":true,"language":"typescript","symbol_kind":"class"},"relations":[{"kind":"declares","target":"src"}]}
 {"kind":"symbol","name":"src.Repo.all","file":"src/repo.ts","line":3,"repo":"ts_sample","props":{"cyclomatic":1,"exported":true,"language":"typescript","receiver":"Repo","symbol_kind":"method"},"relations":[{"kind":"declares","target":"src"}]}
 {"kind":"symbol","name":"src.Service","file":"src/svc.ts","line":4,"repo":"ts_sample","props":{"exported":true,"language":"typescript","symbol_kind":"class"},"relations":[{"kind":"declares","target":"src"}]}

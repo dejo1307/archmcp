@@ -14,11 +14,15 @@ import (
 // facts. It is a superset of extractFile: every symbol / import / route / storage
 // fact is preserved, and RelCalls / RelInstantiates edges are added when call
 // sites are observed inside function bodies.
-func extractFileAST(src []byte, relFile string, isDjango, isFlask, isFastAPI bool, idx *pySymbolIndex) []facts.Fact {
+//
+// It also returns the file's FastAPI router wiring, which extractPython feeds to
+// composeRouterPrefixes once every file is known — mount prefixes routinely cross
+// module boundaries, so they cannot be folded per file.
+func extractFileAST(src []byte, relFile string, isDjango, isFlask, isFastAPI bool, idx *pySymbolIndex) ([]facts.Fact, pyRouterTopology) {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(python.Language())); err != nil {
-		return nil
+		return nil, pyRouterTopology{}
 	}
 
 	tree := parser.Parse(src, nil)
@@ -38,7 +42,12 @@ func extractFileAST(src []byte, relFile string, isDjango, isFlask, isFastAPI boo
 		idx:       idx,
 	}
 	w.walkModule(tree.RootNode())
-	return w.out
+
+	// Collected after the walk so the import map is fully populated: a mount
+	// argument is routinely a router imported from another module.
+	topo := collectRouterTopology(tree.RootNode(), src, relFile, module, w.importMap)
+	topo.routes = w.routeRefs
+	return w.out, topo
 }
 
 type pyWalker struct {
@@ -100,6 +109,25 @@ type pyWalker struct {
 	// body still runs many times — so a query inside it is still an N+1 candidate.
 	repeatDepth int
 	selfName     string
+
+	// funcScope is the qualified name of the OUTERMOST enclosing function whose
+	// body is being walked ("" at module/class level). Unlike selfName it is
+	// saved and restored, and it survives walkNestedScope — so a decorator on a
+	// def nested in a router factory still reports the factory as its scope.
+	// Used to key a function-local router variable to its factory function.
+	funcScope string
+
+	// routeRefs ties each emitted route fact (by index into w.out) to the router
+	// variable it was registered on, for composeRouterPrefixes.
+	routeRefs []pyRouteRef
+
+	// routeDecorators is the set of decorator start byte offsets already turned
+	// into route facts, so a decorator reached by two walks emits once. A class
+	// body is walked twice by design (handleClass: walkBody for owners, then
+	// walkForCalls for class-level expressions), which routes a method's
+	// decorators through both handleDecoratedDefinition and walkNestedScope.
+	// Offsets are unique within a file, and a pyWalker is per-file.
+	routeDecorators map[uint]bool
 
 	// fileRefs accumulates RelCalls edges made in file-scope (module-level) code
 	// and by decorators — references with no enclosing symbol owner. They are
@@ -537,28 +565,11 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 			// computed expression the route regex below cannot parse) marks this a
 			// framework-dispatched handler. Covers @r.get / @app.route and Flask-AppBuilder
 			// @expose (which has no receiver dot, so routeMethodRe alone misses it).
-			if routeMethodRe.MatchString(text) || exposeDecoratorRe.MatchString(text) {
+			isRoute, emitted := w.emitDecoratorRoute(c, text, &pendingRouteIndices)
+			if isRoute {
 				isRouteHandler = true
 			}
-			// FastAPI/Starlette verb decorator (@r.get) or Flask @app.route / @bp.route.
-			if m := routeDecoratorRe.FindStringSubmatch(text); m != nil {
-				path := m[3]
-				line := int(c.StartPosition().Row) + 1
-				if strings.EqualFold(m[2], "route") {
-					// Flask: HTTP verbs come from methods=[...] (default GET); framework
-					// is the @X.route idiom itself, not the project detection.
-					w.emitRoutes(path, routeMethods(text), "flask", line, &pendingRouteIndices)
-				} else {
-					// Verb shorthand (@r.get). Shared by FastAPI and Flask 2.0, so the
-					// framework is derived from project detection rather than hardcoded.
-					w.emitRoutes(path, []string{strings.ToUpper(m[2])}, w.verbShorthandFramework(), line, &pendingRouteIndices)
-				}
-				continue
-			}
-			// Flask-AppBuilder @expose("/path", methods=[...]).
-			if m := exposeDecoratorRe.FindStringSubmatch(text); m != nil {
-				line := int(c.StartPosition().Row) + 1
-				w.emitRoutes(m[1], routeMethods(text), "flask", line, &pendingRouteIndices)
+			if emitted {
 				continue
 			}
 			// DRF @api_view(['GET','POST']).
@@ -626,6 +637,61 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 	for _, dec := range decorators {
 		w.emitDecoratorRef(dec)
 	}
+}
+
+// emitDecoratorRoute emits the server-route facts carried by a single decorator
+// node, if it is a route decorator in a form the path regexes can parse.
+//
+// isRoute reports whether the decorator is a route-method decorator in ANY form
+// (literal, path= keyword, or a computed path the regexes cannot read) — the
+// caller uses it to tag the handler as a framework-dispatched entry point.
+// emitted reports whether route facts were actually appended.
+//
+// Shared by handleDecoratedDefinition (module- and class-level defs) and
+// walkNestedScope (defs nested in a function body), so the two paths cannot
+// drift in which decorator forms they recognize.
+func (w *pyWalker) emitDecoratorRoute(c *sitter.Node, text string, pending *[]int) (isRoute, emitted bool) {
+	// Covers @r.get / @app.route and Flask-AppBuilder @expose (which has no
+	// receiver dot, so routeMethodRe alone misses it).
+	isRoute = routeMethodRe.MatchString(text) || exposeDecoratorRe.MatchString(text)
+	if w.routeDecorators == nil {
+		w.routeDecorators = map[uint]bool{}
+	}
+	if w.routeDecorators[c.StartByte()] {
+		return isRoute, true // already emitted by an earlier walk of this decorator
+	}
+	// FastAPI/Starlette verb decorator (@r.get) or Flask @app.route / @bp.route.
+	if m := routeDecoratorRe.FindStringSubmatch(text); m != nil {
+		path := m[3]
+		line := int(c.StartPosition().Row) + 1
+		before := len(w.out)
+		if strings.EqualFold(m[2], "route") {
+			// Flask: HTTP verbs come from methods=[...] (default GET); framework
+			// is the @X.route idiom itself, not the project detection.
+			w.emitRoutes(path, routeMethods(text), "flask", line, pending)
+		} else {
+			// Verb shorthand (@r.get). Shared by FastAPI and Flask 2.0, so the
+			// framework is derived from project detection rather than hardcoded.
+			w.emitRoutes(path, []string{strings.ToUpper(m[2])}, w.verbShorthandFramework(), line, pending)
+		}
+		// m[1] is the receiver the route was registered on (the `router` in
+		// `@router.get`). Tie the new facts to it so composeRouterPrefixes can fold
+		// on the prefix it is mounted at.
+		if group := w.routerGroupKey(m[1]); group != "" {
+			for i := before; i < len(w.out); i++ {
+				w.routeRefs = append(w.routeRefs, pyRouteRef{idx: i, group: group})
+			}
+		}
+		w.routeDecorators[c.StartByte()] = true
+		return isRoute, true
+	}
+	// Flask-AppBuilder @expose("/path", methods=[...]).
+	if m := exposeDecoratorRe.FindStringSubmatch(text); m != nil {
+		w.emitRoutes(m[1], routeMethods(text), "flask", int(c.StartPosition().Row)+1, pending)
+		w.routeDecorators[c.StartByte()] = true
+		return isRoute, true
+	}
+	return isRoute, false
 }
 
 // emitRoutes appends one KindRoute fact per HTTP method for a server route.
@@ -911,7 +977,15 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		w.loopDepth = 0
 		w.scalingDepth = 0
 		w.selfName = qualName
+		// Only the outermost function establishes the router scope: a router
+		// variable is local to the factory that builds it, and collectRouterTopology
+		// keys assignments the same way.
+		savedFuncScope := w.funcScope
+		if w.funcScope == "" {
+			w.funcScope = qualName
+		}
 		w.walkForCalls(bodyNode)
+		w.funcScope = savedFuncScope
 		props["cyclomatic"] = 1 + w.metrics.decisions
 		if w.metrics.loopDepth > 0 {
 			props["loop_depth"] = w.metrics.loopDepth
@@ -1369,6 +1443,16 @@ func (w *pyWalker) walkNestedScope(node *sitter.Node) {
 			} else if ident := firstChildOfKind(c, "identifier"); ident != nil {
 				w.emitValueRef(ident)
 			}
+			// A route decorator inside a function body is the FastAPI router-factory
+			// pattern (`def get_x_router(): router = APIRouter(); @router.post("/")
+			// async def handler(): ...`), which module-level walkStatement never
+			// reaches. Emit its routes here, after the reference walk above so the
+			// edges that walk produces are unchanged. The nested def gets no symbol
+			// of its own, so the route carries no handler prop and the handler needs
+			// no route_handler entry-point tag (nothing can read it as dead).
+			// Mounted prefixes are folded on afterwards by composeRouterPrefixes.
+			var nestedRoutes []int
+			w.emitDecoratorRoute(c, pyText(c, w.src), &nestedRoutes)
 		}
 		if def == node {
 			return // malformed decorated_definition with no definition field

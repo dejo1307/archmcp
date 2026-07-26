@@ -1,0 +1,7 @@
+{
+  "name": "@acme/sdk",
+  "version": "0.1.0",
+  "optionalDependencies": {
+    "@acme/native-darwin-arm64": "0.1.0"
+  }
+}

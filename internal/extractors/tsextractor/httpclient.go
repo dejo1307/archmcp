@@ -95,9 +95,46 @@ func fileBaseLiterals(src []byte) map[string]string {
 	return out
 }
 
-// httpMethodWindow is how many bytes after the URL literal to scan for the
-// request's method option.
-const httpMethodWindow = 200
+// optionsObjectAfter returns the options-object literal that is the call's second
+// argument — the slice from its "{" to the matching "}" — or nil when the call has
+// no options, or passes them as a variable rather than a literal.
+//
+// The method must be read from THIS call's options and nothing else. Scanning a
+// flat byte window forward instead lets a later call's `method:` bleed backwards,
+// so a plain `fetch("/a/b")` sitting above a POST reports POST — a wrong verb on a
+// real path, which then mis-resolves (or fails to resolve) in the cross-repo
+// linker. Pass 3 already scopes its scan with enclosingObject for the same reason.
+func optionsObjectAfter(src []byte, pos int) []byte {
+	i := pos
+	skipSpace := func() {
+		for i < len(src) && (src[i] == ' ' || src[i] == '\t' || src[i] == '\n' || src[i] == '\r') {
+			i++
+		}
+	}
+	skipSpace()
+	if i >= len(src) || src[i] != ',' {
+		return nil // single-argument call -> no options
+	}
+	i++
+	skipSpace()
+	if i >= len(src) || src[i] != '{' {
+		return nil // options passed as a variable/expression -> no literal to read
+	}
+	open := i
+	depth := 0
+	for ; i < len(src) && i-open < objectScanCap; i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[open : i+1]
+			}
+		}
+	}
+	return nil
+}
 
 // objectScanCap bounds how far on each side of a `url:` property to scan for the
 // braces of its enclosing object literal, so a pathological input cannot make the
@@ -155,12 +192,10 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 	for _, m := range httpClientCall.FindAllSubmatchIndex(src, -1) {
 		raw := firstNonEmptyGroup(src, m, 2, 3, 4)
 		method := "GET"
-		end := m[1] + httpMethodWindow
-		if end > len(src) {
-			end = len(src)
-		}
-		if mm := httpClientMethod.FindSubmatch(src[m[1]:end]); mm != nil {
-			method = strings.ToUpper(string(mm[1]))
+		if opts := optionsObjectAfter(src, m[1]); opts != nil {
+			if mm := httpClientMethod.FindSubmatch(opts); mm != nil {
+				method = strings.ToUpper(string(mm[1]))
+			}
 		}
 		add(raw, method, "fetch", m[2])
 	}

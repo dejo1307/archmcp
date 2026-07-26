@@ -663,7 +663,27 @@ import (
 // a repo's own topic and a topic owned by no loaded repo draw no edge. Go does not
 // participate in the extractor cache, so this bump documents the behavior change
 // rather than invalidating anything.
-const cacheVersion = "v132"
+// v133: Python FastAPI routers are no longer invisible. Route decorators on a def
+// nested in a function body are extracted (the router-factory idiom `def
+// get_x_router(): router = APIRouter(); @router.post("/") ...`, which module-level
+// statement walking never reached — v117 fixed only its dead-code attribution), and
+// a repo-wide fixpoint folds include_router mount prefixes onto the bare decorator
+// path, so a route is stored at the path it actually serves ("/api/v1/cognify", not
+// "/"). Mirrors the Go (v125) and Axum (v130) prefix composition, keyed by the
+// decorator's receiver rather than by line span; an unresolved or ambiguous mount
+// keeps the bare path, and Flask Blueprint url_prefix stays unfolded (GAP-PY-06).
+// TypeScript module facts gained package_name (the nearest package.json name), which
+// the cross-repo import linker reads to recognize a repo's own npm @scope.
+// v134: the TypeScript HTTP-client extractor reads a call's verb from that call's
+// OWN options-object literal (brace-matched from the second argument) instead of a
+// flat 200-byte window scanned forward from the URL. The window let a later call's
+// `method:` bleed backwards, so a plain fetch("/a/b") sitting above a POST was
+// emitted as POST — a wrong verb on a real path, which the cross-repo linker then
+// matches against the wrong server route or fails to match at all. Options passed
+// as a variable carry no readable verb and now fall back to GET rather than
+// adopting an unrelated one. Mirrors how Pass 3 already scopes its scan with
+// enclosingObject.
+const cacheVersion = "v134"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

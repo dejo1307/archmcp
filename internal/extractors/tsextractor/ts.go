@@ -192,14 +192,23 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	}
 
 	// Emit module facts for each directory
+	pkgNames := collectPackageNames(repoPath, files)
 	for dir := range modules {
+		props := map[string]any{
+			"language": "typescript",
+		}
+		// The npm package this directory belongs to. The cross-repo linker reads it
+		// to recognize a repo's own @scope, so an import of a sibling package the
+		// repo itself publishes is not mistaken for a dependency on another repo
+		// that happens to be labeled like the scope.
+		if name := nearestPackageName(pkgNames, dir); name != "" {
+			props["package_name"] = name
+		}
 		allFacts = append(allFacts, facts.Fact{
-			Kind: facts.KindModule,
-			Name: dir,
-			File: dir,
-			Props: map[string]any{
-				"language": "typescript",
-			},
+			Kind:  facts.KindModule,
+			Name:  dir,
+			File:  dir,
+			Props: props,
 		})
 	}
 
@@ -848,6 +857,50 @@ func detectRoute(relFile string) *facts.Fact {
 func detectNextJS(repoPath string) bool {
 	tsRoot, _ := findTSRoot(repoPath)
 	return detectNextJSAt(tsRoot) || (tsRoot != repoPath && detectNextJSAt(repoPath))
+}
+
+// collectPackageNames maps each directory holding a package.json to the package
+// name it declares. Read off-glob (package.json is not a TypeScript file), the
+// same way tsconfig aliases and ORM flags already are.
+func collectPackageNames(repoPath string, files []string) map[string]string {
+	out := map[string]string{}
+	for _, relFile := range files {
+		if filepath.Base(relFile) != "package.json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			continue
+		}
+		var pkg struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(data, &pkg); err != nil || pkg.Name == "" {
+			continue
+		}
+		out[filepath.ToSlash(filepath.Dir(relFile))] = pkg.Name
+	}
+	return out
+}
+
+// nearestPackageName returns the package name declared by the closest ancestor
+// (or self) of dir, or "" if none — the npm resolution rule, so a file under
+// packages/api/src belongs to packages/api's package.
+func nearestPackageName(pkgNames map[string]string, dir string) string {
+	for d := filepath.ToSlash(dir); ; {
+		if name, ok := pkgNames[d]; ok {
+			return name
+		}
+		i := strings.LastIndexByte(d, '/')
+		if i < 0 {
+			if d == "." {
+				return ""
+			}
+			d = "."
+			continue
+		}
+		d = d[:i]
+	}
 }
 
 func detectNextJSAt(dir string) bool {

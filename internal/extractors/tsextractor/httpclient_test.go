@@ -214,8 +214,6 @@ func TestExtractHTTPClientFacts_GluedQueryPlaceholderStripped(t *testing.T) {
 // a file-scope const, or a constructor default param — so the full path (which
 // matches the server route) is emitted instead of a bare single-segment suffix.
 func TestExtractHTTPClientFacts_BaseLiteralResolved(t *testing.T) {
-	// GET calls are placed last so the method-scan window (200 bytes after the URL)
-	// cannot pick up a later call's `method:` option and mis-label them.
 	src := "const ROOT = '/api/v2/things';\n" +
 		"class PricingApi {\n" +
 		"  private readonly basePath = '/api/settings/pricing';\n" +
@@ -277,5 +275,61 @@ func TestExtractHTTPClientFacts_BaseLiteralAmbiguousNotResolved(t *testing.T) {
 		if _, found := got[bad]; found {
 			t.Errorf("ambiguous base must not resolve to %q: %+v", bad, got)
 		}
+	}
+}
+
+// A call's verb must come from ITS OWN options object. Scanning a flat byte
+// window forward let a later call's `method:` bleed backwards, so a plain
+// fetch(url) sitting above a POST reported POST — a wrong verb on a real path,
+// which then mis-resolves in the cross-repo linker.
+func TestExtractHTTPClientFacts_MethodDoesNotBleedFromNextCall(t *testing.T) {
+	src := "export async function fetchResults() {\n" +
+		"  const res = await fetch('/api/v1/search/results');\n" +
+		"  return res.json();\n" +
+		"}\n" +
+		"export async function search(q: string) {\n" +
+		"  const res = await fetch('/api/v1/search', {\n" +
+		"    method: 'POST',\n" +
+		"    body: JSON.stringify({ query: q }),\n" +
+		"  });\n" +
+		"  return res.json();\n" +
+		"}\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "src/api.ts"))
+
+	if got["/api/v1/search/results"] != "GET" {
+		t.Errorf("optionless fetch = %v, want GET (bled from the POST below): %+v",
+			got["/api/v1/search/results"], got)
+	}
+	if got["/api/v1/search"] != "POST" {
+		t.Errorf("fetch with method: 'POST' = %v, want POST: %+v", got["/api/v1/search"], got)
+	}
+}
+
+// A multi-line options object with nested braces (a JSON.stringify payload, a
+// spread of defaults) is still read to its matching close brace.
+func TestExtractHTTPClientFacts_MethodFromNestedOptionsObject(t *testing.T) {
+	src := "const r = fetch('/api/v1/items', {\n" +
+		"  ...defaults,\n" +
+		"  headers: { 'Content-Type': 'application/json' },\n" +
+		"  body: JSON.stringify({ nested: { deep: 1 } }),\n" +
+		"  method: 'PUT',\n" +
+		"});\n"
+	if got := byNameMethod(extractHTTPClientFacts([]byte(src), "src/api.ts")); got["/api/v1/items"] != "PUT" {
+		t.Errorf("method after nested objects = %v, want PUT: %+v", got["/api/v1/items"], got)
+	}
+}
+
+// Options passed as a variable carry no readable verb, so the call falls back to
+// GET rather than picking up an unrelated `method:` elsewhere in the file.
+func TestExtractHTTPClientFacts_VariableOptionsDefaultsToGet(t *testing.T) {
+	src := "const opts = { method: 'DELETE' };\n" +
+		"const a = fetch('/api/v1/things', opts);\n" +
+		"const b = fetch('/api/v1/others', { method: 'POST' });\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "src/api.ts"))
+	if got["/api/v1/things"] != "GET" {
+		t.Errorf("variable options = %v, want GET: %+v", got["/api/v1/things"], got)
+	}
+	if got["/api/v1/others"] != "POST" {
+		t.Errorf("literal options = %v, want POST: %+v", got["/api/v1/others"], got)
 	}
 }
