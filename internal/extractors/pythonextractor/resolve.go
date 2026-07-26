@@ -18,9 +18,9 @@ import (
 // Names, so without this pass Python imports never resolve to internal modules
 // and coupling collapses to zero. This mirrors the Go extractor, which resolves
 // imports to slash paths at extraction time by stripping the go.mod module path.
-func resolveImports(allFacts []facts.Fact, modules map[string]bool) {
-	idx := buildSuffixIndex(modules)
-	topPkgs := topLevelSegments(modules)
+func resolveImports(allFacts []facts.Fact, modules map[string]bool, pkgDirs map[string]bool) {
+	idx := buildSuffixIndex(modules, pkgDirs)
+	topPkgs := importableRoots(modules, pkgDirs)
 
 	for i := range allFacts {
 		f := &allFacts[i]
@@ -73,10 +73,19 @@ func resolveImports(allFacts []facts.Fact, modules map[string]bool) {
 // segment names no internal directory (numpy, sqlalchemy) or a stdlib module is
 // external: its edge is removed to avoid short-name collisions that would hide real
 // dead code. Same-module and relative targets (already slash paths) are untouched.
-func resolveCallTargets(allFacts []facts.Fact, fileModules map[string]bool) {
-	fileIdx := buildSuffixIndex(fileModules)
-	topPkgs := topLevelSegments(fileModules)
-	reexports := buildReexportIndex(allFacts)
+func resolveCallTargets(allFacts []facts.Fact, fileModules map[string]bool, pkgDirs map[string]bool) {
+	fileIdx := buildSuffixIndex(fileModules, pkgDirs)
+	topPkgs := importableRoots(fileModules, pkgDirs)
+	reexports := buildReexportIndex(allFacts, pkgDirs)
+
+	// Every symbol name in the snapshot, so a class-qualified chain can only bind to
+	// a name that really exists (see resolveDottedTarget step 3).
+	symbols := make(map[string]bool)
+	for i := range allFacts {
+		if allFacts[i].Kind == facts.KindSymbol {
+			symbols[allFacts[i].Name] = true
+		}
+	}
 
 	for i := range allFacts {
 		f := &allFacts[i]
@@ -92,7 +101,7 @@ func resolveCallTargets(allFacts []facts.Fact, fileModules map[string]bool) {
 		out := f.Relations[:0]
 		for _, rel := range f.Relations {
 			if (rel.Kind == facts.RelCalls || rel.Kind == facts.RelInstantiates) && isDottedCallTarget(rel.Target) {
-				resolved, keep := resolveDottedTarget(rel.Target, fileIdx, topPkgs, importerDir, reexports)
+				resolved, keep := resolveDottedTarget(rel.Target, fileIdx, topPkgs, importerDir, reexports, symbols)
 				if !keep {
 					continue // external/stdlib → drop the edge
 				}
@@ -140,7 +149,7 @@ type reexportIndex struct {
 // rather than resolved arbitrarily: binding a call to the wrong definition would
 // fabricate an edge, and a missing edge is the safer error (the same rule the
 // dotted/bare-name paths follow).
-func buildReexportIndex(allFacts []facts.Fact) reexportIndex {
+func buildReexportIndex(allFacts []facts.Fact, pkgDirs map[string]bool) reexportIndex {
 	byDir := map[string]map[string]string{}
 	ambiguous := map[string]bool{}
 
@@ -194,7 +203,7 @@ func buildReexportIndex(allFacts []facts.Fact) reexportIndex {
 			dirs[d] = true
 		}
 	}
-	return reexportIndex{byDir: byDir, dirs: buildSuffixIndex(dirs)}
+	return reexportIndex{byDir: byDir, dirs: buildSuffixIndex(dirs, pkgDirs)}
 }
 
 // lookup resolves a dotted package prefix plus a symbol to the module that
@@ -242,27 +251,49 @@ func stringSliceProp(props map[string]any, key string) []string {
 // The three attempts are ordered cheapest-and-most-certain first, so adding the
 // re-export step can only rescue targets that previously dangled — a target the
 // module lookup already resolved never reaches it.
-func resolveDottedTarget(dotted string, fileIdx suffixIndex, topPkgs map[string]bool, importerDir string, reexports reexportIndex) (string, bool) {
+func resolveDottedTarget(dotted string, fileIdx suffixIndex, topPkgs map[string]bool, importerDir string, reexports reexportIndex, symbols map[string]bool) (string, bool) {
 	li := strings.LastIndexByte(dotted, '.')
 	if li <= 0 {
 		return dotted, true
 	}
 	modulePrefix := dotted[:li]
-	symbol := dotted[li+1:]
 
-	// 1. The prefix names a module file outright.
-	if dir := resolveAbsolute(modulePrefix, fileIdx, topPkgs, importerDir); dir != "" {
-		return dir + "." + symbol, true
+	// Walk the module/symbol split point leftwards, longest module prefix first, so
+	// the symbol part grows: "pkg.mod.Cls.method" is tried as (pkg.mod.Cls, method)
+	// and then (pkg.mod, Cls.method). The walker qualifies symbols as
+	// module.Class.method, so the second shape is the one that names a real symbol.
+	//
+	// The lookup is EXACT at each position. resolveAbsolute drops trailing segments
+	// on failure, which is right for an import (a.b.c may name a symbol inside
+	// package a.b) but wrong here: the segments it drops are the class the symbol
+	// hangs off, so it silently turned "mod.Cls.method" into "mod.method" — not a
+	// dangling target but a WRONG one, pointing at whatever else happens to bear
+	// that name.
+	//
+	// A multi-segment symbol part is a weaker claim than a single one, so it must be
+	// CONFIRMED against the snapshot's symbol names before being accepted; otherwise
+	// a shorter prefix would mint a plausible-but-wrong edge, which is worse than
+	// leaving the target dangling. symbols may be nil, which disables confirmation
+	// and therefore the multi-segment shapes entirely.
+	for cut := li; cut > 0; cut = strings.LastIndexByte(dotted[:cut], '.') {
+		prefix, symbolPath := dotted[:cut], dotted[cut+1:]
+		confirmed := strings.IndexByte(symbolPath, '.') < 0 // single segment: legacy shape
+
+		if dir := resolveModuleExact(prefix, fileIdx, topPkgs, importerDir); dir != "" {
+			if cand := dir + "." + symbolPath; confirmed || symbols[cand] {
+				return cand, true
+			}
+		}
+		// The prefix may name a PACKAGE whose __init__.py re-exports the symbol; bind
+		// to the module that actually defines it.
+		if mod := reexports.lookup(prefix, firstSeg(symbolPath), topPkgs, importerDir); mod != "" {
+			if cand := mod + "." + symbolPath; confirmed || symbols[cand] {
+				return cand, true
+			}
+		}
 	}
 
-	// 2. The prefix names a PACKAGE whose __init__.py re-exports the symbol. Bind to
-	// the module that actually defines it, so the edge lands on a real node instead
-	// of dangling as a dotted string.
-	if mod := reexports.lookup(modulePrefix, symbol, topPkgs, importerDir); mod != "" {
-		return mod + "." + symbol, true
-	}
-
-	// 3. Internal, but nothing more precise is known: keep the dotted target so
+	// Internal, but nothing more precise is known: keep the dotted target so
 	// downstream short-name matching still marks the symbol used. This carries no
 	// graph edge — it only feeds the dead-code heuristic.
 	seg0 := firstSeg(modulePrefix)
@@ -277,9 +308,47 @@ func resolveDottedTarget(dotted string, fileIdx suffixIndex, topPkgs map[string]
 // nearest source root (shortest physical path) is first.
 type suffixIndex map[string][]string
 
-// buildSuffixIndex indexes every module dir by each of its trailing-segment
-// suffixes. For dir "a/b/c" it registers "a.b.c"->dir, "b.c"->dir, "c"->dir.
-func buildSuffixIndex(modules map[string]bool) suffixIndex {
+// packageDirs returns the directories containing an __init__.py, i.e. the ones
+// Python treats as packages. buildSuffixIndex uses it to tell a genuine top-level
+// package from a like-named directory nested inside another package.
+func packageDirs(pyFiles []string) map[string]bool {
+	out := make(map[string]bool)
+	for _, f := range pyFiles {
+		if !isInitFile(f) {
+			continue
+		}
+		dir := fileDir(f)
+		if dir == "." {
+			dir = ""
+		}
+		out[dir] = true
+	}
+	return out
+}
+
+// buildSuffixIndex indexes every module dir by its trailing-segment suffixes, so
+// an import written relative to a source root ("airflow.models.dag") finds the
+// module at "airflow-core/src/airflow/models/dag".
+//
+// A suffix is only registered where it is genuinely importable. Python's rule is
+// that a directory is a top-level package only if its PARENT is not itself a
+// package: "airflow-core/src/airflow" qualifies because "src" holds no
+// __init__.py, but a nested "…/relational/sqlalchemy" does not, because
+// "relational" is a package and so that directory is only reachable as
+// relational.sqlalchemy.
+//
+// Registering every suffix unconditionally let an internal directory that merely
+// SHARES A NAME with a third-party package capture its imports: a repo with
+// "…/databases/relational/sqlalchemy" and "cognee/alembic" had plain
+// `import sqlalchemy` resolve internally, marking those dependencies source:
+// internal and keeping ~500 third-party call edges in the graph as if they were
+// first-party.
+//
+// pkgDirs is the set of directories containing an __init__.py. When it is empty
+// (a caller with no package information) the rule cannot fire and the index keeps
+// its historical permissive shape, so this only ever tightens where there is
+// evidence to tighten on.
+func buildSuffixIndex(modules map[string]bool, pkgDirs map[string]bool) suffixIndex {
 	idx := make(suffixIndex)
 	for dir := range modules {
 		if dir == "" || dir == "." {
@@ -287,6 +356,11 @@ func buildSuffixIndex(modules map[string]bool) suffixIndex {
 		}
 		segs := strings.Split(dir, "/")
 		for i := range segs {
+			// i == 0 is the full repo-relative path, always addressable. Beyond that,
+			// the match starts at segs[i], so segs[:i] must not be a package.
+			if i > 0 && pkgDirs[strings.Join(segs[:i], "/")] {
+				continue
+			}
 			key := strings.Join(segs[i:], ".")
 			idx[key] = append(idx[key], dir)
 		}
@@ -307,21 +381,55 @@ func buildSuffixIndex(modules map[string]bool) suffixIndex {
 	return idx
 }
 
-// topLevelSegments returns the set of all path segments appearing in any module
-// dir. It is used as a cheap, safe early-exit gate in resolveAbsolute: an import
-// whose first dotted segment names no internal directory cannot be internal, so
-// it is left for stdlib/external classification. It is permissive by design —
-// it never wrongly rejects an internal import (the failure mode we are fixing).
-func topLevelSegments(modules map[string]bool) map[string]bool {
-	segs := make(map[string]bool)
+// importableRoots returns the segment names an absolute import may START with —
+// the names reachable on sys.path rather than every directory name in the tree.
+//
+// It gates resolveAbsolute (an import whose first segment names no internal root
+// cannot be internal) and resolveDottedTarget's keep-dotted branch. Both formerly
+// used every path segment at any depth, which is why a nested
+// "…/relational/sqlalchemy" made `sqlalchemy.Column` look internal even after
+// suffix matching was tightened: the fix has to hold in both places or the edge is
+// merely retained one step later.
+//
+// A segment qualifies under the same package-boundary rule buildSuffixIndex uses:
+// it is at the repo root, or the path above it is not itself a package. With
+// pkgDirs empty the rule cannot fire and every segment qualifies, preserving the
+// historical permissive behaviour.
+func importableRoots(modules map[string]bool, pkgDirs map[string]bool) map[string]bool {
+	roots := make(map[string]bool)
 	for dir := range modules {
-		for _, s := range strings.Split(dir, "/") {
-			if s != "" && s != "." {
-				segs[s] = true
+		segs := strings.Split(dir, "/")
+		for i, s := range segs {
+			if s == "" || s == "." {
+				continue
 			}
+			if i > 0 && pkgDirs[strings.Join(segs[:i], "/")] {
+				break // everything deeper is a subpackage, not a root
+			}
+			roots[s] = true
 		}
 	}
-	return segs
+	return roots
+}
+
+// resolveModuleExact maps a dotted path to a module dir WITHOUT dropping trailing
+// segments, the difference from resolveAbsolute that matters for a call target:
+// shortening is correct for an import (a.b.c may name a symbol inside package a.b)
+// but for a call it discards the class the symbol belongs to.
+func resolveModuleExact(dotted string, idx suffixIndex, topPkgs map[string]bool, importerDir string) string {
+	if dotted == "" {
+		return ""
+	}
+	seg0 := firstSeg(dotted)
+	if pyStdlib[seg0] || !topPkgs[seg0] {
+		return ""
+	}
+	for _, dir := range idx[dotted] {
+		if dir != importerDir {
+			return dir // pre-sorted: nearest source root wins
+		}
+	}
+	return ""
 }
 
 // resolveAbsolute maps a dotted absolute import ("airflow.models.dag") to the

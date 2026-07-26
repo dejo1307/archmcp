@@ -69,7 +69,7 @@ func (e *PythonExtractor) ExtractTestRefs(ctx context.Context, repoPath string, 
 			fileModules[strings.TrimSuffix(f, ".py")] = true
 		}
 	}
-	resolveCallTargets(out, fileModules)
+	resolveCallTargets(out, fileModules, packageDirs(prodFiles))
 
 	// Keep only targets that resolved to a canonical symbol name. resolveCallTargets
 	// rewrites internal dotted paths to slash form and drops external ones, so a

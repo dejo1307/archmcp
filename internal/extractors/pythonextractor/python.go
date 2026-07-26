@@ -150,10 +150,16 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 		modules[filepath.Dir(pyFiles[i])] = true
 	}
 
+	// The packages (dirs with __init__.py) let suffix matching tell a real
+	// top-level package from a like-named directory nested inside another package,
+	// so a vendored-looking "…/relational/sqlalchemy" does not capture `import
+	// sqlalchemy`.
+	pkgDirs := packageDirs(pyFiles)
+
 	// Resolve dotted import targets to internal module slash paths (and classify
 	// stdlib/external) now that the full module set is known. Without this,
 	// Python imports never match module Names downstream.
-	resolveImports(allFacts, modules)
+	resolveImports(allFacts, modules, pkgDirs)
 
 	// Parse pyproject.toml entry-points (console_scripts, plugin groups) into
 	// reference edges, so functions registered as entry points — loaded by name by
@@ -169,13 +175,13 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 	for _, f := range pyFiles {
 		fileModules[strings.TrimSuffix(f, ".py")] = true
 	}
-	resolveCallTargets(allFacts, fileModules)
+	resolveCallTargets(allFacts, fileModules, pkgDirs)
 
 	// Fold FastAPI include_router mount prefixes onto the bare decorator paths, so
 	// a route reads as the path it actually serves ("/api/v1/cognify") rather than
 	// the leaf its router declares ("/"). Runs last among the index-based passes:
 	// it rebuilds the fact slice, invalidating the route indices it consumes.
-	allFacts = composeRouterPrefixes(allFacts, routerTopos, fileModules)
+	allFacts = composeRouterPrefixes(allFacts, routerTopos, fileModules, pkgDirs)
 
 	// Propagate the walk-time io_direct flag transitively across the (now canonical)
 	// call graph into performs_io, so a function that reaches DB/network I/O only through

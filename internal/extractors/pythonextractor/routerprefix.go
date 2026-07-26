@@ -325,7 +325,7 @@ func kwargString(call *sitter.Node, src []byte, want string) string {
 // router is mounted at, resolving include_router mounts repo-wide via a fixpoint.
 // Deterministic: groups, mounts and emitted prefixes are all processed in sorted
 // order. Route facts whose mount chain does not resolve are returned untouched.
-func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, fileModules map[string]bool) []facts.Fact {
+func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, fileModules map[string]bool, pkgDirs map[string]bool) []facts.Fact {
 	groups := map[string]*pyRouterGroup{}
 	byName := map[string][]string{}
 	var routes []pyRouteRef
@@ -350,12 +350,12 @@ func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, file
 		return allFacts
 	}
 
-	fileIdx := buildSuffixIndex(fileModules)
-	topPkgs := topLevelSegments(fileModules)
+	fileIdx := buildSuffixIndex(fileModules, pkgDirs)
+	topPkgs := importableRoots(fileModules, pkgDirs)
 	// A router imported through a package __init__ now resolves by its dotted path
 	// rather than only via the unique-bare-name fallback below, so a re-exported
 	// router whose short name is not repo-wide unique still finds its group.
-	reexports := buildReexportIndex(allFacts)
+	reexports := buildReexportIndex(allFacts, pkgDirs)
 
 	// Resolve mounts to group keys, in file then source order.
 	type mountEdge struct{ parent, child, prefix string }
@@ -476,7 +476,7 @@ func resolveRouterKey(raw, name string, groups map[string]*pyRouterGroup, byName
 		return raw
 	}
 	if isDottedCallTarget(raw) {
-		if resolved, keep := resolveDottedTarget(raw, fileIdx, topPkgs, importerDir, reexports); keep {
+		if resolved, keep := resolveDottedTarget(raw, fileIdx, topPkgs, importerDir, reexports, nil); keep {
 			if _, ok := groups[resolved]; ok {
 				return resolved
 			}
