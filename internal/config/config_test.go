@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/enola-labs/enola/internal/facts"
+)
 
 // TestDefaultIgnoresNestedBuildAndPods locks in the ignore-pattern fix: build
 // output must be ignored at ANY depth (Gradle/Android emit data/build/...), and
@@ -89,6 +93,85 @@ func TestDefaultTestGlobsCoverTypeScriptAndStayIgnored(t *testing.T) {
 		}
 		if !contains(cfg.Ignore, g) {
 			t.Errorf("TestGlob %q is not in Default().Ignore; a test glob that is not ignored indexes test symbols as production code", g)
+		}
+	}
+}
+
+// TestDefaultIgnoresPythonTests pins the Python half of the test-ignore contract.
+//
+// Python test files are not merely noise. A pytest fixture that assembles a
+// throwaway app —
+//
+//	app.include_router(get_cognify_router(), prefix="/cognify")
+//
+// — is a route-mount fact, and the repo-wide FastAPI prefix fixpoint (v133) folds
+// every mount it can see. Indexing tests therefore lets a test-only prefix REWRITE
+// production routes: a real corpus gained six phantom endpoints its service never
+// served, one of which then matched a client call and mis-attributed the evidence
+// on a cross-repo edge. Test files were also ~35% of that repo's total facts.
+//
+// The patterns are deliberately asymmetric with Ruby's (v97). conftest.py is
+// reserved by pytest outright and test_* is its discovery prefix — a production
+// module so named would itself be collected as a test — so both are safe at any
+// depth. A bare "**/*_test.py" is NOT included: as a suffix it repeats the Ruby
+// hazard of swallowing production code that merely ends in the token.
+func TestDefaultIgnoresPythonTests(t *testing.T) {
+	cfg := Default()
+
+	for _, want := range []string{"**/conftest.py", "**/test_*.py", "**/tests/**/*.py", "**/test/**/*.py"} {
+		if !contains(cfg.Ignore, want) {
+			t.Errorf("Default().Ignore missing %q", want)
+		}
+		if !contains(cfg.TestGlobs, want) {
+			t.Errorf("Default().TestGlobs missing %q — the file would be ignored and never recoverable", want)
+		}
+	}
+
+	// The suffix form must stay out: scoping is what keeps production code safe.
+	if contains(cfg.Ignore, "**/*_test.py") {
+		t.Error("Default().Ignore has bare \"**/*_test.py\"; a suffix glob swallows production code ending in the token (see Ruby, v97)")
+	}
+}
+
+// TestPythonTestGlobsMatchRealPaths exercises the patterns against the real paths
+// that motivated them, and against production paths that must survive. Presence in
+// the slice is not the contract — what the globs actually match is.
+func TestPythonTestGlobsMatchRealPaths(t *testing.T) {
+	ignore := Default().Ignore
+
+	ignored := []string{
+		// The fixture that mounted routers at test-only prefixes.
+		"cognee/tests/unit/api/test_api_error_responses.py",
+		// Fixtures and helpers in a tests tree carry no test_ prefix.
+		"cognee/tests/unit/api/conftest.py",
+		"cognee/tests/helpers/factories.py",
+		"tests/integration/test_search.py",
+		// Singular test/ tree, and a co-located test_ file outside any tests dir.
+		"src/pkg/test/test_client.py",
+		"cognee/modules/search/test_operations.py",
+		"conftest.py",
+	}
+	for _, p := range ignored {
+		if !facts.MatchAnyGlob(p, ignore) {
+			t.Errorf("%q should be ignored but is not", p)
+		}
+	}
+
+	production := []string{
+		// Nothing here is a test: no test_ prefix, no tests/ tree.
+		"cognee/api/v1/cognify/routers/get_cognify_router.py",
+		"cognee/api/client.py",
+		"cognee/modules/pipelines/operations/run_tasks.py",
+		// "latest" contains "test" but is not a test directory.
+		"cognee/modules/latest/handler.py",
+		// A production module ending in the token survives — the Ruby v97 hazard.
+		"cognee/modules/ab_test.py",
+		// A shipped testing-helper package is not a tests tree.
+		"cognee/testing/harness.py",
+	}
+	for _, p := range production {
+		if facts.MatchAnyGlob(p, ignore) {
+			t.Errorf("%q is production code but is ignored", p)
 		}
 	}
 }

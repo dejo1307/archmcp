@@ -90,6 +90,29 @@ func Default() *Config {
 			// stop being ignored, or it is dropped without being recovered.
 			"**/spec/**/*_spec.rb",
 			"**/test/**/*_test.rb",
+			// Python. Test files here are not merely noise to be filtered later: a
+			// pytest fixture that assembles a throwaway app
+			// (app.include_router(get_cognify_router(), prefix="/cognify")) is a
+			// route-mount fact, and the repo-wide prefix fixpoint (v133) folds every
+			// mount it can see. A test-only prefix therefore REWRITES production
+			// routes — a real corpus gained six phantom endpoints its service never
+			// served, which then matched a client call and mis-attributed a
+			// cross-repo edge's evidence. Python test files were also ~35% of that
+			// repo's total facts.
+			//
+			// conftest.py is reserved by pytest outright, and the test_ prefix is its
+			// discovery convention (a production module so named would itself be
+			// collected as a test), so both are safe at any depth. A whole tests/ tree
+			// goes too, since fixtures and factories carry no test_ prefix.
+			// Deliberately NOT a bare "**/*_test.py": that repeats the Ruby hazard
+			// above of swallowing production code that merely ends in the token, and
+			// inside a tests/ tree it is already covered.
+			// Keep in sync with TestGlobs below: a file that stops being a test must
+			// stop being ignored, or it is dropped without being recovered.
+			"**/conftest.py",
+			"**/test_*.py",
+			"**/tests/**/*.py",
+			"**/test/**/*.py",
 			".enola/**",
 			// Build / cache artifacts. These are generated output (often transpiled
 			// JS, e.g. Next.js .next/) and must never be indexed as source — doing so
@@ -146,6 +169,16 @@ func Default() *Config {
 			"**/*_test.go",
 			"**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx",
 			"**/spec/**/*_spec.rb", "**/test/**/*_test.rb",
+			// Python has no TestRefExtractor yet, so these four are a deliberate
+			// no-op today: runTestRefExtractors skips non-implementers. They are
+			// listed anyway because Ignore above requires the two lists to agree —
+			// a file ignored here but absent from TestGlobs is dropped with no way
+			// to recover it — and so that implementing PythonExtractor.ExtractTestRefs
+			// switches the signal on without a second config change.
+			// Until then, a Python symbol called only from a test reads as dead:
+			// expect dead-code false positives on Python repos to rise.
+			"**/conftest.py", "**/test_*.py",
+			"**/tests/**/*.py", "**/test/**/*.py",
 		},
 		Extractors: []string{"cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},

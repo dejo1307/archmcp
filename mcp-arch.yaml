@@ -30,6 +30,15 @@ ignore:
   - "**/*.test.tsx"
   - "**/*.spec.ts"
   - "**/*.spec.tsx"
+  # Python. A pytest fixture that assembles a throwaway app is a route-mount
+  # fact, and the repo-wide prefix fixpoint folds every mount it can see — so a
+  # test-only prefix rewrites production routes. conftest.py and the test_ prefix
+  # are pytest-reserved; a whole tests/ tree goes too, since fixtures and
+  # factories carry no test_ prefix. Kept in sync with config.Default().
+  - "**/conftest.py"
+  - "**/test_*.py"
+  - "**/tests/**/*.py"
+  - "**/test/**/*.py"
   # Next.js / build and cache
   - ".next/**"
   - "out/**"
