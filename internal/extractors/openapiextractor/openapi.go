@@ -302,10 +302,17 @@ func hasOpenAPIContent(path string) bool {
 }
 
 // skipDir returns true for directories that should never be descended into.
+//
+// This extractor walks the repo itself rather than consuming the engine's
+// ignore-glob-filtered file list, so config.Default().Ignore does NOT apply here
+// — every entry it needs must be repeated below. "testdata" is Go's reserved
+// fixture directory: those fixtures are whole miniature codebases, and their
+// client specs were being attributed to the HOST repo's service (enola's own
+// testdata supplied phantom outbound HTTP call sites).
 func skipDir(name string) bool {
 	switch name {
 	case "vendor", "node_modules", ".git", ".enola", "backstage",
-		"tmp", "log", "build", ".build", ".gradle":
+		"tmp", "log", "build", ".build", ".gradle", "testdata":
 		return true
 	}
 	return false

@@ -5,6 +5,10 @@ ignore:
   - "node_modules/**"
   - ".git/**"
   - ".enola/**"
+  # Go reserves testdata/ for fixtures and never compiles it. Fixture repos are
+  # miniature codebases, so indexing them injects their routes and client call
+  # sites into the host repo's graph. Kept in sync with config.Default().
+  - "**/testdata/**"
   # Python virtual environments, installed dependencies, and tool caches. A
   # repo-local .venv/venv holds the whole dependency tree (thousands of
   # third-party .py files) and must never be indexed — it dominates snapshot

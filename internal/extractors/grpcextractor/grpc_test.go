@@ -231,3 +231,33 @@ func TestDetect(t *testing.T) {
 		t.Fatalf("Detect = %v, %v; want true, nil", ok, err)
 	}
 }
+
+// Detect runs before the engine's ignore-glob-filtered file list exists, so it
+// walks the repo itself and config.Default()'s "**/testdata/**" cannot reach it.
+// A repo whose only .proto are fixtures does not serve gRPC, and enabling the
+// extractor on that basis attributes fixture services to the host repo.
+// (Extract needs no such guard — it consumes the already-filtered list.)
+func TestDetect_IgnoresTestdataFixtures(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel string) {
+		t.Helper()
+		abs := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(usersProto), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("internal/engine/testdata/repos/svc/proto/users.proto")
+	if ok, err := New().Detect(dir); err != nil || ok {
+		t.Errorf("Detect = %v, %v; want false, nil (only a testdata fixture present)", ok, err)
+	}
+
+	// A first-party .proto alongside the fixture still enables the extractor.
+	write("proto/users/v1/users.proto")
+	if ok, err := New().Detect(dir); err != nil || !ok {
+		t.Errorf("Detect = %v, %v; want true, nil (first-party .proto present)", ok, err)
+	}
+}

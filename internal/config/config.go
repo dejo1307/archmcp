@@ -66,6 +66,16 @@ func Default() *Config {
 			"vendor/**",
 			"node_modules/**",
 			".git/**",
+			// Go reserves testdata/ for fixtures — the toolchain never compiles it.
+			// Fixture repos are whole miniature codebases (clients, servers, routes),
+			// so indexing them injects their call sites into the HOST repo's graph:
+			// enola's own testdata/repos/** supplied all 9 of its detected outbound
+			// HTTP call sites, manufacturing a coverage gap for a service that makes
+			// no outbound calls at all. Any-depth form, and safe for fixture-driven
+			// tests: those root each scan INSIDE the fixture (testdata/repos/<f>/<sub>),
+			// so the scanned-relative paths contain no testdata/ segment to match.
+			// Keep in sync with the bundled mcp-arch.yaml ignore list.
+			"**/testdata/**",
 			"**/*_test.go",
 			"**/*.test.ts",
 			"**/*.test.tsx",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -226,5 +227,29 @@ paths:
 	got := extract(t, repo)
 	if findRoute(got, "/ok", "GET") == nil {
 		t.Errorf("valid spec should still extract despite a malformed sibling; got %+v", got)
+	}
+}
+
+// This extractor walks the repo itself instead of consuming the engine's
+// ignore-glob-filtered file list, so config.Default()'s "**/testdata/**" does
+// not reach it — skipDir must exclude fixtures on its own. Without this, the
+// client specs in enola's own testdata/repos/** were extracted as facts of the
+// enola service, manufacturing outbound HTTP call sites for a repo that makes
+// none and reporting it as a cross-repo coverage gap.
+func TestExtract_SkipsTestdataFixtures(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "api/openapi/widgets.yaml", widgetsSpec)
+	writeSpec(t, repo, "internal/engine/testdata/repos/sample/api/openapi/widgets.yaml", widgetsSpec)
+
+	got := extract(t, repo)
+
+	// Only the first-party spec's 3 routes; the fixture copy contributes nothing.
+	if len(got) != 3 {
+		t.Fatalf("expected 3 route facts from the non-fixture spec, got %d: %+v", len(got), got)
+	}
+	for _, f := range got {
+		if sf, _ := f.Props["spec_file"].(string); strings.Contains(sf, "testdata/") {
+			t.Errorf("extracted a fixture spec: %s", sf)
+		}
 	}
 }

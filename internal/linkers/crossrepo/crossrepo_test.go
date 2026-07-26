@@ -201,6 +201,99 @@ func TestIsGenericPath(t *testing.T) {
 			t.Errorf("isGenericPath(%q) = true, want false", p)
 		}
 	}
+	// The rest of the infra/mount vocabulary: a lone segment is generic because
+	// of what it is NAMED, so every one of these must stay unlinkable.
+	for _, p := range []string{
+		"/healthz", "/healthcheck", "/ping", "/ready", "/readyz",
+		"/live", "/livez", "/version", "/info", "/api", "/graphql", "/HEALTH",
+	} {
+		if !isGenericPath(normalizePath(p)) {
+			t.Errorf("isGenericPath(%q) = false, want true (generic vocabulary)", p)
+		}
+	}
+	// Named single-segment endpoints are linkable: a pure segment count used to
+	// make these unlinkable, silently dropping real cross-repo edges (an
+	// /activate client could never resolve to its /activate server).
+	for _, p := range []string{"/activate", "/checkout", "/subscribe", "/{id}"} {
+		if isGenericPath(normalizePath(p)) {
+			t.Errorf("isGenericPath(%q) = true, want false (named endpoint)", p)
+		}
+	}
+}
+
+// A named single-segment endpoint links. This is the enola-enterprise ->
+// enola-licensing-api shape: a client POSTing /activate to the service that
+// serves POST /activate. It drew no edge while isGenericPath was a segment
+// count, and even once the path cleared that filter the server-side index still
+// dropped it, because pathSuffixes yields nothing below minSharedSegments —
+// so the call reported path_unknown against an index it was never admitted to.
+func TestComputeLinks_HTTP_SingleSegmentPath(t *testing.T) {
+	in := []facts.Fact{
+		serverRoute("licensing-api", "/activate", "POST"),
+		clientRoute("enterprise", "/activate", "POST", nil),
+	}
+	out := ComputeLinks(in, nil)
+
+	if findEdge(out, "enterprise", "licensing-api") == nil {
+		t.Fatalf("enterprise should depend on licensing-api via POST /activate; edges=%+v", crossRepoEdges(out))
+	}
+	if !hasServiceEdge(out, "enterprise", "licensing-api") {
+		t.Errorf("enterprise service node missing depends_on licensing-api")
+	}
+	// The call site resolved, so it must no longer read as a coverage blind spot
+	// — the symptom that exposed this bug in the first place.
+	for _, f := range out {
+		if f.Kind != facts.KindService || f.Repo != "enterprise" {
+			continue
+		}
+		cov, ok := f.Props["edge_coverage"].([]map[string]any)
+		if !ok || len(cov) != 1 {
+			t.Fatalf("enterprise edge_coverage = %+v, want one http_client entry", f.Props["edge_coverage"])
+		}
+		if cov[0]["resolved"] != 1 || cov[0]["unresolved"] != 0 {
+			t.Errorf("enterprise coverage = %+v, want resolved 1 / unresolved 0", cov[0])
+		}
+	}
+}
+
+// The generic vocabulary still refuses to link: every service serves /health,
+// so a path+method match between two repos is no evidence they talk.
+func TestComputeLinks_HTTP_GenericPathDoesNotLink(t *testing.T) {
+	in := []facts.Fact{
+		serverRoute("svc-a", "/health", "GET"),
+		clientRoute("svc-b", "/health", "GET", nil),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in, nil)); len(edges) != 0 {
+		t.Errorf("/health must not link, got %d edge(s): %+v", len(edges), edges)
+	}
+}
+
+// A single-segment path is thinner evidence, so an ambiguous match (two loaded
+// repos serving POST /activate) draws nothing rather than guessing a provider.
+func TestComputeLinks_HTTP_SingleSegmentAmbiguousDoesNotLink(t *testing.T) {
+	in := []facts.Fact{
+		serverRoute("licensing-a", "/activate", "POST"),
+		serverRoute("licensing-b", "/activate", "POST"),
+		clientRoute("enterprise", "/activate", "POST", nil),
+	}
+	if edges := crossRepoEdges(ComputeLinks(in, nil)); len(edges) != 0 {
+		t.Errorf("ambiguous single-segment match must not link, got %d edge(s): %+v", len(edges), edges)
+	}
+}
+
+func TestSingleSegmentPath(t *testing.T) {
+	for _, p := range []string{"/activate", "/checkout", "activate"} {
+		if !singleSegmentPath(normalizePath(p)) {
+			t.Errorf("singleSegmentPath(%q) = false, want true", p)
+		}
+	}
+	// Multi-segment, parameterized, and empty paths do not take the stricter
+	// unambiguous-provider gate in linkHTTP.
+	for _, p := range []string{"/a/b", "/items/{id}", "/{id}", "/"} {
+		if singleSegmentPath(normalizePath(p)) {
+			t.Errorf("singleSegmentPath(%q) = true, want false", p)
+		}
+	}
 }
 
 // --- (A) HTTP linking ---

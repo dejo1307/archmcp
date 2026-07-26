@@ -241,10 +241,15 @@ func isWellKnownImport(path string) bool {
 }
 
 // skipDir matches directories that never contain first-party .proto worth
-// indexing (VCS, deps, build output, enola artifacts).
+// indexing (VCS, deps, build output, enola artifacts, Go fixture data).
+//
+// Only Detect consults this — Extract consumes the engine's file list, which is
+// already ignore-glob filtered. Detect runs BEFORE that list exists and so must
+// repeat the exclusions itself, or a repo whose only .proto sit under testdata
+// enables the gRPC extractor on the strength of fixtures it does not serve.
 func skipDir(name string) bool {
 	switch name {
-	case ".git", "node_modules", "vendor", ".enola", "dist", "build", ".next":
+	case ".git", "node_modules", "vendor", ".enola", "dist", "build", ".next", "testdata":
 		return true
 	}
 	return false

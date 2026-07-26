@@ -199,7 +199,7 @@ func indexServerRoutes(all []facts.Fact) map[string][]routeRef {
 		}
 		for _, p := range serverPaths(f) {
 			ref := routeRef{repo: f.Repo, method: method, path: f.Name, fullPath: p}
-			for _, suf := range pathSuffixes(p) {
+			for _, suf := range pathMatchKeys(p) {
 				server[routeKey(suf, method)] = append(server[routeKey(suf, method)], ref)
 			}
 		}
@@ -221,7 +221,7 @@ func indexServerPathSuffixes(all []facts.Fact) map[string]bool {
 			continue
 		}
 		for _, p := range serverPaths(f) {
-			for _, suf := range pathSuffixes(p) {
+			for _, suf := range pathMatchKeys(p) {
 				set[suf] = true
 			}
 		}
@@ -268,6 +268,16 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge, cov map[string]*httpCove
 				// base-relative client calling a longer server path).
 				matches, matchedPath := lookupClientMatches(server, clientPath, method)
 				provider, unambiguous := pickProvider(f, matches)
+				// A single-segment path (/activate) cleared the generic vocabulary but
+				// is thinner evidence than a multi-segment one: there is less path to
+				// coincide by accident, so a hint-disambiguated pick among several
+				// candidate providers is not enough. Demand an outright unambiguous
+				// match, and otherwise drop the call site back to unresolved — where a
+				// genuinely missing link stays visible as a coverage gap rather than
+				// being resolved to the wrong service.
+				if provider != "" && singleSegmentPath(np) && !unambiguous {
+					provider = ""
+				}
 				// A non-empty provider means the call site matched a loaded service (a
 				// self-match is internal, not a blind spot) — count it resolved either way.
 				if provider != "" {
@@ -447,19 +457,22 @@ func UnmatchedServerRouteKeys(all []facts.Fact) map[string]bool {
 		if method == "" {
 			continue
 		}
-		// Skip low-signal generic paths (/health, /status, single-segment routes):
-		// the matcher refuses to link these (a client call to one is dropped by the
-		// same isGenericPath filter below), so we cannot reliably tell whether a
-		// client uses them — and infra / non-client callers commonly do. Excluding
-		// them from the candidate set keeps the unused verdict to routes we can
-		// actually reason about, never flagging a generic endpoint that may be in use.
+		// Skip low-signal generic paths (/health, /status, /metrics): the matcher
+		// refuses to link these (a client call to one is dropped by the same
+		// isGenericPath filter below), so we cannot reliably tell whether a client
+		// uses them — and infra / non-client callers commonly do. Excluding them
+		// from the candidate set keeps the unused verdict to routes we can actually
+		// reason about, never flagging a generic endpoint that may be in use.
+		// This is a vocabulary test, not a segment count, so a named single-segment
+		// route (/activate) does enter the candidate set — it is linkable, and its
+		// used/unused verdict is therefore meaningful.
 		if isGenericPath(normalizePath(f.Name)) {
 			continue
 		}
 		identities[routeIdentityKey(f.Repo, method, f.Name)] = true
 		for _, p := range serverPaths(f) {
 			ref := routeRef{repo: f.Repo, method: method, path: f.Name, fullPath: p}
-			for _, suf := range pathSuffixes(p) {
+			for _, suf := range pathMatchKeys(p) {
 				server[routeKey(suf, method)] = append(server[routeKey(suf, method)], ref)
 			}
 		}
@@ -569,9 +582,11 @@ func UnmatchedClientRouteKeys(all []facts.Fact) map[string]string {
 
 // clientPathHasServer reports whether any of a client path's trailing-segment
 // suffixes matches a server route path suffix regardless of verb (mirrors
-// lookupClientMatches' suffix generation, minus the method filter).
+// lookupClientMatches' key generation, minus the method filter — including its
+// whole-path fallback, so a single-segment client path is tested against the
+// index rather than reported path_unknown without ever being looked up).
 func clientPathHasServer(serverSuffixes map[string]bool, clientPath string) bool {
-	for _, suf := range pathSuffixes(clientPath) {
+	for _, suf := range pathMatchKeys(clientPath) {
 		if serverSuffixes[suf] {
 			return true
 		}
@@ -1662,6 +1677,29 @@ func pathSuffixes(normPath string) []string {
 	return out
 }
 
+// pathMatchKeys returns the path forms to join a route on — its suffixes, or the
+// whole path when it is too short to have any.
+//
+// pathSuffixes yields nothing below minSharedSegments, because a lone trailing
+// segment is too weak to join a PREFIXED path on. But used bare it also drops
+// single-segment routes from the join entirely: a server serving GET /widgets
+// was indexed under no key at all, so no client could ever match it, and the
+// client side reported path_unknown against an index the path had never been
+// admitted to. lookupClientMatches already worked around this on one side with a
+// whole-path fallback; centralizing it here makes every builder and lookup agree.
+//
+// Only the exact full path is ever added, never a bare trailing segment of a
+// longer path, so this admits exact single-segment matches without weakening
+// suffix matching. Fabrication is held off on the client side instead, where
+// isGenericPath drops infra names (/health, /status) and linkHTTP demands an
+// unambiguous provider before drawing a one-segment edge.
+func pathMatchKeys(normPath string) []string {
+	if sufs := pathSuffixes(normPath); len(sufs) > 0 {
+		return sufs
+	}
+	return []string{normPath}
+}
+
 // lookupClientMatches resolves a client path against the server suffix index by
 // trying the client path's own trailing-segment suffixes longest-first and
 // returning the first (most specific) hit, plus the suffix that matched. The
@@ -1702,8 +1740,30 @@ func canonicalLeadingSlash(p string) string {
 	return "/" + p
 }
 
-// isGenericPath reports whether a path is too low-signal to safely link on
-// (e.g. /health, /status) — no path parameter and fewer than two segments.
+// genericSegments are single-segment endpoint names so widely reused that a
+// path/method match between two repos carries no evidence they talk to each
+// other: infra probes, discovery roots, and API mount points. Nearly every
+// service serves some of these, so linking on them fabricates edges.
+var genericSegments = map[string]bool{
+	"health": true, "healthz": true, "healthcheck": true,
+	"status": true, "ping": true, "metrics": true,
+	"ready": true, "readyz": true, "live": true, "livez": true,
+	"version": true, "info": true, "api": true, "graphql": true,
+}
+
+// isGenericPath reports whether a path is too low-signal to safely link on.
+//
+// This was originally a pure segment count (fewer than two segments = generic),
+// which swept up every legitimate single-segment endpoint — a client POSTing to
+// /activate could never resolve to the service serving POST /activate, and the
+// missed edge surfaced only as an unresolved coverage gap. The count is a proxy
+// for the real property (is this name so common that a match proves nothing?),
+// so test that property directly: a lone segment is generic when it is one of
+// the well-known infra/mount names above, not merely because it is alone.
+//
+// A single-segment path that clears the vocabulary is still weaker evidence
+// than a multi-segment one, so linkHTTP additionally requires its match to be
+// unambiguous — see the singleSegmentPath gate there.
 func isGenericPath(normPath string) bool {
 	var segs []string
 	for _, s := range strings.Split(normPath, "/") {
@@ -1714,7 +1774,31 @@ func isGenericPath(normPath string) bool {
 	if strings.Contains(normPath, "{}") {
 		return false
 	}
-	return len(segs) < 2
+	if len(segs) == 0 {
+		return true // bare "/"
+	}
+	if len(segs) == 1 {
+		return genericSegments[strings.ToLower(segs[0])]
+	}
+	return false
+}
+
+// singleSegmentPath reports whether a normalized path has exactly one segment
+// and no path parameter. Such a path passes isGenericPath only by clearing the
+// generic vocabulary; linkHTTP still demands an unambiguous provider before
+// drawing an edge from one, keeping the linker's preference for a missing edge
+// over a fabricated one.
+func singleSegmentPath(normPath string) bool {
+	if strings.Contains(normPath, "{}") {
+		return false
+	}
+	n := 0
+	for _, s := range strings.Split(normPath, "/") {
+		if s != "" {
+			n++
+		}
+	}
+	return n == 1
 }
 
 // normalizeLabel lowercases and strips '-'/'_' so "app-web",

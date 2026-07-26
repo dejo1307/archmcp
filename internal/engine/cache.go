@@ -683,7 +683,16 @@ import (
 // as a variable carry no readable verb and now fall back to GET rather than
 // adopting an unrelated one. Mirrors how Pass 3 already scopes its scan with
 // enclosingObject.
-const cacheVersion = "v134"
+// v135: "**/testdata/**" joins the default ignore globs, and the two extractors
+// that walk the repo themselves rather than consuming the engine's filtered file
+// list — OpenAPI (Extract) and gRPC (Detect) — repeat the exclusion in their own
+// skipDir, which the globs cannot reach. Go reserves testdata/ for fixtures, and
+// a fixture repo is a whole miniature codebase: enola's own testdata/repos/**
+// supplied every one of its detected outbound HTTP call sites, manufacturing a
+// cross-repo coverage gap for a service that makes no outbound calls at all.
+// Fixture-driven tests are unaffected — they root each scan INSIDE the fixture,
+// so the scanned-relative paths contain no testdata/ segment to match.
+const cacheVersion = "v135"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
