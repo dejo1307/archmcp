@@ -630,3 +630,56 @@ func TestResolveCallTargets_SingleSegmentNeedsNoConfirmation(t *testing.T) {
 		t.Errorf("resolved call target = %q, want %q", got, want)
 	}
 }
+
+// A directory with no __init__.py breaks the package chain and starts a new source
+// root, so its own children are importable by bare name even though the directory
+// sits inside a package. Scripts in such a tree import each other that way
+// ("from corpus import read_source"), and classifying those external made the whole
+// tree read as dead code.
+//
+// The same fixture pins that this does NOT undo the third-party guard: the
+// look-alike dir's parent IS a package, so it stays unreachable by bare name. Both
+// halves must hold together — that is the whole point of the per-position rule.
+func TestImportableRoots_NonPackageDirStartsNewRoot(t *testing.T) {
+	modules := modSet(
+		"pkg/analysis/corpus",             // pkg/analysis has no __init__.py
+		"pkg/infra/relational/sqlalchemy", // pkg/infra/relational IS a package
+	)
+	pkgDirs := modSet("pkg", "pkg/infra", "pkg/infra/relational")
+
+	roots := importableRoots(modules, pkgDirs)
+
+	if !roots["corpus"] {
+		t.Error("corpus must be an importable root: its parent pkg/analysis is not a package")
+	}
+	if roots["sqlalchemy"] {
+		t.Error("sqlalchemy must NOT be a root: its parent pkg/infra/relational is a package")
+	}
+	if !roots["pkg"] {
+		t.Error("the repo-root segment must always be a root")
+	}
+	if roots["infra"] || roots["relational"] {
+		t.Error("subpackages of pkg must not be roots")
+	}
+}
+
+// End-to-end for the same shape: a sibling import inside a non-package directory
+// resolves to a real symbol, while a bare third-party import in the same repo is
+// still classified external.
+func TestResolveCallTargets_SiblingImportInNonPackageDir(t *testing.T) {
+	fileModules := modSet("pkg/analysis/analyze", "pkg/analysis/corpus", "pkg/infra/relational/sqlalchemy/adapter")
+	pkgDirs := modSet("pkg", "pkg/infra", "pkg/infra/relational", "pkg/infra/relational/sqlalchemy")
+	ff := []facts.Fact{
+		symCall("pkg/analysis/analyze.py", "pkg/analysis/analyze.main", "corpus.read_source"),
+		symCall("pkg/analysis/analyze.py", "pkg/analysis/analyze.main2", "sqlalchemy.Column"),
+	}
+
+	resolveCallTargets(ff, fileModules, pkgDirs)
+
+	if got, want := callTarget(ff[0]), "pkg/analysis/corpus.read_source"; got != want {
+		t.Errorf("sibling import: got %q, want %q", got, want)
+	}
+	if got := callTarget(ff[1]); got != "" {
+		t.Errorf("third-party import must still be dropped, got %q", got)
+	}
+}

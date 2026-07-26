@@ -752,7 +752,22 @@ import (
 // framework_registered=true, the same treatment click/Typer commands already got.
 // Facts are flagged, never dropped: callers of generated code must still resolve,
 // so only the dead-code judgement changes.
-const cacheVersion = "v139"
+// v140: two Python reference gaps, each making live code read as dead.
+//
+// importableRoots stopped scanning a path at the first package parent, but a
+// directory with no __init__.py BREAKS the package chain and starts a new source
+// root, so a segment below a package can itself be importable. A non-package
+// directory nested in a package puts its own siblings on sys.path, and
+// "from corpus import read_source" between two files there is a real internal
+// import; classifying those external made a whole analysis tree read as dead. Now
+// judged per position, matching buildSuffixIndex — which already did — so a
+// like-named third-party directory whose parent IS a package stays excluded (v138).
+//
+// A function handed to a decorator as a VALUE (@override_run_tasks(run_tasks),
+// @register(handler)) is a real use: the decorator stores it and the framework
+// invokes it later. The decorator-argument walk looked only for nested CALLS, so a
+// bare identifier slipped past and the referenced function had no incoming edge.
+const cacheVersion = "v140"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

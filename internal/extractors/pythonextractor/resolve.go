@@ -403,8 +403,17 @@ func importableRoots(modules map[string]bool, pkgDirs map[string]bool) map[strin
 			if s == "" || s == "." {
 				continue
 			}
+			// Each position is judged on its own: "deeper" does not mean "still inside
+			// a package". A directory without an __init__.py breaks the package chain
+			// and starts a new source root, so a segment below a package can itself be
+			// importable — a scripts directory nested in a package (no __init__.py)
+			// puts its own siblings on sys.path, and `from corpus import read_source`
+			// between two files there is a real internal import. Stopping the scan at
+			// the first package parent instead classified all of them external, which
+			// is how a whole analysis package read as dead. buildSuffixIndex applies
+			// the identical rule per position; the two must agree.
 			if i > 0 && pkgDirs[strings.Join(segs[:i], "/")] {
-				break // everything deeper is a subpackage, not a root
+				continue
 			}
 			roots[s] = true
 		}

@@ -1975,3 +1975,76 @@ def outer():
 		t.Errorf("outer: RelCalls = %v, want svc.helper (called from a method of a function-nested class)", calls)
 	}
 }
+
+// A function handed to a decorator as a VALUE is a real use: the decorator stores
+// it and the framework invokes it later. The decorator-argument walk only looked
+// for nested CALLS, so a bare identifier slipped past and the referenced function
+// read as dead code.
+func TestAST_DecoratorArgumentFunctionIsReferenced(t *testing.T) {
+	src := `from pkg.dist import run_tasks_distributed
+from pkg.reg import override_run_tasks
+
+
+@override_run_tasks(run_tasks_distributed)
+async def run_tasks(data):
+    return data
+`
+	ff := astExtract(t, "pkg/ops.py", src, false)
+
+	var targets []string
+	for _, f := range ff {
+		for _, r := range f.Relations {
+			if r.Kind == facts.RelCalls {
+				targets = append(targets, r.Target)
+			}
+		}
+	}
+	want := "pkg.dist.run_tasks_distributed"
+	found := false
+	for _, tg := range targets {
+		if tg == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("decorator argument not referenced: want %q among %v", want, targets)
+	}
+}
+
+// The decorator's own call is still recorded, and a nested call inside the
+// arguments still resolves — the value-reference pass must add to that walk, not
+// replace it.
+func TestAST_DecoratorArgumentKeepsNestedCalls(t *testing.T) {
+	src := `from pkg.deps import Depends, requires_access
+
+
+@router.get("/x", dependencies=[Depends(requires_access(method="GET"))])
+def handler():
+    return None
+`
+	ff := astExtract(t, "pkg/routes.py", src, false)
+
+	var targets []string
+	for _, f := range ff {
+		for _, r := range f.Relations {
+			if r.Kind == facts.RelCalls {
+				targets = append(targets, r.Target)
+			}
+		}
+	}
+	// requires_access is the inner call and resolves through the import map; Depends
+	// is the outer call in the collection and stays a bare name (pre-existing, not
+	// affected by the value-reference pass). Both must still be present — the point
+	// is that adding value refs did not displace the nested-call walk.
+	for _, want := range []string{"Depends", "pkg.deps.requires_access"} {
+		found := false
+		for _, tg := range targets {
+			if tg == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("nested decorator-argument call lost: want %q among %v", want, targets)
+		}
+	}
+}

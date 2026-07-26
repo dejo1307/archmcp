@@ -576,6 +576,12 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 			if call := firstChildOfKind(c, "call"); call != nil {
 				if args := call.ChildByFieldName("arguments"); args != nil {
 					w.walkTopLevelCalls(args)
+					// walkTopLevelCalls finds nested CALLS; a function handed to a
+					// decorator as a VALUE (@override_run_tasks(run_tasks_distributed),
+					// @register(handler)) is a bare identifier and slips past it. That is
+					// a real use — the decorator stores the function and the framework
+					// invokes it — so without this the referenced function reads as dead.
+					w.fileRefs = append(w.fileRefs, w.argRefRelations(args)...)
 				}
 			}
 			// A route-method decorator in any path form (literal, path= keyword, or a
