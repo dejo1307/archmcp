@@ -1801,7 +1801,9 @@ func isTSTestFile(relFile string) bool {
 // then degrades to short-name matching (its documented conservative bias — only
 // ever ADDS references), which is exactly how the dead-code detector matches. Path
 // aliases ARE reconstructed so "@/…"-imported helpers still resolve.
-func (e *TSExtractor) ExtractTestRefs(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
+// prodFiles is unused: knownFiles is deliberately left nil (see above), so this
+// pass has nothing to check a production file set against.
+func (e *TSExtractor) ExtractTestRefs(ctx context.Context, repoPath string, files, _ []string) ([]facts.Fact, error) {
 	var testFiles []string
 	for _, relFile := range files {
 		if isTSTestFile(relFile) {

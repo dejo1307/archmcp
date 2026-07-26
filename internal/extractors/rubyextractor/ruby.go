@@ -216,9 +216,11 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 // (which the orphans package explicitly excludes), and no symbol/module/route
 // explainer is affected, while the dead-code detector can still see that a
 // production symbol is exercised by a test and not mis-report it as dead.
-func (e *RubyExtractor) ExtractTestRefs(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
+// prodFiles is unused: Ruby references are resolved by constant name, not against
+// the set of files that exist.
+func (e *RubyExtractor) ExtractTestRefs(ctx context.Context, repoPath string, testFiles, _ []string) ([]facts.Fact, error) {
 	var rbFiles []string
-	for _, relFile := range files {
+	for _, relFile := range testFiles {
 		if isRubySourceFile(repoPath, relFile) {
 			rbFiles = append(rbFiles, relFile)
 		}

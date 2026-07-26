@@ -66,7 +66,7 @@ func TestNewThing(t *testing.T) {
 `,
 	})
 
-	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"pkg/svc/svc_test.go"})
+	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"pkg/svc/svc_test.go"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestExternal(t *testing.T) {
 `,
 	})
 
-	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"pkg/svc/ext_test.go"})
+	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"pkg/svc/ext_test.go"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestHelper(t *testing.T) {
 `,
 	})
 
-	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"pkg/svc/svc_test.go"})
+	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"pkg/svc/svc_test.go"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestExtractTestRefs_IgnoresFilesItDoesNotOwn(t *testing.T) {
 	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{
 		"spec/thing_spec.rb", // Ruby's, not ours
 		"pkg/svc/svc.go",     // production source, not a test
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestExtractTestRefs_ReferenceFreeFileYieldsNoFact(t *testing.T) {
 		"pkg/svc/empty_test.go": "package svc\n\nvar x = 1\n",
 	})
 
-	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"pkg/svc/empty_test.go"})
+	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"pkg/svc/empty_test.go"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

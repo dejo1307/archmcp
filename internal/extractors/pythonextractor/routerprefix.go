@@ -352,6 +352,10 @@ func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, file
 
 	fileIdx := buildSuffixIndex(fileModules)
 	topPkgs := topLevelSegments(fileModules)
+	// A router imported through a package __init__ now resolves by its dotted path
+	// rather than only via the unique-bare-name fallback below, so a re-exported
+	// router whose short name is not repo-wide unique still finds its group.
+	reexports := buildReexportIndex(allFacts)
 
 	// Resolve mounts to group keys, in file then source order.
 	type mountEdge struct{ parent, child, prefix string }
@@ -360,7 +364,7 @@ func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, file
 	for i := range topos {
 		importerDir := fileDir(topos[i].relFile)
 		for _, m := range topos[i].mounts {
-			child := resolveRouterKey(m.child, m.childName, groups, byName, fileIdx, topPkgs, importerDir)
+			child := resolveRouterKey(m.child, m.childName, groups, byName, fileIdx, topPkgs, importerDir, reexports)
 			if child == "" || child == m.parent {
 				continue
 			}
@@ -467,12 +471,12 @@ func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, file
 // first, then the dotted import target resolved to a slash symbol, then a unique
 // repo-wide match on the bare name (which is what carries a router re-exported
 // through a package __init__). Ambiguous or unknown -> "", leaving the bare path.
-func resolveRouterKey(raw, name string, groups map[string]*pyRouterGroup, byName map[string][]string, fileIdx suffixIndex, topPkgs map[string]bool, importerDir string) string {
+func resolveRouterKey(raw, name string, groups map[string]*pyRouterGroup, byName map[string][]string, fileIdx suffixIndex, topPkgs map[string]bool, importerDir string, reexports reexportIndex) string {
 	if _, ok := groups[raw]; ok {
 		return raw
 	}
 	if isDottedCallTarget(raw) {
-		if resolved, keep := resolveDottedTarget(raw, fileIdx, topPkgs, importerDir); keep {
+		if resolved, keep := resolveDottedTarget(raw, fileIdx, topPkgs, importerDir, reexports); keep {
 			if _, ok := groups[resolved]; ok {
 				return resolved
 			}

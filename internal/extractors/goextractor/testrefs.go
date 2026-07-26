@@ -33,9 +33,12 @@ func isGoTestFile(relFile string) bool { return strings.HasSuffix(relFile, "_tes
 // enable Go caching and pull .go files out of computeExtractorKeys' shared
 // partition, changing the shared hash that keys EVERY other extractor. So the
 // filter lives here instead — Ruby's ExtractTestRefs filters internally too.
-func (e *GoExtractor) ExtractTestRefs(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
+// prodFiles is unused: Go call targets resolve lexically through the module path
+// and each file's own imports, so this pass needs no view of which production
+// files exist.
+func (e *GoExtractor) ExtractTestRefs(ctx context.Context, repoPath string, testFiles, _ []string) ([]facts.Fact, error) {
 	var goFiles []string
-	for _, relFile := range files {
+	for _, relFile := range testFiles {
 		if isGoTestFile(relFile) {
 			goFiles = append(goFiles, relFile)
 		}

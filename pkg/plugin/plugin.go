@@ -52,9 +52,24 @@ type KeyDependent interface {
 // never becomes a dead-code candidate and no other explainer is affected.
 // Extractors that do not implement it are simply skipped for test-ref extraction.
 type TestRefExtractor interface {
-	// ExtractTestRefs parses the given repo-relative test files and returns
+	// ExtractTestRefs parses the repo-relative test files in testFiles and returns
 	// reference-only facts (facts.KindTestRef).
-	ExtractTestRefs(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error)
+	//
+	// prodFiles is the production file list the same snapshot passed to Extract —
+	// every non-test file, across all languages. It exists because resolving a test's
+	// reference can require knowing which production modules are real: Python spells
+	// an absolute-import call target as a dotted path ("pkg.mod.func") and can only
+	// rewrite it to a canonical symbol name by checking that path against the set of
+	// files that exist. Without it, every such target looks external and is dropped,
+	// and the pass emits facts with no usable edges.
+	//
+	// Implementations that resolve purely lexically (Go via import paths, Ruby and
+	// TypeScript via their own conventions) ignore it. It is passed rather than
+	// re-derived inside the extractor deliberately: only the engine knows which files
+	// survived the ignore globs, and a second walk would duplicate that knowledge —
+	// the mistake that let fixture directories into the graph via the self-walking
+	// OpenAPI and gRPC extractors.
+	ExtractTestRefs(ctx context.Context, repoPath string, testFiles, prodFiles []string) ([]facts.Fact, error)
 }
 
 // Explainer analyzes facts and produces architectural insights.

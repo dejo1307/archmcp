@@ -335,7 +335,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	// Reference-only extraction over test/spec files. Runs every snapshot (not
 	// cached with the main extractors) and adds only KindTestRef facts, so a
 	// production symbol exercised solely by a test is not mis-reported as dead.
-	e.runTestRefExtractors(ctx, absRepo, testFiles)
+	e.runTestRefExtractors(ctx, absRepo, testFiles, files)
 
 	tExtract = time.Since(tStage)
 	newCount := e.store.Count()
@@ -776,7 +776,12 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 // for every enabled, detected extractor that implements plugin.TestRefExtractor.
 // It scopes each extractor to the test files it owns and adds the resulting
 // KindTestRef facts to the store. Errors are logged, not fatal.
-func (e *Engine) runTestRefExtractors(ctx context.Context, repoPath string, testFiles []string) {
+//
+// prodFiles is the same non-test file list handed to runExtractors, forwarded so an
+// extractor whose reference resolution depends on which production modules exist
+// (Python — see plugin.TestRefExtractor) does not have to re-walk the repo and
+// re-implement the ignore globs to find out.
+func (e *Engine) runTestRefExtractors(ctx context.Context, repoPath string, testFiles, prodFiles []string) {
 	if len(testFiles) == 0 {
 		return
 	}
@@ -803,7 +808,10 @@ func (e *Engine) runTestRefExtractors(ctx context.Context, repoPath string, test
 		if len(owned) == 0 {
 			continue
 		}
-		refFacts, err := tr.ExtractTestRefs(ctx, repoPath, owned)
+		// prodFiles is passed whole, unscoped by FileOwner: an extractor that needs
+		// it uses it to decide whether a referenced module EXISTS, and the answer
+		// must not depend on which extractor owns the file.
+		refFacts, err := tr.ExtractTestRefs(ctx, repoPath, owned, prodFiles)
 		if err != nil {
 			log.Printf("[engine] extractor %s test-ref error: %v", ext.Name(), err)
 			continue

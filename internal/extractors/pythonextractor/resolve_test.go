@@ -345,3 +345,101 @@ func TestResolveCallTargets_AlreadyResolvedSlash_Untouched(t *testing.T) {
 		t.Errorf("already-resolved slash target should be untouched, got %q", got)
 	}
 }
+
+// initDep builds the dependency fact an __init__.py from-import produces after
+// resolveImports has rewritten its target to a slash module path.
+func initDep(initFile, sourceModule string, reexports ...string) facts.Fact {
+	return facts.Fact{
+		Kind:      facts.KindDependency,
+		Name:      "x -> " + sourceModule,
+		File:      initFile,
+		Props:     map[string]any{"language": "python", "reexports": reexports},
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: sourceModule}},
+	}
+}
+
+// The router-wiring case. A package is a DIRECTORY, so "pkg.routers" matches no
+// module file and the call target used to dangle as a dotted string — leaving the
+// API composition root connected to none of the routers it mounts.
+func TestResolveCallTargets_PackageReexport_ResolvesToDefiningModule(t *testing.T) {
+	fileModules := modSet(
+		"cognee/api/client",
+		"cognee/api/v1/add/routers/__init__",
+		"cognee/api/v1/add/routers/get_add_router",
+	)
+	ff := []facts.Fact{
+		initDep("cognee/api/v1/add/routers/__init__.py",
+			"cognee/api/v1/add/routers/get_add_router", "get_add_router"),
+		symCall("cognee/api/client.py", "cognee/api/client.app",
+			"cognee.api.v1.add.routers.get_add_router"),
+	}
+	resolveCallTargets(ff, fileModules)
+
+	want := "cognee/api/v1/add/routers/get_add_router.get_add_router"
+	if got := callTarget(ff[1]); got != want {
+		t.Errorf("resolved call target = %q, want %q", got, want)
+	}
+}
+
+// The re-exported name need not match the module file name.
+func TestResolveCallTargets_PackageReexport_NameDiffersFromModule(t *testing.T) {
+	fileModules := modSet("pkg/app", "pkg/svc/__init__", "pkg/svc/impl")
+	ff := []facts.Fact{
+		initDep("pkg/svc/__init__.py", "pkg/svc/impl", "Widget", "build"),
+		symCall("pkg/app.py", "pkg/app.run", "pkg.svc.Widget"),
+	}
+	resolveCallTargets(ff, fileModules)
+
+	if got, want := callTarget(ff[1]), "pkg/svc/impl.Widget"; got != want {
+		t.Errorf("resolved call target = %q, want %q", got, want)
+	}
+}
+
+// A name re-exported from two different modules in the same package is ambiguous.
+// Binding it to either would fabricate an edge, so it stays dotted — carrying no
+// graph edge, exactly as before this resolution step existed.
+func TestResolveCallTargets_PackageReexport_AmbiguousStaysDotted(t *testing.T) {
+	fileModules := modSet("pkg/app", "pkg/svc/__init__", "pkg/svc/a", "pkg/svc/b")
+	ff := []facts.Fact{
+		initDep("pkg/svc/__init__.py", "pkg/svc/a", "thing"),
+		initDep("pkg/svc/__init__.py", "pkg/svc/b", "thing"),
+		symCall("pkg/app.py", "pkg/app.run", "pkg.svc.thing"),
+	}
+	resolveCallTargets(ff, fileModules)
+
+	if got := callTarget(ff[2]); got != "pkg.svc.thing" {
+		t.Errorf("ambiguous re-export must stay dotted, got %q", got)
+	}
+}
+
+// An __init__.py whose source module did not resolve to an internal path cannot
+// name an internal symbol; the target must not be bound to it.
+func TestResolveCallTargets_PackageReexport_ExternalSourceIgnored(t *testing.T) {
+	fileModules := modSet("pkg/app", "pkg/svc/__init__")
+	ff := []facts.Fact{
+		// Unresolved/external source: still dotted, no slash.
+		initDep("pkg/svc/__init__.py", "third_party.lib", "helper"),
+		symCall("pkg/app.py", "pkg/app.run", "pkg.svc.helper"),
+	}
+	resolveCallTargets(ff, fileModules)
+
+	if got := callTarget(ff[1]); got != "pkg.svc.helper" {
+		t.Errorf("external re-export source must not bind; got %q", got)
+	}
+}
+
+// An exact module match must still win: the re-export step is a FALLBACK and must
+// not change any target that already resolved.
+func TestResolveCallTargets_ExactModuleWinsOverReexport(t *testing.T) {
+	fileModules := modSet("pkg/app", "pkg/svc", "pkg/svc/__init__", "pkg/svc/impl")
+	ff := []facts.Fact{
+		initDep("pkg/svc/__init__.py", "pkg/svc/impl", "run"),
+		symCall("pkg/app.py", "pkg/app.main", "pkg.svc.run"),
+	}
+	resolveCallTargets(ff, fileModules)
+
+	// "pkg/svc" is a real module file, so the symbol belongs to it, not to impl.
+	if got, want := callTarget(ff[1]), "pkg/svc.run"; got != want {
+		t.Errorf("exact module match must win: got %q, want %q", got, want)
+	}
+}

@@ -692,7 +692,34 @@ import (
 // cross-repo coverage gap for a service that makes no outbound calls at all.
 // Fixture-driven tests are unaffected — they root each scan INSIDE the fixture,
 // so the scanned-relative paths contain no testdata/ segment to match.
-const cacheVersion = "v135"
+// v136: the Python extractor implements plugin.TestRefExtractor, so a production
+// symbol exercised only by a pytest file is no longer mis-reported as dead — on a
+// real corpus ~58% of Python symbols with no incoming call edge were imported or
+// called from tests. plugin.TestRefExtractor now also receives the production file
+// list: Python spells an absolute-import target as a dotted path ("pkg.mod.func")
+// and can only rewrite it to a canonical symbol name by checking that path against
+// the set of files that exist, which the engine alone knows post-ignore-globs.
+// The pass emits ONLY KindTestRef facts — never symbols, modules or routes — so
+// re-reading files the ignore globs exclude cannot put a pytest fixture's
+// include_router prefix back into the production route graph (the v135 regression).
+// The global symbol index is deliberately not rebuilt (Extract's Pass 1 is the
+// expensive half of Python extraction), so receiver-typed method calls go
+// unresolved; an unresolved target is dropped, never guessed, leaving its symbol
+// the dead-code candidate it already was.
+// v137: Python call targets imported through a package __init__.py re-export now
+// resolve to the module that DEFINES the symbol instead of dangling as a dotted
+// string. A package is a directory, so "from pkg.sub import thing" left a target
+// "pkg.sub.thing" whose prefix matched no module file (the set holds
+// pkg/sub/__init__ and pkg/sub/thing, never pkg/sub) — 674 such targets carrying
+// 4,660 call edges in one corpus, including every router factory its API
+// composition root mounts, so find_path from that file reached none of them. The
+// walker already recorded the data (Props["reexports"] plus the import target);
+// resolveCallTargets now indexes it, keyed by full package dir so a lookup is
+// exact. Exact module resolution still runs first, making this purely additive; a
+// name re-exported from two modules in one package stays dotted rather than bind
+// arbitrarily. This is a GRAPH fix, not a dead-code one — the orphans explainer's
+// short-name matching already treated these symbols as used.
+const cacheVersion = "v137"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

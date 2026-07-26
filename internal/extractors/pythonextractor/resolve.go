@@ -76,6 +76,7 @@ func resolveImports(allFacts []facts.Fact, modules map[string]bool) {
 func resolveCallTargets(allFacts []facts.Fact, fileModules map[string]bool) {
 	fileIdx := buildSuffixIndex(fileModules)
 	topPkgs := topLevelSegments(fileModules)
+	reexports := buildReexportIndex(allFacts)
 
 	for i := range allFacts {
 		f := &allFacts[i]
@@ -91,7 +92,7 @@ func resolveCallTargets(allFacts []facts.Fact, fileModules map[string]bool) {
 		out := f.Relations[:0]
 		for _, rel := range f.Relations {
 			if (rel.Kind == facts.RelCalls || rel.Kind == facts.RelInstantiates) && isDottedCallTarget(rel.Target) {
-				resolved, keep := resolveDottedTarget(rel.Target, fileIdx, topPkgs, importerDir)
+				resolved, keep := resolveDottedTarget(rel.Target, fileIdx, topPkgs, importerDir, reexports)
 				if !keep {
 					continue // external/stdlib → drop the edge
 				}
@@ -110,22 +111,160 @@ func isDottedCallTarget(t string) bool {
 	return strings.IndexByte(t, '.') >= 0 && strings.IndexByte(t, '/') < 0
 }
 
+// reexportIndex answers "package P re-exports name N — which module defines it?".
+//
+// It exists because a package is a DIRECTORY, and directories are not modules. For
+// `from pkg.sub import thing` the call target is "pkg.sub.thing", whose module
+// prefix "pkg.sub" matches no file: the module set holds "pkg/sub/__init__" and
+// "pkg/sub/thing", never "pkg/sub". Absolute resolution therefore fails and the
+// target stays a dotted string matching no node — a dangling edge. A real corpus
+// had 674 such targets carrying 4,660 call edges, including every one of the 34
+// router factories its API composition root wires up, leaving that file connected
+// to nothing internal in the graph.
+type reexportIndex struct {
+	// byDir maps a package dir to each re-exported name's defining module.
+	byDir map[string]map[string]string
+	// dirs indexes those package dirs by dotted suffix, so a dotted module prefix
+	// can be matched the same way resolveAbsolute matches module paths (import
+	// paths are relative to a source root, so dots do not map 1:1 onto slashes).
+	dirs suffixIndex
+}
+
+// buildReexportIndex reads the re-export data the walker already emits on every
+// __init__.py from-import: Props["reexports"] (the imported short names) plus the
+// relation Target naming the module they come from. resolveImports has run by now,
+// so that Target is already a slash module path — only internal, resolved ones are
+// indexed, since an unresolved or external source cannot name an internal symbol.
+//
+// A name re-exported from two DIFFERENT modules in the same package is dropped
+// rather than resolved arbitrarily: binding a call to the wrong definition would
+// fabricate an edge, and a missing edge is the safer error (the same rule the
+// dotted/bare-name paths follow).
+func buildReexportIndex(allFacts []facts.Fact) reexportIndex {
+	byDir := map[string]map[string]string{}
+	ambiguous := map[string]bool{}
+
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindDependency || !isInitFile(f.File) {
+			continue
+		}
+		names := stringSliceProp(f.Props, "reexports")
+		if len(names) == 0 {
+			continue
+		}
+		var source string
+		for _, rel := range f.Relations {
+			if rel.Kind == facts.RelImports {
+				source = rel.Target
+				break
+			}
+		}
+		// Only a resolved internal module can define an internal symbol. An
+		// unresolved dotted path or a third-party package is not usable here.
+		if source == "" || !strings.ContainsRune(source, '/') {
+			continue
+		}
+		dir := fileDir(f.File)
+		if byDir[dir] == nil {
+			byDir[dir] = map[string]string{}
+		}
+		for _, n := range names {
+			if n == "" {
+				continue
+			}
+			key := dir + "\x00" + n
+			if prev, ok := byDir[dir][n]; ok && prev != source {
+				ambiguous[key] = true
+				continue
+			}
+			if !ambiguous[key] {
+				byDir[dir][n] = source
+			}
+		}
+	}
+	for key := range ambiguous {
+		dir, n, _ := strings.Cut(key, "\x00")
+		delete(byDir[dir], n)
+	}
+
+	dirs := make(map[string]bool, len(byDir))
+	for d := range byDir {
+		if len(byDir[d]) > 0 {
+			dirs[d] = true
+		}
+	}
+	return reexportIndex{byDir: byDir, dirs: buildSuffixIndex(dirs)}
+}
+
+// lookup resolves a dotted package prefix plus a symbol to the module that
+// actually defines it, or "" when the package re-exports no such name.
+func (r reexportIndex) lookup(modulePrefix, symbol string, topPkgs map[string]bool, importerDir string) string {
+	if len(r.byDir) == 0 {
+		return ""
+	}
+	dir := resolveAbsolute(modulePrefix, r.dirs, topPkgs, importerDir)
+	if dir == "" {
+		return ""
+	}
+	return r.byDir[dir][symbol]
+}
+
+// isInitFile reports whether a repo-relative path is a package __init__.py.
+func isInitFile(f string) bool {
+	return f == "__init__.py" || strings.HasSuffix(f, "/__init__.py")
+}
+
+// stringSliceProp reads a []string prop, tolerating the []any shape a fact takes
+// on after a JSON round-trip.
+func stringSliceProp(props map[string]any, key string) []string {
+	switch v := props[key].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 // resolveDottedTarget maps a dotted call target ("a.b.c.sym") to a canonical slash
-// symbol name when its module prefix resolves to an internal file, keeps it dotted
-// when the prefix is internal but not an exact file (a package re-export), and
-// reports keep=false when the prefix is stdlib/third-party (drop the edge).
-func resolveDottedTarget(dotted string, fileIdx suffixIndex, topPkgs map[string]bool, importerDir string) (string, bool) {
+// symbol name when its module prefix resolves to an internal file or to a package
+// that re-exports the symbol, keeps it dotted when the prefix is internal but
+// neither of those, and reports keep=false when the prefix is stdlib/third-party
+// (drop the edge).
+//
+// The three attempts are ordered cheapest-and-most-certain first, so adding the
+// re-export step can only rescue targets that previously dangled — a target the
+// module lookup already resolved never reaches it.
+func resolveDottedTarget(dotted string, fileIdx suffixIndex, topPkgs map[string]bool, importerDir string, reexports reexportIndex) (string, bool) {
 	li := strings.LastIndexByte(dotted, '.')
 	if li <= 0 {
 		return dotted, true
 	}
 	modulePrefix := dotted[:li]
 	symbol := dotted[li+1:]
+
+	// 1. The prefix names a module file outright.
 	if dir := resolveAbsolute(modulePrefix, fileIdx, topPkgs, importerDir); dir != "" {
 		return dir + "." + symbol, true
 	}
-	// Internal package re-export or same-package import: keep the dotted target so
-	// downstream short-name matching still marks the symbol used.
+
+	// 2. The prefix names a PACKAGE whose __init__.py re-exports the symbol. Bind to
+	// the module that actually defines it, so the edge lands on a real node instead
+	// of dangling as a dotted string.
+	if mod := reexports.lookup(modulePrefix, symbol, topPkgs, importerDir); mod != "" {
+		return mod + "." + symbol, true
+	}
+
+	// 3. Internal, but nothing more precise is known: keep the dotted target so
+	// downstream short-name matching still marks the symbol used. This carries no
+	// graph edge — it only feeds the dead-code heuristic.
 	seg0 := firstSeg(modulePrefix)
 	if topPkgs[seg0] && !pyStdlib[seg0] {
 		return dotted, true

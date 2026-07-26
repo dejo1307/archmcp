@@ -47,7 +47,7 @@ func TestExtractTestRefs_ImportedCallResolvesToProductionSymbol(t *testing.T) {
 		"src/util.test.ts": `import { formatTag } from './util';` + "\n" + `test('formats', () => { formatTag(' x '); });`,
 	}, false)
 
-	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"src/util.test.ts"})
+	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"src/util.test.ts"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestExtractTestRefs_AliasAndNamespaceImportsResolve(t *testing.T) {
 		"tests/thing.test.ts": `import { helper } from '~/helper';` + "\n" + `import * as ns from '~/util/ns';` + "\n" + `test('t', () => { helper(); ns.build(); });`,
 	}, false)
 
-	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"tests/thing.test.ts"})
+	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"tests/thing.test.ts"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestExtractTestRefs_EmitsOnlyTestRefNoSymbols(t *testing.T) {
 		"src/svc.spec.ts": `import { render } from '@testing-library/react';` + "\n" + `import { doWork } from './svc';` + "\n" + `test('w', () => { doWork(); });`,
 	}, false)
 
-	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"src/svc.spec.ts"})
+	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"src/svc.spec.ts"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestExtractTestRefs_IgnoresNonTestFiles(t *testing.T) {
 	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{
 		"src/svc.ts",         // production source, not a test
 		"spec/thing_spec.rb", // Ruby's, not ours
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestExtractTestRefs_ReferenceFreeFileYieldsNoFact(t *testing.T) {
 		"src/nothing.test.ts": `const x: number = 1;`,
 	}, false)
 
-	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"src/nothing.test.ts"})
+	ff, err := New().ExtractTestRefs(context.Background(), dir, []string{"src/nothing.test.ts"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

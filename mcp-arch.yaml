@@ -30,6 +30,12 @@ ignore:
   - "**/*.test.tsx"
   - "**/*.spec.ts"
   - "**/*.spec.tsx"
+  # Ruby has no co-located test convention (RSpec requires spec/, Minitest
+  # defaults to test/), so these demand the directory as well as the filename: a
+  # bare "**/*_test.rb" also swallows production code that merely ends in the
+  # token. Kept in sync with config.Default().
+  - "**/spec/**/*_spec.rb"
+  - "**/test/**/*_test.rb"
   # Python. A pytest fixture that assembles a throwaway app is a route-mount
   # fact, and the repo-wide prefix fixpoint folds every mount it can see — so a
   # test-only prefix rewrites production routes. conftest.py and the test_ prefix
@@ -44,6 +50,12 @@ ignore:
   - "out/**"
   - ".vercel/**"
   - ".turbo/**"
+  - "dist/**"
+  - "coverage/**"
+  - ".nuxt/**"
+  - ".svelte-kit/**"
+  # Rust / Maven / Gradle build output, at any depth.
+  - "**/target/**"
   # Minified / bundled JS (also detected heuristically by the extractor; kept in
   # sync with config.Default() in internal/config/config.go)
   - "**/*.min.js"
