@@ -97,6 +97,54 @@ func TestMergeRepoEntries_DepartedRepoDropped(t *testing.T) {
 	}
 }
 
+// A repo's corpus size is read from its own snapshot metadata, which may be
+// momentarily unreadable — a zero reading means "no measurement this time", not
+// "this repo has no source". Writing the gap through would silently un-price
+// every later query against that repo, so the last known size carries forward.
+func TestMergeRepoEntries_SourceBytesCarriedForwardOnZero(t *testing.T) {
+	now, _ := time.Parse(time.RFC3339, "2026-07-08T09:00:00Z")
+	prev := map[string]facts.GraphRepoEntry{
+		"A": {Label: "A", AddedAt: "2026-07-01T09:00:00Z", Git: gi("x"), SourceBytes: 872_581_357},
+	}
+	cur := []facts.GraphRepoEntry{{Label: "A", Git: gi("x"), SourceBytes: 0}}
+
+	got := mergeRepoEntries(cur, prev, now)
+	if got[0].SourceBytes != 872_581_357 {
+		t.Errorf("SourceBytes: got %d, want the previous 872581357 carried forward", got[0].SourceBytes)
+	}
+}
+
+// A fresh reading always wins, so a repo that grew or shrank is repriced.
+func TestMergeRepoEntries_SourceBytesFreshReadingWins(t *testing.T) {
+	now, _ := time.Parse(time.RFC3339, "2026-07-08T09:00:00Z")
+	prev := map[string]facts.GraphRepoEntry{
+		"A": {Label: "A", AddedAt: "2026-07-01T09:00:00Z", Git: gi("x"), SourceBytes: 100},
+	}
+	cur := []facts.GraphRepoEntry{{Label: "A", Git: gi("x"), SourceBytes: 900}}
+
+	if got := mergeRepoEntries(cur, prev, now); got[0].SourceBytes != 900 {
+		t.Errorf("SourceBytes: got %d, want the fresh 900", got[0].SourceBytes)
+	}
+}
+
+// The field is additive: a receipt written before it existed must still parse,
+// leaving the size unknown rather than failing the read.
+func TestReadPriorGraphReceipt_ReceiptWithoutSourceBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	old := `{"repos":[{"label":"A","path":"/tmp/a","added_at":"2026-07-01T09:00:00Z","fact_count":7}]}`
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := readPriorGraphReceipt(path)
+	entry, ok := got["A"]
+	if !ok {
+		t.Fatal("pre-existing receipt failed to parse")
+	}
+	if entry.SourceBytes != 0 || entry.FactCount != 7 {
+		t.Errorf("got %+v, want SourceBytes=0 (unknown) and the existing fields intact", entry)
+	}
+}
+
 func TestInGraphFor(t *testing.T) {
 	now, _ := time.Parse(time.RFC3339, "2026-07-08T09:00:00Z")
 	if got := inGraphFor("2026-07-08T06:00:00Z", now); got != (3 * time.Hour).String() {

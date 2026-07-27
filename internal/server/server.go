@@ -83,10 +83,15 @@ type Server struct {
 	// by genMu (only read/written inside the locked generate_snapshot handler).
 	snapshotsGenerated bool
 
-	// corpusByRepo remembers each repo's measured corpus for this session, so a
-	// later append can price cross-repo edge resolution against what is already
-	// loaded. Guarded by genMu, like snapshotsGenerated.
-	corpusByRepo map[string]int
+	// corpusByRepo remembers each repo's measured corpus for the currently loaded
+	// graph: a later append prices cross-repo edge resolution against it, and
+	// every query is scaled and capped by its total.
+	//
+	// Writes happen only in the genMu-serialized snapshot handler, but reads now
+	// come from the value middleware on every concurrent tool call. So the map is
+	// published behind an atomic pointer and replaced wholesale — never mutated
+	// in place, which would race a reader mid-iteration.
+	corpusByRepo atomic.Pointer[map[string]int]
 
 	// Freshness-banner cache. freshnessBanner() shells out to git per repo, so the
 	// result is memoized for freshTTL to keep that cost off the hot path of
@@ -178,7 +183,12 @@ func (s *Server) valueMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 		rec := &callRecord{}
 		result, err := next(context.WithValue(ctx, callRecordKey{}, rec), method, req)
 
-		call := status.ToolCall{Tool: params.Name, Repo: s.activeRepo(), OK: err == nil}
+		call := status.ToolCall{
+			Tool:         params.Name,
+			Repo:         s.activeRepo(),
+			OK:           err == nil,
+			CorpusTokens: s.loadedCorpusTokens(),
+		}
 		if ctr, ok := result.(*mcp.CallToolResult); ok && ctr != nil {
 			call.OK = call.OK && !ctr.IsError
 			call.ResponseBytes = resultBytes(ctr)
@@ -199,28 +209,79 @@ func (s *Server) valueMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 // bytes into tokens, matching the engine's own heuristic elsewhere.
 const charsPerToken = 4
 
-// rememberCorpus records a repo's measured corpus so that snapshotting a sibling
-// repo afterwards can price the cross-repo edge resolution against everything
-// already loaded. Caller holds genMu.
+// rememberCorpus records a repo's measured corpus in the published map, so that
+// snapshotting a sibling can price cross-repo edge resolution against what is
+// already loaded, and queries can be scaled by the whole graph. Copy-on-write:
+// the map is rebuilt and swapped rather than updated in place. Caller holds genMu.
 func (s *Server) rememberCorpus(repo string, tokens int) {
-	if s.corpusByRepo == nil {
-		s.corpusByRepo = make(map[string]int)
+	next := make(map[string]int)
+	if cur := s.corpusByRepo.Load(); cur != nil {
+		for k, v := range *cur {
+			next[k] = v
+		}
 	}
-	s.corpusByRepo[repo] = tokens
+	next[repo] = tokens
+	s.corpusByRepo.Store(&next)
 }
 
-// priorCorpusTokens is the combined corpus loaded before this call, excluding the
-// repo about to be indexed. It is deliberately session-scoped: after a restart it
-// starts empty, so the first snapshot of a session claims no cross-repo premium.
-// Under-crediting a restart is the right way to be wrong here. Caller holds genMu.
-func (s *Server) priorCorpusTokens(exclude string) int {
+// resetCorpus clears the pool, for a non-append snapshot that resets the store.
+// Caller holds genMu.
+func (s *Server) resetCorpus() {
+	s.corpusByRepo.Store(nil)
+}
+
+// SeedCorpus publishes the corpus of a graph restored from disk, so queries are
+// priced against it before this process has taken any snapshot of its own.
+//
+// Without it the pool is empty until the first generate_snapshot, and a restart
+// silently un-scales every query — which is the normal path, since
+// AutoLoadSnapshot exists precisely so queries work after a restart WITHOUT
+// re-snapshotting. Call it before Run; a nil or empty map is ignored, and a
+// later snapshot overwrites what it seeded.
+func (s *Server) SeedCorpus(byRepo map[string]int) {
+	if len(byRepo) == 0 {
+		return
+	}
+	seeded := make(map[string]int, len(byRepo))
+	for repo, tokens := range byRepo {
+		if tokens > 0 {
+			seeded[repo] = tokens
+		}
+	}
+	if len(seeded) == 0 {
+		return
+	}
+	s.corpusByRepo.Store(&seeded)
+}
+
+// corpusTokensExcept sums the published corpus, optionally skipping one repo.
+// Pass "" to total the whole loaded graph.
+func (s *Server) corpusTokensExcept(exclude string) int {
+	cur := s.corpusByRepo.Load()
+	if cur == nil {
+		return 0
+	}
 	total := 0
-	for repo, tokens := range s.corpusByRepo {
+	for repo, tokens := range *cur {
 		if repo != exclude {
 			total += tokens
 		}
 	}
 	return total
+}
+
+// priorCorpusTokens is the combined corpus loaded before this call, excluding the
+// repo about to be indexed. It is deliberately session-scoped: after a restart it
+// starts empty, so the first snapshot of a session claims no cross-repo premium.
+// Under-crediting a restart is the right way to be wrong here.
+func (s *Server) priorCorpusTokens(exclude string) int {
+	return s.corpusTokensExcept(exclude)
+}
+
+// loadedCorpusTokens is the size of the graph a query actually searched — every
+// repo resident, since a query is not scoped to one of them.
+func (s *Server) loadedCorpusTokens() int {
+	return s.corpusTokensExcept("")
 }
 
 // previousSnapshot reads a repo's last snapshot id and file hashes from its own
@@ -820,7 +881,7 @@ func (s *Server) registerTools() {
 		// appended to a small cluster would be credited for edges against every
 		// unrelated repo snapshotted earlier in the session.
 		if !appendMode {
-			s.corpusByRepo = nil
+			s.resetCorpus()
 		}
 
 		// Read this repo's previous snapshot from disk before overwriting it, so the

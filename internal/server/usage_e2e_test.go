@@ -90,6 +90,64 @@ func TestE2E_ToolUsageIsRecordedForStatus(t *testing.T) {
 	}
 }
 
+// A restarted server restores its graph from disk and serves queries without
+// re-snapshotting — that is what AutoLoadSnapshot exists for. Those queries
+// searched a graph of a known size, so they must be priced against it. Before
+// SeedCorpus the pool was empty until the first snapshot, so the normal path
+// (restart, query, never snapshot) silently scored queries as if the graph were
+// tiny.
+func TestE2E_SeededCorpusPricesQueriesAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
+
+	eng, cfg := newTestEngine(t)
+	srv, err := bootstrap.NewServer(eng, cfg)
+	if err != nil {
+		t.Fatalf("bootstrap.NewServer: %v", err)
+	}
+
+	repo := copyTree(t, filepath.Join("..", "engine", "testdata", "repos", "go_sample"), t.TempDir())
+	tracker := status.NewTracker(repo)
+	tracker.SetStartTime(time.Now())
+	srv.SetToolCallback(tracker.Record)
+	tracker.PersistStartup()
+
+	serverT, clientT := mcp.NewInMemoryTransports()
+	if _, err := srv.MCP().Connect(ctx, serverT, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "enola-test", Version: "0"}, nil)
+	cs, err := client.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	// Stand in for a restored graph: facts loaded, and a corpus large enough that
+	// pricing against it is visibly different from pricing against nothing.
+	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "generate_snapshot", Arguments: map[string]any{"repo_path": repo},
+	}); err != nil {
+		t.Fatalf("generate_snapshot: %v", err)
+	}
+	srv.SeedCorpus(map[string]int{repo: 40_000_000})
+
+	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "query_facts", Arguments: map[string]any{"kind": "module", "output_mode": "summary"},
+	}); err != nil {
+		t.Fatalf("query_facts: %v", err)
+	}
+
+	ss := status.ServerSnapshot()
+	got := ss.GrandSaved["query_facts"]
+	unscaled := status.ComputeValue(
+		map[string]int{"query_facts": 1}, map[string]int{},
+	).TotalTokensSaved
+	if got <= unscaled {
+		t.Errorf("query on a seeded 40M-token graph earned %d, no more than the unscaled %d", got, unscaled)
+	}
+}
+
 // A tool that fails is still a call that happened, but it displaced no work.
 // This holds end-to-end only because recording runs after the handler: a read
 // tool called with no snapshot loaded must earn nothing for its error message.

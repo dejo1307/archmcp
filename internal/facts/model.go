@@ -378,4 +378,15 @@ type GraphRepoEntry struct {
 	InGraphFor      string   `json:"in_graph_for"`                // human duration since AddedAt (e.g. "72h3m0s"); derived, recomputed each write
 	FactCount       int      `json:"fact_count"`                  // facts tagged with this repo label
 	CommitChangedAt string   `json:"commit_changed_at,omitempty"` // RFC3339 UTC, last time the recorded commit moved; AddedAt is NOT reset when the commit changes
+
+	// SourceBytes is the on-disk size of this repo's parsed source — the corpus
+	// figure the value model prices against (see pkg/status). It is carried here
+	// so a server restarting onto a restored graph knows how large that graph is
+	// without re-snapshotting: the facts come back from disk, and so must the
+	// measurement of what they were extracted from.
+	//
+	// Zero means "not recorded" — a receipt written before this field existed, or
+	// a repo whose snapshot metadata could not be read. Consumers treat zero as
+	// unknown rather than as an empty corpus.
+	SourceBytes int64 `json:"source_bytes,omitempty"`
 }

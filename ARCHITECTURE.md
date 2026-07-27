@@ -273,7 +273,7 @@ The estimate answers one question:
 
 That counterfactual, not the size of enola's own response, is the baseline. The distinction matters. A `query_facts` call that returns 12 KB of JSON has not "cost" you 3,000 tokens — it has *replaced* an exploration loop that would have grepped, opened a dozen files, and re-derived the same edges imperfectly. Pricing the response instead of what it displaced would measure the wrong thing entirely, and would perversely reward tools that answer less.
 
-The counterfactual is also why the model is anchored to **corpus size**, not to call count. Reconstructing a graph of a large monorepo (33.0M tokens of parsed source, 477,383 facts, 47,711 files) and reconstructing one of a small service (72K tokens) are not the same act of work. Any flat per-call price is wrong at both ends by more than two orders of magnitude, so there isn't one.
+The counterfactual is also why the model is anchored to **corpus size**, not to call count. Reconstructing a graph of the Linux kernel (218M tokens of parsed source, 1.9M facts, 55,399 files) and reconstructing one of a small service (17.9K tokens) are not the same act of work. Any flat per-call price is wrong at both ends by four orders of magnitude, so there isn't one.
 
 ### The corpus anchor
 
@@ -284,17 +284,20 @@ Two properties of that measurement are load-bearing:
 - It counts **parsed source only**, not `files_seen`. A snapshot's `file_hashes` list covers everything the walker touched, including whatever else lives in the tree. On one real repository the two differ by 39× — 3.1M tokens of source against 121M once JPEGs, an MP4 or two and a 63 MB GeoIP database are folded in. An agent was never going to read those, so they are not corpus.
 - It is a **measurement, not a guess**. Nothing else in this model is allowed to invent a corpus size.
 
-Measured across the workloads enola is actually pointed at, the spread the model has to cover is roughly **460×**:
+Measured across the workloads enola is actually pointed at, the spread the model has to cover is over **12,000×** — from a 17.9K-token service to a 218M-token kernel:
 
 | Workload | Parsed source | Facts | Wall clock |
 |---|---:|---:|---:|
-| Single small service (Go) | 72K tokens | 3,475 | 0.4s |
-| Mid-size project (Python + TS) | 1.78M | 16,909 | 1.1s |
-| Large project (Python + TS) | 5.90M | 51,645 | 3.5s |
-| **8-repo product ecosystem** (5 languages, backend + web + iOS + Android) | **10.62M** | 155,796 | 9.1s |
-| **Large monorepo** (Ruby + TS + Python + Java) | **33.00M** | 477,383 | 30.9s |
+| Mid-size project (Python + TS) | 1.77M tokens | 16,909 | 0.8s |
+| Backend service (Go + Python) | 3.12M | 23,716 | 1.5s |
+| Apache Airflow (Python + TS + Java + gRPC) | 8.54M | 67,702 | 4.9s |
+| **8-repo product ecosystem** (5 languages, backend + web + iOS + Android) | **8.45M** | 155,796 | 8.2s |
+| **GitLab** (Ruby + TS + Python + Java) | **32.77M** | 435,033 | 22.3s |
+| **Linux kernel** (C + Rust) | **218.15M** | 1,892,343 | 2m20s |
 
-The rendered digest (`llm_context.md`) is capped at ~16K tokens regardless. For the monorepo at the bottom of that table, that is a **2,065:1** compression of the corpus into the artifact an agent actually reads.
+Every figure there is the engine's own measurement, taken on a fresh snapshot; the ecosystem row sums its eight repos.
+
+The rendered digest (`llm_context.md`) is capped at ~16K tokens regardless of any of it. For GitLab that is a **2,048:1** compression of the corpus into the artifact an agent actually reads; for the kernel, **13,600:1**.
 
 ### Tokens
 
@@ -303,7 +306,7 @@ first snapshot     = corpus_tokens × rediscoveryFactor
 additional repo    = above + priorCorpusTokens × crossRepoPremiumFactor
 refresh (unchanged)= refreshConfirmCredit
 refresh (changed)  = changed_fraction × corpus_tokens × rediscoveryFactor + refreshConfirmCredit
-query tools        = weight × tokensPerManualOp − response_tokens
+query tools        = weight × tokensPerManualOp × queryCorpusScale − response_tokens
 ```
 
 Credit is never negative, and a failed call earns nothing at all.
@@ -316,7 +319,7 @@ The premium is also scoped to the graph actually loaded. A non-append snapshot r
 
 **The cross-repo premium** is not a bonus for doing more work; it prices a different *kind* of result. A cross-repo edge — an iOS client calling a route served by its backend — can only be derived with both corpora resident at once. That is why `append` is priced above a second independent snapshot, and it leads directly to the threshold below.
 
-**The infeasibility threshold.** When the corpus that must be simultaneously resident exceeds `agentContextWindow`, the counterfactual is not *expensive* — it is **impossible**. The 8-repo ecosystem above resolves its cross-repo edges across 10.62M tokens held at once; the monorepo is 33M. No amount of patience or budget gets an agent there by re-reading files, because it cannot hold the sides of the comparison in the same context.
+**The infeasibility threshold.** When the corpus that must be simultaneously resident exceeds `agentContextWindow`, the counterfactual is not *expensive* — it is **impossible**. The 8-repo ecosystem above resolves its cross-repo edges across 8.45M tokens held at once; GitLab is 32.77M, and the Linux kernel 218.15M — 218× a single window. No amount of patience or budget gets an agent there by re-reading files, because it cannot hold the sides of the comparison in the same context.
 
 Such entries keep their numeric credit (so totals stay arithmetic) but are **flagged in the output** rather than quietly rendered as a large number. A footnote saying *"exceeds a single context window — not reproducible by re-reading"* is a stronger and more honest claim than any figure, and it is the case both large workloads in the table above fall into.
 
@@ -326,7 +329,27 @@ Such entries keep their numeric credit (so totals stay arithmetic) but are **fla
 
 Note that "unchanged" is decided on **file hashes**, not on the snapshot id alone. An id can move without any source moving — a version bump, a config change — and that earns confirmation credit rather than a full rebuild's worth. Two distinct cases are therefore carried explicitly: a changed-fraction of exactly zero means *the files are identical*, while a **negative** fraction means *no previous snapshot to compare against*, which is a genuine first build. They must not share a default — one of them is worth a whole corpus and the other is worth a few thousand tokens.
 
-For the **query tools**, `weight` remains an ordinal judgement — how much exploration one call displaces, relative to the others — while `tokensPerManualOp` converts it into tokens. That constant is calibrated to the **median** parsed source file across the corpora above (~800 tokens), not the mean, which outliers inflate by roughly 2.5×. Response tokens are subtracted, which is what finally makes the `output_mode` ladder visible in the estimate: `summary` mode genuinely saves more than `full` mode, and the model should say so.
+For the **query tools**, `weight` remains an ordinal judgement — how much exploration one call displaces, relative to the others — while `tokensPerManualOp` converts it into tokens. That constant is calibrated to the **median** parsed source file across the corpora above (~800 tokens), not the mean, which outliers inflate by roughly 2.5×. Response tokens are subtracted, which is what makes the `output_mode` ladder visible in the estimate: `summary` mode genuinely saves more than `full` mode, and the model should say so.
+
+**Queries scale with the graph they searched.** The work a query replaces is driven by the size of the haystack, not the number of needles: asking *"where are the dependency cycles"* over Linux (1.9M facts across 55,399 files) displaces far more grepping than the same question over a small service, even though it returns fewer findings. So the ordinal weight is multiplied by `queryCorpusScale`, taken over the whole loaded graph rather than one repo — a query is not scoped to a single repo, so neither is its pricing.
+
+The growth is **logarithmic and capped**. A haystack 100× larger does not take 100× the greps, just a few more rounds of them, and linear scaling would hand a single query millions of tokens on a kernel-sized graph:
+
+| Graph | Corpus | Scale | One `query_insights` |
+|---|---:|---:|---:|
+| Small service | 17.9K | 1.00 | 10,743 *(corpus-capped)* |
+| Mid-size project | 1.77M | 1.00 | 24,000 |
+| 8-repo ecosystem | 8.45M | 3.23 | 77,532 |
+| GitLab | 32.77M | 5.19 | 124,472 |
+| Linux kernel | 218.15M | 7.92 | 190,107 |
+
+Below `queryScaleReferenceCorpus` the weight stands unscaled; `maxQueryCorpusScale` binds above ~230M tokens. That cap is the most arbitrary number in the model — it exists to stay conservative at the top end, not because 8 is special.
+
+**The graph's size survives a restart.** A server coming back up restores its facts from disk without re-snapshotting — that is what `AutoLoadSnapshot` is for, and with one server per agent terminal it is the normal path, not an edge case. So the measurement those facts were extracted from has to come back with them, or every query on a restored graph is priced as though the graph were tiny. Each repo's parsed-source size is therefore carried in the graph receipt (`GraphRepoEntry.SourceBytes`), and `AutoLoadSnapshot` returns it from the *same* receipt the facts came from — resolving one independently could size the graph by a repo set the server is not actually holding.
+
+The field is additive and `omitempty`: a receipt written before it existed reads as zero, which is treated as *unknown* rather than as an empty corpus, and heals on the next snapshot. It is not an input to `computeSnapshotID`, so snapshot fingerprints are unaffected. And because a repo's size is read from its own `snapshot.meta.json`, a momentarily unreadable file yields zero — which the receipt merge treats as "no new reading" and carries the last known size forward, rather than writing the gap through and silently un-pricing that repo.
+
+**And a query is capped by its graph, like a snapshot is by its repo.** No call can displace more work than reading outright everything it searched, so query credit is bounded by `corpus × rediscoveryFactor`. That bound is what the top row above hits: a single `query_insights` priced at its ordinal weight would otherwise be credited 24,000 tokens against a repo whose entire source is 17,906.
 
 ### Time
 
@@ -350,36 +373,39 @@ All seven live at the top of [`pkg/status/value.go`](pkg/status/value.go) so tun
 | `crossRepoPremiumFactor` | Share of the already-loaded corpus credited for resolving a new repo's edges against it. |
 | `refreshConfirmCredit` | Per-repo credit for establishing that nothing changed. |
 | `tokensPerManualOp` | Median parsed source file, in tokens. |
+| `queryScaleReferenceCorpus` | Graph size at which a query's ordinal weight stands unscaled. |
+| `maxQueryCorpusScale` | Ceiling on that multiplier, so huge graphs cannot run away. |
 | `agentTokensPerSecond` | End-to-end agent discovery throughput. |
 | `reworkFactor` | Non-determinism premium — work done twice. |
 | `agentContextWindow` | Threshold past which the counterfactual is infeasible. |
 
-### A worked example
+### A worked example: the Linux kernel
 
-Mapping the 8-repo ecosystem from the table above — one `generate_snapshot` per repo, the first `fresh` and the rest `append`, then one refresh and a handful of reads:
+The extreme end of the table — one `generate_snapshot` over the kernel's 55,399 parsed files, then three reads:
 
 ```
 Value Estimate (approximate):
   tool                calls   ~time saved   ~tokens saved
-  explore                 1            7s           11.7K
-  generate_snapshot       9     1h 6m 54s            6.7M
-  query_facts             2            6s           10.6K
-  query_insights          1           14s           23.9K
-  show_symbol             1            0s               0
-  TOTAL                  14     1h 7m 22s           6.7M†
-  running now            14     1h 7m 22s            6.7M
+  explore                 1            6s           11.2K
+  generate_snapshot       1  21h 48m 52s           130.9M
+  query_facts             1            3s            6.3K
+  query_insights          1           14s           23.4K
+  TOTAL                   4  21h 49m 16s           130.9M†
+  running now             4  21h 49m 16s           130.9M
 
   † corpus exceeds a single context window — not reproducible by re-reading files.
 ```
 
 Four things in that output are worth reading closely:
 
-- **6.7M tokens for the snapshots** is `10.62M × 0.6` plus the cross-repo premiums — derived from the corpus, so the same nine calls against a smaller or larger estate would score differently.
-- **1h 7m for 6.7M tokens** is the agent-throughput conversion, not a per-lookup charge. It is time you spend waiting on an agent, so it is bounded by how fast an agent ingests, not by how long a person would take to read the same code.
-- **`show_symbol` earned 0.** It was called with a name that does not exist. The call is counted — it happened — but a "not found" displaces no work.
-- **The dagger.** 10.62M tokens cannot be held at once, so the eight cross-repo edges in this graph are not derivable by re-reading files at any budget.
+- **130.9M is exactly `218.15M × 0.6`** — the corpus times `rediscoveryFactor`, with no premium because it is a single repo. Nothing about the call count produced that number.
+- **The ratio of snapshot to reads is 3,200:1.** On a codebase this size, building the graph *is* the work; the queries are rounding error against it. That is the model agreeing with intuition rather than being tuned to.
+- **21.8 hours is a floor, not an estimate of the real cost.** It is the agent-throughput conversion of tokens avoided. Nobody was going to ingest 130.9M tokens — people spend months learning a kernel — so the figure understates the true difficulty by a wide margin. It is bounded by what the model can defend, not by what the work is worth.
+- **The dagger is the honest claim.** At 218.15M tokens the corpus exceeds a single context window by **218×**. The token figure describes a counterfactual that cannot be performed at all, which is why a flagged row says more than its number does.
 
-Re-running the identical session immediately afterwards yields **15.4K** for the same nine snapshots: every repo's `snapshot_id` matched, so each earned confirmation credit instead of a rebuild. That gap — 6.7M versus 15.4K for byte-identical commands — is the model distinguishing building an understanding from confirming one still holds.
+Two operational notes follow from the same run, and they matter before pointing enola at a tree this size: the snapshot writes an **830 MB `facts.jsonl`**, and it produces **37,425 insights** — far past what anyone triages by hand, so `min_confidence` and an explainer filter are the sensible default posture rather than an afterthought.
+
+At the other end of the scale, re-running an identical session over an already-built graph collapses to confirmation credit — roughly 1.7K per repo instead of its corpus. That gap, for byte-identical commands, is the model distinguishing building an understanding from confirming one still holds.
 
 ### What it deliberately does not model
 

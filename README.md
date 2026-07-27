@@ -614,29 +614,29 @@ Repos tracked: 21
 Tool Usage:
   tool                running     total
   explore                   1         1
-  generate_snapshot         9         9
-  query_facts               2         2
+  generate_snapshot         1         1
+  query_facts               1         1
   query_insights            1         1
-  show_symbol               1         1
 
 Value Estimate (approximate):
   tool                calls   ~time saved   ~tokens saved
-  explore                 1            7s           11.7K
-  generate_snapshot       9     1h 6m 54s            6.7M
-  query_facts             2            6s           10.6K
-  query_insights          1           14s           23.9K
-  show_symbol             1            0s               0
-  TOTAL                  14     1h 7m 22s           6.7M†
-  running now            14     1h 7m 22s            6.7M
+  explore                 1            6s           11.2K
+  generate_snapshot       1  21h 48m 52s           130.9M
+  query_facts             1            3s            6.3K
+  query_insights          1           14s           23.4K
+  TOTAL                   4  21h 49m 16s           130.9M†
+  running now             4  21h 49m 16s           130.9M
 
   † corpus exceeds a single context window — not reproducible by re-reading files.
 ```
 
-That's one session mapping an 8-repo, 5-language product ecosystem - 10.6M tokens of source, reduced to a queryable graph in about nine seconds. Two details worth noticing: `show_symbol` earned **0** because it was called with a name that doesn't exist (the call is counted; a "not found" displaces no work), and re-running the identical session immediately afterwards scores **15.4K** instead of 6.7M, because every repo's snapshot id matched and each call earned confirmation credit rather than a rebuild. Building an understanding and confirming one still holds are different things, and the estimate says so.
+That's a single session over the **Linux kernel** - 218M tokens of C and Rust across 55,399 parsed files, indexed into 1.9M facts in 2m20s. The 130.9M is exactly `218M × 0.6`: priced from the corpus, not from the fact that one call happened. And the dagger is doing more work than the number is - at 218× a context window, that graph isn't expensive to rebuild by reading files, it's *impossible* to.
+
+Run the same session again over an unchanged repo and it collapses to a few thousand tokens: the snapshot ids match, so each call earns confirmation credit instead of a rebuild. Building an understanding and confirming one still holds are different things, and the estimate says so.
 
 `--status --all` gives the same figures broken down **per repository**, sorted by tokens saved - useful for seeing which part of your estate the tooling is actually earning its keep on.
 
-Be clear about what these numbers are. They answer one question: **what would an agent have had to ingest to reach the same answer with ordinary tools - grep, glob, open a file, read it, infer?** So a snapshot is priced from the *corpus it indexed*, measured, not from the fact that a call happened; a repo of 72K tokens and a monorepo of 33M are not the same act of work. Reading time converts to your time waiting on the agent, including the rework a non-deterministic reconstruction implies. Failed calls are counted but earn nothing, and the tokens you spend reading enola's own response are subtracted - so `output_mode='summary'` genuinely scores better than `'full'`.
+Be clear about what these numbers are. They answer one question: **what would an agent have had to ingest to reach the same answer with ordinary tools - grep, glob, open a file, read it, infer?** So a snapshot is priced from the *corpus it indexed*, measured, not from the fact that a call happened; a 17.9K-token service and the 218M-token Linux kernel are not the same act of work, and no flat per-call price is right for both. Reading time converts to your time waiting on the agent, including the rework a non-deterministic reconstruction implies. Failed calls are counted but earn nothing, and the tokens you spend reading enola's own response are subtracted - so `output_mode='summary'` genuinely scores better than `'full'`.
 
 They're an estimate, labelled as one - but the inputs are real: corpus sizes measured at snapshot time, call counts recorded per repository under `~/.enola/usage/`. They survive server restarts and deleting a repo's `.enola/` directory, and `--status` works from any directory, not just a snapshotted one. The full model, its constants and what it deliberately leaves out are in [ARCHITECTURE.md](ARCHITECTURE.md#the-value-model).
 

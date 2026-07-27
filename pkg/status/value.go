@@ -1,6 +1,7 @@
 package status
 
 import (
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -50,6 +51,21 @@ const (
 	// the MEDIAN parsed source file across the measured corpora (~800 tokens),
 	// not the mean, which outliers inflate by roughly 2.5x.
 	tokensPerManualOp = 800
+
+	// queryScaleReferenceCorpus is the graph size at which a query tool's weight
+	// is taken at face value. Below it the weight stands unscaled; above it, the
+	// same question displaces more manual searching, because the work a query
+	// replaces is driven by the size of the haystack rather than the number of
+	// needles — finding three cycles in a kernel is harder than finding three
+	// thousand in a small service.
+	queryScaleReferenceCorpus = 1_800_000
+
+	// maxQueryCorpusScale bounds that multiplier. The growth is logarithmic
+	// because a haystack 100x larger does not take 100x the greps, just a few
+	// more rounds of them; the cap then stops the largest graphs running away
+	// entirely. It is the most arbitrary number in this file — it exists to be
+	// conservative at the top end, not because 8 is special.
+	maxQueryCorpusScale = 8
 
 	// agentTokensPerSecond is end-to-end agent discovery throughput — tool round
 	// trips and reasoning included, not raw generation speed. It converts tokens
@@ -178,8 +194,28 @@ type ToolCall struct {
 	// visible in the estimate: summary mode genuinely saves more than full mode.
 	ResponseBytes int
 
+	// CorpusTokens is the size of the graph this call ran against — the whole
+	// loaded set, not one repo, since a query searches everything resident. It
+	// scales query credit and caps it. Zero means unknown, which scales by one.
+	// Ignored for generate_snapshot, which prices from Snapshot instead.
+	CorpusTokens int
+
 	// Snapshot is non-nil only for generate_snapshot.
 	Snapshot *SnapshotValue
+}
+
+// queryCorpusScale returns the multiplier applied to a query tool's ordinal
+// weight for a graph of the given size: 1 at or below the reference corpus,
+// growing logarithmically above it, hard-capped at maxQueryCorpusScale.
+func queryCorpusScale(corpusTokens int) float64 {
+	if corpusTokens <= queryScaleReferenceCorpus {
+		return 1
+	}
+	scale := 1 + math.Log2(float64(corpusTokens)/queryScaleReferenceCorpus)
+	if scale > maxQueryCorpusScale {
+		return maxQueryCorpusScale
+	}
+	return scale
 }
 
 // TokensSaved prices a single call: the tokens an agent did not have to ingest,
@@ -193,7 +229,7 @@ func (c ToolCall) TokensSaved() int {
 	if c.Snapshot != nil {
 		gross = c.Snapshot.tokens()
 	} else {
-		gross = weightFor(c.Tool) * tokensPerManualOp
+		gross = c.queryTokens()
 	}
 
 	net := gross - c.ResponseBytes/charsPerTokenApprox
@@ -201,6 +237,24 @@ func (c ToolCall) TokensSaved() int {
 		return 0
 	}
 	return net
+}
+
+// queryTokens prices one query tool call: its ordinal weight in tokens, scaled
+// by the size of the graph it searched, and capped by what reading that graph
+// would have cost outright.
+//
+// The cap matters as much as the scaling. Without it a single query against a
+// small repo is credited more than the repo's entire source — no call can
+// displace more work than reading everything it searched.
+func (c ToolCall) queryTokens() int {
+	gross := float64(weightFor(c.Tool)*tokensPerManualOp) * queryCorpusScale(c.CorpusTokens)
+
+	if c.CorpusTokens > 0 {
+		if ceiling := float64(c.CorpusTokens) * rediscoveryFactor; gross > ceiling {
+			return int(ceiling)
+		}
+	}
+	return int(gross)
 }
 
 // tokens prices a snapshot from the corpus it indexed.

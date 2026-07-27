@@ -225,6 +225,55 @@ func TestAutoLoadSnapshot_FromGlobalReceipt(t *testing.T) {
 	}
 }
 
+// A restart restores the graph without re-snapshotting, so the corpus that graph
+// was extracted from has to come back too — otherwise queries against it are
+// priced as if it were tiny. AutoLoadSnapshot returns that measurement from the
+// SAME receipt the facts came from, so the two can never describe different repo
+// sets.
+func TestAutoLoadSnapshot_ReturnsRestoredCorpus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repo := writeGoRepo(t)
+	appended := writeBiggerGoRepo(t)
+	eng1, _ := engineFor(t, repo)
+
+	// Mirror the server: artifacts are written for each repo as it is indexed, so
+	// every repo ends up with its own snapshot.meta.json carrying its own size.
+	if _, err := eng1.GenerateSnapshot(context.Background(), repo, false); err != nil {
+		t.Fatalf("GenerateSnapshot: %v", err)
+	}
+	if err := eng1.WriteArtifacts(repo); err != nil {
+		t.Fatalf("WriteArtifacts: %v", err)
+	}
+	if _, err := eng1.GenerateSnapshot(context.Background(), appended, true); err != nil {
+		t.Fatalf("GenerateSnapshot (append): %v", err)
+	}
+	if err := eng1.WriteArtifacts(appended); err != nil {
+		t.Fatalf("WriteArtifacts (append): %v", err)
+	}
+	if err := eng1.WriteGlobalReceipt(); err != nil {
+		t.Fatalf("WriteGlobalReceipt: %v", err)
+	}
+
+	// Session 2 (restart) in the same workspace.
+	eng2, cfg2 := engineFor(t, repo)
+	corpus := bootstrap.AutoLoadSnapshot(eng2, cfg2)
+
+	if len(corpus) != 2 {
+		t.Fatalf("restored corpus covers %d repos, want 2: %+v", len(corpus), corpus)
+	}
+	for path, tokens := range corpus {
+		if tokens <= 0 {
+			t.Errorf("repo %s restored with a non-positive corpus of %d", path, tokens)
+		}
+	}
+	// The bigger repo must measure bigger — the map carries real sizes, not a
+	// placeholder shared by every entry.
+	if corpus[appended] <= corpus[repo] {
+		t.Errorf("expected the larger repo to measure larger: %d vs %d", corpus[appended], corpus[repo])
+	}
+}
+
 // TestAutoLoadSnapshot_PrefersOwnWorkspace is the cross-terminal regression test.
 // A user typically runs one server per agent terminal; the machine-wide receipt
 // describes only whichever generated last. A restart in workspace A must come back

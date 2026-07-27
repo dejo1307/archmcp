@@ -116,6 +116,65 @@ func TestResponseCostIsSubtracted(t *testing.T) {
 	}
 }
 
+// The same question over a bigger haystack displaces more searching, so query
+// credit rises with the size of the graph it ran against — sub-linearly, and
+// bounded, so a huge graph cannot run away with it.
+func TestQueryCreditScalesWithGraphSize(t *testing.T) {
+	q := func(corpus int) int {
+		return ToolCall{Tool: "query_insights", OK: true, CorpusTokens: corpus}.TokensSaved()
+	}
+	small, mid, large, kernel := q(1_800_000), q(8_450_000), q(32_770_000), q(218_150_000)
+
+	if small != weightFor("query_insights")*tokensPerManualOp {
+		t.Errorf("at the reference corpus the weight should stand unscaled: got %d", small)
+	}
+	if small >= mid || mid >= large || large >= kernel {
+		t.Errorf("credit must rise with graph size: %d %d %d %d", small, mid, large, kernel)
+	}
+	// Sub-linear, and bounded: the kernel is 121x the reference corpus but earns
+	// under 8x the credit — it lands just below the cap, which binds at ~230M.
+	ratio := float64(kernel) / float64(small)
+	if ratio > maxQueryCorpusScale {
+		t.Errorf("scaling exceeded its cap: %.2fx", ratio)
+	}
+	if ratio < 7 {
+		t.Errorf("kernel-scale query should approach the cap, got %.2fx", ratio)
+	}
+}
+
+// No single query can displace more work than reading everything it searched.
+// Without this a query on a small repo out-earns the repo's entire source.
+func TestQueryCreditCappedByGraphSize(t *testing.T) {
+	corpus := 17_906
+	tiny := ToolCall{Tool: "query_insights", OK: true, CorpusTokens: corpus}
+	if got, ceiling := tiny.TokensSaved(), int(float64(corpus)*rediscoveryFactor); got > ceiling {
+		t.Errorf("query credit %d exceeds the cost of reading the whole graph (%d)", got, ceiling)
+	}
+}
+
+// An unknown corpus must not silently zero the credit via the cap.
+func TestQueryCreditUnknownCorpusIsUnscaled(t *testing.T) {
+	got := ToolCall{Tool: "query_facts", OK: true}.TokensSaved()
+	if want := weightFor("query_facts") * tokensPerManualOp; got != want {
+		t.Errorf("unknown corpus: got %d, want the unscaled weight %d", got, want)
+	}
+}
+
+func TestQueryCorpusScaleBounds(t *testing.T) {
+	if got := queryCorpusScale(0); got != 1 {
+		t.Errorf("unknown corpus scale: got %v, want 1", got)
+	}
+	if got := queryCorpusScale(queryScaleReferenceCorpus / 100); got != 1 {
+		t.Errorf("small corpus must floor at 1, got %v", got)
+	}
+	if got := queryCorpusScale(queryScaleReferenceCorpus * 2); got != 2 {
+		t.Errorf("doubling the corpus should add one scale step: got %v, want 2", got)
+	}
+	if got := queryCorpusScale(1 << 60); got != maxQueryCorpusScale {
+		t.Errorf("scale must cap: got %v, want %v", got, maxQueryCorpusScale)
+	}
+}
+
 func TestSnapshotCreditScalesWithCorpus(t *testing.T) {
 	small := ToolCall{Tool: "generate_snapshot", OK: true,
 		Snapshot: &SnapshotValue{CorpusTokens: 72_000, ChangedFraction: 1}}

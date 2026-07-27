@@ -21,6 +21,11 @@ import (
 const (
 	globalReceiptDirName  = ".enola"
 	globalReceiptFileName = "receipt.json"
+
+	// snapshotMetaFileName is a repo's own snapshot metadata, inside its output
+	// directory. Read when assembling the graph receipt to recover the parsed
+	// source size of repos this snapshot did not itself index.
+	snapshotMetaFileName = "snapshot.meta.json"
 )
 
 // globalReceiptPath resolves ~/.enola/receipt.json. It returns an error when the
@@ -151,14 +156,39 @@ func (e *Engine) repoEntries(b *snapshotBundle) []facts.GraphRepoEntry {
 	entries := make([]facts.GraphRepoEntry, 0, len(repos))
 	for label, abs := range repos {
 		entries = append(entries, facts.GraphRepoEntry{
-			Label:     label,
-			Path:      abs,
-			Git:       gitInfo(abs),
-			FactCount: b.store.CountByRepo(label),
+			Label:       label,
+			Path:        abs,
+			Git:         gitInfo(abs),
+			FactCount:   b.store.CountByRepo(label),
+			SourceBytes: e.repoSourceBytes(b, abs),
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Label < entries[j].Label })
 	return entries
+}
+
+// repoSourceBytes returns a repo's parsed-source size. The repo indexed by THIS
+// snapshot is answered from memory; the rest are read from their own
+// snapshot.meta.json, which is authoritative for them whichever session wrote it.
+//
+// Zero on any failure, which the merge step then treats as "no new reading" and
+// carries the previous value forward — a repo whose metadata is momentarily
+// unreadable must not have its corpus silently reset to nothing.
+func (e *Engine) repoSourceBytes(b *snapshotBundle, absRepo string) int64 {
+	if b.snapshot != nil && b.snapshot.Meta.RepoPath == absRepo {
+		return b.snapshot.Meta.SourceBytes
+	}
+	data, err := os.ReadFile(filepath.Join(absRepo, e.cfg.Output.Dir, snapshotMetaFileName))
+	if err != nil {
+		return 0
+	}
+	var meta struct {
+		SourceBytes int64 `json:"source_bytes"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return 0
+	}
+	return meta.SourceBytes
 }
 
 // crossRepoEdgeCount counts the consumer->provider edges in the cross-repo "graph
@@ -333,6 +363,13 @@ func mergeRepoEntries(cur []facts.GraphRepoEntry, prevByLabel map[string]facts.G
 				c.CommitChangedAt = nowStr
 			} else {
 				c.CommitChangedAt = prev.CommitChangedAt
+			}
+			// A zero reading means the repo's metadata could not be read this
+			// time, not that its corpus vanished. Carry the last known size
+			// forward rather than writing the gap through — otherwise one
+			// unreadable file silently un-prices every later query on that repo.
+			if c.SourceBytes == 0 {
+				c.SourceBytes = prev.SourceBytes
 			}
 		}
 		c.InGraphFor = inGraphFor(c.AddedAt, now)

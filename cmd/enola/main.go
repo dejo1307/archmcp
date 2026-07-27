@@ -131,12 +131,16 @@ func main() {
 		os.Exit(0)
 	}
 
-	bootstrap.AutoLoadSnapshot(eng, cfg)
+	restoredCorpus := bootstrap.AutoLoadSnapshot(eng, cfg)
 
 	srv, err := bootstrap.NewServer(eng, cfg)
 	if err != nil {
 		log.Fatalf("failed to create server: %v", err)
 	}
+
+	// Size the restored graph before serving, so queries against it are priced
+	// correctly without waiting for a snapshot this process does not need.
+	srv.SeedCorpus(restoredCorpus)
 
 	// Record per-tool usage so a later `enola --status` has something to report.
 	// Per-repo counters are loaded lazily from ~/.enola/usage/ on first touch, so

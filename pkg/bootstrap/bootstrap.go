@@ -168,6 +168,13 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.srv.Run(ctx)
 }
 
+// SeedCorpus publishes the corpus of a graph restored from disk, so queries are
+// priced against it before this process takes a snapshot of its own. Pass the map
+// returned by AutoLoadSnapshot, and call it before Run.
+func (s *Server) SeedCorpus(byRepo map[string]int) {
+	s.srv.SeedCorpus(byRepo)
+}
+
 // SetToolCallback sets a callback invoked once per completed tool call, with the
 // tool name, the absolute repo path the call operated on, whether it succeeded,
 // its response size and any snapshot detail — everything the value model needs
@@ -326,11 +333,18 @@ func GraphStateFunc(eng *Engine) status.GraphFunc {
 // it runs single-threaded at startup, before the MCP server begins serving tool
 // calls — no reader can observe a half-built store. Callers must keep it strictly
 // before Server.Run.
-func AutoLoadSnapshot(eng *Engine, cfg *config.Config) {
+// It returns the parsed-source size of each restored repo, keyed by absolute
+// path, or nil when nothing was restored. That map comes from the SAME receipt
+// the facts came from, which is the point of returning it rather than letting the
+// caller resolve one independently: the two could otherwise disagree, and a
+// server would size its graph by a repo set it is not actually holding. Pass it
+// to Server.SeedCorpus so queries are priced against the restored graph without
+// waiting for a snapshot this process did not need to take.
+func AutoLoadSnapshot(eng *Engine, cfg *config.Config) map[string]int {
 	// Preferred path: this workspace's own graph.
 	if gr, err := engine.LoadWorkspaceReceipt(cfg.Repo); err == nil && len(gr.Repos) > 0 {
 		if restoreFromGlobalReceipt(eng, cfg, gr) {
-			return
+			return corpusFromReceipt(gr)
 		}
 		log.Printf("[bootstrap] workspace receipt present but multi-repo restore incomplete; trying the machine-wide receipt")
 	}
@@ -341,7 +355,7 @@ func AutoLoadSnapshot(eng *Engine, cfg *config.Config) {
 	// the cross-talk the workspace receipt above exists to prevent.
 	if gr, err := engine.LoadGlobalReceipt(); err == nil && len(gr.Repos) > 0 && receiptCovers(gr, cfg.Repo) {
 		if restoreFromGlobalReceipt(eng, cfg, gr) {
-			return
+			return corpusFromReceipt(gr)
 		}
 		log.Printf("[bootstrap] global receipt present but multi-repo restore incomplete; falling back to single-repo")
 	}
@@ -349,18 +363,46 @@ func AutoLoadSnapshot(eng *Engine, cfg *config.Config) {
 	// Fallback: single-repo restore of cfg.Repo.
 	repoPath, err := filepath.Abs(cfg.Repo)
 	if err != nil {
-		return
+		return nil
 	}
 	dir := filepath.Join(repoPath, cfg.Output.Dir)
 	if _, err := os.Stat(filepath.Join(dir, "facts.jsonl")); err != nil {
-		return // nothing on disk; start empty
+		return nil // nothing on disk; start empty
 	}
 	label := filepath.Base(repoPath)
 	if err := eng.RestoreFromDir(dir, map[string]string{label: repoPath}, label); err != nil {
 		log.Printf("[bootstrap] warning: failed to restore snapshot from %s: %v", dir, err)
-		return
+		return nil
 	}
 	log.Printf("[bootstrap] restored single-repo snapshot for %s", label)
+
+	// No graph receipt on this path, so read the size from the snapshot we just
+	// restored — it carries the same measurement.
+	if snap := eng.Snapshot(); snap != nil && snap.Meta.SourceBytes > 0 {
+		return map[string]int{repoPath: int(snap.Meta.SourceBytes / charsPerToken)}
+	}
+	return nil
+}
+
+// charsPerToken converts source bytes to tokens, matching the heuristic used
+// throughout the engine and the value model.
+const charsPerToken = 4
+
+// corpusFromReceipt projects a graph receipt into the corpus map the server
+// prices queries with. Repos whose size was never recorded (a receipt written
+// before the field existed) are omitted rather than entered as zero, so a partial
+// receipt under-reports instead of claiming a repo has no source.
+func corpusFromReceipt(gr *facts.GraphReceipt) map[string]int {
+	out := make(map[string]int, len(gr.Repos))
+	for _, r := range gr.Repos {
+		if r.SourceBytes > 0 && r.Path != "" {
+			out[r.Path] = int(r.SourceBytes / charsPerToken)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // receiptCovers reports whether a graph receipt includes the given workspace
