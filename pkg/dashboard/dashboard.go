@@ -390,6 +390,9 @@ type pageData struct {
 	Tools      []toolRow
 	Values     []valueRow
 	ValueTotal valueRow
+	// BeyondContext marks that some indexed corpus exceeded what an agent can
+	// hold at once, where the token figure understates what enola did.
+	BeyondContext bool
 
 	HasReceipt  bool
 	Receipt     *facts.Receipt
@@ -477,7 +480,8 @@ func (s *Server) buildPage() pageData {
 			data.TrackingSince = ss.TrackingSince.Format("2006-01-02 15:04:05")
 		}
 		data.Tools = toolRows(ss.GrandTotal, self.SessionCounts)
-		data.Values, data.ValueTotal = valueRows(ss.GrandTotal)
+		data.Values, data.ValueTotal = valueRows(ss.GrandTotal, ss.GrandSaved)
+		data.BeyondContext = ss.BeyondContext
 		data.Instances = instanceRows(ss.Instances, self.PID, now)
 	}
 	if len(data.Instances) == 0 {
@@ -610,8 +614,8 @@ func toolRows(total, session map[string]int) []toolRow {
 
 // valueRows builds the per-tool value-estimate rows plus the total row, reusing
 // the shared status value model so the numbers match --status exactly.
-func valueRows(total map[string]int) ([]valueRow, valueRow) {
-	rep := status.ComputeValue(total)
+func valueRows(total, saved map[string]int) ([]valueRow, valueRow) {
+	rep := status.ComputeValue(total, saved)
 	rows := make([]valueRow, 0, len(rep.Tools))
 	for _, tv := range rep.Tools {
 		rows = append(rows, valueRow{

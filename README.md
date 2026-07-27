@@ -94,7 +94,7 @@ enola removes the guessing from the part that should never be guessed: the struc
 
 The result is the difference between *vibe coding* - prompt, hope, fix - and **AI-augmented engineering**: fewer wrong turns, fewer tokens burned, and work you can reproduce. enola adds determinism where AI lacks it, so your agent spends its intelligence on the actual problem instead of re-learning your repo.
 
-**The savings show up in two currencies.** Tokens are the obvious one: a graph query costs a fraction of the file-reading it replaces. Time is the bigger one - work that doesn't have to be redone because the agent knew the blast radius before it started, and knew it had gone wrong before you did. `enola --status` (and `--status --all`, per repository) reports both, from real per-tool call counts recorded under `~/.enola/usage/`. It's a static estimate, clearly labelled as one - but it's counted from what your agents actually did, not from a brochure.
+**The savings show up in two currencies.** Tokens are the obvious one: a graph query costs a fraction of the file-reading it replaces. Time is the bigger one - work that doesn't have to be redone because the agent knew the blast radius before it started, and knew it had gone wrong before you did. And past a certain size the comparison stops being about cost at all: linking an 8-repo ecosystem means holding 10M+ tokens of source at once, so those cross-repo edges aren't expensive to find by grepping, they're *unreachable* by grepping. `enola --status` (and `--status --all`, per repository) reports both currencies, priced against what an agent would have had to ingest instead - measured corpus sizes and real call counts recorded under `~/.enola/usage/`. It's an estimate, clearly labelled as one, and [documented in full](ARCHITECTURE.md#the-value-model) - but it's counted from what your agents actually did, not from a brochure.
 
 > 📖 **Want the *why* before the *what*?** [**The most boring file in enola**](https://enola.tech/blog/the-most-boring-file-in-enola) is the story of why enola exists at all, and the design decision the whole thing rests on. It's the best place to start.
 
@@ -150,7 +150,7 @@ Everyone above the keyboard needs the same thing enola produces: a structural ma
 - **Anyone about to refactor** - know the **blast radius before** touching code with `impact_analysis`, and know **what your refactor actually did** after, with `diff_snapshot`. A large refactor usually fails in one of two ways: you missed a caller, or you moved the mess rather than removing it. The first is a traversal; the second is a delta. Both are answers, not opinions.
 - **Anyone reviewing AI-written code** - the hardest question in an agent-heavy workflow isn't "does it work?", it's "did it change the architecture in a way nobody asked for?" `diff_snapshot` answers exactly that, and only that: it reports what *moved*, never pre-existing state, so a clean diff is genuinely a clean bill of structural health rather than a wall of noise you learn to ignore.
 - **Architects** - the structural view you usually maintain by hand, computed from the code instead of a diagram that drifts out of date: dependency cycles, layer violations, call-graph hotspots, cross-repo coupling, and dependency depth - plus a module/dependency diagram an agent regenerates from the current commit, so the picture stays honest. Pin a baseline at the start of a migration and every diff afterwards tells you whether the codebase is moving toward the target architecture or away from it.
-- **Engineering leaders - CTOs, VPs, and managers** - a trustworthy picture of a codebase's shape for planning, onboarding, and risk. Deterministic signals (cycles, hotspots, coupling) instead of gut feel, a new-hire tour or a deck diagram that matches reality, a map that's reproducible run to run - so two people looking at it see the same thing - and, via `--status` and the dashboard, a running tally of what the tooling has actually saved across every repo your team points it at.
+- **Engineering leaders - CTOs, VPs, and managers** - a trustworthy picture of a codebase's shape for planning, onboarding, and risk. Deterministic signals (cycles, hotspots, coupling) instead of gut feel, a new-hire tour or a deck diagram that matches reality, a map that's reproducible run to run - so two people looking at it see the same thing - and, via `--status` and the dashboard, a running tally of what the tooling has actually saved across every repo your team points it at - priced against the reconstruction it replaced, by a model that is [written down and arguable](ARCHITECTURE.md#the-value-model) rather than asserted.
 
 ---
 
@@ -364,7 +364,7 @@ Some questions don't need an agent at all. The MCP server also serves a **read-o
 - *What did the analysis find?* - every insight grouped by explainer and filterable by confidence, so you can see the cycles and hotspots without asking a model to list them.
 - *Is this snapshot trustworthy?* - the receipt: snapshot ID, enola version, git ref and dirty flag, extractors used.
 - *Why does this snapshot look thin?* - extraction quality: files seen vs. parsed vs. skipped, parse errors with samples, unresolved cross-repo edges, coverage gaps.
-- *What has this actually saved me?* - the same value estimate `--status` prints, per tool and lifetime.
+- *What has this actually saved me?* - the same value estimate `--status` prints, per tool and lifetime ([how it's calculated](ARCHITECTURE.md#the-value-model)).
 
 Reading it costs nothing and burns no context. It's also the fastest way to sanity-check a snapshot before you trust an answer built on it.
 
@@ -590,7 +590,7 @@ Run `enola --help` for the full text. With no flags, enola starts the MCP server
 | `--generate [config_path]` | Generate a snapshot and exit - no MCP server. Artifacts go to `output.dir` (default `.enola/`). |
 | `--explain [repo_path]` | Print the statistics report above and exit. Read-only: nothing is written to `.enola/`. |
 | `--list` | List the MCP tools this build serves, with one-line summaries. |
-| `--status` | List every enola server running right now - PID, repos, uptime, calls, dashboard URL - plus per-tool call counts and an estimate of the time and context those calls saved. |
+| `--status` | List every enola server running right now - PID, repos, uptime, calls, dashboard URL - plus per-tool call counts and an estimate of the reconstruction those calls saved, in time and tokens. |
 | `--status --all` | The same usage, broken down per repository. |
 | `--no-dashboard` | Start the MCP server without the localhost dashboard. |
 | `--version` | Print the build version. |
@@ -613,25 +613,36 @@ Repos tracked: 21
 
 Tool Usage:
   tool                running     total
-  generate_snapshot        18       145
-  query_facts               9        32
-  query_insights            4        15
-  ...
+  explore                   1         1
+  generate_snapshot         9         9
+  query_facts               2         2
+  query_insights            1         1
+  show_symbol               1         1
 
 Value Estimate (approximate):
   tool                calls   ~time saved   ~tokens saved
-  generate_snapshot     145   120h 50m 0s           29.0M
-  query_insights         15     3h 45m 0s          900.0K
-  impact_analysis        10      2h 5m 0s          500.0K
-  ...
-  TOTAL                 237   132h 5m 30s           31.7M
+  explore                 1            7s           11.7K
+  generate_snapshot       9     1h 6m 54s            6.7M
+  query_facts             2            6s           10.6K
+  query_insights          1           14s           23.9K
+  show_symbol             1            0s               0
+  TOTAL                  14     1h 7m 22s           6.7M†
+  running now            14     1h 7m 22s            6.7M
+
+  † corpus exceeds a single context window — not reproducible by re-reading files.
 ```
+
+That's one session mapping an 8-repo, 5-language product ecosystem - 10.6M tokens of source, reduced to a queryable graph in about nine seconds. Two details worth noticing: `show_symbol` earned **0** because it was called with a name that doesn't exist (the call is counted; a "not found" displaces no work), and re-running the identical session immediately afterwards scores **15.4K** instead of 6.7M, because every repo's snapshot id matched and each call earned confirmation credit rather than a rebuild. Building an understanding and confirming one still holds are different things, and the estimate says so.
 
 `--status --all` gives the same figures broken down **per repository**, sorted by tokens saved - useful for seeing which part of your estate the tooling is actually earning its keep on.
 
-Be clear about what these numbers are: a **static per-tool model** of how many manual lookups (open a file, grep, read) one call replaces, converted at 30 seconds and ~2,000 tokens per lookup. They're an estimate, labelled as one - but the *call counts* are real, recorded per repository under `~/.enola/usage/`, so they survive server restarts and deleting a repo's `.enola/` directory, and `--status` works from any directory, not just a snapshotted one.
+Be clear about what these numbers are. They answer one question: **what would an agent have had to ingest to reach the same answer with ordinary tools - grep, glob, open a file, read it, infer?** So a snapshot is priced from the *corpus it indexed*, measured, not from the fact that a call happened; a repo of 72K tokens and a monorepo of 33M are not the same act of work. Reading time converts to your time waiting on the agent, including the rework a non-deterministic reconstruction implies. Failed calls are counted but earn nothing, and the tokens you spend reading enola's own response are subtracted - so `output_mode='summary'` genuinely scores better than `'full'`.
 
-And the estimate is deliberately conservative in one important way: it prices only the lookups your agent *didn't have to do*. It doesn't try to price the refactor it didn't have to redo - the second attempt at a migration, the missed caller found in code review, the afternoon spent reconstructing how two services talk. That's the saving `impact_analysis` and `diff_snapshot` are really for, and it's the one you'll feel first.
+They're an estimate, labelled as one - but the inputs are real: corpus sizes measured at snapshot time, call counts recorded per repository under `~/.enola/usage/`. They survive server restarts and deleting a repo's `.enola/` directory, and `--status` works from any directory, not just a snapshotted one. The full model, its constants and what it deliberately leaves out are in [ARCHITECTURE.md](ARCHITECTURE.md#the-value-model).
+
+**The dagger matters more than the number.** When the corpus exceeds what an agent can hold at once - as an 8-repo ecosystem or a large monorepo does - the counterfactual isn't expensive, it's *impossible*: cross-repo edges can't be derived by re-reading files when both sides can't be in context together. Those rows are flagged, because "not reproducible by re-reading" is a stronger claim than any figure.
+
+And the estimate stays conservative where it can't measure. It prices the ingestion an agent avoided and a slice of the rework; it doesn't try to price the missed caller found in code review, or the afternoon spent reconstructing how two services talk. That's the saving `impact_analysis` and `diff_snapshot` are really for, and it's the one you'll feel first.
 
 ### The dashboard
 

@@ -91,6 +91,73 @@ func TestScanFootprint(t *testing.T) {
 	}
 }
 
+// The engine's own measurement covers exactly the files that produced facts, so
+// it must win outright over anything derived from the walked-file list.
+func TestScanFootprintPrefersEngineMeasurement(t *testing.T) {
+	repo := t.TempDir()
+	enolaDir := filepath.Join(repo, ".enola")
+	if err := os.MkdirAll(enolaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "a.go"), make([]byte, 400), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := map[string]any{
+		"repo_path":    repo,
+		"source_bytes": 12345,
+		"file_hashes":  []map[string]string{{"path": "a.go"}},
+	}
+	metaBytes, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(enolaDir, "snapshot.meta.json"), metaBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fp := ScanFootprint(enolaDir)
+	if fp.SourceBytes != 12345 {
+		t.Errorf("SourceBytes: got %d, want the engine's 12345", fp.SourceBytes)
+	}
+}
+
+// file_hashes is the files_SEEN set. Summing it whole counts images, media and
+// vendored databases as though an agent would have read them — on a real repo
+// that turned a 3.1M-token corpus into 121M. The fallback must filter to source.
+func TestScanFootprintFallbackExcludesNonSource(t *testing.T) {
+	repo := t.TempDir()
+	enolaDir := filepath.Join(repo, ".enola")
+	if err := os.MkdirAll(filepath.Join(repo, "uploads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(enolaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "a.go"), make([]byte, 400), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A big binary the walker saw but no extractor ever parsed.
+	if err := os.WriteFile(filepath.Join(repo, "uploads", "photo.jpg"), make([]byte, 4_000_000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No source_bytes: an old snapshot, so the fallback path runs.
+	meta := map[string]any{
+		"repo_path": repo,
+		"file_hashes": []map[string]string{
+			{"path": "a.go"},
+			{"path": "uploads/photo.jpg"},
+		},
+	}
+	metaBytes, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(enolaDir, "snapshot.meta.json"), metaBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fp := ScanFootprint(enolaDir)
+	if fp.SourceBytes != 400 {
+		t.Errorf("SourceBytes: got %d, want 400 (the .jpg must not count as corpus)", fp.SourceBytes)
+	}
+}
+
 func TestScanFootprintMissingDir(t *testing.T) {
 	fp := ScanFootprint(filepath.Join(t.TempDir(), "does-not-exist"))
 	if fp.TotalBytes != 0 || fp.Facts != 0 {

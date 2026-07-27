@@ -171,9 +171,10 @@
     <thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">~Time saved</th><th class="num">~Tokens saved</th></tr></thead>
     <tbody>
       {{range .Values}}<tr><td>{{.Label}}</td><td class="num">{{.Calls}}</td><td class="num">{{.TimeSaved}}</td><td class="num">{{.TokensSaved}}</td></tr>{{end}}
-      <tr class="total"><td>{{.ValueTotal.Label}}</td><td class="num">{{.ValueTotal.Calls}}</td><td class="num">{{.ValueTotal.TimeSaved}}</td><td class="num">{{.ValueTotal.TokensSaved}}</td></tr>
+      <tr class="total"><td>{{.ValueTotal.Label}}</td><td class="num">{{.ValueTotal.Calls}}</td><td class="num">{{.ValueTotal.TimeSaved}}</td><td class="num">{{.ValueTotal.TokensSaved}}{{if .BeyondContext}}&#8224;{{end}}</td></tr>
     </tbody>
   </table></div>
+  {{if .BeyondContext}}<p class="note">&#8224; Some indexed corpus exceeds a single context window &mdash; that part is not reproducible by re-reading files at any budget, so the token figure understates it.</p>{{end}}
   {{else}}<p class="note">No value recorded yet.</p>{{end}}
 
   <h2>Current snapshot receipt</h2>

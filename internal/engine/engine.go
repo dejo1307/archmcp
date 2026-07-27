@@ -432,6 +432,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 			FilesSeen:         len(files),
 			FilesParsed:       e.store.CountFilesWithFacts(files, parsedPrefix),
+			SourceBytes:       e.store.SourceBytesWithFacts(files, parsedPrefix, absRepo),
 			FilesSkipped:      skips.count,
 			DirsSkipped:       skips.dirCount,
 			SkippedSample:     skips.sample,

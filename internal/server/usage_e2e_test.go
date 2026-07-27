@@ -32,7 +32,7 @@ func TestE2E_ToolUsageIsRecordedForStatus(t *testing.T) {
 	repo := copyTree(t, filepath.Join("..", "engine", "testdata", "repos", "go_sample"), t.TempDir())
 	tracker := status.NewTracker(repo)
 	tracker.SetStartTime(time.Now())
-	srv.SetToolCallback(tracker.OnToolCall)
+	srv.SetToolCallback(tracker.Record)
 	tracker.PersistStartup()
 
 	serverT, clientT := mcp.NewInMemoryTransports()
@@ -75,7 +75,62 @@ func TestE2E_ToolUsageIsRecordedForStatus(t *testing.T) {
 	}
 
 	// The value estimate is what makes --status more than a counter dump.
-	if rep := status.ComputeValue(ss.GrandTotal); rep.TotalCalls != 3 || rep.TotalTokensSaved == 0 {
+	rep := status.ComputeValue(ss.GrandTotal, ss.GrandSaved)
+	if rep.TotalCalls != 3 || rep.TotalTokensSaved == 0 {
 		t.Errorf("value report over recorded usage: %d calls, %d tokens saved", rep.TotalCalls, rep.TotalTokensSaved)
+	}
+
+	// Credit must be recorded per call, not re-derived from counts at render
+	// time — that is what keeps the figure identical across binaries.
+	if ss.GrandSaved["generate_snapshot"] == 0 {
+		t.Error("generate_snapshot recorded no corpus-derived credit")
+	}
+	if ss.GrandSaved["query_facts"] == 0 {
+		t.Error("query_facts recorded no credit")
+	}
+}
+
+// A tool that fails is still a call that happened, but it displaced no work.
+// This holds end-to-end only because recording runs after the handler: a read
+// tool called with no snapshot loaded must earn nothing for its error message.
+func TestE2E_FailedCallCountedButNotCredited(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
+
+	eng, cfg := newTestEngine(t)
+	srv, err := bootstrap.NewServer(eng, cfg)
+	if err != nil {
+		t.Fatalf("bootstrap.NewServer: %v", err)
+	}
+
+	tracker := status.NewTracker(t.TempDir())
+	tracker.SetStartTime(time.Now())
+	srv.SetToolCallback(tracker.Record)
+	tracker.PersistStartup()
+
+	serverT, clientT := mcp.NewInMemoryTransports()
+	if _, err := srv.MCP().Connect(ctx, serverT, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "enola-test", Version: "0"}, nil)
+	cs, err := client.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	// No snapshot has been generated, so this returns "No facts available".
+	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "query_insights", Arguments: map[string]any{},
+	}); err != nil {
+		t.Fatalf("query_insights: %v", err)
+	}
+
+	ss := status.ServerSnapshot()
+	if got := ss.GrandTotal["query_insights"]; got != 1 {
+		t.Errorf("failed call should still be counted: got %d, want 1", got)
+	}
+	if got := ss.GrandSaved["query_insights"]; got != 0 {
+		t.Errorf("failed call must earn no credit: got %d, want 0", got)
 	}
 }

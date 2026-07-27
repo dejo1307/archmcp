@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // charsPerToken is the rough characters-per-token ratio used to convert source
@@ -47,9 +48,22 @@ type snapshotMeta struct {
 	InsightCount int    `json:"insight_count"`
 	FilesSeen    int    `json:"files_seen"`
 	FilesParsed  int    `json:"files_parsed"`
+	SourceBytes  int64  `json:"source_bytes"`
 	FileHashes   []struct {
 		Path string `json:"path"`
 	} `json:"file_hashes"`
+}
+
+// sourceExts is the fallback filter for snapshots written before the engine
+// recorded SourceBytes. It approximates "a file an extractor could have parsed";
+// the engine's own figure, which knows exactly which files produced facts, is
+// always preferred.
+var sourceExts = map[string]bool{
+	".go": true, ".ts": true, ".tsx": true, ".js": true, ".jsx": true, ".mjs": true, ".cjs": true,
+	".rb": true, ".py": true, ".kt": true, ".kts": true, ".swift": true, ".java": true,
+	".rs": true, ".php": true, ".c": true, ".cc": true, ".cpp": true, ".cxx": true,
+	".h": true, ".hpp": true, ".hxx": true, ".m": true, ".mm": true,
+	".proto": true, ".vue": true, ".erb": true, ".haml": true,
 }
 
 // ScanFootprint walks the given .enola directory and reads the snapshot metadata
@@ -109,16 +123,29 @@ func (fp *Footprint) applySnapshotMeta(enolaDir string) {
 		fp.FilesIndexed = meta.FilesSeen
 	}
 
-	for _, fh := range meta.FileHashes {
-		p := fh.Path
-		if !filepath.IsAbs(p) && meta.RepoPath != "" {
-			p = filepath.Join(meta.RepoPath, p)
+	// Prefer the engine's own measurement: it is the size of exactly the files
+	// that produced facts. Only fall back to walking file_hashes for snapshots
+	// written before that field existed — and even then, filter to plausible
+	// source extensions. file_hashes is the files_SEEN set, so summing it whole
+	// counts images, media and vendored databases as though an agent would have
+	// read them: on one real repo, 121M tokens against 3.1M of actual source.
+	if meta.SourceBytes > 0 {
+		fp.SourceBytes = meta.SourceBytes
+	} else {
+		for _, fh := range meta.FileHashes {
+			if !sourceExts[strings.ToLower(filepath.Ext(fh.Path))] {
+				continue
+			}
+			p := fh.Path
+			if !filepath.IsAbs(p) && meta.RepoPath != "" {
+				p = filepath.Join(meta.RepoPath, p)
+			}
+			info, err := os.Stat(p)
+			if err != nil {
+				continue
+			}
+			fp.SourceBytes += info.Size()
 		}
-		info, err := os.Stat(p)
-		if err != nil {
-			continue
-		}
-		fp.SourceBytes += info.Size()
 	}
 	fp.SourceTokens = int(fp.SourceBytes / charsPerToken)
 }

@@ -120,6 +120,35 @@ func (s *Store) CountFilesWithFacts(files []string, prefix string) int {
 	return n
 }
 
+// SourceBytesWithFacts returns the total on-disk size of the walked files that
+// produced at least one fact — the same set CountFilesWithFacts counts, measured
+// rather than counted. root is the repo root that files are relative to.
+//
+// This is the corpus figure the value model in pkg/status is anchored to, and it
+// deliberately measures only *parsed* files. Summing every walked file instead
+// folds in whatever else lives in the tree — images, media, vendored databases,
+// stale artifacts — which on a real repo is a 39x difference, and none of it is
+// source an agent would have read. Unreadable files are skipped, not estimated.
+func (s *Store) SourceBytesWithFacts(files []string, prefix, root string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var total int64
+	for _, f := range files {
+		key := prefix + filepath.ToSlash(f)
+		if idxs, ok := s.byFile[key]; !ok || len(idxs) == 0 {
+			continue
+		}
+		p := f
+		if !filepath.IsAbs(p) && root != "" {
+			p = filepath.Join(root, f)
+		}
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			total += info.Size()
+		}
+	}
+	return total
+}
+
 // ByKind returns all facts of the given kind.
 func (s *Store) ByKind(kind string) []Fact {
 	s.mu.RLock()

@@ -569,7 +569,7 @@ func TestHandlerRendersQualityModals(t *testing.T) {
 }
 
 func TestValueRowsHasTotal(t *testing.T) {
-	rows, total := valueRows(map[string]int{"explore": 3})
+	rows, total := valueRows(map[string]int{"explore": 3}, map[string]int{"explore": 24_000})
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
@@ -578,6 +578,11 @@ func TestValueRowsHasTotal(t *testing.T) {
 	}
 	if total.Label != "TOTAL" || total.Calls != 3 {
 		t.Errorf("total = %+v", total)
+	}
+	// The page must render the credit that was recorded, so the dashboard and
+	// --status can never disagree about the same usage file.
+	if rows[0].TokensSaved != "24.0K" {
+		t.Errorf("TokensSaved = %q, want 24.0K", rows[0].TokensSaved)
 	}
 }
 

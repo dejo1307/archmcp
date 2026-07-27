@@ -240,7 +240,7 @@ Agent tooling starts one MCP server per session, so several run concurrently —
 
 That registry is what lets `--status` list every running server with its own URL, and what lets a dashboard name the process serving it instead of guessing from the newest usage file — a guess that, with several terminals open, was usually a different process.
 
-The value estimate is a deliberately simple model in [`pkg/status/value.go`](pkg/status/value.go): one weight per tool (the number of manual lookups a call replaces) times two conversion constants (seconds and tokens per lookup). `RegisterToolWeights` lets a wrapper price the tools it adds instead of letting them fall through to the default weight; it is guarded by a mutex because registration happens at startup while reads come from the tool callback.
+The value estimate `--status` and the dashboard render lives in [`pkg/status/value.go`](pkg/status/value.go) and has its own section below — see [The value model](#the-value-model).
 
 **[`pkg/dashboard`](pkg/dashboard)** serves the read-only page described in the README, on a loopback port bound at startup (`--no-dashboard` skips it). It is **strictly a viewer**: `buildPage` runs per request and every source is read through an accessor the MCP tools already use — `Options.Tracker`, the engine's published store, and the receipt/insight artifacts (preferring the in-memory copy, falling back to the last-written file on disk, since `AutoLoadSnapshot` restores facts without full receipt metadata). Nothing it does mutates server state, and every source degrades to an explanatory note rather than an error page.
 
@@ -258,6 +258,141 @@ The page reads receipts into the engine's own `facts.Receipt` / `facts.GraphRece
 **The insight allowlist.** `insightLabels` in [`pkg/dashboard/insights.go`](pkg/dashboard/insights.go) maps explainer id → display label, one entry per explainer `bootstrap.NewEngine` registers, and it doubles as an admission list: `insightDetails` drops any insight whose `Source` is absent from it, and excludes it from the structural/candidate counts. This matters because both binaries share a repo's `.enola/insights.json` — without the filter, a file written by a build with extra explainers would surface findings this engine cannot produce. For the same reason the clickable insight counters render the *filtered* total rather than the receipt's raw `insight_count`, so the number you click always matches the list you get.
 
 **The overlay.** A wrapper adds panels through `Options` rather than by forking the page. `Overlay` is a template fragment redefining any of the blocks `OverlayBlocks()` publishes — `extra-styles`, `extra-cards`, `extra-modals`, `extra-scripts` — each of which is passed the page root, so the fragment reaches its own data as `{{.Extra}}`, computed per request by `Options.Extra(store)`. `InsightLabels` widens the allowlist above (a wrapper that registers explainers *must* use it, or its own findings are filtered out of its own dashboard) and `Title` names the product. Two tests hold the contract from both ends: `TestOverlayBlocksExistInPage` here, and a matching check in the wrapper that its fragment defines only published names. Note that every server gets its own `Clone` of the base template even without an overlay — `html/template` refuses to clone a template that has already executed, so rendering straight from the package-level base would break the *next* dashboard's construction.
+
+---
+
+## The value model
+
+`--status`, `--status --all` and the dashboard all report an estimate of what enola saved you, in two currencies: **tokens** and **time**. The model lives in [`pkg/status/value.go`](pkg/status/value.go) and is computed from real per-tool call counts recorded under `~/.enola/usage/`. This section says exactly what those numbers mean, because a savings figure that nobody can explain is worth less than no figure at all.
+
+### What is being counted
+
+The estimate answers one question:
+
+> **What would an agent have had to ingest to arrive at the same answer using ordinary tools — grep, glob, open a file, read it, infer?**
+
+That counterfactual, not the size of enola's own response, is the baseline. The distinction matters. A `query_facts` call that returns 12 KB of JSON has not "cost" you 3,000 tokens — it has *replaced* an exploration loop that would have grepped, opened a dozen files, and re-derived the same edges imperfectly. Pricing the response instead of what it displaced would measure the wrong thing entirely, and would perversely reward tools that answer less.
+
+The counterfactual is also why the model is anchored to **corpus size**, not to call count. Reconstructing a graph of a large monorepo (33.0M tokens of parsed source, 477,383 facts, 47,711 files) and reconstructing one of a small service (72K tokens) are not the same act of work. Any flat per-call price is wrong at both ends by more than two orders of magnitude, so there isn't one.
+
+### The corpus anchor
+
+Every figure derives from one measurement: **the token size of the source enola actually parsed**, computed by `ScanFootprint` in [`pkg/status/footprint.go`](pkg/status/footprint.go) and cached per repo in the usage file.
+
+Two properties of that measurement are load-bearing:
+
+- It counts **parsed source only**, not `files_seen`. A snapshot's `file_hashes` list covers everything the walker touched, including whatever else lives in the tree. On one real repository the two differ by 39× — 3.1M tokens of source against 121M once JPEGs, an MP4 or two and a 63 MB GeoIP database are folded in. An agent was never going to read those, so they are not corpus.
+- It is a **measurement, not a guess**. Nothing else in this model is allowed to invent a corpus size.
+
+Measured across the workloads enola is actually pointed at, the spread the model has to cover is roughly **460×**:
+
+| Workload | Parsed source | Facts | Wall clock |
+|---|---:|---:|---:|
+| Single small service (Go) | 72K tokens | 3,475 | 0.4s |
+| Mid-size project (Python + TS) | 1.78M | 16,909 | 1.1s |
+| Large project (Python + TS) | 5.90M | 51,645 | 3.5s |
+| **8-repo product ecosystem** (5 languages, backend + web + iOS + Android) | **10.62M** | 155,796 | 9.1s |
+| **Large monorepo** (Ruby + TS + Python + Java) | **33.00M** | 477,383 | 30.9s |
+
+The rendered digest (`llm_context.md`) is capped at ~16K tokens regardless. For the monorepo at the bottom of that table, that is a **2,065:1** compression of the corpus into the artifact an agent actually reads.
+
+### Tokens
+
+```
+first snapshot     = corpus_tokens × rediscoveryFactor
+additional repo    = above + priorCorpusTokens × crossRepoPremiumFactor
+refresh (unchanged)= refreshConfirmCredit
+refresh (changed)  = changed_fraction × corpus_tokens × rediscoveryFactor + refreshConfirmCredit
+query tools        = weight × tokensPerManualOp − response_tokens
+```
+
+Credit is never negative, and a failed call earns nothing at all.
+
+**A repo is never credited more than its own corpus.** Reading every line of it is the most an agent could possibly have ingested on its account, so that is the ceiling — the cross-repo premium tops a snapshot up toward it but never past it. Without that bound, a 4K-token service joining a 50M-token graph would earn hundreds of times its own source. The bound buys a property worth stating plainly: **cumulative snapshot credit never exceeds the size of the code itself.** If a total ever reads higher than the corpus it was computed over, the model is wrong, not the codebase.
+
+The premium is also scoped to the graph actually loaded. A non-append snapshot resets the store, and the corpus pool resets with it — a repo joining a small cluster is credited for edges against that cluster, not against everything indexed earlier in the session.
+
+`rediscoveryFactor` (< 1) encodes that an agent doing this by hand does **not** read every file. It reads a lot of them, greps the rest, and stops when it thinks it understands enough — usually before it actually does. Crediting the full corpus would assume an exhaustiveness no agent exhibits.
+
+**The cross-repo premium** is not a bonus for doing more work; it prices a different *kind* of result. A cross-repo edge — an iOS client calling a route served by its backend — can only be derived with both corpora resident at once. That is why `append` is priced above a second independent snapshot, and it leads directly to the threshold below.
+
+**The infeasibility threshold.** When the corpus that must be simultaneously resident exceeds `agentContextWindow`, the counterfactual is not *expensive* — it is **impossible**. The 8-repo ecosystem above resolves its cross-repo edges across 10.62M tokens held at once; the monorepo is 33M. No amount of patience or budget gets an agent there by re-reading files, because it cannot hold the sides of the comparison in the same context.
+
+Such entries keep their numeric credit (so totals stay arithmetic) but are **flagged in the output** rather than quietly rendered as a large number. A footnote saying *"exceeds a single context window — not reproducible by re-reading"* is a stronger and more honest claim than any figure, and it is the case both large workloads in the table above fall into.
+
+**Refreshes are not waste.** Re-running `generate_snapshot` on an unchanged repo looks redundant and isn't: it answers *"is my understanding of this system still valid?"*, which is the question [`internal/engine/freshness.go`](internal/engine/freshness.go) exists to answer and which is genuinely expensive to settle by hand — you must re-derive the graph to know whether it moved. So an unchanged refresh earns a small fixed credit (real, but far below a first build), and a changed one is scaled by the fraction of files whose hashes actually moved. The `snapshot_id`, `git.commit` and `config_hash` recorded in `snapshot.meta.json` are what make that distinction exact rather than heuristic.
+
+**The ledger has the final say on "first".** Whether a repo has been built before is answered by the usage history, not by the repo's `.enola` directory. Those are different questions with different lifetimes: repo-local metadata says *"is this graph on disk current?"* and travels with the working copy — it survives clearing `~/.enola`, and it arrives with a fresh clone. The value model asks *"has this installation ever been credited for building this graph?"*, which only the ledger can answer. So a snapshot the server reports as unchanged is still priced as a first build when no snapshot credit exists for that repo yet. Without that rule a leftover meta file suppresses the credit permanently, and resetting your statistics silently makes every subsequent build look free.
+
+Note that "unchanged" is decided on **file hashes**, not on the snapshot id alone. An id can move without any source moving — a version bump, a config change — and that earns confirmation credit rather than a full rebuild's worth. Two distinct cases are therefore carried explicitly: a changed-fraction of exactly zero means *the files are identical*, while a **negative** fraction means *no previous snapshot to compare against*, which is a genuine first build. They must not share a default — one of them is worth a whole corpus and the other is worth a few thousand tokens.
+
+For the **query tools**, `weight` remains an ordinal judgement — how much exploration one call displaces, relative to the others — while `tokensPerManualOp` converts it into tokens. That constant is calibrated to the **median** parsed source file across the corpora above (~800 tokens), not the mean, which outliers inflate by roughly 2.5×. Response tokens are subtracted, which is what finally makes the `output_mode` ladder visible in the estimate: `summary` mode genuinely saves more than `full` mode, and the model should say so.
+
+### Time
+
+Time saved is **your** time — a human waiting on an agent — not CPU time and not model throughput:
+
+```
+time_saved = (tokens_avoided / agentTokensPerSecond) × reworkFactor
+```
+
+`agentTokensPerSecond` is end-to-end discovery throughput: tool round trips and reasoning included, not raw generation speed.
+
+`reworkFactor` is the **non-determinism premium**, and it is the honest core of enola's pitch. An agent re-deriving your architecture from grep does not merely take longer — it gets things subtly wrong often enough that some fraction of the work is done twice: the migration attempted a second time, the caller missed until code review, the refactor undone. enola returns the same graph every time. Pricing that as a named, tunable multiplier is better than burying it inside a per-tool weight where nobody can find or argue with it.
+
+### The constants
+
+All seven live at the top of [`pkg/status/value.go`](pkg/status/value.go) so tuning is a one-line change. Where a range was defensible, the lower end was chosen:
+
+| Constant | Meaning |
+|---|---|
+| `rediscoveryFactor` | Fraction of a corpus an agent actually ingests before it stops. |
+| `crossRepoPremiumFactor` | Share of the already-loaded corpus credited for resolving a new repo's edges against it. |
+| `refreshConfirmCredit` | Per-repo credit for establishing that nothing changed. |
+| `tokensPerManualOp` | Median parsed source file, in tokens. |
+| `agentTokensPerSecond` | End-to-end agent discovery throughput. |
+| `reworkFactor` | Non-determinism premium — work done twice. |
+| `agentContextWindow` | Threshold past which the counterfactual is infeasible. |
+
+### A worked example
+
+Mapping the 8-repo ecosystem from the table above — one `generate_snapshot` per repo, the first `fresh` and the rest `append`, then one refresh and a handful of reads:
+
+```
+Value Estimate (approximate):
+  tool                calls   ~time saved   ~tokens saved
+  explore                 1            7s           11.7K
+  generate_snapshot       9     1h 6m 54s            6.7M
+  query_facts             2            6s           10.6K
+  query_insights          1           14s           23.9K
+  show_symbol             1            0s               0
+  TOTAL                  14     1h 7m 22s           6.7M†
+  running now            14     1h 7m 22s            6.7M
+
+  † corpus exceeds a single context window — not reproducible by re-reading files.
+```
+
+Four things in that output are worth reading closely:
+
+- **6.7M tokens for the snapshots** is `10.62M × 0.6` plus the cross-repo premiums — derived from the corpus, so the same nine calls against a smaller or larger estate would score differently.
+- **1h 7m for 6.7M tokens** is the agent-throughput conversion, not a per-lookup charge. It is time you spend waiting on an agent, so it is bounded by how fast an agent ingests, not by how long a person would take to read the same code.
+- **`show_symbol` earned 0.** It was called with a name that does not exist. The call is counted — it happened — but a "not found" displaces no work.
+- **The dagger.** 10.62M tokens cannot be held at once, so the eight cross-repo edges in this graph are not derivable by re-reading files at any budget.
+
+Re-running the identical session immediately afterwards yields **15.4K** for the same nine snapshots: every repo's `snapshot_id` matched, so each earned confirmation credit instead of a rebuild. That gap — 6.7M versus 15.4K for byte-identical commands — is the model distinguishing building an understanding from confirming one still holds.
+
+### What it deliberately does not model
+
+- **Reasoning tokens.** Only ingestion is priced. The thinking an agent does *about* what it read is not counted, on either side of the comparison.
+- **Cache warmth.** A repeat read inside one session is cheaper than a cold one; the model ignores this in enola's disfavour.
+- **Downstream consequence.** The missed caller found in code review, the afternoon spent reconstructing how two services talk, the design decision made on a wrong mental model. `reworkFactor` prices a slice of this; the rest is not attempted.
+- **Value not yet consumed.** A graph built and never queried is credited for the build. It is a durable, reusable artifact and the credit is for producing it — not a forecast that it will be used.
+
+### Extending it
+
+`RegisterToolWeights` lets a wrapper binary price the tools it adds instead of letting them fall through to `defaultWeight` — a licensed wrapper registers its own at startup, before the server begins serving. The map is mutex-guarded because registration happens once at startup while reads come from the tool callback and, in wrapper binaries, from concurrent HTTP handlers.
+
+One rule matters here: **the credit is persisted alongside the count**, not repriced at render time. Every binary shares `~/.enola/usage/`, and a build that has never heard of a tool would price it at `defaultWeight` — so the same usage file would report a materially different figure depending on which binary you ran `--status` from. Recording the token figure when the call happens is what makes the number a property of the data rather than of the reader.
 
 ---
 

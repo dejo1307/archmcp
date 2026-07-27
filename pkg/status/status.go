@@ -34,6 +34,17 @@ type StatusInfo struct {
 	ToolCounts    map[string]int `json:"tool_counts"`              // lifetime grand total
 	SessionCounts map[string]int `json:"session_counts,omitempty"` // since last reload
 
+	// TokensSaved is the lifetime credit per tool, accumulated at call time and
+	// merged the same way ToolCounts is. It is stored rather than recomputed
+	// because its inputs — corpus size, changed-file fraction, response size —
+	// are only knowable when the call happens. Storing the result also makes the
+	// figure binary-independent: a build that has never heard of a tool renders
+	// the credit that build recorded, instead of silently repricing it.
+	TokensSaved    map[string]int `json:"tokens_saved,omitempty"`
+	SessionTokens  map[string]int `json:"session_tokens,omitempty"`
+	BeyondContext  bool           `json:"beyond_context,omitempty"` // some call spanned more than one context window
+	CorpusTokens   int            `json:"corpus_tokens,omitempty"`  // last measured parsed-source size of this repo
+
 	// DashboardPort is the localhost port of the dashboard served by whichever
 	// process wrote this file last (0 if none). Kept for compatibility with
 	// binaries predating the instance registry; current readers take the port
@@ -109,7 +120,30 @@ type repoState struct {
 	session       map[string]int
 	flushed       map[string]int
 	trackingSince time.Time
+
+	// Token credit is accumulated and merged exactly like the counts above:
+	// savedBaseline is what was on disk at first touch, savedSession is this
+	// process's increments, savedFlushed is how much of that is already durable.
+	savedBaseline map[string]int
+	savedSession  map[string]int
+	savedFlushed  map[string]int
+
+	beyondContext bool
+	corpusTokens  int
 }
+
+// hasSnapshotCredit reports whether this repo's usage history has ever credited
+// a snapshot — lifetime or this session. It is the ledger's own answer to "have I
+// seen this repo built before?", which is the question the value model needs;
+// the repo-local .enola metadata answers a different one ("is this graph on disk
+// current?") and is not a substitute. Caller holds t.mu.
+func (rs *repoState) hasSnapshotCredit() bool {
+	return rs.savedBaseline[snapshotTool] > 0 || rs.savedSession[snapshotTool] > 0
+}
+
+// snapshotTool is the one tool whose value is corpus-derived rather than priced
+// from a weight, so it is the tool the ledger check above looks for.
+const snapshotTool = "generate_snapshot"
 
 // NewTracker creates a multi-repo tracker. fallbackRepo (typically the server's
 // launch dir) is used to attribute calls that report an empty repo path.
@@ -173,10 +207,25 @@ func (t *Tracker) PersistStartup() {
 	t.startHeartbeat()
 }
 
-// OnToolCall is the callback registered with the server. repo is the absolute
-// path of the repo the call operated on; an empty repo falls back to the
-// tracker's fallback repo.
+// OnToolCall records a completed call by name only, crediting it as a successful
+// query. It is retained for callers that cannot describe the outcome; the server
+// uses Record, which prices the call properly.
 func (t *Tracker) OnToolCall(toolName, repo string) {
+	t.Record(ToolCall{Tool: toolName, Repo: repo, OK: true})
+}
+
+// Record accounts for one completed tool call: it increments the call count and
+// accumulates the token credit the call earned. repo is the absolute path of the
+// repo the call operated on; an empty repo falls back to the tracker's fallback
+// repo.
+//
+// Credit is computed here, at call time, because its inputs (corpus size,
+// changed-file fraction, response size) are not recoverable afterwards from a
+// call count. A failed call still increments the count — it happened — but earns
+// nothing, since a validation error or a "run generate_snapshot first" displaces
+// no work.
+func (t *Tracker) Record(call ToolCall) {
+	repo := call.Repo
 	if repo == "" {
 		repo = t.fallbackRepo
 	}
@@ -184,8 +233,32 @@ func (t *Tracker) OnToolCall(toolName, repo string) {
 
 	t.mu.Lock()
 	rs := t.stateLocked(repo)
-	rs.session[toolName]++
-	t.lastTool = toolName
+	// A snapshot the LEDGER has never credited is a first build, whatever the
+	// repo's own .enola metadata says. The server decides "unchanged" by
+	// comparing against that metadata, which lives in the repo and outlives this
+	// usage history entirely — it survives clearing ~/.enola, and it arrives with
+	// a fresh clone. Without this check, a repo carrying a stale meta file earns
+	// confirmation credit forever and its first real build is never priced.
+	if call.Snapshot != nil && !rs.hasSnapshotCredit() {
+		firstBuild := *call.Snapshot
+		firstBuild.Unchanged = false
+		firstBuild.ChangedFraction = -1
+		call.Snapshot = &firstBuild
+	}
+	tokens := call.TokensSaved()
+	rs.session[call.Tool]++
+	// Always write the credit key, even when the call earned nothing. Its
+	// presence is what tells a reader "this figure was recorded, trust it"
+	// rather than falling back to repricing from counts — so a tool whose calls
+	// all failed reports the zero it earned instead of a legacy estimate.
+	rs.savedSession[call.Tool] += tokens
+	if call.BeyondContext() {
+		rs.beyondContext = true
+	}
+	if call.Snapshot != nil && call.Snapshot.CorpusTokens > 0 {
+		rs.corpusTokens = call.Snapshot.CorpusTokens
+	}
+	t.lastTool = call.Tool
 	t.lastCallAt = time.Now()
 	t.mu.Unlock()
 
@@ -263,9 +336,13 @@ func (t *Tracker) Self() Instance {
 	defer t.mu.Unlock()
 
 	session := make(map[string]int)
+	sessionTokens := make(map[string]int)
 	for _, rs := range t.repos {
 		for k, v := range rs.session {
 			session[k] += v
+		}
+		for k, v := range rs.savedSession {
+			sessionTokens[k] += v
 		}
 	}
 
@@ -294,6 +371,7 @@ func (t *Tracker) Self() Instance {
 		LastTool:      t.lastTool,
 		LastCallAt:    t.lastCallAt,
 		SessionCounts: session,
+		SessionTokens: sessionTokens,
 	}
 }
 
@@ -319,10 +397,13 @@ func (t *Tracker) stateLocked(repo string) *repoState {
 		return rs
 	}
 	rs := &repoState{
-		repoPath: repo,
-		baseline: make(map[string]int),
-		session:  make(map[string]int),
-		flushed:  make(map[string]int),
+		repoPath:      repo,
+		baseline:      make(map[string]int),
+		session:       make(map[string]int),
+		flushed:       make(map[string]int),
+		savedBaseline: make(map[string]int),
+		savedSession:  make(map[string]int),
+		savedFlushed:  make(map[string]int),
 	}
 	fp, err := usagePath(repo)
 	if err != nil {
@@ -359,6 +440,11 @@ func (t *Tracker) loadLocked(rs *repoState) {
 	for k, v := range info.ToolCounts {
 		rs.baseline[k] = v
 	}
+	for k, v := range info.TokensSaved {
+		rs.savedBaseline[k] = v
+	}
+	rs.beyondContext = info.BeyondContext
+	rs.corpusTokens = info.CorpusTokens
 	rs.trackingSince = info.TrackingSince
 	if migrated {
 		// Only remove the legacy file once the write to its new home has
@@ -400,6 +486,19 @@ func (t *Tracker) infoLocked(rs *repoState) StatusInfo {
 	for k, v := range rs.session {
 		session[k] = v
 	}
+
+	savedTotal := make(map[string]int, len(rs.savedBaseline)+len(rs.savedSession))
+	for k, v := range rs.savedBaseline {
+		savedTotal[k] = v
+	}
+	for k, v := range rs.savedSession {
+		savedTotal[k] += v
+	}
+	savedSession := make(map[string]int, len(rs.savedSession))
+	for k, v := range rs.savedSession {
+		savedSession[k] = v
+	}
+
 	return StatusInfo{
 		PID:           os.Getpid(),
 		StartTime:     t.start,
@@ -407,6 +506,10 @@ func (t *Tracker) infoLocked(rs *repoState) StatusInfo {
 		RepoPath:      rs.repoPath,
 		ToolCounts:    total,
 		SessionCounts: session,
+		TokensSaved:   savedTotal,
+		SessionTokens: savedSession,
+		BeyondContext: rs.beyondContext,
+		CorpusTokens:  rs.corpusTokens,
 		DashboardPort: t.dashboardPort,
 	}
 }
@@ -442,10 +545,22 @@ func (t *Tracker) flush(rs *repoState) {
 			delta[k] = d
 		}
 	}
+	savedDelta := make(map[string]int, len(rs.savedSession))
+	savedPending := make(map[string]int, len(rs.savedSession))
+	for k, v := range rs.savedSession {
+		savedPending[k] = v
+		// A zero delta is still written, so the key exists on disk for a tool
+		// that earned nothing. Credit only ever grows, so this never subtracts.
+		savedDelta[k] = v - rs.savedFlushed[k]
+	}
 	info := t.infoLocked(rs)
 	baseline := make(map[string]int, len(rs.baseline))
 	for k, v := range rs.baseline {
 		baseline[k] = v
+	}
+	savedBase := make(map[string]int, len(rs.savedBaseline))
+	for k, v := range rs.savedBaseline {
+		savedBase[k] = v
 	}
 	t.mu.Unlock()
 
@@ -453,20 +568,36 @@ func (t *Tracker) flush(rs *repoState) {
 	// siblings have already written. A missing file falls back to the baseline
 	// this process loaded (covers the first write and legacy migration).
 	total := baseline
+	savedTotal := savedBase
 	if onDisk, _, err := ReadStatus(rs.filePath); err == nil {
 		total = onDisk.ToolCounts
 		if total == nil {
 			total = make(map[string]int)
 		}
+		savedTotal = onDisk.TokensSaved
+		if savedTotal == nil {
+			savedTotal = make(map[string]int)
+		}
 		// Keep the earliest tracking-since across processes.
 		if !onDisk.TrackingSince.IsZero() && (info.TrackingSince.IsZero() || onDisk.TrackingSince.Before(info.TrackingSince)) {
 			info.TrackingSince = onDisk.TrackingSince
+		}
+		// Beyond-context is sticky: once any process has recorded a corpus too
+		// large to re-read, that stays true of the repo's history.
+		info.BeyondContext = info.BeyondContext || onDisk.BeyondContext
+		// A sibling that just re-measured the corpus wins only if we have not.
+		if info.CorpusTokens == 0 {
+			info.CorpusTokens = onDisk.CorpusTokens
 		}
 	}
 	for k, v := range delta {
 		total[k] += v
 	}
+	for k, v := range savedDelta {
+		savedTotal[k] += v
+	}
 	info.ToolCounts = total
+	info.TokensSaved = savedTotal
 
 	data, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
@@ -480,6 +611,9 @@ func (t *Tracker) flush(rs *repoState) {
 	t.mu.Lock()
 	for k, v := range pending {
 		rs.flushed[k] = v
+	}
+	for k, v := range savedPending {
+		rs.savedFlushed[k] = v
 	}
 	t.mu.Unlock()
 }
@@ -552,7 +686,7 @@ func PrintStatus() {
 	fmt.Fprintf(os.Stderr, "Repos tracked: %d\n", ss.Repos)
 
 	printToolUsage(ss.GrandTotal, ss.Session)
-	printValue(ss.GrandTotal, ss.Session)
+	printValue(ss.GrandTotal, ss.GrandSaved, ss.Session, ss.SessionSaved, ss.BeyondContext)
 	fmt.Fprintf(os.Stderr, "\n")
 }
 
@@ -635,13 +769,16 @@ func sortedUnion(maps ...map[string]int) []string {
 
 // printValue renders the estimated time and context (tokens) saved by the
 // recorded tool usage. The per-tool table and grand TOTAL are computed on the
-// lifetime totals; a trailing line adds the current-session subtotal. Figures
-// are estimates from a static per-tool model.
-func printValue(total, session map[string]int) {
+// lifetime totals; a trailing line adds the current-session subtotal.
+//
+// Figures are estimates of the reconstruction an agent did not have to perform —
+// see ARCHITECTURE.md, "The value model". beyond marks that some corpus exceeded
+// a single context window, where the token figure understates the case.
+func printValue(total, saved, session, sessionSaved map[string]int, beyond bool) {
 	if len(total) == 0 {
 		return
 	}
-	rep := ComputeValue(total)
+	rep := ComputeValue(total, saved)
 
 	fmt.Fprintf(os.Stderr, "\nValue Estimate (approximate):\n")
 
@@ -657,12 +794,17 @@ func printValue(total, session map[string]int) {
 		fmt.Fprintf(os.Stderr, "  %-*s  %6d  %12s  %14s\n",
 			maxLen, tv.Tool, tv.Calls, formatDuration(tv.TimeSaved), humanCount(tv.TokensSaved))
 	}
-	fmt.Fprintf(os.Stderr, "  %-*s  %6d  %12s  %14s\n",
-		maxLen, "TOTAL", rep.TotalCalls, formatDuration(rep.TotalTimeSaved), humanCount(rep.TotalTokensSaved))
+	fmt.Fprintf(os.Stderr, "  %-*s  %6d  %12s  %13s%s\n",
+		maxLen, "TOTAL", rep.TotalCalls, formatDuration(rep.TotalTimeSaved),
+		humanCount(rep.TotalTokensSaved), beyondMark(beyond))
 
-	sess := ComputeValue(session)
+	sess := ComputeValue(session, sessionSaved)
 	fmt.Fprintf(os.Stderr, "  %-*s  %6d  %12s  %14s\n",
 		maxLen, "running now", sess.TotalCalls, formatDuration(sess.TotalTimeSaved), humanCount(sess.TotalTokensSaved))
+
+	if beyond {
+		fmt.Fprintf(os.Stderr, "\n  %s\n", beyondNote)
+	}
 }
 
 // humanCount renders a large count with thousands/millions suffixes (e.g. 1.2M).

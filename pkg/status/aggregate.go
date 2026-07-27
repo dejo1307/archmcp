@@ -13,6 +13,9 @@ import (
 type RepoUsage struct {
 	RepoPath      string
 	Counts        map[string]int // lifetime grand total
+	Saved         map[string]int // lifetime token credit, per tool
+	BeyondContext bool           // some call spanned more than one context window
+	CorpusTokens  int            // last measured parsed-source size
 	TrackingSince time.Time
 }
 
@@ -20,6 +23,8 @@ type RepoUsage struct {
 type Aggregate struct {
 	Repos         []RepoUsage    // sorted by tokens saved, descending
 	Combined      map[string]int // summed grand totals across all repos
+	CombinedSaved map[string]int // summed token credit across all repos
+	BeyondContext bool           // any repo exceeded a context window
 	TrackingSince time.Time      // earliest across all repos
 }
 
@@ -29,6 +34,7 @@ type Aggregate struct {
 func AggregateUsage(dir string) (Aggregate, error) {
 	var agg Aggregate
 	agg.Combined = make(map[string]int)
+	agg.CombinedSaved = make(map[string]int)
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -53,11 +59,18 @@ func AggregateUsage(dir string) (Aggregate, error) {
 		agg.Repos = append(agg.Repos, RepoUsage{
 			RepoPath:      info.RepoPath,
 			Counts:        info.ToolCounts,
+			Saved:         info.TokensSaved,
+			BeyondContext: info.BeyondContext,
+			CorpusTokens:  info.CorpusTokens,
 			TrackingSince: info.TrackingSince,
 		})
 		for k, v := range info.ToolCounts {
 			agg.Combined[k] += v
 		}
+		for k, v := range info.TokensSaved {
+			agg.CombinedSaved[k] += v
+		}
+		agg.BeyondContext = agg.BeyondContext || info.BeyondContext
 		if !info.TrackingSince.IsZero() && (agg.TrackingSince.IsZero() || info.TrackingSince.Before(agg.TrackingSince)) {
 			agg.TrackingSince = info.TrackingSince
 		}
@@ -65,8 +78,8 @@ func AggregateUsage(dir string) (Aggregate, error) {
 
 	// Sort repos by estimated tokens saved, descending (biggest value first).
 	sort.Slice(agg.Repos, func(i, j int) bool {
-		return ComputeValue(agg.Repos[i].Counts).TotalTokensSaved >
-			ComputeValue(agg.Repos[j].Counts).TotalTokensSaved
+		return ComputeValue(agg.Repos[i].Counts, agg.Repos[i].Saved).TotalTokensSaved >
+			ComputeValue(agg.Repos[j].Counts, agg.Repos[j].Saved).TotalTokensSaved
 	})
 
 	return agg, nil
@@ -86,6 +99,9 @@ func AggregateUsage(dir string) (Aggregate, error) {
 type ServerStatus struct {
 	GrandTotal    map[string]int // sum of ToolCounts across all repos (lifetime)
 	Session       map[string]int // sum of SessionCounts across live instances
+	GrandSaved    map[string]int // sum of TokensSaved across all repos (lifetime)
+	SessionSaved  map[string]int // sum of SessionTokens across live instances
+	BeyondContext bool           // any repo's corpus exceeded a context window
 	Instances     []Instance     // every server running right now, oldest first
 	StartTime     time.Time      // primary instance's start time
 	PID           int            // primary instance's PID
@@ -109,8 +125,10 @@ type ServerStatus struct {
 // Best-effort: unreadable/malformed files are skipped.
 func AggregateServer(dir string) ServerStatus {
 	ss := ServerStatus{
-		GrandTotal: make(map[string]int),
-		Session:    make(map[string]int),
+		GrandTotal:   make(map[string]int),
+		Session:      make(map[string]int),
+		GrandSaved:   make(map[string]int),
+		SessionSaved: make(map[string]int),
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -144,6 +162,10 @@ func AggregateServer(dir string) ServerStatus {
 		for k, v := range info.ToolCounts {
 			ss.GrandTotal[k] += v
 		}
+		for k, v := range info.TokensSaved {
+			ss.GrandSaved[k] += v
+		}
+		ss.BeyondContext = ss.BeyondContext || info.BeyondContext
 		if !info.TrackingSince.IsZero() && (ss.TrackingSince.IsZero() || info.TrackingSince.Before(ss.TrackingSince)) {
 			ss.TrackingSince = info.TrackingSince
 		}
@@ -154,6 +176,9 @@ func AggregateServer(dir string) ServerStatus {
 		for _, inst := range ss.Instances {
 			for k, v := range inst.SessionCounts {
 				ss.Session[k] += v
+			}
+			for k, v := range inst.SessionTokens {
+				ss.SessionSaved[k] += v
 			}
 		}
 		primary := primaryInstance(ss.Instances)
@@ -176,6 +201,12 @@ func AggregateServer(dir string) ServerStatus {
 		if info.StartTime.Equal(ss.StartTime) {
 			for k, v := range info.SessionCounts {
 				ss.Session[k] += v
+			}
+			// Credit must travel with the counts here too. Summing one without
+			// the other leaves the session row to be repriced by the legacy
+			// fallback, which made it disagree with the lifetime TOTAL above it.
+			for k, v := range info.SessionTokens {
+				ss.SessionSaved[k] += v
 			}
 		}
 	}
@@ -235,14 +266,33 @@ func PrintStatusAll() {
 	fmt.Fprintf(os.Stderr, "\nValue Estimate (approximate):\n")
 	fmt.Fprintf(os.Stderr, "  %-*s  %6s  %12s  %14s\n", maxLen, "repo", "calls", "~time saved", "~tokens saved")
 	for _, r := range agg.Repos {
-		v := ComputeValue(r.Counts)
-		fmt.Fprintf(os.Stderr, "  %-*s  %6d  %12s  %14s\n",
-			maxLen, displayRepo(r.RepoPath), v.TotalCalls, formatDuration(v.TotalTimeSaved), humanCount(v.TotalTokensSaved))
+		v := ComputeValue(r.Counts, r.Saved)
+		fmt.Fprintf(os.Stderr, "  %-*s  %6d  %12s  %13s%s\n",
+			maxLen, displayRepo(r.RepoPath), v.TotalCalls, formatDuration(v.TotalTimeSaved),
+			humanCount(v.TotalTokensSaved), beyondMark(r.BeyondContext))
 	}
-	total := ComputeValue(agg.Combined)
-	fmt.Fprintf(os.Stderr, "  %-*s  %6d  %12s  %14s\n",
-		maxLen, "TOTAL", total.TotalCalls, formatDuration(total.TotalTimeSaved), humanCount(total.TotalTokensSaved))
+	total := ComputeValue(agg.Combined, agg.CombinedSaved)
+	fmt.Fprintf(os.Stderr, "  %-*s  %6d  %12s  %13s%s\n",
+		maxLen, "TOTAL", total.TotalCalls, formatDuration(total.TotalTimeSaved),
+		humanCount(total.TotalTokensSaved), beyondMark(agg.BeyondContext))
+	if agg.BeyondContext {
+		fmt.Fprintf(os.Stderr, "\n  %s\n", beyondNote)
+	}
 	fmt.Fprintf(os.Stderr, "\n")
+}
+
+// beyondNote explains the marker on rows whose corpus exceeds what an agent can
+// hold at once. For those, the token figure understates the case: the work was
+// not merely cheaper through enola, it was not available any other way.
+const beyondNote = "† corpus exceeds a single context window — not reproducible by re-reading files."
+
+// beyondMark returns the flag appended to a value row, or a blank of equal width
+// so unflagged rows stay aligned with flagged ones.
+func beyondMark(beyond bool) string {
+	if beyond {
+		return "†"
+	}
+	return " "
 }
 
 // displayRepo renders a repo path for the aggregate table. The full path is

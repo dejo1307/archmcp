@@ -81,6 +81,7 @@ type Instance struct {
 	LastTool      string         `json:"last_tool,omitempty"`
 	LastCallAt    time.Time      `json:"last_call_at,omitempty"`
 	SessionCounts map[string]int `json:"session_counts,omitempty"`
+	SessionTokens map[string]int `json:"session_tokens,omitempty"` // token credit earned this session, per tool
 }
 
 // URL is the instance's dashboard URL, or "" when it serves no dashboard.

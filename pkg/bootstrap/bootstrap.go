@@ -168,10 +168,14 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.srv.Run(ctx)
 }
 
-// SetToolCallback sets a callback invoked each time a tool is called. The
-// callback receives the tool name and the absolute repo path the call operated
-// on.
-func (s *Server) SetToolCallback(cb func(tool, repo string)) {
+// SetToolCallback sets a callback invoked once per completed tool call, with the
+// tool name, the absolute repo path the call operated on, whether it succeeded,
+// its response size and any snapshot detail — everything the value model needs
+// that cannot be recovered from a call count afterwards.
+//
+// It fires for every tool on the server, including those a wrapper binary
+// registers, so a wrapper does not report its own calls.
+func (s *Server) SetToolCallback(cb func(status.ToolCall)) {
 	s.srv.SetToolCallback(cb)
 }
 

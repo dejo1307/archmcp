@@ -234,6 +234,7 @@ type SnapshotMeta struct {
 	// Extraction-quality fields (the loop signal).
 	FilesSeen         int               `json:"files_seen,omitempty"`         // source files the walker enumerated (excludes ignored)
 	FilesParsed       int               `json:"files_parsed,omitempty"`       // distinct files that produced at least one fact
+	SourceBytes       int64             `json:"source_bytes,omitempty"`       // on-disk bytes of the FilesParsed set — the corpus this graph replaces reading (see pkg/status value model)
 	FilesSkipped      int               `json:"files_skipped,omitempty"`      // ignored FILES the walker visited; a pruned directory counts once in DirsSkipped, not once per file
 	DirsSkipped       int               `json:"dirs_skipped,omitempty"`       // ignored DIRECTORIES pruned whole; their contents are never visited, so they are counted nowhere else
 	SkippedSample     []string          `json:"skipped_sample,omitempty"`     // a capped sample of both, each naming the glob that matched it

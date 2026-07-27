@@ -160,7 +160,7 @@ func main() {
 	// Deregister on the way out so the registry reflects the shutdown at once
 	// rather than waiting for a reader to reap a dead PID.
 	defer tracker.Close()
-	srv.SetToolCallback(tracker.OnToolCall)
+	srv.SetToolCallback(tracker.Record)
 
 	// Start the localhost HTTP dashboard alongside the MCP server. It binds a
 	// free loopback port — plus the shared, bookmarkable one if it can claim it —
