@@ -1,5 +1,7 @@
 # enola - cross-repo architecture intelligence for AI coding agents
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fenola-labs%2Fenola.svg)](https://mcptoplist.com/server/glama%2Fenola-labs%2Fenola)
+
 **Deterministic code analysis across *every* repository in your system, served to your AI agent over MCP. Your real architecture - extracted from source, not guessed, not embedded, not summarized.**
 
 enola is a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **code architecture analysis**. Point it at a repository and it builds a precise graph of your code's structure - modules, types, routes, storage, dependencies, and how they all connect - straight from your source, and exposes tools your agent can use to traverse and query it.
