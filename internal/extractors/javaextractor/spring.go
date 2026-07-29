@@ -275,7 +275,7 @@ func springRouteFacts(basePath string, methodAnns []javaAnnotation, relFile stri
 		} else {
 			continue
 		}
-		full := joinRoutePath(basePath, sub)
+		full := facts.JoinRoutePath(basePath, sub)
 		for _, m := range methods {
 			out = append(out, facts.Fact{
 				Kind: facts.KindRoute,
@@ -337,30 +337,4 @@ func requestMappingVerbs(a *javaAnnotation) []string {
 		return []string{"ALL"}
 	}
 	return out
-}
-
-func joinRoutePath(base, sub string) string {
-	base = strings.TrimSpace(base)
-	sub = strings.TrimSpace(sub)
-	switch {
-	case base == "":
-		if sub == "" {
-			return "/"
-		}
-		return ensureLeadingSlash(sub)
-	case sub == "":
-		return ensureLeadingSlash(base)
-	default:
-		return ensureLeadingSlash(strings.TrimSuffix(base, "/")) + ensureLeadingSlash(sub)
-	}
-}
-
-func ensureLeadingSlash(s string) string {
-	if s == "" {
-		return ""
-	}
-	if strings.HasPrefix(s, "/") {
-		return s
-	}
-	return "/" + s
 }

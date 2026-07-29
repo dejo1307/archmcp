@@ -98,6 +98,26 @@ var fixtures = []fixture{
 	// Two different-language repos sharing only nested type names. The linker must
 	// draw no shared_symbols edge between them; see GAP-LK-03.
 	{name: "kotlin_swift_multirepo", subRepos: []string{"android", "ios"}},
+	// A decorator-routed TypeScript backend plus an SDK that calls it. Pins v142 end
+	// to end, which the unit tests cannot: the server routes the @Controller classes
+	// compose to have to RESOLVE against the SDK's client calls and draw a cross-repo
+	// edge. Before v142 TypeScript had no server-side route DSL at all, so the api
+	// repo emitted zero routes and was classified `isolated` while every SDK call sat
+	// unresolved. Covers both argument forms (@Controller({path}) and
+	// @Controller("…")), a bare @Get() serving the class path, the InversifyJS
+	// vocabulary, and — by its absence from the golden — a verb decorator on a
+	// non-controller class minting nothing.
+	{name: "ts_nest_multirepo", subRepos: []string{"api", "sdk"}},
+	// A call-routed Express server plus a consumer that calls it. Pins v143's three
+	// rules, none of which a unit test can prove end to end: (a) receiver binding
+	// separates registrations from v141's identically-shaped client calls, so no call
+	// site is emitted twice and no client route is reclassified; (b) a sub-router
+	// mounted in the SAME file composes ('/admin/users'), while one mounted from
+	// another file emits nothing rather than a wrong fragment path ('/login'); and
+	// (c) a bare catch-all is not an endpoint. The consumer's fourth call is served by
+	// nobody, so it stays unresolved — the control that the linker is matching real
+	// paths rather than accepting anything.
+	{name: "ts_express_multirepo", subRepos: []string{"server", "consumer"}},
 }
 
 func TestGolden(t *testing.T) {

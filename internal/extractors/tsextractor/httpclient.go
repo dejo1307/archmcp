@@ -240,7 +240,17 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 	// method is the call name, as in pass 2; the "/"-rooted argument requirement
 	// lives in the pattern (see lowerVerbCall) rather than here, so a collection
 	// lookup never reaches add() in the first place.
+	//
+	// A receiver bound to an app or router in this file is a route REGISTRATION, not
+	// an outbound call — `router.get('/x')` and `axios.get('/x')` are the same text.
+	// extractServerRouteFacts owns those, so skip them here or the call site would be
+	// emitted twice, once in each direction. Only known server receivers are skipped:
+	// an unknown one stays a client call, exactly as before this pass existed.
+	serverRecv := serverBindings(src)
 	for _, m := range lowerVerbCall.FindAllSubmatchIndex(src, -1) {
+		if isServerReceiver(serverRecv, identifierEndingAt(src, m[0])) {
+			continue
+		}
 		method := strings.ToUpper(string(src[m[2]:m[3]]))
 		raw := firstNonEmptyGroup(src, m, 2, 3, 4)
 		add(raw, method, "axios", m[0])

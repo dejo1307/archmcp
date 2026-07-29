@@ -416,9 +416,9 @@ func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, file
 	for len(queue) > 0 {
 		w := queue[0]
 		queue = queue[1:]
-		base := joinPyPath(w.at, groups[w.key].prefix)
+		base := facts.JoinRoutePath(w.at, groups[w.key].prefix)
 		for _, e := range byParent[w.key] {
-			enqueue(work{e.child, joinPyPath(base, e.prefix)})
+			enqueue(work{e.child, facts.JoinRoutePath(base, e.prefix)})
 		}
 	}
 
@@ -435,7 +435,7 @@ func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, file
 		}
 		var ps []string
 		for at := range set {
-			if full := joinPyPath(at, g.prefix); full != "" {
+			if full := facts.JoinRoutePath(at, g.prefix); full != "" {
 				ps = append(ps, full)
 			}
 		}
@@ -458,7 +458,7 @@ func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, file
 		}
 		for _, p := range ps {
 			nf := f
-			nf.Name = joinPyPath(p, f.Name)
+			nf.Name = facts.JoinRoutePath(p, f.Name)
 			nf.Props = copyProps(f.Props)
 			nf.Props["path"] = nf.Name
 			out = append(out, nf)
@@ -494,19 +494,6 @@ func baseName(key string) string {
 		return key[i+1:]
 	}
 	return key
-}
-
-// joinPyPath composes a mount prefix with a sub-path, collapsing the boundary
-// slash. A "/" or empty sub-path — FastAPI's idiom for "the router root", as in
-// `@router.post("/")` under prefix="/api/v1/cognify" — yields just the prefix.
-func joinPyPath(prefix, sub string) string {
-	if prefix == "" {
-		return sub
-	}
-	if sub == "" || sub == "/" {
-		return prefix
-	}
-	return strings.TrimRight(prefix, "/") + "/" + strings.TrimLeft(sub, "/")
 }
 
 func copyProps(p map[string]any) map[string]any {

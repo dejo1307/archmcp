@@ -799,7 +799,50 @@ import (
 // dependency edge out of test traffic — the paths matched a real server because
 // they are the routes under test. Same principle as v-era GAP-XL-15, which keeps
 // test_ref facts out of the coupling graph.
-const cacheVersion = "v141"
+// v142: TypeScript gains its first SERVER-side route DSL. Until now every `role` the
+// extractor wrote was "client" — server routes existed only for file-based routers
+// (Next.js, Nuxt, SvelteKit) — so a decorator-routed backend contributed zero routes,
+// every client call against it fell into the unresolved residual, and the backend was
+// classified `isolated`, i.e. a leaf.
+//
+// A class carrying @Controller (NestJS) or @controller (InversifyJS) now emits one
+// server route per verb-decorated method, composing the class base path with the
+// method sub-path through facts.JoinRoutePath. Both argument forms are read —
+// @Controller("/users") and @Controller({path: "/users"}), the latter being the form
+// real NestJS code overwhelmingly uses. Emission is gated on the controller
+// decorator, so a generic @Get on an ordinary class mints nothing, and the two
+// frameworks' verb vocabularies are kept separate so a class cannot mix them.
+//
+// Two things are deliberately NOT composed into the path, because the decorator does
+// not determine them: a `version:` property (NestJS versioning may be header- or
+// media-type-based) and the application's global prefix (routinely read from the
+// environment). The linker's >=2-segment suffix match resolves the difference.
+//
+// Gated on facts.IsTestPath like v141's client side: an e2e fixture's controller
+// would otherwise mint server routes no production client calls, which is a false
+// unused-route finding rather than a discovery.
+// v143: the other half of TypeScript's server side — routes registered by CALL
+// rather than by decorator. `<recv>.<verb>('/path', handler)` is the shape Express,
+// Fastify, Hono and Koa/Oak all share, so one pass covers the family, and both the
+// ESM and CommonJS binding forms are read (`const app = require('express')()` is as
+// common as the import form, and matching only the latter found zero routes on the
+// one real Express server available to measure against).
+//
+// The shape is also v141's CLIENT shape — axios.get('/x') and router.get('/x') are
+// the same text — so the two passes are separated by RECEIVER BINDING, resolved per
+// file. A receiver bound to an app or router registers routes; anything else stays a
+// client call, unchanged. The client pass skips known server receivers so a single
+// call site cannot be emitted twice, once in each direction; measured on the corpus,
+// that also corrected two registrations v141 had been reporting as outbound calls.
+//
+// A sub-router with no visible mount emits NOTHING. Its paths are fragments —
+// router.post('/login') in a module mounted at '/webhooks' elsewhere serves
+// '/webhooks/login' — so emitting '/login' would be a wrong fact, and a wrong path can
+// false-match another repo's route, which is worse than silence. Mounts declared in
+// the same file are composed; cross-file mount resolution needs a repo-wide pass and
+// is deliberately not attempted. Bare catch-alls (app.get('*')) are skipped for the
+// same reason: a SPA fallback is not an endpoint and would match any client path.
+const cacheVersion = "v143"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

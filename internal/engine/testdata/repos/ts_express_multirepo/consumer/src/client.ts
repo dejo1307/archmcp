@@ -1,0 +1,29 @@
+import axios from "axios";
+
+// The consumer half, and the reason receiver binding matters: a client call and a
+// route registration are the same text apart from the receiver, so only the binding
+// tells them apart. These must all stay client calls; the server repo's
+// registrations must not be reported as outbound calls, and these must not be
+// reported as routes served here.
+//
+// Note the deliberate absence of a worked example in this comment. The client
+// patterns scan raw source with no comment awareness, so spelling one out here would
+// mint a phantom route — latent on the corpus (zero occurrences), but real.
+export async function health() {
+  return axios.get("/healthcheck");
+}
+
+export async function listAdminUsers() {
+  return axios.get("/admin/users");
+}
+
+export async function banUser(id: string) {
+  return axios.post(`/admin/users/${id}/ban`, {});
+}
+
+// No server in this snapshot serves this one, so it stays an unresolved edge — the
+// control showing the linker is matching on real paths rather than accepting
+// anything.
+export async function unknown() {
+  return axios.get("/not/served/anywhere");
+}

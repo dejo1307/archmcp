@@ -1,0 +1,27 @@
+// CommonJS binding form. Matching only `import express from "express"` found zero
+// routes on the one real Express server in the corpus, which is written like this.
+const app = require('express')();
+const express = require('express');
+const webhookRoutes = require('./routes/webhooks');
+
+// Registered on the app, so served at the path as written.
+app.get('/healthcheck', healthCheckController);
+app.options('/healthcheck', healthCheckController);
+app.get('/go/:name', proxyLink());
+
+// A sub-router declared in another file and mounted HERE. The mount prefix lives in
+// this file, so webhooks.js's own fragments stay unemitted (see that file) — resolving
+// them would need a repo-wide pass.
+app.use('/webhooks', webhookRoutes);
+
+// Declared and mounted in this same file, so the prefix IS known and composes.
+const admin = express.Router();
+admin.get('/users', listUsers);
+admin.post('/users/:id/ban', banUser);
+app.use('/admin', admin);
+
+// A bare catch-all is a SPA fallback, not an endpoint. Indexing it would let it match
+// any client path at all, so it is skipped.
+app.get('*', require('./controllers/default'));
+
+module.exports = app;

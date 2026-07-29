@@ -260,6 +260,10 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// the copies that predated it had drifted apart in both directions.
 	if !facts.IsTestPath(relFile) {
 		result = append(result, extractHTTPClientFacts(src, relFile)...)
+		// Call-registered server routes (Express/Fastify/Hono/Koa). Same test-path
+		// gate: an e2e suite that spins up its own app would otherwise contribute
+		// server routes no production client calls.
+		result = append(result, extractServerRouteFacts(src, relFile)...)
 	}
 
 	// gRPC-web client call sites become client-role routes to "/pkg.Service/Method".
@@ -574,6 +578,16 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 				int(node.StartPosition().Row)+1); sf != nil {
 				result = append(result, *sf)
 			}
+		}
+
+		// NestJS/InversifyJS: a class decorated @Controller declares server routes.
+		// Companion facts in the same sense as the @Entity storage above — the class
+		// keeps its symbol, and each verb-decorated method gains a route. Skipped for
+		// test files: an e2e fixture's controller would otherwise mint server routes
+		// that no production client calls, i.e. false unused-route findings (the
+		// counterpart to the v141 client-side gate).
+		if !facts.IsTestPath(relFile) {
+			result = append(result, decoratorRouteFacts(node, classBody, src, relFile, dir)...)
 		}
 
 		// Extract class methods

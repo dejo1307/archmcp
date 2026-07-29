@@ -84,7 +84,7 @@ func (w *symfonyRouteWalker) handleClass(node *sitter.Node) {
 		if len(methods) == 0 {
 			methods = []string{"ANY"}
 		}
-		path := joinSymfonyPath(classPrefix, r.path)
+		path := facts.JoinRoutePath(classPrefix, r.path)
 		for _, verb := range methods {
 			w.emit(m, strings.ToUpper(verb), path, handler, r.name)
 		}
@@ -285,14 +285,4 @@ func methodConst(node *sitter.Node, src []byte) string {
 		return strings.ToUpper(strings.TrimPrefix(constName, "METHOD_"))
 	}
 	return ""
-}
-
-// joinSymfonyPath concatenates a class-level prefix with a method path into a single
-// normalized "/a/b" path.
-func joinSymfonyPath(prefix, path string) string {
-	segs := append(splitSegs(prefix), splitSegs(path)...)
-	if len(segs) == 0 {
-		return "/"
-	}
-	return "/" + strings.Join(segs, "/")
 }

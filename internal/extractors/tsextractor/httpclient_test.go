@@ -127,7 +127,7 @@ func TestExtractHTTPClientFacts_LowercaseInterpolatedBaseNotMatched(t *testing.T
 // TestExtractHTTPClientFacts_TestFileCallsAreNotClientRoutes pins the guard that
 // v141 needed the moment it landed. Admitting lowercase verbs made every supertest
 // call in an e2e suite — request(app).get('/v2/me') — look exactly like production
-// axios traffic, and on ts/cal.diy that turned a NestJS API's own test suite into
+// axios traffic, and on one real NestJS API that turned its own test suite into
 // **500+** client routes, moved the service from `isolated` to `connected`, and
 // fabricated a cross-repo `v2 -> web` dependency edge out of test traffic. The
 // paths matched a real server for a real reason: they are the routes under test.

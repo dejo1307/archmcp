@@ -99,8 +99,25 @@ func classDecorator(node *sitter.Node, src []byte, want string) (name, arg strin
 	return "", "", false
 }
 
-// decoratorIn scans one node's immediate children for a named decorator.
+// decoratorIn scans one node's immediate children for a named decorator and returns
+// its first string argument. A thin wrapper over decoratorArgsIn, which owns the
+// scan — @Controller({path: "…"}) needs the arguments NODE rather than its first
+// string, and the two must not drift into separate traversals.
 func decoratorIn(node *sitter.Node, src []byte, want string) (name, arg string, ok bool) {
+	args, found := decoratorArgsIn(node, src, want)
+	if !found {
+		return "", "", false
+	}
+	return want, firstStringArg(args, src), true
+}
+
+// decoratorArgsIn scans one node's immediate children for a named decorator and
+// returns its call arguments. A bare decorator (@Entity, @Get) yields a nil args
+// node with ok=true — present, but carrying nothing.
+func decoratorArgsIn(node *sitter.Node, src []byte, want string) (args *sitter.Node, ok bool) {
+	if node == nil {
+		return nil, false
+	}
 	for i := range node.ChildCount() {
 		child := node.Child(i)
 		if child.Kind() != "decorator" {
@@ -112,18 +129,18 @@ func decoratorIn(node *sitter.Node, src []byte, want string) (name, arg string, 
 			switch inner.Kind() {
 			case "identifier":
 				if nodeText(inner, src) == want {
-					return want, "", true
+					return nil, true
 				}
 			case "call_expression":
 				fn := inner.ChildByFieldName("function")
 				if fn == nil || nodeText(fn, src) != want {
 					continue
 				}
-				return want, firstStringArg(inner.ChildByFieldName("arguments"), src), true
+				return inner.ChildByFieldName("arguments"), true
 			}
 		}
 	}
-	return "", "", false
+	return nil, false
 }
 
 // drizzleTableStorage emits a storage fact for `export const orders = pgTable("orders", …)`.

@@ -93,7 +93,7 @@ func feignClientFacts(basePath, hint string, methodAnns []javaAnnotation, relFil
 		} else {
 			continue
 		}
-		full := cleanJavaClientPath(joinRoutePath(basePath, sub))
+		full := cleanJavaClientPath(facts.JoinRoutePath(basePath, sub))
 		for _, m := range methods {
 			props := map[string]any{
 				"role":      "client",

@@ -389,7 +389,7 @@ func composeAxumPrefixes(allFacts []facts.Fact, builders []axumBuilder, crates [
 		w := queue[0]
 		queue = queue[1:]
 		for _, e := range edges[w.key] {
-			full := joinAxumPath(w.prefix, e.prefix)
+			full := facts.JoinRoutePath(w.prefix, e.prefix)
 			if prefixes[e.callee] == nil {
 				prefixes[e.callee] = map[string]bool{}
 			}
@@ -423,7 +423,7 @@ func composeAxumPrefixes(allFacts []facts.Fact, builders []axumBuilder, crates [
 		sort.Strings(ps)
 		for _, p := range ps {
 			nf := f
-			nf.Name = joinAxumPath(p, f.Name)
+			nf.Name = facts.JoinRoutePath(p, f.Name)
 			out = append(out, nf)
 		}
 	}
@@ -481,19 +481,6 @@ func builderForFact(f facts.Fact, byFile map[string][]*axumBuilder) *axumBuilder
 		}
 	}
 	return best
-}
-
-// joinAxumPath composes a mount prefix with a sub-path, collapsing the boundary
-// slash. A "/" or empty sub-path (an Axum router root under a nest) yields just
-// the prefix, so "/api/v1/search" + "/" -> "/api/v1/search".
-func joinAxumPath(prefix, sub string) string {
-	if prefix == "" {
-		return sub
-	}
-	if sub == "" || sub == "/" {
-		return prefix
-	}
-	return strings.TrimRight(prefix, "/") + "/" + strings.TrimLeft(sub, "/")
 }
 
 // fileStem is a Rust file's module name: its base name without the .rs suffix.

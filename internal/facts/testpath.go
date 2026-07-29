@@ -87,8 +87,8 @@ var testFileSuffixes = []string{
 	// admission rule — and neither is reachable by the `.spec.ts`/`.test.ts` entries
 	// above, because those require a leading dot the hyphenated form does not have.
 	// Without them a NestJS API's e2e suite reads as production HTTP-client code:
-	// on ts/cal.diy that was 500+ supertest calls turned into client routes, which
-	// fabricated a cross-repo dependency edge out of test traffic.
+	// on one real NestJS API that was 500+ supertest calls turned into client routes,
+	// which fabricated a cross-repo dependency edge out of test traffic.
 	".e2e-spec.ts", ".e2e-spec.tsx", ".e2e.ts", ".e2e.tsx",
 }
 
