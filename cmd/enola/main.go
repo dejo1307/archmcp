@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/upgrade"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
@@ -68,10 +69,16 @@ func main() {
 			noDashboard = true
 		default:
 			// In --explain mode the positional argument is the repository path;
-			// otherwise it is the config file path.
-			if explainMode {
+			// otherwise it is the config file path. A repository is a directory and
+			// a config is a file, so `--explain cluster.yaml` is unambiguous — and
+			// without this it would analyse the YAML file as if it were a repo and
+			// report on nothing.
+			switch {
+			case explainMode && isDirectory(arg):
 				explainRepo = arg
-			} else {
+			case explainMode:
+				cfgPath = arg
+			default:
 				cfgPath = arg
 			}
 		}
@@ -101,18 +108,24 @@ func main() {
 	}
 
 	if generateMode {
-		repoPath, err := filepath.Abs(cfg.Repo)
+		repoPaths, err := cfg.RepoPaths()
 		if err != nil {
 			log.Fatalf("failed to resolve repo path: %v", err)
 		}
 
-		snapshot, err := eng.GenerateSnapshot(ctx, repoPath, false)
-		if err != nil {
-			log.Fatalf("snapshot generation failed: %v", err)
-		}
-
-		if err := eng.WriteArtifacts(repoPath); err != nil {
-			log.Fatalf("failed to write artifacts: %v", err)
+		var snapshot *facts.Snapshot
+		for i, repoPath := range repoPaths {
+			// The first repository resets the store; the rest append to it, which is
+			// what makes one process produce one linked graph.
+			snapshot, err = eng.GenerateSnapshot(ctx, repoPath, i > 0)
+			if err != nil {
+				log.Fatalf("snapshot generation failed for %s: %v", repoPath, err)
+			}
+			// In multi-repo mode WriteArtifacts writes the whole store to each
+			// repo's output dir, matching what the MCP server does per generate.
+			if err := eng.WriteArtifacts(repoPath); err != nil {
+				log.Fatalf("failed to write artifacts for %s: %v", repoPath, err)
+			}
 		}
 
 		// Refresh the graph-wide receipt at ~/.enola/receipt.json. Non-fatal: a
@@ -122,12 +135,19 @@ func main() {
 		}
 
 		fmt.Fprintf(os.Stderr, "\nSnapshot complete:\n")
-		fmt.Fprintf(os.Stderr, "  Repository:  %s\n", snapshot.Meta.RepoPath)
+		if len(repoPaths) > 1 {
+			fmt.Fprintf(os.Stderr, "  Repositories: %d\n", len(repoPaths))
+			for _, p := range repoPaths {
+				fmt.Fprintf(os.Stderr, "    - %s\n", p)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "  Repository:  %s\n", snapshot.Meta.RepoPath)
+		}
 		fmt.Fprintf(os.Stderr, "  Facts:       %d\n", snapshot.Meta.FactCount)
 		fmt.Fprintf(os.Stderr, "  Insights:    %d\n", snapshot.Meta.InsightCount)
 		fmt.Fprintf(os.Stderr, "  Artifacts:   %d\n", len(snapshot.Artifacts))
 		fmt.Fprintf(os.Stderr, "  Duration:    %s\n", snapshot.Meta.Duration)
-		fmt.Fprintf(os.Stderr, "  Output:      %s\n", filepath.Join(repoPath, cfg.Output.Dir))
+		fmt.Fprintf(os.Stderr, "  Output:      %s\n", filepath.Join(repoPaths[len(repoPaths)-1], cfg.Output.Dir))
 		os.Exit(0)
 	}
 
@@ -216,23 +236,40 @@ func helpSpec() cli.HelpSpec {
 // runExplain indexes the given repository (defaulting to the configured repo)
 // and prints a human-readable statistical summary to stdout.
 func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, repoArg string) {
-	repo := repoArg
-	if repo == "" {
-		repo = cfg.Repo
-	}
-	repoPath, err := filepath.Abs(repo)
-	if err != nil {
-		log.Fatalf("failed to resolve repo path: %v", err)
+	// A positional argument names one repository and overrides the config; with no
+	// argument the config decides, which is what lets `repos:` produce a report over
+	// the whole cluster rather than its first member.
+	var repoPaths []string
+	if repoArg != "" {
+		abs, err := filepath.Abs(repoArg)
+		if err != nil {
+			log.Fatalf("failed to resolve repo path: %v", err)
+		}
+		repoPaths = []string{abs}
+	} else {
+		var err error
+		if repoPaths, err = cfg.RepoPaths(); err != nil {
+			log.Fatalf("failed to resolve repo path: %v", err)
+		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Analyzing %s …\n", repoPath)
 	// --explain is a read-only, no-artifacts mode: reuse a cache if one exists,
 	// but never write to .enola.
 	eng.SetPersistCache(false)
-	if _, err := eng.GenerateSnapshot(ctx, repoPath, false); err != nil {
-		log.Fatalf("snapshot generation failed: %v", err)
+	for i, repoPath := range repoPaths {
+		fmt.Fprintf(os.Stderr, "Analyzing %s …\n", repoPath)
+		if _, err := eng.GenerateSnapshot(ctx, repoPath, i > 0); err != nil {
+			log.Fatalf("snapshot generation failed for %s: %v", repoPath, err)
+		}
 	}
 
 	report := explain.Compute(eng)
 	fmt.Print(report.Render())
+}
+
+// isDirectory reports whether path names an existing directory. Used to tell a
+// repository argument from a config-file argument.
+func isDirectory(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }

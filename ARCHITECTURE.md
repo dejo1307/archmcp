@@ -664,6 +664,11 @@ The config file is **optional**. Every field has a built-in default (see `config
 
 ```yaml
 repo: "."
+# …or name a whole cluster instead, resolved relative to THIS file:
+# repos:
+#   - ../api
+#   - ../web
+#   - ../sdk
 ignore:
   - "vendor/**"
   - "node_modules/**"
@@ -711,7 +716,8 @@ The bundled [`mcp-arch.yaml`](mcp-arch.yaml) ships a much fuller `ignore` list (
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `repo` | Repository root path | `"."` |
+| `repo` | Repository root path, relative to the **working directory** | `"."` |
+| `repos` | Ordered list of repository roots forming a multi-repo cluster; supersedes `repo`. One `--generate` run indexes them all (the first fresh, the rest appended), producing the service nodes and cross-repo edges a single-repo snapshot cannot have. Entries resolve relative to the **config file's own directory**, so a checked-in cluster config means the same thing wherever it is run from. Order is semantic; duplicates are dropped | *(unset)* |
 | `ignore` | Glob patterns for files/dirs to skip | vendor, node_modules, .git, tests, build dirs, minified JS (`*.min.js`/`*.bundle.js`), docs, config data, … |
 | `extractors` | Enabled extractors | `["cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust"]` |
 | `explainers` | Enabled explainers | `["cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"]` |

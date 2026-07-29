@@ -433,6 +433,22 @@ enola --generate [config_path]   # config_path is optional; defaults to mcp-arch
 
 Artifacts are written to the configured `output.dir` (default `.enola/`). The config file is optional - see **[ARCHITECTURE.md → Configuration](ARCHITECTURE.md#configuration)** for the full field reference and defaults.
 
+**Indexing a whole cluster in one command.** Cross-repo linking needs several repositories in one graph. Name them with `repos:` and a single run indexes them all - the first fresh, the rest appended - producing the service nodes, cross-repo edges, `coverage_report` and unused-route findings that a single-repo snapshot cannot have:
+
+```yaml
+# ci/cluster.yaml
+repos:
+  - ../api
+  - ../web
+  - ../sdk
+```
+
+```bash
+enola --generate ci/cluster.yaml
+```
+
+Entries resolve **relative to the config file**, not to your working directory, so a cluster config can be checked in and means the same thing on a laptop and in CI. (`repo:` is unchanged: a single repository, relative to the working directory.) Order matters - the first entry resets the graph and the rest are added to it.
+
 ---
 
 ## Explain a repository at a glance
@@ -453,7 +469,12 @@ enola --explain
 
 # Analyze a specific repository path
 enola --explain /path/to/repo
+
+# Report over a whole cluster, from a config that names it with `repos:`
+enola --explain ci/cluster.yaml
 ```
+
+The argument is a **repository** when it is a directory and a **config file** when it is a file, so both forms work without a flag to tell them apart.
 
 **The report covers nine sections:**
 - **Overview** - path, analysis time, active languages, total fact count
@@ -589,8 +610,8 @@ Run `enola --help` for the full text. With no flags, enola starts the MCP server
 
 | Flag | What it does |
 |------|--------------|
-| `--generate [config_path]` | Generate a snapshot and exit - no MCP server. Artifacts go to `output.dir` (default `.enola/`). |
-| `--explain [repo_path]` | Print the statistics report above and exit. Read-only: nothing is written to `.enola/`. |
+| `--generate [config_path]` | Generate a snapshot and exit - no MCP server. Artifacts go to `output.dir` (default `.enola/`). With `repos:` in the config, indexes the whole cluster in one run. |
+| `--explain [repo_path\|config_path]` | Print the statistics report above and exit. Read-only: nothing is written to `.enola/`. A directory is a repository; a file is a config, so a `repos:` config reports over the whole cluster. |
 | `--list` | List the MCP tools this build serves, with one-line summaries. |
 | `--status` | List every enola server running right now - PID, repos, uptime, calls, dashboard URL - plus per-tool call counts and an estimate of the reconstruction those calls saved, in time and tokens. |
 | `--status --all` | The same usage, broken down per repository. |

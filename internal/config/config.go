@@ -3,13 +3,38 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config represents the mcp-arch.yaml configuration.
 type Config struct {
-	Repo       string       `yaml:"repo"`
+	Repo string `yaml:"repo"`
+
+	// Repos is the ordered list of repositories that form a multi-repo cluster.
+	// When set it supersedes Repo, and the whole cluster is indexed in one run —
+	// the first repository fresh, the rest appended.
+	//
+	// It exists because cross-repo linking was previously reachable only from an
+	// MCP session: `append` is a generate_snapshot tool parameter, and both CLIs
+	// hardcoded false, so a CI job or a developer not driving an agent could only
+	// ever see the single-repo subset (no service nodes, no cross-repo edges, no
+	// coverage_report, no unused-routes). Naming the cluster in the config also
+	// makes its composition a reviewable file rather than a property of the order
+	// somebody happened to issue tool calls in.
+	//
+	// Entries are resolved relative to the DIRECTORY OF THIS FILE, not the working
+	// directory, so a checked-in cluster config means the same thing wherever it is
+	// run from. (Repo keeps its historical cwd-relative behaviour.)
+	Repos []string `yaml:"repos"`
+
+	// SourcePath is the file this config was read from, or "" when the built-in
+	// defaults are in force. Not read from YAML — set by Load, and used to resolve
+	// Repos entries against the config's own directory.
+	SourcePath string `yaml:"-"`
+
 	Ignore     []string     `yaml:"ignore"`
 	TestGlobs  []string     `yaml:"test_globs"`
 	Extractors []string     `yaml:"extractors"`
@@ -202,6 +227,13 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
+	// Recorded so Repos entries resolve against the config's own directory; see
+	// RepoPaths.
+	if abs, err := filepath.Abs(path); err == nil {
+		cfg.SourcePath = abs
+	} else {
+		cfg.SourcePath = path
+	}
 
 	// Ensure required defaults
 	if cfg.Output.Dir == "" {
@@ -212,6 +244,66 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// RepoPaths returns the absolute repository paths this run covers, in the order
+// they should be indexed: the first fresh, the rest appended.
+//
+// This is the single definition of "which repositories does this config describe",
+// so the CLI, --explain and any wrapper agree. Two resolution rules, and the
+// difference is deliberate:
+//
+//   - Repos entries resolve against the config file's own directory, because a
+//     cluster config is meant to be checked in and to mean the same thing wherever
+//     it is run from. With no config file (built-in defaults) there is no such
+//     directory, so they fall back to the working directory.
+//   - Repo resolves against the working directory, unchanged, because that is what
+//     `repo: "."` has always meant.
+//
+// Returns exactly one path when Repos is empty, so a single-repo caller needs no
+// special case.
+func (c *Config) RepoPaths() ([]string, error) {
+	if len(c.Repos) == 0 {
+		abs, err := filepath.Abs(c.Repo)
+		if err != nil {
+			return nil, fmt.Errorf("resolving repo %q: %w", c.Repo, err)
+		}
+		return []string{abs}, nil
+	}
+
+	base := ""
+	if c.SourcePath != "" {
+		base = filepath.Dir(c.SourcePath)
+	}
+	out := make([]string, 0, len(c.Repos))
+	seen := map[string]bool{}
+	for _, r := range c.Repos {
+		// Trimmed before the emptiness check: a whitespace-only entry is a YAML
+		// slip, and filepath.Abs would happily turn it into the working directory.
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		p := r
+		if !filepath.IsAbs(p) && base != "" {
+			p = filepath.Join(base, p)
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return nil, fmt.Errorf("resolving repos entry %q: %w", r, err)
+		}
+		// A repository listed twice would be indexed twice, the second pass
+		// appending a duplicate of every fact it already contributed.
+		if seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		out = append(out, abs)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("repos is set but contains no usable paths")
+	}
+	return out, nil
 }
 
 // IsExtractorEnabled returns true if the named extractor is enabled.

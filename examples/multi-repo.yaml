@@ -1,25 +1,40 @@
 # enola configuration for cross-repo analysis.
 #
 # This config enables all extractors so it works regardless of which
-# languages each repository uses. Use append mode to build a combined
-# snapshot across multiple repositories.
+# languages each repository uses. There are two ways to build the combined
+# snapshot; they produce the same graph.
 #
-# Workflow:
-#   1. Generate the first repo:
-#      > "Generate an architectural snapshot of /path/to/ruby-monolith"
+# A. Name the cluster here, and index it in one command:
 #
-#   2. Append additional repos:
-#      > "Generate a snapshot of /path/to/go-service with append mode"
+#      enola --generate examples/multi-repo.yaml
 #
-#   3. Query across repos:
+#    Uncomment `repos:` below. Entries resolve relative to THIS FILE, not to
+#    your working directory, so the config can be checked in and means the
+#    same thing on a laptop and in CI. Order is semantic: the first entry
+#    resets the graph and the rest are added to it.
+#
+# B. Drive it from your agent, one repo at a time:
+#
+#      1. > "Generate an architectural snapshot of /path/to/ruby-monolith"
+#      2. > "Generate a snapshot of /path/to/go-service with append mode"
+#
+# Then query across repos:
 #      > "Query all route facts"                      (all repos)
 #      > "Query all symbols in go-service"             (single repo)
 #
 # Each repo is tagged with a label derived from its directory name
 # (e.g. /path/to/go-service -> "go-service"). File paths in the
 # fact store are prefixed with the repo label in multi-repo mode.
+#
+# Cross-repo edges, `coverage_report` and unused-route findings only exist
+# with two or more repos loaded — which is what either route above gives you.
 
 repo: "."
+
+# repos:
+#   - ../ruby-monolith
+#   - ../go-service
+#   - ../web-client
 ignore:
   # Dependencies and tooling
   - "vendor/**"
