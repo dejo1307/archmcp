@@ -248,8 +248,19 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		result = append(result, openapiRoutes...)
 	}
 
-	// Hand-written fetch / makeRequest API calls are also client-role routes.
-	result = append(result, extractHTTPClientFacts(src, relFile)...)
+	// Hand-written fetch / makeRequest / axios API calls are also client-role routes
+	// — but only from PRODUCTION code. A test's HTTP traffic is not an architectural
+	// dependency: an e2e suite driving supertest against its own service would
+	// otherwise become hundreds of outbound client routes, inflate that service's
+	// edge_coverage, and — because those paths really do match another repo's server
+	// routes — fabricate a cross-repo dependency edge out of test traffic. Same
+	// principle as GAP-XL-15, which keeps test_ref facts out of the coupling graph.
+	// facts.IsTestPath is the single shared definition (internal/facts/testpath.go);
+	// resolving test-ness here rather than with a local suffix list is deliberate —
+	// the copies that predated it had drifted apart in both directions.
+	if !facts.IsTestPath(relFile) {
+		result = append(result, extractHTTPClientFacts(src, relFile)...)
+	}
 
 	// gRPC-web client call sites become client-role routes to "/pkg.Service/Method".
 	result = append(result, extractGRPCClientFacts(src, relFile, grpcStubs)...)

@@ -767,7 +767,39 @@ import (
 // @register(handler)) is a real use: the decorator stores it and the framework
 // invokes it later. The decorator-argument walk looked only for nested CALLS, so a
 // bare identifier slipped past and the referenced function had no incoming edge.
-const cacheVersion = "v140"
+// v141: two TypeScript HTTP-client detection gaps, both of which made outbound
+// calls vanish from the graph entirely — not counted detected, external OR
+// unresolved, so the cross-repo residual under-reported with no sign it had.
+//
+// The optional type-argument group in every client-call pattern was "<[^>]*>",
+// which cannot span a NESTED type argument: on fetch<ApiResponse<Foo>>(…) the inner
+// class stops at the first ">", the following "\s*\(" meets a ">" and fails, and
+// (RE2 having no recursion) backtracking to the empty alternative then meets "<".
+// One level of generics matched, two silently did not — and this hit the paths the
+// extractor advertises, openapi-fetch's API.GET<ApiResponse<T>>(…) among them. The
+// group is now bounded on "(", which a type argument never contains.
+//
+// Lowercase verb calls — axios.get('/path'), http.post('/path'), the dominant
+// hand-written idiom — matched nothing at all. They were excluded to avoid
+// colliding with map.get()/cache.delete(), which is a real hazard; the new
+// lowerVerbCall pays for admitting them by requiring a "/"-rooted literal argument,
+// a condition cleanTSPath already enforces downstream, so no collection lookup can
+// reach it. A lowercase call on an interpolated template (`${base}/x`) is still
+// deliberately not matched.
+//
+// Admitting lowercase verbs immediately required a guard it did not need before:
+// a supertest call in an e2e suite — request(app).get('/v2/me') — is byte-identical
+// in shape to production axios traffic. Client-route extraction is therefore now
+// gated on !facts.IsTestPath, because a test's HTTP traffic is not an architectural
+// dependency, and facts.IsTestPath learned the two e2e conventions its .spec/.test
+// suffixes could never match (".e2e-spec.ts", Nest's generated form, and ".e2e.ts",
+// Playwright's — the hyphen means neither carries the leading dot those entries
+// require). Ungated, a NestJS API's own test suite became 500+ client routes,
+// promoted the service from isolated to connected, and fabricated a cross-repo
+// dependency edge out of test traffic — the paths matched a real server because
+// they are the routes under test. Same principle as v-era GAP-XL-15, which keeps
+// test_ref facts out of the coupling graph.
+const cacheVersion = "v141"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -21,7 +21,15 @@ import (
 // `window.fetch(` / `this.makeRequest(` (preceded by `.`) while rejecting calls
 // whose name merely ENDS in "fetch" — `router.prefetch(...)`, `query.refetch(...)`
 // — which are navigation/cache primitives, not outbound HTTP.
-var httpClientCall = regexp.MustCompile("(?:^|[^\\w])(fetch|makeRequest)\\s*(?:<[^>]*>)?\\s*\\(\\s*(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`)")
+// The optional type-argument group is bounded on "(" rather than ">", because a
+// TypeScript type argument is routinely NESTED — fetch<ApiResponse<Foo>>(…) — and
+// "<[^>]*>" stops at the inner ">", leaving the following "\s*\(" to meet a ">"
+// and fail. RE2 has no recursion, so the empty alternative is no rescue: it then
+// meets "<" and fails too, and the call is silently not a call. A type argument
+// never contains "(", so "[^()]*" runs greedily to the last ">" before the call
+// parenthesis and spans any nesting depth. Same reasoning at verbNamedCall and
+// lowerVerbCall — all three shared the defect.
+var httpClientCall = regexp.MustCompile("(?:^|[^\\w])(fetch|makeRequest)\\s*(?:<[^()]*>)?\\s*\\(\\s*(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`)")
 
 // httpClientMethod matches a `method: 'POST'` option within a call's options
 // object.
@@ -34,9 +42,30 @@ var httpClientMethod = regexp.MustCompile(`method\s*:\s*['"]([A-Za-z]+)['"]`)
 //	API.getApi().GET('/api/v3/items/{id}', { params: … })
 //	ApiV3.getApi().DELETE('/api/v3/widgets/{id}/follow')
 //
-// Only uppercase verbs are matched: that is the generated-client convention and it
-// avoids colliding with ordinary lowercase methods like map.get()/cache.delete().
-var verbNamedCall = regexp.MustCompile("\\.(GET|POST|PUT|DELETE|PATCH)\\s*(?:<[^>]*>)?\\s*\\(\\s*(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`)")
+// Only uppercase verbs are matched here: that is the generated-client convention,
+// and it avoids colliding with ordinary lowercase methods like map.get()/
+// cache.delete(). The lowercase idiom is handled separately by lowerVerbCall,
+// which pays for admitting it with a stricter argument rule.
+var verbNamedCall = regexp.MustCompile("\\.(GET|POST|PUT|DELETE|PATCH)\\s*(?:<[^()]*>)?\\s*\\(\\s*(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`)")
+
+// lowerVerbCall matches the hand-written client idiom that verbNamedCall's
+// uppercase-only rule deliberately excludes — axios.get('/path'), http.post('/path'),
+// apiClient.put('/path') — which is the dominant shape in TypeScript codebases and
+// contributed no route fact at all until now.
+//
+// The collision that motivated the uppercase-only rule (map.get("key"),
+// cache.delete(id), searchParams.get("q"), headers.get("content-type")) is answered
+// here by requiring the first argument to be a "/"-ROOTED literal. That is not a new
+// heuristic: cleanTSPath already rejects every non-"/"-rooted path downstream, so
+// admitting one here that it would drop anyway is the only case this widening adds.
+// A collection key beginning with "/" is vanishingly rare; a request path not
+// beginning with one is not a request path.
+//
+// Deliberately NOT matched: a lowercase call whose argument is a template starting
+// with an interpolation (axios.get(`${base}/x`)). Recovering those needs the base
+// resolution of cleanTSPath, and admitting them here would re-open the collision
+// this rule closes. They stay missed — see GAP-TS-06 for the base-URL half.
+var lowerVerbCall = regexp.MustCompile("\\.(get|post|put|delete|patch)\\s*(?:<[^()]*>)?\\s*\\(\\s*(?:\"(/[^\"]*)\"|'(/[^']*)'|`(/[^`]*)`)")
 
 // urlProperty matches a `url:` object property whose value is a string/template
 // literal — the options-object client idiom, e.g.
@@ -205,6 +234,16 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 		method := strings.ToUpper(string(src[m[2]:m[3]]))
 		raw := firstNonEmptyGroup(src, m, 2, 3, 4)
 		add(raw, method, "openapi-fetch", m[0])
+	}
+
+	// Pass 2b — lowercase verb-named calls (axios.get('/x'), http.post('/x')). The
+	// method is the call name, as in pass 2; the "/"-rooted argument requirement
+	// lives in the pattern (see lowerVerbCall) rather than here, so a collection
+	// lookup never reaches add() in the first place.
+	for _, m := range lowerVerbCall.FindAllSubmatchIndex(src, -1) {
+		method := strings.ToUpper(string(src[m[2]:m[3]]))
+		raw := firstNonEmptyGroup(src, m, 2, 3, 4)
+		add(raw, method, "axios", m[0])
 	}
 
 	// Pass 3 — options-object clients: a `url:` property inside an object literal

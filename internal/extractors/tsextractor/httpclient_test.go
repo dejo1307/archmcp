@@ -43,6 +43,122 @@ func TestExtractHTTPClientFacts_VerbNamedCalls(t *testing.T) {
 	}
 }
 
+// TestExtractHTTPClientFacts_NestedGenericTypeArg pins v141's first half: a NESTED
+// type argument must not defeat detection. "<[^>]*>" stopped at the inner ">", so
+// one level of generics matched and two silently did not — on the very shape
+// openapi-fetch clients use. Both the verb-named and the fetch pattern shared the
+// bug, so both are asserted here; the one-level cases are the control that shows
+// the widening did not simply relax everything.
+func TestExtractHTTPClientFacts_NestedGenericTypeArg(t *testing.T) {
+	src := "async function load() {\n" +
+		"  await API.getApi().GET<Resp>('/api/v3/one-level');\n" +
+		"  await API.getApi().GET<ApiResponse<Item[]>>('/api/v3/nested');\n" +
+		"  await API.getApi().POST<ApiResponse<Map<string, Item>>>('/api/v3/deeply-nested');\n" +
+		"  await fetch<ApiResponse<Item>>('/api/v3/fetch-nested');\n" +
+		"}\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "client/feed/network.ts"))
+
+	for path, want := range map[string]string{
+		"/api/v3/one-level":     "GET",
+		"/api/v3/nested":        "GET",
+		"/api/v3/deeply-nested": "POST",
+		"/api/v3/fetch-nested":  "GET",
+	} {
+		if got[path] != want {
+			t.Errorf("%s: want %s, got %+v", path, want, got)
+		}
+	}
+}
+
+// TestExtractHTTPClientFacts_LowercaseVerbCalls pins v141's second half: the
+// hand-written axios idiom is detected, and the collision hazard that justified
+// excluding it stays excluded. The discriminator is the "/"-rooted argument, so
+// every must-not case below is a real-world lowercase method whose first argument
+// is an ordinary string key.
+func TestExtractHTTPClientFacts_LowercaseVerbCalls(t *testing.T) {
+	src := "async function load(id: string, data: Body) {\n" +
+		"  await axios.get('/api/v2/slots/available', { params });\n" +
+		"  await http.post<ApiResponse<string>>('/slots/reserve', data);\n" +
+		"  await apiClient.put(`/calendars/${id}/credentials`, data);\n" +
+		"  await client.delete('/bookings/{uid}');\n" +
+		"  await api.patch(\"/me\", data);\n" +
+		// Collision cases the uppercase-only rule was protecting against: a
+		// lowercase verb whose argument is a plain key, not a "/"-rooted path.
+		"  const a = map.get('some-key');\n" +
+		"  cache.delete('session');\n" +
+		"  searchParams.get('redirect');\n" +
+		"  headers.get('content-type');\n" +
+		"  formData.get('file');\n" +
+		"}\n"
+	got := byNameMethod(extractHTTPClientFacts([]byte(src), "client/feed/network.ts"))
+
+	for path, want := range map[string]string{
+		"/api/v2/slots/available":   "GET",
+		"/slots/reserve":            "POST",
+		"/calendars/{}/credentials": "PUT",
+		"/bookings/{uid}":           "DELETE",
+		"/me":                       "PATCH",
+	} {
+		if got[path] != want {
+			t.Errorf("%s: want %s, got %+v", path, want, got)
+		}
+	}
+	for _, key := range []string{"some-key", "session", "redirect", "content-type", "file"} {
+		if _, found := got[key]; found {
+			t.Errorf("lowercase collection call %q must not be detected: %+v", key, got)
+		}
+	}
+}
+
+// TestExtractHTTPClientFacts_LowercaseInterpolatedBaseNotMatched pins the boundary
+// v141 deliberately did NOT cross: a lowercase call whose template begins with an
+// interpolation is not a "/"-rooted literal, and admitting it would re-open the
+// collision that the leading-slash rule closes. Recorded as an assertion so the
+// omission reads as a decision rather than an oversight (see GAP-TS-06).
+func TestExtractHTTPClientFacts_LowercaseInterpolatedBaseNotMatched(t *testing.T) {
+	src := "async function load() {\n" +
+		"  await axios.get(`${baseUrl}/v1/charges`);\n" +
+		"}\n"
+	if ff := extractHTTPClientFacts([]byte(src), "client/pay.ts"); len(ff) != 0 {
+		t.Errorf("interpolated-base lowercase call must not be detected: %+v", ff)
+	}
+}
+
+// TestExtractHTTPClientFacts_TestFileCallsAreNotClientRoutes pins the guard that
+// v141 needed the moment it landed. Admitting lowercase verbs made every supertest
+// call in an e2e suite — request(app).get('/v2/me') — look exactly like production
+// axios traffic, and on ts/cal.diy that turned a NestJS API's own test suite into
+// **500+** client routes, moved the service from `isolated` to `connected`, and
+// fabricated a cross-repo `v2 -> web` dependency edge out of test traffic. The
+// paths matched a real server for a real reason: they are the routes under test.
+//
+// The gate lives at the ts.go call site (facts.IsTestPath), so this asserts the
+// predicate covers the two e2e conventions that the .spec/.test suffixes miss —
+// the hyphenated forms have no leading dot and so were never matched.
+func TestExtractHTTPClientFacts_TestFileCallsAreNotClientRoutes(t *testing.T) {
+	for _, f := range []string{
+		"src/app.e2e-spec.ts",                     // Nest CLI convention
+		"src/modules/slots/e2e/slots.e2e-spec.ts", // colocated e2e suite
+		"playwright/oauth-provider.e2e.ts",        // Playwright/Cypress convention
+		"src/api/client.spec.ts",                  // already covered; kept as control
+	} {
+		if !facts.IsTestPath(f) {
+			t.Errorf("IsTestPath(%q) = false; an HTTP call here would become a phantom client route", f)
+		}
+	}
+	// A production file must not be swept up by the widened suffix list: the rule
+	// this list enforces is "a convention a tool enforces", not "looks testy".
+	for _, f := range []string{
+		"src/lib/e2e-helpers.ts",
+		"src/modules/latest/client.ts",
+		"src/contest/api.ts",
+	} {
+		if facts.IsTestPath(f) {
+			t.Errorf("IsTestPath(%q) = true; production code must stay in the graph", f)
+		}
+	}
+}
+
 // TestExtractHTTPClientFacts_OptionsObject covers the options-object client where
 // the URL is a `url:` property and the verb is a `type:` property (with the
 // action verb "query" mapping to GET), including the declarative request object.
