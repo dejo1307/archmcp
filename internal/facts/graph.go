@@ -353,7 +353,16 @@ func (g *Graph) traverseFrom(starts []string, direction string, relKinds, nodeKi
 			}
 
 			if len(result.Nodes) >= maxNodes {
+				// Still traverse through this node but don't include it in
+				// results — same contract as the node-kind filter above.
+				// maxNodes bounds the returned set, not the walk: dropping the
+				// node from the queue would hide everything reachable only
+				// through it and make NodesVisited/MaxDepthReached describe the
+				// truncated walk rather than the graph. Nodes already appended
+				// are unaffected, so the returned set stays the BFS-order prefix
+				// of an uncapped traversal.
 				truncated = true
+				queue = append(queue, queueItem{name: e.Target, depth: newDepth})
 				continue
 			}
 
@@ -515,10 +524,11 @@ func (g *Graph) ImpactSet(target string, maxDepth, maxNodes int, includeForward 
 	seeds := g.impactSeeds(target)
 	rev := g.traverseFrom(seeds, "reverse", nil, nil, maxDepth, maxNodes)
 
-	// The max_nodes cap stops the BFS frontier, so rev's node/visited counts do
-	// not reflect the true dependent count. Compute it with a cheap count-only
-	// pass (same seeds, same depth, no node cap) so the summary is accurate even
-	// when the displayed set is truncated.
+	// max_nodes caps rev.Nodes, so len(rev.Nodes) is not the dependent count.
+	// (The cap bounds the returned set only — the BFS itself walks the full
+	// reachable set, so rev.Stats.NodesVisited/MaxDepthReached do describe the
+	// graph.) Count with a cheap count-only pass that excludes the seeds
+	// themselves, so the summary is accurate even when the display is truncated.
 	totalDependents := g.reachableCount(seeds, "reverse", maxDepth)
 
 	result := ImpactResult{

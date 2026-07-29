@@ -166,6 +166,132 @@ func TestTraverse_EdgesConsistentWhenTruncated(t *testing.T) {
 	}
 }
 
+// buildChainGraph creates a linear chain N00 -> N01 -> ... -> N20 (21 nodes,
+// 20 hops), which is exactly the traverseFrom maxDepth ceiling. A chain isolates
+// the BFS frontier: every node is reachable only through its predecessor, so any
+// node dropped from the queue silently hides the whole remaining tail.
+func buildChainGraph(n int) *Graph {
+	s := NewStore()
+	for i := 0; i < n; i++ {
+		f := Fact{Kind: KindSymbol, Name: chainName(i), File: "chain.go", Line: i + 1}
+		if i < n-1 {
+			f.Relations = []Relation{{Kind: RelCalls, Target: chainName(i + 1)}}
+		}
+		s.Add(f)
+	}
+	s.BuildGraph()
+	return s.Graph()
+}
+
+func chainName(i int) string {
+	return "N" + string(rune('0'+i/10)) + string(rune('0'+i%10))
+}
+
+// TestTraverse_MaxNodesCapsOutputNotFrontier pins that maxNodes bounds what is
+// RETURNED, not how far the BFS walks. The node-kind filter path already queues
+// nodes it excludes from results ("Still traverse through this node but don't
+// include it in results"); the maxNodes path must do the same, or every node
+// reachable only through a capped-out node becomes invisible and the reported
+// stats describe a truncated walk rather than the graph.
+func TestTraverse_MaxNodesCapsOutputNotFrontier(t *testing.T) {
+	g := buildChainGraph(21)
+
+	result := g.Traverse("N00", "forward", nil, nil, 20, 2)
+
+	if !result.Stats.Truncated {
+		t.Fatal("expected Truncated with maxNodes=2")
+	}
+	if len(result.Nodes) != 2 {
+		t.Errorf("len(Nodes) = %d, want 2 (maxNodes caps the returned set)", len(result.Nodes))
+	}
+	// The frontier must survive the cap: the whole 21-node chain is walked.
+	if result.Stats.NodesVisited != 21 {
+		t.Errorf("NodesVisited = %d, want 21 — the BFS frontier stopped at the cap instead of walking the chain", result.Stats.NodesVisited)
+	}
+	if result.Stats.MaxDepthReached != 20 {
+		t.Errorf("MaxDepthReached = %d, want 20 — depth is reported from a truncated walk, understating the graph", result.Stats.MaxDepthReached)
+	}
+}
+
+// TestTraverse_MaxNodesReturnsSamePrefixAsUncapped pins the no-collateral-damage
+// property: raising the frontier past the cap must not change WHICH nodes are
+// returned. The capped result must stay the exact BFS-order prefix of the
+// uncapped one, so the cap remains a pure output bound.
+func TestTraverse_MaxNodesReturnsSamePrefixAsUncapped(t *testing.T) {
+	g := buildChainGraph(21)
+
+	full := g.Traverse("N00", "forward", nil, nil, 20, 500)
+	if len(full.Nodes) != 21 {
+		t.Fatalf("uncapped traversal returned %d nodes, want 21", len(full.Nodes))
+	}
+
+	for _, cap := range []int{1, 2, 5, 13} {
+		capped := g.Traverse("N00", "forward", nil, nil, 20, cap)
+		if len(capped.Nodes) != cap {
+			t.Errorf("maxNodes=%d returned %d nodes, want %d", cap, len(capped.Nodes), cap)
+			continue
+		}
+		want := nodeNames(full.Nodes[:cap])
+		if got := nodeNames(capped.Nodes); !reflect.DeepEqual(got, want) {
+			t.Errorf("maxNodes=%d returned %v, want the uncapped prefix %v", cap, got, want)
+		}
+	}
+}
+
+// TestTraverse_MaxNodesPrefixWithBranching is the branching counterpart of
+// TestTraverse_MaxNodesReturnsSamePrefixAsUncapped. A chain cannot catch
+// sibling-ordering effects — every node has one successor — so it would pass
+// even if the cap changed WHICH of several equal-depth siblings is returned.
+// This topology gives depth 1 three siblings and depth 2 five, so any reordering
+// introduced by queueing capped-out nodes shows up as a prefix mismatch.
+func TestTraverse_MaxNodesPrefixWithBranching(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		Fact{Kind: KindSymbol, Name: "R", File: "r.go", Relations: []Relation{
+			{Kind: RelCalls, Target: "A"},
+			{Kind: RelCalls, Target: "B"},
+			{Kind: RelCalls, Target: "C"},
+		}},
+		Fact{Kind: KindSymbol, Name: "A", File: "a.go", Relations: []Relation{
+			{Kind: RelCalls, Target: "A1"},
+			{Kind: RelCalls, Target: "A2"},
+		}},
+		Fact{Kind: KindSymbol, Name: "B", File: "b.go", Relations: []Relation{
+			{Kind: RelCalls, Target: "B1"},
+		}},
+		Fact{Kind: KindSymbol, Name: "C", File: "c.go", Relations: []Relation{
+			{Kind: RelCalls, Target: "C1"},
+			{Kind: RelCalls, Target: "C2"},
+		}},
+		Fact{Kind: KindSymbol, Name: "A1", File: "a1.go"},
+		Fact{Kind: KindSymbol, Name: "A2", File: "a2.go"},
+		Fact{Kind: KindSymbol, Name: "B1", File: "b1.go"},
+		Fact{Kind: KindSymbol, Name: "C1", File: "c1.go"},
+		Fact{Kind: KindSymbol, Name: "C2", File: "c2.go"},
+	)
+	s.BuildGraph()
+	g := s.Graph()
+
+	full := g.Traverse("R", "forward", nil, nil, 5, 500)
+	if len(full.Nodes) != 9 {
+		t.Fatalf("uncapped traversal returned %d nodes, want 9", len(full.Nodes))
+	}
+
+	for cap := 1; cap <= 9; cap++ {
+		capped := g.Traverse("R", "forward", nil, nil, 5, cap)
+		if got, want := nodeNames(capped.Nodes), nodeNames(full.Nodes[:cap]); !reflect.DeepEqual(got, want) {
+			t.Errorf("maxNodes=%d returned %v, want the uncapped prefix %v", cap, got, want)
+		}
+		// The walk itself must be cap-independent: every cap sees the whole graph.
+		if capped.Stats.NodesVisited != 9 {
+			t.Errorf("maxNodes=%d: NodesVisited = %d, want 9 (the frontier must survive the cap)", cap, capped.Stats.NodesVisited)
+		}
+		if capped.Stats.MaxDepthReached != full.Stats.MaxDepthReached {
+			t.Errorf("maxNodes=%d: MaxDepthReached = %d, want %d", cap, capped.Stats.MaxDepthReached, full.Stats.MaxDepthReached)
+		}
+	}
+}
+
 func TestTraverse_RelationKindFilter(t *testing.T) {
 	g, _ := buildTestGraph()
 
