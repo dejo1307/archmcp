@@ -1,0 +1,73 @@
+# enola architectural regression gate — GitHub Actions.
+#
+# It answers what tests do not: did this pull request change the STRUCTURE of the system
+# in a way nobody asked for? A newly introduced dependency cycle fails the job; findings
+# below that threshold are reported in the log and allowed through.
+#
+# HOW THE BASELINE GETS HERE
+# --------------------------
+# The gate needs something to compare against. This workflow pins a baseline from the PR's
+# own merge-base checkout, which requires no artifact plumbing and works on a fresh clone.
+#
+# `fetch-depth: 0` is required. actions/checkout defaults to a depth-1 clone, which has no
+# merge-base to check out, and the gate would silently have nothing to compare against.
+#
+# A faster arrangement — publish the snapshot from the default branch once and restore it
+# here instead of re-indexing the base — needs baselines to survive moving between
+# machines, which they do not yet: comparability compares the absolute repo path, so a
+# baseline pinned under one checkout path declines to grade under another.
+name: architecture
+
+on:
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install enola
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/enola-labs/enola/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Pin a baseline from the merge base
+        run: |
+          # Record the PR head as an explicit SHA before moving: `git checkout -` is
+          # unreliable after a --detach, and returning to the wrong commit would make the
+          # gate grade the base branch against itself and always report clean.
+          head=$(git rev-parse HEAD)
+          base=$(git merge-base "$head" "origin/${{ github.base_ref }}")
+          echo "Baseline commit: $base"
+          echo "PR head:         $head"
+
+          git checkout --quiet --detach "$base"
+          enola --generate
+          enola baseline pin
+
+          # .enola/ is untracked, so the pinned baseline survives the checkout back.
+          git checkout --quiet --detach "$head"
+
+      - name: Grade the change
+        run: enola check
+
+      # `enola check` exit codes:
+      #   0 clean · 1 regression (job fails) · 2 error · 3 declined (not comparable)
+      #
+      # Codes 2 and 3 fail the job here by design: in CI they mean the gate did not
+      # actually run, and a gate that silently passes when it could not run is worse than
+      # no gate. Add `|| [ $? -eq 3 ]` if you would rather treat "declined" as a pass
+      # while rolling this out.
+
+      - name: Publish the verdict as JSON
+        if: always()
+        run: enola check --json > architecture-verdict.json || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: architecture-verdict
+          path: architecture-verdict.json

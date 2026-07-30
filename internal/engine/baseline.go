@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -27,6 +28,25 @@ var snapshotArtifactFiles = []string{"facts.jsonl", "insights.json", "snapshot.m
 // OutputDir returns the absolute .enola output directory for repoPath.
 func (e *Engine) OutputDir(repoPath string) string {
 	return filepath.Join(repoPath, e.cfg.Output.Dir)
+}
+
+// ResolveBaselineDir maps a baseline selector to the directory holding that
+// snapshot's artifacts: "" / "pinned" → the explicit SetBaseline pin, "previous" → the
+// automatically-rotated preceding run, anything else → an explicit path.
+//
+// Shared so every caller resolves a selector identically. The MCP tools
+// (diff_snapshot, compare_receipts) and the `enola check` CLI gate must agree on what
+// `previous` means, or the same word would name different snapshots depending on which
+// surface the caller used.
+func ResolveBaselineDir(outDir, selector string) string {
+	switch strings.ToLower(strings.TrimSpace(selector)) {
+	case "", "pinned":
+		return filepath.Join(outDir, BaselineSubdir)
+	case "previous":
+		return filepath.Join(outDir, PreviousSubdir)
+	default:
+		return selector
+	}
 }
 
 // SetBaseline pins the current on-disk snapshot as the diff baseline by copying

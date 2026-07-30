@@ -1,0 +1,344 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/enola-labs/enola/internal/diff"
+	"github.com/enola-labs/enola/internal/engine"
+	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/pkg/bootstrap"
+	"github.com/enola-labs/enola/pkg/check"
+)
+
+// target is the repository the gate operates on, plus how it was resolved — reported to
+// the user so which repo and which config were used is never a guess.
+type target struct {
+	engine     *bootstrap.Engine
+	repoPaths  []string
+	configNote string
+}
+
+// resolveTarget turns the single positional argument into an engine pointed at the right
+// repository. The argument is a REPOSITORY when it names a directory and a CONFIG FILE
+// when it names a file — the same disambiguation --explain uses, so `enola check
+// /path/to/repo` means what a reader expects.
+//
+// Without this, a directory argument fell through to config.Load, which cannot read a
+// directory: it warned and silently used built-in defaults, whose `repo: .` is the WORKING
+// DIRECTORY. So `enola check /path/to/other/repo` analysed whichever repo you happened to
+// be standing in and graded it against that repo's baseline — the wrong answer, presented
+// as a real verdict.
+//
+// When the argument is a directory, a mcp-arch.yaml INSIDE it is picked up if present.
+// That keeps `baseline pin` and `check` resolving identically, which matters more than it
+// looks: the config determines the ignore globs, and a pin and a check that disagreed on
+// them would differ in ignore-glob hash and make every diff decline as incomparable.
+func resolveTarget(arg string) target {
+	cfgPath := "mcp-arch.yaml"
+	repoOverride := ""
+	note := ""
+
+	switch {
+	case arg == "":
+		note = "config " + cfgPath + " (or built-in defaults)"
+	case isDirectory(arg):
+		abs, err := filepath.Abs(arg)
+		if err != nil {
+			checkFatal("resolving repo path %q: %v", arg, err)
+		}
+		repoOverride = abs
+		if inner := filepath.Join(abs, "mcp-arch.yaml"); fileExists(inner) {
+			cfgPath = inner
+			note = "repo " + abs + " (config " + inner + ")"
+		} else {
+			note = "repo " + abs + " (built-in default config)"
+		}
+	default:
+		cfgPath = arg
+		note = "config " + arg
+	}
+
+	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{ConfigPath: cfgPath})
+	if err != nil {
+		checkFatal("failed to create engine: %v", err)
+	}
+	if repoOverride != "" {
+		// Repos would otherwise win in RepoPaths and silently ignore the directory the
+		// caller named.
+		cfg.Repo = repoOverride
+		cfg.Repos = nil
+	}
+	repoPaths, err := cfg.RepoPaths()
+	if err != nil {
+		checkFatal("failed to resolve repo path: %v", err)
+	}
+	return target{engine: eng, repoPaths: repoPaths, configNote: note}
+}
+
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir()
+}
+
+// runCheck is the `enola check` gate: snapshot the repo, diff it against a baseline,
+// grade the delta, and exit with a code CI can act on.
+//
+// It never returns — it exits with the verdict's code. Exit codes are the contract:
+// 0 clean, 1 regression, 2 usage/operational error, 3 declined (not comparable).
+func runCheck(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	var (
+		baseline      = fs.String("baseline", "pinned", "what to compare against: pinned, previous, or a path to a directory holding facts.jsonl")
+		failOn        = fs.String("fail-on", "", "comma-separated explainer names whose new findings fail (default: cycles)")
+		minConfidence = fs.Float64("min-confidence", 0, "confidence floor within --fail-on explainers (default: 1.00)")
+		warnOnly      = fs.Bool("warn-only", false, "report everything but always exit 0 on findings (blocking/usage errors still apply)")
+		asJSON        = fs.Bool("json", false, "emit the verdict as JSON instead of text")
+		focus         = fs.String("focus", "", "narrow the delta to entries referencing this module/file/symbol")
+		detail        = fs.Bool("detail", false, "print the full delta (changed edges and facts) under the verdict")
+		write         = fs.Bool("write", false, "persist snapshot artifacts to .enola/ (default: read-only, nothing is written)")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: enola check [flags] [config_path]\n\n"+
+			"Grade what a change did to the architecture, against a pinned baseline.\n\n"+
+			"Exit codes:\n"+
+			"  0  clean      no structural regression\n"+
+			"  1  regression the policy was violated\n"+
+			"  2  error      the gate could not run (no baseline, bad flag, inverted pair)\n"+
+			"  3  declined   the baseline is not comparable; refusing to grade\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		os.Exit(check.StatusUsageError.ExitCode())
+	}
+
+	var arg string
+	if rest := fs.Args(); len(rest) > 0 {
+		arg = rest[0]
+	}
+
+	policy := check.Policy{
+		MinConfidence: *minConfidence,
+		WarnOnly:      *warnOnly,
+	}
+	if *failOn != "" {
+		for _, name := range strings.Split(*failOn, ",") {
+			if n := strings.TrimSpace(name); n != "" {
+				policy.FailExplainers = append(policy.FailExplainers, n)
+			}
+		}
+	}
+
+	tgt := resolveTarget(arg)
+	eng, repoPaths := tgt.engine, tgt.repoPaths
+	fmt.Fprintf(os.Stderr, "enola check: %s\n", tgt.configNote)
+
+	// Read-only unless --write. Skipping WriteArtifacts is what makes it read-only:
+	// that is where the snapshot is persisted AND where the previous/ rotation happens,
+	// so a bare `enola check` leaves both the pinned baseline and previous/ untouched
+	// and can be run repeatedly against the same baseline. SetPersistCache(false)
+	// additionally keeps the extractor cache off disk, matching --explain.
+	if !*write {
+		eng.SetPersistCache(false)
+	}
+	for i, repoPath := range repoPaths {
+		if _, err := eng.GenerateSnapshot(ctx, repoPath, i > 0); err != nil {
+			checkFatal("snapshot generation failed for %s: %v", repoPath, err)
+		}
+	}
+	if *write {
+		for _, repoPath := range repoPaths {
+			if err := eng.WriteArtifacts(repoPath); err != nil {
+				checkFatal("failed to write artifacts for %s: %v", repoPath, err)
+			}
+		}
+	}
+
+	snap := eng.Snapshot()
+	if snap == nil || eng.Store().Count() == 0 {
+		checkFatal("snapshot produced no facts for %s", strings.Join(repoPaths, ", "))
+	}
+	// Build current from the store so it reflects the whole (possibly multi-repo) graph
+	// rather than only the last repo indexed — the same construction diff_snapshot uses.
+	current := &facts.Snapshot{Meta: snap.Meta, Facts: eng.Store().All(), Insights: snap.Insights}
+
+	// The baseline is anchored on the FIRST repo: that is the one whose snapshot reset
+	// the graph, and it is where `enola baseline pin` writes.
+	anchor := repoPaths[0]
+	baseDir := engine.ResolveBaselineDir(eng.OutputDir(anchor), *baseline)
+	base, err := bootstrap.LoadSnapshotDir(baseDir)
+	if err != nil {
+		checkFatal("%s", baselineHelp(*baseline, baseDir, anchor, err))
+	}
+
+	d := diff.Compute(base, current)
+	if *focus != "" {
+		d = d.Focused(*focus)
+	}
+
+	verdict := check.Evaluate(d, policy)
+
+	if *asJSON {
+		out, err := verdict.JSON()
+		if err != nil {
+			checkFatal("failed to encode verdict: %v", err)
+		}
+		fmt.Println(string(out))
+	} else {
+		fmt.Print(verdict.Render())
+		if *detail {
+			fmt.Printf("\n%s\n", verdict.Detail())
+		}
+	}
+	os.Exit(verdict.ExitCode())
+}
+
+// baselineHelp turns a failed baseline load into an actionable message rather than a
+// bare stat error — the most common way a first run of `enola check` fails is simply
+// that no baseline was ever pinned.
+// repoHint is the repository the caller named, echoed back into the suggested commands so
+// they can be pasted as-is rather than adapted.
+func baselineHelp(selector, dir, repoHint string, err error) string {
+	switch strings.ToLower(strings.TrimSpace(selector)) {
+	case "", "pinned":
+		return fmt.Sprintf("no pinned baseline at %s\n\n"+
+			"The gate needs a \"before\" to compare against, pinned BEFORE you edit:\n"+
+			"    enola baseline pin %s\n"+
+			"    …make your change…\n"+
+			"    enola check %s\n\n"+
+			"Or compare against the immediately-preceding snapshot with --baseline=previous.",
+			dir, repoHint, repoHint)
+	case "previous":
+		return fmt.Sprintf("no previous snapshot at %s — that requires at least two snapshots "+
+			"written with `enola --generate` (note `enola check` is read-only by default and does "+
+			"not rotate it).\n\nFor a stable baseline across several rounds of edits, prefer:\n"+
+			"    enola baseline pin %s", dir, repoHint)
+	default:
+		return fmt.Sprintf("could not load baseline from %q: %v", dir, err)
+	}
+}
+
+// checkFatal reports an operational failure and exits 2 — distinct from a regression,
+// because the gate did not run at all.
+func checkFatal(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "enola check: "+format+"\n", args...)
+	os.Exit(check.StatusUsageError.ExitCode())
+}
+
+// runBaseline is `enola baseline pin|show|clear` — the CLI half of the loop, so the
+// baseline can be managed without an agent.
+func runBaseline(args []string) {
+	fs := flag.NewFlagSet("baseline", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: enola baseline <pin|show|clear> [config_path]\n\n"+
+			"  pin    freeze the current .enola snapshot as the diff baseline\n"+
+			"  show   report whether a baseline exists, and what it describes\n"+
+			"  clear  remove the pinned baseline\n")
+	}
+	if err := fs.Parse(args); err != nil {
+		os.Exit(check.StatusUsageError.ExitCode())
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fs.Usage()
+		os.Exit(check.StatusUsageError.ExitCode())
+	}
+	action := strings.ToLower(rest[0])
+
+	var arg string
+	if len(rest) > 1 {
+		arg = rest[1]
+	}
+	tgt := resolveTarget(arg)
+	eng := tgt.engine
+	anchor := tgt.repoPaths[0]
+	outDir := eng.OutputDir(anchor)
+	baseDir := engine.ResolveBaselineDir(outDir, "pinned")
+
+	switch action {
+	case "pin":
+		// Snapshot first, then pin. "Pin a baseline of this repo" is one intent, and
+		// requiring a separate --generate made the first useful thing a new user does a
+		// two-command ritual whose failure mode ("no snapshot to pin") explained the
+		// mechanism rather than the goal.
+		//
+		// Always regenerating is also the safer semantic: pinning whatever happened to be
+		// on disk could freeze a snapshot from days ago as "the state before my change",
+		// which is precisely the staleness the diff then warns about. Snapshots are
+		// deterministic, so for an unchanged tree this costs a cached re-index and
+		// produces byte-identical facts.
+		fmt.Fprintf(os.Stderr, "enola baseline: %s\n", tgt.configNote)
+		for i, repoPath := range tgt.repoPaths {
+			if _, err := eng.GenerateSnapshot(context.Background(), repoPath, i > 0); err != nil {
+				checkFatal("snapshot generation failed for %s: %v", repoPath, err)
+			}
+		}
+		for _, repoPath := range tgt.repoPaths {
+			if err := eng.WriteArtifacts(repoPath); err != nil {
+				checkFatal("failed to write artifacts for %s: %v", repoPath, err)
+			}
+		}
+		if err := eng.SetBaseline(anchor); err != nil {
+			checkFatal("could not pin baseline: %v", err)
+		}
+		fmt.Printf("Baseline pinned for %s\n", anchor)
+		if snap, err := bootstrap.LoadSnapshotDir(baseDir); err == nil {
+			describeBaseline(snap)
+		}
+		fmt.Printf("\nNow make your changes, then run:\n    enola check %s\n", anchor)
+	case "show":
+		snap, err := bootstrap.LoadSnapshotDir(baseDir)
+		if err != nil {
+			fmt.Printf("No baseline pinned (%s does not hold a snapshot).\nRun `enola --generate` then `enola baseline pin`.\n", baseDir)
+			os.Exit(check.StatusUsageError.ExitCode())
+		}
+		fmt.Printf("Baseline at %s\n", baseDir)
+		describeBaseline(snap)
+	case "clear":
+		if err := os.RemoveAll(baseDir); err != nil {
+			checkFatal("could not clear baseline: %v", err)
+		}
+		fmt.Printf("Baseline cleared (%s removed).\n", baseDir)
+	default:
+		fmt.Fprintf(os.Stderr, "enola baseline: unknown action %q\n", action)
+		fs.Usage()
+		os.Exit(check.StatusUsageError.ExitCode())
+	}
+}
+
+// describeBaseline prints what a pinned baseline actually describes, so `show` answers
+// "is this still the right thing to compare against?" rather than only "it exists".
+func describeBaseline(snap *facts.Snapshot) {
+	m := snap.Meta
+	fmt.Printf("  Generated: %s\n", orUnknown(m.GeneratedAt))
+	fmt.Printf("  Repo:      %s\n", orUnknown(m.RepoPath))
+	if r := m.Receipt(); r.Git != nil {
+		state := "clean"
+		if r.Git.Dirty {
+			state = "dirty (uncommitted changes)"
+		}
+		fmt.Printf("  Git:       %s @ %s — %s\n", orUnknown(r.Git.Ref), shortCommit(r.Git.Commit), state)
+	}
+	fmt.Printf("  Facts:     %d · Insights: %d\n", len(snap.Facts), len(snap.Insights))
+	fmt.Printf("  Snapshot:  %s\n", orUnknown(m.Receipt().SnapshotID))
+}
+
+func orUnknown(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "(unknown)"
+	}
+	return s
+}
+
+func shortCommit(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return orUnknown(s)
+}

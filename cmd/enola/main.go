@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,11 +32,22 @@ func main() {
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 
-	if len(os.Args) > 1 && os.Args[1] == "upgrade" {
-		if err := upgrade.Run(ctx, version.Version); err != nil {
-			log.Fatalf("upgrade failed: %v", err)
+	// Subcommands are dispatched before the flag loop below, which is an exact-match
+	// switch over os.Args and cannot parse `--flag=value`. Each subcommand owns its own
+	// FlagSet instead.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "upgrade":
+			if err := upgrade.Run(ctx, version.Version); err != nil {
+				log.Fatalf("upgrade failed: %v", err)
+			}
+			os.Exit(0)
+		case "check":
+			runCheck(ctx, os.Args[2:]) // exits with the verdict's code
+		case "baseline":
+			runBaseline(os.Args[2:])
+			os.Exit(0)
 		}
-		os.Exit(0)
 	}
 
 	generateMode := false
@@ -44,7 +56,7 @@ func main() {
 	statusAll := false
 	noDashboard := false
 	cfgPath := "mcp-arch.yaml"
-	explainRepo := "" // optional positional repo path for --explain
+	repoArg := "" // optional positional repo path, for --explain and --generate
 
 	for _, arg := range os.Args[1:] {
 		switch arg {
@@ -68,18 +80,30 @@ func main() {
 		case "--no-dashboard":
 			noDashboard = true
 		default:
-			// In --explain mode the positional argument is the repository path;
-			// otherwise it is the config file path. A repository is a directory and
-			// a config is a file, so `--explain cluster.yaml` is unambiguous — and
-			// without this it would analyse the YAML file as if it were a repo and
-			// report on nothing.
+			// The positional argument is a REPOSITORY when it names a directory and a
+			// CONFIG FILE when it names a file, so both `--explain /path/to/repo` and
+			// `--explain cluster.yaml` are unambiguous — without the distinction the
+			// latter would be analysed as if the YAML file were a repository.
+			//
+			// The same applies to --generate: pointing it at a directory is the obvious
+			// way to snapshot another repo, and treating that as a config path made it
+			// fall back to defaults (repo: ".") and silently snapshot the working
+			// directory instead of the repository named.
+			//
+			// Anything else is REJECTED rather than passed on as a config path. An
+			// unreadable config is only a warning inside config.Load — by design, so a
+			// missing mcp-arch.yaml falls back to defaults — but combined with a
+			// catch-all default: here, every typo inherited that leniency and became a
+			// silent wrong action. `enola chekc .` started an MCP server; `enola
+			// --generate /does/not/exist.yaml` snapshotted the working directory. Both
+			// looked like they worked.
 			switch {
-			case explainMode && isDirectory(arg):
-				explainRepo = arg
-			case explainMode:
+			case isDirectory(arg):
+				repoArg = arg
+			case fileExists(arg):
 				cfgPath = arg
 			default:
-				cfgPath = arg
+				log.Fatalf("%s", unknownArgHelp(arg))
 			}
 		}
 	}
@@ -103,11 +127,21 @@ func main() {
 	}
 
 	if explainMode {
-		runExplain(ctx, eng, cfg, explainRepo)
+		runExplain(ctx, eng, cfg, repoArg)
 		os.Exit(0)
 	}
 
 	if generateMode {
+		// A positional directory names one repository and overrides the config, so
+		// `enola --generate /path/to/repo` snapshots that repo rather than the working
+		// directory. Repos must be cleared too, or it would win in RepoPaths.
+		if repoArg != "" {
+			abs, err := filepath.Abs(repoArg)
+			if err != nil {
+				log.Fatalf("failed to resolve repo path: %v", err)
+			}
+			cfg.Repo, cfg.Repos = abs, nil
+		}
 		repoPaths, err := cfg.RepoPaths()
 		if err != nil {
 			log.Fatalf("failed to resolve repo path: %v", err)
@@ -265,6 +299,63 @@ func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, 
 
 	report := explain.Compute(eng)
 	fmt.Print(report.Render())
+}
+
+// knownSubcommands are dispatched before the flag loop. Listed here so an argument that
+// was MEANT to be one gets a targeted message instead of a generic path error.
+var knownSubcommands = []string{"check", "baseline", "upgrade"}
+
+// unknownArgHelp explains a rejected argument in terms of what the caller probably meant.
+//
+// The two cases worth separating are a mistyped subcommand and a bad path: telling someone
+// who typed `enola chekc .` that "no such file or directory" would send them looking at
+// their filesystem rather than at their spelling.
+func unknownArgHelp(arg string) string {
+	if !strings.HasPrefix(arg, "-") && !strings.ContainsAny(arg, "/\\.") {
+		if near := closestSubcommand(arg); near != "" {
+			return fmt.Sprintf("unknown command %q — did you mean %q?\n\n    enola %s --help\n\nRun `enola --help` for all commands.", arg, near, near)
+		}
+		return fmt.Sprintf("unknown command %q (expected one of: %s), and it is not a path either.\n\nRun `enola --help`.",
+			arg, strings.Join(knownSubcommands, ", "))
+	}
+	if strings.HasPrefix(arg, "-") {
+		return fmt.Sprintf("unknown flag %q — run `enola --help` for the supported flags.", arg)
+	}
+	return fmt.Sprintf("%q is neither a directory (a repository) nor an existing file (a config).\n\n"+
+		"A path naming a DIRECTORY is treated as a repository; one naming a FILE is treated as a config.", arg)
+}
+
+// closestSubcommand returns the known subcommand within edit distance 2 of arg, if any —
+// enough to catch a transposition or a doubled letter without guessing wildly.
+func closestSubcommand(arg string) string {
+	best, bestDist := "", 3
+	for _, cmd := range knownSubcommands {
+		if d := editDistance(strings.ToLower(arg), cmd); d < bestDist {
+			best, bestDist = cmd, d
+		}
+	}
+	return best
+}
+
+// editDistance is the standard Levenshtein distance over two short ASCII words.
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	cur := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, min(cur[j-1]+1, prev[j-1]+cost))
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(b)]
 }
 
 // isDirectory reports whether path names an existing directory. Used to tell a

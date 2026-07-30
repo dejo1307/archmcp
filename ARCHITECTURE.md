@@ -223,6 +223,8 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 
 `--help`, `--list` and `--status` are served from two public packages, for the same reason as `pkg/explain`: a wrapper binary must be able to print *its* version of each without restating the shared text. Both extension points are plain data, so nothing a wrapper adds is known here.
 
+**Subcommands vs. flags.** `check`, `baseline` and `upgrade` are dispatched in [`cmd/enola/main.go`](cmd/enola/main.go) *before* the flag loop, and each owns a `flag.FlagSet`. The loop itself is an exact-match switch over `os.Args` and cannot parse `--flag=value`, so anything taking its own flags has to be a subcommand. The loop's `default:` case **validates** rather than absorbs: a directory is a repository, an existing file is a config, and anything else is rejected. It used to pass every unrecognized token through as a config path, and because an unreadable config is only a *warning* inside `config.Load` — by design, so a missing `mcp-arch.yaml` falls back to defaults — every typo inherited that leniency and became a silent wrong action (`enola chekc .` started an MCP server; `enola --generate /does/not/exist.yaml` snapshotted the working directory). The default-path fallback is unchanged; only an *explicitly named* path that does not exist is now fatal.
+
 **[`pkg/cli`](pkg/cli)** renders what a binary prints about itself.
 
 - `OSSTools()` is the `--list` catalogue: name plus a one-line summary. It is hand-written on purpose — the descriptions registered with `mcp.AddTool` are multi-paragraph agent prompts, unusable in a terminal. `TestE2E_ToolCatalogueMatchesRegisteredTools` ([`internal/server/e2e_test.go`](internal/server/e2e_test.go)) asserts set equality against the tools the running server actually registers, so the two cannot drift. `RenderToolList(ToolListSpec)` renders it; a wrapper passes its own tools in `Extra` (or an unlock note via `ExtraLocked`/`LockedNote`), and with a zero spec the output never mentions that a wrapper exists.
@@ -557,6 +559,8 @@ Per-service edge-coverage report, so you can tell a genuinely isolated service f
 
 Pins the current snapshot as a diff baseline by copying the snapshot artifacts (`facts.jsonl`, `insights.json`, `snapshot.meta.json`) into `.enola/baseline/`. Call it once at the start of a task, after the first `generate_snapshot`. The pinned baseline **survives subsequent `generate_snapshot` runs**, so it stays valid across several rounds of edits — unlike the auto-rotated `.enola/previous/`, which only ever holds the immediately-preceding run. Takes no parameters.
 
+> The CLI equivalent, `enola baseline pin [repo|config]`, **snapshots first and then pins** — there is no separate `--generate` step. The MCP tool cannot do that (the agent has just generated, and re-generating inside the tool would be surprising), but from a shell "pin a baseline of this repo" is one intent, and pinning whatever happened to be on disk risks freezing a days-old snapshot as "the state before my change" — precisely the staleness the diff then warns about.
+
 ### `diff_snapshot` — "what did my change actually do?"
 
 Computes the architectural **delta** between a baseline snapshot and the current one. This is the verification counterpart to `impact_analysis`: where impact analysis *plans* a change, diff_snapshot *confirms* it, replacing "re-read the files to check what got built" with a deterministic answer.
@@ -583,7 +587,42 @@ The typical loop is `generate_snapshot → set_baseline → edit → generate_sn
 | `output_mode` | `summary` (default — headline regressions/improvements + structural tally) → `compact` (adds finding descriptions, evidence, and the changed edges/facts) → `full` (complete JSON). |
 | `max_tokens` | Optional hard cap on output size. |
 
-The engine lives in [`internal/diff`](internal/diff/diff.go) (pure `Compute` + deterministic renderers) and is re-exported for out-of-module use via [`pkg/diff`](pkg/diff/diff.go); baseline persistence and the on-disk loader live in [`internal/engine/baseline.go`](internal/engine/baseline.go). `diff_snapshot` also runs the **comparability guard** (`diff.CompareMeta`): it reads the receipt fields on both snapshots' metadata and warns, above the delta, when they were not generated over equivalent inputs.
+The engine lives in [`internal/diff`](internal/diff/diff.go) (pure `Compute` + deterministic renderers) and is re-exported for out-of-module use via [`pkg/diff`](pkg/diff/diff.go); baseline persistence, the on-disk loader and the shared selector resolution (`ResolveBaselineDir`) live in [`internal/engine/baseline.go`](internal/engine/baseline.go). `diff_snapshot` also runs the **comparability guard** (`diff.CompareMeta`): it reads the receipt fields on both snapshots' metadata and warns, above the delta, when they were not generated over equivalent inputs.
+
+#### Comparability is a spectrum, not a boolean
+
+`Comparability` carries `Comparable bool` (invariant: `Comparable == (len(Warnings) == 0)`), free-text `Warnings`, and a **set of `Kinds`** categorizing them. The kinds exist because the boolean spans everything from *"these are different repositories, the delta is meaningless"* to *"the baseline is four days old, the delta is real but also contains the repo's own drift"*. A human reader can weigh that from the prose; a **gate cannot** — and consuming `Comparable` would turn every stale baseline into a hard refusal, contradicting the deliberate design of `staleBaselineDays`.
+
+| Kind | Raised when | Treated as |
+|------|-------------|-----------|
+| `different_repo` | the two snapshots are of different repositories | blocking |
+| `version_mismatch` | different enola versions (extractor changes read as churn) | blocking |
+| `extractor_set` | a language present on one side only | blocking |
+| `ignore_globs` | the set of files parsed changed | blocking |
+| `unclassified` | contributed via `AddWarning` by a caller that knows something this package cannot (notably `engine.Drift`) | blocking — a gate must **fail closed** on a caveat it cannot categorize |
+| `inverted_pair` | the baseline is *newer* than the current snapshot | usage error (concrete remedy: re-generate) |
+| `stale_baseline` | the baseline is ≥ 3 days older | **advisory** — warn and still grade |
+| `pre_receipt` | the baseline predates snapshot receipts | advisory |
+
+`Kinds` is a **set**, not a per-message list, so `Warnings` keeps its type and JSON shape for every existing consumer (the dashboard, `output_mode='full'`, and out-of-module readers via `pkg/diff`). Callers that know their category should use `AddWarningKind` rather than `AddWarning`.
+
+> Note on timestamps: `GeneratedAt` is RFC3339, i.e. **second** resolution, so a baseline pinned and then diffed inside the same second yields a zero gap. Zero is *simultaneous*, not inverted — `inverted_pair` requires a strictly negative gap. Treating zero as inverted made a no-op check on an untouched repository report "the current snapshot does not contain your change".
+
+---
+
+### The gate (`pkg/check`) — `diff_snapshot` as an exit code
+
+[`pkg/check`](pkg/check/check.go) is a thin, **pure** policy layer over `internal/diff`: `Compute` decides *what changed*, `Evaluate(*diff.SnapshotDiff, Policy) Verdict` decides whether that is allowed to break a build. Same delta plus same policy always yields the same verdict, so a gate is as reproducible as the snapshot underneath it. It backs the `enola check` CLI, and exists as a public package so a wrapper can build a graded verdict on top of it rather than re-deriving one.
+
+`Status.ExitCode()` is the contract with CI: `0` clean · `1` regression · `2` usage error · `3` incomparable. Precedence is **blocking → usage error → regression**; blocking comes first because when the snapshots were built over different inputs, the inverted-pair remedy ("re-generate") would send the caller down the wrong path. Nothing is hidden by the ordering — every warning is reported regardless of which decided the status.
+
+**Why the policy keys on the explainer rather than on confidence.** The obvious design is "fail at confidence `1.0`, because [Insights](#insights-explainers) says `1.0` is a structural fact and anything below is a flagged heuristic". That does not survive contact with the explainers: `godclass` computes confidence from a fan-in ratio and **clamps it to `1.0`**, so a statistical outlier at twice the threshold presents as a certainty; and `layers` emits an informational `Architecture pattern: <name>` finding whose confidence is the share of the codebase matching the pattern, which can also reach `1.0`. A gate keyed on the number alone would fail builds for a new statistical outlier and for a re-detected pattern after a reorganization.
+
+So the **explainer is the primary filter** (`DefaultFailExplainers = ["cycles"]`) and confidence is a floor applied within it (`DefaultMinConfidence = 1.0`). The floor still does real work: `cycles` emits both a true cycle at `1.0` and a "highly coupled module cluster" at `0.4` whose own description calls it "a coupling-density signal, not a defect to break".
+
+> The confidence-invariant violation above is a **real inconsistency between the docs and the explainers**, worked around here rather than fixed. Capping `god-class` below `1.0` and reclassifying the `layers` pattern finding as informational would let the gate key on confidence directly — but it changes insight output, so it needs golden regeneration.
+
+**New coupling is reported, never failed.** `diff.Edge` is name-level, so `EdgesAdded` is populated by virtually any change — adding a function that calls another adds edges. A gate firing on that would be switched off within a day. Only module-level and cross-repo coupling deltas are worth escalating, and that needs an edge filter that does not exist yet.
 
 ---
 

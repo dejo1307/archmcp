@@ -592,3 +592,29 @@ func TestCompareMeta_BaselineNewerThanCurrentWarns(t *testing.T) {
 		}
 	}
 }
+
+// TestCompareMeta_SameSecondIsNotInverted — GeneratedAt is RFC3339, i.e. second
+// resolution, so a baseline pinned and then diffed within the same second produces a
+// ZERO gap. Zero is simultaneous, not inverted.
+//
+// It mattered as soon as a caller acted on the verdict instead of only printing it: the
+// `enola check` gate consumes WarnInvertedPair as a usage error, so treating a zero gap
+// as inverted made a no-op check on an untouched repository report "the current snapshot
+// does not contain your change" and exit non-zero.
+func TestCompareMeta_SameSecondIsNotInverted(t *testing.T) {
+	meta := func(ts string) facts.SnapshotMeta {
+		return facts.SnapshotMeta{
+			RepoPath: "/repo", EnolaVersion: "dev", GeneratedAt: ts,
+			Extractors: []string{"go"},
+		}
+	}
+	const ts = "2026-07-30T06:17:24Z"
+	same := compareMeta(meta(ts), meta(ts))
+
+	if same.HasKind(WarnInvertedPair) {
+		t.Errorf("identical timestamps were classified as an inverted pair: %v", same.Warnings)
+	}
+	if !same.Comparable {
+		t.Errorf("identical timestamps must be comparable, got warnings: %v", same.Warnings)
+	}
+}

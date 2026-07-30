@@ -46,9 +46,38 @@ func TestDefaultHelp_NoWrapperConcepts(t *testing.T) {
 	}
 }
 
-func TestDefaultHelp_NoCommandsBlockWhenEmpty(t *testing.T) {
-	if strings.Contains(renderDefault(t), "COMMANDS") {
+// The claim under test is about the RENDERER — an empty block is omitted rather than
+// printed as a bare heading. It used to assert this against DefaultHelp, which happened
+// to declare no commands; DefaultHelp now documents `check` and `baseline`, so the spec
+// is emptied explicitly instead. Otherwise the test would be pinning the command list
+// rather than the rendering rule, and any new engine subcommand would "fail" it.
+func TestRenderHelp_NoCommandsBlockWhenEmpty(t *testing.T) {
+	spec := DefaultHelp(testBinary())
+	spec.Commands = nil
+
+	var b strings.Builder
+	RenderHelp(&b, spec)
+
+	if strings.Contains(b.String(), "COMMANDS") {
 		t.Error("COMMANDS block should be omitted when no commands are declared")
+	}
+}
+
+// The gate's subcommands are engine features, not wrapper features, so the shared help
+// must describe them — every binary built on this engine serves them.
+func TestDefaultHelp_DocumentsGateCommands(t *testing.T) {
+	out := renderDefault(t)
+	for _, want := range []string{"COMMANDS", "check", "baseline"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q missing from default help:\n%s", want, out)
+		}
+	}
+	// The exit codes are the CLI's contract with CI; the help is where a reader looks
+	// for them before wiring up a pipeline.
+	for _, code := range []string{"0 clean", "1 regression", "2 error", "3 declined"} {
+		if !strings.Contains(out, code) {
+			t.Errorf("exit code %q not documented in help:\n%s", code, out)
+		}
 	}
 }
 

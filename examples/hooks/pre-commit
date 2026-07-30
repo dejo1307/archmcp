@@ -1,0 +1,63 @@
+#!/bin/sh
+# enola architectural regression gate — a pre-commit hook.
+#
+# Copy it into your own repository and enable it:
+#
+#     mkdir -p .githooks && cp pre-commit .githooks/pre-commit
+#     chmod +x .githooks/pre-commit
+#     git config core.hooksPath .githooks
+#
+# It answers the question a test suite does not: did this change alter the STRUCTURE of
+# the system in a way nobody asked for? By default only a newly introduced dependency
+# cycle fails the commit; everything else is reported and allowed through.
+#
+# `enola check` is read-only — it writes nothing to .enola/ and leaves your pinned
+# baseline in place, so it is safe to run on every commit and as often as you like.
+#
+# Exit codes:
+#   0  clean       no structural regression
+#   1  regression  the policy was violated  -> the commit is blocked
+#   2  error       the gate could not run (no baseline pinned yet)
+#   3  declined    the baseline is not comparable; refusing to grade
+#
+# Skip in an emergency with `git commit --no-verify`.
+set -e
+
+if ! command -v enola >/dev/null 2>&1; then
+  echo "pre-commit: enola not on PATH — skipping the architecture gate." >&2
+  exit 0
+fi
+
+# `|| status=$?` rather than a bare call: under `set -e` a non-zero exit would abort the
+# hook before the status could be inspected, so every regression would surface as a bare
+# failed hook with no explanation of which code it was.
+status=0
+enola check || status=$?
+
+case $status in
+  0) ;;
+  1)
+    echo "" >&2
+    echo "pre-commit: BLOCKED — this change introduces a structural regression (see above)." >&2
+    echo "Fix it, or commit with --no-verify if you are doing it deliberately." >&2
+    exit 1
+    ;;
+  2)
+    # No baseline pinned yet. Deliberately NOT a failure: a developer who has never run
+    # enola should not be blocked from committing by a gate they have not set up. Pin one
+    # with `enola --generate && enola baseline pin`.
+    echo "pre-commit: no baseline pinned — skipping the architecture gate." >&2
+    exit 0
+    ;;
+  3)
+    # The baseline cannot be trusted (different enola version, extractor set, or repo).
+    # Not the developer's fault and not a statement about their change, so it warns
+    # rather than blocks. Re-pin with `enola --generate && enola baseline pin`.
+    echo "pre-commit: baseline not comparable — skipping the gate. Re-pin it." >&2
+    exit 0
+    ;;
+  *)
+    echo "pre-commit: enola check exited $status — skipping the gate." >&2
+    exit 0
+    ;;
+esac

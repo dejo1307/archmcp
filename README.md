@@ -342,6 +342,15 @@ If the diff shows a regression, hand it straight back:
 
 Two prompts, no file re-reading, no review meeting. Repeat until the diff is boring.
 
+**The same loop without an agent.** Everything above is also a shell command, so the check can run in a git hook or CI instead of depending on the agent remembering to ask:
+
+```bash
+enola baseline pin      # before editing
+enola check             # after - exits 1 on a structural regression
+```
+
+See [The gate - `enola check`](#the-gate---enola-check).
+
 #### 5. Go multi-repo
 
 Generate the first repo, then add the rest with append mode - enola links them into one cross-repo graph:
@@ -608,9 +617,17 @@ For interactive per-module blast-radius queries with configurable depth, see the
 
 Run `enola --help` for the full text. With no flags, enola starts the MCP server on stdio.
 
+Every path argument follows the same rule: **a directory is a repository, a file is a config.** Anything that is neither is rejected rather than silently ignored.
+
+| Command | What it does |
+|------|--------------|
+| `baseline pin\|show\|clear [repo\|config]` | Manage the diff baseline - the "before" a change is graded against. `pin` snapshots the repository and freezes it (no separate `--generate` needed); `show` reports what the current baseline describes; `clear` removes it. Stored per repository, in that repo's `.enola/baseline`, so several repos each keep their own. |
+| `check [flags] [repo\|config]` | **Grade what a change did to the architecture**, and exit with a code CI can act on. Read-only: writes nothing and leaves the baseline in place, so it can be run repeatedly. See [The gate](#the-gate---enola-check). |
+| `upgrade` | Download and install the latest release over the running binary. |
+
 | Flag | What it does |
 |------|--------------|
-| `--generate [config_path]` | Generate a snapshot and exit - no MCP server. Artifacts go to `output.dir` (default `.enola/`). With `repos:` in the config, indexes the whole cluster in one run. |
+| `--generate [repo_path\|config_path]` | Generate a snapshot and exit - no MCP server. Artifacts go to `output.dir` (default `.enola/`). With `repos:` in the config, indexes the whole cluster in one run. |
 | `--explain [repo_path\|config_path]` | Print the statistics report above and exit. Read-only: nothing is written to `.enola/`. A directory is a repository; a file is a config, so a `repos:` config reports over the whole cluster. |
 | `--list` | List the MCP tools this build serves, with one-line summaries. |
 | `--status` | List every enola server running right now - PID, repos, uptime, calls, dashboard URL - plus per-tool call counts and an estimate of the reconstruction those calls saved, in time and tokens. |
@@ -618,7 +635,69 @@ Run `enola --help` for the full text. With no flags, enola starts the MCP server
 | `--no-dashboard` | Start the MCP server without the localhost dashboard. |
 | `--version` | Print the build version. |
 | `--help`, `-h` | Show usage. |
-| `upgrade` | Download and install the latest release over the running binary. |
+
+### The gate - `enola check`
+
+`diff_snapshot` answers "what did my change actually do?" for an agent. `enola check` asks the same question from a shell, and turns the answer into an **exit code** - so the same delta can gate a commit or a CI job with no agent in the loop.
+
+```bash
+enola baseline pin /path/to/repo    # 1. freeze how it looks now, BEFORE editing
+#   …make your changes…
+enola check /path/to/repo           # 2. grade what they did
+```
+
+| Exit | Meaning |
+|------|---------|
+| `0` | **clean** - no structural regression |
+| `1` | **regression** - the policy was violated |
+| `2` | **error** - the gate could not run (no baseline pinned, bad argument, inverted snapshot pair) |
+| `3` | **declined** - the baseline is not comparable, so it refused to grade |
+
+`3` is deliberately not `1`. When the two snapshots were built over different inputs - a different enola version, a different extractor set, changed ignore globs - the delta describes *how they were produced*, not what you edited. Reporting that as a failing change would be a lie, so the gate says it declined and why.
+
+**A stale baseline warns; it never blocks.** Past three days it tells you exactly how stale and what that means (the delta now also contains whatever the repo itself changed in between) - then grades anyway, because a long-lived baseline is a legitimate way to measure a multi-day refactor and only you know which you meant.
+
+**What fails by default is narrow: a newly introduced dependency cycle, and nothing else.** Everything below that is reported, not failed - so a red gate is always real. Widen it per repo:
+
+```bash
+enola check --fail-on=cycles,layers --min-confidence=0.8   # also fail on new layer violations
+enola check --warn-only                                    # report everything, never fail
+enola check --json                                         # machine-readable verdict
+enola check --detail                                       # full delta under the verdict
+enola check --baseline=previous                            # compare against the preceding snapshot
+enola check --focus=internal/auth                          # narrow the delta to what you touched
+enola check --write                                        # also persist the snapshot (default: read-only)
+```
+
+The output names what moved rather than counting it - the added symbols with their `file:line`, the new coupling with its relation kinds, and any finding whose content shifted:
+
+```
+FAIL — 1 structural regression introduced.
+
+Regressions (fail):
+  - [cycles] 1.00 — Cyclic dependency detected (2 modules)
+      module "pkga" is part of the cycle
+
+What changed
+  symbols      +2
+  dependencies +1
+  edges        +4  (imports +1, calls +1, declares +2)
+
+Added (3):
+  symbol     pkga.AlphaViaB                    pkga/a.go:7
+  symbol     pkgb.Helper                       pkgb/b.go:7
+  dependency pkga -> example.com/gate/pkgb     pkga/a.go:3
+
+New coupling (4):
+  pkga                --imports--> pkgb
+  pkga.AlphaViaB      --calls--> pkgb.Helper
+  pkga.AlphaViaB      --declares--> pkga
+  pkgb.Helper         --declares--> pkgb
+```
+
+Lists cap at 12 entries with a `--detail` pointer, and `declares` edges - the mechanical one-per-new-symbol link to their module - always sort last, since they say nothing about what got coupled.
+
+Ready-made wiring: [`examples/hooks/pre-commit`](examples/hooks/pre-commit) (blocks only on exit `1`; a missing or incomparable baseline skips the gate rather than blocking someone over setup they haven't done) and [`examples/ci/architecture-gate.yml`](examples/ci/architecture-gate.yml) (a GitHub Action that pins a baseline from the PR's merge base).
 
 ### What it saved you - `--status`
 

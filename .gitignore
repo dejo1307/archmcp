@@ -8,6 +8,11 @@
 *.so
 *.dylib
 
+# The binary produced by `go build -o enola ./cmd/enola` (the command CONTRIBUTING.md
+# gives). Leading slash on purpose: an unanchored `enola` would also match the
+# cmd/enola/ DIRECTORY, silently hiding every new source file added there.
+/enola
+
 # Test binary, built with `go test -c`
 *.test
 

@@ -75,7 +75,13 @@ func DefaultHelp(bin Binary) HelpSpec {
 		Tagline: "MCP server for architectural snapshots",
 		Intro:   "Give your AI agent a map of the codebase before it starts exploring.",
 		Usage: []string{
-			bin.Name + " [flags] [config_path]",
+			bin.Name + " [flags] [repo_path|config_path]",
+			bin.Name + " baseline <pin|show|clear> [repo_path|config_path]",
+			bin.Name + " check [flags] [repo_path|config_path]",
+		},
+		Commands: []FlagDoc{
+			{Flag: "baseline", Desc: "Manage the diff baseline — the \"before\" your changes are graded\nagainst. \"pin\" snapshots the repository and freezes it (no separate\n--generate needed), \"show\" reports what the current baseline\ndescribes, \"clear\" removes it. The baseline is stored per-repository,\nin that repo's output dir, so several repos each keep their own."},
+			{Flag: "check", Desc: "Grade what a change did to the architecture against the pinned\nbaseline, and exit with a code CI can act on:\n  0 clean · 1 regression · 2 error · 3 declined (not comparable)\nRead-only by default — nothing is written, and the baseline stays\nput, so it can be run as often as you like. Run\n\"" + bin.Name + " check --help\" for the flags."},
 		},
 		Flags: []FlagDoc{
 			{Flag: "--generate", Desc: "Generate a snapshot and exit (do not start MCP server)"},
@@ -96,15 +102,55 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Comment: "Print a statistics report for a repository and exit", Command: bin.Name + " --explain /path/to/repo"},
 			{Comment: "Report over a whole cluster", Command: bin.Name + " --explain cluster.yaml"},
 			{Comment: "Generate snapshot with custom config", Command: bin.Name + " --generate my-config.yaml"},
+			{Comment: "Freeze another repo's architecture before editing it (see THE GATE)", Command: bin.Name + " baseline pin /path/to/repo"},
+			{Comment: "Grade your changes to it (exit 1 on a structural regression)", Command: bin.Name + " check /path/to/repo"},
+			{Comment: "Report what the pinned baseline describes", Command: bin.Name + " baseline show /path/to/repo"},
+			{Comment: "Report a regression without failing the build", Command: bin.Name + " check --warn-only"},
+			{Comment: "Compare against the preceding snapshot instead of the pin", Command: bin.Name + " check --baseline=previous"},
+			{Comment: "Also fail on new layer violations", Command: bin.Name + " check --fail-on=cycles,layers --min-confidence=0.8"},
 			{Comment: "Check MCP server status", Command: bin.Name + " --status"},
 			{Comment: "Show usage broken down per repo", Command: bin.Name + " --status --all"},
 			{Comment: "Check version", Command: bin.Name + " --version"},
 		},
 		Sections: []Section{
+			gateSection(bin),
 			dashboardSection(),
 			mcpConfigSection(bin),
 			buildSection(bin),
 		},
+	}
+}
+
+// gateSection documents the before/after loop. It is a section rather than a list of
+// examples because the ORDER is the whole point: the baseline has to be pinned before the
+// edit, and a reader who finds `check` first will otherwise run it against nothing.
+func gateSection(bin Binary) Section {
+	return Section{
+		Title: "THE GATE — grading a change",
+		Body: fmt.Sprintf(`  Tests tell you whether behaviour still works. This tells you whether a change
+  altered the STRUCTURE of the system in a way nobody asked for — a new dependency
+  cycle, coupling between modules that had no business knowing about each other.
+
+  It needs a "before" to compare against, so the order matters:
+
+    1.  %s baseline pin /path/to/repo     # freeze how it looks NOW, before editing
+    2.  …make your changes…
+    3.  %s check /path/to/repo            # grade what they did
+
+  Step 1 snapshots the repository and freezes it — no separate --generate needed.
+  Omit the path to act on the current directory.
+
+  The baseline lives in that repository's own output dir (.enola/baseline), so each
+  repo keeps its own and you can hold baselines for several at once. "baseline show"
+  reports what the current one describes; "baseline clear" removes it.
+
+  Step 3 is read-only: it writes nothing and leaves the baseline in place, so it can
+  be run as often as you like and re-run after a fix. It exits 0 when clean, 1 on a
+  structural regression, 2 when it could not run, and 3 when it declined to grade
+  because the baseline is not comparable — 3 is never a statement about your change.
+
+  A path that names a DIRECTORY is a repository; one that names a FILE is a config.
+`, bin.Name, bin.Name),
 	}
 }
 

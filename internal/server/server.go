@@ -1623,19 +1623,8 @@ func (s *Server) registerTools() {
 		current := &facts.Snapshot{Meta: snap.Meta, Facts: s.eng.Store().All(), Insights: snap.Insights}
 
 		// Resolve the baseline directory from the selector.
-		outDir := s.eng.OutputDir(repoPath)
 		sel := strings.TrimSpace(args.Baseline)
-		var baseDir string
-		switch strings.ToLower(sel) {
-		case "", "pinned":
-			baseDir = filepath.Join(outDir, engine.BaselineSubdir)
-		case "previous":
-			baseDir = filepath.Join(outDir, engine.PreviousSubdir)
-		default:
-			baseDir = sel // explicit path to a dir holding facts.jsonl
-		}
-
-		baseline, err := engine.LoadSnapshotDir(baseDir)
+		baseline, err := engine.LoadSnapshotDir(s.resolveBaselineDir(repoPath, sel))
 		if err != nil {
 			switch strings.ToLower(sel) {
 			case "", "pinned":
@@ -1767,15 +1756,7 @@ func (s *Server) addDriftWarning(d *diff.SnapshotDiff, repoPath string) {
 // path) to the on-disk directory holding that snapshot's artifacts — the same
 // resolution diff_snapshot uses, shared so compare_receipts stays consistent.
 func (s *Server) resolveBaselineDir(repoPath, selector string) string {
-	outDir := s.eng.OutputDir(repoPath)
-	switch strings.ToLower(strings.TrimSpace(selector)) {
-	case "", "pinned":
-		return filepath.Join(outDir, engine.BaselineSubdir)
-	case "previous":
-		return filepath.Join(outDir, engine.PreviousSubdir)
-	default:
-		return selector // explicit path to a dir holding facts.jsonl / receipt.json
-	}
+	return engine.ResolveBaselineDir(s.eng.OutputDir(repoPath), selector)
 }
 
 // renderReceipt produces the compact markdown summary for the snapshot_receipt
