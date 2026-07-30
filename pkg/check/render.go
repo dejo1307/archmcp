@@ -389,6 +389,13 @@ func pluralKind(kind string) string {
 	return kind + "s"
 }
 
+// truncate shortens an identifier from the LEFT, keeping its tail.
+//
+// Fact and edge names here are path-like — "airflow-core/src/airflow/pkg/__init__.helper"
+// — and everything that distinguishes one from another lives at the end: the file, the
+// symbol. Cutting the tail produced output where genuinely different entries rendered
+// identically, so a list of seven distinct new edges read as though it contained
+// duplicates. The shared prefix is the part a reader can afford to lose.
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -396,7 +403,13 @@ func truncate(s string, max int) string {
 	if max <= 1 {
 		return s[:max]
 	}
-	return s[:max-1] + "…"
+	// Byte slicing is safe against a multi-byte boundary here because the cut point is
+	// re-derived from a rune count, not from the byte index.
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return "…" + string(runes[len(runes)-(max-1):])
 }
 
 // writeComparability prints every warning verbatim plus what its category means for

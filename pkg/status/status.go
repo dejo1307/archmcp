@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/enola-labs/enola/internal/filelock"
 )
 
 // StatusFile is the name of the status file written to .enola/.
@@ -530,11 +532,11 @@ func (t *Tracker) flush(rs *repoState) {
 	// Take the cross-process lock first, then the tracker lock — always in that
 	// order, and never the reverse, so two enola goroutines cannot deadlock.
 	// A lock failure is not fatal: we degrade to an unsynchronized merge.
-	lk, err := acquireLock(rs.filePath)
+	lk, err := filelock.Acquire(rs.filePath)
 	if err != nil {
 		log.Printf("[status] warning: could not lock %s: %v (writing unsynchronized)", rs.filePath, err)
 	}
-	defer lk.release()
+	defer lk.Release()
 
 	t.mu.Lock()
 	delta := make(map[string]int, len(rs.session))

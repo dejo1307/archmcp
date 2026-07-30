@@ -236,7 +236,7 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 
 Agent tooling starts one MCP server per session, so several run concurrently — different repos, sometimes the same repo, both binaries — and they all share `~/.enola`. Two mechanisms keep that from turning into cross-talk.
 
-**Shared files are merged, not overwritten.** A repo's usage file has many writers. `Tracker.flush` therefore holds a cross-process lock ([`filelock_unix.go`](pkg/status/filelock_unix.go) / [`filelock_windows.go`](pkg/status/filelock_windows.go)), re-reads the file, and adds only the increments this process has not yet flushed. Writing `baseline + ownSession` instead — as it once did — silently discarded whatever a sibling had recorded in between.
+**Shared files are merged, not overwritten.** A repo's usage file has many writers. `Tracker.flush` therefore holds a cross-process lock ([`internal/filelock`](internal/filelock)), re-reads the file, and adds only the increments this process has not yet flushed. Writing `baseline + ownSession` instead — as it once did — silently discarded whatever a sibling had recorded in between.
 
 **Per-process state lives in files with one writer.** Everything that describes a *process* rather than a repo — PID, uptime, dashboard port, the repos it holds, its own call counts — is published to `~/.enola/instances/<pid>-<startNano>.json` ([`instance.go`](pkg/status/instance.go)), refreshed on every tool call and by a 30s heartbeat, and removed by `Tracker.Close`. `LiveInstances` reads them, and reaps records whose process is gone (or whose PID is live but long unrefreshed — a PID-reuse guard), so a hard-killed server disappears at the next read. The start-time suffix means a recycled PID cannot resurrect a dead record.
 
@@ -561,6 +561,13 @@ Pins the current snapshot as a diff baseline by copying the snapshot artifacts (
 
 > The CLI equivalent, `enola baseline pin [repo|config]`, **snapshots first and then pins** — there is no separate `--generate` step. The MCP tool cannot do that (the agent has just generated, and re-generating inside the tool would be surprising), but from a shell "pin a baseline of this repo" is one intent, and pinning whatever happened to be on disk risks freezing a days-old snapshot as "the state before my change" — precisely the staleness the diff then warns about.
 
+**Publishing a baseline is atomic.** The artifacts are staged in a sibling temp directory and renamed into place, never copied file-by-file into `baseline/`. Two properties follow, and both were bugs before:
+>
+> - **A partially-written baseline is never observable.** `LoadSnapshotDir` accepts any directory containing `facts.jsonl`, so a half-copied baseline reads as a real one and is diffed against — silently producing a wrong delta rather than an error. An *absent* baseline is handled everywhere; a partial one is not.
+> - **A failed pin leaves the previous baseline intact.** Copying in place overwrites the old artifacts before it can discover it will fail, so an interrupted pin used to leave a baseline that was neither the old one nor the new one.
+>
+> Replacing rather than overlaying also means the directory holds exactly the current artifact set, so a file written by an older enola no longer survives indefinitely because nothing overwrites it. The swap is remove-then-rename, leaving a brief window where the directory does not exist — deliberate, since renaming a directory onto a non-empty one is not portable, and absent is the safe state.
+
 ### `diff_snapshot` — "what did my change actually do?"
 
 Computes the architectural **delta** between a baseline snapshot and the current one. This is the verification counterpart to `impact_analysis`: where impact analysis *plans* a change, diff_snapshot *confirms* it, replacing "re-read the files to check what got built" with a deterministic answer.
@@ -636,6 +643,49 @@ So the **explainer is the primary filter** (`DefaultFailExplainers = ["cycles"]`
 > The confidence-invariant violation above is a **real inconsistency between the docs and the explainers**, worked around here rather than fixed. Capping `god-class` below `1.0` and reclassifying the `layers` pattern finding as informational would let the gate key on confidence directly — but it changes insight output, so it needs golden regeneration.
 
 **New coupling is reported, never failed.** `diff.Edge` is name-level, so `EdgesAdded` is populated by virtually any change — adding a function that calls another adds edges. A gate firing on that would be switched off within a day. Only module-level and cross-repo coupling deltas are worth escalating, and that needs an edge filter that does not exist yet.
+
+---
+
+### Getting the loop used (`pkg/install`, `enola hook`)
+
+A gate nobody runs is not a gate. [`pkg/install`](pkg/install/install.go) writes enola's instructions into the files coding agents actually read, and optionally a hook that closes the loop without anyone remembering to.
+
+**Everything here is built on one constraint: these are the user's files.** Two failure modes drove the design, both observed in comparable tools rather than imagined:
+
+- *Destroying hand-written content.* A section updater that anchors on a heading and takes everything to the next one will, sooner or later, anchor on an inline mention and delete what lies between. enola's block is delimited by explicit `<!-- enola:begin -->` / `<!-- enola:end -->` sentinels, the boundary is never inferred from document structure, and **unbalanced markers are refused rather than guessed at** — the correct response to not understanding a user's file is to stop.
+- *Writing where nothing reads.* Config placed at a path the target ignores parses cleanly, looks installed, and silently does nothing. Every target path here was verified against that tool's own documentation before being written to.
+
+That verification changed the design twice.
+
+**Owned files wherever the tool allows one.** Claude Code loads `.claude/rules/*.md` at launch with the same priority as a project `CLAUDE.md`; Cursor has `.cursor/rules/`; Copilot has `.github/instructions/*.instructions.md`. In each case enola writes **a file it owns outright** rather than performing surgery on a document the user hand-maintains — so for three of the six targets the destructive-edit risk cannot arise at all. Only `AGENTS.md` (and the user-level `AGENTS.md` files) are genuinely shared, so only they need the sentinel machinery — and the repo-root one is never *created*, since a tool that drops a new instruction file into a repository uninvited is one that gets removed.
+
+Copilot's frontmatter is load-bearing rather than decorative: `applyTo` is **required** for a file under `.github/instructions/`, and one written without it exists, looks installed, and governs nothing.
+
+**Codex, Copilot and Pi all read the repository's `AGENTS.md`.** So locally they need no file of their own, and enola deliberately writes none — a second repo-local file would put the same instruction into the same context window twice. What they do need is their *user-level* files (`~/.codex/AGENTS.md`, `~/.pi/agent/AGENTS.md`), which reach projects where nobody has run `enola install`. Those are written only when the tool's own config directory already exists: that directory is the evidence the tool is installed, and creating `~/.codex` for someone who does not use Codex would be littering in a home directory to no purpose.
+
+The write primitives are deliberately boring: atomic write via temp-and-rename, deep-equal before writing so a re-run reports `unchanged` rather than churning the file, unparseable JSON backed up and skipped rather than overwritten, and JSON configs mutated in place so every key enola does not know about survives. `install` previews and asks before it writes; `uninstall` restores shared files byte-for-byte and prunes the directories it created.
+
+**`enola hook stop`** ([`cmd/enola/hook.go`](cmd/enola/hook.go)) is what the installed hook invokes. It grades the session's change and emits the verdict as `additionalContext` only when a baseline was pinned *and* the change regressed. Two rules govern it:
+
+1. **It never exits non-zero.** Exit 2 would block the agent, which is not advisory mode's job. Exit 1 is a *non-blocking error* to the harness — so forwarding `enola check`'s regression code would surface as a hook failure rather than as the verdict it actually is.
+2. **Every failure is silent.** No baseline, no snapshot, unreadable payload, missing `cwd`, a directory that is not a repository, an unknown event: all exit 0 with no output. enola is a guest in someone else's session, and a broken guest must never look like a broken session.
+
+**`enola hook session-start`** is the other half: it freezes the architecture as a baseline when a session begins, so the loop needs no participation at all.
+
+**The snapshot never runs in the hook.** It costs 0.2 s on a small repository and over ten seconds on a large one, and a session start that stalls for ten seconds is a broken tool however good the report at the other end is. The hook spawns a detached copy of itself and returns immediately, so session-start latency is the cost of one process spawn — measured at the binary's own floor (~17 ms) on a repository that takes ~10 s to index. That is the only mitigation constant in the size of the repo; a `timeout` still pays the timeout.
+
+Four properties make automatic pinning safe to enable at all:
+
+| Guarantee | Mechanism |
+|---|---|
+| Session start is never delayed | spawn detached, never wait, exit 0 |
+| A timeout kill does not kill the snapshot | new session (`setsid`) / detached process group on Windows, so a group-wide kill of the hook does not reach the child |
+| Several terminals do one snapshot, not N | non-blocking [`internal/filelock`](internal/filelock) `TryAcquire`; a session that finds the lock held does nothing. Blocking would have turned one redundant snapshot into a queue of them |
+| A deliberate baseline is never destroyed | an auto-pinned baseline carries a marker file; one without it was pinned by a person or an agent and is left alone |
+
+That last rule matters more than it looks. A baseline pinned at the start of a multi-day refactor is the "before" of that whole effort — replacing it at the next session start would destroy exactly what it was recording, and the diff would silently start reporting nothing. An auto-pinned baseline is refreshed only when the tree has actually moved, and a **dirty tree is never treated as current**: "dirty" says the content is not identified by the commit, so two dirty trees at one commit may differ arbitrarily.
+
+Every failure path — no git, not a repository, the lock held, a snapshot error, a platform that cannot detach — does nothing and says nothing.
 
 ---
 
@@ -895,6 +945,18 @@ The receipt is a **functional superset** of the manifest proposed in [issue #60]
 `llm_context.md` is the human- and agent-readable digest. It's prioritized and truncated to the configured token budget, and includes (as space allows): a repository map of modules, the detected architecture pattern, cross-repo dependencies, entry points, routes, storage, dependency rules, the most critical modules (by fan-in/fan-out), risk zones (cycles and layer violations), and an architecture-aware "how to add a feature" guide.
 
 ---
+
+## Cache identity — why a snapshot cannot depend on which binary wrote the cache
+
+The extractor cache is keyed by `cacheVersion` plus, per extractor, a content hash of the files it owns. `cacheVersion` is a constant a human bumps when an extractor's output changes — and that is exactly the problem: a missed bump means every entry the old binary wrote keeps being served by the new one, for files whose contents never changed, silently.
+
+It is not theoretical. A snapshot taken with a stale cache came out **568 facts larger** than a cold run of the same binary on the same tree; the next run, reading the cache the first had pruned, produced the corrected set. A `baseline pin` and an `enola check` landed on opposite sides of that transition, and the diff reported hundreds of facts as **removed** that nobody had touched. For a gate whose entire value is "a clean diff means something", facts that depend on which binary happened to write the cache are the most damaging possible failure.
+
+So the cache also records a **build identity** — the release version plus the executable's size and modification time — and a cache written by any other binary is discarded wholesale rather than partially reused. Entries carry no record of which extractor logic produced them, so there is no sound way to keep part of one.
+
+- **Size and mtime, not a content hash of the binary.** This runs on every snapshot and the binary is tens of megabytes; a stat is free. The failure mode of the cheap check is a needless re-parse (a rebuilt-but-identical binary), never a stale reuse — the right direction to be wrong in.
+- **It complements `cacheVersion` rather than replacing it.** `cacheVersion` still expresses *semantic* invalidation and is still enforced by [`internal/cachecov`](internal/cachecov); the build stamp is the automatic backstop for when a bump is forgotten, and it is what makes iterating on an extractor locally safe without remembering to delete `.enola/extractor_cache.json` between builds.
+- **A cache predating the stamp has an empty build field**, which fails the comparison and is discarded — the correct outcome, since it cannot say what produced it.
 
 ## Determinism & incremental updates
 

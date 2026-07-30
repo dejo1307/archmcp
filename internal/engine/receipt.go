@@ -73,6 +73,14 @@ func computeConfigHash(cfg *config.Config) string {
 	return sha256Prefixed([]byte(sb.String()))
 }
 
+// GitState reports the repository's current VCS state, or nil when it cannot be
+// determined. Exported so a caller can ask "has the tree moved since this snapshot?"
+// without taking a snapshot to find out — the session-start hook uses it to skip a pin
+// that would reproduce the baseline it already has.
+func GitState(repoPath, outputDir string) *facts.GitInfo {
+	return gitInfo(repoPath, outputDir)
+}
+
 // gitInfo captures the repository's VCS state. It returns nil when repoPath is
 // not a git working tree or git is unavailable, so a non-git or sandboxed run
 // degrades to no git section rather than erroring.

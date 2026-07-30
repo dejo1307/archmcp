@@ -621,6 +621,8 @@ Every path argument follows the same rule: **a directory is a repository, a file
 
 | Command | What it does |
 |------|--------------|
+| `install [--hooks] [--global]` | **Tell your coding agents enola is here.** Writes its instructions into the files they actually read - `.claude/rules/enola.md`, `.cursor/rules/enola.mdc`, and a marked block in `AGENTS.md` if you have one. Previews every change and asks before writing. See [Wiring it into your agents](#wiring-it-into-your-agents). |
+| `uninstall [--global]` | Remove everything `install` wrote, leaving the rest of each file byte-for-byte as it was. |
 | `baseline pin\|show\|clear [repo\|config]` | Manage the diff baseline - the "before" a change is graded against. `pin` snapshots the repository and freezes it (no separate `--generate` needed); `show` reports what the current baseline describes; `clear` removes it. Stored per repository, in that repo's `.enola/baseline`, so several repos each keep their own. |
 | `check [flags] [repo\|config]` | **Grade what a change did to the architecture**, and exit with a code CI can act on. Read-only: writes nothing and leaves the baseline in place, so it can be run repeatedly. See [The gate](#the-gate---enola-check). |
 | `upgrade` | Download and install the latest release over the running binary. |
@@ -635,6 +637,59 @@ Every path argument follows the same rule: **a directory is a repository, a file
 | `--no-dashboard` | Start the MCP server without the localhost dashboard. |
 | `--version` | Print the build version. |
 | `--help`, `-h` | Show usage. |
+
+### Wiring it into your agents - `enola install`
+
+An MCP server your agent forgets to use is a tool you don't have. `enola install` writes a short instruction into the files your agents already read, so they know the graph is there and what it's for:
+
+```bash
+enola install                 # this repository (shared with the team via source control)
+enola install --global        # this user, every project
+enola install --dry-run       # show what would change, write nothing
+enola install --yes           # skip the confirmation prompt (for scripts)
+enola install --targets=claude,cursor   # a subset instead of every detected agent
+enola uninstall               # remove it all again
+```
+
+| Target | Local (this repo) | Global (`--global`) |
+|---|---|---|
+| Claude Code | `.claude/rules/enola.md` *(owned)* | `~/.claude/rules/enola.md` *(owned)* |
+| Cursor | `.cursor/rules/enola.mdc` *(owned)* | — no user-level rules directory |
+| GitHub Copilot | `.github/instructions/enola.instructions.md` *(owned)* | — lives in IDE/account settings |
+| Codex · Copilot · Pi | `AGENTS.md` *(marked block, only if it already exists)* | — |
+| Codex | *covered by `AGENTS.md`* | `~/.codex/AGENTS.md` *(marked block)* |
+| Pi | *covered by `AGENTS.md`* | `~/.pi/agent/AGENTS.md` *(marked block)* |
+
+**Codex, Copilot and Pi all read the repository's `AGENTS.md`**, so locally one block serves all three - enola won't write a second repo-local file for them, which would only put the same instruction into the same context window twice. Their `--global` entries add what `AGENTS.md` can't: guidance in projects where nobody has run `enola install`. Those are written only when the tool's config directory already exists, so enola never creates `~/.codex` for someone who doesn't use Codex.
+
+Restrict the run with `--targets=claude,copilot` if you only want some.
+
+**It never surprises you.** Every run previews what it will touch and asks before writing. It never creates an `AGENTS.md` that wasn't already there. Re-running reports `unchanged` rather than churning files. And `uninstall` restores shared files byte-for-byte - the block is delimited by explicit `<!-- enola:begin -->` / `<!-- enola:end -->` markers, and if those markers have been hand-edited into an unbalanced state, enola refuses to write rather than guess where its section ends.
+
+#### Closing the loop automatically - `--hooks`
+
+```bash
+enola install --hooks
+```
+
+This installs both halves of the loop, so it runs without anyone remembering to:
+
+- **`SessionStart`** freezes the architecture as a baseline when a session begins - the "before".
+- **`Stop`** grades what the session changed when your agent finishes a turn, and hands the verdict back **only if** the change introduced a structural regression.
+
+The agent gets a chance to fix a dependency cycle before telling you it's done, rather than you finding it in review.
+
+It is deliberately opt-in and deliberately quiet:
+
+- **Session start is never delayed.** The baseline snapshot runs detached, so the hook returns in milliseconds whether your repo takes 0.2 seconds or two minutes to index. A timeout would only *cap* that cost; detaching removes it.
+- **Your own baseline is never replaced.** A baseline you pinned yourself - or that your agent pinned with `set_baseline` - is left alone. Only one enola pinned automatically is refreshed, and only when the tree has actually moved.
+- **Several open terminals do one snapshot, not six.** The pin is single-flight across processes; sessions that arrive while one is running do nothing.
+- **Silent unless it matters.** No baseline, nothing changed, a clean result, an incomparable baseline - all produce no output at all. The gate speaks only when the change actually regressed the architecture.
+- **It never blocks.** The verdict is context the agent can act on, not a wall it has to get past.
+- **It never breaks your session.** Every failure path - no snapshot, unreadable input, a directory that isn't a repository - exits cleanly and says nothing. A broken enola must never look like a broken session.
+- **It merges into your config.** Your existing hooks, permissions and settings are preserved; `uninstall` removes exactly enola's entries and nothing else.
+
+The hooks shell out to `enola hook session-start` and `enola hook stop`, which is what you'll see in `.claude/settings.json`, pinned to the absolute path of the binary you installed with. You never run them yourself.
 
 ### The gate - `enola check`
 

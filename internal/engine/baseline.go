@@ -72,19 +72,59 @@ func rotatePrevious(outDir string) error {
 	return copyArtifacts(outDir, filepath.Join(outDir, PreviousSubdir))
 }
 
-// copyArtifacts copies the snapshot artifact files from srcDir to dstDir,
-// tolerating individually-missing sources (older snapshots may lack insights/meta).
+// copyArtifacts publishes the snapshot artifact files from srcDir to dstDir as a
+// single atomic step: everything is copied into a sibling temp directory first, and
+// only a complete set is renamed into place. Individually-missing sources are
+// tolerated (older snapshots may lack insights/meta).
+//
+// It copied file-by-file directly into dstDir until a reader could observe the
+// halfway state. Two things made that matter:
+//
+//   - A partially-copied baseline reads as a real one. LoadSnapshotDir only requires
+//     facts.jsonl to exist, so a truncated copy is diffed against rather than
+//     rejected, and the delta is silently wrong. Once the baseline is pinned in the
+//     background at session start, a short session can reach exactly that window.
+//   - A failed copy destroyed the previous baseline. Writing in place means the old
+//     artifacts are already overwritten when the error happens; staging means a
+//     failure leaves the existing baseline untouched.
+//
+// The swap is remove-then-rename, so there is a brief moment where dstDir does not
+// exist. That is deliberate and safe: an ABSENT baseline is handled everywhere (it
+// reads as "no baseline pinned"), whereas a PARTIAL one is the failure this exists to
+// prevent. Renaming a directory onto a non-empty one is not portable, so a swap
+// without any window is not available here.
+//
+// Replacing rather than overlaying also means dstDir ends up holding exactly the
+// current artifact set: a stray file written by an older enola no longer survives
+// indefinitely because nothing overwrites it.
 func copyArtifacts(srcDir, dstDir string) error {
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
-		return fmt.Errorf("creating %s: %w", dstDir, err)
+	parent := filepath.Dir(dstDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", parent, err)
 	}
+	// Staged inside the output dir so the rename stays on one filesystem — across a
+	// mount boundary os.Rename fails with EXDEV and the atomicity is lost.
+	tmpDir, err := os.MkdirTemp(parent, ".tmp-"+filepath.Base(dstDir)+"-")
+	if err != nil {
+		return fmt.Errorf("creating staging dir in %s: %w", parent, err)
+	}
+	// Cleans up every failure path, and is a no-op once the rename has moved it.
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
 	for _, name := range snapshotArtifactFiles {
-		if err := copyFile(filepath.Join(srcDir, name), filepath.Join(dstDir, name)); err != nil {
+		if err := copyFile(filepath.Join(srcDir, name), filepath.Join(tmpDir, name)); err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
 			return err
 		}
+	}
+
+	if err := os.RemoveAll(dstDir); err != nil {
+		return fmt.Errorf("clearing %s: %w", dstDir, err)
+	}
+	if err := os.Rename(tmpDir, dstDir); err != nil {
+		return fmt.Errorf("publishing %s: %w", dstDir, err)
 	}
 	return nil
 }

@@ -4,12 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/extractors"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -858,8 +860,42 @@ type extractorCache struct {
 	hits int
 }
 
-// loadExtractorCache reads the cache file at path. A missing or unreadable file
-// yields an empty (but usable) cache, so caching degrades to a full run.
+// buildIdentity identifies the binary that produced a cache entry: the release
+// version, plus the executable's size and modification time.
+//
+// cacheVersion alone is not enough, because it is a constant a human has to remember
+// to bump. When an extractor's behaviour changes and the bump is missed — routine
+// while developing, and possible in a release — every cache written by the old binary
+// keeps being served by the new one, silently, for files whose contents never changed.
+// That is not a theoretical risk: it produced a snapshot 568 facts larger than a
+// cold run of the same binary on the same tree, which then surfaced as hundreds of
+// phantom "removed" facts in a diff against a snapshot taken after the cache caught up.
+// For a tool whose value rests on "a clean diff means something", facts that depend on
+// which binary happened to write the cache are the most damaging kind of wrong.
+//
+// Size and mtime rather than a content hash: the binary is tens of megabytes and this
+// runs on every snapshot, whereas a stat is free. The failure mode of the cheap check
+// is a needless re-parse (a rebuilt-but-identical binary), never a stale reuse.
+func buildIdentity() string {
+	id := version.Version
+	if exe, err := os.Executable(); err == nil {
+		if fi, err := os.Stat(exe); err == nil {
+			id = fmt.Sprintf("%s|%d|%d", id, fi.Size(), fi.ModTime().UnixNano())
+		}
+	}
+	return id
+}
+
+// cacheFile is the on-disk shape of the extractor cache.
+type cacheFile struct {
+	Version string                     `json:"version"`
+	Build   string                     `json:"build,omitempty"`
+	Entries map[string]json.RawMessage `json:"entries"`
+}
+
+// loadExtractorCache reads the cache file at path. A missing, unreadable, or
+// foreign-build file yields an empty (but usable) cache, so caching degrades to a
+// full run rather than to wrong facts.
 func loadExtractorCache(path string) *extractorCache {
 	c := &extractorCache{
 		prev: map[string]json.RawMessage{},
@@ -869,12 +905,16 @@ func loadExtractorCache(path string) *extractorCache {
 	if err != nil {
 		return c
 	}
-	var on struct {
-		Version string                     `json:"version"`
-		Entries map[string]json.RawMessage `json:"entries"`
-	}
+	var on cacheFile
 	if err := json.Unmarshal(data, &on); err != nil || on.Version != cacheVersion {
 		return c // treat schema mismatch as a cold cache
+	}
+	// A cache written by a different binary is discarded wholesale. Entries carry no
+	// record of which extractor logic produced them, so there is no safe way to reuse
+	// part of it — and a cache written before this field existed has an empty Build,
+	// which correctly fails the comparison.
+	if on.Build != buildIdentity() {
+		return c
 	}
 	if on.Entries != nil {
 		c.prev = on.Entries
@@ -908,12 +948,10 @@ func (c *extractorCache) put(key string, ff []facts.Fact) {
 	c.next[key] = raw
 }
 
-// save writes the keys used this run to path.
+// save writes the keys used this run to path, stamped with the binary that produced
+// them so a later run by a different build discards rather than reuses them.
 func (c *extractorCache) save(path string) error {
-	on := struct {
-		Version string                     `json:"version"`
-		Entries map[string]json.RawMessage `json:"entries"`
-	}{Version: cacheVersion, Entries: c.next}
+	on := cacheFile{Version: cacheVersion, Build: buildIdentity(), Entries: c.next}
 	data, err := json.Marshal(on)
 	if err != nil {
 		return err

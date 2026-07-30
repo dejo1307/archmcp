@@ -47,6 +47,14 @@ func main() {
 		case "baseline":
 			runBaseline(os.Args[2:])
 			os.Exit(0)
+		case "hook":
+			runHook(ctx, os.Args[2:]) // always exits 0; never disturbs a session
+		case "install":
+			runInstall(os.Args[2:], false)
+			os.Exit(0)
+		case "uninstall":
+			runInstall(os.Args[2:], true)
+			os.Exit(0)
 		}
 	}
 
@@ -303,7 +311,7 @@ func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, 
 
 // knownSubcommands are dispatched before the flag loop. Listed here so an argument that
 // was MEANT to be one gets a targeted message instead of a generic path error.
-var knownSubcommands = []string{"check", "baseline", "upgrade"}
+var knownSubcommands = []string{"check", "baseline", "install", "uninstall", "upgrade"}
 
 // unknownArgHelp explains a rejected argument in terms of what the caller probably meant.
 //
