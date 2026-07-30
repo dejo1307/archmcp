@@ -1,0 +1,5 @@
+# Both services in one graph. Paths resolve relative to THIS file, so the config
+# means the same thing wherever it is run from.
+repos:
+  - api
+  - web

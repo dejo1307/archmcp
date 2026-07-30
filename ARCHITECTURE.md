@@ -734,6 +734,17 @@ These become real, queryable facts:
 
 Because they're ordinary graph nodes and edges, the traversal tools become cross-repo aware with no extra steps — `traverse`, `find_path`, and `impact_analysis` all reach across repo boundaries. The cross-repo dependencies also appear as a **Cross-Repo Dependencies** section in `llm_context.md`, so an agent reading the snapshot sees them without running a tool.
 
+### What is deliberately not linked
+
+Cross-repo linking is the part of enola hardest to verify from the outside, so its limits belong beside the claim rather than being discovered later. In each case the choice is the same: **report the gap instead of inventing an edge.** A missing edge is visible — it appears in `enola coverage`'s unresolved count, and a reader can go look. A *wrong* edge is invisible and gets acted on: an `impact_analysis` that silently includes a dependency that does not exist is worse than one that admits it does not know.
+
+- **Dynamic or interpolated paths.** A URL assembled at runtime (`base + "/" + tenant + "/orders"`) has no path to match, so the call site is detected, counted as unresolved, and never guessed at.
+- **Cross-file mount resolution.** Prefix composition follows a subrouter across function and package boundaries within a module-wide fixpoint. A mount whose prefix cannot be traced back to a literal is left at its bare path rather than composed to a plausible one.
+- **Bare catch-alls.** `app.get('*')` and equivalents are skipped: an SPA fallback is not an endpoint, and treating it as one would match any client path in any repository.
+- **Absolute URLs to unloaded hosts.** Reported as *external* rather than unresolved — a third-party API is a known boundary, not a blind spot.
+
+[`examples/cross-repo/`](examples/cross-repo/) is a runnable demonstration of both halves: two services whose link depends on a prefix composed across a function boundary, plus one deliberately dynamic call that stays unresolved. A test asserts it keeps demonstrating both, so the example cannot rot into describing an outcome that no longer happens.
+
 ### Finding unused endpoints
 
 The same client/server route matching that draws cross-repo edges also answers its inverse: **which server routes does no loaded client call?** After linking, every server `route` a client matched is left untouched; every one that *no* client resolved to — by the identical normalized path + method join — is tagged `unmatched_by_clients: true` on the route fact.

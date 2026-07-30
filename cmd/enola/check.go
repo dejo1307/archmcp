@@ -225,8 +225,13 @@ func baselineHelp(selector, dir, repoHint string, err error) string {
 
 // checkFatal reports an operational failure and exits 2 — distinct from a regression,
 // because the gate did not run at all.
-func checkFatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "enola check: "+format+"\n", args...)
+func checkFatal(format string, args ...any) { cmdFatal("check", format, args...) }
+
+// cmdFatal reports an operational failure and exits 2 — distinct from a regression,
+// because the command did not run at all. The command name is a parameter so a shared
+// helper cannot misattribute an error to the wrong subcommand.
+func cmdFatal(cmd, format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "enola "+cmd+": "+format+"\n", args...)
 	os.Exit(check.StatusUsageError.ExitCode())
 }
 

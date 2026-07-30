@@ -78,6 +78,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			bin.Name + " [flags] [repo_path|config_path]",
 			bin.Name + " baseline <pin|show|clear> [repo_path|config_path]",
 			bin.Name + " check [flags] [repo_path|config_path]",
+			bin.Name + " coverage [flags] [repo_path|config_path]",
 			bin.Name + " install [--hooks] [--global] [repo_path]",
 		},
 		Commands: []FlagDoc{
@@ -85,6 +86,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Flag: "uninstall", Desc: "Remove everything \"install\" wrote, leaving the rest of each\nfile byte-for-byte as it was."},
 			{Flag: "baseline", Desc: "Manage the diff baseline — the \"before\" your changes are graded\nagainst. \"pin\" snapshots the repository and freezes it (no separate\n--generate needed), \"show\" reports what the current baseline\ndescribes, \"clear\" removes it. The baseline is stored per-repository,\nin that repo's output dir, so several repos each keep their own."},
 			{Flag: "check", Desc: "Grade what a change did to the architecture against the pinned\nbaseline, and exit with a code CI can act on:\n  0 clean · 1 regression · 2 error · 3 declined (not comparable)\nRead-only by default — nothing is written, and the baseline stays\nput, so it can be run as often as you like. Run\n\"" + bin.Name + " check --help\" for the flags."},
+			{Flag: "coverage", Desc: "Report which cross-repo edges were resolved and which were not,\nper service — telling a genuinely isolated service apart from one\nwhose outbound edges could not be followed. Needs two or more\nrepositories in one graph. A report, not a gate: always exits 0."},
 		},
 		Flags: []FlagDoc{
 			{Flag: "--generate", Desc: "Generate a snapshot and exit (do not start MCP server)"},
@@ -113,6 +115,8 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Comment: "Preview what install would change, writing nothing", Command: bin.Name + " install --hooks --dry-run"},
 			{Comment: "Remove it all again", Command: bin.Name + " uninstall"},
 			{Comment: "Report a regression without failing the build", Command: bin.Name + " check --warn-only"},
+			{Comment: "See which cross-repo edges resolved, and which did not", Command: bin.Name + " coverage cluster.yaml"},
+			{Comment: "Just the blind spots", Command: bin.Name + " coverage --unresolved cluster.yaml"},
 			{Comment: "Compare against the preceding snapshot instead of the pin", Command: bin.Name + " check --baseline=previous"},
 			{Comment: "Also fail on new layer violations", Command: bin.Name + " check --fail-on=cycles,layers --min-confidence=0.8"},
 			{Comment: "Check MCP server status", Command: bin.Name + " --status"},

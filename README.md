@@ -133,6 +133,16 @@ The hard part isn't finding the call, it's making both sides match. A route regi
 
 So an agent can answer *if I change this endpoint, which mobile screens break?* by traversal instead of inference — and `enola check` grades a change that spans repos the same way it grades one that doesn't.
 
+Whether that actually worked on *your* code is not something you should have to take on trust:
+
+```bash
+enola coverage cluster.yaml
+```
+
+reports, per service, how many outbound call sites enola detected, how many it resolved to a loaded repository, and **how many it couldn't** — so a genuinely isolated service is distinguishable from one whose edges enola simply failed to follow. The misses are always shown, because a number you can't check is worth less than one you can.
+
+[`examples/cross-repo/`](examples/cross-repo/) is a two-service demo you can run in one command: a prefix composed across a function boundary so the client's call resolves, and one deliberately dynamic call that stays unresolved — because reporting a gap beats inventing an edge.
+
 ---
 
 ## Supported languages
