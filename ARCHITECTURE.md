@@ -188,7 +188,7 @@ The shared module-graph construction and statistical-outlier helpers used by sev
 
 ## The explain package (`pkg/explain`)
 
-`pkg/explain` ([`pkg/explain/explain.go`](pkg/explain/explain.go)) is a **public** package rather than `internal/` for one reason: `enola-enterprise` imports it to append its own license-gated sections (dead code, package metrics) to the base `Report` before rendering. It is one of several `pkg/` packages that exist for that cross-module consumer — see [The CLI surface](#the-cli-surface-pkgcli-and-pkgstatus) for the two that back `--help`, `--list` and `--status`.
+`pkg/explain` ([`pkg/explain/explain.go`](pkg/explain/explain.go)) is a **public** package rather than `internal/` for one reason: `enola-enterprise` imports it to append its own license-gated sections (dead code, package metrics) to the base `Report` before rendering. It is one of several `pkg/` packages that exist for that cross-module consumer — see [The CLI surface](#the-cli-surface-pkgcli-pkgstatus-and-pkgdashboard) for the two that back `--help`, `--list` and `--status`.
 
 ### `Report` and `Compute()`
 
