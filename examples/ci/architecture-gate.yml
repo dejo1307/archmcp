@@ -6,68 +6,98 @@
 #
 # HOW THE BASELINE GETS HERE
 # --------------------------
-# The gate needs something to compare against. This workflow pins a baseline from the PR's
-# own merge-base checkout, which requires no artifact plumbing and works on a fresh clone.
+# The gate needs a "before" to compare against. The default branch publishes its snapshot
+# once; every PR restores that artifact and diffs against it. The PR job therefore indexes
+# the tree ONCE — it never re-indexes the base — and needs no merge-base checkout and no
+# full-history clone.
 #
-# `fetch-depth: 0` is required. actions/checkout defaults to a depth-1 clone, which has no
-# merge-base to check out, and the gate would silently have nothing to compare against.
+# This works because a baseline is portable: `enola check` identifies a repository by its
+# normalized git remote (falling back to the checkout directory name), not by the absolute
+# path it was snapshotted at, so a baseline pinned on one runner grades against a checkout
+# anywhere else.
 #
-# A faster arrangement — publish the snapshot from the default branch once and restore it
-# here instead of re-indexing the base — needs baselines to survive moving between
-# machines, which they do not yet: comparability compares the absolute repo path, so a
-# baseline pinned under one checkout path declines to grade under another.
+# Sizing: roughly 550 KB of gzipped artifact per ~17k facts. For a very large monorepo,
+# prefer actions/cache over a per-run artifact.
 name: architecture
 
 on:
+  push:
+    branches: [main]
   pull_request:
 
 jobs:
-  gate:
+  # Publishes the baseline every time the default branch moves. PRs consume the most
+  # recent successful run of this job.
+  publish-baseline:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install enola
         run: |
           curl -fsSL https://raw.githubusercontent.com/enola-labs/enola/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Pin a baseline from the merge base
+      - name: Pin the baseline
+        run: enola baseline pin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: enola-baseline
+          path: .enola/baseline/
+          retention-days: 30
+
+  gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install enola
         run: |
-          # Record the PR head as an explicit SHA before moving: `git checkout -` is
-          # unreliable after a --detach, and returning to the wrong commit would make the
-          # gate grade the base branch against itself and always report clean.
-          head=$(git rev-parse HEAD)
-          base=$(git merge-base "$head" "origin/${{ github.base_ref }}")
-          echo "Baseline commit: $base"
-          echo "PR head:         $head"
+          curl -fsSL https://raw.githubusercontent.com/enola-labs/enola/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-          git checkout --quiet --detach "$base"
-          enola --generate
-          enola baseline pin
-
-          # .enola/ is untracked, so the pinned baseline survives the checkout back.
-          git checkout --quiet --detach "$head"
+      # The baseline comes from the newest successful publish-baseline run on the default
+      # branch. `continue-on-error` covers the first-ever run, before any baseline has been
+      # published — see the next step.
+      - name: Fetch the published baseline
+        id: baseline
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: architecture.yml
+          branch: main
+          name: enola-baseline
+          path: baseline
+          if_no_artifact_found: fail
 
       - name: Grade the change
-        run: enola check
+        run: |
+          if [ "${{ steps.baseline.outcome }}" != "success" ]; then
+            echo "No published baseline yet — skipping the gate."
+            echo "It will start enforcing once publish-baseline has run on the default branch."
+            exit 0
+          fi
+          enola check --baseline baseline
 
       # `enola check` exit codes:
       #   0 clean · 1 regression (job fails) · 2 error · 3 declined (not comparable)
       #
-      # Codes 2 and 3 fail the job here by design: in CI they mean the gate did not
-      # actually run, and a gate that silently passes when it could not run is worse than
-      # no gate. Add `|| [ $? -eq 3 ]` if you would rather treat "declined" as a pass
-      # while rolling this out.
+      # Codes 2 and 3 fail the job by design: in CI they mean the gate did not actually
+      # run, and a gate that silently passes when it could not run is worse than no gate.
+      # Add `|| [ $? -eq 3 ]` if you would rather treat "declined" as a pass while rolling
+      # this out — a stale baseline does NOT produce 3, it warns and still grades, so 3
+      # really does mean the comparison was unsound.
 
       - name: Publish the verdict as JSON
-        if: always()
-        run: enola check --json > architecture-verdict.json || true
+        if: always() && steps.baseline.outcome == 'success'
+        run: enola check --baseline baseline --json > architecture-verdict.json || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: architecture-verdict
           path: architecture-verdict.json
+          if-no-files-found: ignore

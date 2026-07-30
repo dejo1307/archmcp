@@ -296,6 +296,31 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 	return d
 }
 
+// repoMismatchDetail says which signal decided that two snapshots are of different
+// repositories, and always carries both absolute paths.
+//
+// Naming the signal matters because the remedy differs: differing remotes mean the wrong
+// baseline was fetched, while differing directory names on the same repository mean a
+// checkout was renamed — recoverable by giving the checkout the expected name, or by
+// pushing a remote so the stronger signal applies. A bare "different repositories" left
+// the reader to guess which.
+func repoMismatchDetail(base, cur facts.SnapshotMeta) string {
+	baseRemote, curRemote := remoteOf(base), remoteOf(cur)
+	if baseRemote != "" && curRemote != "" {
+		return fmt.Sprintf("remote %s vs %s; paths %s vs %s",
+			baseRemote, curRemote, orDash(base.RepoPath), orDash(cur.RepoPath))
+	}
+	return fmt.Sprintf("%s vs %s — no git remote recorded on both sides, so the checkout "+
+		"directory name was compared", orDash(base.RepoPath), orDash(cur.RepoPath))
+}
+
+func remoteOf(m facts.SnapshotMeta) string {
+	if m.Git == nil {
+		return ""
+	}
+	return facts.NormalizeRemote(m.Git.Remote)
+}
+
 // compareMeta checks that two snapshots were generated over equivalent inputs and
 // returns comparability warnings for each mismatch that would distort the delta.
 // An auto-loaded baseline carries an empty Meta (only RepoPath) — its unknown
@@ -304,10 +329,14 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 func compareMeta(base, cur facts.SnapshotMeta) Comparability {
 	var c Comparability
 
-	if base.RepoPath != "" && cur.RepoPath != "" && base.RepoPath != cur.RepoPath {
+	// Identity, not location. Comparing absolute paths made a baseline taken on a CI
+	// runner incomparable with the same repository on a workstation, which blocked the
+	// whole point of a portable baseline artifact. facts.SameRepo prefers the normalized
+	// git remote and falls back to the checkout directory name.
+	if !facts.SameRepo(base, cur) {
 		c.add(WarnDifferentRepo,
-			"baseline and current are different repositories (%s vs %s) — the delta is unlikely to be meaningful",
-			base.RepoPath, cur.RepoPath)
+			"baseline and current are different repositories (%s) — the delta is unlikely to be meaningful",
+			repoMismatchDetail(base, cur))
 	}
 
 	if base.EnolaVersion == "" || cur.EnolaVersion == "" {

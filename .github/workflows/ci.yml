@@ -53,6 +53,93 @@ jobs:
       - name: Golden + determinism
         run: go test -count=1 -run 'TestGolden|TestDeterminism' ./internal/engine/...
 
+  # Enola grading Enola: the gate this repo ships, run on this repo's own changes.
+  #
+  # ADVISORY — this job reports the verdict and always succeeds. It is here to prove the
+  # gate works on a real PR stream and to surface structural regressions for a human to
+  # judge, not to block merges yet. To make it enforcing, delete the `exit 0` at the end
+  # of "Grade the change" (see the comment there).
+  #
+  # The baseline comes from the PR's own merge base rather than a published artifact.
+  # That costs one extra index — which for this repo is ~200ms — and in exchange needs no
+  # cross-workflow artifact plumbing, no third-party action, and no push trigger. A repo
+  # large enough for that trade to hurt should use the publish/restore shape in
+  # examples/ci/architecture-gate.yml instead.
+  architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # merge-base needs history; the default depth-1 clone has none
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Built ONCE, from the PR head, and kept outside the tree so it survives the
+      # checkouts below. Using one binary for both snapshots keeps the enola version and
+      # config hash identical on the two sides — rebuilding at the merge base would make
+      # them differ and the gate would (correctly) decline to grade.
+      - name: Build enola from this PR
+        run: go build -o /tmp/enola ./cmd/enola
+
+      - name: Pin a baseline from the merge base
+        run: |
+          # Be explicit about fetching the base branch: actions/checkout leaves a PR on a
+          # merge ref, and origin/<base> is not guaranteed to be present.
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+          # Record the head as an explicit SHA: `git checkout -` is unreliable after a
+          # --detach, and returning to the wrong commit would grade the base against
+          # itself and always report clean.
+          head=$(git rev-parse HEAD)
+          base=$(git merge-base "$head" "origin/${{ github.base_ref }}")
+          echo "Baseline: $base"
+          echo "PR head:  $head"
+
+          git checkout --quiet --detach "$base"
+          /tmp/enola baseline pin
+          # .enola/ is gitignored, so the pinned baseline survives the checkout back.
+          git checkout --quiet --detach "$head"
+
+      - name: Grade the change
+        run: |
+          # Run without --warn-only so the verdict text stays honest about what the
+          # policy WOULD do; the job's advisory status comes from the exit 0 below.
+          set +e
+          /tmp/enola check 2>/dev/null | tee verdict.txt
+          code=${PIPESTATUS[0]}
+          set -e
+
+          {
+            echo '### Architecture'
+            case "$code" in
+              0) echo 'No structural regression.' ;;
+              1) echo '**Structural regression introduced** — advisory for now, see the verdict below.' ;;
+              2) echo 'The gate could not run (exit 2).' ;;
+              3) echo 'Declined to grade: the baseline was not comparable (exit 3). Not a statement about this change.' ;;
+              *) echo "Unexpected exit $code." ;;
+            esac
+            echo '```'
+            cat verdict.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Advisory: report, never block. Delete this line to make the gate enforcing —
+          # the exit code above is already the verdict.
+          exit 0
+
+      - name: Upload the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-verdict
+          path: verdict.txt
+          if-no-files-found: ignore
+
   # golangci-lint v2 (action @v8). The repo baseline is clean, so this gates the
   # whole tree — any new finding fails the build. Linter set in .golangci.yml.
   lint:

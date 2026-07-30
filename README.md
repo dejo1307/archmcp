@@ -697,7 +697,9 @@ New coupling (4):
 
 Lists cap at 12 entries with a `--detail` pointer, and `declares` edges - the mechanical one-per-new-symbol link to their module - always sort last, since they say nothing about what got coupled.
 
-Ready-made wiring: [`examples/hooks/pre-commit`](examples/hooks/pre-commit) (blocks only on exit `1`; a missing or incomparable baseline skips the gate rather than blocking someone over setup they haven't done) and [`examples/ci/architecture-gate.yml`](examples/ci/architecture-gate.yml) (a GitHub Action that pins a baseline from the PR's merge base).
+**Baselines are portable.** A baseline is identified by the repository's normalized git remote (falling back to the checkout directory name), not by the absolute path it was pinned at - so one pinned on a CI runner grades against a checkout anywhere else. That's what makes the CI shape cheap: the default branch publishes `.enola/baseline/` once, every PR restores it and diffs against it, and no job ever indexes the base a second time.
+
+Ready-made wiring: [`examples/hooks/pre-commit`](examples/hooks/pre-commit) (blocks only on exit `1`; a missing or incomparable baseline skips the gate rather than blocking someone over setup they haven't done) and [`examples/ci/architecture-gate.yml`](examples/ci/architecture-gate.yml) (publish-on-main, restore-on-PR).
 
 ### What it saved you - `--status`
 

@@ -96,6 +96,14 @@ func gitInfo(repoPath, outputDir string) *facts.GitInfo {
 	if ref, err := runGit(repoPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		info.Ref = ref
 	}
+	// The repository's identity, as opposed to this revision's. Recorded so a baseline
+	// pinned under one checkout path can be recognized as the same repository under
+	// another — the property that lets a CI baseline artifact be restored and diffed.
+	// Absent origin, no remotes at all, or a detached/bare setup all just leave it empty,
+	// matching how the rest of this function degrades.
+	if remote, err := runGit(repoPath, "remote", "get-url", "origin"); err == nil {
+		info.Remote = facts.NormalizeRemote(remote)
+	}
 	// --porcelain prints one line per changed/untracked path; any output => dirty.
 	// The ':(exclude)' pathspec drops our own output dir; '.' is the positive
 	// pathspec it subtracts from. An outputDir configured outside the repo simply

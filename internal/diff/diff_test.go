@@ -593,6 +593,49 @@ func TestCompareMeta_BaselineNewerThanCurrentWarns(t *testing.T) {
 	}
 }
 
+// TestCompareMeta_RelocatedBaselineIsComparable is the portable-baseline guarantee at the
+// comparability boundary: a baseline pinned on a CI runner and restored on a workstation
+// must GRADE, not decline.
+//
+// Comparing absolute RepoPath meant a downloaded baseline artifact always tripped
+// "different repositories" — which pkg/check treats as blocking — so the CI story could
+// not work at all, however correct the delta underneath it was.
+func TestCompareMeta_RelocatedBaselineIsComparable(t *testing.T) {
+	at := func(path, remote string) facts.SnapshotMeta {
+		return facts.SnapshotMeta{
+			RepoPath: path, EnolaVersion: "dev", GeneratedAt: "2026-07-30T06:17:24Z",
+			Extractors: []string{"go"},
+			Git:        &facts.GitInfo{Remote: remote},
+		}
+	}
+
+	ci := at("/home/runner/work/app/app", "https://github.com/org/app.git")
+	local := at("/Users/dev/src/app", "git@github.com:org/app.git")
+
+	got := compareMeta(ci, local)
+	if got.HasKind(WarnDifferentRepo) {
+		t.Errorf("a relocated baseline of the same repo was reported as a different repository: %v", got.Warnings)
+	}
+	if !got.Comparable {
+		t.Errorf("expected comparable, got warnings: %v", got.Warnings)
+	}
+
+	// The guard must still fire for a genuinely different repository, or it would be
+	// worth nothing: the gate would happily diff two unrelated graphs.
+	other := at("/home/runner/work/app/app", "https://github.com/org/unrelated.git")
+	mismatch := compareMeta(other, local)
+	if !mismatch.HasKind(WarnDifferentRepo) {
+		t.Errorf("genuinely different repositories were not flagged: %v", mismatch.Warnings)
+	}
+	// And the message must name the signal AND both paths, so the remedy is obvious.
+	joined := strings.Join(mismatch.Warnings, " ")
+	for _, want := range []string{"remote", "github.com/org/unrelated", "github.com/org/app", "/Users/dev/src/app"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("mismatch warning omitted %q: %v", want, mismatch.Warnings)
+		}
+	}
+}
+
 // TestCompareMeta_SameSecondIsNotInverted — GeneratedAt is RFC3339, i.e. second
 // resolution, so a baseline pinned and then diffed within the same second produces a
 // ZERO gap. Zero is simultaneous, not inverted.

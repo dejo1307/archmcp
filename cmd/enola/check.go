@@ -324,6 +324,12 @@ func describeBaseline(snap *facts.Snapshot) {
 			state = "dirty (uncommitted changes)"
 		}
 		fmt.Printf("  Git:       %s @ %s — %s\n", orUnknown(r.Git.Ref), shortCommit(r.Git.Commit), state)
+		// The repository identity a restored baseline is matched on. Shown because
+		// "which repo does this baseline describe?" is the question `show` exists to
+		// answer, and after an import the answer is no longer obvious from the path.
+		if r.Git.Remote != "" {
+			fmt.Printf("  Remote:    %s\n", r.Git.Remote)
+		}
 	}
 	fmt.Printf("  Facts:     %d · Insights: %d\n", len(snap.Facts), len(snap.Insights))
 	fmt.Printf("  Snapshot:  %s\n", orUnknown(m.Receipt().SnapshotID))

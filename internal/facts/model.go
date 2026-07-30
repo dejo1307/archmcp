@@ -259,6 +259,17 @@ type GitInfo struct {
 	Ref    string `json:"ref,omitempty"`    // branch or symbolic ref (e.g. "main")
 	Commit string `json:"commit,omitempty"` // full commit SHA of HEAD
 	Dirty  bool   `json:"dirty"`            // true when the working tree has uncommitted changes
+
+	// Remote is the origin URL, normalized to a comparable identity
+	// ("github.com/org/repo" — no scheme, credentials, port or ".git" suffix). Empty
+	// when there is no remote, no git, or no origin.
+	//
+	// It exists so two snapshots of the SAME repository taken at different absolute
+	// paths — a CI runner's checkout and a developer's working copy — can be recognized
+	// as comparable. Commit identifies a revision; this identifies the repository.
+	// A remote is used rather than the root commit because the root commit is
+	// unreachable in a shallow clone, which is what CI checkouts default to.
+	Remote string `json:"remote,omitempty"`
 }
 
 // ParseError records a non-fatal extraction failure — an extractor that could

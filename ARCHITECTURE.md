@@ -595,7 +595,7 @@ The engine lives in [`internal/diff`](internal/diff/diff.go) (pure `Compute` + d
 
 | Kind | Raised when | Treated as |
 |------|-------------|-----------|
-| `different_repo` | the two snapshots are of different repositories | blocking |
+| `different_repo` | the two snapshots are of different repositories (see [Repository identity](#repository-identity-portable-baselines) — *not* merely a different path) | blocking |
 | `version_mismatch` | different enola versions (extractor changes read as churn) | blocking |
 | `extractor_set` | a language present on one side only | blocking |
 | `ignore_globs` | the set of files parsed changed | blocking |
@@ -607,6 +607,19 @@ The engine lives in [`internal/diff`](internal/diff/diff.go) (pure `Compute` + d
 `Kinds` is a **set**, not a per-message list, so `Warnings` keeps its type and JSON shape for every existing consumer (the dashboard, `output_mode='full'`, and out-of-module readers via `pkg/diff`). Callers that know their category should use `AddWarningKind` rather than `AddWarning`.
 
 > Note on timestamps: `GeneratedAt` is RFC3339, i.e. **second** resolution, so a baseline pinned and then diffed inside the same second yields a zero gap. Zero is *simultaneous*, not inverted — `inverted_pair` requires a strictly negative gap. Treating zero as inverted made a no-op check on an untouched repository report "the current snapshot does not contain your change".
+
+#### Repository identity (portable baselines)
+
+A baseline is only useful in CI if it can be **pinned on one machine and graded on another**. That makes "are these the same repository?" a question about *identity*, not *location* — and comparing absolute `RepoPath` answered it with location. A baseline pinned at `/home/runner/work/app/app` and restored against `/Users/dev/src/app` always tripped `different_repo`, which the gate treats as blocking, so a downloaded baseline artifact could never grade. (The delta underneath was correct the whole time; only the verdict was wrong.)
+
+`facts.SameRepo` ([`internal/facts/repoidentity.go`](internal/facts/repoidentity.go)) decides it from two signals, strongest first:
+
+1. **Normalized git remotes**, when both snapshots have one. `facts.NormalizeRemote` reduces a remote URL to `host/path` — scheme, credentials, port and a trailing `.git` removed, lowercased — so every way of cloning one repository collapses to one identity: `git@github.com:org/app.git`, `https://github.com/org/app`, and a CI URL carrying an injected token all normalize to `github.com/org/app`. Without that, a runner cloning over HTTPS and a developer over SSH would read as two repositories.
+2. **The checkout directory name**, otherwise. Weaker — two unrelated repositories both checked out as `api/` look alike — but it is what exists for a repo with no remote, and it is strictly better than the absolute path it replaces. It compares the last segment across *either* separator, because a baseline written on a Linux runner and read on Windows carries the separator of the machine that **wrote** it.
+
+`GitInfo.Remote` is populated by one more read-only `git remote get-url origin` alongside the three calls already in `gitInfo()`, and degrades to empty exactly as they do (no git, no repo, no origin). It is normalized again on read, so a baseline written by an older build — carrying a raw URL, or no remote at all — still compares correctly. **A remote rather than the root commit**: `git rev-list --max-parents=0` looks like the purer identity, but it is unreachable in a shallow clone, which is what `actions/checkout` does by default.
+
+Both absolute paths stay in the warning text, and it names which signal decided, because the remedies differ: differing remotes mean the wrong baseline was fetched; differing directory names on one repository mean a checkout was renamed.
 
 ---
 
