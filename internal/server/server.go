@@ -1654,6 +1654,14 @@ func (s *Server) registerTools() {
 		if args.Focus != "" {
 			d = d.Focused(s.normalizeToRelative(args.Focus))
 		}
+		// Whether the CURRENT snapshot still matches the working tree is something only
+		// the caller can establish, and it is the one caveat that invalidates the whole
+		// delta: if the tree moved since the snapshot, this diff describes neither the
+		// old state nor the new one. Checked here rather than in the freshness banner
+		// because it re-hashes the repo — affordable at a deliberate decision point,
+		// not on every tool call. Focused() preserves Comparability, so this is added
+		// after narrowing and still renders above the delta.
+		s.addDriftWarning(d, repoPath)
 
 		switch resolveOutputMode(args.OutputMode, modeSummary) {
 		case modeFull:
@@ -1719,6 +1727,40 @@ func (s *Server) registerTools() {
 		}
 		return textResult(capTokens(rc.Render(), args.MaxTokens, false)), nil, nil
 	})
+}
+
+// driftSamplePaths bounds how many drifted paths a comparability warning names, so the
+// message stays readable on a large refactor while still showing WHICH files moved.
+const driftSamplePaths = 5
+
+// addDriftWarning appends a comparability caveat when the loaded snapshot no longer
+// matches repoPath's working tree, so a delta computed from a stale snapshot cannot be
+// mistaken for a current one.
+//
+// A failure to determine drift is logged and otherwise ignored: the diff is still worth
+// returning, and inventing a caveat from an unreadable repo would be its own false
+// signal. A snapshot with no recorded file hashes reports Unknown, surfaced as "cannot
+// verify" rather than silence — an unanswerable check must not read as a clean bill of
+// health.
+func (s *Server) addDriftWarning(d *diff.SnapshotDiff, repoPath string) {
+	if d == nil || repoPath == "" {
+		return
+	}
+	dr, err := s.eng.Drift(repoPath)
+	if err != nil {
+		log.Printf("[server] could not determine drift for %s: %v", repoPath, err)
+		return
+	}
+	switch {
+	case dr.Unknown:
+		d.AddWarning("could not verify that the current snapshot still matches the working tree — " +
+			dr.Summary(driftSamplePaths))
+	case dr.Any():
+		d.AddWarning(fmt.Sprintf(
+			"the working tree has changed since the current snapshot was taken: %s — this delta "+
+				"describes neither the snapshot's state nor the tree's; re-run generate_snapshot and diff again",
+			dr.Summary(driftSamplePaths)))
+	}
 }
 
 // resolveBaselineDir maps a baseline selector ('pinned'/”/'previous'/explicit

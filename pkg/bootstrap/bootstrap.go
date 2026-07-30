@@ -58,6 +58,18 @@ func (e *Engine) Snapshot() *facts.Snapshot {
 	return e.eng.Snapshot()
 }
 
+// Drift is the set of files that moved since the snapshot was taken. Aliased rather
+// than redefined so its methods (Any, Count, Summary) come with it and the two
+// packages cannot drift apart.
+type Drift = engine.Drift
+
+// Drift reports whether the loaded snapshot still matches repoPath's working tree, by
+// re-walking and re-hashing. It re-reads every walked file, so it belongs at a
+// deliberate decision point (a diff, a validation) rather than on a hot read path.
+func (e *Engine) Drift(repoPath string) (Drift, error) {
+	return e.eng.Drift(repoPath)
+}
+
 // ActiveRepo returns the absolute repo path of the currently loaded snapshot,
 // or "" if none is loaded. Used to attribute tool usage to the repo a call
 // actually operated on.

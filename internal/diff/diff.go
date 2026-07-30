@@ -277,15 +277,43 @@ func compareMeta(base, cur facts.SnapshotMeta) Comparability {
 	// GeneratedAt was printed on line 3 and never compared. An 11-day-old baseline from
 	// the same enola version with the same extractors yields Comparable:true, zero
 	// warnings, and a confident 24-regression report for a change that touched no facts.
-	if age, ok := baselineAgeDays(base.GeneratedAt, cur.GeneratedAt); ok && age >= staleBaselineDays {
+	switch gap, ok := baselineGap(base.GeneratedAt, cur.GeneratedAt); {
+	case !ok:
+		// Unparseable or missing timestamp — the pre-receipt case, which already has
+		// its own softer note above. Nothing further to say.
+	case gap <= 0:
+		// The baseline is NEWER than the snapshot being compared, i.e. the "current"
+		// side is stale. This used to be silent: it shared the ok=false signal with
+		// "no timestamp recorded", so the provenance line rendered backwards and
+		// nothing flagged it.
+		c.Warnings = append(c.Warnings,
+			"the baseline is newer than the snapshot it is being compared against — the current snapshot "+
+				"predates the baseline, so it does not contain your change; re-run generate_snapshot")
+	case int(gap.Hours()/24) >= staleBaselineDays:
 		c.Warnings = append(c.Warnings, fmt.Sprintf(
 			"baseline is %d days older than the current snapshot — anything the repo itself changed in "+
 				"between will appear as part of this delta; re-pin the baseline (set_baseline) to compare only your change",
-			age))
+			int(gap.Hours()/24)))
 	}
 
 	c.Comparable = len(c.Warnings) == 0
 	return c
+}
+
+// AddWarning appends a comparability warning and clears Comparable, preserving the
+// `Comparable == (len(Warnings) == 0)` invariant that compareMeta establishes.
+//
+// It exists so callers outside this package can contribute a caveat without setting
+// the two fields independently — a caller that appended to Warnings and forgot
+// Comparable would render the caveat above the delta while still reporting the pair as
+// comparable in JSON. Used for facts that only the caller can know, notably whether
+// the current snapshot still matches the working tree (engine.Drift).
+func (d *SnapshotDiff) AddWarning(w string) {
+	if w == "" {
+		return
+	}
+	d.Comparability.Warnings = append(d.Comparability.Warnings, w)
+	d.Comparability.Comparable = false
 }
 
 // missingFrom returns the elements of want that are absent from have, sorted.
@@ -295,11 +323,16 @@ func compareMeta(base, cur facts.SnapshotMeta) Comparability {
 // multi-day refactor, and the caller is the only one who knows which they meant.
 const staleBaselineDays = 3
 
-// baselineAgeDays returns how many whole days older the baseline is than the current
-// snapshot. Both timestamps are RFC3339 UTC (facts.SnapshotMeta.GeneratedAt); an
-// unparseable or missing one yields ok=false, which is the pre-receipt baseline case
-// that already has its own warning.
-func baselineAgeDays(baseTS, curTS string) (int, bool) {
+// baselineGap returns how much older the baseline is than the current snapshot: a
+// positive duration when the baseline came first, non-positive when the pair is
+// inverted (a stale "current" side). Both timestamps are RFC3339 UTC
+// (facts.SnapshotMeta.GeneratedAt).
+//
+// ok=false means only that a timestamp was missing or unparseable — the pre-receipt
+// case, which has its own note. It deliberately does NOT fold in the inverted case:
+// conflating "cannot tell" with "baseline is newer" is what made an inverted pair
+// silent, so callers must distinguish the two.
+func baselineGap(baseTS, curTS string) (time.Duration, bool) {
 	b, err := time.Parse(time.RFC3339, baseTS)
 	if err != nil {
 		return 0, false
@@ -308,11 +341,7 @@ func baselineAgeDays(baseTS, curTS string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	d := c.Sub(b)
-	if d <= 0 {
-		return 0, false
-	}
-	return int(d.Hours() / 24), true
+	return c.Sub(b), true
 }
 
 func missingFrom(want, have []string) []string {

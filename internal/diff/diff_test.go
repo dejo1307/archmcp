@@ -554,3 +554,41 @@ func TestCompareMeta_StaleBaselineWarns(t *testing.T) {
 		}
 	}
 }
+
+// TestCompareMeta_BaselineNewerThanCurrentWarns covers the inverted pair, which used to
+// be silent: baselineAgeDays returns ok=false for a non-positive gap, sharing that
+// signal with "no timestamp recorded", so a baseline NEWER than the snapshot being
+// compared produced zero warnings. That is the sharpest form of a stale current
+// snapshot — the provenance line renders backwards ("Baseline <newer> → current
+// <older>") and nothing says so.
+func TestCompareMeta_BaselineNewerThanCurrentWarns(t *testing.T) {
+	meta := func(ts string) facts.SnapshotMeta {
+		return facts.SnapshotMeta{
+			RepoPath: "/repo", EnolaVersion: "dev", GeneratedAt: ts,
+			Extractors: []string{"go"},
+		}
+	}
+	// Baseline is 13 minutes NEWER than "current".
+	inverted := compareMeta(meta("2026-07-30T06:30:00Z"), meta("2026-07-30T06:17:24Z"))
+	var found bool
+	for _, w := range inverted.Warnings {
+		if strings.Contains(w, "newer") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a baseline newer than the current snapshot produced no warning: %v", inverted.Warnings)
+	}
+	if inverted.Comparable {
+		t.Error("an inverted baseline/current pair must not be reported as comparable")
+	}
+
+	// A missing timestamp is a DIFFERENT condition and keeps its own softer note; it
+	// must not start claiming the pair is inverted.
+	missing := compareMeta(meta(""), meta("2026-07-30T06:17:24Z"))
+	for _, w := range missing.Warnings {
+		if strings.Contains(w, "newer") {
+			t.Errorf("a missing baseline timestamp was reported as an inverted pair: %q", w)
+		}
+	}
+}
