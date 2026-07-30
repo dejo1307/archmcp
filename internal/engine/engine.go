@@ -427,7 +427,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 			EnolaVersion: version.Version,
 			SnapshotID:   computeSnapshotID(factsBuf.Bytes(), version.Version, configHash),
-			Git:          gitInfo(absRepo),
+			Git:          gitInfo(absRepo, e.cfg.Output.Dir),
 			ConfigHash:   configHash,
 
 			FilesSeen:         len(files),

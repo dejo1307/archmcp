@@ -70,7 +70,11 @@ func (e *Engine) Staleness(maxAge time.Duration, now time.Time) Staleness {
 		if r.Path == "" || r.Git == nil {
 			continue // non-git or unknown: covered by the age signal only
 		}
-		cur := gitInfo(r.Path)
+		// Same outputDir exclusion as the snapshot-time capture in receipt.go. The two
+		// MUST agree: recording "clean" while reading the live tree as dirty (because
+		// enola's own output dir is untracked) would make the arm below fire on every
+		// single snapshot.
+		cur := gitInfo(r.Path, e.cfg.Output.Dir)
 		if cur == nil {
 			continue
 		}

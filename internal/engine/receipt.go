@@ -76,7 +76,18 @@ func computeConfigHash(cfg *config.Config) string {
 // gitInfo captures the repository's VCS state. It returns nil when repoPath is
 // not a git working tree or git is unavailable, so a non-git or sandboxed run
 // degrades to no git section rather than erroring.
-func gitInfo(repoPath string) *facts.GitInfo {
+//
+// outputDir is the engine's output directory (cfg.Output.Dir), excluded from the
+// dirtiness check. enola writes its own artifacts there and --porcelain lists
+// untracked paths, so without the exclusion any repo that does not gitignore that
+// directory records dirty:true from its first snapshot onward — the cache save
+// creates it before this function runs, and it pre-exists every later run. That
+// wrong baseline silently disables the git-drift half of the staleness check, whose
+// "newly dirty" arm can only fire when the recorded state was clean (see
+// freshness.go). The walker already excludes the same directory from analysis, so
+// keeping it out here makes the flag describe the SOURCE rather than enola's own
+// output. Pass "" to check the whole tree.
+func gitInfo(repoPath, outputDir string) *facts.GitInfo {
 	commit, err := runGit(repoPath, "rev-parse", "HEAD")
 	if err != nil || commit == "" {
 		return nil
@@ -86,7 +97,14 @@ func gitInfo(repoPath string) *facts.GitInfo {
 		info.Ref = ref
 	}
 	// --porcelain prints one line per changed/untracked path; any output => dirty.
-	if status, err := runGit(repoPath, "status", "--porcelain"); err == nil && strings.TrimSpace(status) != "" {
+	// The ':(exclude)' pathspec drops our own output dir; '.' is the positive
+	// pathspec it subtracts from. An outputDir configured outside the repo simply
+	// matches nothing, which is harmless.
+	statusArgs := []string{"status", "--porcelain"}
+	if outputDir != "" {
+		statusArgs = append(statusArgs, "--", ".", ":(exclude)"+outputDir)
+	}
+	if status, err := runGit(repoPath, statusArgs...); err == nil && strings.TrimSpace(status) != "" {
 		info.Dirty = true
 	}
 	return info

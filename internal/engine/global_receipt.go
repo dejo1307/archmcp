@@ -158,7 +158,7 @@ func (e *Engine) repoEntries(b *snapshotBundle) []facts.GraphRepoEntry {
 		entries = append(entries, facts.GraphRepoEntry{
 			Label:       label,
 			Path:        abs,
-			Git:         gitInfo(abs),
+			Git:         gitInfo(abs, e.cfg.Output.Dir),
 			FactCount:   b.store.CountByRepo(label),
 			SourceBytes: e.repoSourceBytes(b, abs),
 		})

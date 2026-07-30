@@ -201,6 +201,123 @@ func writeForeignGlobalReceipt(t *testing.T, home, foreignRepoPath, generatedAt 
 	}
 }
 
+// TestSnapshotGit_OwnOutputDirIsNotTreeDirt is the regression for enola recording its
+// OWN artifacts as working-tree dirt. gitInfo decides dirtiness from any
+// `git status --porcelain` output, and --porcelain lists untracked paths — so the
+// .enola/ directory the snapshot itself creates (extractor-cache save, engine.go:328,
+// which runs BEFORE the receipt reads git state) made a pristine committed repo record
+// dirty: true.
+//
+// The repo here deliberately does NOT gitignore the output dir, which is the case that
+// regresses. The second snapshot matters as much as the first: by then .enola/ already
+// exists before the run begins, so call ordering is no longer the operative cause and
+// only excluding the directory fixes it.
+func TestSnapshotGit_OwnOutputDirIsNotTreeDirt(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module dirtmod\n\ngo 1.21\n")
+	writeFile(t, filepath.Join(repo, "pkg", "a", "a.go"), "package a\n\nfunc A() {}\n")
+	initGitRepo(t, repo)
+
+	cfg := config.Default()
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RegisterExtractor(goextractor.New())
+
+	for _, run := range []string{"first", "second"} {
+		snap, err := eng.GenerateSnapshot(context.Background(), repo, false)
+		if err != nil {
+			t.Fatalf("%s snapshot: %v", run, err)
+		}
+		if err := eng.WriteArtifacts(repo); err != nil {
+			t.Fatalf("%s WriteArtifacts: %v", run, err)
+		}
+		if snap.Meta.Git == nil {
+			t.Fatalf("%s run: no git info recorded", run)
+		}
+		if snap.Meta.Git.Dirty {
+			t.Errorf("%s run: committed-clean repo recorded dirty:true — enola's own %s/ counted as tree dirt",
+				run, cfg.Output.Dir)
+		}
+	}
+}
+
+// TestSnapshotGit_RealChangeStillDirty guards the fix above against over-suppressing:
+// excluding the output dir must not blind the flag to actual uncommitted source changes.
+func TestSnapshotGit_RealChangeStillDirty(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module dirtmod2\n\ngo 1.21\n")
+	writeFile(t, filepath.Join(repo, "pkg", "a", "a.go"), "package a\n\nfunc A() {}\n")
+	initGitRepo(t, repo)
+
+	// A real, uncommitted modification to a TRACKED file.
+	writeFile(t, filepath.Join(repo, "pkg", "a", "a.go"), "package a\n\nfunc A() {}\nfunc B() {}\n")
+
+	cfg := config.Default()
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RegisterExtractor(goextractor.New())
+
+	snap, err := eng.GenerateSnapshot(context.Background(), repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Meta.Git == nil {
+		t.Fatal("no git info recorded")
+	}
+	if !snap.Meta.Git.Dirty {
+		t.Error("a modified tracked file must still record dirty:true")
+	}
+}
+
+// TestStaleness_DetectsEditAfterCleanSnapshotWithoutGitignore is the payoff. A repo that
+// does not gitignore the output dir previously recorded dirty:true at snapshot time,
+// which killed the `!r.Git.Dirty && cur.Dirty` arm for its whole life — so a later edit
+// produced no staleness signal at all. With the baseline recorded correctly, the arm is
+// live again.
+func TestStaleness_DetectsEditAfterCleanSnapshotWithoutGitignore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "go.mod"), "module dirtmod3\n\ngo 1.21\n")
+	writeFile(t, filepath.Join(repo, "pkg", "a", "a.go"), "package a\n\nfunc A() {}\n")
+	initGitRepo(t, repo)
+
+	cfg := config.Default()
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RegisterExtractor(goextractor.New())
+	if _, err := eng.GenerateSnapshot(context.Background(), repo, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Edit a tracked file after the snapshot, leaving it uncommitted.
+	writeFile(t, filepath.Join(repo, "pkg", "a", "a.go"), "package a\n\nfunc A() {}\nfunc Added() {}\n")
+
+	now := time.Now()
+	st := eng.Staleness(24*time.Hour, now)
+	if st.TooOld {
+		t.Fatalf("snapshot is seconds old, TooOld should be false (Age=%s)", st.Age)
+	}
+	if len(st.Changed) != 1 || st.Changed[0].Reason != "uncommitted changes" {
+		t.Errorf("got Changed=%+v, want one \"uncommitted changes\" for the edited repo", st.Changed)
+	}
+}
+
 // initGitRepo creates a git repo with one commit and returns its HEAD.
 func initGitRepo(t *testing.T, repo string) string {
 	t.Helper()
