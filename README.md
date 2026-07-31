@@ -76,6 +76,8 @@ claude mcp add enola enola
 
 `enola install` writes a short instruction into the files your agents already read — Claude Code, Cursor, Copilot, Codex, Pi — and `--hooks` adds the two hooks that run the loop for you. It previews every change and asks before writing, never creates files you didn't have, and `enola uninstall` puts everything back byte-for-byte.
 
+After your next session, `enola doctor` reports whether those hooks actually fired. Worth running once: a hook configuration is a contract with your agent, and one it quietly ignores looks exactly like one it honours.
+
 Prefer to drive it yourself? Skip step 2 and run the loop by hand:
 
 ```bash

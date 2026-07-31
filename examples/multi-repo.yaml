@@ -94,19 +94,24 @@ ignore:
   - "Dockerfile"
   - "**/Dockerfile*"
   - "**/.env*"
-extractors:
-  - go
-  - kotlin
-  - typescript
-  - swift
-  - ruby
-# explainers: / renderers: are deliberately absent.
+# extractors: / explainers: / renderers: are all deliberately absent.
 #
 # A list-valued key REPLACES the built-in list rather than extending it, so naming
 # a subset here silently disables everything that ships beyond it — this file used
 # to pin four explainers, turning off the other six (god-class, hotspots,
 # unused-routes, dependency-depth, exported-surface, complexity-outliers) for anyone
 # who adopted it. Omitting the keys means new plugins arrive automatically.
+#
+# `extractors:` was the same mistake, and worse here than anywhere else. This file
+# pinned five languages while its own header promised it "enables all extractors so
+# it works regardless of which languages each repository uses" — so a cluster
+# containing a PHP, Rust, Python, Java or C++ repository indexed it as though the
+# language were unsupported. A cluster config is the one place you cannot know in
+# advance which languages will turn up, which is exactly why it must not guess.
+#
+# The per-language examples (go.yaml, ruby.yaml, …) DO pin one extractor, and that
+# is correct: naming the language is the entire point of those files. The rule is
+# "pin a plugin list only when the list is the reason the file exists".
 output:
   dir: ".enola"
   max_context_tokens: 16000

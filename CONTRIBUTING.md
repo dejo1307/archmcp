@@ -19,6 +19,18 @@ Thank you for your interest in contributing to enola. Every contribution — cod
    git checkout -b my-feature
    ```
 
+5. **Enable the pre-push hook** — once per clone:
+
+   ```bash
+   git config core.hooksPath .githooks
+   ```
+
+   It runs the guards that are cheap locally and awkward in CI: the `cacheVersion`
+   coverage check, and the golden + determinism suite. Skip in an emergency with
+   `git push --no-verify`; CI enforces both anyway.
+
+   It also runs one check **CI cannot run at all**. See below.
+
 ## What to work on
 
 - **Bug reports and fixes** — if something doesn't work, open an issue or submit a fix.
@@ -40,6 +52,30 @@ If you're considering a larger change, please open an issue first so we can disc
    ```
 
 5. Open a pull request against `main`. Describe what the change does and why.
+
+### If you touch the agent hooks
+
+`pkg/install/`, `cmd/enola/hook.go`, `cmd/enola/doctor.go` and `internal/hookstate/`
+are covered by one test CI will never run for you:
+
+```bash
+ENOLA_E2E=1 go test -run TestStopHook_FiresInARealSession ./pkg/install/
+```
+
+It installs the hooks the way a user does, ends a **real agent session** with a known
+regression present, and asserts the verdict came out. CI runners do not run agent
+sessions by design, so this only ever executes on a developer's machine — the pre-push
+hook runs it automatically when your push touches one of those paths, and skips with a
+loud message if `claude` is not on your `PATH`.
+
+Please do not treat it as optional. The failure mode it guards against is a hook
+configuration that parses, reports success, and does nothing: every cheaper check
+passed while the `Stop` hook was silently never firing, because a unit test can only
+compare the output against the same belief that produced it. The full account is in
+[`DEFECTS_FOUND.md`](DEFECTS_FOUND.md).
+
+If you cannot run it, say so in the PR so a reviewer can. `enola doctor` is the
+same question asked after the fact, on a real repository.
 
 ## Code style
 
