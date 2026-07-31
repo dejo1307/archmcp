@@ -39,8 +39,12 @@ const HooksNote = `
 
 enola's hook is installed for this project: at the end of a session it reports the
 architectural delta if — and only if — the change introduced a structural regression.
-It never blocks, and it says nothing unless a baseline was pinned (` + "`set_baseline`" + `) and
-something actually regressed.`
+It never blocks, and it stays silent when the change is clean.
+
+It speaks in one other case: when it could not grade the change at all, because the
+baseline is not comparable to the current snapshot. That is NOT a verdict about your
+change — it means no verdict was reached — and the remedy is to re-pin the baseline.
+Said once per cause, not once per session.`
 
 // block wraps content in the sentinels used for files the user also maintains.
 func block(content string) string {

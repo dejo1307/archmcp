@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/version"
 )
 
 // Baseline subdirectories under the .enola output dir. `previous` is rotated
@@ -173,4 +175,45 @@ func LoadSnapshotDir(dir string) (*facts.Snapshot, error) {
 		}
 	}
 	return snap, nil
+}
+
+// CurrentMeta returns the IDENTITY half of the SnapshotMeta this engine would write
+// for repoPath — enola version, config and ignore-glob hashes, the detected extractor
+// set, the repo path and its git state — without parsing a single file.
+//
+// It exists so "could a snapshot taken now be compared against this baseline?" can be
+// answered before deciding to take one. The session-start hook asks it to find out
+// whether the baseline it is about to grade against is still usable, and `enola
+// doctor` asks it to tell a human the same thing before a session ends rather than
+// after. Both would otherwise have to build a full snapshot to learn that the
+// comparison was never going to work.
+//
+// Extractor detection is replicated from runExtractors deliberately rather than
+// approximated: the recorded set is "enabled AND detected", and Detect is a cheap
+// file-presence probe. Counting fields (facts, files, timings) are left zero — this
+// is not a snapshot and must not be mistaken for one; only the fields
+// diff.CompareMeta reads are populated.
+func (e *Engine) CurrentMeta(repoPath string) *facts.SnapshotMeta {
+	absRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		return nil
+	}
+	var used []string
+	for _, ext := range e.extractors.All() {
+		if !e.cfg.IsExtractorEnabled(ext.Name()) {
+			continue
+		}
+		if detected, err := ext.Detect(absRepo); err == nil && detected {
+			used = append(used, ext.Name())
+		}
+	}
+	return &facts.SnapshotMeta{
+		RepoPath:       absRepo,
+		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+		Extractors:     used,
+		EnolaVersion:   version.Version,
+		Git:            gitInfo(absRepo, e.cfg.Output.Dir),
+		ConfigHash:     computeConfigHash(e.cfg),
+		IgnoreGlobHash: computeIgnoreGlobHash(e.cfg),
+	}
 }

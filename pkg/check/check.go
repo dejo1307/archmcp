@@ -132,6 +132,23 @@ func (p Policy) fails(in facts.Insight) bool {
 // blockingKinds are the comparability warnings that make a delta meaningless rather
 // than merely caveated: the numbers below them describe differences in how the two
 // snapshots were produced, not the change under test.
+// BlockingKinds returns the comparability warnings that make a delta untrustworthy —
+// the ones that make the gate decline rather than grade.
+//
+// Exported so callers who need the classification without running the gate share it
+// rather than re-deriving it: the session-start hook decides whether to refresh a
+// baseline on exactly the grounds `enola check` would have refused to use it. Two
+// copies of "which warnings are fatal" would drift, and the drift would be invisible.
+func BlockingKinds(c diff.Comparability) []diff.WarningKind {
+	var out []diff.WarningKind
+	for _, k := range c.Kinds {
+		if blockingKinds[k] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 var blockingKinds = map[diff.WarningKind]bool{
 	diff.WarnDifferentRepo:   true,
 	diff.WarnVersionMismatch: true,

@@ -69,6 +69,17 @@ type Record struct {
 	LastFired   time.Time `json:"last_fired"`
 	Count       int       `json:"count"`
 	LastOutcome Outcome   `json:"last_outcome,omitempty"`
+
+	// LastReason identifies WHICH decline was last reported, so a repeat can be
+	// recognised and left unsaid. Empty whenever the last run did not decline —
+	// including a run that graded successfully, which is what makes a recurrence
+	// speak again instead of being suppressed forever by a problem that was fixed
+	// in between.
+	//
+	// Absent from older heartbeat files, where it reads as the zero value: an
+	// upgrade therefore reports the current decline once, which is the right
+	// behaviour rather than a migration.
+	LastReason string `json:"last_reason,omitempty"`
 }
 
 // State is the whole file.
@@ -76,8 +87,8 @@ type State struct {
 	// InstalledAt is when `install --hooks` last configured this repository. It is what
 	// makes "never fired" meaningful: without it, an empty file cannot be told apart
 	// from hooks that were never installed in the first place.
-	InstalledAt time.Time          `json:"installed_at,omitempty"`
-	Events      map[Event]*Record  `json:"events,omitempty"`
+	InstalledAt time.Time         `json:"installed_at,omitempty"`
+	Events      map[Event]*Record `json:"events,omitempty"`
 	// HookCommand records which binary the installed hooks invoke, so a heartbeat that
 	// stopped can be attributed to a moved or replaced enola rather than to the agent.
 	HookCommand string `json:"hook_command,omitempty"`
@@ -112,7 +123,13 @@ func Load(outDir string) State {
 // RecordFired stamps an event. Best-effort and silent by contract: this is called from
 // a hook, and a hook that cannot fail loudly must not try. Every error path returns
 // without disturbing the caller.
-func RecordFired(outDir string, e Event, o Outcome) {
+func RecordFired(outDir string, e Event, o Outcome) { RecordFiredWithReason(outDir, e, o, "") }
+
+// RecordFiredWithReason is RecordFired carrying the decline identity from
+// check.Verdict.DeclineKey(). Pass "" for every outcome that is not a decline — that
+// is what clears a previously reported reason, so the same problem returning after
+// being fixed is reported again rather than silently suppressed.
+func RecordFiredWithReason(outDir string, e Event, o Outcome, reason string) {
 	mutate(outDir, func(s *State) {
 		if s.Events == nil {
 			s.Events = map[Event]*Record{}
@@ -125,7 +142,23 @@ func RecordFired(outDir string, e Event, o Outcome) {
 		r.LastFired = now()
 		r.Count++
 		r.LastOutcome = o
+		r.LastReason = reason
 	})
+}
+
+// ShouldReport reports whether a decline with this identity is worth saying out loud.
+//
+// True when it differs from what was last recorded — a first occurrence, a different
+// problem, or the same problem returning after a successful grade cleared it. False
+// for an unchanged repeat, because a hook that says the same thing at the end of every
+// session is one people uninstall, and the standing state is visible in `enola doctor`
+// either way.
+func ShouldReport(outDir string, e Event, reason string) bool {
+	if reason == "" {
+		return false
+	}
+	r := Load(outDir).Get(e)
+	return r == nil || r.LastReason != reason
 }
 
 // RecordInstalled stamps the install time and the hook command, so a later report can

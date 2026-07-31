@@ -77,18 +77,44 @@ func runStopHook(ctx context.Context) {
 	// paths are the ones worth recording: a hook that never fires and a hook that fires
 	// and finds nothing are indistinguishable in a session, and only one of them is
 	// broken. See internal/hookstate and DEFECTS_FOUND.md.
-	hookstate.RecordFired(outDir, hookstate.EventStop, stopOutcome(verdict, ok))
+	declineKey := ""
+	if ok {
+		declineKey = verdict.DeclineKey()
+	}
+	// ShouldReport is asked BEFORE recording, because recording is what makes the next
+	// identical decline a repeat.
+	sayDecline := ok && declineKey != "" && hookstate.ShouldReport(outDir, hookstate.EventStop, declineKey)
+	hookstate.RecordFiredWithReason(outDir, hookstate.EventStop, stopOutcome(verdict, ok), declineKey)
 
-	if !ok || verdict.Status != check.StatusRegression {
+	var context string
+	switch {
+	case ok && verdict.Status == check.StatusRegression:
+		context = "enola graded the architectural change made in this session and found a structural " +
+			"regression. This was not necessarily intended — review it before considering the task " +
+			"finished, and either fix it or say why it is deliberate.\n\n" + verdict.Render()
+
+	case sayDecline:
+		// The gate could not grade at all, and saying nothing would be indistinguishable
+		// from grading it clean. `enola check` spends a whole exit code (3) keeping those
+		// apart so "I refuse to grade this" is never read as "your change is bad"; a hook
+		// that stays silent collapses the same distinction in the other direction, and
+		// leaves someone believing the loop is protecting them when it is not.
+		//
+		// Said once per distinct reason, not once per session — see hookstate.ShouldReport.
+		context = "enola could NOT grade the architectural change made in this session: " +
+			verdict.DeclineReason() + ".\n\n" +
+			"This is NOT a statement about your change — the comparison itself was untrustworthy, " +
+			"so no verdict was reached in either direction. Re-pin the baseline to restore grading " +
+			"(`enola baseline pin`, or the set_baseline tool), and `enola doctor` reports whether " +
+			"the hooks are grading again."
+
+	default:
 		return
 	}
 
 	var out stopHookOutput
 	out.HookSpecificOutput.HookEventName = "Stop"
-	out.HookSpecificOutput.AdditionalContext =
-		"enola graded the architectural change made in this session and found a structural " +
-			"regression. This was not necessarily intended — review it before considering the task " +
-			"finished, and either fix it or say why it is deliberate.\n\n" + verdict.Render()
+	out.HookSpecificOutput.AdditionalContext = context
 
 	encoded, err := json.Marshal(out)
 	if err != nil {
@@ -189,7 +215,7 @@ func pinBaselineSingleFlight(ctx context.Context, repoDir string) {
 	defer lock.Release()
 
 	baselineDir := engine.ResolveBaselineDir(outDir, "pinned")
-	if !shouldAutoPin(baselineDir, anchor, cfg.Output.Dir) {
+	if !shouldAutoPin(baselineDir, anchor, cfg.Output.Dir, eng.CurrentMeta(anchor)) {
 		return
 	}
 
@@ -225,13 +251,28 @@ func pinBaselineSingleFlight(ctx context.Context, repoDir string) {
 //
 // A dirty tree is never treated as current: "dirty" says the content is not identified by
 // the commit, so two dirty trees at the same commit may differ arbitrarily.
-func shouldAutoPin(baselineDir, repoDir, outputDir string) bool {
+//
+// The third rule is about usefulness rather than freshness: an auto-pinned baseline that
+// can no longer be COMPARED to a current snapshot — a different enola version, a changed
+// extractor set or ignore globs — is not a baseline at all, and refreshing it costs one
+// snapshot where leaving it costs the session's entire grading, silently. Tree movement
+// alone missed this: a session starting on a clean unchanged tree after an upgrade
+// graded against an unusable baseline and said nothing.
+//
+// Still only ever applied to baselines this hook created. A deliberate pin stays
+// untouched even when unusable — replacing it would discard the "before" of a refactor
+// that may span days, which is a worse outcome than a Stop hook that has to explain
+// itself. That case is reported instead.
+func shouldAutoPin(baselineDir, repoDir, outputDir string, current *facts.SnapshotMeta) bool {
 	base, err := bootstrap.LoadSnapshotDir(baselineDir)
 	if err != nil {
 		return true // no baseline yet — this is exactly what the hook is for
 	}
 	if _, err := os.Stat(filepath.Join(baselineDir, autoPinMarker)); err != nil {
 		return false // deliberately pinned; not ours to replace
+	}
+	if current != nil && baselineIsUnusable(base.Meta, *current) {
+		return true
 	}
 	now := engine.GitState(repoDir, outputDir)
 	if now == nil || base.Meta.Git == nil {
@@ -260,6 +301,16 @@ func stopOutcome(v check.Verdict, ok bool) hookstate.Outcome {
 	default:
 		return hookstate.OutcomeClean
 	}
+}
+
+// baselineIsUnusable reports whether a BLOCKING comparability warning stands between
+// these two snapshots — the same classification `enola check` uses to decline, so the
+// hook refreshes exactly what the gate would have refused to grade against. Advisory
+// warnings (a stale baseline) are deliberately not included: those still grade, and
+// re-pinning on staleness would destroy the multi-day baseline the staleness warning
+// exists to permit.
+func baselineIsUnusable(base, current facts.SnapshotMeta) bool {
+	return len(check.BlockingKinds(diff.CompareMeta(base, current))) > 0
 }
 
 // gradeQuietly runs the gate, returning ok=false for every reason a hook should stay

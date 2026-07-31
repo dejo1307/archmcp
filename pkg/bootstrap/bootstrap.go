@@ -142,6 +142,11 @@ func (e *Engine) SetBaseline(repoPath string) error {
 }
 
 // OutputDir returns the absolute .enola output directory for repoPath.
+// CurrentMeta returns the identity half of the SnapshotMeta this engine would write,
+// without parsing anything — enough for diff.CompareMeta to say whether a baseline is
+// still usable.
+func (e *Engine) CurrentMeta(repoPath string) *facts.SnapshotMeta { return e.eng.CurrentMeta(repoPath) }
+
 func (e *Engine) OutputDir(repoPath string) string {
 	return e.eng.OutputDir(repoPath)
 }

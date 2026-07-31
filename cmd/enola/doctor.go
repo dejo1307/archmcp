@@ -8,7 +8,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/enola-labs/enola/internal/diff"
+	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/hookstate"
+	"github.com/enola-labs/enola/pkg/bootstrap"
+	"github.com/enola-labs/enola/pkg/check"
 )
 
 // runDoctor is `enola doctor`: does the loop actually run in this repository?
@@ -61,12 +65,14 @@ func runDoctor(args []string) {
 	outDir := hookOutputDir(repoDir)
 	state := hookstate.Load(outDir)
 	installed := hooksConfigured(repoDir)
+	baselineIssue := baselineUsability(repoDir, outDir)
 
 	if *asJSON {
 		out := map[string]any{
-			"repo":             repoDir,
-			"hooks_configured": installed,
-			"state":            state,
+			"repo":              repoDir,
+			"hooks_configured":  installed,
+			"state":             state,
+			"baseline_unusable": baselineIssue,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -75,6 +81,20 @@ func runDoctor(args []string) {
 	}
 
 	fmt.Printf("enola doctor: %s\n\n", repoDir)
+
+	// Asked and answered BEFORE a session ends, which is the difference between this
+	// and reading the last outcome below: an unusable baseline makes the hooks decline
+	// to grade, and they decline quietly. Knowing now beats finding out afterwards.
+	fmt.Println("Baseline")
+	if baselineIssue == "" {
+		fmt.Println("  comparable — the gate can grade against it")
+	} else {
+		fmt.Printf("  NOT COMPARABLE: %s\n", baselineIssue)
+		fmt.Println("  Nothing will be graded against it until it is re-pinned:")
+		fmt.Println("      enola baseline pin")
+	}
+	fmt.Println()
+
 	fmt.Println("Session hooks")
 
 	if !installed {
@@ -135,6 +155,27 @@ func runDoctor(args []string) {
 	default:
 		fmt.Println("  Both hooks are firing. The loop is closed.")
 	}
+}
+
+// baselineUsability returns why the pinned baseline could not be graded against, or
+// "" when it can. It answers from metadata alone — no files are parsed — so `doctor`
+// stays a report rather than becoming a snapshot.
+func baselineUsability(repoDir, outDir string) string {
+	base, err := bootstrap.LoadSnapshotDir(engine.ResolveBaselineDir(outDir, "pinned"))
+	if err != nil {
+		return "" // no baseline pinned; the hooks section covers that case
+	}
+	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{ConfigPath: configForRepo(repoDir)})
+	if err != nil {
+		return ""
+	}
+	cfg.Repo, cfg.Repos = repoDir, nil
+	current := eng.CurrentMeta(repoDir)
+	if current == nil {
+		return ""
+	}
+	v := check.Evaluate(&diff.SnapshotDiff{Comparability: diff.CompareMeta(base.Meta, *current)}, check.Policy{})
+	return v.DeclineReason()
 }
 
 // hooksConfigured reports whether .claude/settings.json carries an entry enola owns.

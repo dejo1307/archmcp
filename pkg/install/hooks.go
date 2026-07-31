@@ -45,7 +45,8 @@ var installedHooks = []hookSpec{{
 	Event:      "Stop",
 	Subcommand: "hook stop",
 	Description: "at the end of a session, the architectural delta is reported only if the " +
-		"change introduced a regression, and only if a baseline was pinned",
+		"change introduced a regression — or, once per cause, that the baseline was not " +
+		"comparable so nothing could be graded at all",
 }}
 
 // HookSummary describes what --hooks will actually configure, for callers that need to

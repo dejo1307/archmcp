@@ -45,14 +45,14 @@ func TestShouldAutoPin_NeverReplacesADeliberatePin(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "baseline")
 	writeBaseline(t, dir, &facts.GitInfo{Commit: "deadbeef"}, false) // no auto marker
 
-	if shouldAutoPin(dir, t.TempDir(), ".enola") {
+	if shouldAutoPin(dir, t.TempDir(), ".enola", nil) {
 		t.Error("a deliberately pinned baseline was scheduled for replacement")
 	}
 }
 
 // TestShouldAutoPin_WithNoBaselineYet — the case the hook exists for.
 func TestShouldAutoPin_WithNoBaselineYet(t *testing.T) {
-	if !shouldAutoPin(filepath.Join(t.TempDir(), "baseline"), t.TempDir(), ".enola") {
+	if !shouldAutoPin(filepath.Join(t.TempDir(), "baseline"), t.TempDir(), ".enola", nil) {
 		t.Error("no baseline exists, so one should be pinned")
 	}
 }
@@ -67,7 +67,7 @@ func TestShouldAutoPin_SkipsWhenTreeHasNotMoved(t *testing.T) {
 
 	// GitState cannot read a non-git directory, so the decision must fail toward
 	// refreshing rather than toward silently keeping a baseline that may be wrong.
-	if !shouldAutoPin(dir, repo, ".enola") {
+	if !shouldAutoPin(dir, repo, ".enola", nil) {
 		t.Error("with git state unavailable, the baseline must be refreshed rather than trusted")
 	}
 }
@@ -79,7 +79,7 @@ func TestShouldAutoPin_DirtyTreeIsNeverCurrent(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "baseline")
 	writeBaseline(t, dir, &facts.GitInfo{Commit: "deadbeef", Dirty: true}, true)
 
-	if !shouldAutoPin(dir, t.TempDir(), ".enola") {
+	if !shouldAutoPin(dir, t.TempDir(), ".enola", nil) {
 		t.Error("a dirty baseline must never be treated as current")
 	}
 }
@@ -96,7 +96,7 @@ func TestSessionStartHook_IsSilentOnEveryFailurePath(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "baseline")
 			// shouldAutoPin is the only part reachable without spawning; exercising it
 			// with hostile inputs must not panic.
-			_ = shouldAutoPin(dir, cwd, ".enola")
+			_ = shouldAutoPin(dir, cwd, ".enola", nil)
 		})
 	}
 }

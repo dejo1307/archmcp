@@ -23,6 +23,45 @@ var kindMeaning = map[diff.WarningKind]string{
 	diff.WarnInvertedPair:    "the current snapshot predates the baseline, so it does not contain your change",
 }
 
+// DeclineReason is the short "why the gate could not grade this" line, for callers
+// that need the reason without the delta — the Stop hook, which must hand an agent
+// something actionable in a couple of sentences rather than a full report.
+//
+// Empty unless the verdict actually declined. It reuses kindMeaning above, so the
+// wording an agent is given and the wording `enola check` prints cannot drift apart:
+// the two surfaces disagreeing about why a baseline is unusable would be its own
+// small betrayal of the exit-code contract.
+func (v Verdict) DeclineReason() string {
+	if v.Status != StatusIncomparable || len(v.BlockingKinds) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(v.BlockingKinds))
+	for _, k := range v.BlockingKinds {
+		if m := kindMeaning[k]; m != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", k, m))
+		} else {
+			parts = append(parts, string(k))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// DeclineKey identifies WHICH decline this is, so a caller can tell a repeat from a
+// new problem without diffing prose. It is the sorted set of blocking kinds: a
+// version mismatch giving way to a different-repository mismatch is a different
+// problem and should be reported again, while the same mismatch recurring is not.
+func (v Verdict) DeclineKey() string {
+	if v.Status != StatusIncomparable || len(v.BlockingKinds) == 0 {
+		return ""
+	}
+	kinds := make([]string, 0, len(v.BlockingKinds))
+	for _, k := range v.BlockingKinds {
+		kinds = append(kinds, string(k))
+	}
+	sort.Strings(kinds)
+	return strings.Join(kinds, ",")
+}
+
 // Render is the human-readable verdict: the headline, why the gate did or did not
 // grade, then the delta itself from internal/diff.
 func (v Verdict) Render() string {
