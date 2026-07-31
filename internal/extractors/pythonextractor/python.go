@@ -176,6 +176,7 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 		fileModules[strings.TrimSuffix(f, ".py")] = true
 	}
 	resolveCallTargets(allFacts, fileModules, pkgDirs)
+	resolveImplementsTargets(allFacts, fileModules, pkgDirs)
 
 	// Fold FastAPI include_router mount prefixes onto the bare decorator paths, so
 	// a route reads as the path it actually serves ("/api/v1/cognify") rather than

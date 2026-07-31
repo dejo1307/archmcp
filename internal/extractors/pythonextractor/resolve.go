@@ -113,6 +113,52 @@ func resolveCallTargets(allFacts []facts.Fact, fileModules map[string]bool, pkgD
 	}
 }
 
+func resolveImplementsTargets(allFacts []facts.Fact, fileModules map[string]bool, pkgDirs map[string]bool) {
+	fileIdx := buildSuffixIndex(fileModules, pkgDirs)
+	topPkgs := importableRoots(fileModules, pkgDirs)
+	reexports := buildReexportIndex(allFacts, pkgDirs)
+	symbols := make(map[string]bool)
+	byShortName := make(map[string][]string)
+	for i := range allFacts {
+		if allFacts[i].Kind != facts.KindSymbol {
+			continue
+		}
+		name := allFacts[i].Name
+		symbols[name] = true
+		short := name
+		if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+			short = name[dot+1:]
+		}
+		byShortName[short] = append(byShortName[short], name)
+	}
+
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
+		}
+		for j := range f.Relations {
+			rel := &f.Relations[j]
+			if rel.Kind != facts.RelImplements {
+				continue
+			}
+			if symbols[rel.Target] {
+				continue
+			}
+			if strings.ContainsRune(rel.Target, '.') {
+				if resolved, keep := resolveDottedTarget(rel.Target, fileIdx, topPkgs, fileDir(f.File), reexports, symbols); keep && symbols[resolved] {
+					rel.Target = resolved
+				}
+				continue
+			}
+			candidates := byShortName[rel.Target]
+			if len(candidates) == 1 {
+				rel.Target = candidates[0]
+			}
+		}
+	}
+}
+
 // isDottedCallTarget reports whether a call target is an unresolved dotted path
 // (e.g. "a.b.c") rather than an already-resolved slash symbol name
 // ("dir/mod.sym") or a bare short name ("Foo").
