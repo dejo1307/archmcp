@@ -119,7 +119,30 @@ func resolveImplementsTargets(allFacts []facts.Fact, fileModules map[string]bool
 	reexports := buildReexportIndex(allFacts, pkgDirs)
 	symbols := make(map[string]bool)
 	byShortName := make(map[string][]string)
+	importedByFile := make(map[string]map[string]string)
 	for i := range allFacts {
+		if allFacts[i].Kind == facts.KindDependency && allFacts[i].Props["from"] == true {
+			var module string
+			for _, rel := range allFacts[i].Relations {
+				if rel.Kind == facts.RelImports {
+					module = rel.Target
+					break
+				}
+			}
+			if module != "" {
+				if importedByFile[allFacts[i].File] == nil {
+					importedByFile[allFacts[i].File] = make(map[string]string)
+				}
+				for local, imported := range stringMapProp(allFacts[i].Props, "bindings") {
+					target := module + "." + imported
+					if previous, exists := importedByFile[allFacts[i].File][local]; exists && previous != target {
+						importedByFile[allFacts[i].File][local] = ""
+					} else {
+						importedByFile[allFacts[i].File][local] = target
+					}
+				}
+			}
+		}
 		if allFacts[i].Kind != facts.KindSymbol {
 			continue
 		}
@@ -130,6 +153,11 @@ func resolveImplementsTargets(allFacts []facts.Fact, fileModules map[string]bool
 			short = name[dot+1:]
 		}
 		byShortName[short] = append(byShortName[short], name)
+	}
+	for i := range allFacts {
+		if allFacts[i].Kind == facts.KindDependency && allFacts[i].Props != nil {
+			delete(allFacts[i].Props, "bindings")
+		}
 	}
 
 	for i := range allFacts {
@@ -147,6 +175,12 @@ func resolveImplementsTargets(allFacts []facts.Fact, fileModules map[string]bool
 			}
 			if strings.ContainsRune(rel.Target, '.') {
 				if resolved, keep := resolveDottedTarget(rel.Target, fileIdx, topPkgs, fileDir(f.File), reexports, symbols); keep && symbols[resolved] {
+					rel.Target = resolved
+				}
+				continue
+			}
+			if imported := importedByFile[f.File][rel.Target]; imported != "" {
+				if resolved, keep := resolveDottedTarget(imported, fileIdx, topPkgs, fileDir(f.File), reexports, symbols); keep && symbols[resolved] {
 					rel.Target = resolved
 				}
 				continue
@@ -286,6 +320,23 @@ func stringSliceProp(props map[string]any, key string) []string {
 		return out
 	}
 	return nil
+}
+
+func stringMapProp(props map[string]any, key string) map[string]string {
+	out := make(map[string]string)
+	switch v := props[key].(type) {
+	case map[string]string:
+		for k, value := range v {
+			out[k] = value
+		}
+	case map[string]any:
+		for k, value := range v {
+			if s, ok := value.(string); ok {
+				out[k] = s
+			}
+		}
+	}
+	return out
 }
 
 // resolveDottedTarget maps a dotted call target ("a.b.c.sym") to a canonical slash

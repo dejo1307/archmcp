@@ -477,6 +477,7 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 	// flag them as orphans. Kept only here to avoid bloating every from-import.
 	isInit := w.relFile == "__init__.py" || strings.HasSuffix(w.relFile, "/__init__.py")
 	var reexported []string
+	bindings := make(map[string]string)
 
 	// Map each imported name to a resolvable target or "" (external).
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
@@ -501,6 +502,9 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 			importedName = pyText(c, w.src)
 			localName = importedName
 		}
+		if localName != "" && importedName != "" && importedName != "*" {
+			bindings[localName] = importedName
+		}
 
 		if isInit && importedName != "" && importedName != "*" {
 			reexported = append(reexported, importedName)
@@ -522,6 +526,9 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 		}
 	}
 
+	if len(bindings) > 0 {
+		depProps["bindings"] = bindings
+	}
 	if len(reexported) > 0 {
 		depProps["reexports"] = reexported
 	}
@@ -795,9 +802,6 @@ func (w *pyWalker) handleClass(node *sitter.Node, decorators []string) {
 			switch c.Kind() {
 			case "identifier":
 				base := pyText(c, w.src)
-				if imported := w.importMap[base]; imported != "" {
-					base = imported
-				}
 				bases = append(bases, base)
 				rels = append(rels, facts.Relation{Kind: facts.RelImplements, Target: base})
 			case "attribute":
