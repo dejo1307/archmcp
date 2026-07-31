@@ -831,6 +831,12 @@ The bundled [`mcp-arch.yaml`](mcp-arch.yaml) ships a much fuller `ignore` list (
 
 That line exists because the failure it prevents is silent. A config decides which extractors run and which paths are ignored, so loading the wrong one does not error — it analyses something other than what was asked for. Before the restriction and the announcement, a config sitting beside a `go build` output governed every repository that binary was ever pointed at, from any directory without one of its own; an eleven-extractor list written before the Rust extractor landed turned a 780-file Rust repository into `0 facts`, with no error and no mention of Rust anywhere in the log.
 
+A config that is **missing** falls back to the built-in defaults. A config that is **present and unusable** — unparseable, or naming an `output.dir` that cannot be honoured — is a fatal error instead, because the fallback's `repo: "."` is the working directory: a typo would otherwise make enola analyse whichever repository you were standing in and present it as an answer about the one the config named. Same rule the CLI already applies to an explicitly-named path that does not exist.
+
+**The output directory ignores itself, wherever it is.** `config.Normalize` — run by both `config.Load` and `engine.New`, so a config assembled in code is treated identically — appends `<output.dir>/**` to the ignore list. `.enola/**` remains in the defaults as a literal as well, so a repository that used the default before changing it does not start indexing its own history.
+
+That derivation is load-bearing rather than tidy. The literal used to be the *only* entry, sitting between `.next/**` and `dist/**` as though it were another build-artifact glob, agreeing with `Output.Dir` only by coincidence. Set `output.dir` to anything else and each snapshot walked the previous one's artifacts — `facts.jsonl`, `insights.json`, `llm_context.md`, plus the `previous/` rotation from run 2 onward — so an unchanged tree produced a different snapshot every run. Reproducibility is the property the baseline diff rests on, and comparability checking cannot catch this: the config is identical on both sides.
+
 **A list-valued key REPLACES its default; it does not merge.** `yaml.Unmarshal` overwrites the slice, so `extractors:` names the complete set — a config written before an extractor existed disables it permanently, and a disabled extractor is never tried and so never appears in the log. Two things make that visible: a bundled config that names no plugin lists at all, and a warning naming any *excluded* extractor that would have detected the repository (also recorded as `shadowed_extractors` in the snapshot receipt). The semantics are unchanged on purpose — an explicit list is the only way to disable an extractor.
 
 | Field | Description | Default |
@@ -841,7 +847,7 @@ That line exists because the failure it prevents is silent. A config decides whi
 | `extractors` | Enabled extractors | `["cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust"]` |
 | `explainers` | Enabled explainers | `["cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"]` |
 | `renderers` | Enabled renderers | `["llm_context"]` |
-| `output.dir` | Output directory for artifacts | `".enola"` |
+| `output.dir` | Output directory for artifacts. Must name a **subdirectory of the repository** — it is joined to the repository path, so an absolute value would nest that whole path inside the repo rather than write where it says. An ignore glob is derived from it automatically (see below) | `".enola"` |
 | `output.max_context_tokens` | Token budget for `llm_context.md` | `16000` |
 | `dashboard.port` | The fixed **shared URL** port every server competes for, in addition to its own ephemeral one. A negative value serves only the ephemeral port. `ENOLA_DASHBOARD_PORT` overrides it (`off` disables). | `7171` |
 | `incremental` | Reuse each extractor's cached facts across snapshots when its files are unchanged; set `false` to force full re-extraction every run | `true` |

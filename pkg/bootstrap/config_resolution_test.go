@@ -59,7 +59,10 @@ func TestResolveConfig_WorkingDirectoryConfigWins(t *testing.T) {
 	writeConfig(t, filepath.Join(dir, "mcp-arch.yaml"), "/from-cwd")
 	t.Chdir(dir)
 
-	cfg, note := bootstrap.ResolveConfig("")
+	cfg, note, err := bootstrap.ResolveConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.Repo != "/from-cwd" {
 		t.Errorf("Repo = %q, want the cwd config's value", cfg.Repo)
 	}
@@ -74,7 +77,10 @@ func TestResolveConfig_WorkingDirectoryConfigWins(t *testing.T) {
 func TestResolveConfig_NoConfigSaysSo(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	cfg, note := bootstrap.ResolveConfig("")
+	cfg, note, err := bootstrap.ResolveConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.Repo != "." {
 		t.Errorf("Repo = %q, want the built-in default", cfg.Repo)
 	}
@@ -83,23 +89,35 @@ func TestResolveConfig_NoConfigSaysSo(t *testing.T) {
 	}
 }
 
-// A config that exists but cannot be parsed is a different situation from none at
-// all — the user meant to configure something and it is not in force — so the
-// underlying error must survive into the note.
-func TestResolveConfig_UnparseableConfigReportsTheError(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "mcp-arch.yaml")
-	if err := os.WriteFile(p, []byte("repo: [unterminated\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(dir)
+// A config that EXISTS but cannot be used must be an error, not a fallback.
+//
+// Falling back substitutes the built-in defaults, whose `repo: "."` is the WORKING
+// DIRECTORY — so a typo would make enola analyse whichever repository you happen to
+// be standing in and present the result as an answer about the one the config named.
+// A missing file means "no preferences"; a broken one means the opposite.
+func TestResolveConfig_UnusableConfigIsAnErrorNotAFallback(t *testing.T) {
+	for _, tc := range []struct{ name, yaml string }{
+		{"unparseable", "repo: [unterminated\n"},
+		// Reached through Normalize rather than the YAML parser, and must not be
+		// treated any more leniently: the file is present and says something enola
+		// cannot honour.
+		{"unusable output.dir", "repo: \".\"\noutput:\n  dir: \"/tmp/absolute\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "mcp-arch.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(dir)
 
-	cfg, note := bootstrap.ResolveConfig("")
-	if cfg.Repo != "." {
-		t.Errorf("Repo = %q, want the built-in default after a parse failure", cfg.Repo)
-	}
-	if !strings.Contains(note, "warning") || !strings.Contains(note, "built-in defaults") {
-		t.Errorf("note = %q, want it to carry both the parse error and the fallback", note)
+			cfg, note, err := bootstrap.ResolveConfig("")
+			if err == nil {
+				t.Fatalf("a broken config resolved to %#v with note %q, instead of erroring", cfg, note)
+			}
+			if cfg != nil {
+				t.Errorf("a config was returned alongside the error: %#v", cfg)
+			}
+		})
 	}
 }
 
@@ -110,7 +128,10 @@ func TestResolveConfig_BundledConfigUsedWhenBinaryIsNotOnPATH(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("PATH", filepath.Join(t.TempDir(), "elsewhere"))
 
-	cfg, note := bootstrap.ResolveConfig("")
+	cfg, note, err := bootstrap.ResolveConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.Repo != "/from-bundle" {
 		t.Fatalf("Repo = %q, want the bundled config to apply to an unpacked binary", cfg.Repo)
 	}
@@ -130,7 +151,10 @@ func TestResolveConfig_BundledConfigRefusedWhenBinaryIsOnPATH(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("PATH", exeDir(t)+string(os.PathListSeparator)+"/usr/bin")
 
-	cfg, note := bootstrap.ResolveConfig("")
+	cfg, note, err := bootstrap.ResolveConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.Repo == "/from-bundle" {
 		t.Errorf("a config beside a binary on PATH governed a repository elsewhere; note = %q", note)
 	}
@@ -145,7 +169,10 @@ func TestResolveConfig_ExplicitAbsolutePathNeverFallsBack(t *testing.T) {
 	bundleConfig(t, "/from-bundle")
 	missing := filepath.Join(t.TempDir(), "no-such-config.yaml")
 
-	cfg, _ := bootstrap.ResolveConfig(missing)
+	cfg, _, err := bootstrap.ResolveConfig(missing)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.Repo == "/from-bundle" {
 		t.Error("an explicit config path fell back to the config beside the binary")
 	}

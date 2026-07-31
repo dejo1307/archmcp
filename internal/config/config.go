@@ -149,7 +149,12 @@ func Default() *Config {
 			"**/test_*.py",
 			"**/tests/**/*.py",
 			"**/test/**/*.py",
-			".enola/**",
+			// enola's own output. This is the DEFAULT location only; the glob for the
+			// configured one is derived in Normalize, which is what makes a custom
+			// output.dir safe. The literal stays because a repository that used the
+			// default before changing it still has artifacts here, and indexing its own
+			// history is exactly the failure the derived glob exists to prevent.
+			defaultOutputDir + "/**",
 			// Build / cache artifacts. These are generated output (often transpiled
 			// JS, e.g. Next.js .next/) and must never be indexed as source — doing so
 			// pollutes query_facts with thousands of spurious facts. The **/<dir>/**
@@ -220,7 +225,7 @@ func Default() *Config {
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
-			Dir:              ".enola",
+			Dir:              defaultOutputDir,
 			MaxContextTokens: 16000,
 		},
 	}
@@ -257,15 +262,71 @@ func Load(path string) (*Config, error) {
 		cfg.SourcePath = path
 	}
 
-	// Ensure required defaults
-	if cfg.Output.Dir == "" {
-		cfg.Output.Dir = ".enola"
+	if err := cfg.Normalize(); err != nil {
+		return nil, fmt.Errorf("in config %s: %w", path, err)
 	}
-	if cfg.Output.MaxContextTokens == 0 {
-		cfg.Output.MaxContextTokens = 16000
+	return cfg, nil
+}
+
+// defaultOutputDir is where artifacts go unless output.dir says otherwise. It is
+// also present as a literal in Default().Ignore, and deliberately so — see Normalize.
+const defaultOutputDir = ".enola"
+
+// Normalize fills in required defaults, validates them, and derives the settings
+// that follow from other settings. Idempotent, and called both by Load and by the
+// engine, so a config built in code gets the same treatment as one read from a file.
+//
+// Its real job is the output directory. `.enola/**` used to be a hard-coded literal
+// in the default ignore list, sitting between `.next/**` and `dist/**` as though it
+// were another build-artifact glob, and agreeing with Output.Dir only by coincidence.
+// Point output.dir anywhere else and the next snapshot walked the previous one's
+// artifacts — facts.jsonl, insights.json, llm_context.md, plus the previous/ rotation
+// from run 2 onward — so an unchanged tree produced a different snapshot every run.
+// Reproducibility is the property the baseline diff rests on, and this broke it for a
+// reason that has nothing to do with enola's determinism, on a setting users are
+// invited to change, with a symptom that points nowhere near the cause.
+//
+// The literal `.enola/**` stays in Default().Ignore as well: a repository that once
+// used the default and later changed it must not start indexing its own history.
+func (c *Config) Normalize() error {
+	if c.Output.Dir == "" {
+		c.Output.Dir = defaultOutputDir
+	}
+	if c.Output.MaxContextTokens == 0 {
+		c.Output.MaxContextTokens = 16000
 	}
 
-	return cfg, nil
+	dir, err := cleanOutputDir(c.Output.Dir)
+	if err != nil {
+		return err
+	}
+	c.Output.Dir = dir
+
+	glob := dir + "/**"
+	if !contains(c.Ignore, glob) {
+		c.Ignore = append(c.Ignore, glob)
+	}
+	return nil
+}
+
+// cleanOutputDir validates output.dir and returns it in slash form.
+//
+// It must be a subdirectory of the repository, because that is the only thing the
+// rest of the code can express: Output.Dir is JOINED to the repository path in half a
+// dozen places, so an absolute path silently produced a directory nested inside the
+// repo (/repo/private/tmp/.../out) rather than the location asked for, and an ignore
+// glob derived from it could not describe the artifacts either. An error naming the
+// constraint beats a path that looks accepted and means something else.
+func cleanOutputDir(dir string) (string, error) {
+	if filepath.IsAbs(dir) {
+		return "", fmt.Errorf("output.dir %q must be a path inside the repository, not an absolute one "+
+			"(it is joined to the repository path, so an absolute value would nest the whole path inside the repo)", dir)
+	}
+	clean := filepath.ToSlash(filepath.Clean(dir))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("output.dir %q must name a subdirectory of the repository", dir)
+	}
+	return clean, nil
 }
 
 // RepoPaths returns the absolute repository paths this run covers, in the order

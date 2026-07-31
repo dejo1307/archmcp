@@ -234,35 +234,46 @@ const defaultConfigName = "mcp-arch.yaml"
 //
 // Lookup order: the given path (or mcp-arch.yaml) relative to the working
 // directory, then — only for an unpacked bundle, see bundledConfigDir — a copy
-// beside the executable. Built-in defaults when neither resolves.
-func ResolveConfig(cfgPath string) (*config.Config, string) {
+// beside the executable. Built-in defaults when neither exists.
+//
+// A config that EXISTS but cannot be used is an error, not a fallback. The two
+// cases look similar and are not: a missing mcp-arch.yaml means "no preferences,
+// use the defaults", while an unparseable one — or one naming an output.dir that
+// cannot be honoured — means the user configured something and it is not in force.
+// Falling back there substitutes `repo: "."`, so a typo makes enola analyse the
+// working directory and present the result as an answer about the repository the
+// config named. The CLI already learned this once, for an explicitly-named path
+// that does not exist (see the default case in cmd/enola/main.go); this is the same
+// rule for a file that is present and wrong.
+func ResolveConfig(cfgPath string) (*config.Config, string, error) {
 	if cfgPath == "" {
 		cfgPath = defaultConfigName
 	}
 
 	cfg, err := config.Load(cfgPath)
 	if err == nil {
-		return cfg, "enola: using config " + cfg.SourcePath
+		return cfg, "enola: using config " + cfg.SourcePath, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, "", err
 	}
 
 	if !filepath.IsAbs(cfgPath) {
 		if exeDir, ok := bundledConfigDir(); ok {
-			if bundled, bErr := config.Load(filepath.Join(exeDir, cfgPath)); bErr == nil {
+			bundled, bErr := config.Load(filepath.Join(exeDir, cfgPath))
+			if bErr == nil {
 				wd, _ := os.Getwd()
 				return bundled, fmt.Sprintf("enola: using config %s (found next to the enola binary, not in %s)",
-					bundled.SourcePath, wd)
+					bundled.SourcePath, wd), nil
+			}
+			if !errors.Is(bErr, fs.ErrNotExist) {
+				return nil, "", bErr
 			}
 		}
 	}
 
-	if errors.Is(err, fs.ErrNotExist) {
-		wd, _ := os.Getwd()
-		return config.Default(), fmt.Sprintf("enola: no %s in %s, using built-in defaults", cfgPath, wd)
-	}
-	// A config that exists but cannot be read or parsed is a different situation
-	// from none at all: the user meant to configure something and it is not in
-	// force. Keep the underlying error rather than reporting only the fallback.
-	return config.Default(), fmt.Sprintf("warning: %v; using built-in defaults", err)
+	wd, _ := os.Getwd()
+	return config.Default(), fmt.Sprintf("enola: no %s in %s, using built-in defaults", cfgPath, wd), nil
 }
 
 // bundledConfigDir returns the executable's directory when a config sitting there
@@ -305,7 +316,10 @@ func bundledConfigDir() (string, bool) {
 // Use the returned Engine's methods to add additional (enterprise) plugins
 // before starting the server or generating snapshots.
 func NewEngine(opts Options) (*Engine, *config.Config, error) {
-	cfg, note := ResolveConfig(opts.ConfigPath)
+	cfg, note, err := ResolveConfig(opts.ConfigPath)
+	if err != nil {
+		return nil, nil, err
+	}
 	fmt.Fprintln(os.Stderr, note)
 
 	eng, err := engine.New(cfg)

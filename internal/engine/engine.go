@@ -68,6 +68,14 @@ type Engine struct {
 // New creates a new Engine with the given config.
 // Extractors, explainers, and renderers must be registered after creation.
 func New(cfg *config.Config) (*Engine, error) {
+	// Normalize here as well as in config.Load: a config assembled in code — by a
+	// test, by a wrapper, by anything that did not read a file — must get the same
+	// derived ignore glob for its output directory, or it indexes its own artifacts.
+	// Idempotent, so the file path pays nothing for it.
+	if err := cfg.Normalize(); err != nil {
+		return nil, err
+	}
+
 	// The build-scratch store and the initial published store are the same empty
 	// store, so AutoLoadSnapshot (which mutates Store() in place before serving)
 	// and the first generate both start from a consistent, non-nil bundle.
