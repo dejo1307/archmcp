@@ -119,7 +119,7 @@ enola check --warn-only          # report everything, fail nothing
 
 Not a language model, and not embeddings. enola parses your source with tree-sitter and language-specific extractors, normalizes it into a typed fact model, links it into a directed graph, and runs real graph algorithms over it — Tarjan's SCC for cycles, cycle-safe longest-path for dependency depth, mean+2σ outlier tests for the statistical findings.
 
-That means the same commit yields the same answer, every time. Every snapshot carries a **receipt**: enola's version, the git ref and whether the tree was dirty, the extractors used, and a snapshot ID that's a `sha256` fingerprint of the facts rather than a random UUID. Before trusting a comparison, enola checks the two snapshots were even built the same way — a different extractor set or changed ignore rules makes a diff meaningless, and it says so instead of reporting churn as if it were your change.
+That means the same commit yields the same answer, every time — measured, not asserted: across 30 open-source repositories indexed three times each, all 30 produced a byte-identical snapshot ID and a byte-identical fact file, over 3.9 million facts with zero parse errors ([BENCHMARKS.md](docs/BENCHMARKS.md)). Every snapshot carries a **receipt**: enola's version, the git ref and whether the tree was dirty, the extractors used, and a snapshot ID that's a `sha256` fingerprint of the facts rather than a random UUID. Before trusting a comparison, enola checks the two snapshots were even built the same way — a different extractor set or changed ignore rules makes a diff meaningless, and it says so instead of reporting churn as if it were your change.
 
 Nothing leaves your machine. It's a local binary reading local files.
 
@@ -173,6 +173,8 @@ Framework- and platform-specific detection for each language is described in **[
 ## Learn more
 
 - **[docs/CLI.md](docs/CLI.md)** - setup, every command and flag, the exit codes, and the `--explain` report.
+- **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** - reproducibility, delta precision, cross-repo coverage and scale, measured on 30 public repositories - including the three defects the run found in enola itself.
+- **[docs/extraction/](docs/extraction/)** - per language, what specific code produces which facts, from committed fixtures - and what each extractor deliberately does not resolve.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - the concept, the fact model, the pipeline, the MCP tool reference, and the value model.
 - **[examples/](examples/)** - ready-made per-language and multi-repo configs, plus a pre-commit hook and a CI workflow.
 

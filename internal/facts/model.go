@@ -232,18 +232,25 @@ type SnapshotMeta struct {
 	ConfigHash   string   `json:"config_hash,omitempty"`   // hash of the effective config (extractors, explainers, renderers, globs, output) — a superset of IgnoreGlobHash
 
 	// Extraction-quality fields (the loop signal).
-	FilesSeen         int               `json:"files_seen,omitempty"`         // source files the walker enumerated (excludes ignored)
-	FilesParsed       int               `json:"files_parsed,omitempty"`       // distinct files that produced at least one fact
-	SourceBytes       int64             `json:"source_bytes,omitempty"`       // on-disk bytes of the FilesParsed set — the corpus this graph replaces reading (see pkg/status value model)
-	FilesSkipped      int               `json:"files_skipped,omitempty"`      // ignored FILES the walker visited; a pruned directory counts once in DirsSkipped, not once per file
-	DirsSkipped       int               `json:"dirs_skipped,omitempty"`       // ignored DIRECTORIES pruned whole; their contents are never visited, so they are counted nowhere else
-	SkippedSample     []string          `json:"skipped_sample,omitempty"`     // a capped sample of both, each naming the glob that matched it
-	IgnoreGlobHash    string            `json:"ignore_glob_hash,omitempty"`   // hash of the sorted ignore+test globs
-	ParseErrors       int               `json:"parse_errors,omitempty"`       // count of extractor detect/parse failures (non-fatal)
-	ParseErrorSample  []ParseError      `json:"parse_error_sample,omitempty"` // a capped sample of those failures
-	HeuristicInsights int               `json:"heuristic_insights,omitempty"` // count of insights with confidence < 1.0 (heuristics, vs. structural facts)
-	Coverage          *CoverageSummary  `json:"coverage,omitempty"`           // cross-repo edge-coverage rollup, nil in single-repo mode
-	OutputHashes      map[string]string `json:"output_hashes,omitempty"`      // artifact name -> "sha256:"-prefixed hash of its written bytes
+	FilesSeen      int      `json:"files_seen,omitempty"`       // source files the walker enumerated (excludes ignored)
+	FilesParsed    int      `json:"files_parsed,omitempty"`     // distinct files that produced at least one fact
+	SourceBytes    int64    `json:"source_bytes,omitempty"`     // on-disk bytes of the FilesParsed set — the corpus this graph replaces reading (see pkg/status value model)
+	FilesSkipped   int      `json:"files_skipped,omitempty"`    // ignored FILES the walker visited; a pruned directory counts once in DirsSkipped, not once per file
+	DirsSkipped    int      `json:"dirs_skipped,omitempty"`     // ignored DIRECTORIES pruned whole; their contents are never visited, so they are counted nowhere else
+	SkippedSample  []string `json:"skipped_sample,omitempty"`   // a capped sample of both, each naming the glob that matched it
+	IgnoreGlobHash string   `json:"ignore_glob_hash,omitempty"` // hash of the sorted ignore+test globs
+	// ShadowedExtractors names extractors that detected this repository but were
+	// excluded by an explicit `extractors:` list — languages present in the source
+	// and absent from the graph. Recorded because the alternative evidence is a
+	// negative (an extractor that never appears in the log), which is unreadable
+	// after the fact: a receipt showing thin extraction should say whose facts are
+	// missing by configuration rather than by absence.
+	ShadowedExtractors []string          `json:"shadowed_extractors,omitempty"`
+	ParseErrors        int               `json:"parse_errors,omitempty"`       // count of extractor detect/parse failures (non-fatal)
+	ParseErrorSample   []ParseError      `json:"parse_error_sample,omitempty"` // a capped sample of those failures
+	HeuristicInsights  int               `json:"heuristic_insights,omitempty"` // count of insights with confidence < 1.0 (heuristics, vs. structural facts)
+	Coverage           *CoverageSummary  `json:"coverage,omitempty"`           // cross-repo edge-coverage rollup, nil in single-repo mode
+	OutputHashes       map[string]string `json:"output_hashes,omitempty"`      // artifact name -> "sha256:"-prefixed hash of its written bytes
 }
 
 // FileHash tracks a file's content hash for incremental updates.

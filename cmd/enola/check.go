@@ -41,11 +41,9 @@ type target struct {
 func resolveTarget(arg string) target {
 	cfgPath := "mcp-arch.yaml"
 	repoOverride := ""
-	note := ""
 
 	switch {
 	case arg == "":
-		note = "config " + cfgPath + " (or built-in defaults)"
 	case isDirectory(arg):
 		abs, err := filepath.Abs(arg)
 		if err != nil {
@@ -54,18 +52,27 @@ func resolveTarget(arg string) target {
 		repoOverride = abs
 		if inner := filepath.Join(abs, "mcp-arch.yaml"); fileExists(inner) {
 			cfgPath = inner
-			note = "repo " + abs + " (config " + inner + ")"
-		} else {
-			note = "repo " + abs + " (built-in default config)"
 		}
 	default:
 		cfgPath = arg
-		note = "config " + arg
 	}
 
 	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{ConfigPath: cfgPath})
 	if err != nil {
 		checkFatal("failed to create engine: %v", err)
+	}
+
+	// The note names the config that was LOADED, not the one that was looked for.
+	// The two differ whenever the lookup falls back — to built-in defaults, or to a
+	// config sitting beside the binary — and a note that reports the intent as
+	// though it were the outcome is worse than none: it is a confirmation of
+	// something nobody checked.
+	note := "built-in default config"
+	if cfg.SourcePath != "" {
+		note = "config " + cfg.SourcePath
+	}
+	if repoOverride != "" {
+		note = "repo " + repoOverride + " (" + note + ")"
 	}
 	if repoOverride != "" {
 		// Repos would otherwise win in RepoPaths and silently ignore the directory the

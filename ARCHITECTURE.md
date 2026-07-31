@@ -825,7 +825,13 @@ output:
   max_context_tokens: 16000
 ```
 
-The bundled [`mcp-arch.yaml`](mcp-arch.yaml) ships a much fuller `ignore` list (Android/Gradle, Xcode/SPM, Rails, CI, Docker, env files, …); see it and the per-language configs under [`examples/`](examples/) for ready-made starting points.
+The bundled [`mcp-arch.yaml`](mcp-arch.yaml) ships a much fuller `ignore` list (Android/Gradle, Xcode/SPM, Rails, CI, Docker, env files, …); see it and the per-language configs under [`examples/`](examples/) for ready-made starting points. It deliberately declares **no** `extractors:`, `explainers:` or `renderers:` — see the override rule below.
+
+**Resolution, and why it is announced.** `bootstrap.ResolveConfig` looks for the named path (default `mcp-arch.yaml`) relative to the working directory, then — only when the running binary is *not* on `PATH`, i.e. an unpacked bundle rather than an installed one — beside the executable. Whatever it settles on is printed to stderr by every command (`enola: using config <path>`, or `no mcp-arch.yaml in <cwd>, using built-in defaults`), and the executable-adjacent case says so explicitly.
+
+That line exists because the failure it prevents is silent. A config decides which extractors run and which paths are ignored, so loading the wrong one does not error — it analyses something other than what was asked for. Before the restriction and the announcement, a config sitting beside a `go build` output governed every repository that binary was ever pointed at, from any directory without one of its own; an eleven-extractor list written before the Rust extractor landed turned a 780-file Rust repository into `0 facts`, with no error and no mention of Rust anywhere in the log.
+
+**A list-valued key REPLACES its default; it does not merge.** `yaml.Unmarshal` overwrites the slice, so `extractors:` names the complete set — a config written before an extractor existed disables it permanently, and a disabled extractor is never tried and so never appears in the log. Two things make that visible: a bundled config that names no plugin lists at all, and a warning naming any *excluded* extractor that would have detected the repository (also recorded as `shadowed_extractors` in the snapshot receipt). The semantics are unchanged on purpose — an explicit list is the only way to disable an extractor.
 
 | Field | Description | Default |
 |-------|-------------|---------|

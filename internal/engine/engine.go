@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -318,10 +319,11 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		cache = loadExtractorCache(cachePath)
 	}
 	preCount := e.store.Count()
-	usedExtractors, parseErrs, err := e.runExtractors(ctx, absRepo, files, currentHashes, cache)
+	usedExtractors, shadowedExtractors, parseErrs, err := e.runExtractors(ctx, absRepo, files, currentHashes, cache)
 	if err != nil {
 		return nil, fmt.Errorf("extraction: %w", err)
 	}
+	e.reportShadowed(absRepo, shadowedExtractors)
 	if cache != nil {
 		log.Printf("[engine] extractor cache: %d reused", cache.hits)
 		if e.persistCache {
@@ -430,17 +432,18 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			Git:          gitInfo(absRepo, e.cfg.Output.Dir),
 			ConfigHash:   configHash,
 
-			FilesSeen:         len(files),
-			FilesParsed:       e.store.CountFilesWithFacts(files, parsedPrefix),
-			SourceBytes:       e.store.SourceBytesWithFacts(files, parsedPrefix, absRepo),
-			FilesSkipped:      skips.count,
-			DirsSkipped:       skips.dirCount,
-			SkippedSample:     skips.sample,
-			IgnoreGlobHash:    ignoreGlobHash,
-			ParseErrors:       len(parseErrs),
-			ParseErrorSample:  capParseErrors(parseErrs),
-			HeuristicInsights: countHeuristicInsights(allInsights),
-			Coverage:          coverageSummary(e.store),
+			FilesSeen:          len(files),
+			FilesParsed:        e.store.CountFilesWithFacts(files, parsedPrefix),
+			SourceBytes:        e.store.SourceBytesWithFacts(files, parsedPrefix, absRepo),
+			FilesSkipped:       skips.count,
+			DirsSkipped:        skips.dirCount,
+			SkippedSample:      skips.sample,
+			IgnoreGlobHash:     ignoreGlobHash,
+			ShadowedExtractors: shadowedExtractors,
+			ParseErrors:        len(parseErrs),
+			ParseErrorSample:   capParseErrors(parseErrs),
+			HeuristicInsights:  countHeuristicInsights(allInsights),
+			Coverage:           coverageSummary(e.store),
 		},
 		// FactsRef aliases the store's slice rather than copying it. This is safe:
 		// `work` is published (below) and then NEVER mutated again — the next
@@ -716,8 +719,12 @@ func (e *Engine) ignoreMatch(relPath string) (string, bool) {
 // runExtractors detects applicable extractors and runs them. When cache is
 // non-nil, extractors implementing plugin.FileOwner have their facts reused
 // whenever the files they depend on are unchanged since the last snapshot.
-func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []string, hashes map[string]string, cache *extractorCache) ([]string, []facts.ParseError, error) {
+//
+// It also reports the SHADOWED extractors: those registered and applicable to this
+// repository, but excluded by an explicit `extractors:` list. See reportShadowed.
+func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []string, hashes map[string]string, cache *extractorCache) ([]string, []string, []facts.ParseError, error) {
 	var usedNames []string
+	var shadowed []string
 	var parseErrs []facts.ParseError
 
 	var keys map[string]string
@@ -727,6 +734,16 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 
 	for _, ext := range e.extractors.All() {
 		if !e.cfg.IsExtractorEnabled(ext.Name()) {
+			// Disabled by config. Detect anyway when the list was written by hand,
+			// so the one case worth a warning — a language present in the repo that
+			// this config will not extract — is named rather than left as an absence.
+			// Detect is a cheap file-presence probe, and only disabled extractors
+			// reach here, so this costs nothing on a config that enables everything.
+			if e.cfg.ExtractorsExplicit {
+				if detected, err := ext.Detect(repoPath); err == nil && detected {
+					shadowed = append(shadowed, ext.Name())
+				}
+			}
 			continue
 		}
 
@@ -774,7 +791,28 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 		log.Printf("[engine] extractor %s: emitted %d facts in %s", ext.Name(), len(extracted), time.Since(tExt).Round(time.Millisecond))
 	}
 
-	return usedNames, parseErrs, nil
+	return usedNames, shadowed, parseErrs, nil
+}
+
+// reportShadowed warns about extractors that would have contributed facts but were
+// excluded by an explicit `extractors:` list.
+//
+// An explicit list replaces the defaults rather than extending them, so a config
+// written before an extractor existed disables it permanently — and a disabled
+// extractor is not merely quiet, it never appears in the log at all. The failure
+// looks exactly like a repository with nothing to find: a 780-file Rust repo
+// reported 0 facts, no error, no mention of Rust. This is the line that names it.
+func (e *Engine) reportShadowed(repoPath string, shadowed []string) {
+	if len(shadowed) == 0 {
+		return
+	}
+	sort.Strings(shadowed)
+	where := "your config"
+	if e.cfg.SourcePath != "" {
+		where = e.cfg.SourcePath
+	}
+	log.Printf("[engine] warning: extractor(s) %s detected %s but are absent from the extractors: list in %s — they contribute no facts. An explicit extractors: list REPLACES the built-in defaults; add them to index these languages.",
+		strings.Join(shadowed, ", "), repoPath, where)
 }
 
 // runTestRefExtractors runs reference-only extraction over the test/spec files

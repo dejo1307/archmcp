@@ -116,31 +116,18 @@ ignore:
   - "**/*Test.php"
   - "**/*TestCase.php"
   - "**/*Cest.php"
-extractors:
-  - cpp
-  - go
-  - grpc
-  - java
-  - kotlin
-  - openapi
-  - php
-  - python
-  - typescript
-  - swift
-  - ruby
-explainers:
-  - cycles
-  - layers
-  - crossrepo
-  - coverage
-  - unused-routes
-  - god-class
-  - hotspots
-  - dependency-depth
-  - exported-surface
-  - complexity-outliers
-renderers:
-  - llm_context
+# extractors: / explainers: / renderers: are deliberately ABSENT.
+#
+# Each of these keys REPLACES the built-in list rather than extending it, so a
+# file that merely mirrors config.Default() can do only one thing: fall behind it.
+# This file used to list eleven extractors, which silently disabled Rust for every
+# repository it governed from the day the Rust extractor landed — and because a
+# config beside the binary also applies to repositories elsewhere, that reached far
+# past this one. Omitting the keys means new extractors, explainers and renderers
+# are picked up automatically.
+#
+# Set them only to genuinely narrow a run (e.g. `extractors: [go]` to index Go
+# alone). enola warns when an extractor you excluded would have detected the repo.
 output:
   dir: ".enola"
   max_context_tokens: 4000

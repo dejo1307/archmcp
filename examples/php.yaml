@@ -46,13 +46,13 @@ ignore:
   - "**/*.md"
 extractors:
   - php
-explainers:
-  - cycles
-  - layers
-  - crossrepo
-  - coverage
-renderers:
-  - llm_context
+# explainers: / renderers: are deliberately absent.
+#
+# A list-valued key REPLACES the built-in list rather than extending it, so naming
+# a subset here silently disables everything that ships beyond it — this file used
+# to pin four explainers, turning off the other six (god-class, hotspots,
+# unused-routes, dependency-depth, exported-surface, complexity-outliers) for anyone
+# who adopted it. Omitting the keys means new plugins arrive automatically.
 output:
   dir: ".enola"
   max_context_tokens: 16000

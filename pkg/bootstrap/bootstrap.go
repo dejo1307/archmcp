@@ -3,7 +3,9 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -215,26 +217,96 @@ type Options struct {
 	ConfigPath string
 }
 
+// defaultConfigName is the config file every command looks for when none is named.
+const defaultConfigName = "mcp-arch.yaml"
+
+// ResolveConfig loads the effective configuration and returns it alongside a
+// one-line description of WHERE it came from, for the caller to print.
+//
+// The description is not decoration. A config governs which extractors run and
+// which paths are ignored, so a run against the wrong config does not fail — it
+// quietly analyses something other than what was asked for. The case that made
+// this necessary: a config predating the Rust extractor, sitting next to a
+// `go build` output, disabled Rust for every repository that binary was ever
+// pointed at, from any directory, with no warning and no mention of Rust in the
+// log. Naming the resolved path on every command converts that from a silent
+// wrong answer into an obvious one.
+//
+// Lookup order: the given path (or mcp-arch.yaml) relative to the working
+// directory, then — only for an unpacked bundle, see bundledConfigDir — a copy
+// beside the executable. Built-in defaults when neither resolves.
+func ResolveConfig(cfgPath string) (*config.Config, string) {
+	if cfgPath == "" {
+		cfgPath = defaultConfigName
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err == nil {
+		return cfg, "enola: using config " + cfg.SourcePath
+	}
+
+	if !filepath.IsAbs(cfgPath) {
+		if exeDir, ok := bundledConfigDir(); ok {
+			if bundled, bErr := config.Load(filepath.Join(exeDir, cfgPath)); bErr == nil {
+				wd, _ := os.Getwd()
+				return bundled, fmt.Sprintf("enola: using config %s (found next to the enola binary, not in %s)",
+					bundled.SourcePath, wd)
+			}
+		}
+	}
+
+	if errors.Is(err, fs.ErrNotExist) {
+		wd, _ := os.Getwd()
+		return config.Default(), fmt.Sprintf("enola: no %s in %s, using built-in defaults", cfgPath, wd)
+	}
+	// A config that exists but cannot be read or parsed is a different situation
+	// from none at all: the user meant to configure something and it is not in
+	// force. Keep the underlying error rather than reporting only the fallback.
+	return config.Default(), fmt.Sprintf("warning: %v; using built-in defaults", err)
+}
+
+// bundledConfigDir returns the executable's directory when a config sitting there
+// should be honoured, and false otherwise.
+//
+// The fallback is defensible for a distribution unpacked as a unit — binary and
+// config shipped together, run from anywhere. It is indefensible for an INSTALLED
+// binary: a config beside enola on PATH governs every invocation from every
+// directory that has no config of its own, which is most of them, and the user has
+// no reason to connect the two. Being on PATH is what separates the cases, so an
+// exe directory that is a PATH entry is refused.
+func bundledConfigDir() (string, bool) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", false
+	}
+	// Resolve symlinks: a Homebrew-style /usr/local/bin/enola -> ../Cellar/... link
+	// is an installed binary, and its real directory is where a bundled config would
+	// live. Best-effort — an unresolvable link falls back to the literal path.
+	if resolved, rErr := filepath.EvalSymlinks(exePath); rErr == nil {
+		exePath = resolved
+	}
+	exeDir := filepath.Clean(filepath.Dir(exePath))
+
+	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
+		if entry == "" {
+			continue
+		}
+		if abs, aErr := filepath.Abs(entry); aErr == nil {
+			entry = abs
+		}
+		if filepath.Clean(entry) == exeDir {
+			return "", false
+		}
+	}
+	return exeDir, true
+}
+
 // NewEngine creates an Engine with all OSS plugins registered.
 // Use the returned Engine's methods to add additional (enterprise) plugins
 // before starting the server or generating snapshots.
 func NewEngine(opts Options) (*Engine, *config.Config, error) {
-	cfgPath := opts.ConfigPath
-	if cfgPath == "" {
-		cfgPath = "mcp-arch.yaml"
-	}
-
-	cfg, err := config.Load(cfgPath)
-	if err != nil && !filepath.IsAbs(cfgPath) {
-		if exePath, exErr := os.Executable(); exErr == nil {
-			exeDir := filepath.Dir(exePath)
-			cfg, err = config.Load(filepath.Join(exeDir, cfgPath))
-		}
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v, using defaults\n", err)
-		cfg = config.Default()
-	}
+	cfg, note := ResolveConfig(opts.ConfigPath)
+	fmt.Fprintln(os.Stderr, note)
 
 	eng, err := engine.New(cfg)
 	if err != nil {

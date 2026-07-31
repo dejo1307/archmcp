@@ -41,7 +41,18 @@ Because your agent launches enola as a long-lived MCP server process, an upgrade
 
 ### Configuration (optional)
 
-**enola needs no config file.** Every setting has a built-in default, so out of the box it indexes the current repo with all extractors enabled and writes to `.enola/`. A config file (`mcp-arch.yaml`) only *overrides* those defaults - it never adds capability you'd otherwise lack. When enola can't find one it simply prints `warning: …, using defaults` and carries on.
+**enola needs no config file.** Every setting has a built-in default, so out of the box it indexes the current repo with all extractors enabled and writes to `.enola/`. A config file (`mcp-arch.yaml`) only *overrides* those defaults - it never adds capability you'd otherwise lack.
+
+Every command prints the config it resolved, on stderr, before it does anything:
+
+```
+enola: using config /Users/you/src/api/mcp-arch.yaml
+enola: no mcp-arch.yaml in /Users/you/src/api, using built-in defaults
+```
+
+It is worth reading. A config decides which extractors run and which paths are ignored, so the wrong one does not fail - it analyses something other than what you asked for. enola looks in the working directory, then (only for a binary that is *not* on your `PATH`, i.e. an unpacked bundle rather than an installed one) beside the executable; the second case says so explicitly.
+
+Note that a list-valued setting **replaces** its default rather than extending it. That is why the bundled `mcp-arch.yaml` declares no `extractors:`, `explainers:` or `renderers:` - a copied list silently falls behind as new ones ship. Set `extractors:` only to deliberately narrow a run; enola warns when an extractor you excluded would have detected the repository.
 
 The install script installs **only the binary**, by design - it does not place a config file. Grab the bundled one from the repo whenever you want to customize (tune the `ignore` globs, pick a subset of extractors, change the output dir, …):
 

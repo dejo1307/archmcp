@@ -4,7 +4,7 @@
 # ignore patterns for every language. Use this as a starting point
 # and remove sections that don't apply to your project.
 #
-# Supported extractors:
+# Supported extractors — all enabled by default, so this file lists none:
 #   - go         (detection: go.mod)
 #   - java       (detection: pom.xml, build.gradle, or .java sources)
 #   - kotlin     (detection: build.gradle.kts or build.gradle with Kotlin/Android)
@@ -14,6 +14,10 @@
 #   - rust       (detection: Cargo.toml)
 #   - cpp        (detection: .cpp/.hpp/... or CMakeLists.txt/Makefile + header)
 #   - php        (detection: composer.json, WordPress markers, or any .php source)
+#   - python     (detection: pyproject.toml, setup.py, requirements.txt, Pipfile,
+#                 or a tool config — pytest.ini/mypy.ini/tox.ini/setup.cfg)
+#   - grpc       (detection: first-party .proto sources)
+#   - openapi    (detection: a YAML/JSON file whose content is an OpenAPI spec)
 
 repo: "."
 ignore:
@@ -97,23 +101,18 @@ ignore:
   - "**/Dockerfile*"
   - "**/.env*"
 
-extractors:
-  - cpp
-  - go
-  - java
-  - kotlin
-  - typescript
-  - swift
-  - ruby
-  - rust
-  - php
-explainers:
-  - cycles
-  - layers
-  - crossrepo
-  - coverage
-renderers:
-  - llm_context
+# extractors: / explainers: / renderers: are deliberately absent.
+#
+# A list-valued key REPLACES the built-in list rather than extending it, so naming
+# a subset here silently disables everything that ships beyond it. Both lists had
+# already fallen behind: `extractors:` claimed to enable every language while
+# omitting grpc, openapi and python, and `explainers:` pinned four of the ten,
+# turning off god-class, hotspots, unused-routes, dependency-depth,
+# exported-surface and complexity-outliers for anyone who adopted this file.
+#
+# The defaults ARE everything, so a config that means "all of it" says nothing at
+# all. Narrow the lists only on purpose, as the per-language examples in this
+# directory do.
 output:
   dir: ".enola"
   max_context_tokens: 16000

@@ -35,6 +35,17 @@ type Config struct {
 	// Repos entries against the config's own directory.
 	SourcePath string `yaml:"-"`
 
+	// ExtractorsExplicit reports whether the file named `extractors:` itself, as
+	// opposed to inheriting Default()'s list. Not read from YAML — set by Load.
+	//
+	// It exists because the two cases are indistinguishable afterwards and mean
+	// opposite things. An explicit list REPLACES the defaults (YAML unmarshalling of
+	// a sequence overwrites the slice), so a config written before an extractor
+	// existed permanently disables it — silently, since a disabled extractor is
+	// simply never tried. Knowing the list was explicit lets the engine say so when
+	// a disabled extractor would have detected the repository.
+	ExtractorsExplicit bool `yaml:"-"`
+
 	Ignore     []string     `yaml:"ignore"`
 	TestGlobs  []string     `yaml:"test_globs"`
 	Extractors []string     `yaml:"extractors"`
@@ -226,6 +237,17 @@ func Load(path string) (*Config, error) {
 	cfg := Default()
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+	}
+
+	// Whether the key was PRESENT cannot be recovered from cfg afterwards: an
+	// absent `extractors:` leaves Default()'s list in place, and a list identical
+	// to it unmarshals to the same value. A second pass with a pointer field is
+	// the only way to tell "inherited the defaults" from "chose exactly these".
+	var probe struct {
+		Extractors *[]string `yaml:"extractors"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err == nil {
+		cfg.ExtractorsExplicit = probe.Extractors != nil
 	}
 	// Recorded so Repos entries resolve against the config's own directory; see
 	// RepoPaths.
