@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/hookstate"
 	"github.com/enola-labs/enola/pkg/install"
 )
 
@@ -148,9 +150,48 @@ func runInstall(args []string, remove bool) {
 	fmt.Println()
 	printPlan(applied)
 
+	// Stamp the heartbeat so `enola doctor` can later say "installed on X, never fired
+	// since" — the one report that distinguishes hooks that are wired up from hooks that
+	// merely look wired up. Local scope only: a global install has no repository whose
+	// output directory could hold the record.
+	if opts.Scope == install.ScopeLocal {
+		if outDir := hookOutputDir(repoDir); outDir != "" {
+			switch {
+			case remove:
+				// A stale "never fired since <date>" after the hooks were deliberately
+				// removed would be a false alarm, so the record goes with them.
+				hookstate.Clear(outDir)
+			case opts.Hooks:
+				hookstate.RecordInstalled(outDir, opts.HookCommand)
+			}
+		}
+	}
+
 	if !remove && opts.Hooks {
 		fmt.Println("\nRestart your agent session for the hooks to take effect.")
+		fmt.Println("Then `enola doctor` will tell you whether they are actually firing.")
 	}
+}
+
+// hookOutputDir resolves a repository's enola output directory without building an
+// engine, so `install` neither pays for plugin registration nor emits the engine's
+// config line in the middle of its own report.
+//
+// It mirrors what the hooks themselves do: a repo-local mcp-arch.yaml when there is
+// one, built-in defaults otherwise. A config that cannot be read falls back to the
+// defaults rather than failing the install — the heartbeat is a diagnostic, and a
+// diagnostic must never be the reason an install breaks.
+func hookOutputDir(repoDir string) string {
+	cfg := config.Default()
+	if p := filepath.Join(repoDir, "mcp-arch.yaml"); fileExists(p) {
+		if loaded, err := config.Load(p); err == nil {
+			cfg = loaded
+		}
+	}
+	if err := cfg.Normalize(); err != nil {
+		return ""
+	}
+	return filepath.Join(repoDir, cfg.Output.Dir)
 }
 
 func act(o install.Options, remove bool) ([]install.Result, error) {

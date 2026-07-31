@@ -13,6 +13,7 @@ import (
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/filelock"
+	"github.com/enola-labs/enola/internal/hookstate"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/check"
 )
@@ -70,7 +71,14 @@ func runStopHook(ctx context.Context) {
 	// Silence is the norm. The gate only has something to say when a baseline was pinned
 	// during this session AND the change regressed the architecture; every other path
 	// ends here, having printed nothing.
-	verdict, ok := gradeQuietly(ctx, in.CWD)
+	verdict, outDir, ok := gradeQuietly(ctx, in.CWD)
+
+	// Record the run BEFORE deciding whether to speak, and on every path. The silent
+	// paths are the ones worth recording: a hook that never fires and a hook that fires
+	// and finds nothing are indistinguishable in a session, and only one of them is
+	// broken. See internal/hookstate and DEFECTS_FOUND.md.
+	hookstate.RecordFired(outDir, hookstate.EventStop, stopOutcome(verdict, ok))
+
 	if !ok || verdict.Status != check.StatusRegression {
 		return
 	}
@@ -164,6 +172,13 @@ func pinBaselineSingleFlight(ctx context.Context, repoDir string) {
 		return
 	}
 
+	// Recorded in the detached child rather than in the hook the agent calls, because
+	// the parent returns before knowing anything and resolving the output dir there
+	// would reintroduce the very work detaching exists to avoid. Doing nothing is still
+	// a run: "skipped" and "never fired" are different states, and only one is a fault.
+	outcome := hookstate.OutcomeSkipped
+	defer func() { hookstate.RecordFired(outDir, hookstate.EventSessionStart, outcome) }()
+
 	// Non-blocking: several agent terminals open on one repository is the documented
 	// normal case, and queueing them would turn one redundant snapshot into a series of
 	// them running back to back. Whoever gets the lock does the work; the rest do nothing.
@@ -194,6 +209,7 @@ func pinBaselineSingleFlight(ctx context.Context, repoDir string) {
 	// Stamp it as ours, so a later session may replace it and a deliberate pin may not be
 	// replaced by us. Written after SetBaseline, which republishes the directory.
 	_ = os.WriteFile(filepath.Join(baselineDir, autoPinMarker), nil, 0o644)
+	outcome = hookstate.OutcomePinned
 }
 
 // shouldAutoPin decides whether to replace the existing baseline.
@@ -227,30 +243,54 @@ func shouldAutoPin(baselineDir, repoDir, outputDir string) bool {
 	return now.Commit != base.Meta.Git.Commit
 }
 
+// stopOutcome classifies a Stop-hook run for the heartbeat.
+//
+// The distinction that earns its keep is OutcomeDeclined: the hook is silent for an
+// incomparable baseline exactly as it is silent for a clean change, and only a
+// heartbeat can tell an operator which of the two has been happening all week.
+func stopOutcome(v check.Verdict, ok bool) hookstate.Outcome {
+	if !ok {
+		return hookstate.OutcomeUnavailable
+	}
+	switch v.Status {
+	case check.StatusRegression:
+		return hookstate.OutcomeReported
+	case check.StatusIncomparable:
+		return hookstate.OutcomeDeclined
+	default:
+		return hookstate.OutcomeClean
+	}
+}
+
 // gradeQuietly runs the gate, returning ok=false for every reason a hook should stay
 // silent rather than report a problem.
-func gradeQuietly(ctx context.Context, repoDir string) (check.Verdict, bool) {
+//
+// It also returns the engine's output directory, which the caller needs to record the
+// heartbeat. That is returned even on the failure paths wherever it is known, because
+// "the hook ran and could not grade" is precisely the state worth having on record.
+func gradeQuietly(ctx context.Context, repoDir string) (check.Verdict, string, bool) {
 	if !isDirectory(repoDir) {
-		return check.Verdict{}, false
+		return check.Verdict{}, "", false
 	}
 
 	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{ConfigPath: configForRepo(repoDir)})
 	if err != nil {
-		return check.Verdict{}, false
+		return check.Verdict{}, "", false
 	}
 	cfg.Repo, cfg.Repos = repoDir, nil
 	repoPaths, err := cfg.RepoPaths()
 	if err != nil || len(repoPaths) == 0 {
-		return check.Verdict{}, false
+		return check.Verdict{}, "", false
 	}
 	anchor := repoPaths[0]
+	outDir := eng.OutputDir(anchor)
 
 	// Load the baseline BEFORE snapshotting. Without one there is nothing to grade, and
 	// checking first means the common case costs nothing rather than paying for a full
 	// snapshot to discover it was pointless.
-	base, err := bootstrap.LoadSnapshotDir(engine.ResolveBaselineDir(eng.OutputDir(anchor), "pinned"))
+	base, err := bootstrap.LoadSnapshotDir(engine.ResolveBaselineDir(outDir, "pinned"))
 	if err != nil {
-		return check.Verdict{}, false
+		return check.Verdict{}, outDir, false
 	}
 
 	// Read-only, exactly like `enola check`: the hook must not mutate the repository's
@@ -258,16 +298,16 @@ func gradeQuietly(ctx context.Context, repoDir string) (check.Verdict, bool) {
 	eng.SetPersistCache(false)
 	for i, p := range repoPaths {
 		if _, err := eng.GenerateSnapshot(ctx, p, i > 0); err != nil {
-			return check.Verdict{}, false
+			return check.Verdict{}, outDir, false
 		}
 	}
 	snap := eng.Snapshot()
 	if snap == nil || eng.Store().Count() == 0 {
-		return check.Verdict{}, false
+		return check.Verdict{}, outDir, false
 	}
 	current := &facts.Snapshot{Meta: snap.Meta, Facts: eng.Store().All(), Insights: snap.Insights}
 
-	return check.Evaluate(diff.Compute(base, current), check.Policy{}), true
+	return check.Evaluate(diff.Compute(base, current), check.Policy{}), outDir, true
 }
 
 // configForRepo prefers a config inside the repository, matching how `enola check`

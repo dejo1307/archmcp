@@ -4,15 +4,26 @@
 #
 #     git config core.hooksPath .githooks
 #
-# It runs two checks:
+# It runs three checks:
 #   1. cacheVersion coverage guard (fast, no CGO): fails if a `// vN:` changelog
 #      entry in internal/engine/cache.go has no registered test in
 #      internal/cachecov/coverage_test.go — i.e. an extractor behavior was bumped
 #      without a covering test.
 #   2. golden + determinism: the extractor fact graph for the fixture repos is
 #      byte-identical to the committed goldens and reproducible across runs.
+#   3. the agent-hook end-to-end test — ONLY when the push touches the installer.
 #
-# To skip in an emergency: `git push --no-verify` (CI still enforces both).
+# Why 3 lives here and not in CI: it needs a real Claude Code session, and CI runners
+# do not run agent sessions by design. That is not a gap that can be closed by moving
+# it — the hook config is a contract owned by another product, so the check has to run
+# somewhere an agent exists. A developer's machine is the only such place, which makes
+# this hook the last line before a release. `enola doctor` is the line after it.
+#
+# It is scoped to installer changes because it costs ~90s and a few cents of API spend.
+# An unconditional gate that expensive is one people turn off, and a guard nobody runs
+# protects nothing.
+#
+# To skip in an emergency: `git push --no-verify` (CI still enforces 1 and 2).
 set -e
 
 echo "pre-push: cacheVersion coverage guard…"
@@ -20,5 +31,36 @@ go test -count=1 -run TestCacheVersionCoverage ./internal/cachecov/
 
 echo "pre-push: golden + determinism…"
 go test -count=1 -run 'TestGolden|TestDeterminism' ./internal/engine/...
+
+# ── 3. agent hooks, only when the installer moved ─────────────────────────────
+# git feeds pre-push one line per ref: <local ref> <local sha> <remote ref> <remote sha>
+zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+changed=""
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+	[ -z "$local_sha" ] && continue
+	[ "$local_sha" = "$zero" ] && continue # branch deletion: nothing to check
+	if [ "$remote_sha" = "$zero" ]; then
+		# New branch: compare against whatever it forked from, falling back to the
+		# previous commit rather than diffing the entire history.
+		base=$(git merge-base "$local_sha" origin/HEAD 2>/dev/null || echo "$local_sha^")
+	else
+		base="$remote_sha"
+	fi
+	changed="$changed$(git diff --name-only "$base" "$local_sha" 2>/dev/null || true)
+"
+done
+
+if printf '%s' "$changed" | grep -qE '^(pkg/install/|cmd/enola/hook\.go|cmd/enola/doctor\.go|internal/hookstate/)'; then
+	if ! command -v claude >/dev/null 2>&1; then
+		echo "pre-push: installer changed, but 'claude' is not on PATH — SKIPPING the hook"
+		echo "          end-to-end test. Nothing else can catch a hook that never fires;"
+		echo "          run it manually before releasing:"
+		echo "              ENOLA_E2E=1 go test -run TestStopHook_FiresInARealSession ./pkg/install/"
+	else
+		echo "pre-push: installer changed — agent hook end-to-end test (~90s, real session)…"
+		ENOLA_E2E=1 go test -count=1 -timeout 15m \
+			-run TestStopHook_FiresInARealSession ./pkg/install/
+	fi
+fi
 
 echo "pre-push: OK"

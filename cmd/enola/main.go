@@ -47,6 +47,9 @@ func main() {
 		case "coverage":
 			runCoverage(ctx, os.Args[2:])
 			os.Exit(0)
+		case "doctor":
+			runDoctor(os.Args[2:])
+			os.Exit(0)
 		case "baseline":
 			runBaseline(os.Args[2:])
 			os.Exit(0)
@@ -314,7 +317,7 @@ func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, 
 
 // knownSubcommands are dispatched before the flag loop. Listed here so an argument that
 // was MEANT to be one gets a targeted message instead of a generic path error.
-var knownSubcommands = []string{"check", "coverage", "baseline", "install", "uninstall", "upgrade"}
+var knownSubcommands = []string{"check", "coverage", "doctor", "baseline", "install", "uninstall", "upgrade"}
 
 // unknownArgHelp explains a rejected argument in terms of what the caller probably meant.
 //
