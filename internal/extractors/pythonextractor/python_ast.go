@@ -795,6 +795,9 @@ func (w *pyWalker) handleClass(node *sitter.Node, decorators []string) {
 			switch c.Kind() {
 			case "identifier":
 				base := pyText(c, w.src)
+				if imported := w.importMap[base]; imported != "" {
+					base = imported
+				}
 				bases = append(bases, base)
 				rels = append(rels, facts.Relation{Kind: facts.RelImplements, Target: base})
 			case "attribute":
