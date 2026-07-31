@@ -283,6 +283,83 @@ func TestResolveCallTargets_AbsoluteInternal_RewritesToSlashSymbol(t *testing.T)
 	}
 }
 
+func TestExtract_PythonResolvesInheritanceTarget(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"pkg/__init__.py":    "",
+		"pkg/wrongparent.py": "class Parent:\n    pass\n",
+		"pkg/parent.py":      "class Parent:\n    pass\n",
+		"pkg/child.py":       "from pkg.parent import Parent\n\nclass Child(Parent):\n    pass\n",
+	}
+	var rel []string
+	for name, content := range files {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rel = append(rel, name)
+	}
+
+	all, err := New().Extract(context.Background(), dir, rel)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	for _, f := range all {
+		if f.Kind != facts.KindSymbol || f.Name != "pkg/child.Child" {
+			continue
+		}
+		if hasRel(f, facts.RelImplements, "pkg/parent.Parent") {
+			return
+		}
+		t.Fatalf("Child inheritance target = %v, want pkg/parent.Parent", f.Relations)
+	}
+	t.Fatal("missing pkg/child.Child symbol")
+}
+
+func TestExtract_PythonResolvesMultipleInheritanceTargets(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"pkg/__init__.py": "",
+		"pkg/father.py":   "class Father:\n    pass\n",
+		"pkg/mother.py":   "class Mother:\n    pass\n",
+		"pkg/child.py":    "from pkg.father import Father\nfrom pkg.mother import Mother\n\nclass Child(Father, Mother):\n    pass\n",
+	}
+	var rel []string
+	for name, content := range files {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rel = append(rel, name)
+	}
+
+	all, err := New().Extract(context.Background(), dir, rel)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	for _, f := range all {
+		if f.Kind != facts.KindSymbol || f.Name != "pkg/child.Child" {
+			continue
+		}
+		if !hasRel(f, facts.RelImplements, "pkg/father.Father") {
+			t.Errorf("Child missing Father inheritance target: %v", f.Relations)
+		}
+		if !hasRel(f, facts.RelImplements, "pkg/mother.Mother") {
+			t.Errorf("Child missing Mother inheritance target: %v", f.Relations)
+		}
+		return
+	}
+	t.Fatal("missing pkg/child.Child symbol")
+}
+
 func TestResolveCallTargets_External_DropsEdge(t *testing.T) {
 	fileModules := modSet("airflow-core/src/airflow/models/dag")
 	ff := []facts.Fact{
