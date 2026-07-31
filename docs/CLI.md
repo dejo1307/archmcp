@@ -453,6 +453,8 @@ enola baseline pin /path/to/repo    # 1. freeze how it looks now, BEFORE editing
 enola check /path/to/repo           # 2. grade what they did
 ```
 
+The baseline is a pinned artifact rather than "whatever state the tool last held" - it survives re-snapshots, publishes atomically, and travels to another machine. Why the graph works that way at all: **[docs/SNAPSHOTS.md](SNAPSHOTS.md)**.
+
 | Exit | Meaning |
 |------|---------|
 | `0` | **clean** - no structural regression |

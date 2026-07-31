@@ -175,7 +175,8 @@ Framework- and platform-specific detection for each language is described in **[
 ## Learn more
 
 - **[docs/CLI.md](docs/CLI.md)** - setup, every command and flag, the exit codes, and the `--explain` report.
-- **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** - reproducibility, delta precision, cross-repo coverage and scale, measured on 30 public repositories - including the three defects the run found in enola itself.
+- **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** - reproducibility, delta precision, cross-repo coverage and scale, measured on 38 public repositories.
+- **[docs/SNAPSHOTS.md](docs/SNAPSHOTS.md)** - why enola computes a graph on demand and keeps it as an addressable snapshot rather than maintaining one continuously-updated graph - and where the opposite choice is the right one.
 - **[docs/extraction/](docs/extraction/)** - per language, what specific code produces which facts, from committed fixtures - and what each extractor deliberately does not resolve.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - the concept, the fact model, the pipeline, the MCP tool reference, and the value model.
 - **[examples/](examples/)** - ready-made per-language and multi-repo configs, plus a pre-commit hook and a CI workflow.

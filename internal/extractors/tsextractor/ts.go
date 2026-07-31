@@ -1431,7 +1431,7 @@ func tryParseTSConfigAliases(tsconfigPath string) (map[string]string, bool) {
 //     churn is indistinguishable from a real change.
 //
 // Ties are broken on the prefix string so the result is a total order, not merely a
-// less-arbitrary one. See DEFECTS_FOUND.md.
+// less-arbitrary one.
 func resolveImportPath(importPath, fileDir string, aliases map[string]string) (string, bool) {
 	bestPrefix, bestReplacement := "", ""
 	for prefix, replacement := range aliases {

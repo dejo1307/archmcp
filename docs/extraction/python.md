@@ -80,8 +80,8 @@ test_ref  tests/test_app.py   --calls--> app/api.handler
 ## Routes — FastAPI router factories and `include_router`
 
 The dominant FastAPI idiom builds the router *inside* a function and nests the handlers
-as inner `def`s. Walking module-level statements never reaches those decorators, so this
-file used to emit no routes at all:
+as inner `def`s. Walking module-level statements never reaches those decorators, so a
+module-level walk finds no routes in this file at all:
 
 ```python
 # api/routers/search.py — the paths here are leaves

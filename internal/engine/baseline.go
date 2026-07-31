@@ -65,7 +65,7 @@ func (e *Engine) SetBaseline(repoPath string) error {
 // rotatePrevious copies the existing snapshot artifacts (if any) from outDir into
 // outDir/previous/ before they are overwritten, giving a one-step-back baseline
 // for diffing without any explicit pin. It is a no-op when no prior snapshot
-// exists. Only the three root artifact files are copied, so the previous/ and
+// exists. Only the root artifact files are copied, so the previous/ and
 // baseline/ subdirs are never nested into themselves.
 func rotatePrevious(outDir string) error {
 	if _, err := os.Stat(filepath.Join(outDir, "facts.jsonl")); err != nil {

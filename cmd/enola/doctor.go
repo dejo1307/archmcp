@@ -20,7 +20,7 @@ import (
 // It exists because of a failure mode a test cannot cover. `enola install --hooks`
 // wrote a configuration the agent silently ignored, so the hooks never fired — and
 // nothing anywhere said so. The installer reported success, the hook binary worked when
-// invoked by hand, and the agent simply never called it. See DEFECTS_FOUND.md.
+// invoked by hand, and the agent simply never called it.
 //
 // The shape of that configuration is a contract owned by the agent, which ships on its
 // own schedule and can change after enola is released. So the durable check is not a

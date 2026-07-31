@@ -96,6 +96,10 @@ This is the property everything else rests on. `snapshot_id` is
 commit are provably the same graph — which is what lets `compare_receipts` refuse to
 diff snapshots that are not comparable instead of reporting churn as your change.
 
+An ID a third party can re-derive is the point rather than a hygiene property: it is
+what makes a graph a value you can keep and compare, instead of a state you are
+currently in — [SNAPSHOTS.md](SNAPSHOTS.md).
+
 ## 2. Delta precision — the ratchet
 
 The claim is that enola reports **what your change did** and stays silent about
@@ -327,7 +331,9 @@ of the three did — and the transcripts say why. From one of them, unprompted:
 
 That is the loop working as designed: the agent introduced the cycle, the Stop hook
 graded the session and handed back the verdict, and the agent corrected itself before
-reporting done. It cost roughly double the turns and 3.6× the money of the bare run.
+reporting done. It took roughly double the turns and 3.6× the money of the bare run —
+which is what checking and then fixing costs against not checking at all, since the
+bare run's $0.31 bought a tree with a dependency cycle in it.
 
 **Read this before quoting the table.**
 
@@ -339,6 +345,12 @@ reporting done. It cost roughly double the turns and 3.6× the money of the bare
   tool, `generate_snapshot`. The loop arm did not succeed because the agent asked
   enola the right question — it succeeded because something asked on its behalf when
   it stopped. That is the whole argument for the hook over the instruction.
+- **The cost column is not enola's price.** It compares an agent that checked its work
+  against one that did not: the bare arm is cheap because it stopped early and shipped
+  the cycle three times out of three. The arm that would isolate what enola costs does
+  not exist here — an agent told to establish the same property *without* a graph,
+  re-deriving the module structure from source on every task. Do not read $0.31 → $1.12
+  as the overhead of adding enola to a run that was otherwise identical.
 - **The instruction arm improved on bare anyway** (1/3 vs 3/3), which is worth being
   honest about: having a structural map in context appears to help even when the
   agent never queries the delta. With three trials, that could equally be noise.
@@ -350,8 +362,9 @@ reporting done. It cost roughly double the turns and 3.6× the money of the bare
 Stated so the numbers above are not read as more than they are.
 
 - **Retrieval speed, token counts and cost per query.** Deliberately absent. It is
-  the axis where every tool in this space competes and the one where enola's evidence
-  would be weakest — the A/B above shows the enola-equipped arms costing 2–3.6× *more*.
+  the axis where every tool in this space competes, and enola has no evidence to offer
+  on it. The A/B's cost column is not that evidence — it compares checking against not
+  checking, not one retrieval path against another.
 - **The session hooks in interactive use.** Section 6 exercises them headlessly, under
   `claude -p`. The configuration is the same either way, but interactive sessions were
   not measured.
@@ -397,4 +410,5 @@ enola coverage cluster.yaml
 
 Per-language extraction detail: **[docs/extraction/](extraction/README.md)** ·
 Commands and flags: **[docs/CLI.md](CLI.md)** ·
+Why the graph is a snapshot: **[docs/SNAPSHOTS.md](SNAPSHOTS.md)** ·
 How the engine works: **[ARCHITECTURE.md](../ARCHITECTURE.md)**

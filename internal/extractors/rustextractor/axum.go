@@ -151,8 +151,7 @@ func collectMethodRouterChain(node *sitter.Node, src []byte) []axumRouteEntry {
 			// `.route(path, …)` call, which is a MethodRouter by construction, so any
 			// method on it is a wrapper around one.
 			//
-			// Found on a production Axum service added to the benchmark corpus; see
-			// DEFECTS_FOUND.md.
+			// Found on a production Axum service added to the benchmark corpus.
 			return collectMethodRouterChain(fn.ChildByFieldName("value"), src)
 		}
 		entries := collectMethodRouterChain(fn.ChildByFieldName("value"), src)

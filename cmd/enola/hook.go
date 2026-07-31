@@ -76,7 +76,7 @@ func runStopHook(ctx context.Context) {
 	// Record the run BEFORE deciding whether to speak, and on every path. The silent
 	// paths are the ones worth recording: a hook that never fires and a hook that fires
 	// and finds nothing are indistinguishable in a session, and only one of them is
-	// broken. See internal/hookstate and DEFECTS_FOUND.md.
+	// broken. See internal/hookstate.
 	declineKey := ""
 	if ok {
 		declineKey = verdict.DeclineKey()

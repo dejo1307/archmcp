@@ -21,8 +21,7 @@ import (
 // positional form yielded ZERO client routes for such a repository, and a Retrofit
 // interface with no routes produces no mobile-to-backend edges at all, silently: the
 // "which screens break if I change this endpoint" question just returns nothing.
-// Found by adding a real Android application to the benchmark corpus; see
-// DEFECTS_FOUND.md.
+// Found by adding a real Android application to the benchmark corpus.
 var retrofitAnnotation = regexp.MustCompile(`@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*\(\s*(?:value\s*=\s*)?"([^"]*)"`)
 
 // absoluteClientURL matches an absolute http(s) URL in a Retrofit annotation,

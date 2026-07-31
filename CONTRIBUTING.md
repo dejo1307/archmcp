@@ -69,10 +69,9 @@ hook runs it automatically when your push touches one of those paths, and skips 
 loud message if `claude` is not on your `PATH`.
 
 Please do not treat it as optional. The failure mode it guards against is a hook
-configuration that parses, reports success, and does nothing: every cheaper check
-passed while the `Stop` hook was silently never firing, because a unit test can only
-compare the output against the same belief that produced it. The full account is in
-[`DEFECTS_FOUND.md`](DEFECTS_FOUND.md).
+configuration that parses, reports success, and does nothing — and every cheaper check
+passes while that is true, because a unit test can only compare the output against the
+same belief that produced it.
 
 If you cannot run it, say so in the PR so a reviewer can. `enola doctor` is the
 same question asked after the fact, on a real repository.

@@ -5,7 +5,7 @@
 // the hooks never fired — and every cheaper check passed while it was broken: the
 // installer wrote the file it meant to, the hook binary produced the right verdict
 // when invoked by hand, and a unit test asserted the shape against the same belief
-// that produced it. See DEFECTS_FOUND.md.
+// that produced it.
 //
 // The shape of that config is a contract owned by the agent, which ships on its own
 // schedule and can change after enola is released. So it is not testable here in any
