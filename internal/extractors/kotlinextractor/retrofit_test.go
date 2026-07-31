@@ -86,3 +86,45 @@ interface AdService {
 		t.Errorf("relative annotation must not be external; got %+v", rel)
 	}
 }
+
+// TestRetrofit_NamedValueArgument covers the `@GET(value = "…")` form.
+//
+// Kotlin allows any single-argument annotation to be written with its argument
+// named, and real Android codebases do — Google's reference app writes every
+// endpoint that way. Matching only the positional form yielded ZERO client routes
+// for such a repository: not a wrong route, no routes at all, and therefore no
+// mobile-to-backend edges and no answer to "which screens break if I change this
+// endpoint". Found by adding a production Android app to the benchmark corpus.
+func TestRetrofit_NamedValueArgument(t *testing.T) {
+	src := `package com.example.core.network.retrofit
+
+interface NetworkApi {
+    @GET(value = "topics")
+    suspend fun getTopics(@Query("ids") ids: List<String>?): NetworkResponse<List<NetworkTopic>>
+
+    @POST(value = "/api/v1/sync")
+    suspend fun sync(@Body body: SyncRequest): NetworkResponse<Unit>
+
+    @GET("positional/still/works")
+    suspend fun positional(): NetworkResponse<Unit>
+}
+`
+	ff := extractRetrofitFacts([]byte(src), "core/network/retrofit/NetworkApi.kt")
+	if len(ff) != 3 {
+		t.Fatalf("expected 3 client routes, got %d: %+v", len(ff), ff)
+	}
+
+	byName := map[string]string{}
+	for _, f := range ff {
+		byName[f.Name], _ = f.Props["method"].(string)
+	}
+	for path, want := range map[string]string{
+		"topics":                 "GET",
+		"/api/v1/sync":           "POST",
+		"positional/still/works": "GET",
+	} {
+		if got := byName[path]; got != want {
+			t.Errorf("route %q method = %q, want %q (all of: %+v)", path, got, want, byName)
+		}
+	}
+}

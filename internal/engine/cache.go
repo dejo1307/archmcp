@@ -844,7 +844,47 @@ import (
 // the same file are composed; cross-file mount resolution needs a repo-wide pass and
 // is deliberately not attempted. Bare catch-alls (app.get('*')) are skipped for the
 // same reason: a SPA fallback is not an endpoint and would match any client path.
-const cacheVersion = "v143"
+// v144: two annotation/chain forms that real code uses and the extractors did not
+// read, each found by adding a production repository to the benchmark corpus rather
+// than by inspection — which is the point of having one.
+//
+// Kotlin/Retrofit: `@GET(value = "topics")`. Kotlin permits any single-argument
+// annotation to be written with its argument named, and Google's reference Android
+// app writes EVERY endpoint that way. Matching only the positional form yielded zero
+// client routes there, and a Retrofit interface with no routes contributes no
+// mobile-to-backend edges at all — so "which screens break if I change this
+// endpoint" answered nothing, silently, on an entire class of Android codebase.
+//
+// Rust/Axum: `.route("/x", get(handler).layer(mw))`. A non-verb method in the
+// MethodRouter chain was treated as a terminator, so per-route middleware — which is
+// idiomatic Axum — discarded the verbs beneath it and dropped the route entirely,
+// with `get` sitting in plain sight. Non-verb methods are now transparent: the walk
+// recurses past them and keeps the chain below. Only ever applied to the second
+// argument of `.route(path, …)`, which is a MethodRouter by construction, so any
+// method on it is a wrapper around one.
+//
+// Unchanged, and still deliberate: `.route(path, handler_var)` emits nothing. There
+// is no verb to infer, and inventing one would produce a route that could false-match
+// another repository's endpoint — worse than the visible gap.
+// v145: TypeScript alias resolution picked among OVERLAPPING aliases by Go map
+// iteration order, taking the first match rather than the most specific one.
+//
+// Wrong twice over. tsconfig `paths` resolution is most-specific-first, so a project
+// mapping both "@acme/schema" and "@acme/" means the former for "@acme/schema/x" —
+// the old code could resolve it to either. And because map iteration is randomized,
+// "either" meant a DIFFERENT answer on different runs of the same unchanged tree.
+//
+// Measured on a 15k-file monorepo that maps one package both to its source and to its
+// built output: 2 facts of 163,582 flipped between runs — enough that three
+// consecutive `enola check` runs on an untouched tree reported `edges +1/-1`, then
+// `+6/-6`, then clean. It was the only repository of 38 that failed byte-level
+// reproducibility, and the failure is the expensive kind: a delta tool that invents
+// churn is worse than one that is merely incomplete, because invented churn is
+// indistinguishable from a real change.
+//
+// Longest matching prefix now wins, ties broken on the prefix string so the result is
+// a total order rather than a less-arbitrary one.
+const cacheVersion = "v145"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

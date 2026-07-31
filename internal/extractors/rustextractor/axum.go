@@ -139,7 +139,21 @@ func collectMethodRouterChain(node *sitter.Node, src []byte) []axumRouteEntry {
 		}
 		name := nodeText(field, src)
 		if !axumHTTPMethods[name] {
-			return nil
+			// A non-verb method in the chain is a DECORATOR, not a terminator:
+			// `.route("/x", get(h).layer(mw))` attaches per-route middleware and is
+			// idiomatic Axum, as are `.route_layer(…)` and `.with_state(…)`. Bailing
+			// out here discarded the verbs underneath it, so the whole route vanished
+			// even though `get` was sitting right there — a route silently absent from
+			// the graph, which is the worst way to be wrong. Recurse past it instead
+			// and keep whatever the chain below yields.
+			//
+			// Safe to be permissive: this only ever runs on the SECOND argument of a
+			// `.route(path, …)` call, which is a MethodRouter by construction, so any
+			// method on it is a wrapper around one.
+			//
+			// Found on a production Axum service added to the benchmark corpus; see
+			// DEFECTS_FOUND.md.
+			return collectMethodRouterChain(fn.ChildByFieldName("value"), src)
 		}
 		entries := collectMethodRouterChain(fn.ChildByFieldName("value"), src)
 		return append(entries, axumRouteEntry{method: strings.ToUpper(name), handler: axumFirstArgName(node, src)})

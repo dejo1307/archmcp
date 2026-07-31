@@ -1161,3 +1161,51 @@ func TestExtract_ThisMemberReference_EventHandler(t *testing.T) {
 		t.Errorf("render should reference this.handleClick (event handler value); relations: %v", render.Relations)
 	}
 }
+
+// TestResolveImportPath_LongestAliasWinsDeterministically pins both halves of the
+// overlapping-alias fix: the most specific alias is chosen (tsconfig `paths`
+// semantics), and the choice does not depend on Go's randomized map iteration.
+//
+// The determinism half is the one that bit: a monorepo mapping a package to BOTH its
+// source and its built output resolved the same import differently between runs, so
+// `enola check` reported edge churn on an untouched tree. Repeating the resolution is
+// what makes this a regression test rather than a coin flip that happened to land.
+func TestResolveImportPath_LongestAliasWinsDeterministically(t *testing.T) {
+	aliases := map[string]string{
+		"@acme/":       "public/@acme/",
+		"@acme/schema": "packages/acme-schema/src",
+		"@":            "src/",
+	}
+
+	for _, tc := range []struct {
+		importPath string
+		want       string
+	}{
+		// Three aliases match; the longest is the answer, not whichever came first.
+		{"@acme/schema/veneer", "packages/acme-schema/src/veneer"},
+		// Only the two shorter ones match here.
+		{"@acme/runtime", "public/@acme/runtime"},
+		{"@utils/thing", "src/utils/thing"},
+	} {
+		for i := 0; i < 50; i++ {
+			got, external := resolveImportPath(tc.importPath, "src/app", aliases)
+			if external {
+				t.Fatalf("%s: resolved as external", tc.importPath)
+			}
+			if got != tc.want {
+				t.Fatalf("%s: got %q, want %q (iteration %d — alias choice is order-dependent)",
+					tc.importPath, got, tc.want, i)
+			}
+		}
+	}
+}
+
+func TestResolveImportPath_NonAliasPathsUnchanged(t *testing.T) {
+	aliases := map[string]string{"@/": "src/"}
+	if got, ext := resolveImportPath("./sibling", "src/app", aliases); ext || got != "src/app/sibling" {
+		t.Errorf("relative import = %q external=%v", got, ext)
+	}
+	if got, ext := resolveImportPath("react", "src/app", aliases); !ext || got != "react" {
+		t.Errorf("bare package should stay external, got %q external=%v", got, ext)
+	}
+}

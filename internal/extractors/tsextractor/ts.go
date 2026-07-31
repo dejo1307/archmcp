@@ -1415,13 +1415,36 @@ func tryParseTSConfigAliases(tsconfigPath string) (map[string]string, bool) {
 
 // resolveImportPath normalizes a TypeScript import path to a filesystem-relative path.
 // It handles path aliases (@/), relative imports (./), and identifies external packages.
+//
+// When several aliases match, the LONGEST prefix wins. Two rules in one:
+//
+//   - Correctness. tsconfig `paths` resolution is most-specific-first, so a project
+//     mapping both "@acme/schema" and "@acme/" means the former for "@acme/schema/x".
+//     Taking any match resolved such imports to the wrong module.
+//   - Determinism. This used to `range` the alias map and return on first match. Go
+//     randomizes map iteration, so on a monorepo that maps a package BOTH to its source
+//     and to its built output, the same import resolved to a different module on
+//     different runs — and the snapshot stopped being reproducible. Measured on a
+//     15k-file monorepo: 2 facts of 163,582 flipped between runs, which was enough to
+//     make `enola check` report `edges +6/-6` on a tree nobody had touched. A delta
+//     tool that invents churn is worse than one that is merely incomplete, because the
+//     churn is indistinguishable from a real change.
+//
+// Ties are broken on the prefix string so the result is a total order, not merely a
+// less-arbitrary one. See DEFECTS_FOUND.md.
 func resolveImportPath(importPath, fileDir string, aliases map[string]string) (string, bool) {
-	// Try alias resolution first
+	bestPrefix, bestReplacement := "", ""
 	for prefix, replacement := range aliases {
-		if strings.HasPrefix(importPath, prefix) {
-			rest := strings.TrimPrefix(importPath, prefix)
-			return filepath.ToSlash(filepath.Clean(replacement + rest)), false
+		if !strings.HasPrefix(importPath, prefix) {
+			continue
 		}
+		if len(prefix) > len(bestPrefix) || (len(prefix) == len(bestPrefix) && prefix < bestPrefix) {
+			bestPrefix, bestReplacement = prefix, replacement
+		}
+	}
+	if bestPrefix != "" {
+		rest := strings.TrimPrefix(importPath, bestPrefix)
+		return filepath.ToSlash(filepath.Clean(bestReplacement + rest)), false
 	}
 
 	// Relative imports

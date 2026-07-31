@@ -258,3 +258,72 @@ fn app() -> Router {
 		t.Errorf("expected no handler prop for a closure handler, got %v", routes[0].Props["handler"])
 	}
 }
+
+// TestAxum_PerRouteLayerDoesNotSwallowTheVerb covers `.route(p, get(h).layer(mw))`.
+//
+// A non-verb method in the MethodRouter chain used to terminate the walk, so
+// per-route middleware — idiomatic Axum — discarded the verbs beneath it and the
+// route vanished entirely, with `get` sitting in plain sight. A route silently absent
+// from the graph is the worst way to be wrong: nothing reports it, and a client
+// calling that path resolves to nothing. Found on a production Axum service added to
+// the benchmark corpus.
+func TestAxum_PerRouteLayerDoesNotSwallowTheVerb(t *testing.T) {
+	ff := extractComposed(t, map[string]string{
+		"src/router.rs": `
+fn build() -> Router {
+    Router::new()
+        .route("/plain", get(root))
+        .route("/layered", get(openapi::handler).layer(Extension(Arc::new(openapi))))
+        .route("/stacked", post(create).layer(a).route_layer(b))
+        .route("/both_verbs_then_layer", get(list).post(create).layer(mw))
+}`,
+	})
+
+	got := routePaths(ff)
+	for _, want := range []string{"/plain", "/layered", "/stacked", "/both_verbs_then_layer"} {
+		if !got[want] {
+			t.Errorf("missing route %q — a decorator in the chain dropped it; got %v", want, got)
+		}
+	}
+
+	// The verbs under the decorator must survive, not just the path.
+	methods := map[string]map[string]bool{}
+	for _, f := range ff {
+		if f.Kind != facts.KindRoute {
+			continue
+		}
+		m, _ := f.Props["method"].(string)
+		if methods[f.Name] == nil {
+			methods[f.Name] = map[string]bool{}
+		}
+		methods[f.Name][m] = true
+	}
+	if !methods["/layered"]["GET"] {
+		t.Errorf("/layered lost its GET verb: %v", methods["/layered"])
+	}
+	if !methods["/both_verbs_then_layer"]["GET"] || !methods["/both_verbs_then_layer"]["POST"] {
+		t.Errorf("/both_verbs_then_layer should keep both verbs, got %v", methods["/both_verbs_then_layer"])
+	}
+}
+
+// TestAxum_HandlerValueWithoutVerbStillEmitsNothing pins the deliberate half of the
+// same walk: `.route(path, handler_var)` has no verb to infer, and inventing one
+// would produce a route that could false-match another repository's endpoint. The
+// permissive recursion above must not turn this into a guess.
+func TestAxum_HandlerValueWithoutVerbStillEmitsNothing(t *testing.T) {
+	ff := extractComposed(t, map[string]string{
+		"src/router.rs": `
+fn build() -> Router {
+    Router::new()
+        .route("/from_var", okay.clone())
+        .route("/real", get(handler))
+}`,
+	})
+	got := routePaths(ff)
+	if got["/from_var"] {
+		t.Error("/from_var has no HTTP verb and must not be emitted")
+	}
+	if !got["/real"] {
+		t.Error("/real should still be extracted")
+	}
+}

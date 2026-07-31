@@ -13,7 +13,17 @@ import (
 //
 //	@GET("/api/settings/entitlements/users/{userID}/active")
 //	@POST("auth/login")
-var retrofitAnnotation = regexp.MustCompile(`@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*\(\s*"([^"]*)"`)
+//	@GET(value = "topics")
+//
+// The `value =` form is the same annotation written with its argument named, which
+// Kotlin allows for any single-argument annotation and which real Android codebases
+// use — Google's own reference app writes every endpoint that way. Matching only the
+// positional form yielded ZERO client routes for such a repository, and a Retrofit
+// interface with no routes produces no mobile-to-backend edges at all, silently: the
+// "which screens break if I change this endpoint" question just returns nothing.
+// Found by adding a real Android application to the benchmark corpus; see
+// DEFECTS_FOUND.md.
+var retrofitAnnotation = regexp.MustCompile(`@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*\(\s*(?:value\s*=\s*)?"([^"]*)"`)
 
 // absoluteClientURL matches an absolute http(s) URL in a Retrofit annotation,
 // capturing the host and the remaining path. A full URL targets a fixed external
