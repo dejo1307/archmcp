@@ -158,21 +158,24 @@ func TestInstall_HooksMergeWithoutDisturbingTheUsersConfig(t *testing.T) {
 			t.Errorf("after install, %q is missing:\n%s", want, got)
 		}
 	}
-	// SessionStart is matcher-grouped while Stop is a flat list. Writing one shape where
-	// the other is expected yields a config that parses and never fires, so the grouping
-	// is asserted rather than assumed.
+	// The user's own flat Stop entry is preserved as written. It does not fire — no
+	// flat entry does — but it is their file, and rewriting somebody's config into a
+	// shape they did not choose is not a repair we get to make silently.
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
 		t.Fatal(err)
 	}
 	hookMap, _ := parsed["hooks"].(map[string]any)
-	ss, _ := hookMap["SessionStart"].([]any)
-	if len(ss) == 0 {
-		t.Fatalf("SessionStart not written:\n%s", got)
+	stop, _ := hookMap["Stop"].([]any)
+	foundUsersEntry := false
+	for _, e := range stop {
+		m, ok := e.(map[string]any)
+		if ok && m["command"] == "my-own-notify.sh" {
+			foundUsersEntry = true
+		}
 	}
-	group, ok := ss[0].(map[string]any)
-	if !ok || group["matcher"] == nil || group["hooks"] == nil {
-		t.Errorf("SessionStart must be matcher-grouped, got %#v", ss[0])
+	if !foundUsersEntry {
+		t.Errorf("the user's own flat Stop entry was not preserved verbatim:\n%s", got)
 	}
 
 	// Uninstall removes exactly enola's entries and nothing else.

@@ -23,9 +23,11 @@ const enolaHookMarker = "enola"
 type hookSpec struct {
 	Event      string
 	Subcommand string
-	// Matcher, when set, means this event takes matcher-GROUPED entries rather than a
-	// flat list. The two shapes are not interchangeable: writing one where the other is
-	// expected produces a config that parses cleanly and never fires.
+	// Matcher narrows an event to particular occasions of it — SessionStart fires on
+	// startup, resume and clear, and enola wants the first two. An empty Matcher means
+	// the event applies unconditionally, NOT that the entry takes a different shape:
+	// every event is written as a list of matcher groups, and a group with no matcher
+	// simply omits the key. See writeHooks.
 	Matcher     string
 	Description string
 }
@@ -73,9 +75,16 @@ func writeHooks(o Options, remove bool) ([]Result, error) {
 			hooks = map[string]any{}
 		}
 
-		// Stop takes a flat list of entries; SessionStart takes matcher-grouped ones.
-		// The events genuinely differ in shape, and getting it wrong is the silent kind
-		// of failure: the config parses and the hook simply never fires.
+		// EVERY event is a list of matcher groups, each holding a nested `hooks` array.
+		// Events differ in whether they carry a matcher, not in their shape.
+		//
+		// This code used to write Stop as a flat list of entries, on the stated premise
+		// that the two events genuinely differed — and the comment above it predicted
+		// its own failure mode exactly: the config parses and the hook simply never
+		// fires. It never fired. `SessionStart` pinned a baseline before editing while
+		// `Stop` silently graded nothing, which is the worst of the three possible
+		// states: everything looks configured and the half that produces the value is
+		// absent. Verified against a real session, both shapes, one variable.
 		for _, h := range installedHooks {
 			entry := map[string]any{
 				"type":    "command",
@@ -83,16 +92,12 @@ func writeHooks(o Options, remove bool) ([]Result, error) {
 				"timeout": hookTimeoutSeconds,
 				"source":  enolaHookMarker,
 			}
-			if h.Matcher != "" {
-				hooks[h.Event] = mergeMatcher(hooks[h.Event], h.Matcher, entry, remove)
-			} else {
-				hooks[h.Event] = mergeFlat(hooks[h.Event], entry, remove)
-			}
+			hooks[h.Event] = mergeMatcher(hooks[h.Event], h.Matcher, entry, remove)
 		}
 
-		for _, k := range []string{"Stop", "SessionStart"} {
-			if lst, ok := hooks[k].([]any); ok && len(lst) == 0 {
-				delete(hooks, k)
+		for _, h := range installedHooks {
+			if lst, ok := hooks[h.Event].([]any); ok && len(lst) == 0 {
+				delete(hooks, h.Event)
 			}
 		}
 		if len(hooks) == 0 {
@@ -107,24 +112,14 @@ func writeHooks(o Options, remove bool) ([]Result, error) {
 	return []Result{r}, nil
 }
 
-// mergeFlat adds or removes one entry in a flat hook list, preserving every other entry.
-func mergeFlat(existing any, entry map[string]any, remove bool) any {
-	list, _ := existing.([]any)
-	out := make([]any, 0, len(list)+1)
-	for _, e := range list {
-		if !isEnolaEntry(e) {
-			out = append(out, e)
-		}
-	}
-	if !remove {
-		out = append(out, entry)
-	}
-	return out
-}
-
-// mergeMatcher adds or removes one entry inside a matcher-grouped hook list. An existing
-// group with the same matcher is reused so the user does not accumulate duplicate groups;
-// groups belonging to anything else are left exactly as they were.
+// mergeMatcher adds or removes one entry inside an event's list of matcher groups. An
+// existing group with the same matcher is reused so the user does not accumulate
+// duplicate groups; groups belonging to anything else are left exactly as they were.
+//
+// An empty matcher means the group that carries no matcher key — the event applying
+// unconditionally. Such a group is written without the key and recognised again by the
+// same absence, so a second install updates it in place rather than appending a
+// duplicate, and uninstall still finds it.
 func mergeMatcher(existing any, matcher string, entry map[string]any, remove bool) any {
 	groups, _ := existing.([]any)
 	out := make([]any, 0, len(groups)+1)
@@ -136,6 +131,17 @@ func mergeMatcher(existing any, matcher string, entry map[string]any, remove boo
 			out = append(out, g)
 			continue
 		}
+		// A map with no `hooks` key is a bare command entry from a flat list — the
+		// shape enola wrote for Stop before this was fixed, which parses and never
+		// fires. Ours is dropped, which is how an existing installation migrates.
+		// Anyone else's is preserved verbatim: it is their file, and a hook that does
+		// not fire is still not ours to delete.
+		if _, grouped := group["hooks"]; !grouped {
+			if !isEnolaEntry(group) {
+				out = append(out, g)
+			}
+			continue
+		}
 		inner, _ := group["hooks"].([]any)
 		kept := make([]any, 0, len(inner))
 		for _, e := range inner {
@@ -143,7 +149,7 @@ func mergeMatcher(existing any, matcher string, entry map[string]any, remove boo
 				kept = append(kept, e)
 			}
 		}
-		if !remove && group["matcher"] == matcher {
+		if !remove && matcherOf(group) == matcher {
 			kept = append(kept, entry)
 			placed = true
 		}
@@ -157,12 +163,24 @@ func mergeMatcher(existing any, matcher string, entry map[string]any, remove boo
 	}
 
 	if !remove && !placed {
-		out = append(out, map[string]any{
-			"matcher": matcher,
-			"hooks":   []any{entry},
-		})
+		group := map[string]any{"hooks": []any{entry}}
+		if matcher != "" {
+			group["matcher"] = matcher
+		}
+		out = append(out, group)
 	}
 	return out
+}
+
+// matcherOf returns a group's matcher, treating an absent or non-string value as the
+// empty matcher — the group that applies unconditionally.
+//
+// Comparing group["matcher"] to a string directly cannot see that group: the value is
+// nil, and nil never equals "". Every install would then append another group instead
+// of updating the one already there, and uninstall would leave it behind.
+func matcherOf(group map[string]any) string {
+	s, _ := group["matcher"].(string)
+	return s
 }
 
 // isEnolaEntry reports whether a hook entry is one enola installed. Identified by an
