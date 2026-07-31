@@ -275,20 +275,45 @@ func SymbolModule(name string) string {
 
 // MeanStdDev returns the arithmetic mean and population standard deviation of
 // the given values. Both are 0 for an empty slice.
+//
+// The result depends only on the MULTISET of values, never on the order the caller
+// supplied them in. That is a guarantee, not an accident: floating-point addition is
+// not associative, so a sequential reduction over the same numbers in a different
+// order differs in the last bits. Callers build these slices by iterating the fact
+// store, whose order reflects concurrent extraction and varies between runs — which
+// made insights.json non-reproducible across runs of an unchanged tree, on the one
+// explainer (god-class) that puts a threshold into its output rather than only using
+// it to select. facts.jsonl hid this because it is sorted before it is written.
+//
+// Sorting here rather than at each call site fixes every caller at once, including
+// the two where the same wobble is currently latent: hotspots and
+// complexity-outliers emit a constant confidence, so their thresholds affect only
+// WHICH items are selected — robust to 1e-15 until a value sits exactly on the
+// cutoff. The codebase already holds this discipline elsewhere; see
+// StronglyConnectedComponents, which documents the same determinism requirement for
+// map iteration.
 func MeanStdDev(values []float64) (mean, std float64) {
 	n := len(values)
 	if n == 0 {
 		return 0, 0
 	}
+
+	// Copied before sorting: callers pass slices they keep using, and reordering
+	// one under them would be a silent action at a distance.
+	v := append([]float64(nil), values...)
+	sort.Float64s(v)
+
 	var sum float64
-	for _, v := range values {
-		sum += v
+	for _, x := range v {
+		sum += x
 	}
 	mean = sum / float64(n)
 
+	// The second pass must read the sorted copy too. Sorting only the mean's
+	// reduction would leave the variance order-dependent, and the threshold with it.
 	var variance float64
-	for _, v := range values {
-		d := v - mean
+	for _, x := range v {
+		d := x - mean
 		variance += d * d
 	}
 	variance /= float64(n)

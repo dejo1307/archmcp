@@ -184,6 +184,10 @@ Explainers turn raw facts into architectural observations. Each insight carries 
 
 The shared module-graph construction and statistical-outlier helpers used by several of these live in [`internal/explainers/common`](internal/explainers/common/common.go).
 
+**Determinism has two halves, and both are load-bearing.** `StronglyConnectedComponents` documents the first: visit nodes in sorted order with sorted neighbour lists, so Go's randomized map iteration cannot reach the output. `MeanStdDev` is the second: it sorts a copy of its values before reducing, so `mean + kσ` is a function of the *multiset* and not of the order the caller iterated.
+
+The second was learned the hard way. Callers build that slice by walking the fact store, whose order reflects concurrent extraction and varies between runs; float addition is not associative; and god-class is the only explainer that puts a threshold into its **output** (`confidence`) rather than using it solely to select. So across 90 runs of 30 repositories, `facts.jsonl` was byte-identical every time — it is sorted before it is written — while `insights.json` moved in the last two digits of a `float64` on one repository. Nothing a human reads changed, and `snapshot_id` does not cover `insights.json`, but `output_hashes["insights.json"]` stopped being reproducible. Any new statistic belongs behind a reduction with this property.
+
 ---
 
 ## The explain package (`pkg/explain`)
@@ -767,7 +771,7 @@ This is the candidate set for dead-endpoint cleanup, computed deterministically 
 
 The flag means "unused by the clients in **this snapshot**" — not "dead." A consumer you didn't load (an admin script, a cron job, a webhook, a third-party caller, a mobile deep link) won't appear, so treat the list as candidates to verify, not delete on sight. The `unmatched_by_clients` flag is computed by the engine during linking and is **always** present on the facts; the `unused-routes` explainer (above) additionally rolls it up into one insight per service, with that caveat attached, and only that rolled-up insight depends on the explainer being enabled.
 
-> **Config note:** the `crossrepo` explainer (which adds a cross-repo entry to `insights.json`) must be listed under `explainers:` in your config — the bundled configs already include it. The `service` nodes, graph edges, traversal, and the `llm_context.md` section work regardless of explainer config; only the `insights.json` entry depends on it.
+> **Config note:** the `crossrepo` explainer (which adds a cross-repo entry to `insights.json`) is enabled by default, and stays enabled as long as your config does not declare an `explainers:` list — the shipped configs deliberately declare none, since such a list replaces the defaults rather than extending them. If you do narrow it, `crossrepo` has to be in it. The `service` nodes, graph edges, traversal, and the `llm_context.md` section work regardless of explainer config; only the `insights.json` entry depends on it.
 
 ---
 

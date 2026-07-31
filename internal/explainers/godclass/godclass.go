@@ -74,6 +74,12 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 		seen[s.Name] = true
 		distinct = append(distinct, s)
 	}
+	// Sorted by name, so this explainer's inputs do not inherit the fact store's
+	// insertion order — which reflects concurrent extraction and varies run to run.
+	// MeanStdDev is order-independent on its own, so this is belt and braces; it is
+	// worth having because it removes the non-determinism at the source instead of
+	// relying on every downstream consumer to neutralise it.
+	sort.Slice(distinct, func(i, j int) bool { return distinct[i].Name < distinct[j].Name })
 
 	// Fan-in per symbol and the distribution used for outlier detection.
 	fanIn := make(map[string]int, len(distinct))

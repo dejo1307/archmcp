@@ -977,8 +977,15 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	outputHashes["facts.jsonl"] = hashBytes(factsBuf.Bytes())
 	log.Printf("[engine] wrote %s", factsPath)
 
-	// Write insights.json
-	insightsJSON, err := json.MarshalIndent(b.snapshot.Insights, "", "  ")
+	// Write insights.json. A nil slice marshals to `null`, not `[]`, so a repository
+	// with no findings produced a document that breaks any consumer iterating the
+	// parsed value without a nil check — on exactly the repositories least likely to
+	// be used while testing a consumer.
+	insights := b.snapshot.Insights
+	if insights == nil {
+		insights = []facts.Insight{}
+	}
+	insightsJSON, err := json.MarshalIndent(insights, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling insights: %w", err)
 	}
