@@ -5,9 +5,9 @@
 [![Release](https://img.shields.io/github/v/release/enola-labs/enola)](https://github.com/enola-labs/enola/releases)
 [![License](https://img.shields.io/github/license/enola-labs/enola)](LICENSE)
 
-enola is the missing piece in your PR review pipeline: it builds a dependency graph from your source code and highlights when a change introduces a new circular dependency or coupling regression — the structural check that keeps a codebase healthy and deployments safe.
+**The quality gate every agentic loop is missing.**
 
-**It checks that every change your agent makes leaves your architecture intact.**
+enola gives your agent the real architecture before it writes a line, then grades what it built and returns that verdict, so it fixes its own regression before calling the job done. Every finding comes from a real parser and a graph algorithm, never a model's guess.
 
 AI agents can write more code than you can carefully review. Tests check that behaviour still works. Linters check that style rules are followed. Neither checks whether the *structure* of the code still makes sense — whether the change coupled two modules that had no business knowing about each other, or closed a dependency loop (a circular dependency). That usually surfaces in review, if someone catches it, or months later when the package is too tangled to refactor.
 
