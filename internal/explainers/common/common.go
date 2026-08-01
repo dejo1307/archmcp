@@ -53,15 +53,83 @@ func FileDir(file string) string {
 // a name no module has, in any repo. Anything resolving a file back to its module has
 // to cross that gap explicitly.
 //
-// Repo is populated in BOTH modes; only the File prefix is append-mode-specific. That
-// is what makes the strip safe rather than lossy: a single-repo fact is File "main.go"
-// with Repo "go_sample", the prefix does not match, and nothing is removed.
+// Repo is populated in BOTH modes; only the File prefix is append-mode-specific.
+//
+// The strip is NOT unconditionally safe, which is why callers that know the module
+// namespace should prefer ModuleDirCandidates. It assumes the repo label cannot also
+// be a real leading path segment — false for the dominant Python layout, where the
+// package inside the repo carries the repo's own name (cognee/cognee,
+// superset/superset). There "cognee/pkg/x.py" strips to "pkg", which names no module,
+// so every edge out of the tree hangs off a phantom node.
 func ModuleDir(f facts.Fact) string {
 	file := f.File
 	if f.Repo != "" {
 		file = strings.TrimPrefix(file, f.Repo+"/")
 	}
 	return FileDir(file)
+}
+
+// ModuleDirCandidates returns the directories a fact's file may name in MODULE-NAME
+// space. Both are legitimate; which one is correct depends on the snapshot's shape,
+// and that cannot be decided from the fact alone:
+//
+//   - the raw repo-relative directory — correct in a single-repo snapshot, including
+//     the case where the first path segment genuinely equals the repo name;
+//   - the same directory with the repo label stripped — correct in an append-mode
+//     (multi-repo) snapshot, where File is repo-prefixed and module names are not.
+//
+// Callers resolve against the module namespace they hold rather than guessing. A
+// caller that used ModuleDir alone silently lost every edge in a repo whose top-level
+// source directory shares the repo's name.
+func ModuleDirCandidates(f facts.Fact) []string {
+	raw := FileDir(f.File)
+	stripped := ModuleDir(f)
+	if raw == stripped {
+		return []string{raw}
+	}
+	return []string{raw, stripped}
+}
+
+// resolveModuleDir picks the module a fact's file belongs to, trying every candidate
+// directory against the known module names.
+//
+// EXACT matches on all candidates are tried before walking any of them up. The order
+// is load-bearing: walking a candidate up can reach a short ancestor that happens to
+// exist in the other snapshot shape (the bare repo label "consumer" in an append-mode
+// graph), so letting a walk-up beat an exact match would let the two shapes
+// cross-match and attribute an edge to the wrong module.
+func resolveModuleDir(f facts.Fact, prod, test map[string]bool) string {
+	candidates := ModuleDirCandidates(f)
+	for _, c := range candidates {
+		if prod[c] || test[c] {
+			return c
+		}
+	}
+	for _, c := range candidates {
+		if m := nearestModuleOrEmpty(c, prod, test); m != "" {
+			return m
+		}
+	}
+	// Unchanged fallback: the repo-stripped directory, so a fact that resolves to no
+	// module at all behaves exactly as it did before.
+	return candidates[len(candidates)-1]
+}
+
+// nearestModuleOrEmpty walks dir up its path until it reaches a known production or
+// test module, returning "" when nothing encloses it — the difference from
+// nearestModule, which reports the input unchanged and so cannot express a miss.
+func nearestModuleOrEmpty(dir string, prod, test map[string]bool) string {
+	cur := dir
+	for {
+		if prod[cur] || test[cur] {
+			return cur
+		}
+		i := strings.LastIndex(cur, "/")
+		if i < 0 {
+			return ""
+		}
+		cur = cur[:i]
+	}
 }
 
 // nearestModule walks dir up its path until it reaches a known production or test
@@ -71,17 +139,10 @@ func ModuleDir(f facts.Fact) string {
 // only differs for nested layouts (Swift/Xcode targets) where the module lives
 // above the file's leaf directory. Mirrors package_metrics' resolveToModule.
 func nearestModule(dir string, prod, test map[string]bool) string {
-	cur := dir
-	for {
-		if prod[cur] || test[cur] {
-			return cur
-		}
-		i := strings.LastIndex(cur, "/")
-		if i < 0 {
-			return dir
-		}
-		cur = cur[:i]
+	if m := nearestModuleOrEmpty(dir, prod, test); m != "" {
+		return m
 	}
+	return dir
 }
 
 // IsExternalImport reports whether an import target points outside the repo
@@ -217,13 +278,16 @@ func BuildModuleGraphExcluding(store *facts.Store, excludeKinds ...string) map[s
 		// edge could form (which silently zeroed cycle detection on such projects).
 		// Resolving up keeps this graph consistent with package_metrics.
 		//
-		// ModuleDir, not FileDir: in an append-mode snapshot the file is repo-prefixed
-		// ("consumer/src/client.ts") while module facts keep their bare name ("src").
-		// Walking up from the prefixed dir reaches no module and nearestModule returns
-		// the raw directory, so every multi-repo edge used to hang off a phantom node
-		// that nothing else referenced — silently costing cycle and depth detection the
-		// coupling that spans repositories.
-		sourceModule := nearestModule(ModuleDir(dep), moduleNames, testModules)
+		// Resolved against BOTH the raw and repo-stripped directories, because which
+		// one is right depends on the snapshot's shape. In an append-mode snapshot the
+		// file is repo-prefixed ("consumer/src/client.ts") while module facts keep
+		// their bare name ("src"), so the raw dir resolves to nothing. But stripping
+		// unconditionally breaks the opposite case — a single-repo Python layout whose
+		// package carries the repo's name ("cognee/benchcyca" -> "benchcyca") — where
+		// the stripped dir is the one that names no module. Either way the edge used
+		// to hang off a phantom node nothing else referenced, silently zeroing cycle
+		// and depth detection across the whole tree. See resolveModuleDir.
+		sourceModule := resolveModuleDir(dep, moduleNames, testModules)
 		if testModules[sourceModule] {
 			continue // edge out of a test bundle — not production architecture
 		}

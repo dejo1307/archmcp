@@ -462,11 +462,14 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 		}
 		// Resolve the importing file's directory up to its nearest classified module,
 		// so a file nested below the module root (Swift/Xcode) still attributes to a
-		// layer instead of being dropped. ModuleDir rather than FileDir: in an
-		// append-mode snapshot the file is repo-prefixed and module names are not, so
-		// FileDir yields the repo label and nothing resolves — which silenced this
-		// explainer entirely for multi-repo graphs.
-		sourceModule, sourceOK := resolveLayerModule(common.ModuleDir(dep), pattern.Modules)
+		// layer instead of being dropped. Both the raw and repo-stripped directories
+		// are tried: the stripped one is required in an append-mode snapshot (the file
+		// is repo-prefixed and module names are not, so the raw dir yields the repo
+		// label and nothing resolves), while the raw one is required in a single-repo
+		// layout whose top-level package carries the repo's own name, where stripping
+		// removes a real path segment. Using either alone silences this explainer for
+		// one of the two shapes.
+		sourceModule, sourceOK := resolveLayerModuleFor(dep, pattern.Modules)
 		if !sourceOK {
 			continue
 		}
@@ -584,6 +587,28 @@ func resolveLayerModule(path string, modules map[string]string) (string, bool) {
 		}
 		cur = cur[:i]
 	}
+}
+
+// resolveLayerModuleFor resolves a dependency fact's own file to a classified module,
+// trying every directory the file may name (see common.ModuleDirCandidates).
+//
+// Exact matches are tried across all candidates before any is walked up, for the same
+// reason as common.resolveModuleDir: a walk-up can reach a short ancestor that exists
+// only because of the OTHER snapshot shape, and letting it beat an exact match would
+// attribute the import to the wrong module.
+func resolveLayerModuleFor(dep facts.Fact, modules map[string]string) (string, bool) {
+	candidates := common.ModuleDirCandidates(dep)
+	for _, c := range candidates {
+		if _, ok := modules[c]; ok {
+			return c, true
+		}
+	}
+	for _, c := range candidates {
+		if m, ok := resolveLayerModule(c, modules); ok {
+			return m, true
+		}
+	}
+	return "", false
 }
 
 // matchesLayer checks if a module path contains any of the given patterns.
