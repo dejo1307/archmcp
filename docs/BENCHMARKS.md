@@ -19,7 +19,7 @@ your change can be believed:
 | **1** | Does the same commit produce the same graph? | A diff between two snapshots is meaningless if the snapshots are not reproducible |
 | **2** | When something regresses, is exactly that reported? | A gate that also reports pre-existing problems gets switched off in a week |
 | **3** | Of the cross-repo edges that exist, how many are found — and are the misses shown? | A resolved-only count is advertising |
-| **4** | Does it finish on a real repository? | A graph you cannot build is not a graph |
+| **4** | Does it finish on a real repository? | If it can't parse a real codebase, there's nothing to report on |
 | **5** | Does an agent, given the tool, actually avoid shipping the regression? | The honest test of the whole idea |
 
 Axes 1–3 have no counterpart in a retrieval benchmark, because you cannot report a
@@ -30,7 +30,7 @@ would have been.
 
 38 repositories, 239,349 source files parsed, 4,211,133 facts carrying 13 distinct
 language tags (C, C++, Go, Java, Kotlin, PHP, Python, Ruby, Rust, Swift, TypeScript,
-gRPC, OpenAPI). Public open-source only — every row is a repository you can clone and
+gRPC, OpenAPI). Public open-source only: every row is a repository you can clone and
 re-run.
 
 | Repository | Language | Files parsed | Facts | Modules | Routes | Cold | Warm |
@@ -93,12 +93,12 @@ from-scratch run agree, not merely that the same code path repeats itself.
 
 This is the property everything else rests on. `snapshot_id` is
 `sha256(facts ‖ enola version ‖ config hash)`, not a UUID, so two runs on the same
-commit are provably the same graph — which is what lets `compare_receipts` refuse to
+commit are provably the same graph. That's what lets `compare_receipts` refuse to
 diff snapshots that are not comparable instead of reporting churn as your change.
 
 An ID a third party can re-derive is the point rather than a hygiene property: it is
 what makes a graph a value you can keep and compare, instead of a state you are
-currently in — [SNAPSHOTS.md](SNAPSHOTS.md).
+currently in. See [SNAPSHOTS.md](SNAPSHOTS.md).
 
 ## 2. Delta precision — the ratchet
 
@@ -126,11 +126,10 @@ delete. The cycle case adds two new modules that import each other.
 
 Read the columns as four separate claims, all of which hold on all twelve:
 
-- **No change → +0 facts, +0 edges, PASS.** A genuine zero. Not "small", not
-  "noise below a threshold" — nothing at all. This is what makes the other three
-  columns mean something.
+- **No change → +0 facts, +0 edges, PASS.** Exactly zero on all twelve repositories.
+  That's what makes a PASS or FAIL on a real change something you can rely on.
 - **Benign addition → PASS**, with the delta naming exactly the 2–3 facts added.
-  A new leaf module is not a regression, and reporting it as one is how gates die.
+  A new leaf module isn't a structural regression, so there's nothing to report.
 - **Injected cycle → FAIL, exactly 1 regression** — out of **974 pre-existing
   findings across these repositories**, up to 159 in a single one. None of them was
   repeated. The ratchet holds.
@@ -143,7 +142,7 @@ resolved import edges, at confidence `1.0`.
 
 **Swift is deliberately absent**, and the reason is a property of the language rather
 than a limit of enola. A Swift module is a *declared* SPM target, so two added
-directories that import each other form no edge and no cycle — verified: the modules
+directories that import each other form no edge and no cycle, verified: the modules
 and the symbols appear, the cycle does not. Injecting one would mean editing
 `Package.swift`, and then "reverted" would be a file restore rather than a delete,
 which is exactly the property that makes the no-change column worth reading.
@@ -168,9 +167,8 @@ thing, and says which, is a gate people leave switched on.
 
 ## 3. Cross-repo resolution, misses included
 
-The number that matters is not how many edges resolved. It is whether the ones that
-did **not** resolve are shown to you — because a service with no dependents and a
-service whose dependents enola failed to follow look identical in a graph.
+enola reports both resolved and unresolved edge counts, so you know how many
+dependents a service actually has.
 
 ### On the committed multi-repo fixtures
 
@@ -211,9 +209,8 @@ Nextcloud server plus two first-party apps, indexed into one graph
   server       coverage_gap         11         0          11
 ```
 
-Zero of eleven resolved. That is the honest number, and the report is built so it
-cannot be mistaken for success: `server` is classified **`coverage_gap`**, not
-`isolated`, and the output says so in words —
+Zero of eleven resolved. The report doesn't disguise it as success: `server` is
+classified **`coverage_gap`**, not `isolated`, and the output says so in words —
 
 > 1 service is classified `coverage_gap`: no resolved outbound edges, but enola DID
 > detect outbound call sites. Do not read these as isolated — they are the case where
@@ -242,7 +239,7 @@ of anything.
 `api/server.go` registers the bare `/orders/{id}` inside a function that receives a
 subrouter mounted at `/api/v2` in `main`. Neither function contains the served path;
 the fact does. The web service's call resolves *because* that prefix was composed
-across the call boundary — and the one unresolved call is a deliberately dynamic URL,
+across the call boundary. The one unresolved call is a deliberately dynamic URL,
 so the demonstration proves its own limit in the same run.
 
 ## 4. Scale
@@ -259,9 +256,9 @@ so the demonstration proves its own limit in the same run.
 
 Warm runs are 1.28×–4.97× faster than cold (over the 28 repositories whose cold run
 exceeds 0.5s; below that the timing is noise), from the per-file content-hash cache
-in `snapshot.meta.json`. Speed is not a claim enola competes on; these numbers are here
-to establish that the graph the other four sections rely on can actually be built on
-real code.
+in `snapshot.meta.json`. These numbers establish that the graph the other four
+sections rely on can actually be built on real code. enola isn't benchmarked on
+speed as a competitive claim.
 
 ## 5. What the extractors see
 
@@ -285,11 +282,11 @@ routes, not coverage: Saleor is GraphQL-first, so its REST surface really is tha
 small, while 123 of its facts carry the Django framework tag (models, mostly). And
 **axum 132** is depressed by the same repository that supplied it: crates.io declares
 most of its API through `utoipa`'s `routes!()` macro, which enola deliberately does
-not expand — the documented limit in [rust.md](extraction/rust.md), observed on
+not expand: a documented limit in [rust.md](extraction/rust.md), observed on
 production code for the first time here.
 
 **What specific code produces which of these facts is documented per language, from
-committed fixtures, in [docs/extraction/](extraction/README.md)** — including what
+committed fixtures, in [docs/extraction/](extraction/README.md)**, including what
 each extractor deliberately does *not* resolve.
 
 ## 6. Agent A/B — does the agent ship the regression?
@@ -323,17 +320,17 @@ run leaves behind is graded against a baseline pinned before it started.
 | loop | **0 / 3** | 24 | $1.12 | 252s |
 
 The bare agent shipped a dependency cycle every time. With the hooks installed, none
-of the three did — and the transcripts say why. From one of them, unprompted:
+of the three did, and the transcripts say why. From one of them, unprompted:
 
 > The regression was `src/domain ↔ src/store`: my first attempt made the domain
 > `import { listOrders }` from the store, which closed a loop with the store's
 > pre-existing `import type { Order }` from the domain. I removed the offending edge.
 
-That is the loop working as designed: the agent introduced the cycle, the Stop hook
-graded the session and handed back the verdict, and the agent corrected itself before
-reporting done. It took roughly double the turns and 3.6× the money of the bare run —
-which is what checking and then fixing costs against not checking at all, since the
-bare run's $0.31 bought a tree with a dependency cycle in it.
+The loop worked as designed: the agent introduced the cycle, the Stop hook graded
+the session and handed back the verdict, and the agent corrected itself before
+reporting done. It took roughly double the turns and 3.6× the money of the bare
+run: the cost of catching and fixing the regression, against the bare run's
+$0.31, which bought a tree with a dependency cycle already in it.
 
 **Read this before quoting the table.**
 
@@ -343,12 +340,12 @@ bare run's $0.31 bought a tree with a dependency cycle in it.
   not as a measured effect size.
 - **No arm ever called `diff_snapshot`.** Every enola-equipped run used exactly one
   tool, `generate_snapshot`. The loop arm did not succeed because the agent asked
-  enola the right question — it succeeded because something asked on its behalf when
+  enola the right question. It succeeded because something asked on its behalf when
   it stopped. That is the whole argument for the hook over the instruction.
 - **The cost column is not enola's price.** It compares an agent that checked its work
   against one that did not: the bare arm is cheap because it stopped early and shipped
   the cycle three times out of three. The arm that would isolate what enola costs does
-  not exist here — an agent told to establish the same property *without* a graph,
+  not exist here: an agent told to establish the same property *without* a graph,
   re-deriving the module structure from source on every task. Do not read $0.31 → $1.12
   as the overhead of adding enola to a run that was otherwise identical.
 - **The instruction arm improved on bare anyway** (1/3 vs 3/3), which is worth being
@@ -363,7 +360,7 @@ Stated so the numbers above are not read as more than they are.
 
 - **Retrieval speed, token counts and cost per query.** Deliberately absent. It is
   the axis where every tool in this space competes, and enola has no evidence to offer
-  on it. The A/B's cost column is not that evidence — it compares checking against not
+  on it. The A/B's cost column is not that evidence: it compares checking against not
   checking, not one retrieval path against another.
 - **The session hooks in interactive use.** Section 6 exercises them headlessly, under
   `claude -p`. The configuration is the same either way, but interactive sessions were
@@ -376,10 +373,10 @@ Stated so the numbers above are not read as more than they are.
   files they are the small end of the corpus. The framework constructs are exercised
   on production code; the scale claims are not.
 - **Vue and Svelte route surfaces are small.** Nuxt and SvelteKit are measured on real
-  applications, but 56 and 13 routes respectively — enough to show file-based routing
+  applications, but 56 and 13 routes respectively, enough to show file-based routing
   works, not enough to characterise it.
 - **Recall of cross-repo edges.** Section 3 reports what enola detected and what it
-  resolved. It does not report edges enola never detected at all — that would need a
+  resolved. It does not report edges enola never detected at all: that would need a
   hand-labelled ground truth for each cluster, which does not exist here.
 - **Comparisons with other tools.** Not measured, not estimated, not implied.
 
