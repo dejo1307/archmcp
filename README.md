@@ -1,10 +1,15 @@
 # enola — architectural regression testing for AI-assisted development
 
 [![MCP Toplist](https://mcptoplist.com/badge/glama%2Fenola-labs%2Fenola.svg)](https://mcptoplist.com/server/glama%2Fenola-labs%2Fenola)
+[![CI](https://github.com/enola-labs/enola/actions/workflows/ci.yml/badge.svg)](https://github.com/enola-labs/enola/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/enola-labs/enola)](https://github.com/enola-labs/enola/releases)
+[![License](https://img.shields.io/github/license/enola-labs/enola)](LICENSE)
 
-**enola checks that every change your agent makes leaves your architecture intact.**
+enola is the missing piece in your PR review pipeline: it builds a dependency graph from your source code and highlights when a change introduces a new circular dependency or coupling regression — the structural check that keeps a codebase healthy and deployments safe.
 
-AI agents can write more code than you can carefully review. Tests check that behaviour still works. Linters check that style rules are followed. Neither checks whether the *structure* of the code still makes sense — whether the change coupled two modules that had no business knowing about each other, or closed a dependency loop. That usually surfaces in review, if someone catches it, or months later when the package is too tangled to refactor.
+**It checks that every change your agent makes leaves your architecture intact.**
+
+AI agents can write more code than you can carefully review. Tests check that behaviour still works. Linters check that style rules are followed. Neither checks whether the *structure* of the code still makes sense — whether the change coupled two modules that had no business knowing about each other, or closed a dependency loop (a circular dependency). That usually surfaces in review, if someone catches it, or months later when the package is too tangled to refactor.
 
 enola checks structure while the change is still easy to fix.
 
@@ -100,7 +105,7 @@ You already own four things that look like they should catch a structural regres
 | **Code review** | whatever a human notices, after the work is finished |
 | **`enola check`** | **what the change did to the structure of the system** |
 
-A dependency cycle is invisible to all four. It isn't a line, it isn't a behaviour, it isn't local to a file, and by the time it reaches review it's already written.
+A dependency cycle spans files, doesn't break any test, and is easy for a reviewer to miss.
 
 ## Only one thing fails the build
 
@@ -124,6 +129,8 @@ enola parses your source with tree-sitter and language-specific extractors, norm
 The same commit yields the same answer, every time: across 38 open-source repositories indexed three times each, all 38 produced a byte-identical snapshot ID and a byte-identical fact file, over 4.2 million facts with zero parse errors ([BENCHMARKS.md](docs/BENCHMARKS.md)). Every snapshot carries a **receipt**: enola's version, the git ref and whether the tree was dirty, the extractors used, and a snapshot ID that's a `sha256` fingerprint of the facts rather than a random UUID. Before comparing two snapshots, enola checks they were built the same way — a different extractor set or changed ignore rules makes a diff meaningless, and it reports that instead of treating the mismatch as your change.
 
 enola runs as a local binary reading local files. Nothing leaves your machine.
+
+It's fast enough to run on every commit: on the same 38-repository corpus, a warm re-index of an unchanged tree took 5.0s for grafana (10,310 files, 163,620 facts) and 33.9s for the Linux kernel (55,399 files, 1.9M facts). Full per-repository numbers, cold and warm, are in [BENCHMARKS.md](docs/BENCHMARKS.md).
 
 **[ARCHITECTURE.md](ARCHITECTURE.md)** has the fact model, the pipeline, the MCP tool reference and the analysis internals.
 
