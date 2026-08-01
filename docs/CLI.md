@@ -244,7 +244,7 @@ The argument is a **repository** when it is a directory and a **config file** wh
 - **Impact analysis (hotspots)** - top modules ranked by fan-in + fan-out coupling, with criticality tier and blast radius
 - **Code health** - per-explainer findings with their top offenders: god classes (high fan-in symbols), call-graph hotspots, deep dependency chains, large public surfaces, and complexity outliers
 
-Every finding carries a confidence score, and it means something exact: `1.0` is a structural fact (a cycle exists; an export ratio measured), while anything below is a flagged heuristic for you to review (a god class is a statistical fan-in outlier, not a rule). The analyses are computed by graph algorithms - Tarjan's SCC for cycles, longest-path for dependency depth, mean+2σ outlier tests for the rest - so the same commit yields the same report.
+Every finding carries a confidence score, and it means something exact: `1.0` is a structural fact — in practice a dependency cycle, the one thing enola computes rather than infers — while anything below is a flagged heuristic for you to review (a god class is a statistical fan-in outlier, not a rule, so it tops out below `1.0` however extreme it gets). The analyses are computed by graph algorithms - Tarjan's SCC for cycles, longest-path for dependency depth, mean+2σ outlier tests for the rest - so the same commit yields the same report.
 
 Here's the actual report for [Apache Airflow](https://github.com/apache/airflow) - a large polyglot codebase (Python, TypeScript, Java and gRPC in one tree) analyzed in a single pass: **136,859 facts, 510,000+ resolved edges, in about 6 seconds** on a laptop (extraction parses files in parallel across cores). Nothing here was written by a model.
 

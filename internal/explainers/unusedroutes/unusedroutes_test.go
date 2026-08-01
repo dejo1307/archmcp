@@ -105,10 +105,16 @@ func TestExplain_MultipleReposSortedAndRoutesSorted(t *testing.T) {
 	if !strings.Contains(insights[0].Title, "alpha") || !strings.Contains(insights[1].Title, "zulu") {
 		t.Errorf("repos not sorted: %q then %q", insights[0].Title, insights[1].Title)
 	}
-	// Routes within a repo are sorted: z1 before z2.
+	// Routes within a repo are sorted: z1 before z2. Evidence is keyed on the route
+	// FACT NAME, not the "METHOD /path" label — that is what lets the snapshot diff
+	// attribute a newly-unused route to the change that caused it. The method rides
+	// in the detail so two verbs on one path stay distinguishable.
 	zulu := insights[1]
-	if len(zulu.Evidence) != 2 || zulu.Evidence[0].Fact != "GET /api/z1" || zulu.Evidence[1].Fact != "GET /api/z2" {
-		t.Errorf("routes within repo not sorted: %+v", zulu.Evidence)
+	if len(zulu.Evidence) != 2 || zulu.Evidence[0].Fact != "/api/z1" || zulu.Evidence[1].Fact != "/api/z2" {
+		t.Errorf("routes within repo not sorted, or not keyed on the fact name: %+v", zulu.Evidence)
+	}
+	if !strings.HasPrefix(zulu.Evidence[0].Detail, "GET /api/z1 — ") {
+		t.Errorf("method should be preserved in the detail, got %q", zulu.Evidence[0].Detail)
 	}
 }
 

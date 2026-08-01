@@ -407,3 +407,58 @@ func TestBuildModuleGraph_AuthoritativeRoleWins(t *testing.T) {
 		t.Error("the edge into it must survive")
 	}
 }
+
+// TestBuildModuleGraph_RepoPrefixedFilesResolve covers append mode, where a fact's
+// File is repo-prefixed ("server/index.js") while module facts keep their bare name
+// ("."). Walking up from the prefixed directory reaches no module, so nearestModule
+// falls back to returning the raw directory — and every cross-repo edge used to hang
+// off a phantom node no module or target ever referenced. Cycles and dependency-depth
+// both read this graph, so the coupling that spans repositories went uncounted.
+func TestBuildModuleGraph_RepoPrefixedFilesResolve(t *testing.T) {
+	s := facts.NewStore()
+	// Two repos, each with a bare module name, as the engine emits them in append mode.
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "handlers", Repo: "server", File: "server/handlers"})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "store", Repo: "server", File: "server/store"})
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency, Repo: "server", File: "server/handlers/h.go",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "store"}},
+	})
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency, Repo: "server", File: "server/store/s.go",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "handlers"}},
+	})
+
+	graph := BuildModuleGraph(s)
+
+	if edges := graph["handlers"]; len(edges) != 1 || edges[0] != "store" {
+		t.Errorf("handlers edges = %v, want [store]", edges)
+	}
+	if _, ok := graph["server/handlers"]; ok {
+		t.Error("repo-prefixed dir leaked as a phantom graph node")
+	}
+	// And the cycle is actually detectable — the property enola check depends on.
+	if got := sccKey(StronglyConnectedComponents(graph)); got != "handlers,store" {
+		t.Errorf("SCC = %q, want the handlers<->store cycle", got)
+	}
+}
+
+// TestModuleDir pins the two spaces apart: a repo-prefixed file resolves into
+// module-name space, while a single-repo file is unchanged.
+func TestModuleDir(t *testing.T) {
+	tests := []struct {
+		file, repo, want string
+	}{
+		{"server/index.js", "server", "."},
+		{"consumer/src/client.ts", "consumer", "src"},
+		{"src/client.ts", "", "src"},
+		{"index.js", "", "."},
+		// A repo label that is not actually a prefix must not be stripped blindly.
+		{"src/client.ts", "other", "src"},
+	}
+	for _, tt := range tests {
+		got := ModuleDir(facts.Fact{File: tt.file, Repo: tt.repo})
+		if got != tt.want {
+			t.Errorf("ModuleDir(%q, repo=%q) = %q, want %q", tt.file, tt.repo, got, tt.want)
+		}
+	}
+}

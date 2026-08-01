@@ -39,7 +39,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 		return nil, nil
 	}
 
-	byRepo := map[string][]string{}
+	byRepo := map[string][]route{}
 	for _, f := range store.ByKind(facts.KindRoute) {
 		if f.Props == nil || f.Props["unmatched_by_clients"] != true {
 			continue
@@ -48,7 +48,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 		if repo == "" {
 			repo = "(unlabeled)"
 		}
-		byRepo[repo] = append(byRepo[repo], routeLabel(f))
+		byRepo[repo] = append(byRepo[repo], route{name: f.Name, file: f.File, label: routeLabel(f)})
 	}
 	if len(byRepo) == 0 {
 		return nil, nil
@@ -63,7 +63,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	var insights []facts.Insight
 	for _, repo := range repos {
 		routes := byRepo[repo]
-		sort.Strings(routes)
+		sort.Slice(routes, func(i, j int) bool { return routes[i].label < routes[j].label })
 		insights = append(insights, facts.Insight{
 			Title: fmt.Sprintf("Unused endpoint candidates: %d route(s) in %s have no caller among loaded clients",
 				len(routes), repo),
@@ -83,6 +83,22 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	return insights, nil
 }
 
+// route carries the three things an unmatched route contributes downstream: the fact
+// NAME, which is the only string the snapshot diff can match; the FILE, which is what
+// scopes an insight to a repo in a multi-repo snapshot; and the human-readable LABEL
+// used in the title and description.
+//
+// Keeping the name separate from the label is the point. The label is "GET /orders"
+// while the fact is named "/orders", so citing the label as evidence matched nothing:
+// the diff could never attribute a newly-unused route to the change that caused it,
+// and query_insights(repo=…) — which scopes by evidence file or path — returned
+// nothing at all for the one explainer that exists only in multi-repo snapshots.
+type route struct {
+	name  string
+	file  string
+	label string
+}
+
 // routeLabel renders a route fact as "METHOD /path" when a method prop is present,
 // else just its name.
 func routeLabel(f facts.Fact) string {
@@ -93,22 +109,32 @@ func routeLabel(f facts.Fact) string {
 }
 
 // sampleList renders up to maxSamples route labels, noting how many were elided.
-func sampleList(routes []string) string {
-	if len(routes) > maxSamples {
-		return fmt.Sprintf("%v (+%d more)", routes[:maxSamples], len(routes)-maxSamples)
+func sampleList(routes []route) string {
+	labels := make([]string, 0, len(routes))
+	for _, r := range routes {
+		labels = append(labels, r.label)
 	}
-	return fmt.Sprintf("%v", routes)
+	if len(labels) > maxSamples {
+		return fmt.Sprintf("%v (+%d more)", labels[:maxSamples], len(labels)-maxSamples)
+	}
+	return fmt.Sprintf("%v", labels)
 }
 
-// evidenceFor attaches up to maxSamples route names as insight evidence.
-func evidenceFor(routes []string) []facts.Evidence {
+// evidenceFor attaches up to maxSamples routes as insight evidence, keyed on the route
+// fact's name so the delta can attribute it, with the method kept in the detail so two
+// verbs on one path stay distinguishable.
+func evidenceFor(routes []route) []facts.Evidence {
 	n := len(routes)
 	if n > maxSamples {
 		n = maxSamples
 	}
 	out := make([]facts.Evidence, 0, n)
 	for _, r := range routes[:n] {
-		out = append(out, facts.Evidence{Fact: r, Detail: "no loaded client calls this route"})
+		detail := "no loaded client calls this route"
+		if r.label != r.name {
+			detail = r.label + " — " + detail
+		}
+		out = append(out, facts.Evidence{Fact: r.name, File: r.file, Detail: detail})
 	}
 	return out
 }

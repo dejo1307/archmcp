@@ -233,7 +233,20 @@ type archPattern struct {
 
 // Explain analyzes the fact store and detects architectural patterns.
 func (e *LayerExplainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
-	modules := store.ByKind(facts.KindModule)
+	// Test scaffolding is not architecture, and it is load-bearing here rather than
+	// cosmetic: len(modules) is the denominator of the pattern's coverage confidence,
+	// that confidence breaks ties in bestPattern, and a signature-layer gate can be
+	// satisfied purely by test trees (src/test/…/adapter plus src/test/…/application
+	// is enough to claim hexagonal). common.IsTestModule rather than a path test,
+	// because `module_role` from a build file outranks what a path looks like.
+	all := store.ByKind(facts.KindModule)
+	modules := make([]facts.Fact, 0, len(all))
+	for _, m := range all {
+		if common.IsTestModule(m) {
+			continue
+		}
+		modules = append(modules, m)
+	}
 	if len(modules) == 0 {
 		return nil, nil
 	}
@@ -333,9 +346,13 @@ func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frame
 		// Also factor in how many distinct layers are matched
 		layerCoverage := float64(len(pattern.Layers)) / float64(len(def.layers))
 
+		// Ceiling is deliberately below 1.0: confidence 1.0 is reserved for a
+		// structural fact, and a pattern match is a coverage ratio over directory
+		// names — a well-supported guess, never a certainty. A repo where every
+		// module matched every layer would otherwise present as proof.
 		pattern.Confidence = (coverage*0.6 + layerCoverage*0.4)
-		if pattern.Confidence > 1.0 {
-			pattern.Confidence = 1.0
+		if pattern.Confidence > common.MaxHeuristicConfidence {
+			pattern.Confidence = common.MaxHeuristicConfidence
 		}
 
 		// Minimum threshold
@@ -423,15 +440,33 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 		sourceLayer, targetLayer   string
 		sourceLevel, targetLevel   int
 		file                       string
+		// depName and rawTarget are the two strings the snapshot diff can actually
+		// match. touchedNames holds fact names plus both endpoints of added/removed
+		// edges, and an import edge is {Source: dep.Name, Target: rel.Target} — the
+		// RAW target, before the relative-import rewrite below. The importing file is
+		// never a fact name, so evidence citing only the file can never be attributed
+		// to a change, which routes every new violation to incidental and out of the
+		// gate. Both are captured from the dependency that survives the dedup.
+		depName, rawTarget string
 	}
 	seen := make(map[string]bool)
 	var violations []violation
 
 	for _, dep := range store.ByKind(facts.KindDependency) {
+		// Test code is not architecture. Gate on the file rather than the module:
+		// resolveLayerModule walks UP to the nearest classified module, so a test or
+		// mock nested inside a production module (Sources/Foo/Mocks/X.swift) would
+		// otherwise have its imports attributed to the production layer.
+		if facts.IsTestPath(dep.File) {
+			continue
+		}
 		// Resolve the importing file's directory up to its nearest classified module,
 		// so a file nested below the module root (Swift/Xcode) still attributes to a
-		// layer instead of being dropped.
-		sourceModule, sourceOK := resolveLayerModule(common.FileDir(dep.File), pattern.Modules)
+		// layer instead of being dropped. ModuleDir rather than FileDir: in an
+		// append-mode snapshot the file is repo-prefixed and module names are not, so
+		// FileDir yields the repo label and nothing resolves — which silenced this
+		// explainer entirely for multi-repo graphs.
+		sourceModule, sourceOK := resolveLayerModule(common.ModuleDir(dep), pattern.Modules)
 		if !sourceOK {
 			continue
 		}
@@ -442,7 +477,8 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 				continue
 			}
 
-			target := rel.Target
+			rawTarget := rel.Target
+			target := rawTarget
 			if strings.HasPrefix(target, ".") {
 				target = common.ResolveRelativeImport(sourceModule, target)
 			}
@@ -475,7 +511,8 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 				sourceModule: sourceModule, targetModule: target,
 				sourceLayer: sourceLayer, targetLayer: targetLayer,
 				sourceLevel: sourceDef.Level, targetLevel: targetDef.Level,
-				file: dep.File,
+				file:    dep.File,
+				depName: dep.Name, rawTarget: rawTarget,
 			})
 		}
 	}
@@ -489,6 +526,25 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 
 	insights := make([]facts.Insight, 0, len(violations))
 	for _, v := range violations {
+		// The file entry stays FIRST: the dashboard's firstEvidence and the gate's
+		// writeFindings both render the first qualifying entry, so the entities the
+		// diff needs are appended behind it rather than prepended in front of it.
+		evidence := []facts.Evidence{
+			{File: v.file, Detail: fmt.Sprintf("import of %s", v.targetModule)},
+		}
+		seenEntity := make(map[string]bool, 4)
+		addEntity := func(name, detail string) {
+			if name == "" || seenEntity[name] {
+				return
+			}
+			seenEntity[name] = true
+			evidence = append(evidence, facts.Evidence{Fact: name, Detail: detail})
+		}
+		addEntity(v.depName, "import edge")
+		addEntity(v.rawTarget, "import edge target")
+		addEntity(v.sourceModule, "importing module")
+		addEntity(v.targetModule, "imported module")
+
 		insights = append(insights, facts.Insight{
 			Title: fmt.Sprintf("Layer violation: %s -> %s", v.sourceLayer, v.targetLayer),
 			Description: fmt.Sprintf(
@@ -498,9 +554,7 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 				v.targetModule, v.targetLayer, v.targetLevel,
 			),
 			Confidence: 0.8,
-			Evidence: []facts.Evidence{
-				{File: v.file, Detail: fmt.Sprintf("import of %s", v.targetModule)},
-			},
+			Evidence:   evidence,
 			Actions: []string{
 				"Introduce an interface/port in the inner layer",
 				"Move shared types to a common package",

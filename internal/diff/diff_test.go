@@ -99,6 +99,64 @@ func TestCompute_NewFinding(t *testing.T) {
 	}
 }
 
+// TestCompute_NewLayerViolationIsAttributed pins the property that makes
+// `--fail-on=layers` mean anything: a layer violation must cite an entity the change
+// actually touched, so that it lands in FindingsNew and reaches the gate.
+//
+// touchedNames holds fact NAMES plus both endpoints of added/removed edges. An
+// importing source file is never a fact name, so evidence citing only the file cannot
+// be attributed under any change — it lands in FindingsNewIncidental, which pkg/check
+// never grades. The explainer therefore also cites the dependency fact and the raw
+// import target, which ARE the two edge endpoints.
+func TestCompute_NewLayerViolationIsAttributed(t *testing.T) {
+	dep := func(name, file, target string) facts.Fact {
+		return facts.Fact{Kind: facts.KindDependency, Name: name, File: file, Repo: "r",
+			Relations: []facts.Relation{{Kind: facts.RelImports, Target: target}}}
+	}
+	violation := facts.Insight{
+		Source: "layers", Title: "Layer violation: domain -> adapter", Confidence: 0.8,
+		Evidence: []facts.Evidence{
+			{File: "domain/order.go", Detail: "import of adapter"},
+			{Fact: "domain -> adapter", Detail: "import edge"},
+			{Fact: "adapter", Detail: "import edge target"},
+		},
+	}
+
+	base := snap([]facts.Fact{mod("domain", "domain/x.go")}, nil)
+	cur := snap([]facts.Fact{
+		mod("domain", "domain/x.go"),
+		dep("domain -> adapter", "domain/order.go", "adapter"),
+	}, []facts.Insight{violation})
+
+	d := Compute(base, cur)
+	if len(d.FindingsNew) != 1 {
+		t.Fatalf("a newly introduced layer violation must be a real regression, got new=%+v incidental=%+v",
+			d.FindingsNew, d.FindingsNewIncidental)
+	}
+	if len(d.FindingsNewIncidental) != 0 {
+		t.Fatalf("expected no incidental findings, got %+v", d.FindingsNewIncidental)
+	}
+}
+
+// TestCompute_FileOnlyEvidenceCannotBeAttributed is the negative half of the test
+// above, and explains why the extra evidence entries exist at all. Kept so that
+// reverting the explainer to file-only evidence fails here with a reason attached.
+func TestCompute_FileOnlyEvidenceCannotBeAttributed(t *testing.T) {
+	fileOnly := facts.Insight{
+		Source: "layers", Title: "Layer violation: domain -> adapter", Confidence: 0.8,
+		Evidence: []facts.Evidence{{File: "domain/order.go", Detail: "import of adapter"}},
+	}
+	base := snap([]facts.Fact{mod("domain", "domain/x.go")}, nil)
+	cur := snap([]facts.Fact{mod("domain", "domain/x.go"), mod("adapter", "adapter/y.go")},
+		[]facts.Insight{fileOnly})
+
+	d := Compute(base, cur)
+	if len(d.FindingsNew) != 0 || len(d.FindingsNewIncidental) != 1 {
+		t.Fatalf("evidence citing only a source file is unattributable and must be incidental, got new=%+v incidental=%+v",
+			d.FindingsNew, d.FindingsNewIncidental)
+	}
+}
+
 // TestCompute_PreexistingFindingIsSilent is the false-signal guard: a finding
 // present in BOTH snapshots (e.g. an API-first route unused before and after, or
 // a pre-existing cycle) must never surface. The ratchet reports movement, not state.

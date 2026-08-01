@@ -184,16 +184,24 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 	return insights, nil
 }
 
-// confidence scales from 0.5 at the threshold toward 1.0 as fan-in grows to ~2x
-// the threshold.
+// confidence scales from 0.5 at the threshold upward as fan-in grows, saturating at
+// common.MaxHeuristicConfidence at ~1.9x the threshold.
+//
+// The ceiling is NOT 1.0, and that matters more than it looks. A god class is a
+// statistical outlier — the score says how far past the repo's own mean+2σ this
+// symbol sits, not that anything is wrong. Letting it saturate at 1.0 made a
+// heuristic present as a structural fact, which is the one thing confidence is
+// documented to distinguish: it is what the receipt's heuristic count, the
+// dashboard's structural/candidate split and query_insights(min_confidence=1.0)
+// each read. Only a cycle is computed with certainty, so only a cycle reaches 1.0.
 func confidence(value, threshold float64) float64 {
 	if threshold <= 0 {
 		return 0.6
 	}
 	ratio := value / threshold // >= 1 for reported symbols
 	c := 0.5 + 0.5*(ratio-1)
-	if c > 1 {
-		c = 1
+	if c > common.MaxHeuristicConfidence {
+		c = common.MaxHeuristicConfidence
 	}
 	if c < 0.5 {
 		c = 0.5

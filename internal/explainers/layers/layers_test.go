@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/enola-labs/enola/internal/explainers/common"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -644,5 +645,183 @@ func TestExplain_RailsDetectedNotNextJS(t *testing.T) {
 	}
 	if arch != "rails-mvc" {
 		t.Errorf("architecture insight = %q, want rails-mvc", arch)
+	}
+}
+
+// --- test-code exclusion, evidence, and append mode ---
+
+// TestDetectViolations_SkipsTestFiles pins the gate on the importing FILE rather than
+// on its module. resolveLayerModule walks UP to the nearest classified module, so a
+// mock or test nested inside a production module (Sources/Foo/Mocks/X.swift) would
+// otherwise have its imports attributed to the production layer and reported as a
+// violation of it.
+func TestDetectViolations_SkipsTestFiles(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"domain/entity", "presentation/views", "adapter/rest", "application/svc"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m})
+	}
+	// Production file: a genuine violation. Test file in the same module: not.
+	addDep(s, "domain/entity/a.go", "presentation/views")
+	addDep(s, "domain/entity/mocks/a_mock.go", "presentation/views")
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if got := countViolations(insights); got != 1 {
+		t.Fatalf("only the production import should violate, got %d", got)
+	}
+}
+
+// TestDetectViolations_CitesEdgeEndpoints pins the evidence the snapshot diff needs.
+// The importing file is never a fact name, so a violation citing only the file can
+// never be attributed to a change and never reaches the gate. The dependency fact and
+// the RAW import target are the two endpoints of the edge that the diff records.
+func TestDetectViolations_CitesEdgeEndpoints(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"domain/entity", "presentation/views", "adapter/rest", "application/svc"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m})
+	}
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency,
+		Name: "domain/entity -> presentation/views",
+		File: "domain/entity/a.go",
+		Relations: []facts.Relation{
+			{Kind: facts.RelImports, Target: "presentation/views"},
+		},
+	})
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	var got []facts.Insight
+	for _, in := range insights {
+		if in.Confidence == 0.8 {
+			got = append(got, in)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 violation, got %d", len(got))
+	}
+
+	// The file entry stays first: the dashboard and the gate both render the first
+	// qualifying evidence entry.
+	if got[0].Evidence[0].File != "domain/entity/a.go" {
+		t.Errorf("file evidence must stay first, got %+v", got[0].Evidence[0])
+	}
+	cited := map[string]bool{}
+	for _, ev := range got[0].Evidence {
+		if ev.Fact != "" {
+			cited[ev.Fact] = true
+		}
+	}
+	for _, want := range []string{"domain/entity -> presentation/views", "presentation/views"} {
+		if !cited[want] {
+			t.Errorf("evidence must cite %q so the diff can attribute it; cited %v", want, cited)
+		}
+	}
+}
+
+// TestDetectViolations_ResolvesRepoPrefixedFiles covers append mode, where a fact's
+// File is repo-prefixed ("server/index.js") while module facts keep their bare name.
+// Deriving the module from the raw File yields the repo label, which no module is
+// called — so the explainer used to report nothing at all on a multi-repo graph.
+func TestDetectViolations_ResolvesRepoPrefixedFiles(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"domain/entity", "presentation/views", "adapter/rest", "application/svc"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m, Repo: "server", File: "server/" + m})
+	}
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency,
+		Name: "domain/entity -> presentation/views",
+		Repo: "server",
+		File: "server/domain/entity/a.go",
+		Relations: []facts.Relation{
+			{Kind: facts.RelImports, Target: "presentation/views"},
+		},
+	})
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if got := countViolations(insights); got != 1 {
+		t.Fatalf("repo-prefixed file must still resolve to its module, got %d violations", got)
+	}
+}
+
+// TestDetectPatterns_ExcludesTestModules pins that test trees do not vote on the
+// architecture. len(modules) is the coverage denominator and the signature-layer gate
+// counts distinct layers, so a repo whose only `adapter` and `application` directories
+// live under a test source set must not be reported as hexagonal.
+func TestDetectPatterns_ExcludesTestModules(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{
+		"src/main/kotlin/app",
+		"src/test/kotlin/adapter",
+		"src/test/kotlin/application",
+	} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m})
+	}
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	for _, in := range insights {
+		if strings.Contains(in.Title, "hexagonal") {
+			t.Fatalf("hexagonal must not be claimed from test-only directories: %q", in.Title)
+		}
+	}
+}
+
+// TestDetectPatterns_ModuleRoleOutranksPath is the other direction, and the reason
+// this filter uses common.IsTestModule rather than a path test. A build file that says
+// a module is production wins over a path that looks like a test tree — a large Android
+// app really does ship `app/src/main/java/…/ui/base/testing`.
+func TestDetectPatterns_ModuleRoleOutranksPath(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"domain/entity", "application/svc", "port/iface"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m})
+	}
+	s.Add(facts.Fact{
+		Kind:  facts.KindModule,
+		Name:  "adapter/rest/testing",
+		Props: map[string]any{facts.PropModuleRole: facts.ModuleRoleProduction},
+	})
+
+	e := New()
+	mods := []facts.Fact{}
+	for _, m := range s.ByKind(facts.KindModule) {
+		if !common.IsTestModule(m) {
+			mods = append(mods, m)
+		}
+	}
+	pattern := e.bestPattern(e.detectPatterns(mods, "", nil))
+	if pattern == nil {
+		t.Fatal("no pattern detected")
+	}
+	if _, ok := pattern.Modules["adapter/rest/testing"]; !ok {
+		t.Errorf("a module the build file calls production must stay classified: %v", pattern.Modules)
+	}
+}
+
+// TestDetectPatterns_ConfidenceStaysBelowOne pins the reserved meaning of 1.0. A
+// pattern match is a coverage ratio over directory names — a well-supported guess,
+// never a proof — so even a repo where every module matches every layer must not
+// present as a structural fact.
+func TestDetectPatterns_ConfidenceStaysBelowOne(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"cmd/server", "internal/auth", "pkg/utils", "api/v1"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m, Props: map[string]any{"language": "go"}})
+	}
+
+	e := New()
+	for _, p := range e.detectPatterns(s.ByKind(facts.KindModule), "go", nil) {
+		if p.Confidence >= 1.0 {
+			t.Errorf("pattern %q reached confidence %v; 1.0 is reserved for structural facts",
+				p.Name, p.Confidence)
+		}
 	}
 }

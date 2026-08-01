@@ -21,6 +21,19 @@ import (
 // such an SCC as one logical layer instead of its full size).
 const OversizedClusterModules = 8
 
+// MaxHeuristicConfidence is the ceiling for any finding that is inferred rather than
+// proven, and it exists to keep one published promise true: confidence `1.0` means a
+// structural fact, anything below it is a heuristic candidate. That promise is what
+// `snapshot_receipt`'s heuristic-insight count, the dashboard's structural/candidate
+// split and `query_insights(min_confidence=…)` all rest on.
+//
+// Two explainers compute a confidence that can otherwise saturate — god-class, whose
+// score is a fan-in ratio against a statistical threshold, and layers, whose pattern
+// confidence is a coverage share. Both are strong signals and neither is a proof, so
+// both clamp here instead of at 1.0. A cycle is the only claim enola computes with
+// certainty, and it is the only thing that may reach 1.0.
+const MaxHeuristicConfidence = 0.95
+
 // FileDir returns the directory portion of a file path, which enola uses as the
 // canonical module name. A path with no separator maps to ".".
 func FileDir(file string) string {
@@ -29,6 +42,26 @@ func FileDir(file string) string {
 		return "."
 	}
 	return strings.Join(parts[:len(parts)-1], "/")
+}
+
+// ModuleDir returns the directory of a fact's file in MODULE-NAME space: FileDir with
+// the repo label stripped first.
+//
+// The two spaces diverge in a multi-repo (append-mode) snapshot and only there. A
+// fact's File is repo-prefixed ("server/index.js") while module facts keep their bare
+// name (".", "routes", "src"), so deriving a module from a raw File yields "server" —
+// a name no module has, in any repo. Anything resolving a file back to its module has
+// to cross that gap explicitly.
+//
+// Repo is populated in BOTH modes; only the File prefix is append-mode-specific. That
+// is what makes the strip safe rather than lossy: a single-repo fact is File "main.go"
+// with Repo "go_sample", the prefix does not match, and nothing is removed.
+func ModuleDir(f facts.Fact) string {
+	file := f.File
+	if f.Repo != "" {
+		file = strings.TrimPrefix(file, f.Repo+"/")
+	}
+	return FileDir(file)
 }
 
 // nearestModule walks dir up its path until it reaches a known production or test
@@ -110,9 +143,13 @@ func BuildModuleGraph(store *facts.Store) map[string][]string {
 	return BuildModuleGraphExcluding(store)
 }
 
-// isTestModule reports whether a module is test scaffolding rather than production
+// IsTestModule reports whether a module is test scaffolding rather than production
 // architecture, and must therefore be kept out of the coupling graph the cycles and
-// dependency-depth explainers read.
+// dependency-depth explainers read, and out of the module population the layers
+// explainer measures architecture-pattern coverage against.
+//
+// Callers holding a module FACT should use this rather than facts.IsTestPath on the
+// name, because only this consults `module_role` — see below.
 //
 // The extractor's `module_role` prop is AUTHORITATIVE where it exists: it comes from
 // a build file, not a guess — an SPM/Xcode target type, a Gradle source set. A module
@@ -127,7 +164,7 @@ func BuildModuleGraph(store *facts.Store) map[string][]string {
 // dependency-depth findings were test modules (`tests/unit_tests/dao (depth 11)`, …)
 // and 2 of the 10 cycles ran through them: an explainer whose entire output was test
 // scaffolding. Where the prop is absent, fall back to the path.
-func isTestModule(m facts.Fact) bool {
+func IsTestModule(m facts.Fact) bool {
 	switch role, _ := m.Props[facts.PropModuleRole].(string); role {
 	case facts.ModuleRoleTest:
 		return true
@@ -159,7 +196,7 @@ func BuildModuleGraphExcluding(store *facts.Store, excludeKinds ...string) map[s
 	moduleNames := make(map[string]bool)
 	testModules := make(map[string]bool)
 	for _, m := range modules {
-		if isTestModule(m) {
+		if IsTestModule(m) {
 			testModules[m.Name] = true
 			continue
 		}
@@ -179,7 +216,14 @@ func BuildModuleGraphExcluding(store *facts.Store, excludeKinds ...string) map[s
 		// raw-FileDir source node never matched a module-name target and no cycle or
 		// edge could form (which silently zeroed cycle detection on such projects).
 		// Resolving up keeps this graph consistent with package_metrics.
-		sourceModule := nearestModule(FileDir(dep.File), moduleNames, testModules)
+		//
+		// ModuleDir, not FileDir: in an append-mode snapshot the file is repo-prefixed
+		// ("consumer/src/client.ts") while module facts keep their bare name ("src").
+		// Walking up from the prefixed dir reaches no module and nearestModule returns
+		// the raw directory, so every multi-repo edge used to hang off a phantom node
+		// that nothing else referenced — silently costing cycle and depth detection the
+		// coupling that spans repositories.
+		sourceModule := nearestModule(ModuleDir(dep), moduleNames, testModules)
 		if testModules[sourceModule] {
 			continue // edge out of a test bundle — not production architecture
 		}

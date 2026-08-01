@@ -56,6 +56,24 @@ func (e *ComplexityExplainer) Explain(ctx context.Context, store *facts.Store) (
 	var entries []entry
 	values := make([]float64, 0, len(symbols))
 	for _, s := range symbols {
+		// Test code leaves BOTH the candidate set and the distribution, and that is a
+		// deliberate divergence from god-class, which filters candidates only.
+		//
+		// The difference is in the metric, not in taste. God-class reads fan-in off the
+		// reverse edge index, so dropping test-sourced edges would rewrite a retained
+		// PRODUCTION symbol's reported number — a test caller is still a caller. Here
+		// the metric is `cyclomatic`, read off the symbol's own props: nothing about
+		// one symbol can change another's complexity, so removing test rows narrows the
+		// comparison population without falsifying a single retained value.
+		//
+		// And the population is the claim. This explainer reports "well above the repo
+		// average"; in the languages with no test-ignore glob (Swift, Kotlin, Java,
+		// C/C++, PHP, Rust) that average otherwise includes every trivial linear test
+		// method, which depresses the mean, compresses sigma and over-reports real
+		// functions against scaffolding.
+		if facts.IsTestPath(s.File) {
+			continue
+		}
 		if !isCallable(s) {
 			continue
 		}

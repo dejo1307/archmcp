@@ -216,3 +216,83 @@ func TestExplain_IgnoresNonCallable(t *testing.T) {
 		t.Errorf("expected non-callable symbols to be ignored, got %d insights", len(insights))
 	}
 }
+
+// fnIn is fn with an explicit file, for exercising the test-path gate.
+func fnIn(name, file string, cyclo any) facts.Fact {
+	return facts.Fact{
+		Kind:  facts.KindSymbol,
+		Name:  name,
+		File:  file,
+		Line:  10,
+		Props: map[string]any{"symbol_kind": facts.SymbolFunc, "cyclomatic": cyclo},
+	}
+}
+
+// TestExplain_SkipsTestSymbols: a complex test helper is not an architectural
+// finding, however tangled it is.
+func TestExplain_SkipsTestSymbols(t *testing.T) {
+	s := facts.NewStore()
+	for i := 0; i < 20; i++ {
+		s.Add(fn(fmt.Sprintf("pkg/x.simple%d", i), 2))
+	}
+	s.Add(fnIn("pkg/x.MonsterFixture", "pkg/x/testdata/build.go", 30))
+
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	for _, in := range insights {
+		if strings.Contains(in.Title, "MonsterFixture") {
+			t.Errorf("a test-path symbol must not be flagged: %q", in.Title)
+		}
+	}
+}
+
+// TestExplain_TestSymbolsDoNotMoveTheThreshold is the reason this explainer filters
+// the DISTRIBUTION and not just the candidates, unlike god-class.
+//
+// The metric here is `cyclomatic`, read off a symbol's own props, so no symbol can
+// change another's value — removing test rows narrows the comparison population
+// without falsifying a single retained number. The finding claims a function is "well
+// above the repo average", and in the languages with no test-ignore glob that average
+// would otherwise be dragged down by every trivial test method, flagging production
+// functions against scaffolding. Same production code, same verdict, with or without
+// 200 trivial tests beside it.
+func TestExplain_TestSymbolsDoNotMoveTheThreshold(t *testing.T) {
+	// Values sit ABOVE minComplexity so the absolute floor cannot mask a threshold
+	// shift: unfiltered, the 200 trivial tests drag mean+2σ from ~15.8 down to ~8.8,
+	// which drops every one of the 20 ordinary functions below the bar and turns one
+	// honest finding into a capped list of fifteen.
+	production := func() *facts.Store {
+		s := facts.NewStore()
+		for i := 0; i < 20; i++ {
+			s.Add(fn(fmt.Sprintf("pkg/x.ordinary%d", i), 12))
+		}
+		s.Add(fn("pkg/x.Heavy", 20))
+		return s
+	}
+
+	alone, err := New().Explain(context.Background(), production())
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+
+	withTests := production()
+	for i := 0; i < 200; i++ {
+		withTests.Add(fnIn(fmt.Sprintf("pkg/x.TestTrivial%d", i), "pkg/x/f_test.go", 1))
+	}
+	beside, err := New().Explain(context.Background(), withTests)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+
+	if len(alone) != len(beside) {
+		t.Fatalf("test symbols moved the outlier threshold: %d findings alone, %d with tests beside",
+			len(alone), len(beside))
+	}
+	for i := range alone {
+		if alone[i].Title != beside[i].Title {
+			t.Errorf("finding %d differs: %q vs %q", i, alone[i].Title, beside[i].Title)
+		}
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/enola-labs/enola/internal/explainers/common"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -322,17 +323,22 @@ func TestExplain_ExcludesTestRefFanIn(t *testing.T) {
 	}
 }
 
-// TestConfidenceMath locks the 0.5→1.0 scaling and its clamps.
+// TestConfidenceMath locks the scaling and its clamps.
+//
+// The upper clamp is common.MaxHeuristicConfidence, NOT 1.0, and that is the point of
+// the case at 40: a fan-in outlier is a statistical candidate however extreme it gets,
+// and 1.0 is reserved for the one thing enola computes with certainty. Saturating here
+// used to publish 14 of enola's own 25 god-class findings as structural facts.
 func TestConfidenceMath(t *testing.T) {
 	tests := []struct {
 		value, threshold, want float64
 	}{
 		{10, 10, 0.5},  // at threshold
 		{15, 10, 0.75}, // halfway to 2x
-		{20, 10, 1.0},  // 2x threshold
-		{40, 10, 1.0},  // clamps at 1.0
-		{5, 10, 0.5},   // below threshold clamps at 0.5
-		{5, 0, 0.6},    // degenerate threshold
+		{20, 10, common.MaxHeuristicConfidence},
+		{40, 10, common.MaxHeuristicConfidence}, // however far past, still a heuristic
+		{5, 10, 0.5},                            // below threshold clamps at 0.5
+		{5, 0, 0.6},                             // degenerate threshold
 	}
 	for _, tt := range tests {
 		if got := confidence(tt.value, tt.threshold); got != tt.want {

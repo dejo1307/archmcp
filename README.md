@@ -57,7 +57,7 @@ New coupling (5):
   invoice.Retry                                --declares--> invoice
 ```
 
-Two packages here, for a readable example. On a 68,000-fact repository carrying 335 pre-existing findings it behaves identically: it reported the one thing the change introduced, and none of the 335.
+Two packages here, for a readable example. On a 68,000-fact repository carrying 268 pre-existing findings it behaves identically: it reported the one thing the change introduced, and none of the 268.
 
 ## Set it up
 

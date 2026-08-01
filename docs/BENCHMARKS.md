@@ -28,47 +28,47 @@ would have been.
 
 ## The corpus
 
-38 repositories, 239,349 source files parsed, 4,211,113 facts carrying 13 distinct
+38 repositories, 239,349 source files parsed, 4,211,133 facts carrying 13 distinct
 language tags (C, C++, Go, Java, Kotlin, PHP, Python, Ruby, Rust, Swift, TypeScript,
 gRPC, OpenAPI). Public open-source only — every row is a repository you can clone and
 re-run.
 
 | Repository | Language | Files parsed | Facts | Modules | Routes | Cold | Warm |
 |---|---|---|---|---|---|---|---|
-| linux | C | 55,399 | 1,892,343 | 4,293 | 0 | 157.6s | 33.9s |
-| gitlab | Ruby | 47,711 | 435,020 | 10,484 | 1,848 | 29.1s | 19.4s |
-| rust | Rust | 36,090 | 394,970 | 3,759 | 0 | 20.4s | 9.1s |
-| shopware | PHP | 13,731 | 218,814 | 4,188 | 724 | 11.1s | 4.9s |
+| linux | C | 55,399 | 1,892,343 | 4,293 | 0 | 157.4s | 33.6s |
+| gitlab | Ruby | 47,711 | 435,020 | 10,484 | 1,848 | 29.3s | 19.6s |
+| rust | Rust | 36,090 | 394,970 | 3,759 | 0 | 20.9s | 8.9s |
+| shopware | PHP | 13,731 | 218,814 | 4,188 | 724 | 11.3s | 5.0s |
 | grafana | Go | 10,310 | 163,620 | 2,295 | 1,714 | 7.5s | 5.0s |
-| thingsboard | Java | 6,371 | 158,987 | 1,164 | 1,403 | 4.8s | 3.1s |
-| nextcloud-server | PHP | 6,037 | 101,462 | 1,538 | 12 | 5.9s | 2.0s |
-| discourse | Ruby | 10,353 | 93,295 | 1,483 | 1,217 | 6.9s | 4.1s |
-| dubbo | Java | 4,351 | 82,550 | 954 | 19 | 4.7s | 1.9s |
-| supabase | TypeScript | 6,918 | 70,203 | 1,679 | 83 | 5.6s | 2.4s |
-| airflow | Python | 4,061 | 67,992 | 1,261 | 463 | 8.7s | 5.3s |
-| deno | Rust | 4,353 | 62,118 | 2,056 | 4 | 7.8s | 2.0s |
+| thingsboard | Java | 6,371 | 158,987 | 1,164 | 1,403 | 4.8s | 3.2s |
+| nextcloud-server | PHP | 6,037 | 101,462 | 1,538 | 12 | 5.8s | 2.1s |
+| discourse | Ruby | 10,353 | 93,295 | 1,483 | 1,217 | 7.1s | 4.2s |
+| dubbo | Java | 4,351 | 82,550 | 954 | 19 | 2.3s | 1.8s |
+| supabase | TypeScript | 6,918 | 70,203 | 1,679 | 83 | 5.8s | 2.5s |
+| airflow | Python | 4,061 | 67,992 | 1,261 | 463 | 8.7s | 5.4s |
+| deno | Rust | 4,353 | 62,118 | 2,056 | 4 | 5.8s | 2.0s |
 | superset | Python | 3,834 | 51,645 | 984 | 302 | 4.8s | 2.7s |
 | cal.com | TypeScript | 4,596 | 48,637 | 1,453 | 270 | 3.0s | 1.5s |
-| dbt-core | Rust | 1,371 | 46,935 | 321 | 202 | 2.9s | 1.0s |
-| wordpress | PHP | 2,840 | 45,681 | 441 | 6,671 | 5.5s | 1.2s |
+| dbt-core | Rust | 1,371 | 46,935 | 321 | 202 | 3.0s | 1.1s |
+| wordpress | PHP | 2,840 | 45,681 | 441 | 6,671 | 5.6s | 1.1s |
 | gmsh | C++ | 1,679 | 41,348 | 86 | 0 | 2.9s | 0.8s |
 | chatwoot | Ruby | 3,643 | 36,046 | 863 | 744 | 2.1s | 1.3s |
-| gitea | Go | 2,210 | 34,088 | 395 | 758 | 1.5s | 1.1s |
+| gitea | Go | 2,210 | 34,088 | 395 | 758 | 1.5s | 1.2s |
 | saleor | Python | 2,473 | 30,052 | 202 | 4 | 3.1s | 2.1s |
 | flarum | PHP | 2,702 | 28,300 | 764 | 11 | 1.3s | 0.7s |
 | cognee | Python | 1,489 | 16,909 | 394 | 214 | 1.7s | 0.8s |
 | cognee-rs | Rust | 846 | 15,827 | 124 | 77 | 1.1s | 0.4s |
 | tokio | Rust | 780 | 14,450 | 99 | 0 | 0.8s | 0.3s |
 | crates-io | Rust | 878 | 12,451 | 214 | 96 | 0.8s | 0.4s |
-| solidus | Ruby | 1,766 | 10,009 | 383 | 171 | 0.9s | 0.7s |
+| solidus | Ruby | 1,766 | 10,009 | 383 | 171 | 0.9s | 0.6s |
 | excalidraw | TypeScript | 526 | 8,738 | 85 | 3 | 0.9s | 0.4s |
-| isowords | Swift | 382 | 5,615 | 160 | 2 | 0.4s | 0.2s |
+| isowords | Swift | 382 | 5,615 | 160 | 2 | 0.5s | 0.2s |
 | nowinandroid | Kotlin | 312 | 5,110 | 123 | 4 | 0.4s | 0.3s |
 | nextcloud-collectives | PHP | 383 | 4,966 | 70 | 1 | 0.5s | 0.2s |
 | getdp | C++ | 169 | 4,562 | 9 | 0 | 0.8s | 0.2s |
-| enola | Go | 158 | 3,506 | 56 | 6 | 0.8s | 0.3s |
+| enola | Go | 158 | 3,526 | 56 | 6 | 0.3s | 0.2s |
 | elk | Vue | 380 | 2,556 | 79 | 56 | 0.2s | 0.1s |
-| nextcloud-contacts | PHP | 170 | 1,706 | 51 | 1 | 0.3s | 0.2s |
+| nextcloud-contacts | PHP | 170 | 1,706 | 51 | 1 | 0.3s | 0.1s |
 | grpc-web-example | Go + gRPC + TS | 12 | 293 | 8 | 5 | 0.1s | 0.1s |
 | sveltekit-realworld | Svelte | 42 | 195 | 14 | 13 | 0.1s | 0.1s |
 | cachet | PHP | 21 | 101 | 11 | 0 | 0.1s | 0.1s |
@@ -88,7 +88,7 @@ three. Running cold then warm is the point: it tests that a cached run and a
 from-scratch run agree, not merely that the same code path repeats itself.
 
 > **38 of 38 repositories produced a byte-identical `snapshot_id` and a
-> byte-identical `facts.jsonl` across all three runs — 114 runs, 4,211,113 facts,
+> byte-identical `facts.jsonl` across all three runs — 114 runs, 4,211,133 facts,
 > zero drift.** `insights.json` is byte-stable on all 38 as well.
 
 This is the property everything else rests on. `snapshot_id` is
@@ -111,15 +111,15 @@ delete. The cycle case adds two new modules that import each other.
 
 | Repository | Language | Pre-existing findings | No change | Benign addition | Injected cycle | Reverted |
 |---|---|---|---|---|---|---|
-| superset | Python | 347 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| superset | Python | 133 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
 | gitea | Go | 159 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
-| enola | Go | 144 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
-| cognee | Python | 123 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| enola | Go | 145 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| cognee | Python | 121 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
 | excalidraw | TypeScript | 111 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
 | chatwoot | Ruby | 104 | PASS · +0 facts | PASS · +3 facts | **FAIL · 1 regression** | PASS · +0 |
 | solidus | Ruby | 72 | PASS · +0 facts | PASS · +3 facts | **FAIL · 1 regression** | PASS · +0 |
 | crates-io | Rust | 65 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
-| nowinandroid | Kotlin | 40 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| nowinandroid | Kotlin | 37 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
 | elk | TypeScript | 26 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
 | sveltekit-realworld | TypeScript | 1 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
 | cachet | PHP | 0 | PASS · +0 facts | PASS · +3 facts | **FAIL · 1 regression** | PASS · +0 |
@@ -131,8 +131,8 @@ Read the columns as four separate claims, all of which hold on all twelve:
   columns mean something.
 - **Benign addition → PASS**, with the delta naming exactly the 2–3 facts added.
   A new leaf module is not a regression, and reporting it as one is how gates die.
-- **Injected cycle → FAIL, exactly 1 regression** — out of **1,192 pre-existing
-  findings across these repositories**, up to 347 in a single one. None of them was
+- **Injected cycle → FAIL, exactly 1 regression** — out of **974 pre-existing
+  findings across these repositories**, up to 159 in a single one. None of them was
   repeated. The ratchet holds.
 - **Reverted → PASS again**, +0 facts. The verdict is a function of the tree, not
   of history.
@@ -150,19 +150,19 @@ which is exactly the property that makes the no-change column worth reading.
 
 ### Why only cycles fail
 
-Across the corpus enola produced **24,648 findings**. Broken down:
+Across the corpus enola produced **24,012 findings**. Broken down:
 
 | Explainer | Findings | Class |
 |---|---|---|
-| hotspots | 20,891 | statistical outlier |
-| layers | 953 | heuristic |
+| hotspots | 20,625 | statistical outlier |
+| layers | 585 | heuristic |
 | **cycles** | **887** | **structural fact — the only one that fails a build** |
 | god-class | 714 | statistical outlier |
-| complexity-outliers | 491 | statistical outlier |
+| complexity-outliers | 489 | statistical outlier |
 | exported-surface | 442 | candidate |
 | dependency-depth | 270 | statistical outlier |
 
-3.6% of findings are eligible to fail a build. The other 96.4% are reported and let
+3.7% of findings are eligible to fail a build. The other 96.3% are reported and let
 you through. That ratio is the design, not an accident: a gate that fails on one
 thing, and says which, is a gate people leave switched on.
 
@@ -249,15 +249,15 @@ so the demonstration proves its own limit in the same run.
 
 | | |
 |---|---|
-| Largest repository indexed | **Linux kernel** — 55,399 files, **1,892,343 facts**, 157.6s cold / 33.9s warm |
-| Largest Ruby | GitLab — 47,711 files, 435,020 facts, 29.1s / 19.4s |
-| Largest Rust | rust-lang/rust — 36,090 files, 394,970 facts, 20.4s / 9.1s |
+| Largest repository indexed | **Linux kernel** — 55,399 files, **1,892,343 facts**, 157.4s cold / 33.6s warm |
+| Largest Ruby | GitLab — 47,711 files, 435,020 facts, 29.3s / 19.6s |
+| Largest Rust | rust-lang/rust — 36,090 files, 394,970 facts, 20.9s / 8.9s |
 | Largest Go | Grafana — 10,310 files, 163,620 facts, 7.5s / 5.0s |
 | Throughput | 7,500–35,000 facts/sec depending on language |
 | Parse errors, all 38 repositories | **0** |
 | Memory, Linux kernel | heap peaked well inside a laptop's budget; no repository required tuning |
 
-Warm runs are 1.33×–5.22× faster than cold (over the 21 repositories whose cold run
+Warm runs are 1.28×–4.97× faster than cold (over the 28 repositories whose cold run
 exceeds 0.5s; below that the timing is noise), from the per-file content-hash cache
 in `snapshot.meta.json`. Speed is not a claim enola competes on; these numbers are here
 to establish that the graph the other four sections rely on can actually be built on
@@ -277,8 +277,8 @@ file-get-contents 9 · hono 7 · gorilla/mux 5 · retrofit 4 · django 4 · expr
 urlsession 2
 ```
 
-Fact kinds: 3,065,486 symbols · 979,468 dependencies · 61,328 file refs ·
-42,546 modules · 41,753 test refs · 17,098 routes · 3,434 storage.
+Fact kinds: 3,065,499 symbols · 979,474 dependencies · 61,328 file refs ·
+42,546 modules · 41,754 test refs · 17,098 routes · 3,434 storage.
 
 Two rows are worth reading carefully rather than as a score. **django 4** counts
 routes, not coverage: Saleor is GraphQL-first, so its REST surface really is that
