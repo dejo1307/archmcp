@@ -16,6 +16,7 @@ var kindMeaning = map[diff.WarningKind]string{
 	diff.WarnDifferentRepo:   "the two snapshots are of different repositories, so the delta is not about your change",
 	diff.WarnVersionMismatch: "different enola versions extract differently, so unchanged code can appear as churn",
 	diff.WarnExtractorSet:    "a language present on one side only makes all of its facts appear added or removed",
+	diff.WarnExplainerSet:    "an explainer present on one side only makes all of its findings appear new or resolved; the facts and coupling in this delta are unaffected",
 	diff.WarnIgnoreGlobs:     "the set of files parsed changed, so some of this delta is exclusion changes, not code changes",
 	diff.WarnUnclassified:    "an uncategorized caveat was raised; the gate fails closed rather than grade what it cannot judge",
 	diff.WarnStaleBaseline:   "the delta is real, but it also contains whatever the repository itself changed since the baseline was pinned",

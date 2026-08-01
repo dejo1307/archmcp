@@ -166,6 +166,13 @@ var blockingKinds = map[diff.WarningKind]bool{
 var advisoryKinds = map[diff.WarningKind]bool{
 	diff.WarnStaleBaseline: true,
 	diff.WarnPreReceipt:    true,
+	// The explainer set differed. Deliberately advisory rather than blocking: unlike a
+	// differing EXTRACTOR set, the fact delta is untouched, so the change is still
+	// gradeable and only the findings from the explainers that differ are misattributed.
+	// Registering it here is what makes "advisory" mean reported-and-graded rather than
+	// silent — a kind in neither map is carried in ComparabilityWarnings but named in
+	// no summary line.
+	diff.WarnExplainerSet: true,
 }
 
 // Verdict is the graded delta.

@@ -101,6 +101,11 @@ const (
 	// WarnExtractorSet — the extractor sets differ, so one language's facts appear
 	// wholesale as added or removed.
 	WarnExtractorSet WarningKind = "extractor_set"
+	// WarnExplainerSet — the explainer sets differ, so one explainer's findings appear
+	// wholesale as new or resolved. Advisory rather than blocking: the fact delta is
+	// unaffected, so the change is still gradeable — only the finding attribution for
+	// the explainers that differ is wrong.
+	WarnExplainerSet WarningKind = "explainer_set"
 	// WarnIgnoreGlobs — the ignore globs differ, so the set of files parsed changed.
 	WarnIgnoreGlobs WarningKind = "ignore_globs"
 	// WarnInvertedPair — the baseline is NEWER than the current snapshot, so the
@@ -360,6 +365,33 @@ func compareMeta(base, cur facts.SnapshotMeta) Comparability {
 	if only := missingFrom(cur.Extractors, base.Extractors); len(only) > 0 {
 		c.add(WarnExtractorSet,
 			"current run added extractor(s) not in the baseline: %s — their facts will all appear as ADDED",
+			strings.Join(only, ", "))
+	}
+
+	// The same two arms for EXPLAINERS. Findings are keyed by their source, so an
+	// explainer present on one side only contributes its entire output as a delta:
+	// every one of its findings reads as introduced or cleared by the change.
+	//
+	// Explainers were recorded in the receipt from the start and never compared, so
+	// this was silent. `explainers:` is an ordinary config knob, and enabling or
+	// disabling one between pinning and checking presented that explainer's whole
+	// finding set as the work of the change. The same happens without anyone editing
+	// anything where the enabled set is decided at runtime rather than by the config.
+	//
+	// ADVISORY, unlike the extractor arms: an extractor set mismatch invalidates the
+	// FACT delta, which is the substrate everything else is computed from, so there is
+	// nothing left worth grading. A differing explainer set leaves facts, edges and
+	// coupling exact and misattributes only the findings from the explainers that
+	// differ. That is a misleading report rather than a wrong verdict, so it is worth
+	// saying loudly and not worth declining to grade over.
+	if only := missingFrom(base.Explainers, cur.Explainers); len(only) > 0 {
+		c.add(WarnExplainerSet,
+			"baseline had explainer(s) not in the current run: %s — their findings will all appear as RESOLVED",
+			strings.Join(only, ", "))
+	}
+	if only := missingFrom(cur.Explainers, base.Explainers); len(only) > 0 {
+		c.add(WarnExplainerSet,
+			"current run added explainer(s) not in the baseline: %s — their findings will all appear as NEW",
 			strings.Join(only, ", "))
 	}
 
