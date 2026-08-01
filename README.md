@@ -2,23 +2,23 @@
 
 [![MCP Toplist](https://mcptoplist.com/badge/glama%2Fenola-labs%2Fenola.svg)](https://mcptoplist.com/server/glama%2Fenola-labs%2Fenola)
 
-**Your agent can't tell you it's finished while it has introduced a dependency cycle.**
+**enola checks that every change your agent makes leaves your architecture intact.**
 
-An AI agent can write more code in an hour than you can carefully review. Your tests tell you the behaviour still works. Your linter tells you the style is fine. Nothing tells you the *structure* still makes sense — that the change didn't couple two modules that had no business knowing about each other, or quietly close a dependency loop. You find that out in review, if you're lucky, or six months later when nobody can refactor that package any more.
+AI agents can write more code than you can carefully review. Tests check that behaviour still works. Linters check that style rules are followed. Neither checks whether the *structure* of the code still makes sense — whether the change coupled two modules that had no business knowing about each other, or closed a dependency loop. That usually surfaces in review, if someone catches it, or months later when the package is too tangled to refactor.
 
-enola answers that question, at the moment it's cheap to fix.
+enola checks structure while the change is still easy to fix.
 
 ---
 
 ## The loop
 
-Two halves, and the second one is the point:
+enola works in two parts.
 
-**Before a change**, your agent gets the real structure — a deterministic graph of your code's modules, symbols, routes, storage and how they depend on each other, extracted from source rather than inferred. It can ask what actually depends on the thing it's about to touch, instead of guessing from a grep.
+**Before a change**, your agent has the real structure of the codebase: a deterministic graph of modules, symbols, routes, and storage, and how they depend on each other, extracted from source rather than inferred. It can look up what actually depends on the thing it's about to touch, instead of guessing from a grep.
 
-**After a change**, enola grades what the change *did*. It pins the architecture beforehand, compares afterwards, and reports the delta: findings introduced or resolved, coupling added, symbols added and removed. It's a **delta, not a linter** — it stays completely silent about everything that was already there, so when it does speak, something actually moved.
+**After a change**, enola grades what happened. It pins the architecture beforehand, compares it afterwards, and reports the delta: findings introduced or resolved, coupling added, symbols added and removed. This goes beyond what a static linter checks — it shows you everything the change actually did, and stays silent about everything that was already there.
 
-That runs in three places, and you can use any of them on their own:
+It runs in three places, each usable on its own:
 
 | | |
 |---|---|
@@ -57,7 +57,7 @@ New coupling (5):
   invoice.Retry                                --declares--> invoice
 ```
 
-Two packages here, for a readable example. On a 68,000-fact repository carrying 268 pre-existing findings it behaves identically: it reported the one thing the change introduced, and none of the 268.
+This example uses two packages for readability. On a 68,000-fact repository carrying 268 pre-existing findings, enola behaves the same way: it reports the one thing the change introduced, not the other 268.
 
 ## Set it up
 
@@ -74,11 +74,11 @@ enola install --hooks
 claude mcp add enola enola
 ```
 
-`enola install` writes a short instruction into the files your agents already read — Claude Code, Cursor, Copilot, Codex, Pi — and `--hooks` adds the two hooks that run the loop for you. It previews every change and asks before writing, never creates files you didn't have, and `enola uninstall` puts everything back byte-for-byte.
+`enola install` adds a short instruction to the files your agents already read — Claude Code, Cursor, Copilot, Codex, Pi — and `--hooks` adds the two hooks that run the loop automatically. It previews every change and asks before writing, never creates files you didn't already have, and `enola uninstall` reverses everything byte-for-byte.
 
 After your next session, `enola doctor` reports whether those hooks actually fired. Worth running once: a hook configuration is a contract with your agent, and one it quietly ignores looks exactly like one it honours.
 
-Prefer to drive it yourself? Skip step 2 and run the loop by hand:
+To run the loop by hand instead, skip step 2:
 
 ```bash
 enola baseline pin      # freeze the architecture before you edit
@@ -104,13 +104,13 @@ A dependency cycle is invisible to all four. It isn't a line, it isn't a behavio
 
 ## Only one thing fails the build
 
-A newly introduced **dependency cycle** fails. Everything else is reported and lets you through.
+Only a newly introduced **dependency cycle** fails the build. Everything else is reported but lets you through.
 
-That's deliberate. A cycle is the one finding enola computes with certainty rather than infers — Tarjan's strongly-connected-components over the real import graph, confidence `1.0` — and it's a violation too consequential to wave past: it dictates load order, it makes both modules untestable in isolation, and it raises the price of every future refactor in that area. It is not a matter of taste, and it's exactly the kind of thing an agent introduces without noticing.
+A cycle is computed with certainty, not inferred: Tarjan's strongly-connected-components algorithm over the real import graph, confidence `1.0`. It also has real consequences — it dictates load order, makes both modules untestable in isolation, and makes that area more expensive to refactor. It's exactly the kind of thing an agent introduces without noticing.
 
-Everything else — god classes, hotspots, deep dependency chains, layer violations, complexity outliers — is a **heuristic**, computed by statistical outlier tests. Those get reported so you can look, and never break your build. Each carries a confidence score so you can tell the two apart at a glance.
+Everything else — god classes, hotspots, deep dependency chains, layer violations, complexity outliers — is a **heuristic**, computed with statistical outlier tests. enola reports these automatically; they never break the build. Each finding carries a confidence score so you can tell the two apart.
 
-A gate that fails on exactly one thing, and tells you which, is a gate people leave switched on. Widen it if you want to:
+If you want to configure the confidence threshold or which findings fail the build, you can:
 
 ```bash
 enola check --fail-on=cycles,layers --min-confidence=0.8
@@ -119,11 +119,11 @@ enola check --warn-only          # report everything, fail nothing
 
 ## How it works
 
-Not a language model, and not embeddings. enola parses your source with tree-sitter and language-specific extractors, normalizes it into a typed fact model, links it into a directed graph, and runs real graph algorithms over it — Tarjan's SCC to find groups of modules that can all reach each other (a cycle), cycle-safe longest-path for the deepest import chain, and mean+2σ outlier tests to flag what sits two standard deviations above your own repository's average for the statistical findings. Terms enola uses in its own output are defined in **[docs/GLOSSARY.md](docs/GLOSSARY.md)**.
+enola parses your source with tree-sitter and language-specific extractors, normalizes it into a typed fact model, links it into a directed graph, and runs graph algorithms over it: Tarjan's SCC to find groups of modules that can all reach each other (a cycle), cycle-safe longest-path for the deepest import chain, and mean+2σ outlier tests to flag what sits two standard deviations above your own repository's average. No language model, no embeddings. Terms enola uses in its own output are defined in **[docs/GLOSSARY.md](docs/GLOSSARY.md)**.
 
-That means the same commit yields the same answer, every time — measured, not asserted: across 38 open-source repositories indexed three times each, all 38 produced a byte-identical snapshot ID and a byte-identical fact file, over 4.2 million facts with zero parse errors ([BENCHMARKS.md](docs/BENCHMARKS.md)). Every snapshot carries a **receipt**: enola's version, the git ref and whether the tree was dirty, the extractors used, and a snapshot ID that's a `sha256` fingerprint of the facts rather than a random UUID. Before trusting a comparison, enola checks the two snapshots were even built the same way — a different extractor set or changed ignore rules makes a diff meaningless, and it says so instead of reporting churn as if it were your change.
+The same commit yields the same answer, every time: across 38 open-source repositories indexed three times each, all 38 produced a byte-identical snapshot ID and a byte-identical fact file, over 4.2 million facts with zero parse errors ([BENCHMARKS.md](docs/BENCHMARKS.md)). Every snapshot carries a **receipt**: enola's version, the git ref and whether the tree was dirty, the extractors used, and a snapshot ID that's a `sha256` fingerprint of the facts rather than a random UUID. Before comparing two snapshots, enola checks they were built the same way — a different extractor set or changed ignore rules makes a diff meaningless, and it reports that instead of treating the mismatch as your change.
 
-Nothing leaves your machine. It's a local binary reading local files.
+enola runs as a local binary reading local files. Nothing leaves your machine.
 
 **[ARCHITECTURE.md](ARCHITECTURE.md)** has the fact model, the pipeline, the MCP tool reference and the analysis internals.
 
@@ -135,15 +135,15 @@ The hard part isn't finding the call, it's making both sides match. A route regi
 
 So an agent can answer *if I change this endpoint, which mobile screens break?* by traversal instead of inference — and `enola check` grades a change that spans repos the same way it grades one that doesn't.
 
-Whether that actually worked on *your* code is not something you should have to take on trust:
+enola shows this working on your own code, rather than asking you to trust it:
 
 ```bash
 enola coverage cluster.yaml
 ```
 
-reports, per service, how many outbound call sites enola detected, how many it resolved to a loaded repository, and **how many it couldn't** — so a genuinely isolated service is distinguishable from one whose edges enola simply failed to follow. The misses are always shown, because a number you can't check is worth less than one you can.
+reports, per service, how many outbound calls enola found, how many it resolved, and **how many it couldn't**. This distinguishes a genuinely isolated service from one whose edges enola simply failed to resolve — misses are always shown, not hidden.
 
-[`examples/cross-repo/`](examples/cross-repo/) is a two-service demo you can run in one command: a prefix composed across a function boundary so the client's call resolves, and one deliberately dynamic call that stays unresolved — because reporting a gap beats inventing an edge.
+[`examples/cross-repo/`](examples/cross-repo/) is a two-service demo you can run in one command: a prefix composed across a function boundary so the client's call resolves, and one deliberately dynamic call that stays unresolved, to show what an unresolved edge looks like rather than hide it.
 
 ---
 
@@ -169,25 +169,25 @@ reports, per service, how many outbound call sites enola detected, how many it r
 
 Framework- and platform-specific detection for each language is described in **[ARCHITECTURE.md → Supported languages](ARCHITECTURE.md#supported-languages)**.
 
-> Python, Ruby, PHP, and Rust are parsed with tree-sitter and contribute call and dependency edges to the graph, so `traverse`, `find_path`, and `impact_analysis` reach into them - not just modules and routes.
+> Python, Ruby, PHP, and Rust are parsed with tree-sitter and contribute call and dependency edges to the graph, so `traverse`, `find_path`, and `impact_analysis` reach into them — not just modules and routes.
 
 
 ## Learn more
 
-- **[docs/CLI.md](docs/CLI.md)** - setup, every command and flag, the exit codes, and the `--explain` report.
-- **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** - reproducibility, delta precision, cross-repo coverage and scale, measured on 38 public repositories.
-- **[docs/SNAPSHOTS.md](docs/SNAPSHOTS.md)** - why enola computes a graph on demand and keeps it as an addressable snapshot rather than maintaining one continuously-updated graph - and where the opposite choice is the right one.
-- **[docs/GLOSSARY.md](docs/GLOSSARY.md)** - the words enola uses in its own output - finding, baseline, receipt, coverage gap, incidental shift - defined in one place.
-- **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** - what the ten explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 24,012 findings about a corpus into the one that is about your change.
-- **[docs/extraction/](docs/extraction/)** - per language, what specific code produces which facts, from committed fixtures - and what each extractor deliberately does not resolve.
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - the concept, the fact model, the pipeline, the MCP tool reference, and the value model.
-- **[examples/](examples/)** - ready-made per-language and multi-repo configs, plus a pre-commit hook and a CI workflow.
+- **[docs/CLI.md](docs/CLI.md)** — setup, every command and flag, the exit codes, and the `--explain` report.
+- **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** — reproducibility, delta precision, cross-repo coverage and scale, measured on 38 public repositories.
+- **[docs/SNAPSHOTS.md](docs/SNAPSHOTS.md)** — why enola computes a graph on demand and keeps it as an addressable snapshot, rather than maintaining one continuously-updated graph, and where the opposite choice is the right one.
+- **[docs/GLOSSARY.md](docs/GLOSSARY.md)** — the words enola uses in its own output — finding, baseline, receipt, coverage gap, incidental shift — defined in one place.
+- **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** — what the ten explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 24,012 findings about a corpus into the one that is about your change.
+- **[docs/extraction/](docs/extraction/)** — per language, what specific code produces which facts, from committed fixtures, and what each extractor deliberately does not resolve.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the concept, the fact model, the pipeline, the MCP tool reference, and the value model.
+- **[examples/](examples/)** — ready-made per-language and multi-repo configs, plus a pre-commit hook and a CI workflow.
 
 ## License
 
-Apache License 2.0 - see [`LICENSE`](LICENSE).
+Apache License 2.0 — see [`LICENSE`](LICENSE).
 
-**What that gets you: all of the above.** This repository is the whole engine, not a trial edition. Every extractor and every language ships here (Go, TypeScript/JavaScript/Vue/Svelte, Python, Java, Kotlin, Ruby, PHP, Swift, Rust, C/C++, gRPC/Protobuf, OpenAPI), along with the cross-repo linker, all 13 MCP tools, all 10 explainers (cycles, layers, cross-repo, coverage, unused-routes, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers), baselines and `diff_snapshot`, snapshot receipts, the `--explain` report and the localhost dashboard. Nothing above is gated, metered, or degraded without a key - there is no license check anywhere in this repository, and no snapshot, fact, or usage counter leaves your machine. (The only outbound request enola makes is to GitHub's release API, and only when you explicitly run `enola upgrade`.)
+This repository is the full engine, not a trial edition. Every extractor and every language ships here (Go, TypeScript/JavaScript/Vue/Svelte, Python, Java, Kotlin, Ruby, PHP, Swift, Rust, C/C++, gRPC/Protobuf, OpenAPI), along with the cross-repo linker, all 13 MCP tools, all 10 explainers (cycles, layers, cross-repo, coverage, unused-routes, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers), baselines and `diff_snapshot`, snapshot receipts, the `--explain` report, and the localhost dashboard. None of this is gated, metered, or degraded without a key — there is no license check anywhere in this repository, and no snapshot, fact, or usage counter leaves your machine. (The only outbound request enola makes is to GitHub's release API, and only when you explicitly run `enola upgrade`.)
 
 ## Acknowledgements
 
