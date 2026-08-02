@@ -1,4 +1,4 @@
-package main
+package command
 
 import (
 	"encoding/json"
@@ -30,13 +30,13 @@ import (
 // Exit codes follow `enola coverage`, not `enola check`: this is a report, so it exits
 // 0 whenever it ran, and 2 only for a usage error. A non-zero code from enola means
 // "your change did something", and a diagnostic must not borrow that meaning.
-func runDoctor(args []string) {
+func (r *Runner) Doctor(args []string) {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr,
-			"Usage: enola doctor [flags] [repo_path]\n\n"+
+			"Usage: "+r.name()+" doctor [flags] [repo_path]\n\n"+
 				"Report whether enola's agent hooks are actually firing in this repository.\n\n"+
 				"`install --hooks` can write a configuration the agent ignores — it reports\n"+
 				"success either way. This asks the only question that settles it: when did the\n"+
@@ -49,11 +49,11 @@ func runDoctor(args []string) {
 
 	repoDir, err := os.Getwd()
 	if err != nil {
-		cmdFatal("doctor", "cannot determine the working directory: %v", err)
+		r.cmdFatal("doctor", "cannot determine the working directory: %v", err)
 	}
 	if rest := fs.Args(); len(rest) > 0 {
 		if !isDirectory(rest[0]) {
-			cmdFatal("doctor", "%q is not a directory", rest[0])
+			r.cmdFatal("doctor", "%q is not a directory", rest[0])
 		}
 		repoDir = rest[0]
 	}
@@ -80,7 +80,7 @@ func runDoctor(args []string) {
 		return
 	}
 
-	fmt.Printf("enola doctor: %s\n\n", repoDir)
+	fmt.Printf(r.name()+" doctor: %s\n\n", repoDir)
 
 	// Asked and answered BEFORE a session ends, which is the difference between this
 	// and reading the last outcome below: an unusable baseline makes the hooks decline
@@ -91,7 +91,7 @@ func runDoctor(args []string) {
 	} else {
 		fmt.Printf("  NOT COMPARABLE: %s\n", baselineIssue)
 		fmt.Println("  Nothing will be graded against it until it is re-pinned:")
-		fmt.Println("      enola baseline pin")
+		fmt.Printf("      %s baseline pin\n", r.name())
 	}
 	fmt.Println()
 
@@ -99,7 +99,7 @@ func runDoctor(args []string) {
 
 	if !installed {
 		fmt.Println("  not configured for this repository.")
-		fmt.Println("  Run `enola install --hooks` to have the loop run itself: a baseline pinned")
+		fmt.Printf("  Run `%s install --hooks` to have the loop run itself: a baseline pinned\n", r.name())
 		fmt.Println("  at session start, and the change graded when the session ends.")
 		return
 	}
@@ -147,10 +147,10 @@ func runDoctor(args []string) {
 		fmt.Println("  The stop hook is running, but last declined to grade: the baseline was not")
 		fmt.Println("  comparable to the current snapshot. It stays silent in-session when this")
 		fmt.Println("  happens, so it looks identical to a clean run. Re-pin with")
-		fmt.Println("  `enola baseline pin` and check `enola check` for the reason.")
+		fmt.Printf("  `%s baseline pin` and check `%s check` for the reason.\n", r.name(), r.name())
 	case state.Get(hookstate.EventStop).LastOutcome == hookstate.OutcomeUnavailable:
 		fmt.Println("  The stop hook is running but has nothing to grade against — usually no")
-		fmt.Println("  baseline yet. `enola baseline pin` fixes it; the session-start hook will")
+		fmt.Printf("  baseline yet. `%s baseline pin` fixes it; the session-start hook will\n", r.name())
 		fmt.Println("  also do it on the next session.")
 	default:
 		fmt.Println("  Both hooks are firing. The loop is closed.")

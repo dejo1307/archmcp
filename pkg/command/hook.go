@@ -1,4 +1,4 @@
-package main
+package command
 
 import (
 	"context"
@@ -44,15 +44,15 @@ type stopHookOutput struct {
 // job in advisory mode; exit 1 is a *non-blocking error* to the harness, so forwarding
 // `enola check`'s regression code would surface as a hook failure rather than as the
 // verdict it actually is.
-func runHook(ctx context.Context, args []string) {
+func (r *Runner) Hook(ctx context.Context, args []string) {
 	if len(args) == 0 {
 		os.Exit(0)
 	}
 	switch args[0] {
 	case "stop":
-		runStopHook(ctx)
+		r.runStopHook(ctx)
 	case "session-start":
-		runSessionStartHook(ctx, args[1:])
+		r.runSessionStartHook(ctx, args[1:])
 	default:
 		// An event this build does not know about is not an error: a newer install may
 		// have written config a older binary does not understand.
@@ -62,7 +62,7 @@ func runHook(ctx context.Context, args []string) {
 
 // runStopHook grades the session's change and, only if it introduced a structural
 // regression, hands the verdict back as context.
-func runStopHook(ctx context.Context) {
+func (r *Runner) runStopHook(ctx context.Context) {
 	in, err := readHookInput()
 	if err != nil || in.CWD == "" {
 		return
@@ -105,7 +105,7 @@ func runStopHook(ctx context.Context) {
 			verdict.DeclineReason() + ".\n\n" +
 			"This is NOT a statement about your change — the comparison itself was untrustworthy, " +
 			"so no verdict was reached in either direction. Re-pin the baseline to restore grading " +
-			"(`enola baseline pin`, or the set_baseline tool), and `enola doctor` reports whether " +
+			fmt.Sprintf("(`%s baseline pin`, or the set_baseline tool), and `%s doctor` reports whether ", r.name(), r.name()) +
 			"the hooks are grading again."
 
 	default:
@@ -146,7 +146,7 @@ const autoPinMarker = ".auto-pinned"
 // of one process spawn, independent of repository size. That is the only mitigation that
 // is constant in the size of the repo rather than merely bounded — a timeout still pays
 // the timeout.
-func runSessionStartHook(ctx context.Context, args []string) {
+func (r *Runner) runSessionStartHook(ctx context.Context, args []string) {
 	if len(args) > 0 && args[0] == detachedRunFlag {
 		// The detached child: the only place any work happens.
 		if len(args) > 1 {

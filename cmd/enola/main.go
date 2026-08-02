@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/cli"
+	"github.com/enola-labs/enola/pkg/command"
 	"github.com/enola-labs/enola/pkg/dashboard"
 	"github.com/enola-labs/enola/pkg/explain"
 	"github.com/enola-labs/enola/pkg/status"
@@ -35,34 +35,19 @@ func main() {
 	// Subcommands are dispatched before the flag loop below, which is an exact-match
 	// switch over os.Args and cannot parse `--flag=value`. Each subcommand owns its own
 	// FlagSet instead.
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "upgrade":
-			if err := upgrade.Run(ctx, version.Version); err != nil {
-				log.Fatalf("upgrade failed: %v", err)
-			}
-			os.Exit(0)
-		case "check":
-			runCheck(ctx, os.Args[2:]) // exits with the verdict's code
-		case "coverage":
-			runCoverage(ctx, os.Args[2:])
-			os.Exit(0)
-		case "doctor":
-			runDoctor(os.Args[2:])
-			os.Exit(0)
-		case "baseline":
-			runBaseline(os.Args[2:])
-			os.Exit(0)
-		case "hook":
-			runHook(ctx, os.Args[2:]) // always exits 0; never disturbs a session
-		case "install":
-			runInstall(os.Args[2:], false)
-			os.Exit(0)
-		case "uninstall":
-			runInstall(os.Args[2:], true)
-			os.Exit(0)
+	//
+	// `upgrade` is handled here rather than in pkg/command because it is OSS-only: a
+	// wrapper binary ships through its own release path and must not offer to replace
+	// itself with an enola build. It is still declared to the Runner (below) so a typo
+	// like `enola upgrad` is recognised as a near-miss rather than as an unknown word.
+	if len(os.Args) > 1 && os.Args[1] == "upgrade" {
+		if err := upgrade.Run(ctx, version.Version); err != nil {
+			log.Fatalf("upgrade failed: %v", err)
 		}
+		os.Exit(0)
 	}
+	cmds := command.New(binary(), "upgrade")
+	cmds.Dispatch(ctx, os.Args[1:]) // returns only when this was not a subcommand
 
 	generateMode := false
 	explainMode := false
@@ -112,12 +97,12 @@ func main() {
 			// --generate /does/not/exist.yaml` snapshotted the working directory. Both
 			// looked like they worked.
 			switch {
-			case isDirectory(arg):
+			case command.IsDirectory(arg):
 				repoArg = arg
-			case fileExists(arg):
+			case command.FileExists(arg):
 				cfgPath = arg
 			default:
-				log.Fatalf("%s", unknownArgHelp(arg))
+				log.Fatalf("%s", cmds.UnknownArgHelp(arg))
 			}
 		}
 	}
@@ -267,12 +252,19 @@ func main() {
 
 // helpSpec is the `--help` text for this binary: the shared engine help with
 // the OSS-only `upgrade` command documented on top.
-func helpSpec() cli.HelpSpec {
-	spec := cli.DefaultHelp(cli.Binary{
+// binary identifies this build to everything that renders its name: the shared help,
+// and the shared subcommands' usage lines and suggested remedies. One value, so a
+// wrapper cannot end up with help that names one binary and errors that name another.
+func binary() cli.Binary {
+	return cli.Binary{
 		Name:       "enola",
 		CmdPackage: "./cmd/enola",
 		VersionVar: "github.com/enola-labs/enola/internal/version.Version",
-	})
+	}
+}
+
+func helpSpec() cli.HelpSpec {
+	spec := cli.DefaultHelp(binary())
 	spec.Usage = append(spec.Usage, "enola upgrade")
 	spec.Commands = append(spec.Commands, cli.FlagDoc{
 		Flag: "upgrade",
@@ -313,68 +305,4 @@ func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, 
 
 	report := explain.Compute(eng)
 	fmt.Print(report.Render())
-}
-
-// knownSubcommands are dispatched before the flag loop. Listed here so an argument that
-// was MEANT to be one gets a targeted message instead of a generic path error.
-var knownSubcommands = []string{"check", "coverage", "doctor", "baseline", "install", "uninstall", "upgrade"}
-
-// unknownArgHelp explains a rejected argument in terms of what the caller probably meant.
-//
-// The two cases worth separating are a mistyped subcommand and a bad path: telling someone
-// who typed `enola chekc .` that "no such file or directory" would send them looking at
-// their filesystem rather than at their spelling.
-func unknownArgHelp(arg string) string {
-	if !strings.HasPrefix(arg, "-") && !strings.ContainsAny(arg, "/\\.") {
-		if near := closestSubcommand(arg); near != "" {
-			return fmt.Sprintf("unknown command %q — did you mean %q?\n\n    enola %s --help\n\nRun `enola --help` for all commands.", arg, near, near)
-		}
-		return fmt.Sprintf("unknown command %q (expected one of: %s), and it is not a path either.\n\nRun `enola --help`.",
-			arg, strings.Join(knownSubcommands, ", "))
-	}
-	if strings.HasPrefix(arg, "-") {
-		return fmt.Sprintf("unknown flag %q — run `enola --help` for the supported flags.", arg)
-	}
-	return fmt.Sprintf("%q is neither a directory (a repository) nor an existing file (a config).\n\n"+
-		"A path naming a DIRECTORY is treated as a repository; one naming a FILE is treated as a config.", arg)
-}
-
-// closestSubcommand returns the known subcommand within edit distance 2 of arg, if any —
-// enough to catch a transposition or a doubled letter without guessing wildly.
-func closestSubcommand(arg string) string {
-	best, bestDist := "", 3
-	for _, cmd := range knownSubcommands {
-		if d := editDistance(strings.ToLower(arg), cmd); d < bestDist {
-			best, bestDist = cmd, d
-		}
-	}
-	return best
-}
-
-// editDistance is the standard Levenshtein distance over two short ASCII words.
-func editDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	cur := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		cur[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			cur[j] = min(prev[j]+1, min(cur[j-1]+1, prev[j-1]+cost))
-		}
-		prev, cur = cur, prev
-	}
-	return prev[len(b)]
-}
-
-// isDirectory reports whether path names an existing directory. Used to tell a
-// repository argument from a config-file argument.
-func isDirectory(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && fi.IsDir()
 }

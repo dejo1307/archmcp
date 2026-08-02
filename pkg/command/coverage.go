@@ -1,4 +1,4 @@
-package main
+package command
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 // A report, not a gate: it exits 0 whenever it ran. `enola check` owns the meaning of a
 // non-zero exit — "your change did something" — and blurring that here would cost more
 // than a threshold flag is worth.
-func runCoverage(ctx context.Context, args []string) {
+func (r *Runner) Coverage(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("coverage", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var (
@@ -32,7 +32,7 @@ func runCoverage(ctx context.Context, args []string) {
 	)
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr,
-			"Usage: enola coverage [flags] [repo_path|config_path]\n\n"+
+			"Usage: "+r.name()+" coverage [flags] [repo_path|config_path]\n\n"+
 				"Report which cross-repo edges enola resolved and which it could not, per service.\n"+
 				"Tells a genuinely isolated service apart from one whose outbound edges enola simply\n"+
 				"failed to follow — a distinction the graph alone cannot express.\n\n"+
@@ -48,20 +48,20 @@ func runCoverage(ctx context.Context, args []string) {
 	if rest := fs.Args(); len(rest) > 0 {
 		arg = rest[0]
 	}
-	tgt := resolveTarget(arg)
-	fmt.Fprintf(os.Stderr, "enola coverage: %s\n", tgt.configNote)
+	tgt := r.resolveTarget(arg)
+	fmt.Fprintf(os.Stderr, r.name()+" coverage: %s\n", tgt.configNote)
 
 	// Read-only, like `check` and `--explain`: reporting on a graph must not rewrite it.
 	tgt.engine.SetPersistCache(false)
 	for i, repoPath := range tgt.repoPaths {
 		if _, err := tgt.engine.GenerateSnapshot(ctx, repoPath, i > 0); err != nil {
-			coverageFatal("snapshot generation failed for %s: %v", repoPath, err)
+			r.coverageFatal("snapshot generation failed for %s: %v", repoPath, err)
 		}
 	}
 
 	report := coverage.Build(tgt.engine.Store(), *service)
 	if *service != "" && len(report) == 0 {
-		coverageFatal("no service named %q in this graph", *service)
+		r.coverageFatal("no service named %q in this graph", *service)
 	}
 	if *unresolved {
 		report = onlyUnresolved(report)
@@ -70,7 +70,7 @@ func runCoverage(ctx context.Context, args []string) {
 	if *asJSON {
 		out, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
-			coverageFatal("failed to encode report: %v", err)
+			r.coverageFatal("failed to encode report: %v", err)
 		}
 		fmt.Println(string(out))
 		return
@@ -78,7 +78,7 @@ func runCoverage(ctx context.Context, args []string) {
 	fmt.Print(report.RenderText())
 }
 
-func coverageFatal(format string, args ...any) { cmdFatal("coverage", format, args...) }
+func (r *Runner) coverageFatal(format string, args ...any) { r.cmdFatal("coverage", format, args...) }
 
 // onlyUnresolved narrows the report to services with unresolved call sites — the
 // failure-hunting view, for someone working through blind spots rather than surveying.

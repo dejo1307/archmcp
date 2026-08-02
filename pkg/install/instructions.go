@@ -53,22 +53,22 @@ func block(content string) string {
 
 // claudeRule is the body of the Claude Code rule file. No `paths` frontmatter, so it
 // loads at launch with the same priority as a project CLAUDE.md.
-func claudeRule(withHooks bool) string {
-	return header() + body(withHooks) + "\n"
+func claudeRule(o Options) string {
+	return header() + body(o) + "\n"
 }
 
 // cursorRule carries Cursor's frontmatter. alwaysApply keeps it in context rather than
 // leaving it to description-matching.
-func cursorRule(withHooks bool) string {
-	return "---\nalwaysApply: true\n---\n\n" + header() + body(withHooks) + "\n"
+func cursorRule(o Options) string {
+	return "---\nalwaysApply: true\n---\n\n" + header() + body(o) + "\n"
 }
 
 // copilotInstructions carries Copilot's frontmatter. applyTo is REQUIRED for a file under
 // .github/instructions/ — without it the file governs nothing, which is the silent kind of
 // failure: it exists, it looks installed, and it never applies. "**" is what makes it
 // unconditional, the counterpart of Cursor's alwaysApply.
-func copilotInstructions(withHooks bool) string {
-	return "---\napplyTo: \"**\"\n---\n\n" + header() + body(withHooks) + "\n"
+func copilotInstructions(o Options) string {
+	return "---\napplyTo: \"**\"\n---\n\n" + header() + body(o) + "\n"
 }
 
 // header marks the file as generated, so a reader knows why it exists and how to remove
@@ -78,9 +78,25 @@ func header() string {
 		"     and `enola uninstall` will remove this file. -->\n\n"
 }
 
-func body(withHooks bool) string {
-	if withHooks {
-		return Instructions + HooksNote
+// body composes what actually gets written: the shared instructions, the hooks note when
+// hooks are installed, and whatever the calling binary appends.
+//
+// ExtraInstructions is the seam for a wrapper that serves tools the OSS build does not,
+// so it can tell the agent they exist without this package having to know about them —
+// and without a wrapper having to fork the instruction text to add two lines. Empty for
+// every current caller; the shared output is byte-identical while it stays empty.
+func body(o Options) string {
+	out := Instructions
+	if o.Hooks {
+		out += HooksNote
 	}
-	return Instructions
+	if extra := strings.TrimSpace(o.ExtraInstructions); extra != "" {
+		out += "\n\n" + extra
+	}
+	if o.Hooks {
+		if extra := strings.TrimSpace(o.ExtraHooksNote); extra != "" {
+			out += "\n\n" + extra
+		}
+	}
+	return out
 }

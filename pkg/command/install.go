@@ -1,4 +1,4 @@
-package main
+package command
 
 import (
 	"flag"
@@ -14,7 +14,7 @@ import (
 
 // runInstall is `enola install` / `enola uninstall`: write enola's instructions, and
 // optionally its hooks, into the config files the agents on this machine actually read.
-func runInstall(args []string, remove bool) {
+func (r *Runner) Install(args []string, remove bool) {
 	name := "install"
 	if remove {
 		name = "uninstall"
@@ -29,9 +29,9 @@ func runInstall(args []string, remove bool) {
 		yes     = fs.Bool("yes", false, "skip the confirmation prompt")
 	)
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: enola %s [flags] [repo_path]\n\n", name)
+		fmt.Fprintf(os.Stderr, "Usage: %s %s [flags] [repo_path]\n\n", r.name(), name)
 		if remove {
-			fmt.Fprint(os.Stderr, "Remove everything `enola install` wrote, leaving the rest of each file untouched.\n\n")
+			fmt.Fprintf(os.Stderr, "Remove everything `%s install` wrote, leaving the rest of each file untouched.\n\n", r.name())
 		} else {
 			fmt.Fprint(os.Stderr,
 				"Write enola's instructions into the files your coding agents read.\n\n"+
@@ -49,17 +49,17 @@ func runInstall(args []string, remove bool) {
 
 	repoDir, err := os.Getwd()
 	if err != nil {
-		installFatal("cannot determine the working directory: %v", err)
+		r.installFatal("cannot determine the working directory: %v", err)
 	}
 	if rest := fs.Args(); len(rest) > 0 {
 		if !isDirectory(rest[0]) {
-			installFatal("%q is not a directory", rest[0])
+			r.installFatal("%q is not a directory", rest[0])
 		}
 		repoDir = rest[0]
 	}
 	home, err := os.UserHomeDir()
 	if err != nil && *global {
-		installFatal("cannot determine the home directory: %v", err)
+		r.installFatal("cannot determine the home directory: %v", err)
 	}
 
 	opts := install.Options{
@@ -89,7 +89,7 @@ func runInstall(args []string, remove bool) {
 	preview.DryRun = true
 	planned, err := act(preview, remove)
 	if err != nil {
-		installFatal("%v", err)
+		r.installFatal("%v", err)
 	}
 
 	fmt.Printf("%s\n", strings.ToUpper(name[:1])+name[1:])
@@ -145,7 +145,7 @@ func runInstall(args []string, remove bool) {
 
 	applied, err := act(opts, remove)
 	if err != nil {
-		installFatal("%v", err)
+		r.installFatal("%v", err)
 	}
 	fmt.Println()
 	printPlan(applied)
@@ -169,7 +169,7 @@ func runInstall(args []string, remove bool) {
 
 	if !remove && opts.Hooks {
 		fmt.Println("\nRestart your agent session for the hooks to take effect.")
-		fmt.Println("Then `enola doctor` will tell you whether they are actually firing.")
+		fmt.Printf("Then `%s doctor` will tell you whether they are actually firing.\n", r.name())
 	}
 }
 
@@ -278,7 +278,7 @@ func wrap(text string, width int) []string {
 	return lines
 }
 
-func installFatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "enola install: "+format+"\n", args...)
+func (r *Runner) installFatal(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, r.name()+" install: "+format+"\n", args...)
 	os.Exit(2)
 }

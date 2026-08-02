@@ -35,6 +35,14 @@ type Options struct {
 	DryRun bool
 	// Targets restricts the run to named targets; empty means every applicable one.
 	Targets []string
+	// ExtraInstructions is appended to the instruction body every target receives.
+	// The seam for a wrapper binary that serves additional tools: it can name them
+	// without this package knowing they exist, and without forking the shared text.
+	// Empty here — no binary sets it yet, and the output is unchanged while it is.
+	ExtraInstructions string
+	// ExtraHooksNote is appended only when Hooks is set, for a wrapper whose hooks do
+	// something the shared HooksNote does not describe.
+	ExtraHooksNote string
 }
 
 func (o Options) hookCommand() string {
@@ -158,7 +166,7 @@ func globalAgentsTarget(o Options, remove bool, tool, rel string) ([]Result, err
 			Reason: filepath.Base(root) + " not found in your home directory, so " + tool + " does not appear to be installed",
 		}}, nil
 	}
-	r, err := upsertSection(path, block(body(o.Hooks)), o.DryRun)
+	r, err := upsertSection(path, block(body(o)), o.DryRun)
 	return []Result{r}, err
 }
 
@@ -183,7 +191,7 @@ func copilotTarget(o Options, remove bool) ([]Result, error) {
 		r, err := removeOwnedFile(path, o.DryRun)
 		return []Result{r}, err
 	}
-	r, err := writeOwnedFile(path, copilotInstructions(o.Hooks), o.DryRun)
+	r, err := writeOwnedFile(path, copilotInstructions(o), o.DryRun)
 	return []Result{r}, err
 }
 
@@ -217,7 +225,7 @@ func claudeTarget(o Options, remove bool) ([]Result, error) {
 		return append(out, hr...), nil
 	}
 
-	r, err := writeOwnedFile(rule, claudeRule(o.Hooks), o.DryRun)
+	r, err := writeOwnedFile(rule, claudeRule(o), o.DryRun)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +258,7 @@ func cursorTarget(o Options, remove bool) ([]Result, error) {
 		r, err := removeOwnedFile(path, o.DryRun)
 		return []Result{r}, err
 	}
-	r, err := writeOwnedFile(path, cursorRule(o.Hooks), o.DryRun)
+	r, err := writeOwnedFile(path, cursorRule(o), o.DryRun)
 	return []Result{r}, err
 }
 
@@ -281,7 +289,7 @@ func agentsTarget(o Options, remove bool) ([]Result, error) {
 				agentsMdReaders + " at once — worth doing deliberately, so create it yourself and re-run",
 		}}, nil
 	}
-	r, err := upsertSection(path, block(body(o.Hooks)), o.DryRun)
+	r, err := upsertSection(path, block(body(o)), o.DryRun)
 	return []Result{r}, err
 }
 

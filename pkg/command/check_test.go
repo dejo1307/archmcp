@@ -1,4 +1,4 @@
-package main
+package command
 
 import (
 	"os"
@@ -24,7 +24,7 @@ func TestResolveTarget_DirectoryArgumentIsTheRepo(t *testing.T) {
 	restore := chdir(t, cwd)
 	defer restore()
 
-	tgt := resolveTarget(repo)
+	tgt := testRunner().resolveTarget(repo)
 
 	if len(tgt.repoPaths) != 1 {
 		t.Fatalf("repoPaths = %v, want exactly one", tgt.repoPaths)
@@ -61,7 +61,7 @@ func TestResolveTarget_PicksUpConfigInsideTheRepo(t *testing.T) {
 	restore := chdir(t, t.TempDir())
 	defer restore()
 
-	tgt := resolveTarget(repo)
+	tgt := testRunner().resolveTarget(repo)
 
 	if !strings.Contains(tgt.configNote, inner) {
 		t.Errorf("configNote = %q, want it to name the in-repo config %q", tgt.configNote, inner)
@@ -89,7 +89,7 @@ func TestResolveTarget_FileArgumentIsAConfig(t *testing.T) {
 	restore := chdir(t, t.TempDir())
 	defer restore()
 
-	tgt := resolveTarget(cfg)
+	tgt := testRunner().resolveTarget(cfg)
 
 	if !strings.Contains(tgt.configNote, cfg) {
 		t.Errorf("configNote = %q, want it to name the config", tgt.configNote)
@@ -123,10 +123,10 @@ func TestUnknownArgHelp_DistinguishesTypoFromBadPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := unknownArgHelp(tc.arg)
+			got := testRunner().UnknownArgHelp(tc.arg)
 			for _, want := range tc.contains {
 				if !strings.Contains(got, want) {
-					t.Errorf("unknownArgHelp(%q) = %q, want it to mention %q", tc.arg, got, want)
+					t.Errorf("testRunner().UnknownArgHelp(%q) = %q, want it to mention %q", tc.arg, got, want)
 				}
 			}
 		})
@@ -137,8 +137,8 @@ func TestUnknownArgHelp_DistinguishesTypoFromBadPath(t *testing.T) {
 // plausible. Offering "check" for an unrelated word would be worse than no suggestion.
 func TestClosestSubcommand_DoesNotGuessWildly(t *testing.T) {
 	for _, arg := range []string{"frobnicate", "serve", "xyzzy"} {
-		if got := closestSubcommand(arg); got != "" {
-			t.Errorf("closestSubcommand(%q) = %q, want no suggestion", arg, got)
+		if got := testRunner().closestSubcommand(arg); got != "" {
+			t.Errorf("testRunner().closestSubcommand(%q) = %q, want no suggestion", arg, got)
 		}
 	}
 	for _, tc := range []struct{ arg, want string }{
@@ -147,8 +147,8 @@ func TestClosestSubcommand_DoesNotGuessWildly(t *testing.T) {
 		{"baselien", "baseline"},
 		{"upgrad", "upgrade"},
 	} {
-		if got := closestSubcommand(tc.arg); got != tc.want {
-			t.Errorf("closestSubcommand(%q) = %q, want %q", tc.arg, got, tc.want)
+		if got := testRunner().closestSubcommand(tc.arg); got != tc.want {
+			t.Errorf("testRunner().closestSubcommand(%q) = %q, want %q", tc.arg, got, tc.want)
 		}
 	}
 }
