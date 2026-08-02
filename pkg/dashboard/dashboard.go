@@ -167,6 +167,9 @@ func Start(eng *bootstrap.Engine, opts Options) (*Server, error) {
 
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/", s.handleIndex)
+	s.mux.HandleFunc("/view", s.handleView)
+	s.mux.HandleFunc("/api/graph", s.handleGraph)
+	s.mux.HandleFunc("/api/graph/search", s.handleGraphSearch)
 
 	go func() {
 		if err := http.Serve(ln, s.mux); err != nil {
@@ -278,6 +281,120 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/view" {
+		http.NotFound(w, r)
+		return
+	}
+	data := s.buildPage()
+	data.ViewOnly = true
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.Execute(w, data); err != nil {
+		log.Printf("dashboard: render failed: %v", err)
+	}
+}
+
+// handleGraph serves a bounded neighborhood of the live graph. The dashboard
+// keeps the complete graph server-side and requests only the current focus
+// scope rather than transferring the entire repository again.
+func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/graph" {
+		http.NotFound(w, r)
+		return
+	}
+	receipt := s.eng.GraphReceipt()
+	if receipt == nil {
+		http.Error(w, "no graph loaded", http.StatusNotFound)
+		return
+	}
+	query := r.URL.Query()
+	if expected := query.Get("snapshot_id"); expected != "" && expected != receipt.SnapshotID {
+		http.Error(w, "snapshot changed; reload the dashboard", http.StatusConflict)
+		return
+	}
+	focus := strings.TrimSpace(query.Get("focus"))
+	if focus == "" {
+		http.Error(w, "focus is required", http.StatusBadRequest)
+		return
+	}
+	direction := query.Get("direction")
+	if direction == "" {
+		direction = "both"
+	}
+	if direction != "forward" && direction != "reverse" && direction != "both" && direction != "" {
+		http.Error(w, "direction must be forward, reverse, or both", http.StatusBadRequest)
+		return
+	}
+	depth := boundedInt(query.Get("depth"), 1, 1, 5)
+	maxNodes := boundedInt(query.Get("max_nodes"), 150, 1, 300)
+	result := buildFocusedGraph(
+		s.eng.Store(), receipt.SnapshotID, focus, query.Get("kind"),
+		query.Get("repo"), direction, depth, maxNodes,
+	)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+type graphSearchResult struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Repo string `json:"repo,omitempty"`
+}
+
+// handleGraphSearch returns a small set of full-snapshot node suggestions.
+// Unlike the focused graph endpoint, search is intentionally not bounded by
+// the currently loaded browser neighborhood.
+func (s *Server) handleGraphSearch(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/graph/search" {
+		http.NotFound(w, r)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if query == "" {
+		_ = json.NewEncoder(w).Encode([]graphSearchResult{})
+		return
+	}
+	needle := strings.ToLower(query)
+	var results []graphSearchResult
+	for _, f := range s.eng.Store().All() {
+		if f.Kind == facts.KindDependency || f.Name == "" ||
+			!strings.Contains(strings.ToLower(f.Name), needle) {
+			continue
+		}
+		results = append(results, graphSearchResult{Name: f.Name, Kind: f.Kind, Repo: f.Repo})
+	}
+	sort.Slice(results, func(i, j int) bool {
+		iPrefix := strings.HasPrefix(strings.ToLower(results[i].Name), needle)
+		jPrefix := strings.HasPrefix(strings.ToLower(results[j].Name), needle)
+		if iPrefix != jPrefix {
+			return iPrefix
+		}
+		return results[i].Name < results[j].Name
+	})
+	if len(results) > 20 {
+		results = results[:20]
+	}
+	_ = json.NewEncoder(w).Encode(results)
+}
+
+func boundedInt(raw string, fallback, min, max int) int {
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if n < min {
+		return min
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
 // titleOr returns the configured product name, or the default when unset.
 func titleOr(title string) string {
 	if title == "" {
@@ -362,6 +479,7 @@ type valueRow struct {
 type pageData struct {
 	RefreshSeconds int
 	Title          string
+	ViewOnly       bool
 
 	// This server's own identity. Never sourced from the cross-process aggregate:
 	// with several agent terminals open, that would name a sibling process.
@@ -401,6 +519,8 @@ type pageData struct {
 	HasGraph  bool
 	Graph     *facts.GraphReceipt
 	GraphNote string
+	GraphView *graphView
+	GraphJSON template.JS
 
 	// Services and CrossRepoEdges are enumerated from the live fact store (not the
 	// receipt, which holds only counts) to back the clickable graph-receipt cards.
@@ -507,6 +627,10 @@ func (s *Server) buildPage() pageData {
 	if gv := s.eng.GraphReceipt(); gv != nil {
 		data.HasGraph = true
 		data.Graph = gv
+		data.GraphView = buildGraphView(s.eng.Store(), gv.SnapshotID)
+		if data.GraphView != nil {
+			data.GraphJSON = template.JS(data.GraphView.BootstrapJSON())
+		}
 	} else {
 		data.GraphNote = "No graph loaded in this server yet — run generate_snapshot to populate this."
 	}

@@ -202,6 +202,77 @@ func TestHandlerNotFound(t *testing.T) {
 	}
 }
 
+func TestGraphEndpointReturnsBoundedFocusedScope(t *testing.T) {
+	isolateHome(t)
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindModule, Name: "a", Repo: "repo", File: "a", Relations: []facts.Relation{{Kind: facts.RelImports, Target: "b"}}},
+		facts.Fact{Kind: facts.KindModule, Name: "b", Repo: "repo", File: "b"},
+	)
+	store.BuildGraph()
+	s := newTestServer(1, fakeArtifacts{
+		store: store,
+		graph: &facts.GraphReceipt{SnapshotID: "snap"},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/graph?focus=b&kind=module&repo=repo&snapshot_id=snap", nil)
+	s.handleGraph(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"snapshot_id":"snap"`, `"scope":"symbols"`, `"name":"b"`, `"name":"a"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestGraphEndpointRequiresMatchingSnapshot(t *testing.T) {
+	isolateHome(t)
+	store := facts.NewStore()
+	store.Add(facts.Fact{Kind: facts.KindModule, Name: "a", Repo: "repo", File: "a"})
+	store.BuildGraph()
+	s := newTestServer(1, fakeArtifacts{
+		store: store,
+		graph: &facts.GraphReceipt{SnapshotID: "current"},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/graph?focus=a&snapshot_id=stale", nil)
+	s.handleGraph(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+}
+
+func TestGraphSearchReturnsMatchingNodes(t *testing.T) {
+	isolateHome(t)
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindModule, Name: "api/domain/fulfilment", Repo: "api", File: "api/domain/fulfilment"},
+		facts.Fact{Kind: facts.KindSymbol, Name: "api/domain/fulfilment/notions.Fulfilment", Repo: "api", File: "api/domain/fulfilment/notions.py"},
+		facts.Fact{Kind: facts.KindDependency, Name: "api/app -> api/domain/fulfilment", Repo: "api", File: "api/app.py"},
+	)
+	s := newTestServer(1, fakeArtifacts{store: store})
+
+	rec := httptest.NewRecorder()
+	s.handleGraphSearch(rec, httptest.NewRequest(http.MethodGet, "/api/graph/search?q=Fulfilment", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"name":"api/domain/fulfilment"`, `"name":"api/domain/fulfilment/notions.Fulfilment"`, `"kind":"module"`, `"kind":"symbol"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("search response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "api/app -> api/domain/fulfilment") {
+		t.Error("search response should not include dependency edge facts")
+	}
+}
+
 func TestStartBindsLoopbackPort(t *testing.T) {
 	s, err := Start(nil, Options{})
 	if err != nil {

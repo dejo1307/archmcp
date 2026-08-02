@@ -39,9 +39,11 @@ type (
 // Re-exported so out-of-module consumers (the enterprise architecture validator)
 // can run reverse-dependency impact analysis over a snapshot's facts.
 type (
-	Graph         = internal.Graph
-	ImpactResult  = internal.ImpactResult
-	TraversalNode = internal.TraversalNode
+	Graph           = internal.Graph
+	ImpactResult    = internal.ImpactResult
+	TraversalResult = internal.TraversalResult
+	TraversalNode   = internal.TraversalNode
+	TraversalEdge   = internal.TraversalEdge
 )
 
 // NewStore builds an empty fact store; callers Add() facts (e.g. those read from a

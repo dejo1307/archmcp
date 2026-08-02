@@ -85,6 +85,54 @@
     .edge-graph #edge-arrow path { fill: var(--muted); }
     .edge-graph .node circle { fill: var(--accent); }
     .edge-graph .node text { fill: var(--fg); font-size: 12px; dominant-baseline: middle; }
+    .graph-modal { padding: 0; }
+    .graph-modal .modal-panel {
+      width: 100vw; height: 100vh; max-width: none; max-height: none;
+      border-radius: 0; display: flex; flex-direction: column;
+    }
+    .graph-snapshot-hash { color: var(--muted); font-size: .72em; font-weight: 400; }
+    .graph-repo-title { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .graph-view-page .wrap { display: none; }
+    .graph-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin-bottom: .65rem; }
+    .graph-toolbar button { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: .25rem .5rem; cursor: pointer; }
+    .graph-toolbar button:hover { border-color: var(--muted); }
+    .graph-filters { display: flex; flex-wrap: wrap; gap: .45rem .75rem; color: var(--muted); font-size: .82rem; }
+    .graph-filters label { white-space: nowrap; }
+    .graph-layout { min-height: 0; flex: 1 1 auto; display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: .75rem; }
+    #graph-canvas { position: relative; min-height: 480px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+    .graph-loading { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,.68); pointer-events: none; }
+    .graph-loading[hidden] { display: none; }
+    .graph-spinner { width: 2rem; height: 2rem; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: graph-spin .75s linear infinite; }
+    @keyframes graph-spin { to { transform: rotate(360deg); } }
+    .graph-side { min-width: 0; overflow: auto; }
+    .graph-search { margin-bottom: 1rem; }
+    .graph-search > button { margin-bottom: .4rem; }
+    .graph-search-hint { margin-left: .35rem; color: var(--muted); font-size: .82rem; }
+    .graph-search-row { display: flex; gap: .35rem; }
+    .graph-search input {
+      min-width: 0; width: 100%; font: inherit; color: var(--fg);
+      background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+      padding: .3rem .4rem;
+    }
+    .graph-search button {
+      font: inherit; color: #fff; background: var(--accent);
+      border: 1px solid var(--border); border-radius: 6px; padding: .3rem .45rem;
+      cursor: pointer;
+    }
+    .graph-search button:hover { border-color: var(--muted); }
+    .graph-side h4 { margin: 0 0 .35rem; font-size: .88rem; }
+    .graph-selection-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .45rem; }
+    .graph-selection-heading h4 { margin: 0; }
+    .graph-selection-hint { color: var(--muted); font-size: .75rem; }
+    .graph-selection-list { display: flex; flex-direction: column; gap: .45rem; margin: 0 0 .45rem; }
+    .graph-selection-item { position: relative; border: 1px solid var(--border); border-radius: 6px; padding: .45rem .6rem; font-size: .82rem; }
+    .graph-selection-meta { min-width: 0; padding-right: 1.25rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .graph-selection-key { font-weight: 700; }
+    .graph-selection-remove { position: absolute; top: .25rem; right: .35rem; border: 0; padding: 0 .2rem; background: none; color: var(--muted); cursor: pointer; font-size: 1rem; line-height: 1; }
+    .graph-selection-remove:hover { color: var(--fg); }
+    .graph-unselect-all { font-size: .75rem; color: var(--muted); white-space: nowrap; }
+    .graph-side pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); margin: 0; }
+    @media (max-width: 760px) { .graph-layout { grid-template-columns: 1fr; } .graph-side { max-height: 180px; } }
     .insight-summary { color: var(--muted); font-size: .85rem; margin: -.25rem 0 .6rem; }
     .insight-filter { display: flex; align-items: center; gap: .5rem; margin: 0 0 .9rem; font-size: .85rem; }
     .insight-filter label { color: var(--muted); }
@@ -113,7 +161,7 @@
     {{block "extra-styles" $}}{{end}}
   </style>
 </head>
-<body>
+<body{{if .ViewOnly}} class="graph-view-page"{{end}}>
 <div class="wrap">
   <header>
     <h1>{{.Title}}</h1>
@@ -123,6 +171,13 @@
 
   <h2>This server</h2>
   <p class="note">Everything on this page describes this one process and the graph it holds. Other servers are listed below.</p>
+  {{if $.GraphView}}
+  <div class="card" style="margin:.75rem 0">
+    <div class="k">Interactive graph</div>
+    <div class="v"><a href="/view">Open graph viewer</a></div>
+    <div class="note" style="margin-top:.25rem">{{$.GraphView.FactCount}} facts · {{$.GraphView.EdgeCount}} edges · {{$.GraphView.Unresolved}} unresolved targets</div>
+  </div>
+  {{end}}
   <div class="grid">
     <div class="card"><div class="k">Process</div><div class="v">PID {{.PID}}</div></div>
     {{if .Binary}}<div class="card"><div class="k">Binary</div><div class="v">{{.Binary}}</div></div>{{end}}
@@ -229,6 +284,13 @@
     </tbody>
   </table></div>
   {{end}}
+  {{if $.GraphView}}
+  <div class="card" style="margin-top:.75rem">
+    <div class="k">Interactive graph</div>
+    <div class="v"><a href="/view">Open graph viewer</a></div>
+    <div class="note" style="margin-top:.25rem">{{$.GraphView.FactCount}} facts · {{$.GraphView.EdgeCount}} edges · {{$.GraphView.Unresolved}} unresolved targets</div>
+  </div>
+  {{end}}
   {{end}}{{else}}<p class="note">{{.GraphNote}}</p>{{end}}
 
   <footer>{{.Title}} dashboard · read-only · localhost only</footer>
@@ -247,6 +309,58 @@
         {{range .Services}}<tr><td>{{.Name}}</td><td class="num">{{.DependsOn}}</td></tr>{{end}}
       </tbody>
     </table></div>
+  </div>
+</div>
+{{end}}
+
+{{if .GraphView}}
+<script type="application/json" id="graph-data">{{.GraphJSON}}</script>
+<script src="https://unpkg.com/cytoscape@3.31.2/dist/cytoscape.min.js"></script>
+<script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
+<script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
+<script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+<div class="modal graph-modal{{if .ViewOnly}} open{{end}}" id="graph-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Interactive graph">
+    <div class="modal-head">
+      <h3>Graph View <span class="graph-repo-title">{{.ReposLoaded}}</span> <span class="graph-snapshot-hash">({{.GraphView.SnapshotID}})</span></h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+    </div>
+    <div class="graph-filters">
+      <strong>Nodes:</strong>
+      {{range .GraphView.NodeKinds}}<label><input type="checkbox" {{if eq . "module"}}checked{{end}} data-graph-node="{{.}}" onchange="graphFilterGraph()"> {{.}}</label>{{end}}
+    </div>
+    <div class="graph-filters">
+      <strong>Edges:</strong>
+      {{range .GraphView.EdgeKinds}}<label><input type="checkbox" checked data-graph-edge="{{.}}" onchange="graphFilterGraph()"> {{.}}</label>{{end}}
+    </div>
+    {{if eq .GraphView.FactCount 0}}<p class="note">This snapshot contains no facts to visualize. The graph receipt and table views remain available.</p>{{end}}
+    <div class="graph-layout">
+      <div id="graph-canvas" role="img" aria-label="Interactive architecture graph">
+        <div id="graph-loading" class="graph-loading" hidden aria-label="Loading graph"><div class="graph-spinner"></div></div>
+      </div>
+      <aside class="graph-side">
+        <div class="graph-search">
+          <button type="button" onclick="graphGoToSearch()">Select Node</button><span class="graph-search-hint">or click a Node</span>
+          <div class="graph-search-row">
+            <input id="graph-search-input" type="search" list="graph-search-suggestions"
+              placeholder="Search nodes…" autocomplete="off"
+              oninput="graphSearchNodes(this.value)"
+              onchange="graphGoToSearch()"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();graphGoToSearch()}">
+          </div>
+          <datalist id="graph-search-suggestions"></datalist>
+        </div>
+        <div id="graph-selection-section" hidden>
+          <div id="graph-selection-heading" class="graph-selection-heading">
+            <h4>Selection</h4>
+            <span class="graph-selection-hint">Shift+Click to Select Multiple Nodes</span>
+            <label id="graph-unselect-all-control" class="graph-unselect-all"><input type="checkbox" id="graph-unselect-all" onchange="if(this.checked) graphClearSelection()"> Unselect all</label>
+          </div>
+          <div id="graph-selection-list" class="graph-selection-list"></div>
+          <pre id="graph-detail">Select a node or edge to inspect its source metadata.</pre>
+        </div>
+      </aside>
+    </div>
   </div>
 </div>
 {{end}}
@@ -409,10 +523,942 @@
     if (!m) return;
     stopRefresh();
     m.classList.add('open');
+    if (id === 'graph-modal') initGraph();
     if (id === 'insights-modal') {
       var sel = document.getElementById('insight-band');
       if (sel) { sel.value = 'all'; filterInsights('all'); } // reopen starts unfiltered
     }
+  }
+
+  var graphPayload = null;
+  var graphCy = null;
+  var graphLevel = 'overview';
+  var graphZoomChanging = false;
+  var graphScopes = {};
+  var graphRequest = null;
+  var graphRequestGeneration = 0;
+  var graphZoomCenter = null;
+  var graphTransition = null;
+  var graphScopeHasMore = false;
+  var graphBaseline = null;
+  var graphViewportRequestTimer = null;
+  var graphZoomGesture = false;
+  var graphZoomGestureTimer = null;
+  var graphSelection = [];
+  var graphSelectionEnabledSymbol = false;
+  var graphSearchTimer = null;
+  var graphSearchRequest = null;
+  var graphSearchResults = {};
+  function graphData() {
+    if (!graphPayload) {
+      var script = document.getElementById('graph-data');
+      if (script) graphPayload = JSON.parse(script.textContent || '{}');
+    }
+    return graphPayload || {};
+  }
+  function graphSetLoading(loading) {
+    var overlay = document.getElementById('graph-loading');
+    if (overlay) overlay.hidden = !loading;
+  }
+  function graphSearchNodes(query) {
+    if (graphSearchTimer) clearTimeout(graphSearchTimer);
+    if (graphSearchRequest) graphSearchRequest.abort();
+    graphSearchResults = {};
+    var list = document.getElementById('graph-search-suggestions');
+    if (list) list.replaceChildren();
+    query = String(query || '').trim();
+    if (query.length < 2) return;
+    graphSearchTimer = setTimeout(function () {
+      graphSearchRequest = new AbortController();
+      fetch('/api/graph/search?q=' + encodeURIComponent(query), { signal: graphSearchRequest.signal })
+        .then(function (response) {
+          if (!response.ok) throw new Error('node search failed (' + response.status + ')');
+          return response.json();
+        })
+        .then(function (results) {
+          graphSearchResults = {};
+          if (!list) return;
+          list.replaceChildren();
+          (results || []).forEach(function (result) {
+            graphSearchResults[result.name] = result;
+            var option = document.createElement('option');
+            option.value = result.name;
+            option.label = result.kind + (result.repo ? ' · ' + result.repo : '');
+            list.appendChild(option);
+          });
+        })
+        .catch(function (error) {
+          if (error.name !== 'AbortError') {
+            var detail = document.getElementById('graph-detail');
+            if (detail) detail.textContent = error.message;
+          }
+        });
+    }, 150);
+  }
+  function graphSyncSelectionStyles() {
+    if (!graphCy) return;
+    graphCy.nodes().unselect();
+    graphCy.nodes().forEach(function (node) {
+      var selected = graphSelection.some(function (item) {
+        return item.name === node.data('name') && item.repo === node.data('repo');
+      });
+      if (selected) node.addClass('graph-selected');
+      else node.removeClass('graph-selected');
+    });
+  }
+  function graphSelectNode(node, append) {
+    if (!graphCy || !node) return;
+    var data = node.data();
+    var item = {
+      name: data.name, repo: data.repo, kind: data.kind, file: data.file,
+      line: data.line, unresolved: data.unresolved, conflated: data.conflated,
+      aggregated: data.aggregated
+    };
+    if (!append) {
+      graphCy.nodes().unselect();
+      graphSelection = [];
+    }
+    var existingIndex = graphSelection.findIndex(function (selected) {
+      return selected.name === item.name && selected.repo === item.repo;
+    });
+    if (existingIndex >= 0) graphSelection[existingIndex] = item;
+    else graphSelection.push(item);
+    if (node.data('kind') === 'module') {
+      var symbolCheckbox = document.querySelector('[data-graph-node="symbol"]');
+      graphSelectionEnabledSymbol = graphSelectionEnabledSymbol ||
+        (!!symbolCheckbox && !symbolCheckbox.checked);
+      graphEnableNodeKind('symbol');
+    }
+    graphRenderSelectionPanel();
+    graphSyncSelectionStyles();
+    graphFilterGraph();
+    graphShowDetail(node.data(), 'node');
+  }
+  function graphRenderSelectionPanel() {
+    var list = document.getElementById('graph-selection-list');
+    if (list) {
+      list.replaceChildren();
+      graphSelection.forEach(function (item, index) {
+        var row = document.createElement('div');
+        row.className = 'graph-selection-item';
+        var label = document.createElement('div');
+        label.className = 'graph-selection-meta';
+        var fields = [
+          ['name', item.name || ''],
+          ['kind', item.kind || ''],
+          item.repo ? ['repository', item.repo] : null,
+          item.file ? ['source', item.file + (item.line ? ':' + item.line : '')] : null,
+          item.unresolved ? ['status', 'unresolved target'] : null,
+          item.conflated && item.conflated.length ? ['also represents', item.conflated.join(', ')] : null,
+          item.aggregated ? ['scope', 'aggregated module overview'] : null
+        ].filter(function (field) { return field; });
+        fields.forEach(function (field, fieldIndex) {
+          if (fieldIndex > 0) label.appendChild(document.createElement('br'));
+          var key = document.createElement('span');
+          key.className = 'graph-selection-key';
+          key.textContent = field[0] + ': ';
+          label.appendChild(key);
+          label.appendChild(document.createTextNode(field[1]));
+        });
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'graph-selection-remove';
+        remove.textContent = '×';
+        remove.setAttribute('aria-label', 'Unselect ' + item.name);
+        remove.addEventListener('click', function () { graphRemoveSelection(index); });
+        row.appendChild(remove);
+        row.appendChild(label);
+        list.appendChild(row);
+      });
+    }
+    var all = document.getElementById('graph-unselect-all');
+    if (all) all.checked = false;
+    var allControl = document.getElementById('graph-unselect-all-control');
+    if (allControl) allControl.hidden = graphSelection.length < 2;
+    var section = document.getElementById('graph-selection-section');
+    if (section) section.hidden = graphSelection.length === 0;
+    var heading = document.getElementById('graph-selection-heading');
+    if (heading) heading.hidden = false;
+  }
+  function graphRemoveSelection(index) {
+    if (index < 0 || index >= graphSelection.length) return;
+    var item = graphSelection[index];
+    graphSelection.splice(index, 1);
+    graphSyncSelectionStyles();
+    if (graphSelection.length === 0) {
+      graphClearSelection();
+      return;
+    }
+    graphRenderSelectionPanel();
+    graphFilterGraph();
+  }
+  function graphFocusLoadedNode(item, activate) {
+    if (!graphCy || !item) return false;
+    var matches = graphCy.nodes().filter(function (node) {
+      return node.data('name') === item.name &&
+        (!item.repo || node.data('repo') === item.repo);
+    });
+    if (matches.length === 0) return false;
+    var node = matches[0];
+    graphSelectNode(node, true);
+    if (activate) {
+      if (node.data('kind') === 'module') {
+        graphZoomCenter = node.renderedPosition();
+        graphSearchLoad(node.data());
+      } else {
+        graphCy.animate({ center: { eles: node }, duration: 250 });
+      }
+      return true;
+    }
+    graphFilterGraph();
+    graphCy.animate({ center: { eles: node }, zoom: Math.max(graphCy.zoom(), 1.5), duration: 350 });
+    graphShowDetail(node.data(), 'node');
+    return true;
+  }
+  function graphSearchLoad(item, merge) {
+    if (!graphCy || !item) return;
+    var data = graphData();
+    var level = 'symbols';
+    var key = [data.snapshot_id, level, item.name, item.kind, item.repo || ''].join('|');
+    var finish = function (scope) {
+      graphSetLoading(false);
+      graphScopes[key] = scope;
+      graphPayload.nodes = graphMergeItems(
+        merge ? graphPayload.nodes : [],
+        graphAbbreviateMemberLabels(scope.nodes, item)
+      );
+      graphPayload.edges = graphMergeItems(merge ? graphPayload.edges : [], scope.edges);
+      graphRenderLevel(level, false);
+      graphFocusLoadedNode(item);
+    };
+    if (graphScopes[key]) {
+      finish(graphScopes[key]);
+      return;
+    }
+    var params = new URLSearchParams({
+      direction: 'both', depth: '1', max_nodes: '150',
+      focus: item.name, kind: item.kind || '', repo: item.repo || '',
+      snapshot_id: data.snapshot_id || ''
+    });
+    var mode = document.getElementById('graph-mode');
+    if (mode) mode.textContent = 'loading search result…';
+    graphSetLoading(true);
+    graphRequest = new AbortController();
+    fetch('/api/graph?' + params.toString(), { signal: graphRequest.signal })
+      .then(function (response) {
+        if (!response.ok) throw new Error('graph request failed (' + response.status + ')');
+        return response.json();
+      })
+      .then(finish)
+      .catch(function (error) {
+        if (error.name === 'AbortError') return;
+        graphSetLoading(false);
+        if (mode) mode.textContent = 'focused graph unavailable';
+        var detail = document.getElementById('graph-detail');
+        if (detail) detail.textContent = error.message;
+      });
+  }
+  function graphGoToSearch() {
+    var input = document.getElementById('graph-search-input');
+    if (!input) return;
+    var query = input.value.trim();
+    if (!query) return;
+    var item = graphSearchResults[query];
+    if (!item) {
+      var data = graphData();
+      var loaded = (data.overview_nodes || []).concat(data.nodes || []);
+      var match = loaded.find(function (node) { return node.name === query; });
+      if (match) item = match;
+    }
+    if (!item) {
+      fetch('/api/graph/search?q=' + encodeURIComponent(query))
+        .then(function (response) { return response.ok ? response.json() : []; })
+        .then(function (results) {
+          var exact = (results || []).find(function (result) { return result.name === query; });
+          if (exact) {
+            graphSearchResults[exact.name] = exact;
+            graphGoToSearch();
+          } else {
+            var detail = document.getElementById('graph-detail');
+            if (detail) detail.textContent = 'No node found for "' + query + '".';
+          }
+        });
+      return;
+    }
+    if (graphFocusLoadedNode(item, true)) return;
+    graphSearchLoad(item);
+  }
+  function graphElements(level) {
+    var data = graphData();
+    var nodes;
+    var edges;
+    if (level === 'overview') {
+      nodes = data.overview_nodes || [];
+      edges = data.overview_edges || [];
+    } else {
+      var allowed = {
+        symbols: { module: true, service: true, symbol: true, route: true, storage: true, unresolved: true },
+        all: null
+      }[level] || null;
+      nodes = (data.nodes || []).filter(function (n) { return !allowed || allowed[n.kind]; });
+      var nodeIDs = {};
+      nodes.forEach(function (n) { nodeIDs[n.id] = true; });
+      edges = (data.edges || []).filter(function (e) {
+        return nodeIDs[e.source] && nodeIDs[e.target];
+      });
+    }
+    return {
+      nodes: (nodes || []).map(function (n) { return { data: n }; }),
+      edges: (edges || []).map(function (e) { return { data: e }; })
+    };
+  }
+  function initGraph() {
+    if (typeof cytoscape === 'undefined') {
+      var detail = document.getElementById('graph-detail');
+      if (detail) detail.textContent = 'The graph library could not be loaded. Use the graph receipt tables instead.';
+      return;
+    }
+    if (graphCy) {
+      graphCy.resize();
+      if (graphLevel === 'symbols') graphCy.center();
+      else graphCy.fit();
+      return;
+    }
+    graphCy = cytoscape({
+      container: document.getElementById('graph-canvas'),
+      elements: graphElements('overview'),
+      wheelSensitivity: 0.2,
+      style: [
+        { selector: 'node', style: { 'background-color': '#2563eb', 'label': 'data(label)', 'color': '#1a1a1a', 'font-size': 9, 'text-wrap': 'wrap', 'text-max-width': 100, 'text-valign': 'bottom', 'text-margin-y': 4, 'width': 10, 'height': 10 } },
+        { selector: 'node[kind = "symbol"]', style: { 'background-color': '#8b5cf6' } },
+        { selector: 'node[kind = "route"]', style: { 'background-color': '#f59e0b' } },
+        { selector: 'node[kind = "storage"]', style: { 'background-color': '#10b981' } },
+        { selector: 'node[kind = "dependency"]', style: { 'background-color': '#64748b' } },
+        { selector: 'node[kind = "test_ref"]', style: { 'background-color': '#ec4899' } },
+        { selector: 'node[kind = "file_ref"]', style: { 'background-color': '#94a3b8' } },
+        { selector: 'node[kind = "unresolved"]', style: { 'background-color': '#b91c1c', 'border-width': 2, 'border-style': 'dashed' } },
+        { selector: 'edge', style: { 'curve-style': 'bezier', 'line-style': 'solid', 'target-arrow-shape': 'vee', 'arrow-scale': 0.7, 'line-color': '#94a3b8', 'target-arrow-color': '#94a3b8', 'width': 'mapData(count, 1, 50, 0.7, 2.5)', 'opacity': 0.75 } },
+        { selector: 'edge[kind = "calls"]', style: { 'line-color': '#8b5cf6', 'target-arrow-color': '#8b5cf6' } },
+        { selector: 'edge[kind = "imports"]', style: { 'line-color': '#2563eb', 'target-arrow-color': '#2563eb' } },
+        { selector: 'edge[kind = "depends_on"]', style: { 'line-color': '#f59e0b', 'target-arrow-color': '#f59e0b' } },
+        { selector: 'edge[kind = "implements"]', style: { 'line-color': '#10b981', 'target-arrow-color': '#10b981' } },
+        { selector: 'edge[kind = "declares"]', style: { 'line-color': '#64748b', 'target-arrow-color': '#64748b' } },
+        { selector: 'edge[kind = "instantiates"]', style: { 'line-color': '#ec4899', 'target-arrow-color': '#ec4899' } },
+        { selector: 'node.graph-selected', style: { 'border-width': 3, 'border-color': '#111827' } }
+      ],
+      layout: graphLayoutOptions('overview')
+    });
+    graphCy.on('tap', 'node', function (event) {
+      var node = event.target;
+      if (!node || typeof node.id !== 'function') return;
+      var shift = !!(event.originalEvent && event.originalEvent.shiftKey);
+      var selectionIndex = graphSelection.findIndex(function (selected) {
+        return selected.name === node.data('name') && selected.repo === node.data('repo');
+      });
+      if (selectionIndex >= 0) {
+        if (graphSelection.length === 1) {
+          graphClearSelection();
+        } else {
+          graphRemoveSelection(selectionIndex);
+        }
+        return;
+      }
+      graphSelectNode(node, shift);
+      if (node.data('kind') === 'module') {
+        graphZoomCenter = node.renderedPosition();
+        graphSearchLoad(node.data(), shift || graphSelection.length > 1);
+      }
+    });
+    graphCy.on('tap', 'edge', function (event) { graphShowDetail(event.target.data(), 'edge'); });
+    graphCy.container().addEventListener('wheel', function (event) {
+      var rect = graphCy.container().getBoundingClientRect();
+      graphZoomCenter = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    }, { passive: true });
+    graphAvoidLabelOverlaps();
+    graphCaptureBaseline();
+  }
+  function graphLayoutOptions(level) {
+    var dense = level === 'symbols';
+    var spacing = {
+      overview: { separation: 180, edgeLength: 260, repulsion: 12000 },
+      symbols:  { separation: 120, edgeLength: 180, repulsion: 14000 }
+    }[level] || { separation: 180, edgeLength: 260, repulsion: 12000 };
+    var fcoseAvailable = typeof cytoscape !== 'undefined' && cytoscape('layout', 'fcose');
+    if (fcoseAvailable) {
+      return {
+        name: 'fcose', quality: 'proof', animate: false, fit: !dense, padding: 100,
+        nodeSeparation: spacing.separation,
+        idealEdgeLength: function (edge) {
+          switch (edge.data('kind')) {
+            case 'declares': return 70;
+            case 'calls': return Math.min(170, spacing.edgeLength);
+            default: return spacing.edgeLength;
+          }
+        },
+        edgeElasticity: function (edge) {
+          switch (edge.data('kind')) {
+            case 'declares': return 0.95;
+            case 'calls': return 0.65;
+            default: return 0.35;
+          }
+        },
+        nodeRepulsion: spacing.repulsion,
+        numIter: 2500, tile: true, tilingPaddingVertical: 140,
+        tilingPaddingHorizontal: 140
+      };
+    }
+    return {
+      name: 'cose', animate: false, fit: !dense, padding: 100,
+      idealEdgeLength: spacing.edgeLength, nodeRepulsion: spacing.repulsion,
+      nodeOverlap: spacing.separation,
+      componentSpacing: 300, gravity: 0.1
+    };
+  }
+  function graphLabelBox(node) {
+    var label = node.data('label') || node.data('name') || '';
+    var lines = String(label).split('\n');
+    var longest = 0;
+    lines.forEach(function (line) { longest = Math.max(longest, line.length); });
+    var width = Math.min(150, Math.max(24, longest * 6));
+    var wrappedLines = Math.ceil(longest / 14);
+    var height = Math.max(16, Math.max(lines.length, wrappedLines) * 12 + 6);
+    var p = node.position();
+    return { left: p.x - width / 2, right: p.x + width / 2, top: p.y - 8, bottom: p.y + height };
+  }
+  function graphBoxesOverlap(a, b) {
+    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  }
+  function graphAvoidLabelOverlaps() {
+    if (!graphCy) return;
+    var nodes = graphCy.nodes().toArray();
+    if (nodes.length > 600) return;
+    for (var iteration = 0; iteration < 30; iteration++) {
+      var moved = false;
+      for (var i = 0; i < nodes.length; i++) {
+        for (var j = i + 1; j < nodes.length; j++) {
+          var a = graphLabelBox(nodes[i]);
+          var b = graphLabelBox(nodes[j]);
+          if (!graphBoxesOverlap(a, b)) continue;
+          var pa = nodes[i].position();
+          var pb = nodes[j].position();
+          var dx = pa.x - pb.x;
+          var dy = pa.y - pb.y;
+          var distance = Math.sqrt(dx * dx + dy * dy) || 1;
+          var push = 12 + Math.min(a.right, b.right) - Math.max(a.left, b.left);
+          nodes[i].position({
+            x: pa.x + dx / distance * push / 2,
+            y: pa.y + dy / distance * push / 2
+          });
+          nodes[j].position({
+            x: pb.x - dx / distance * push / 2,
+            y: pb.y - dy / distance * push / 2
+          });
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+  }
+  function graphHandleZoom() {
+    // Zoom changes the viewport only. Visibility is controlled by node
+    // checkboxes and the explicit selection filter.
+  }
+  function graphColorForEdgeKind(kind) {
+    switch (kind) {
+      case 'calls':      return '#8b5cf6';
+      case 'imports':    return '#2563eb';
+      case 'depends_on': return '#f59e0b';
+      case 'implements': return '#10b981';
+      case 'declares':   return '#64748b';
+      case 'instantiates': return '#ec4899';
+      default:           return '#94a3b8';
+    }
+  }
+  function graphColorForNodeKind(kind) {
+    switch (kind) {
+      case 'module':
+      case 'service':     return '#2563eb';
+      case 'symbol':      return '#8b5cf6';
+      case 'route':       return '#f59e0b';
+      case 'storage':     return '#10b981';
+      case 'dependency':  return '#64748b';
+      case 'test_ref':    return '#ec4899';
+      case 'file_ref':    return '#94a3b8';
+      case 'unresolved':  return '#b91c1c';
+      default:            return '#94a3b8';
+    }
+  }
+  function graphApplyCheckboxColors() {
+    document.querySelectorAll('[data-graph-edge]').forEach(function (checkbox) {
+      checkbox.style.accentColor = graphColorForEdgeKind(checkbox.getAttribute('data-graph-edge'));
+    });
+    document.querySelectorAll('[data-graph-node]').forEach(function (checkbox) {
+      checkbox.style.accentColor = graphColorForNodeKind(checkbox.getAttribute('data-graph-node'));
+    });
+  }
+  function graphShowDetail(item, type) {
+    var detail = document.getElementById('graph-detail');
+    if (!detail) return;
+    if (type === 'edge') {
+      detail.hidden = false;
+      var data = graphData();
+      var nodes = (data.nodes || []).concat(data.overview_nodes || []);
+      var endpoints = {};
+      nodes.forEach(function (n) { endpoints[n.id] = n; });
+      var source = endpoints[item.source];
+      var target = endpoints[item.target];
+      if (graphCy) {
+        source = (graphCy.getElementById(item.source).data() || source);
+        target = (graphCy.getElementById(item.target).data() || target);
+      }
+      source = source || { name: item.source, kind: 'unknown' };
+      target = target || { name: item.target, kind: 'unknown' };
+      detail.textContent = [
+        'kind: ' + item.kind,
+        'underlying edges: ' + (item.count || 1),
+        'source: ' + source.name,
+        'target: ' + target.name,
+        item.aggregated ? 'scope: aggregated module overview' : 'scope: direct fact relation'
+      ].join('\n');
+      return;
+    }
+    detail.hidden = true;
+    detail.textContent = [
+      'name: ' + (item.name || ''),
+      'kind: ' + (item.kind || ''),
+      item.repo ? 'repository: ' + item.repo : '',
+      item.file ? 'source: ' + item.file + (item.line ? ':' + item.line : '') : '',
+      item.unresolved ? 'status: unresolved target' : '',
+      item.conflated && item.conflated.length ? 'also represents: ' + item.conflated.join(', ') : '',
+      item.aggregated ? 'scope: aggregated module overview' : ''
+    ].filter(function (line) { return line; }).join('\n');
+  }
+  function graphRenderLevel(level, preserveViewport) {
+    if (!graphCy) return;
+    var viewport = preserveViewport ? { pan: graphCy.pan(), zoom: graphCy.zoom() } : null;
+    graphZoomChanging = true;
+    graphLevel = level;
+    graphCy.elements().remove();
+    graphCy.add(graphElements(level));
+    graphCy.layout(graphLayoutOptions(level)).run();
+    if (level === 'symbols') {
+      if (viewport) {
+        graphCy.zoom(viewport.zoom);
+        graphCy.pan(viewport.pan);
+      } else {
+        graphCy.center();
+      }
+    }
+    graphAvoidLabelOverlaps();
+    if (graphTransition) {
+      var transitionNode = graphCy.nodes().filter(function (node) {
+        return node.data('name') === graphTransition.name &&
+          (!graphTransition.repo || node.data('repo') === graphTransition.repo);
+      });
+      if (transitionNode.length > 0) {
+        var after = transitionNode[0].renderedPosition();
+        var desired = {
+          x: graphTransition.anchor.x + graphTransition.offset.x,
+          y: graphTransition.anchor.y + graphTransition.offset.y
+        };
+        var pan = graphCy.pan();
+        graphCy.pan({
+          x: pan.x + desired.x - after.x,
+          y: pan.y + desired.y - after.y
+        });
+      }
+      graphTransition = null;
+    }
+    var mode = document.getElementById('graph-mode');
+    var labels = {
+      overview: 'module overview',
+      symbols: 'modules, symbols & endpoints',
+      all: 'all facts'
+    };
+    if (mode) mode.textContent = labels[level] || level;
+    graphFilterGraph();
+    graphCaptureBaseline();
+    graphZoomChanging = false;
+  }
+  function graphCaptureBaseline() {
+    if (!graphCy) return;
+    var positions = {};
+    graphCy.nodes().forEach(function (node) {
+      positions[node.id()] = { x: node.position('x'), y: node.position('y') };
+    });
+    graphBaseline = { positions: positions, pan: graphCy.pan(), zoom: graphCy.zoom() };
+  }
+  function graphFocusForRequest() {
+    if (!graphCy) return null;
+    var selected = graphCy.nodes().filter(function (node) {
+      return graphSelection.some(function (item) {
+        return item.name === node.data('name') && item.repo === node.data('repo');
+      });
+    });
+    if (selected.length > 0) {
+      var selectedData = selected[0].data();
+      var selectedPoint = selected[0].renderedPosition();
+      var selectedAnchor = graphZoomCenter || selectedPoint;
+      graphTransition = {
+        name: selectedData.name, repo: selectedData.repo,
+        anchor: selectedAnchor,
+        offset: { x: selectedPoint.x - selectedAnchor.x, y: selectedPoint.y - selectedAnchor.y }
+      };
+      graphZoomCenter = null;
+      return selectedData;
+    }
+    var cursorAnchor = graphZoomCenter;
+    var closestNode = graphNearestNode(cursorAnchor);
+    graphZoomCenter = null;
+    if (closestNode) {
+      var closestPoint = closestNode.renderedPosition();
+      var closestAnchor = cursorAnchor || closestPoint;
+      graphTransition = {
+        name: closestNode.data('name'), repo: closestNode.data('repo'),
+        anchor: closestAnchor,
+        offset: { x: closestPoint.x - closestAnchor.x, y: closestPoint.y - closestAnchor.y }
+      };
+      return closestNode.data();
+    }
+    return null;
+  }
+  function graphNearestNode(center) {
+    if (!graphCy) return null;
+    center = center || { x: graphCy.width() / 2, y: graphCy.height() / 2 };
+    var closest = null;
+    var distance = Infinity;
+    graphCy.nodes().forEach(function (node) {
+      var p = node.renderedPosition();
+      var dx = p.x - center.x;
+      var dy = p.y - center.y;
+      var d = dx * dx + dy * dy;
+      if (d < distance) {
+        distance = d;
+        closest = node;
+      }
+    });
+    return closest;
+  }
+  function graphNeighborhoodVisible() {
+    if (!graphCy || graphScopeHasMore) return false;
+    var selected = graphCy.nodes().filter(function (node) {
+      return graphSelection.some(function (item) {
+        return item.name === node.data('name') && item.repo === node.data('repo');
+      });
+    });
+    var focus = selected.length > 0 ? selected[0] : graphNearestNode(graphZoomCenter);
+    if (!focus) return false;
+    var relevant = focus.closedNeighborhood().nodes().filter(function (node) {
+      return node.visible();
+    });
+    var margin = 24;
+    var width = graphCy.width();
+    var height = graphCy.height();
+    return relevant.every(function (node) {
+      var box = node.renderedBoundingBox({ includeLabels: true });
+      return box.x1 >= margin && box.y1 >= margin &&
+        box.x2 <= width - margin && box.y2 <= height - margin;
+    });
+  }
+  function graphCaptureSelectedTransition() {
+    if (!graphCy) return;
+    var selected = graphCy.nodes().filter(function (node) {
+      return graphSelection.some(function (item) {
+        return item.name === node.data('name') && item.repo === node.data('repo');
+      });
+    });
+    if (selected.length === 0) return;
+    var node = selected[0];
+    var point = node.renderedPosition();
+    graphTransition = {
+      name: node.data('name'), repo: node.data('repo'),
+      anchor: point, offset: { x: 0, y: 0 }
+    };
+  }
+  function graphViewportModules() {
+    if (!graphCy) return [];
+    var width = graphCy.width();
+    var height = graphCy.height();
+    var visible = [];
+    graphCy.nodes().forEach(function (node) {
+      if (node.data('kind') !== 'module' || !node.visible()) return;
+      var box = node.renderedBoundingBox({ includeLabels: true });
+      if (box.x2 >= 0 && box.y2 >= 0 && box.x1 <= width && box.y1 <= height) {
+        visible.push(node.data());
+      }
+    });
+    return visible;
+  }
+  function graphHandleViewportChange() {
+    if (graphZoomChanging || graphZoomGesture || graphLevel !== 'symbols') return;
+    if (graphViewportRequestTimer) clearTimeout(graphViewportRequestTimer);
+    graphViewportRequestTimer = setTimeout(function () {
+      graphViewportRequestTimer = null;
+      graphFetchVisibleSymbols(false);
+    }, 120);
+  }
+  function graphHandleViewportZoom() {
+    graphZoomGesture = true;
+    if (graphViewportRequestTimer) {
+      clearTimeout(graphViewportRequestTimer);
+      graphViewportRequestTimer = null;
+    }
+    if (graphZoomGestureTimer) clearTimeout(graphZoomGestureTimer);
+    graphZoomGestureTimer = setTimeout(function () {
+      graphZoomGesture = false;
+      graphZoomGestureTimer = null;
+    }, 0);
+  }
+  function graphFetchVisibleSymbols(setTransition) {
+    var data = graphData();
+    var modules = graphViewportModules();
+    if (modules.length === 0) {
+      var nearest = graphNearestNode(null);
+      if (nearest && nearest.data('kind') === 'module') modules = [nearest.data()];
+    }
+    if (modules.length === 0) return;
+    if (setTransition) graphFocusForRequest();
+    var scopes = modules.map(function (focus) {
+      return {
+        focus: focus,
+        key: [data.snapshot_id, 'symbols', focus.name, focus.kind, focus.repo || ''].join('|')
+      };
+    });
+    var missing = scopes.filter(function (item) { return !graphScopes[item.key]; });
+    if (missing.length === 0) {
+      graphScopeHasMore = scopes.some(function (item) { return graphScopes[item.key].has_more; });
+      graphPayload.nodes = graphMergeItems(graphLevel === 'symbols' ? graphPayload.nodes : [], scopes.map(function (item) {
+        return graphAbbreviateMemberLabels(graphScopes[item.key].nodes, item.focus);
+      }).reduce(function (all, nodes) { return all.concat(nodes); }, []));
+      graphPayload.edges = graphMergeItems(graphLevel === 'symbols' ? graphPayload.edges : [], scopes.map(function (item) {
+        return graphScopes[item.key].edges;
+      }).reduce(function (all, edges) { return all.concat(edges); }, []));
+      if (graphLevel === 'symbols') graphCaptureSelectedTransition();
+      graphRenderLevel('symbols', graphLevel === 'symbols');
+      return;
+    }
+    if (graphRequest) graphRequest.abort();
+    var generation = ++graphRequestGeneration;
+    var mode = document.getElementById('graph-mode');
+    if (mode) mode.textContent = 'loading visible module symbols…';
+    graphSetLoading(true);
+    graphRequest = new AbortController();
+    var renderTimer = null;
+    var rendered = false;
+    function renderLoadedScopes() {
+      if (renderTimer) return;
+      renderTimer = setTimeout(function () {
+        renderTimer = null;
+        if (generation !== graphRequestGeneration) return;
+        var nodes = [];
+        var edges = [];
+        scopes.forEach(function (item) {
+          var scope = graphScopes[item.key];
+          if (!scope) return;
+          nodes = nodes.concat(graphAbbreviateMemberLabels(scope.nodes, item.focus));
+          edges = edges.concat(scope.edges);
+        });
+        graphPayload.nodes = graphMergeItems(graphLevel === 'symbols' ? graphPayload.nodes : [], nodes);
+        graphPayload.edges = graphMergeItems(graphLevel === 'symbols' ? graphPayload.edges : [], edges);
+        var preserveViewport = rendered || graphLevel === 'symbols';
+        if (preserveViewport) graphCaptureSelectedTransition();
+        graphRenderLevel('symbols', preserveViewport);
+        rendered = true;
+      }, 100);
+    }
+    var requests = missing.map(function (item) {
+      var params = new URLSearchParams({
+        direction: 'both', depth: '1', max_nodes: '150',
+        focus: item.focus.name, kind: item.focus.kind || '', repo: item.focus.repo || '',
+        snapshot_id: data.snapshot_id || ''
+      });
+      return fetch('/api/graph?' + params.toString(), { signal: graphRequest.signal })
+        .then(function (response) {
+          if (!response.ok) throw new Error('graph request failed (' + response.status + ')');
+          return response.json();
+        })
+        .then(function (scope) {
+          graphScopes[item.key] = scope;
+          renderLoadedScopes();
+          return scope;
+        });
+    });
+    Promise.all(requests)
+      .then(function () {
+        if (generation !== graphRequestGeneration) return;
+        graphScopeHasMore = scopes.some(function (item) { return graphScopes[item.key].has_more; });
+        graphSetLoading(false);
+        renderLoadedScopes();
+      })
+      .catch(function (error) {
+        if (error.name === 'AbortError') return;
+        if (generation !== graphRequestGeneration) return;
+        graphSetLoading(false);
+        var detail = document.getElementById('graph-detail');
+        if (detail) detail.textContent = error.message;
+        if (mode) mode.textContent = 'focused graph unavailable';
+      });
+  }
+  function graphFetchLevel(level) {
+    if (level === 'symbols') {
+      graphFetchVisibleSymbols(true);
+      return;
+    }
+    var focus = graphFocusForRequest();
+    if (!focus) return;
+    var data = graphData();
+    var key = [data.snapshot_id, level, focus.name, focus.kind, focus.repo || ''].join('|');
+    if (graphScopes[key]) {
+      graphScopeHasMore = graphScopes[key].has_more;
+      graphPayload.nodes = graphMergeItems(
+        graphLevel === level ? graphAbbreviateMemberLabels(graphPayload.nodes, focus) : [],
+        graphAbbreviateMemberLabels(graphScopes[key].nodes, focus)
+      );
+      graphPayload.edges = graphMergeItems(graphLevel === level ? graphPayload.edges : [], graphScopes[key].edges);
+      graphRenderLevel(level);
+      return;
+    }
+    if (graphRequest) graphRequest.abort();
+    var generation = ++graphRequestGeneration;
+    var mode = document.getElementById('graph-mode');
+    if (mode) mode.textContent = 'loading focused graph…';
+    graphSetLoading(true);
+    var params = new URLSearchParams({
+      direction: 'both', depth: '1', max_nodes: '150',
+      focus: focus.name, kind: focus.kind || '', repo: focus.repo || '',
+      snapshot_id: data.snapshot_id || ''
+    });
+    graphRequest = new AbortController();
+    fetch('/api/graph?' + params.toString(), { signal: graphRequest.signal })
+      .then(function (response) {
+        if (!response.ok) throw new Error('graph request failed (' + response.status + ')');
+        return response.json();
+      })
+      .then(function (scope) {
+        if (generation !== graphRequestGeneration) return;
+        graphSetLoading(false);
+        graphScopes[key] = scope;
+        graphScopeHasMore = scope.has_more;
+        graphPayload.nodes = graphMergeItems(
+          graphLevel === level ? graphAbbreviateMemberLabels(graphPayload.nodes, focus) : [],
+          graphAbbreviateMemberLabels(scope.nodes, focus)
+        );
+        graphPayload.edges = graphMergeItems(graphLevel === level ? graphPayload.edges : [], scope.edges);
+        graphRenderLevel(level);
+        if (scope.has_more) {
+          var notice = document.getElementById('graph-detail');
+          if (notice) notice.textContent = 'This focused view is truncated. Expand or refocus to inspect more.';
+        }
+      })
+      .catch(function (error) {
+        if (error.name === 'AbortError') return;
+        if (generation !== graphRequestGeneration) return;
+        graphSetLoading(false);
+        var detail = document.getElementById('graph-detail');
+        if (detail) detail.textContent = error.message;
+        if (mode) mode.textContent = 'focused graph unavailable';
+      });
+  }
+  function graphMergeItems(existing, incoming) {
+    var byID = {};
+    (existing || []).forEach(function (item) { byID[item.id] = item; });
+    (incoming || []).forEach(function (item) { byID[item.id] = item; });
+    return Object.keys(byID).map(function (id) { return byID[id]; });
+  }
+  function graphAbbreviateMemberLabels(nodes, focus) {
+    var prefix = focus && focus.kind === 'module' ? focus.name + '/' : '';
+    if (!prefix) return nodes || [];
+    return (nodes || []).map(function (node) {
+      if (node.kind !== 'symbol' || node.name.indexOf(prefix) !== 0) return node;
+      var copy = {};
+      Object.keys(node).forEach(function (key) { copy[key] = node[key]; });
+      copy.label = './' + node.name.slice(prefix.length);
+      return copy;
+    });
+  }
+  function graphShowNeighbors() {
+    graphLoad(graphLevel === 'overview' ? 'symbols' : graphLevel);
+  }
+  function graphLoad(level) {
+    if (!graphCy) return;
+    if (level === 'overview') {
+      if (graphRequest) graphRequest.abort();
+      graphRequest = null;
+      graphRequestGeneration++;
+      graphScopeHasMore = false;
+      graphRenderLevel(level);
+    } else {
+      graphFetchLevel(level);
+    }
+  }
+  function graphFit() { if (graphCy) { graphCy.resize(); graphCy.fit(undefined, 35); } }
+  function graphResetLayout() {
+    if (!graphCy) return;
+    if (!graphBaseline) return;
+    graphZoomChanging = true;
+    graphCy.nodes().forEach(function (node) {
+      var position = graphBaseline.positions[node.id()];
+      if (position) node.position(position);
+    });
+    graphCy.zoom(graphBaseline.zoom);
+    graphCy.pan(graphBaseline.pan);
+    graphZoomChanging = false;
+  }
+  function graphClearSelection() {
+    if (!graphCy) return;
+    graphSelection = [];
+    if (graphSelectionEnabledSymbol) {
+      var symbolCheckbox = document.querySelector('[data-graph-node="symbol"]');
+      if (symbolCheckbox) symbolCheckbox.checked = false;
+      graphSelectionEnabledSymbol = false;
+    }
+    graphSyncSelectionStyles();
+    var input = document.getElementById('graph-search-input');
+    if (input) input.value = '';
+    graphSearchResults = {};
+    if (graphSearchTimer) clearTimeout(graphSearchTimer);
+    if (graphSearchRequest) graphSearchRequest.abort();
+    var detail = document.getElementById('graph-detail');
+    if (detail) detail.textContent = 'Select a node or edge to inspect its source metadata.';
+    graphRenderSelectionPanel();
+    if (graphLevel !== 'overview') {
+      graphRenderLevel('overview', false);
+    } else {
+      graphFilterGraph();
+    }
+  }
+  function graphEnableNodeKind(kind) {
+    var checkbox = document.querySelector('[data-graph-node="' + kind + '"]');
+    if (checkbox) checkbox.checked = true;
+  }
+  function graphFilterGraph() {
+    if (!graphCy) return;
+    graphSyncSelectionStyles();
+    var selected = graphCy.nodes().filter(function (node) {
+      return graphSelection.some(function (item) {
+        return item.name === node.data('name') && item.repo === node.data('repo');
+      });
+    });
+    var neighborhood = null;
+    if (selected.length > 0) {
+      neighborhood = {};
+      selected.forEach(function (focused) {
+        focused.closedNeighborhood().nodes().forEach(function (node) {
+          neighborhood[node.id()] = true;
+        });
+      });
+    }
+    graphCy.nodes().forEach(function (node) {
+      var checkbox = document.querySelector('[data-graph-node="' + node.data('kind') + '"]');
+      var inSelection = !neighborhood || neighborhood[node.id()];
+      node.style('display', checkbox && checkbox.checked && inSelection ? 'element' : 'none');
+    });
+    graphCy.edges().forEach(function (edge) {
+      var edgeCheckbox = document.querySelector('[data-graph-edge="' + edge.data('kind') + '"]');
+      var sourceVisible = graphCy.getElementById(edge.data('source')).style('display') !== 'none';
+      var targetVisible = graphCy.getElementById(edge.data('target')).style('display') !== 'none';
+      edge.style('display', edgeCheckbox && edgeCheckbox.checked && sourceVisible && targetVisible ? 'element' : 'none');
+    });
   }
 
   // insightBandMatch reports whether a row's confidence percent falls in the band.
@@ -488,7 +1534,8 @@
       if (open) closeModal(open);
     }
   });
-  startRefresh();
+  graphApplyCheckboxColors();
+  {{if .ViewOnly}}initGraph();{{else}}startRefresh();{{end}}
 </script>
 </body>
 </html>

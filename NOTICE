@@ -19,3 +19,29 @@ tree-sitter-swift — Swift grammar for tree-sitter
   the upstream grammar.json (see that directory's ATTRIBUTION.md for details and
   the regeneration command). The surrounding cgo glue (binding.go, cgo_parser.c,
   cgo_scanner.c) is enola's own code and is not part of the upstream grammar.
+
+--------------------------------------------------------------------------------
+
+The dashboard's interactive graph viewer loads the following third-party
+JavaScript packages at runtime from unpkg. Each package is distributed under
+the MIT License:
+
+cytoscape
+  Version:  3.31.2
+  Source:   https://github.com/cytoscape/cytoscape.js
+  License:  MIT — https://github.com/cytoscape/cytoscape.js/blob/3.31.2/LICENSE
+
+layout-base
+  Version:  2.0.1
+  Source:   https://github.com/iVis-at-Bilkent/layout-base
+  License:  MIT — https://github.com/iVis-at-Bilkent/layout-base/blob/2.0.1/LICENSE
+
+cose-base
+  Version:  2.2.0
+  Source:   https://github.com/iVis-at-Bilkent/cose-base
+  License:  MIT — https://github.com/iVis-at-Bilkent/cose-base/blob/2.2.0/LICENSE
+
+cytoscape-fcose
+  Version:  2.2.0
+  Source:   https://github.com/iVis-at-Bilkent/cytoscape.js-fcose
+  License:  MIT — https://github.com/cytoscape/cytoscape.js-fcose/blob/2.2.0/LICENSE
