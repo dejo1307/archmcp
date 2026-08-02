@@ -82,7 +82,17 @@ func (v Verdict) Render() string {
 			sb.WriteString("PASS — no architectural change.\n")
 		}
 	case StatusRegression:
-		fmt.Fprintf(&sb, "FAIL — %s introduced.\n", plural(len(v.Failures), "structural regression", "structural regressions"))
+		// Breaches count toward the headline. A change that trips only a measurement
+		// threshold has zero failing FINDINGS, and reporting "0 structural regressions
+		// introduced" above a FAIL is the kind of contradiction that makes a reader stop
+		// believing the first line.
+		n := len(v.Failures)
+		for _, b := range v.Breaches {
+			if b.Fatal {
+				n++
+			}
+		}
+		fmt.Fprintf(&sb, "FAIL — %s introduced.\n", plural(n, "structural regression", "structural regressions"))
 	case StatusUsageError:
 		sb.WriteString("ERROR — the gate could not run.\n")
 	case StatusIncomparable:
@@ -91,6 +101,7 @@ func (v Verdict) Render() string {
 	}
 
 	v.writeComparability(&sb)
+	v.writeBreaches(&sb)
 
 	if len(v.Failures) > 0 {
 		// The header has to agree with the verdict. Labelling these "(fail)" under a
@@ -479,6 +490,25 @@ func writeKinds(sb *strings.Builder, kinds []diff.WarningKind) {
 		} else {
 			fmt.Fprintf(sb, "    %s\n", k)
 		}
+	}
+}
+
+// writeBreaches reports the measurement thresholds this change met.
+//
+// Measurements the caller supplied but no threshold gates are deliberately NOT printed
+// here: they are carried in the JSON for a consumer that wants them, and a text verdict
+// that listed every number it chose not to act on would bury the ones it did.
+func (v Verdict) writeBreaches(sb *strings.Builder) {
+	if len(v.Breaches) == 0 {
+		return
+	}
+	sb.WriteString("\nMeasurements over threshold:\n")
+	for _, b := range v.Breaches {
+		severity := "warn"
+		if b.Fatal {
+			severity = "fail"
+		}
+		fmt.Fprintf(sb, "  - [%s] %d %s\n", severity, b.Measurement.Count, b.Measurement.Label)
 	}
 }
 

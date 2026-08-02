@@ -73,6 +73,41 @@ var DefaultFailExplainers = []string{"cycles"}
 // second out of the gate without needing a second allow-list.
 const DefaultMinConfidence = 1.0
 
+// Measurement is a count the policy can gate on that the DELTA ALONE DOES NOT CARRY —
+// something the caller computed by running its own analysis over the two snapshots.
+//
+// It exists so that grading stays in one place while measuring stays with whoever can
+// measure. A caller that owns an analyzer the engine does not ship can report what it
+// found; it does not get to decide what that means for the verdict, because two surfaces
+// deciding separately is how they come to disagree about the same change.
+type Measurement struct {
+	// Name is the stable key a Threshold refers to.
+	Name string `json:"name"`
+	// Label is the human phrasing used in the verdict line ("net-new dead-code
+	// orphan(s)"), so a breach reads as a sentence rather than a variable name.
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+// Threshold turns a Measurement into a verdict contribution. A zero bound disables that
+// severity, so {FailAt: 3} warns at nothing and fails at three.
+//
+// Both bounds live here rather than in the measuring code because the whole point is
+// that one policy object describes what the gate enforces, whoever invoked it.
+type Threshold struct {
+	Measurement string `json:"measurement"`
+	WarnAt      int    `json:"warn_at,omitempty"`
+	FailAt      int    `json:"fail_at,omitempty"`
+}
+
+// Breach is a Measurement that met or exceeded one of its bounds.
+type Breach struct {
+	Measurement Measurement `json:"measurement"`
+	// Fatal distinguishes a FailAt breach from a WarnAt one. A warning breach is
+	// reported and does not change the exit code.
+	Fatal bool `json:"fatal"`
+}
+
 // Policy decides which parts of a delta are allowed to fail a build.
 type Policy struct {
 	// FailExplainers are the explainer names whose new findings fail the gate.
@@ -84,6 +119,21 @@ type Policy struct {
 	// usage errors are NOT suppressed by it — those are not judgements about the code,
 	// they are statements that the gate could not run.
 	WarnOnly bool `json:"warn_only"`
+	// Thresholds gate on Measurements the caller supplies. EMPTY BY DEFAULT, which is
+	// what keeps this additive: with no thresholds the verdict is byte-identical to
+	// what it was before measurements existed, so a build that passes today still
+	// passes. Anything that would newly fail a build has to be asked for.
+	Thresholds []Threshold `json:"thresholds,omitempty"`
+}
+
+// thresholdFor returns the bound configured for a measurement, if any.
+func (p Policy) thresholdFor(name string) (Threshold, bool) {
+	for _, t := range p.Thresholds {
+		if t.Measurement == name {
+			return t, true
+		}
+	}
+	return Threshold{}, false
 }
 
 // resolved fills in the defaults, so a Verdict records the policy that was actually
@@ -96,6 +146,7 @@ func (p Policy) resolved() Policy {
 		FailExplainers: p.failExplainers(),
 		MinConfidence:  p.minConfidence(),
 		WarnOnly:       p.WarnOnly,
+		Thresholds:     p.Thresholds,
 	}
 }
 
@@ -192,6 +243,13 @@ type Verdict struct {
 	// a drifting statistical threshold or a re-ranked top-N. Never graded.
 	Incidental []facts.Insight `json:"incidental,omitempty"`
 
+	// Measurements are every count the caller supplied, gated or not. Breaches are the
+	// subset that met a threshold; a fatal one makes the status a regression exactly as
+	// a failing finding does, so both surfaces reach the same verdict from the same
+	// numbers.
+	Measurements []Measurement `json:"measurements,omitempty"`
+	Breaches     []Breach      `json:"breaches,omitempty"`
+
 	// ComparabilityWarnings is every warning, verbatim and in full. Not split by
 	// severity: diff.Comparability records kinds as a set rather than per-message, and
 	// inventing an alignment to sort the prose would be a lie about which message
@@ -252,7 +310,7 @@ func edgeKindCounts(edges []diff.Edge) map[string]int {
 // built over different inputs, "re-run generate_snapshot" (the remedy for an inverted
 // pair) sends the caller down the wrong path. Nothing is hidden by the ordering — every
 // warning is reported regardless of which one decided the status.
-func Evaluate(d *diff.SnapshotDiff, p Policy) Verdict {
+func Evaluate(d *diff.SnapshotDiff, p Policy, measurements ...Measurement) Verdict {
 	v := Verdict{Policy: p.resolved(), Diff: d}
 	if d == nil {
 		v.Status = StatusUsageError
@@ -291,12 +349,31 @@ func Evaluate(d *diff.SnapshotDiff, p Policy) Verdict {
 	v.EdgeKindsRemoved = edgeKindCounts(d.EdgesRemoved)
 	v.FindingsChanged = d.FindingsChanged
 
+	// Measurements are carried whether or not a threshold gates them: a caller that
+	// measured something and got silence cannot tell "under the bound" from "never
+	// looked", and that ambiguity is the same one the incidental bucket exists to avoid.
+	v.Measurements = measurements
+	fatalBreach := false
+	for _, m := range measurements {
+		t, ok := p.thresholdFor(m.Name)
+		if !ok {
+			continue
+		}
+		switch {
+		case t.FailAt > 0 && m.Count >= t.FailAt:
+			v.Breaches = append(v.Breaches, Breach{Measurement: m, Fatal: true})
+			fatalBreach = true
+		case t.WarnAt > 0 && m.Count >= t.WarnAt:
+			v.Breaches = append(v.Breaches, Breach{Measurement: m})
+		}
+	}
+
 	switch {
 	case len(v.BlockingKinds) > 0:
 		v.Status = StatusIncomparable
 	case d.Comparability.HasKind(diff.WarnInvertedPair):
 		v.Status = StatusUsageError
-	case len(v.Failures) > 0 && !p.WarnOnly:
+	case (len(v.Failures) > 0 || fatalBreach) && !p.WarnOnly:
 		v.Status = StatusRegression
 	default:
 		v.Status = StatusClean
