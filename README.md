@@ -679,6 +679,17 @@ Starting the MCP server also starts a **read-only dashboard** on a free loopback
 - the **insights** grouped by explainer, filterable by confidence band, so you can see what each finding is and how certain it is;
 - **extraction quality** - per-service coverage, unresolved routes, and samples of skipped files and parse errors, which is where you look when a snapshot seems thin.
 
+The **Interactive graph** link opens a full-screen, read-only graph viewer for the
+same snapshot. It starts with a module-level overview: select or search for a
+module to load its bounded neighborhood of symbols and relations, then use the
+node- and edge-kind filters to focus the view. Search can find nodes across the
+loaded snapshot, while each focused request remains capped so the browser is
+not sent the entire repository at once. If the snapshot changes while the
+viewer is open, it asks you to reload before requesting more data. The viewer
+loads its pinned Cytoscape libraries from unpkg, so browser access to that CDN
+is required for the interactive graph; the receipt tables remain available
+without it.
+
 It is strictly a viewer: every request reads through the same concurrency-safe accessors the MCP tools use and never mutates server state. It binds loopback only and serves nothing but that one page. Pass `--no-dashboard` to skip it.
 
 #### Several servers at once
