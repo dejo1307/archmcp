@@ -17,8 +17,10 @@
 package conformance
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/diff"
@@ -314,3 +316,60 @@ func sortedKeys(m map[string]bool) []string {
 
 // round2 keeps the ratio stable in its rendered form; it is reported, not compared.
 func round2(f float64) float64 { return float64(int(f*100+0.5)) / 100 }
+
+// Render describes the comparison in prose, for the text output of a tool that was asked
+// to check conformance.
+//
+// Returns "" when nothing was declared AND nothing spilled over. In auto mode a change
+// that stayed inside its own edit sites is the ordinary case, and printing a paragraph
+// to say so on every diff would train readers to skip the section that matters when it is
+// not empty.
+func (r Report) Render() string {
+	if !r.Declared && len(r.Spillover) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\n## Scope\n\n")
+
+	switch {
+	case len(r.Spillover) > 0 && r.Declared:
+		sb.WriteString("**Reached beyond the declared scope.** ")
+	case len(r.Spillover) > 0:
+		sb.WriteString("**Reached beyond the packages this change edited.** ")
+	default:
+		sb.WriteString("Stayed within the declared scope. ")
+	}
+	sb.WriteString(pluralf("%d of %d package(s) touched were predicted or declared",
+		len(r.Matched), len(r.ActualPackages)))
+	if len(r.ActualPackages) > 0 {
+		sb.WriteString(", match ratio " + trimFloat(r.MatchRatio))
+	}
+	sb.WriteString(".\n")
+
+	if len(r.Spillover) > 0 {
+		sb.WriteString("\nSpillover — touched but neither predicted nor declared:\n")
+		for _, p := range r.Spillover {
+			sb.WriteString("  - " + p + "\n")
+		}
+		sb.WriteString("\nA package here was changed by something the declaration did not describe.\n" +
+			"That is worth reading even when every finding is clean.\n")
+	}
+	if len(r.Unrealized) > 0 {
+		sb.WriteString("\nPredicted but not touched (usually fine — the change was narrower than its blast radius):\n")
+		for _, p := range r.Unrealized {
+			sb.WriteString("  - " + p + "\n")
+		}
+	}
+	return sb.String()
+}
+
+func pluralf(format string, matched, total int) string {
+	return fmt.Sprintf(format, matched, total)
+}
+
+// trimFloat renders a ratio without trailing zeros, so "1" rather than "1.00".
+func trimFloat(f float64) string {
+	s := strconv.FormatFloat(f, 'f', 2, 64)
+	s = strings.TrimRight(s, "0")
+	return strings.TrimSuffix(s, ".")
+}

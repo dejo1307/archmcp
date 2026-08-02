@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/conformance"
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/drift"
 	"github.com/enola-labs/enola/internal/engine"
@@ -1645,6 +1646,24 @@ func (s *Server) registerTools() {
 		if args.Focus != "" {
 			d = d.Focused(s.normalizeToRelative(args.Focus))
 		}
+
+		// Conformance is computed only when the caller declares an intent, or when a
+		// plain delta is worth checking against its own edit sites. It needs a graph over
+		// the BASELINE's facts — a store assembled from a loaded snapshot has no index
+		// until one is built — so it is not free, and it is not run for callers who asked
+		// for a delta and nothing more.
+		var conf *conformance.Report
+		if args.Target != "" || len(args.ExpectedPackages) > 0 {
+			baseStore := facts.NewStore()
+			baseStore.Add(baseline.Facts...)
+			rep := conformance.Compute(baseStore, s.eng.Store(), d, conformance.Options{
+				Target:           args.Target,
+				ExpectedPackages: args.ExpectedPackages,
+				MaxDepth:         args.MaxDepth,
+				MaxNodes:         args.MaxNodes,
+			})
+			conf = &rep
+		}
 		// Whether the CURRENT snapshot still matches the working tree is something only
 		// the caller can establish, and it is the one caveat that invalidates the whole
 		// delta: if the tree moved since the snapshot, this diff describes neither the
@@ -1656,11 +1675,19 @@ func (s *Server) registerTools() {
 
 		switch resolveOutputMode(args.OutputMode, modeSummary) {
 		case modeFull:
-			return jsonResultCapped(d, args.MaxTokens)
+			if conf == nil {
+				return jsonResultCapped(d, args.MaxTokens)
+			}
+			// Embedded, so the delta's fields stay at the top level and a consumer that
+			// never asks for conformance sees the shape it always saw.
+			return jsonResultCapped(struct {
+				*diff.SnapshotDiff
+				Conformance *conformance.Report `json:"conformance,omitempty"`
+			}{d, conf}, args.MaxTokens)
 		case modeCompact:
-			return textResult(capTokens(d.RenderCompact(), args.MaxTokens, false)), nil, nil
+			return textResult(capTokens(conformanceFirst(conf, d.RenderCompact()), args.MaxTokens, false)), nil, nil
 		default:
-			return textResult(capTokens(d.RenderSummary(), args.MaxTokens, false)), nil, nil
+			return textResult(capTokens(conformanceFirst(conf, d.RenderSummary()), args.MaxTokens, false)), nil, nil
 		}
 	})
 
@@ -1718,6 +1745,20 @@ func (s *Server) registerTools() {
 		}
 		return textResult(capTokens(rc.Render(), args.MaxTokens, false)), nil, nil
 	})
+}
+
+// conformanceFirst puts the scope verdict ahead of the delta.
+//
+// A caller who declared an intent asked a yes/no question, and the answer must not sit
+// below a page of structural tallies — the delta is the evidence, not the finding.
+func conformanceFirst(conf *conformance.Report, body string) string {
+	if conf == nil {
+		return body
+	}
+	if s := conf.Render(); s != "" {
+		return strings.TrimLeft(s, "\n") + "\n" + body
+	}
+	return body
 }
 
 // resolveBaselineDir maps a baseline selector ('pinned'/”/'previous'/explicit
@@ -1843,10 +1884,14 @@ type queryInsightsArgs struct {
 type setBaselineArgs struct{}
 
 type diffSnapshotArgs struct {
-	Baseline   string `json:"baseline,omitempty" jsonschema:"What to compare against: 'pinned' (DEFAULT — the snapshot frozen by set_baseline), 'previous' (the immediately-preceding generate_snapshot run, rotated automatically), or an explicit path to a directory containing facts.jsonl."`
-	Focus      string `json:"focus,omitempty" jsonschema:"Optional: narrow the diff to entries referencing this module, file, or symbol (substring match). Use it to verify only the area you changed."`
-	OutputMode string `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — headline regressions/improvements + structural tally) → 'compact' (adds finding descriptions, evidence, changed edges/facts) → 'full' (complete JSON)."`
-	MaxTokens  int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens). Default: no cap."`
+	Baseline         string   `json:"baseline,omitempty" jsonschema:"What to compare against: 'pinned' (DEFAULT — the snapshot frozen by set_baseline), 'previous' (the immediately-preceding generate_snapshot run, rotated automatically), or an explicit path to a directory containing facts.jsonl."`
+	Focus            string   `json:"focus,omitempty" jsonschema:"Optional: narrow the diff to entries referencing this module, file, or symbol (substring match). Use it to verify only the area you changed."`
+	OutputMode       string   `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — headline regressions/improvements + structural tally) → 'compact' (adds finding descriptions, evidence, changed edges/facts) → 'full' (complete JSON)."`
+	MaxTokens        int      `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens). Default: no cap."`
+	Target           string   `json:"target,omitempty" jsonschema:"Optional: the symbol, type or package you INTENDED to change. Turns the diff into a conformance check — reverse-dependency impact analysis runs on the PRE-change graph and any package the change reached outside that predicted radius is reported as spillover. Omit for a plain delta."`
+	ExpectedPackages []string `json:"expected_packages,omitempty" jsonschema:"Optional: packages you expected this change to touch, in addition to whatever the impact analysis predicts. Anything touched that is neither expected nor predicted is spillover."`
+	MaxDepth         int      `json:"max_depth,omitempty" jsonschema:"Reverse-dependency traversal depth for the predicted radius (1-10). Default 3. Only used with target/expected_packages."`
+	MaxNodes         int      `json:"max_nodes,omitempty" jsonschema:"Max nodes per impact traversal (1-500). Default 200. Only used with target/expected_packages."`
 }
 
 type coverageReportArgs struct {

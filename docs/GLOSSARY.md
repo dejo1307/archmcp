@@ -98,6 +98,18 @@ anything it cites. Usually a moving statistical threshold, or a ranked list re-o
 after a worse offender was removed. Reported separately and **never graded**, so
 statistical drift cannot masquerade as something you did.
 
+**Declared scope** — what you say a change was *supposed* to touch, via `--target` (a
+symbol, type or package) or `--expected` (packages). A delta cannot infer it: two
+snapshots record what changed, never what was intended.
+
+**Predicted blast radius** — the packages a declared target's reverse dependents live in,
+computed on the **pre-change** graph. What *should* have been reachable.
+
+**Spillover** — packages the change actually touched that were neither predicted nor
+declared. A package altered by something your description did not cover — which is worth
+reading even when every finding is clean and the build is green. Reported by default;
+fails only when `--max-spillover` says so.
+
 **Comparability** — whether two snapshots can be meaningfully subtracted at all. Two
 snapshots built over different extractor sets, ignore rules or enola versions differ in
 ways that describe *how they were produced* rather than what you edited. `diff_snapshot`

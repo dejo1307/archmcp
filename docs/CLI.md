@@ -478,6 +478,39 @@ enola check --focus=internal/auth                          # narrow the delta to
 enola check --write                                        # also persist the snapshot (default: read-only)
 ```
 
+**Declaring what you meant to change.** The flags above grade the delta. `--target` grades
+it against your *intent*: reverse-dependency impact analysis runs on the pre-change graph,
+and any package the change reached outside that predicted radius is reported as
+**spillover** — a package altered by something your description did not cover.
+
+```bash
+enola check --target=internal/auth                    # what should this change have reached?
+enola check --target=internal/auth --expected=cmd/api # …plus a package you know you touched
+enola check --target=internal/auth --max-spillover=0  # and fail if it reached anywhere else
+```
+
+```
+## Scope
+
+**Reached beyond the declared scope.** 1 of 2 package(s) touched were predicted or
+declared, match ratio 0.5.
+
+Spillover — touched but neither predicted nor declared:
+  - unrelated
+
+Predicted but not touched (usually fine — the change was narrower than its blast radius):
+  - api
+```
+
+Spillover is **reported, never failed, until you ask for it**: `--max-spillover=N` allows
+up to N and fails above that, so `--max-spillover=0` means "fail on any". A scope check
+that broke the build the first time someone passed `--target` would only teach people not
+to pass it.
+
+This is the one question a delta cannot answer on its own. A diff is a function of two
+snapshots, so it can say what changed and nothing about what you *meant* to change —
+spillover needs that third input.
+
 The output names what moved rather than counting it - the added symbols with their `file:line`, the new coupling with its relation kinds, and any finding whose content shifted:
 
 ```

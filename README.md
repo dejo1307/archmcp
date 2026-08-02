@@ -117,6 +117,18 @@ enola check --fail-on=cycles,layers --min-confidence=0.8
 enola check --warn-only          # report everything, fail nothing
 ```
 
+Or grade the change against what you *meant* to do. `--target` runs reverse-dependency
+impact analysis on the pre-change graph and reports any package the change reached
+outside that radius — a package altered by something your description did not cover:
+
+```bash
+enola check --target=internal/auth                    # did it stay where I said?
+enola check --target=internal/auth --max-spillover=0  # …and fail if it did not
+```
+
+This is the one thing a delta cannot work out for itself: two snapshots record what
+changed, never what was intended.
+
 ## How it works
 
 Not a language model, and not embeddings. enola parses your source with tree-sitter and language-specific extractors, normalizes it into a typed fact model, links it into a directed graph, and runs real graph algorithms over it — Tarjan's SCC to find groups of modules that can all reach each other (a cycle), cycle-safe longest-path for the deepest import chain, and mean+2σ outlier tests to flag what sits two standard deviations above your own repository's average for the statistical findings. Terms enola uses in its own output are defined in **[docs/GLOSSARY.md](docs/GLOSSARY.md)**.

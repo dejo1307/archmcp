@@ -122,6 +122,8 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Comment: "Are the session hooks actually firing?", Command: bin.Name + " doctor"},
 			{Comment: "Compare against the preceding snapshot instead of the pin", Command: bin.Name + " check --baseline=previous"},
 			{Comment: "Also fail on new layer violations", Command: bin.Name + " check --fail-on=cycles,layers --min-confidence=0.8"},
+			{Comment: "Did the change stay where you said it would?", Command: bin.Name + " check --target=internal/auth"},
+			{Comment: "…and fail if it reached anywhere else", Command: bin.Name + " check --target=internal/auth --max-spillover=0"},
 			{Comment: "Check MCP server status", Command: bin.Name + " --status"},
 			{Comment: "Show usage broken down per repo", Command: bin.Name + " --status --all"},
 			{Comment: "Check version", Command: bin.Name + " --version"},

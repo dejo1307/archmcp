@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/conformance"
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/facts"
@@ -104,6 +105,9 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		focus         = fs.String("focus", "", "narrow the delta to entries referencing this module/file/symbol")
 		detail        = fs.Bool("detail", false, "print the full delta (changed edges and facts) under the verdict")
 		write         = fs.Bool("write", false, "persist snapshot artifacts to .enola/ (default: read-only, nothing is written)")
+		target        = fs.String("target", "", "the symbol, type or package you INTENDED to change; packages reached outside its predicted blast radius are reported as spillover")
+		expected      = fs.String("expected", "", "comma-separated packages you expected to touch, in addition to the predicted radius")
+		maxSpillover  = fs.Int("max-spillover", -1, "fail when more than N packages are reached outside the declared scope (default: report only, never fail)")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" check [flags] [config_path]\n\n"+
@@ -127,6 +131,15 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	policy := check.Policy{
 		MinConfidence: *minConfidence,
 		WarnOnly:      *warnOnly,
+	}
+	// Spillover is REPORTED by default and fails only when a bound is given. A scope
+	// check that broke builds the moment someone first passed --target would teach
+	// people not to pass it.
+	if *maxSpillover >= 0 {
+		policy.Thresholds = append(policy.Thresholds, check.Threshold{
+			Measurement: "spillover_packages",
+			FailAt:      *maxSpillover + 1, // "allow up to N" — so N+1 is the failure
+		})
 	}
 	if *failOn != "" {
 		for _, name := range strings.Split(*failOn, ",") {
@@ -183,7 +196,30 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		d = d.Focused(*focus)
 	}
 
-	verdict := check.Evaluate(d, policy)
+	// Conformance: did the change stay inside what the caller declared? Computed only
+	// when something WAS declared — a gate that graded scope nobody stated would be
+	// grading its own guess.
+	var measurements []check.Measurement
+	var conf *conformance.Report
+	if *target != "" || *expected != "" {
+		baseStore := facts.NewStore()
+		baseStore.Add(base.Facts...)
+		rep := conformance.Compute(baseStore, eng.Store(), d, conformance.Options{
+			Target:           *target,
+			ExpectedPackages: splitList(*expected),
+		})
+		conf = &rep
+		// Reported as a MEASUREMENT, not graded here. Whether spillover fails a build is
+		// policy, and policy lives in one place — otherwise this gate and any other
+		// surface computing the same number would come to disagree about it.
+		measurements = append(measurements, check.Measurement{
+			Name:  "spillover_packages",
+			Label: "package(s) reached outside the declared scope",
+			Count: len(rep.Spillover),
+		})
+	}
+
+	verdict := check.Evaluate(d, policy, measurements...)
 
 	if *asJSON {
 		out, err := verdict.JSON()
@@ -192,12 +228,26 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		}
 		fmt.Println(string(out))
 	} else {
+		if conf != nil {
+			fmt.Print(conf.Render())
+		}
 		fmt.Print(verdict.Render())
 		if *detail {
 			fmt.Printf("\n%s\n", verdict.Detail())
 		}
 	}
 	os.Exit(verdict.ExitCode())
+}
+
+// splitList parses a comma-separated flag into a trimmed, non-empty list.
+func splitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // baselineHelp turns a failed baseline load into an actionable message rather than a
