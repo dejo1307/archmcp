@@ -157,6 +157,18 @@ func LoadSnapshotDir(dir string) (*facts.Snapshot, error) {
 	return engine.LoadSnapshotDir(dir)
 }
 
+// ResolveBaselineDir maps a baseline selector to the directory holding that snapshot's
+// artifacts: "" / "pinned" → the explicit SetBaseline pin, "previous" → the
+// automatically-rotated preceding run, anything else → an explicit path.
+//
+// Re-exported so out-of-module callers resolve a selector the same way the MCP tools
+// and the `check` gate do. What `previous` means is a contract, not a path convention:
+// a consumer that spelled it out locally would keep working right up until the rotation
+// changed, and then disagree with every other surface about which snapshot it named.
+func ResolveBaselineDir(outDir, selector string) string {
+	return engine.ResolveBaselineDir(outDir, selector)
+}
+
 // GetArtifact returns the content of a named artifact.
 func (e *Engine) GetArtifact(name string) ([]byte, error) {
 	return e.eng.GetArtifact(name)
