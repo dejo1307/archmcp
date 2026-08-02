@@ -72,6 +72,39 @@ type TestRefExtractor interface {
 	ExtractTestRefs(ctx context.Context, repoPath string, testFiles, prodFiles []string) ([]facts.Fact, error)
 }
 
+// Annotator is an optional interface an Explainer may implement to write DERIVED
+// VALUES back onto the facts it analysed, in addition to emitting insights.
+//
+// It exists because insights and measurements are different things. An insight is a
+// finding — discrete, evidenced, worth a reader's attention — and an analyzer that
+// computes a continuous value for every module has no honest way to publish it as one:
+// emitting a finding per module would be noise, and emitting only the outliers throws
+// the rest away. A prop on the fact is the right home, and it comes with a property
+// insights do not have: the snapshot diff already reports prop movement, so an annotated
+// metric becomes comparable across two snapshots for free, attributed to the module it
+// belongs to.
+//
+// Contract:
+//
+//   - Annotate runs AFTER extraction and linking, so the whole graph is present — which
+//     is what makes whole-graph derivations (afferent/efferent coupling) computable here
+//     and not in an extractor.
+//   - It runs BEFORE Explain, so an implementation can compute once, annotate, and read
+//     its own props back when building insights.
+//   - It may only ADD OR UPDATE PROPS on existing facts. Adding, removing or renaming
+//     facts here would make the graph depend on which explainers were enabled, and two
+//     snapshots taken with different sets would no longer be comparable.
+//   - Values MUST be deterministic and stable in their rendered form. They are written
+//     into facts.jsonl and hashed into the snapshot id, so an unrounded float — whose
+//     last bits can move with summation order — would make an unchanged tree produce a
+//     different snapshot every run. Round before storing.
+//
+// Gated exactly like Explain: an explainer excluded by config annotates nothing.
+type Annotator interface {
+	// Annotate writes derived values onto facts already in the store.
+	Annotate(ctx context.Context, store *facts.Store) error
+}
+
 // Explainer analyzes facts and produces architectural insights.
 type Explainer interface {
 	// Name returns the explainer identifier (e.g. "cycles", "layers").

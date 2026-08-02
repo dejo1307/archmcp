@@ -109,6 +109,14 @@ func (d *SnapshotDiff) RenderCompact() string {
 		}
 		for _, c := range shown {
 			fmt.Fprintf(&sb, "- %s %s (%s:%d)\n", c.After.Kind, c.After.Name, c.After.File, c.After.Line)
+			// Name WHAT moved. The before/after facts have always been carried here and
+			// never surfaced, so a changed fact rendered as a bare line and the reader
+			// had to open the JSON to learn whether a signature, a complexity metric or
+			// a coupling number had shifted. A count of changed facts is not a finding;
+			// the delta inside them is.
+			for _, d := range changedProps(c) {
+				fmt.Fprintf(&sb, "    %s\n", d)
+			}
 		}
 		if len(d.FactsChanged) > len(shown) {
 			fmt.Fprintf(&sb, "- … and %d more (output_mode='full' for all)\n", len(d.FactsChanged)-len(shown))
@@ -117,6 +125,53 @@ func (d *SnapshotDiff) RenderCompact() string {
 	}
 
 	return sb.String()
+}
+
+// changedProps describes what actually differs between the two versions of a fact, as
+// "key: before → after" lines.
+//
+// Props only. Kind and Name are the identity a FactChange is matched on and cannot
+// differ; File and Line moving is noise on its own (a fact shifting down a file is not
+// an architectural change) and is left to the location already printed above.
+//
+// Values are rendered with %v rather than compared numerically: props are map[string]any
+// holding whatever an extractor put there, and a differ that assumed a type would go
+// quiet the first time one changed.
+func changedProps(c FactChange) []string {
+	if len(c.Before.Props) == 0 && len(c.After.Props) == 0 {
+		return nil
+	}
+	keys := make(map[string]bool, len(c.Before.Props)+len(c.After.Props))
+	for k := range c.Before.Props {
+		keys[k] = true
+	}
+	for k := range c.After.Props {
+		keys[k] = true
+	}
+	names := make([]string, 0, len(keys))
+	for k := range keys {
+		names = append(names, k)
+	}
+	// Sorted: the map iteration order varies between runs, and a renderer whose output
+	// reshuffles makes two identical diffs look different.
+	sort.Strings(names)
+
+	var out []string
+	for _, k := range names {
+		before, hadBefore := c.Before.Props[k]
+		after, hadAfter := c.After.Props[k]
+		switch {
+		case hadBefore && hadAfter:
+			if fmt.Sprintf("%v", before) != fmt.Sprintf("%v", after) {
+				out = append(out, fmt.Sprintf("%s: %v → %v", k, before, after))
+			}
+		case hadAfter:
+			out = append(out, fmt.Sprintf("%s: (unset) → %v", k, after))
+		case hadBefore:
+			out = append(out, fmt.Sprintf("%s: %v → (unset)", k, before))
+		}
+	}
+	return out
 }
 
 // writeIncidentalShifts lists findings that appeared or cleared without a

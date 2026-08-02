@@ -872,10 +872,37 @@ func (e *Engine) runTestRefExtractors(ctx context.Context, repoPath string, test
 	}
 }
 
+// runAnnotators lets enabled explainers write derived values back onto the facts
+// before any of them run Explain.
+//
+// Two orderings matter and neither is incidental. It runs AFTER the graph is built, so
+// whole-graph derivations (afferent/efferent coupling) are computable at all; and it runs
+// BEFORE every Explain rather than interleaved per explainer, so one explainer's insights
+// can never depend on whether another happened to be registered ahead of it — which would
+// make the snapshot depend on registration order.
+//
+// An annotator failure is logged and skipped, exactly as an explainer failure is: a
+// missing derived prop costs a diff some detail, and refusing to produce a snapshot over
+// it would cost the caller everything else in the graph.
+func (e *Engine) runAnnotators(ctx context.Context) {
+	for _, exp := range e.explainers.All() {
+		ann, ok := exp.(plugin.Annotator)
+		if !ok || !e.cfg.IsExplainerEnabled(exp.Name()) {
+			continue
+		}
+		log.Printf("[engine] running annotator: %s", exp.Name())
+		if err := ann.Annotate(ctx, e.store); err != nil {
+			log.Printf("[engine] annotator %s error: %v", exp.Name(), err)
+		}
+	}
+}
+
 // runExplainers runs all enabled explainers.
 func (e *Engine) runExplainers(ctx context.Context) ([]facts.Insight, []string, error) {
 	var allInsights []facts.Insight
 	var usedNames []string
+
+	e.runAnnotators(ctx)
 
 	for _, exp := range e.explainers.All() {
 		if !e.cfg.IsExplainerEnabled(exp.Name()) {

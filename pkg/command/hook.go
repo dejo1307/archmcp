@@ -71,7 +71,7 @@ func (r *Runner) runStopHook(ctx context.Context) {
 	// Silence is the norm. The gate only has something to say when a baseline was pinned
 	// during this session AND the change regressed the architecture; every other path
 	// ends here, having printed nothing.
-	verdict, outDir, ok := gradeQuietly(ctx, in.CWD)
+	verdict, outDir, ok := r.gradeQuietly(ctx, in.CWD)
 
 	// Record the run BEFORE deciding whether to speak, and on every path. The silent
 	// paths are the ones worth recording: a hook that never fires and a hook that fires
@@ -150,7 +150,7 @@ func (r *Runner) runSessionStartHook(ctx context.Context, args []string) {
 	if len(args) > 0 && args[0] == detachedRunFlag {
 		// The detached child: the only place any work happens.
 		if len(args) > 1 {
-			pinBaselineSingleFlight(ctx, args[1])
+			r.pinBaselineSingleFlight(ctx, args[1])
 		}
 		return
 	}
@@ -182,8 +182,8 @@ func (r *Runner) runSessionStartHook(ctx context.Context, args []string) {
 //
 // Everything here is silent. It has no terminal, nobody is reading its output, and a hook
 // that cannot fail loudly must not try.
-func pinBaselineSingleFlight(ctx context.Context, repoDir string) {
-	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{ConfigPath: configForRepo(repoDir)})
+func (r *Runner) pinBaselineSingleFlight(ctx context.Context, repoDir string) {
+	eng, cfg, err := r.newEngine(bootstrap.Options{ConfigPath: configForRepo(repoDir)})
 	if err != nil {
 		return
 	}
@@ -319,12 +319,12 @@ func baselineIsUnusable(base, current facts.SnapshotMeta) bool {
 // It also returns the engine's output directory, which the caller needs to record the
 // heartbeat. That is returned even on the failure paths wherever it is known, because
 // "the hook ran and could not grade" is precisely the state worth having on record.
-func gradeQuietly(ctx context.Context, repoDir string) (check.Verdict, string, bool) {
+func (r *Runner) gradeQuietly(ctx context.Context, repoDir string) (check.Verdict, string, bool) {
 	if !isDirectory(repoDir) {
 		return check.Verdict{}, "", false
 	}
 
-	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{ConfigPath: configForRepo(repoDir)})
+	eng, cfg, err := r.newEngine(bootstrap.Options{ConfigPath: configForRepo(repoDir)})
 	if err != nil {
 		return check.Verdict{}, "", false
 	}

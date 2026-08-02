@@ -65,7 +65,7 @@ func (r *Runner) Doctor(args []string) {
 	outDir := hookOutputDir(repoDir)
 	state := hookstate.Load(outDir)
 	installed := hooksConfigured(repoDir)
-	baselineIssue := baselineUsability(repoDir, outDir)
+	baselineIssue := r.baselineUsability(repoDir, outDir)
 
 	if *asJSON {
 		out := map[string]any{
@@ -160,12 +160,12 @@ func (r *Runner) Doctor(args []string) {
 // baselineUsability returns why the pinned baseline could not be graded against, or
 // "" when it can. It answers from metadata alone — no files are parsed — so `doctor`
 // stays a report rather than becoming a snapshot.
-func baselineUsability(repoDir, outDir string) string {
+func (r *Runner) baselineUsability(repoDir, outDir string) string {
 	base, err := bootstrap.LoadSnapshotDir(engine.ResolveBaselineDir(outDir, "pinned"))
 	if err != nil {
 		return "" // no baseline pinned; the hooks section covers that case
 	}
-	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{ConfigPath: configForRepo(repoDir)})
+	eng, cfg, err := r.newEngine(bootstrap.Options{ConfigPath: configForRepo(repoDir)})
 	if err != nil {
 		return ""
 	}

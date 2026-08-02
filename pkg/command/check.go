@@ -57,7 +57,7 @@ func (r *Runner) resolveTarget(arg string) target {
 		cfgPath = arg
 	}
 
-	eng, cfg, err := bootstrap.NewEngine(bootstrap.Options{ConfigPath: cfgPath})
+	eng, cfg, err := r.newEngine(bootstrap.Options{ConfigPath: cfgPath})
 	if err != nil {
 		r.checkFatal("failed to create engine: %v", err)
 	}

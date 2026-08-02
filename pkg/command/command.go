@@ -21,6 +21,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/cli"
 )
 
@@ -37,6 +39,40 @@ type Runner struct {
 	// accepts, so they belong in the typo suggestions and the "expected one of" list —
 	// otherwise `enola upgrad` is told upgrade is not a command of any kind.
 	own []string
+	// setup configures every engine the shared commands build, so a wrapper's plugins
+	// are present in the gate, the hook and the reports — not only in its MCP server.
+	//
+	// These commands construct their OWN engines (a gate has to snapshot the tree it is
+	// grading), so a wrapper that registered plugins on the server's engine alone got a
+	// plain OSS engine here. That is how `baseline pin` came to write a snapshot with a
+	// different explainer set than `--generate` on the same tree, from the same binary.
+	setup func(*bootstrap.Engine)
+}
+
+// WithEngine registers a hook applied to every engine these commands construct. Returns
+// the Runner so it can be chained onto New.
+//
+// The callback takes only the Engine: a wrapper outside this module cannot name
+// *config.Config, but it can reach the same value through Engine.Config() and mutate it
+// there. Keeping the signature to one exported type is what makes this usable across the
+// module boundary at all.
+func (r *Runner) WithEngine(setup func(*bootstrap.Engine)) *Runner {
+	r.setup = setup
+	return r
+}
+
+// newEngine builds an engine for a shared command and applies the wrapper's setup.
+// Every command that needs an engine must go through here; calling bootstrap.NewEngine
+// directly silently opts that command out of whatever the binary registers.
+func (r *Runner) newEngine(opts bootstrap.Options) (*bootstrap.Engine, *config.Config, error) {
+	eng, cfg, err := bootstrap.NewEngine(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if r.setup != nil {
+		r.setup(eng)
+	}
+	return eng, cfg, nil
 }
 
 // New returns a Runner for the given binary. ownSubcommands names commands the binary
