@@ -70,6 +70,19 @@ func computeConfigHash(cfg *config.Config) string {
 	writeSortedSection("test_globs", cfg.TestGlobs)
 	fmt.Fprintf(&sb, "output_dir:%s\nmax_context_tokens:%d\nincremental:%t\n",
 		cfg.Output.Dir, cfg.Output.MaxContextTokens, cfg.IncrementalEnabled())
+	// The linking vocabulary changes which cross-repo edges are drawn, so it changes
+	// emitted facts. Without it here, two snapshots taken under different vocabularies
+	// would carry the same config hash and compare as equivalent — and diff_snapshot
+	// would report the resulting edge changes as a delta somebody made.
+	//
+	// An invalid overlay contributes its error text: the snapshot is already wrong in
+	// that case, and hashing the failure keeps it from colliding with a valid one.
+	if v, err := cfg.LinkingVocab(); err == nil {
+		sb.WriteString("linking:\n")
+		sb.WriteString(v.Fingerprint())
+	} else {
+		sb.WriteString("linking:invalid:" + err.Error() + "\n")
+	}
 	return sha256Prefixed([]byte(sb.String()))
 }
 

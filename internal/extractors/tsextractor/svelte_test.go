@@ -171,10 +171,10 @@ func TestDetectSvelteKit_PkgDep(t *testing.T) {
 
 func TestDetectSvelteKitRoute(t *testing.T) {
 	tests := []struct {
-		name      string
-		file      string
-		wantRoute string
-		wantType  string
+		name       string
+		file       string
+		wantRoute  string
+		wantType   string
 		wantMethod string
 	}{
 		{"root page", "src/routes/+page.svelte", "/", "page", "GET"},

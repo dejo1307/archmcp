@@ -13,6 +13,7 @@ import (
 
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo/routeindex"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -20,10 +21,12 @@ import (
 const CoverageEdgeType = "http_client"
 
 // Signal matches client call sites against server routes across repos.
-type Signal struct{}
+type Signal struct {
+	m *routeindex.Matcher
+}
 
-// New returns the signal.
-func New() *Signal { return &Signal{} }
+// New returns the signal, matching under the given vocabulary.
+func New(v *vocab.Set) *Signal { return &Signal{m: routeindex.New(v)} }
 
 func (s *Signal) Name() string { return "http" }
 
@@ -32,10 +35,11 @@ func (s *Signal) Phase() plugin.SignalPhase { return plugin.PhaseDirectional }
 // --- signal (A): HTTP route role matching ---
 
 func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
+	m := s.m
 	// Index server routes by normalized path-suffix + method (shared with the
 	// unmatched-client pass so verdicts stay in lockstep).
 	all := in.Facts()
-	server := routeindex.IndexServerRoutes(all)
+	server := m.IndexServerRoutes(all)
 
 	// Match client routes against the server index.
 	for _, f := range all {
@@ -57,8 +61,8 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 		matched := false
 		method := routeindex.NormalizeMethod(f.PropString("method"))
 		if method != "" {
-			np := routeindex.NormalizePath(f.Name)
-			if !routeindex.IsGenericPath(np) {
+			np := m.NormalizePath(f.Name)
+			if !m.IsGenericPath(np) {
 				// Canonicalize the leading slash so a base-relative client path
 				// ("settings/x") matches the indexed suffix form ("/settings/x").
 				clientPath := routeindex.CanonicalLeadingSlash(np)
@@ -69,7 +73,7 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 				// prefix ("/api/settings/tickets/{}/resolve") to a server serving the
 				// un-prefixed path ("/tickets/{}/resolve"), as well as the reverse (a
 				// base-relative client calling a longer server path).
-				matches, matchedPath := routeindex.LookupClientMatches(server, clientPath, method)
+				matches, matchedPath := m.LookupClientMatches(server, clientPath, method)
 				provider, unambiguous := pickProvider(f, matches)
 				// A single-segment path (/activate) cleared the generic vocabulary but
 				// is thinner evidence than a multi-segment one: there is less path to
@@ -201,7 +205,7 @@ func serviceHint(f facts.Fact) string {
 // --- server-side inverse: routes no loaded client calls ---
 
 // other repo loaded there are no clients for a route to be unused by.
-func UnmatchedServerRouteKeys(all []facts.Fact) map[string]bool {
+func UnmatchedServerRouteKeys(m *routeindex.Matcher, all []facts.Fact) map[string]bool {
 	if len(reposOf(all)) < 2 {
 		return nil
 	}
@@ -228,13 +232,13 @@ func UnmatchedServerRouteKeys(all []facts.Fact) map[string]bool {
 		// This is a vocabulary test, not a segment count, so a named single-segment
 		// route (/activate) does enter the candidate set — it is linkable, and its
 		// used/unused verdict is therefore meaningful.
-		if routeindex.IsGenericPath(routeindex.NormalizePath(f.Name)) {
+		if m.IsGenericPath(m.NormalizePath(f.Name)) {
 			continue
 		}
 		identities[routeindex.RouteIdentityKey(f.Repo, method, f.Name)] = true
-		for _, p := range routeindex.ServerPaths(f) {
+		for _, p := range m.ServerPaths(f) {
 			ref := routeindex.RouteRef{Repo: f.Repo, Method: method, Path: f.Name, FullPath: p}
-			for _, suf := range routeindex.PathMatchKeys(p) {
+			for _, suf := range m.PathMatchKeys(p) {
 				server[routeindex.RouteKey(suf, method)] = append(server[routeindex.RouteKey(suf, method)], ref)
 			}
 		}
@@ -252,11 +256,11 @@ func UnmatchedServerRouteKeys(all []facts.Fact) map[string]bool {
 		if method == "" {
 			continue
 		}
-		np := routeindex.NormalizePath(f.Name)
-		if routeindex.IsGenericPath(np) {
+		np := m.NormalizePath(f.Name)
+		if m.IsGenericPath(np) {
 			continue
 		}
-		matches, _ := routeindex.LookupClientMatches(server, routeindex.CanonicalLeadingSlash(np), method)
+		matches, _ := m.LookupClientMatches(server, routeindex.CanonicalLeadingSlash(np), method)
 		for _, m := range matches {
 			matched[routeindex.RouteIdentityKey(m.Repo, m.Method, m.Path)] = true
 			if m.Repo != f.Repo {
@@ -302,12 +306,12 @@ const (
 // fell into the unresolved coverage count — the queryable counterpart to the
 // aggregate edge_coverage numbers. External calls (hardcoded third-party hosts) are
 // expected non-matches and are omitted. Returns nil for single-repo snapshots.
-func UnmatchedClientRouteKeys(all []facts.Fact) map[string]string {
+func UnmatchedClientRouteKeys(m *routeindex.Matcher, all []facts.Fact) map[string]string {
 	if len(reposOf(all)) < 2 {
 		return nil
 	}
-	server := routeindex.IndexServerRoutes(all)
-	serverSuffixes := routeindex.IndexServerPathSuffixes(all)
+	server := m.IndexServerRoutes(all)
+	serverSuffixes := m.IndexServerPathSuffixes(all)
 	unmatched := map[string]string{}
 	for _, f := range all {
 		if f.Kind != facts.KindRoute || f.Repo == "" || routeindex.RoleOf(f) != facts.RoleClient {
@@ -322,17 +326,17 @@ func UnmatchedClientRouteKeys(all []facts.Fact) map[string]string {
 			unmatched[id] = ReasonNoMethod
 			continue
 		}
-		np := routeindex.NormalizePath(f.Name)
-		if routeindex.IsGenericPath(np) {
+		np := m.NormalizePath(f.Name)
+		if m.IsGenericPath(np) {
 			unmatched[id] = ReasonGenericPath
 			continue
 		}
 		cp := routeindex.CanonicalLeadingSlash(np)
-		matches, _ := routeindex.LookupClientMatches(server, cp, method)
+		matches, _ := m.LookupClientMatches(server, cp, method)
 		if provider, _ := pickProvider(f, matches); provider == "" {
 			// Distinguish "a server serves this path but not this verb" from "no
 			// server serves this path at all", so the residual is self-triaging.
-			if routeindex.ClientPathHasServer(serverSuffixes, cp) {
+			if m.ClientPathHasServer(serverSuffixes, cp) {
 				unmatched[id] = ReasonMethodMismatch
 			} else {
 				unmatched[id] = ReasonPathUnknown

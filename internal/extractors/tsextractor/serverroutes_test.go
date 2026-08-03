@@ -83,7 +83,7 @@ app.get('/healthcheck', handler);
 	for path, want := range map[string]string{
 		"/webhooks/login":  "GET",
 		"/webhooks/logout": "POST",
-		"/healthcheck":    "GET",
+		"/healthcheck":     "GET",
 	} {
 		if got[path] != want {
 			t.Errorf("%s: want %s, got %+v", path, want, got)

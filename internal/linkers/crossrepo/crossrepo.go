@@ -29,6 +29,7 @@ package crossrepo
 
 import (
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -52,14 +53,17 @@ type SourceReader func(f facts.Fact) (string, bool)
 // is commutative.
 //
 // src supplies file contents so shared type names can be verified against the code
-// behind them; pass nil to match on names alone.
-func ComputeLinks(all []facts.Fact, src SourceReader, signals []plugin.CrossRepoSignal) []facts.Fact {
+// behind them; pass nil to match on names alone. v is the tuning vocabulary; it is
+// passed rather than read from a global so two snapshots taken under different
+// vocabularies cannot interfere, and so the value is visibly part of the input whose
+// fingerprint the snapshot's config hash covers.
+func ComputeLinks(all []facts.Fact, src SourceReader, signals []plugin.CrossRepoSignal, v *vocab.Set) []facts.Fact {
 	in := newInput(all, src)
 	if len(in.Repos()) < 2 {
 		return nil // need at least two repos to have a cross-repo edge
 	}
 
-	out := newSink()
+	out := newSink(v)
 
 	// Two phases, in order. Within a phase the order is whatever the registry hands
 	// back and must not matter; between phases it is a correctness constraint. The

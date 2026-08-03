@@ -26,6 +26,7 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/binders"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo/signals"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/internal/renderers"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/plugin"
@@ -588,7 +589,15 @@ func (e *Engine) linkCrossRepo(repoPaths map[string]string) {
 		return f.Props["synthetic"] == crossrepo.SyntheticMarker
 	})
 
-	links := crossrepo.ComputeLinks(e.store.All(), sourceReaderFor(repoPaths), e.signals.All())
+	// An invalid `linking:` overlay is reported once and the run continues on the
+	// built-in defaults: config validation belongs at load, and failing the whole
+	// snapshot here would trade a graph linked with default vocabulary for no graph.
+	v, err := e.cfg.LinkingVocab()
+	if err != nil {
+		log.Printf("[engine] invalid linking vocabulary, using defaults: %v", err)
+		v = vocab.Default()
+	}
+	links := crossrepo.ComputeLinks(e.store.All(), sourceReaderFor(repoPaths), e.signals.All(), v)
 	if len(links) == 0 {
 		return
 	}

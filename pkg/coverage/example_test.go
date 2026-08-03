@@ -12,6 +12,7 @@ import (
 	"github.com/enola-labs/enola/internal/extractors/goextractor"
 	"github.com/enola-labs/enola/internal/facts"
 	httpsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/http"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/coverage"
 )
 
@@ -48,7 +49,7 @@ func TestPublishedExample_StillDemonstratesWhatItClaims(t *testing.T) {
 	// Cross-repo linking is plugin-driven: an engine with no registered signals
 	// produces service nodes and no edges. This example is about the coverage a link
 	// reports, so it needs the HTTP signal that draws one.
-	eng.RegisterCrossRepoSignal(httpsignal.New())
+	eng.RegisterCrossRepoSignal(httpsignal.New(vocab.Default()))
 	eng.SetPersistCache(false) // never write into the published example
 
 	ctx := context.Background()

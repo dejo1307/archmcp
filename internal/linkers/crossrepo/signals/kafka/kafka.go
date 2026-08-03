@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -14,10 +15,12 @@ import (
 //
 // It is directional despite the transport being fire-and-forget: topic ownership is
 // what orients it, and ownership is asymmetric.
-type Signal struct{}
+type Signal struct {
+	v *vocab.Set
+}
 
-// New returns the signal.
-func New() *Signal { return &Signal{} }
+// New returns the signal, reading topic ownership under the given vocabulary.
+func New(v *vocab.Set) *Signal { return &Signal{v: v} }
 
 func (s *Signal) Name() string { return "kafka" }
 
@@ -28,9 +31,9 @@ func (s *Signal) Phase() plugin.SignalPhase { return plugin.PhaseDirectional }
 // (e.g. "svc-orders.order_placed" -> "svc-orders",
 // "core.items.item_uploaded" -> "core"), so the leading segment identifies the
 // producer even when that repo's producer code cannot be parsed.
-func topicOwner(topic string) string {
+func (s *Signal) topicOwner(topic string) string {
 	topic = strings.TrimSpace(topic)
-	if i := strings.IndexByte(topic, '.'); i >= 0 {
+	if i := strings.Index(topic, s.v.TopicOwnerSeparator); i >= 0 {
 		return topic[:i]
 	}
 	return topic
@@ -52,7 +55,7 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 		if f.PropString("storage_kind") != facts.StorageKindTopic {
 			continue
 		}
-		owner := topicOwner(f.Name)
+		owner := s.topicOwner(f.Name)
 		if owner == "" {
 			continue
 		}

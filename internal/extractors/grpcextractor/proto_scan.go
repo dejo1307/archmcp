@@ -24,8 +24,8 @@ type protoService struct {
 
 // protoRPC is one `rpc M(Req) returns (Resp);` declaration.
 type protoRPC struct {
-	name        string
-	line        int
+	name         string
+	line         int
 	clientStream bool
 	serverStream bool
 }
@@ -43,7 +43,7 @@ var (
 	rePackage = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;`)
 	reImport  = regexp.MustCompile(`(?m)^\s*import\s+(?:public\s+|weak\s+)?"([^"]+)"\s*;`)
 	// rpc Name ( [stream] Req ) returns ( [stream] Resp )
-	reRPC = regexp.MustCompile(`\brpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(stream\s+)?[.A-Za-z_][.A-Za-z0-9_]*\s*\)\s+returns\s*\(\s*(stream\s+)?[.A-Za-z_][.A-Za-z0-9_]*\s*\)`)
+	reRPC     = regexp.MustCompile(`\brpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(stream\s+)?[.A-Za-z_][.A-Za-z0-9_]*\s*\)\s+returns\s*\(\s*(stream\s+)?[.A-Za-z_][.A-Za-z0-9_]*\s*\)`)
 	reComment = regexp.MustCompile(`//[^\n]*`)
 )
 

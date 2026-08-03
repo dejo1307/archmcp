@@ -11,6 +11,7 @@ import (
 	importsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/imports"
 	kafkasignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/kafka"
 	sharedcodesignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/sharedcode"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -61,7 +62,7 @@ func contractFixture() []facts.Fact {
 }
 
 func runWith(order []plugin.CrossRepoSignal) []byte {
-	out := ComputeLinks(contractFixture(), nil, order)
+	out := ComputeLinks(contractFixture(), nil, order, vocab.Default())
 	b, _ := json.Marshal(out)
 	return b
 }
@@ -80,10 +81,10 @@ func runWith(order []plugin.CrossRepoSignal) []byte {
 // shared-code annotation onto or off an edge.
 func TestSignals_OutputIsIndependentOfRegistrationOrder(t *testing.T) {
 	forward := []plugin.CrossRepoSignal{
-		httpsignal.New(), importsignal.New(), kafkasignal.New(), sharedcodesignal.New(),
+		httpsignal.New(vocab.Default()), importsignal.New(), kafkasignal.New(vocab.Default()), sharedcodesignal.New(vocab.Default()),
 	}
 	reverse := []plugin.CrossRepoSignal{
-		sharedcodesignal.New(), kafkasignal.New(), importsignal.New(), httpsignal.New(),
+		sharedcodesignal.New(vocab.Default()), kafkasignal.New(vocab.Default()), importsignal.New(), httpsignal.New(vocab.Default()),
 	}
 
 	a, b := runWith(forward), runWith(reverse)
@@ -97,7 +98,7 @@ func TestSignals_OutputIsIndependentOfRegistrationOrder(t *testing.T) {
 // same facts must be identical.
 func TestComputeLinks_RepeatedRunsAreStable(t *testing.T) {
 	order := []plugin.CrossRepoSignal{
-		httpsignal.New(), importsignal.New(), kafkasignal.New(), sharedcodesignal.New(),
+		httpsignal.New(vocab.Default()), importsignal.New(), kafkasignal.New(vocab.Default()), sharedcodesignal.New(vocab.Default()),
 	}
 	if a, b := runWith(order), runWith(order); !reflect.DeepEqual(a, b) {
 		t.Errorf("two identical runs differ\n--- a ---\n%s\n--- b ---\n%s", a, b)
@@ -122,8 +123,8 @@ func TestComputeLinks_RepeatedRunsAreStable(t *testing.T) {
 // narrows a shared-symbol set, and this fixture supplies no SourceReader.
 func TestMaterialize_PropSurfaceIsStable(t *testing.T) {
 	out := ComputeLinks(contractFixture(), nil, []plugin.CrossRepoSignal{
-		httpsignal.New(), importsignal.New(), kafkasignal.New(), sharedcodesignal.New(),
-	})
+		httpsignal.New(vocab.Default()), importsignal.New(), kafkasignal.New(vocab.Default()), sharedcodesignal.New(vocab.Default()),
+	}, vocab.Default())
 
 	seen := map[string]map[string]bool{
 		facts.KindService:    {},
@@ -167,7 +168,55 @@ func TestComputeLinks_SingleRepoIsNoOp(t *testing.T) {
 		{Kind: facts.KindRoute, Name: "/api/items", Repo: "solo",
 			Props: map[string]any{"method": "GET", facts.PropRole: facts.RoleClient}},
 	}
-	if out := ComputeLinks(in, nil, []plugin.CrossRepoSignal{httpsignal.New()}); len(out) != 0 {
+	if out := ComputeLinks(in, nil, []plugin.CrossRepoSignal{httpsignal.New(vocab.Default())}, vocab.Default()); len(out) != 0 {
 		t.Errorf("single-repo snapshot produced %d synthetic facts, want 0: %+v", len(out), out)
+	}
+}
+
+// TestVocabularyOverlay_SuppressesAFalseEdge is the user story the `linking:` block
+// exists for, end to end.
+//
+// Two apps built on the same framework each declare that framework's boilerplate base
+// classes. Nothing is shared between them — the names coincide because the framework
+// generates them — but with the framework unknown to enola they look like shared code
+// and get coupled. Before this overlay existed the only fix was a Go patch and a
+// release, which is how every one of the built-in entries got there.
+//
+// The assertion is in two halves deliberately: the coupling must be present with the
+// default vocabulary, and absent once the user names the convention. Only asserting the
+// second half would pass against a fixture that never coupled at all.
+func TestVocabularyOverlay_SuppressesAFalseEdge(t *testing.T) {
+	sym := func(repo, name string) facts.Fact {
+		return facts.Fact{Kind: facts.KindSymbol, Name: name, Repo: repo,
+			File:  repo + "/app/" + name + ".ex",
+			Props: map[string]any{"symbol_kind": facts.SymbolClass, "language": "elixir"}}
+	}
+	// Boilerplate every app of this (hypothetical) framework declares identically.
+	boilerplate := []string{"AcmeWebEndpoint", "AcmeWebRouter", "AcmeWebTelemetry"}
+	var in []facts.Fact
+	for _, name := range boilerplate {
+		in = append(in, sym("storefront", name), sym("admin", name))
+	}
+
+	signals := func(v *vocab.Set) []plugin.CrossRepoSignal {
+		return []plugin.CrossRepoSignal{sharedcodesignal.New(v)}
+	}
+
+	// Half one: with the framework unknown, the two apps are coupled.
+	before := sharedCodeFacts(ComputeLinks(in, nil, signals(vocab.Default()), vocab.Default()))
+	if len(before) != 1 {
+		t.Fatalf("precondition: unknown framework boilerplate should couple the apps; got %d couplings", len(before))
+	}
+
+	// Half two: the user names the convention in enola.yaml. No code change, no release.
+	tuned, err := vocab.Apply(&vocab.Overlay{
+		FrameworkConventions: vocab.ListOverlay{Add: boilerplate},
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	after := sharedCodeFacts(ComputeLinks(in, nil, signals(tuned), tuned))
+	if len(after) != 0 {
+		t.Errorf("the overlay did not suppress the false coupling: %+v", after)
 	}
 }

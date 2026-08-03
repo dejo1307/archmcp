@@ -13,12 +13,24 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 )
 
-// keeps the join specific enough to avoid false positives while tolerating the
-// base-path/prefix differences between a server's full path ("/api/settings/...")
-// and a client's base-relative call ("settings/...").
-const minSharedSegments = 2
+// Matcher applies the route-matching rules under one vocabulary. The rules that consult
+// tunable knowledge — which single-segment paths are too generic to link on, which
+// response-format suffixes to strip, how many trailing segments a suffix match needs —
+// are methods on it rather than package functions, so a snapshot's vocabulary reaches
+// them explicitly instead of through a package-level global that tests would have to
+// mutate and concurrent snapshots would share.
+//
+// Rules that consult nothing tunable (RouteIdentity, NormalizeMethod, RoleOf, …) stay
+// package-level: making them methods would imply a configurability they do not have.
+type Matcher struct {
+	v *vocab.Set
+}
+
+// New returns a Matcher using the given vocabulary.
+func New(v *vocab.Set) *Matcher { return &Matcher{v: v} }
 
 type RouteRef struct {
 	Repo     string
@@ -33,7 +45,7 @@ type RouteRef struct {
 // UnmatchedClientRouteKeys so both resolve a client call identically. ServerPaths
 // already returns normalized paths; fullPath records which full path a suffix came
 // from, so a match can tell a full-path hit from a fragment hit.
-func IndexServerRoutes(all []facts.Fact) map[string][]RouteRef {
+func (m *Matcher) IndexServerRoutes(all []facts.Fact) map[string][]RouteRef {
 	server := map[string][]RouteRef{}
 	for _, f := range all {
 		if f.Kind != facts.KindRoute || f.Repo == "" || RoleOf(f) == facts.RoleClient {
@@ -43,9 +55,9 @@ func IndexServerRoutes(all []facts.Fact) map[string][]RouteRef {
 		if method == "" {
 			continue
 		}
-		for _, p := range ServerPaths(f) {
+		for _, p := range m.ServerPaths(f) {
 			ref := RouteRef{Repo: f.Repo, Method: method, Path: f.Name, FullPath: p}
-			for _, suf := range PathMatchKeys(p) {
+			for _, suf := range m.PathMatchKeys(p) {
 				server[RouteKey(suf, method)] = append(server[RouteKey(suf, method)], ref)
 			}
 		}
@@ -57,7 +69,7 @@ func IndexServerRoutes(all []facts.Fact) map[string][]RouteRef {
 // method — the method-agnostic counterpart to IndexServerRoutes. It lets the
 // unmatched-client pass tell "the endpoint exists but we have the wrong verb"
 // (method_mismatch) from "no server route serves this path at all" (path_unknown).
-func IndexServerPathSuffixes(all []facts.Fact) map[string]bool {
+func (m *Matcher) IndexServerPathSuffixes(all []facts.Fact) map[string]bool {
 	set := map[string]bool{}
 	for _, f := range all {
 		if f.Kind != facts.KindRoute || f.Repo == "" || RoleOf(f) == facts.RoleClient {
@@ -66,8 +78,8 @@ func IndexServerPathSuffixes(all []facts.Fact) map[string]bool {
 		if NormalizeMethod(f.PropString("method")) == "" {
 			continue
 		}
-		for _, p := range ServerPaths(f) {
-			for _, suf := range PathMatchKeys(p) {
+		for _, p := range m.ServerPaths(f) {
+			for _, suf := range m.PathMatchKeys(p) {
 				set[suf] = true
 			}
 		}
@@ -77,10 +89,10 @@ func IndexServerPathSuffixes(all []facts.Fact) map[string]bool {
 
 // ServerPaths returns the normalized paths a server route is reachable at: its
 // own path and, when present, its gateway path (prefix + path).
-func ServerPaths(f facts.Fact) []string {
-	out := []string{NormalizePath(f.Name)}
+func (m *Matcher) ServerPaths(f facts.Fact) []string {
+	out := []string{m.NormalizePath(f.Name)}
 	if gw := f.PropString("gateway_path"); gw != "" {
-		out = append(out, NormalizePath(gw))
+		out = append(out, m.NormalizePath(gw))
 	}
 	return out
 }
@@ -115,8 +127,8 @@ func RouteIdentityKey(repo, method, path string) string {
 // LookupClientMatches' key generation, minus the method filter — including its
 // whole-path fallback, so a single-segment client path is tested against the
 // index rather than reported path_unknown without ever being looked up).
-func ClientPathHasServer(serverSuffixes map[string]bool, clientPath string) bool {
-	for _, suf := range PathMatchKeys(clientPath) {
+func (m *Matcher) ClientPathHasServer(serverSuffixes map[string]bool, clientPath string) bool {
+	for _, suf := range m.PathMatchKeys(clientPath) {
 		if serverSuffixes[suf] {
 			return true
 		}
@@ -161,17 +173,12 @@ func NormalizeMethod(m string) string {
 // unused-route pass builds its own index over the same keyspace.
 func RouteKey(normPath, method string) string { return normPath + "|" + method }
 
-// formatExtensions are response-format suffixes a client may append to a path
-// (Rails renders these as an optional ".:format" that never appears in the route
-// path) — so they must be stripped before comparing a client call to a server route.
-var formatExtensions = []string{".json", ".xml"}
-
 // stripFormatExtension removes a trailing response-format extension from a single
 // path segment: "orders.json" -> "orders", "{id}.json" -> "{id}" (so the later
 // {}-collapse still fires). Only the known format suffixes are stripped, so a
 // version-like segment ("v2.5") or a real dotted name is left intact.
-func stripFormatExtension(seg string) string {
-	for _, ext := range formatExtensions {
+func (m *Matcher) stripFormatExtension(seg string) string {
+	for _, ext := range m.v.FormatExtensions {
 		if len(seg) > len(ext) && strings.HasSuffix(seg, ext) {
 			return seg[:len(seg)-len(ext)]
 		}
@@ -183,7 +190,7 @@ func stripFormatExtension(seg string) string {
 // (.json/.xml) from the final segment, and collapses path parameters in any
 // framework syntax ({id}, :id, <id>) to a single "{}" placeholder, so a client
 // path matches the server path it calls regardless of param naming or format suffix.
-func NormalizePath(p string) string {
+func (m *Matcher) NormalizePath(p string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return ""
@@ -196,7 +203,7 @@ func NormalizePath(p string) string {
 	// client call "/devices/{id}.json" normalizes to the same "/devices/{}" the
 	// server route "/devices/:id" produces.
 	if n := len(segs); n > 0 {
-		segs[n-1] = stripFormatExtension(segs[n-1])
+		segs[n-1] = m.stripFormatExtension(segs[n-1])
 	}
 	for i, s := range segs {
 		switch {
@@ -215,7 +222,7 @@ func NormalizePath(p string) string {
 }
 
 // pathSuffixes returns every trailing-segment suffix of a normalized path that
-// has at least minSharedSegments non-empty segments, longest first. Each suffix
+// has at least m.v.Thresholds.MinSharedSegments non-empty segments, longest first. Each suffix
 // is rendered leading-slash-canonical ("/seg/seg/..."), so a server path
 // "/api/settings/entitlements/definitions" yields:
 //
@@ -223,9 +230,9 @@ func NormalizePath(p string) string {
 //	/settings/entitlements/definitions
 //	/entitlements/definitions
 //
-// ("definitions" alone is dropped: below minSharedSegments). This lets a client
+// ("definitions" alone is dropped: below m.v.Thresholds.MinSharedSegments). This lets a client
 // calling a base-relative subpath match the server serving the full path.
-func pathSuffixes(normPath string) []string {
+func (m *Matcher) pathSuffixes(normPath string) []string {
 	var segs []string
 	for _, s := range strings.Split(normPath, "/") {
 		if s != "" {
@@ -233,7 +240,7 @@ func pathSuffixes(normPath string) []string {
 		}
 	}
 	var out []string
-	for start := 0; start+minSharedSegments <= len(segs); start++ {
+	for start := 0; start+m.v.Thresholds.MinSharedSegments <= len(segs); start++ {
 		out = append(out, "/"+strings.Join(segs[start:], "/"))
 	}
 	return out
@@ -242,7 +249,7 @@ func pathSuffixes(normPath string) []string {
 // PathMatchKeys returns the path forms to join a route on — its suffixes, or the
 // whole path when it is too short to have any.
 //
-// pathSuffixes yields nothing below minSharedSegments, because a lone trailing
+// pathSuffixes yields nothing below m.v.Thresholds.MinSharedSegments, because a lone trailing
 // segment is too weak to join a PREFIXED path on. But used bare it also drops
 // single-segment routes from the join entirely: a server serving GET /widgets
 // was indexed under no key at all, so no client could ever match it, and the
@@ -255,8 +262,8 @@ func pathSuffixes(normPath string) []string {
 // suffix matching. Fabrication is held off on the client side instead, where
 // IsGenericPath drops infra names (/health, /status) and linkHTTP demands an
 // unambiguous provider before drawing a one-segment edge.
-func PathMatchKeys(normPath string) []string {
-	if sufs := pathSuffixes(normPath); len(sufs) > 0 {
+func (m *Matcher) PathMatchKeys(normPath string) []string {
+	if sufs := m.pathSuffixes(normPath); len(sufs) > 0 {
 		return sufs
 	}
 	return []string{normPath}
@@ -267,11 +274,11 @@ func PathMatchKeys(normPath string) []string {
 // returning the first (most specific) hit, plus the suffix that matched. The
 // longest suffix is the full client path, so an exact full-path match still wins
 // first; shorter suffixes then let a prefixed client path ("/api/settings/x/y")
-// match a server serving the un-prefixed path ("/x/y"). For sub-minSharedSegments
+// match a server serving the un-prefixed path ("/x/y"). For sub-m.v.Thresholds.MinSharedSegments
 // paths (no suffixes) it falls back to a single full-path lookup, preserving the
 // original behavior.
-func LookupClientMatches(server map[string][]RouteRef, clientPath, method string) ([]RouteRef, string) {
-	sufs := pathSuffixes(clientPath)
+func (m *Matcher) LookupClientMatches(server map[string][]RouteRef, clientPath, method string) ([]RouteRef, string) {
+	sufs := m.pathSuffixes(clientPath)
 	if len(sufs) == 0 {
 		if m := server[RouteKey(clientPath, method)]; len(m) > 0 {
 			return m, clientPath
@@ -302,17 +309,6 @@ func CanonicalLeadingSlash(p string) string {
 	return "/" + p
 }
 
-// genericSegments are single-segment endpoint names so widely reused that a
-// path/method match between two repos carries no evidence they talk to each
-// other: infra probes, discovery roots, and API mount points. Nearly every
-// service serves some of these, so linking on them fabricates edges.
-var genericSegments = map[string]bool{
-	"health": true, "healthz": true, "healthcheck": true,
-	"status": true, "ping": true, "metrics": true,
-	"ready": true, "readyz": true, "live": true, "livez": true,
-	"version": true, "info": true, "api": true, "graphql": true,
-}
-
 // IsGenericPath reports whether a path is too low-signal to safely link on.
 //
 // This was originally a pure segment count (fewer than two segments = generic),
@@ -326,7 +322,7 @@ var genericSegments = map[string]bool{
 // A single-segment path that clears the vocabulary is still weaker evidence
 // than a multi-segment one, so linkHTTP additionally requires its match to be
 // unambiguous — see the SingleSegmentPath gate there.
-func IsGenericPath(normPath string) bool {
+func (m *Matcher) IsGenericPath(normPath string) bool {
 	var segs []string
 	for _, s := range strings.Split(normPath, "/") {
 		if s != "" {
@@ -340,7 +336,7 @@ func IsGenericPath(normPath string) bool {
 		return true // bare "/"
 	}
 	if len(segs) == 1 {
-		return genericSegments[strings.ToLower(segs[0])]
+		return m.v.GenericPathSegments[strings.ToLower(segs[0])]
 	}
 	return false
 }

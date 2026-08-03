@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -16,9 +17,6 @@ import (
 // signal meant editing both. Now a signal declares a plugin.Bucket and reports into
 // it, and materialization is a loop — the only thing this file knows about any
 // particular signal is nothing at all.
-
-// maxSamples bounds how many samples an edge fact carries per bucket.
-const maxSamples = 25
 
 // edge accumulates everything justifying one consumer -> provider dependency.
 type edge struct {
@@ -61,6 +59,8 @@ func (b *bucketData) add(v string) {
 // sink is the EvidenceSink handed to every signal. It is not safe for concurrent use;
 // signals run sequentially within a phase.
 type sink struct {
+	v *vocab.Set
+
 	edges     map[string]*edge
 	couplings map[string]*coupling
 	coverage  map[string]map[string]*plugin.Coverage // repo -> edgeType -> tally
@@ -81,8 +81,9 @@ type sink struct {
 	symmetricVias map[string]bool
 }
 
-func newSink() *sink {
+func newSink(v *vocab.Set) *sink {
 	return &sink{
+		v:             v,
 		edges:         map[string]*edge{},
 		couplings:     map[string]*coupling{},
 		coverage:      map[string]map[string]*plugin.Coverage{},
@@ -206,7 +207,7 @@ func bucketFor(m map[string]*bucketData, spec plugin.Bucket) *bucketData {
 
 // writeBuckets renders every non-empty bucket into props, in bucket-name order so the
 // result is deterministic regardless of the order signals ran or reported.
-func writeBuckets(props map[string]any, buckets map[string]*bucketData) {
+func writeBuckets(props map[string]any, buckets map[string]*bucketData, max int) {
 	names := make([]string, 0, len(buckets))
 	for n := range buckets {
 		names = append(names, n)
@@ -219,7 +220,7 @@ func writeBuckets(props map[string]any, buckets map[string]*bucketData) {
 		}
 		vals := sortedKeys(d.values)
 		props[d.spec.CountProp] = len(vals)
-		props[d.spec.SamplesProp] = capSamples(vals)
+		props[d.spec.SamplesProp] = capSamples(vals, max)
 		// Only meaningful when verification actually narrowed the set; without it the
 		// two counts are equal and the extra prop is noise.
 		if d.spec.UnverifiedProp != "" && d.unverified > len(vals) {
@@ -259,7 +260,7 @@ func materialize(s *sink, allRepos []string) []facts.Fact {
 		if e.confidence != "" {
 			props["confidence"] = e.confidence
 		}
-		writeBuckets(props, e.buckets)
+		writeBuckets(props, e.buckets, s.v.Thresholds.MaxSamples)
 
 		depFacts = append(depFacts, facts.Fact{
 			Kind:  facts.KindDependency,
@@ -286,7 +287,7 @@ func materialize(s *sink, allRepos []string) []facts.Fact {
 			"via":       sortedKeys(c.via),
 			"repos":     []string{c.repoA, c.repoB},
 		}
-		writeBuckets(props, c.buckets)
+		writeBuckets(props, c.buckets, s.v.Thresholds.MaxSamples)
 		depFacts = append(depFacts, facts.Fact{
 			Kind:  facts.KindDependency,
 			Name:  fmt.Sprintf("%s <-> %s", c.repoA, c.repoB),
@@ -365,10 +366,10 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
-// capSamples bounds a sample list to maxSamples entries.
-func capSamples(ss []string) []string {
-	if len(ss) > maxSamples {
-		return ss[:maxSamples]
+// capSamples bounds a sample list to max entries.
+func capSamples(ss []string, max int) []string {
+	if len(ss) > max {
+		return ss[:max]
 	}
 	return ss
 }

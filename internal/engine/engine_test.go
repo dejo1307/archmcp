@@ -14,6 +14,7 @@ import (
 	importsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/imports"
 	kafkasignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/kafka"
 	sharedcodesignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/sharedcode"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 )
 
 func TestIsIgnored(t *testing.T) {
@@ -538,8 +539,8 @@ func TestSourceReaderFor_NilWithoutRepoPaths(t *testing.T) {
 // nodes and no edges — which is the correct behavior for an engine with no signals, and
 // a confusing test failure if you expected the old hardcoded set.
 func registerOSSSignals(e *Engine) {
-	e.RegisterCrossRepoSignal(httpsignal.New())
+	e.RegisterCrossRepoSignal(httpsignal.New(vocab.Default()))
 	e.RegisterCrossRepoSignal(importsignal.New())
-	e.RegisterCrossRepoSignal(kafkasignal.New())
-	e.RegisterCrossRepoSignal(sharedcodesignal.New())
+	e.RegisterCrossRepoSignal(kafkasignal.New(vocab.Default()))
+	e.RegisterCrossRepoSignal(sharedcodesignal.New(vocab.Default()))
 }

@@ -58,11 +58,11 @@ type Instance struct {
 
 	// Identity of the binary and the launch context — what distinguishes two
 	// instances at a glance.
-	Binary     string `json:"binary"`               // "enola" / "enola-enterprise"
-	Version    string `json:"version,omitempty"`    // build version
-	Licensed   bool   `json:"licensed,omitempty"`   // enterprise features active
-	ConfigPath string `json:"config_path,omitempty"`// resolved mcp-arch.yaml
-	WorkDir    string `json:"work_dir,omitempty"`   // cwd, i.e. which workspace launched it
+	Binary     string `json:"binary"`                // "enola" / "enola-enterprise"
+	Version    string `json:"version,omitempty"`     // build version
+	Licensed   bool   `json:"licensed,omitempty"`    // enterprise features active
+	ConfigPath string `json:"config_path,omitempty"` // resolved mcp-arch.yaml
+	WorkDir    string `json:"work_dir,omitempty"`    // cwd, i.e. which workspace launched it
 
 	// Graph state, refreshed after each generate_snapshot.
 	PrimaryRepo  string         `json:"primary_repo,omitempty"` // abs cfg.Repo

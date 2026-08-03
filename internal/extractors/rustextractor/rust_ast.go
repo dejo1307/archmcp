@@ -132,16 +132,16 @@ type astWalker struct {
 	loopDepth    int // syntactic loop nesting (for/while/loop)
 	scalingDepth int // nesting of loops with a data-dependent (non-constant) trip count
 
-	fnMaxLoop       int             // peak loopDepth seen in the current function
-	fnMaxScaling    int             // peak scalingDepth seen in the current function
-	fnLoopCount     int             // number of loop constructs in the current function
-	fnCallsInLoop   []string        // resolved callees invoked at loopDepth > 0
-	fnCallsInScaling []string       // resolved callees invoked at repeatDepth > 0 (scaling subset)
-	fnInLoopSeen    map[string]bool // dedup set for fnCallsInLoop
-	fnInScalingSeen map[string]bool // dedup set for fnCallsInScaling
-	fnIODirect      bool            // the current function makes a direct I/O call
-	fnRecursive     bool            // the current function calls itself
-	fnSelfName      string          // canonical name of the current function (for recursion)
+	fnMaxLoop        int             // peak loopDepth seen in the current function
+	fnMaxScaling     int             // peak scalingDepth seen in the current function
+	fnLoopCount      int             // number of loop constructs in the current function
+	fnCallsInLoop    []string        // resolved callees invoked at loopDepth > 0
+	fnCallsInScaling []string        // resolved callees invoked at repeatDepth > 0 (scaling subset)
+	fnInLoopSeen     map[string]bool // dedup set for fnCallsInLoop
+	fnInScalingSeen  map[string]bool // dedup set for fnCallsInScaling
+	fnIODirect       bool            // the current function makes a direct I/O call
+	fnRecursive      bool            // the current function calls itself
+	fnSelfName       string          // canonical name of the current function (for recursion)
 
 	// importMap maps a `use`-imported simple name to its canonical symbol fact
 	// name (e.g. "run" -> "src/helper.run") when the import resolved to a known

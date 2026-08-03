@@ -9,11 +9,12 @@ import (
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 )
 
 func bind(t *testing.T, store *facts.Store) {
 	t.Helper()
-	if err := New().Bind(context.Background(), store); err != nil {
+	if err := New(vocab.Default()).Bind(context.Background(), store); err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
 }

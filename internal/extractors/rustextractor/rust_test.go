@@ -85,7 +85,7 @@ func TestParseCargoPackageName(t *testing.T) {
 // attach their RelImplements edge to the type.
 func TestExtract_WorkspaceCrossCrateDependency(t *testing.T) {
 	repo, files := writeRustRepo(t, map[string]string{
-		"Cargo.toml": "[workspace]\nmembers = [\"crates/dbt-common\", \"crates/dbt-parser\"]\n",
+		"Cargo.toml":                   "[workspace]\nmembers = [\"crates/dbt-common\", \"crates/dbt-parser\"]\n",
 		"crates/dbt-common/Cargo.toml": "[package]\nname = \"dbt-common\"\n",
 		"crates/dbt-common/src/lib.rs": `
 pub struct Error;

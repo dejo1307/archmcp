@@ -1935,7 +1935,6 @@ func TestBestPath_EmptyCandidates_NoPanic(t *testing.T) {
 	}
 }
 
-
 // --- GAP-LK-04: cross-repo explainers must not degrade silently ---
 
 func TestCrossRepoExplainer(t *testing.T) {

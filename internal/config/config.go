@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 )
 
 // Config represents the mcp-arch.yaml configuration.
@@ -52,6 +54,16 @@ type Config struct {
 	Explainers []string     `yaml:"explainers"`
 	Renderers  []string     `yaml:"renderers"`
 	Output     OutputConfig `yaml:"output"`
+
+	// Linking overlays the cross-repo linker's tuning vocabulary — the word lists that
+	// decide which names are too generic to link on, and the numeric thresholds. It is
+	// ADDITIVE over the built-in defaults (see vocab.Overlay), so fixing one false edge
+	// cannot silently discard the rest.
+	//
+	// Changing it changes emitted facts, so it is folded into the snapshot's config
+	// hash; two snapshots taken under different vocabularies are not comparable and the
+	// receipt says so.
+	Linking *vocab.Overlay `yaml:"linking,omitempty"`
 
 	// Dashboard configures the localhost dashboard served alongside the MCP
 	// server. Optional: the zero value keeps the built-in defaults.
@@ -411,4 +423,11 @@ func contains(ss []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// LinkingVocab resolves the effective cross-repo linking vocabulary: the built-in
+// defaults with any `linking:` overlay applied. It returns an error for an invalid
+// threshold rather than clamping — see vocab.Apply.
+func (c *Config) LinkingVocab() (*vocab.Set, error) {
+	return vocab.Apply(c.Linking)
 }

@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -30,23 +31,24 @@ import (
 const Via = "shared_symbols"
 
 // Signal detects repos sharing distinctive type declarations.
-type Signal struct{}
+type Signal struct {
+	v *vocab.Set
+}
 
-// New returns the signal.
-func New() *Signal { return &Signal{} }
+// New returns the signal, judging identities under the given vocabulary.
+func New(v *vocab.Set) *Signal { return &Signal{v: v} }
 
 func (s *Signal) Name() string { return "shared-code" }
 
 func (s *Signal) Phase() plugin.SignalPhase { return plugin.PhaseSymmetric }
 
-// minSharedSymbols is the fewest distinct distinctive type identities two repos
+// s.v.Thresholds.MinSharedSymbols is the fewest distinct distinctive type identities two repos
 // must share before a shared-symbol edge is drawn. Set above 2 so an incidental
 // name collision (a `JsonParser` both repos happen to define) cannot fabricate a
 // dependency, while genuinely shared/vendored code (a protocol header copied
 // between repos) shares many.
-const minSharedSymbols = 3
 
-// maxVocabRepoShare bounds how widely an unqualified type identity may be
+// s.v.Thresholds.MaxVocabRepoShare bounds how widely an unqualified type identity may be
 // declared before it is read as shared domain vocabulary rather than evidence
 // that any specific pair shares code. Vendored/shared source (an onelab protocol
 // header) lands in the handful of repos that copied it; a domain type every
@@ -55,77 +57,27 @@ const minSharedSymbols = 3
 // loaded repos is the latter, so it is dropped as a pairwise coupling signal —
 // otherwise a fleet of same-language services fabricates a near-complete mesh of
 // edges from parallel modeling alone.
-const maxVocabRepoShare = 0.5
 
-// minReposForVocabFilter guards the vocabulary filter so it only applies once
+// s.v.Thresholds.MinReposForVocabFilter guards the vocabulary filter so it only applies once
 // enough repos are loaded that "a majority of repos" is a meaningful bar. With
 // two or three repos a genuinely vendored header can legitimately appear in most
 // of them, so below this count the filter stays off and the small-repo-set
 // behavior (including every 2-repo test fixture) is preserved unchanged.
-const minReposForVocabFilter = 4
 
 // isUbiquitousIdentity reports whether an unqualified identity declared in
 // declaringRepos of totalRepos loaded repos is too widespread to be a pairwise
-// coupling signal — see maxVocabRepoShare. Namespace-qualified identities never
+// coupling signal — see s.v.Thresholds.MaxVocabRepoShare. Namespace-qualified identities never
 // reach here: "::" is a strong shared-source marker and bypasses the filter.
-func isUbiquitousIdentity(declaringRepos, totalRepos int) bool {
-	if totalRepos < minReposForVocabFilter {
+func (s *Signal) isUbiquitousIdentity(declaringRepos, totalRepos int) bool {
+	if totalRepos < s.v.Thresholds.MinReposForVocabFilter {
 		return false
 	}
-	return float64(declaringRepos) > maxVocabRepoShare*float64(totalRepos)
-}
-
-// genericTypeNames are common unqualified type names too generic to link on by
-// themselves. Namespaced identities (e.g. "onelab::number") bypass this list —
-// sharing a namespace across repos is itself meaningful.
-var genericTypeNames = map[string]bool{
-	"config": true, "error": true, "manager": true, "options": true,
-	"result": true, "base": true, "impl": true, "utils": true, "util": true,
-	"common": true, "exception": true, "context": true, "data": true,
-	"info": true, "item": true, "node": true, "entry": true, "helper": true,
-	"settings": true, "logger": true, "test": true, "main": true, "model": true,
-	"request": true, "response": true, "status": true, "value": true,
-}
-
-// frameworkConventionNames are type identities a framework's own convention or
-// generator makes essentially EVERY app of that framework declare identically, so
-// two apps sharing one is not evidence of shared code — the cross-repo analog of
-// genericTypeNames, but for framework boilerplate rather than generic words. These
-// are matched exactly (case-sensitive) and rejected even when namespace-qualified.
-// Seeded with Rails (Application* base classes, ActionCable base classes) and
-// CanCanCan (Ability); extend as other frameworks' conventions surface.
-var frameworkConventionNames = map[string]bool{
-	"ApplicationController":        true,
-	"ApplicationRecord":            true,
-	"ApplicationJob":               true,
-	"ApplicationMailer":            true,
-	"ApplicationHelper":            true,
-	"ApplicationCable::Connection": true,
-	"ApplicationCable::Channel":    true,
-	"Ability":                      true,
-}
-
-// genericComponentNames are the vocabulary of UI-component naming: words so many
-// components are built from that a type named only out of them identifies a role,
-// not a shared implementation. Two frontends each declaring a "SidebarProps" or a
-// "DialogProps" is convention, not shared code — their field sets typically have no
-// overlap at all. Checked against the camelCase segments of an identity once its
-// convention suffix is stripped, so "PanelSectionProps" (all-generic) is rejected while
-// "GaugePanelProps" (Gauge is not generic) survives.
-var genericComponentNames = map[string]bool{
-	"footer": true, "header": true, "layout": true, "modal": true, "card": true,
-	"button": true, "list": true, "container": true, "wrapper": true,
-	"panel": true, "page": true, "form": true, "icon": true, "badge": true,
-	"avatar": true, "banner": true, "dialog": true, "menu": true, "nav": true,
-	"sidebar": true, "tooltip": true, "spinner": true, "overlay": true,
-	"toast": true, "section": true, "row": true, "cell": true, "label": true,
-	"title": true,
+	return float64(declaringRepos) > s.v.Thresholds.MaxVocabRepoShare*float64(totalRepos)
 }
 
 // conventionSuffixes are the trailing words a framework's naming convention appends
 // to a component name to derive a companion type. They carry no information of their
 // own, so they are stripped before an identity's segments are judged.
-var conventionSuffixes = [...]string{"Props", "Types", "Type", "State"}
 
 // isConventionalComponentName reports whether an identity is built purely from the
 // generic UI-component vocabulary — a name every app of the framework produces for
@@ -140,9 +92,9 @@ var conventionSuffixes = [...]string{"Props", "Types", "Type", "State"}
 // coincidence. The stripped core is also deliberately NOT re-checked against the
 // minimum-length rule: "TileProps" reduces to a 4-character "Like" yet names real
 // shared code.
-func isConventionalComponentName(id string) bool {
+func (s *Signal) isConventionalComponentName(id string) bool {
 	core := id
-	for _, suffix := range conventionSuffixes {
+	for _, suffix := range s.v.ConventionSuffixes {
 		if len(core) > len(suffix) && strings.HasSuffix(core, suffix) {
 			core = core[:len(core)-len(suffix)]
 			break
@@ -154,7 +106,7 @@ func isConventionalComponentName(id string) bool {
 	}
 	for _, seg := range segments {
 		lower := strings.ToLower(seg)
-		if !genericComponentNames[lower] && !genericTypeNames[lower] {
+		if !s.v.GenericComponentNames[lower] && !s.v.GenericTypeNames[lower] {
 			return false
 		}
 	}
@@ -182,7 +134,7 @@ func splitCamelCase(s string) []string {
 	return out
 }
 
-// minFileSimilarity is the least line-set overlap the two files declaring a shared type
+// s.v.Thresholds.MinFileSimilarity is the least line-set overlap the two files declaring a shared type
 // name must have for that name to count as evidence of shared CODE. Measured on real
 // repo pairs, file-level overlap separates the two populations cleanly: genuinely
 // vendored files score at or near 1.0, while same-name-different-code declarations sit
@@ -192,29 +144,28 @@ func splitCamelCase(s string) []string {
 // whole files, and facts carry no end line, so a body would have to be guessed. The
 // tradeoff is a missed match when a genuinely shared declaration sits inside an
 // otherwise-different file.
-const minFileSimilarity = 0.5
 
-// maxComparedFileBytes skips files too large to be worth hashing line-by-line; a
+// s.v.Thresholds.MaxComparedFileBytes skips files too large to be worth hashing line-by-line; a
 // vendored bundle or generated blob should not dominate link time.
-const maxComparedFileBytes = 1 << 20 // 1 MiB
 
-// maxFactsPerIdentityRepo bounds how many declaring facts are kept per (identity,
+// s.v.Thresholds.MaxFactsPerIdentityRepo bounds how many declaring facts are kept per (identity,
 // repo). A class can be reopened across several files; keeping a few lets verification
 // pick the best-matching pair without letting a widely-reopened name explode the
 // comparison count.
-const maxFactsPerIdentityRepo = 3
 
 // fileComparer scores how similar two source files are, memoizing both the per-file
 // line sets and the per-pair score. Several shared identities usually resolve to the
 // same file pair, and every file is read at most once.
 type fileComparer struct {
+	v     *vocab.Set
 	src   plugin.SignalInput
 	lines map[string]map[string]bool // fact file path -> normalized line set (nil = unreadable)
 	score map[string]float64         // "fileA\x00fileB" -> similarity
 }
 
-func newFileComparer(src plugin.SignalInput) *fileComparer {
+func (s *Signal) newFileComparer(src plugin.SignalInput) *fileComparer {
 	return &fileComparer{
+		v:     s.v,
 		src:   src,
 		lines: map[string]map[string]bool{},
 		score: map[string]float64{},
@@ -227,7 +178,7 @@ func (fc *fileComparer) linesOf(f facts.Fact) map[string]bool {
 		return set
 	}
 	var set map[string]bool
-	if text, ok := fc.src.ReadSource(f); ok && len(text) <= maxComparedFileBytes {
+	if text, ok := fc.src.ReadSource(f); ok && len(text) <= fc.v.Thresholds.MaxComparedFileBytes {
 		set = tokenSet(text)
 	}
 	fc.lines[f.File] = set
@@ -241,12 +192,12 @@ func (fc *fileComparer) similar(a, b facts.Fact) bool {
 	if b.File < a.File {
 		key = b.File + "\x00" + a.File
 	}
-	if s, ok := fc.score[key]; ok {
-		return s >= minFileSimilarity
+	if score, ok := fc.score[key]; ok {
+		return score >= fc.v.Thresholds.MinFileSimilarity
 	}
-	s := jaccard(fc.linesOf(a), fc.linesOf(b))
-	fc.score[key] = s
-	return s >= minFileSimilarity
+	score := jaccard(fc.linesOf(a), fc.linesOf(b))
+	fc.score[key] = score
+	return score >= fc.v.Thresholds.MinFileSimilarity
 }
 
 // tokenSet reduces source to the set of identifiers and punctuation it contains.
@@ -293,7 +244,7 @@ func jaccard(a, b map[string]bool) float64 {
 // verifyIdentity reports whether any pairing of the files declaring id in repos a and b
 // is similar enough to count. A class reopened across files gives several candidates;
 // the best pairing wins, since one shared file is enough to evidence shared code.
-func verifyIdentity(byRepo map[string][]facts.Fact, a, b string, fc *fileComparer) bool {
+func (s *Signal) verifyIdentity(byRepo map[string][]facts.Fact, a, b string, fc *fileComparer) bool {
 	for _, fa := range byRepo[a] {
 		for _, fb := range byRepo[b] {
 			if fc.similar(fa, fb) {
@@ -321,17 +272,17 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 		if f.Kind != facts.KindSymbol || f.Repo == "" || !isTypeSymbol(f) {
 			continue
 		}
-		if isNonContractSharedFile(f.File) {
+		if s.isNonContractSharedFile(f.File) {
 			continue // auto-generated class, not portable contract surface
 		}
 		id := typeIdentity(f.Name, in.ModuleNames(f.Repo))
-		if !isDistinctiveIdentity(id) {
+		if !s.isDistinctiveIdentity(id) {
 			continue
 		}
 		if idToRepos[id] == nil {
 			idToRepos[id] = map[string][]facts.Fact{}
 		}
-		if len(idToRepos[id][f.Repo]) < maxFactsPerIdentityRepo {
+		if len(idToRepos[id][f.Repo]) < s.v.Thresholds.MaxFactsPerIdentityRepo {
 			idToRepos[id][f.Repo] = append(idToRepos[id][f.Repo], f)
 		}
 	}
@@ -355,7 +306,7 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 			continue
 		}
 		qualified := isNamespaceQualified(id)
-		if !qualified && isUbiquitousIdentity(len(repos), repoCount) {
+		if !qualified && s.isUbiquitousIdentity(len(repos), repoCount) {
 			continue // shared domain vocabulary across the fleet, not pairwise coupling
 		}
 		rs := make([]string, 0, len(repos))
@@ -386,12 +337,12 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 		nameMatches[key] = len(ids)
 	}
 	if in.HasSource() {
-		fc := newFileComparer(in)
+		fc := s.newFileComparer(in)
 		for key, ids := range pairShared {
 			a, b, _ := strings.Cut(key, "\x00")
 			verified := map[string]bool{}
 			for id := range ids {
-				if verifyIdentity(idToRepos[id], a, b, fc) {
+				if s.verifyIdentity(idToRepos[id], a, b, fc) {
 					verified[id] = true
 				}
 			}
@@ -407,7 +358,7 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 	// the reverse edge would contradict it. A library monorepo whose types a
 	// consuming app also declares must not come out depending on that app.
 	for key, ids := range pairShared {
-		if len(ids) < minSharedSymbols {
+		if len(ids) < s.v.Thresholds.MinSharedSymbols {
 			continue
 		}
 		a, b, _ := strings.Cut(key, "\x00")
@@ -466,13 +417,13 @@ func typeIdentity(name string, modules []string) string {
 // namespaced identity (containing "::") is always kept; anything else — including a
 // dotted nested type name — is kept only if it is reasonably long and not a common
 // generic type name.
-func isDistinctiveIdentity(id string) bool {
+func (s *Signal) isDistinctiveIdentity(id string) bool {
 	if id == "" {
 		return false
 	}
 	// Framework-convention boilerplate is checked before the namespace bypass so a
 	// qualified convention name (ApplicationCable::Connection) is excluded too.
-	if frameworkConventionNames[id] {
+	if s.v.FrameworkConventions[id] {
 		return false
 	}
 	if isNamespaceQualified(id) {
@@ -481,12 +432,12 @@ func isDistinctiveIdentity(id string) bool {
 	if len(id) < 5 {
 		return false
 	}
-	if genericTypeNames[strings.ToLower(id)] {
+	if s.v.GenericTypeNames[strings.ToLower(id)] {
 		return false
 	}
 	// A name assembled purely from generic component vocabulary ("SidebarProps",
 	// "PanelSectionProps") is naming convention rather than shared code.
-	return !isConventionalComponentName(id)
+	return !s.isConventionalComponentName(id)
 }
 
 // nonContractPathMarkers are path fragments identifying files whose declarations are
@@ -501,23 +452,17 @@ func isDistinctiveIdentity(id string) bool {
 // between the consumers, and the real dependency (each consumer -> that API) is
 // already captured by HTTP/import linking; counting the generated stubs only
 // fabricates a spurious edge between the consumers themselves.
-var nonContractPathMarkers = [...]string{
-	"/db/migrate/",
-	"/spec/support/", "/__mocks__/", "/__tests__/", "/fixtures/", "/factories/", "/mocks/",
-	".stories.", ".test.", ".spec.", "_test.", "_spec.",
-	".gen.", ".pb.", "_pb2.", ".generated.",
-}
 
 // isNonContractSharedFile reports whether a file holds declarations that are not
 // portable contract surface for the shared-symbol signal, so they must not fabricate
 // or inflate a cross-repo edge. Directory markers are matched against a
 // leading-slash-normalised path so they also hit a repo-root-relative path.
-func isNonContractSharedFile(file string) bool {
+func (s *Signal) isNonContractSharedFile(file string) bool {
 	rooted := file
 	if !strings.HasPrefix(rooted, "/") {
 		rooted = "/" + rooted
 	}
-	for _, marker := range nonContractPathMarkers {
+	for _, marker := range s.v.NonContractPaths {
 		if strings.Contains(rooted, marker) {
 			return true
 		}

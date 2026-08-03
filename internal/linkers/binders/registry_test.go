@@ -11,6 +11,7 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcimpl"
 	"github.com/enola-labs/enola/internal/linkers/binders/httphandler"
 	"github.com/enola-labs/enola/internal/linkers/binders/unmatchedroutes"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -101,10 +102,10 @@ func runAll(t *testing.T, order []binders.Binder) []byte {
 // stage carries no meaning" a checked property rather than a comment.
 func TestBinders_OutputIsIndependentOfRegistrationOrder(t *testing.T) {
 	forward := []binders.Binder{
-		grpcclientfqn.New(), grpcimpl.New(), httphandler.New(), unmatchedroutes.New(),
+		grpcclientfqn.New(), grpcimpl.New(), httphandler.New(), unmatchedroutes.New(vocab.Default()),
 	}
 	reverse := []binders.Binder{
-		unmatchedroutes.New(), httphandler.New(), grpcimpl.New(), grpcclientfqn.New(),
+		unmatchedroutes.New(vocab.Default()), httphandler.New(), grpcimpl.New(), grpcclientfqn.New(),
 	}
 
 	a := runAll(t, forward)
@@ -120,7 +121,7 @@ func TestBinders_OutputIsIndependentOfRegistrationOrder(t *testing.T) {
 // whole set twice must produce exactly what running it once did.
 func TestBinders_RepeatedRunsAreStable(t *testing.T) {
 	order := []binders.Binder{
-		grpcclientfqn.New(), grpcimpl.New(), httphandler.New(), unmatchedroutes.New(),
+		grpcclientfqn.New(), grpcimpl.New(), httphandler.New(), unmatchedroutes.New(vocab.Default()),
 	}
 	once := runAll(t, order)
 	twice := runAll(t, append(order, order...))
@@ -138,7 +139,7 @@ func TestBinders_RepeatedRunsAreStable(t *testing.T) {
 func TestRegistry_StagePartitions(t *testing.T) {
 	reg := binders.NewRegistry()
 	for _, b := range []binders.Binder{
-		grpcclientfqn.New(), grpcimpl.New(), httphandler.New(), unmatchedroutes.New(),
+		grpcclientfqn.New(), grpcimpl.New(), httphandler.New(), unmatchedroutes.New(vocab.Default()),
 	} {
 		reg.Register(b)
 	}

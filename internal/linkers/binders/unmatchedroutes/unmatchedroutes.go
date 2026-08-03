@@ -8,6 +8,7 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo/routeindex"
 	httpsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/http"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -41,10 +42,17 @@ const (
 // makes the binder idempotent across appends: loading a second repo can resolve a call
 // site that was unmatched when only one repo was in the store, and the stale prop must
 // not survive that.
-type Binder struct{}
+type Binder struct {
+	m *routeindex.Matcher
+}
 
-// New returns the binder.
-func New() *Binder { return &Binder{} }
+// New returns the binder, matching under the given vocabulary.
+//
+// It takes the vocabulary at construction rather than reading it from the store,
+// because its verdicts must be computed with the SAME matching rules the HTTP signal
+// used — a binder matching under different vocabulary would report as "unmatched"
+// routes the linker had happily linked.
+func New(v *vocab.Set) *Binder { return &Binder{m: routeindex.New(v)} }
 
 func (b *Binder) Name() string { return "unmatched-routes" }
 
@@ -52,8 +60,8 @@ func (b *Binder) Stage() plugin.BindStage { return plugin.StagePostLink }
 
 func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	all := store.All()
-	serverKeys := httpsignal.UnmatchedServerRouteKeys(all)
-	clientKeys := httpsignal.UnmatchedClientRouteKeys(all)
+	serverKeys := httpsignal.UnmatchedServerRouteKeys(b.m, all)
+	clientKeys := httpsignal.UnmatchedClientRouteKeys(b.m, all)
 
 	flaggedServer, flaggedClient := 0, 0
 	store.UpdateWhere(func(f *facts.Fact) {

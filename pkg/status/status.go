@@ -42,10 +42,10 @@ type StatusInfo struct {
 	// are only knowable when the call happens. Storing the result also makes the
 	// figure binary-independent: a build that has never heard of a tool renders
 	// the credit that build recorded, instead of silently repricing it.
-	TokensSaved    map[string]int `json:"tokens_saved,omitempty"`
-	SessionTokens  map[string]int `json:"session_tokens,omitempty"`
-	BeyondContext  bool           `json:"beyond_context,omitempty"` // some call spanned more than one context window
-	CorpusTokens   int            `json:"corpus_tokens,omitempty"`  // last measured parsed-source size of this repo
+	TokensSaved   map[string]int `json:"tokens_saved,omitempty"`
+	SessionTokens map[string]int `json:"session_tokens,omitempty"`
+	BeyondContext bool           `json:"beyond_context,omitempty"` // some call spanned more than one context window
+	CorpusTokens  int            `json:"corpus_tokens,omitempty"`  // last measured parsed-source size of this repo
 
 	// DashboardPort is the localhost port of the dashboard served by whichever
 	// process wrote this file last (0 if none). Kept for compatibility with
@@ -68,8 +68,8 @@ type StatusInfo struct {
 type Tracker struct {
 	mu            sync.Mutex
 	start         time.Time
-	dashboardPort int    // localhost HTTP dashboard port (0 if none)
-	frontDoor     bool   // owns the stable dashboard port
+	dashboardPort int  // localhost HTTP dashboard port (0 if none)
+	frontDoor     bool // owns the stable dashboard port
 	ident         Identity
 	fallbackRepo  string // used when a call reports an empty repo path
 	repos         map[string]*repoState

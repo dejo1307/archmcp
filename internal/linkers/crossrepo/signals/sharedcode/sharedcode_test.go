@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -25,6 +26,7 @@ func symInFile(repo, name, file string) facts.Fact {
 }
 
 func TestIsConventionalComponentName(t *testing.T) {
+	s := New(vocab.Default())
 	for _, tc := range []struct {
 		id   string
 		want bool
@@ -42,8 +44,8 @@ func TestIsConventionalComponentName(t *testing.T) {
 		{"WidgetRegistry", false},
 		{"HTTPServerProps", false}, // acronym segment kept intact
 	} {
-		if got := isConventionalComponentName(tc.id); got != tc.want {
-			t.Errorf("isConventionalComponentName(%q) = %v, want %v", tc.id, got, tc.want)
+		if got := s.isConventionalComponentName(tc.id); got != tc.want {
+			t.Errorf("s.isConventionalComponentName(%q) = %v, want %v", tc.id, got, tc.want)
 		}
 	}
 }
@@ -66,6 +68,7 @@ func TestSplitCamelCase(t *testing.T) {
 }
 
 func TestIsNonContractSharedFile(t *testing.T) {
+	s := New(vocab.Default())
 	for _, tc := range []struct {
 		file string
 		want bool
@@ -86,18 +89,19 @@ func TestIsNonContractSharedFile(t *testing.T) {
 		{"client/components/latest/index.tsx", false}, // "test" inside a word must not match
 		{"", false},
 	} {
-		if got := isNonContractSharedFile(tc.file); got != tc.want {
-			t.Errorf("isNonContractSharedFile(%q) = %v, want %v", tc.file, got, tc.want)
+		if got := s.isNonContractSharedFile(tc.file); got != tc.want {
+			t.Errorf("s.isNonContractSharedFile(%q) = %v, want %v", tc.file, got, tc.want)
 		}
 	}
 }
 
 func TestJaccardAndTokenSet(t *testing.T) {
+	s := New(vocab.Default())
 	if got := jaccard(tokenSet(bodyAlpha), tokenSet(bodyAlphaReformatted)); got != 1.0 {
 		t.Errorf("reformatted copy similarity = %v, want 1.0 (whitespace normalized away)", got)
 	}
-	if got := jaccard(tokenSet(bodyAlpha), tokenSet(bodyBeta)); got >= minFileSimilarity {
-		t.Errorf("same-name-different-code similarity = %v, want < %v", got, minFileSimilarity)
+	if got := jaccard(tokenSet(bodyAlpha), tokenSet(bodyBeta)); got >= s.v.Thresholds.MinFileSimilarity {
+		t.Errorf("same-name-different-code similarity = %v, want < %v", got, s.v.Thresholds.MinFileSimilarity)
 	}
 	if got := jaccard(tokenSet(""), tokenSet(bodyAlpha)); got != 0 {
 		t.Errorf("empty file similarity = %v, want 0", got)
@@ -106,8 +110,8 @@ func TestJaccardAndTokenSet(t *testing.T) {
 	// Whole-line comparison scored this kind of drift as a near-total mismatch, which
 	// was the metric's main failure mode on real repos.
 	edited := strings.ReplaceAll(bodyAlpha, "widget", "item")
-	if got := jaccard(tokenSet(bodyAlpha), tokenSet(edited)); got < minFileSimilarity {
-		t.Errorf("within-line drift similarity = %v, want >= %v", got, minFileSimilarity)
+	if got := jaccard(tokenSet(bodyAlpha), tokenSet(edited)); got < s.v.Thresholds.MinFileSimilarity {
+		t.Errorf("within-line drift similarity = %v, want >= %v", got, s.v.Thresholds.MinFileSimilarity)
 	}
 }
 
@@ -149,8 +153,9 @@ end`
 // TestFileComparer_ReadsEachFileOnce pins the memoization: several shared identities
 // usually resolve to the same file pair, and link time should not scale with them.
 func TestFileComparer_ReadsEachFileOnce(t *testing.T) {
+	s := New(vocab.Default())
 	reads := map[string]int{}
-	fc := newFileComparer(fakeInput{read: func(f facts.Fact) (string, bool) {
+	fc := s.newFileComparer(fakeInput{read: func(f facts.Fact) (string, bool) {
 		reads[f.File]++
 		return bodyAlpha, true
 	}})

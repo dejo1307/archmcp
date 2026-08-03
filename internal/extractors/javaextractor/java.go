@@ -109,6 +109,7 @@ func (e *JavaExtractor) Extract(ctx context.Context, repoPath string, files []st
 //   - import dependency facts whose target FQN resolves to a declared type — or whose
 //     value names a known source package — are marked source="internal" and pointed at
 //     the owning module dir.
+//
 // canonicalizeTargets returns the FQN -> "<dir>.<Type>" index it builds, so callers
 // (e.g. the SPI service-file fold) can resolve implementation FQNs to canonical
 // fact names without rebuilding it.
