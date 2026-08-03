@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/enola-labs/enola/pkg/facts"
 	pkghistory "github.com/enola-labs/enola/pkg/history"
@@ -82,13 +83,21 @@ func writeBlob(root string, entries []pkghistory.Entry, e pkghistory.Entry, c Co
 		return nil, err
 	}
 
+	// Sort on the way in. A reconstruction always comes back sorted (Patch.Apply says so),
+	// so hashing the caller's ORDER rather than the canonical one produces a blob that can
+	// never verify — it fails the integrity check on first read, reporting damage where
+	// there is none. Today's only caller hands over facts.jsonl, which WriteJSONL already
+	// sorted, so the bug is invisible in production and waits for the second caller.
+	factLines := sortedLines(c.FactLines)
+	insightLines := sortedLines(c.InsightLines)
+
 	rev := pkghistory.Revision{
-		FactsHash: pkghistory.HashLines(c.FactLines),
+		FactsHash: pkghistory.HashLines(factLines),
 		Receipt:   c.Receipt,
 	}
 
 	segment, member := state.segment, state.member+1
-	factsPatch := pkghistory.ComputePatch(state.factLines, c.FactLines)
+	factsPatch := pkghistory.ComputePatch(state.factLines, factLines)
 	switch {
 	case state.segment == 0:
 		// No parent to chain from. Number the new segment above every number ever ISSUED,
@@ -111,12 +120,12 @@ func writeBlob(root string, entries []pkghistory.Entry, e pkghistory.Entry, c Co
 		// A new segment's first revision is a patch against the empty set. Not a special
 		// case bolted on — it is what "a patch against nothing" already means — so the
 		// encoder, decoder and apply path stay single.
-		rev.Facts = pkghistory.ComputePatch(nil, c.FactLines)
-		rev.Insights = pkghistory.ComputePatch(nil, c.InsightLines)
+		rev.Facts = pkghistory.ComputePatch(nil, factLines)
+		rev.Insights = pkghistory.ComputePatch(nil, insightLines)
 	} else {
 		rev.Parent = state.factsHash
 		rev.Facts = factsPatch
-		rev.Insights = pkghistory.ComputePatch(state.insightLines, c.InsightLines)
+		rev.Insights = pkghistory.ComputePatch(state.insightLines, insightLines)
 	}
 
 	if err := writeRevisionFile(pkghistory.RevisionPath(root, segment, member), rev); err != nil {
@@ -164,6 +173,13 @@ func readBlobState(root string, entries []pkghistory.Entry) (blobState, error) {
 		}, nil
 	}
 	return blobState{}, nil
+}
+
+// sortedLines returns a sorted copy, leaving the caller's slice alone.
+func sortedLines(lines []string) []string {
+	out := append([]string(nil), lines...)
+	sort.Strings(out)
+	return out
 }
 
 // nextSegment returns a segment number that has never been issued: one above the highest

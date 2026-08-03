@@ -812,6 +812,10 @@ func oneLine(s string) string {
 
 // registerTools adds MCP tools for snapshot generation and fact querying.
 func (s *Server) registerTools() {
+	// The timeline tools, in their own file: everything else here answers about the tree
+	// as it is now, and those answer about the past.
+	s.registerHistoryTools()
+
 	// Tool: generate_snapshot
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "generate_snapshot",

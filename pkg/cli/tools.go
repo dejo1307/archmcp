@@ -43,6 +43,10 @@ func OSSTools() []ToolEntry {
 		{Name: "diff_snapshot", Description: "Show what changed in the architecture between the baseline snapshot and the current one."},
 		{Name: "snapshot_receipt", Description: "Show the receipt for the current snapshot — a compact manifest of what the graph was generated over and how complete extraction was."},
 		{Name: "compare_receipts", Description: "Compare the current snapshot's receipt against a baseline's to check they are comparable before trusting a diff."},
+		// The only two that answer about the PAST. Everything above describes the tree as
+		// it is now — diff_snapshot included, which compares two nows.
+		{Name: "architecture_history", Description: "Show how the architecture changed over time — one entry per recorded snapshot, with what moved since the previous one."},
+		{Name: "architecture_blame", Description: "Find when something entered the architecture and when it left — \"when did this module start importing that one?\"."},
 	}
 }
 

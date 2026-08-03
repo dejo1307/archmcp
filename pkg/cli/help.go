@@ -83,6 +83,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			bin.Name + " log [flags] [repo_path|config_path]",
 			bin.Name + " show [<revision>] [repo_path|config_path]",
 			bin.Name + " diff <revA>..<revB> [repo_path|config_path]",
+			bin.Name + " blame [flags] <pattern> [repo_path|config_path]",
 			bin.Name + " install [--hooks] [--global] [repo_path]",
 		},
 		Commands: []FlagDoc{
@@ -94,6 +95,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Flag: "log", Desc: "EXPERIMENTAL. Show what this repository's architecture has done over\ntime — one line per recorded snapshot, with what changed since the\none before it. Read-only: it reports what was observed and never\nsnapshots to fill a gap. Every snapshot is recorded as a revision\n(~450 bytes, outside the repo); set `history.enabled: false` to stop."},
 			{Flag: "show", Desc: "EXPERIMENTAL. Show what ONE recorded revision did to the architecture\n— \"log\" says a revision added twelve facts, this says which twelve.\nReconstructs the revision and its predecessor out of\nthe stored history and compares them, so a past change is described in the same words it\nwas described in at the time. A revision is a snapshot id or prefix, a\ngit commit, HEAD~N, @<seq>, a ref name, or `latest` (the default)."},
 			{Flag: "diff", Desc: "EXPERIMENTAL. Show the architecture delta between any two recorded\nrevisions — the question a week of work produces, where \"show\" answers\nfor a single one. Either side of the range may be empty, meaning the\noldest or newest recorded revision."},
+			{Flag: "blame", Desc: "EXPERIMENTAL. Show when something entered the architecture and when\nit left — \"when did this module start importing that one?\", which a\nsnapshot cannot answer however good it is, because it is a question\nabout the past. Matches a name, a path, or both ends of an edge\nagainst the recorded facts; --findings searches findings instead,\nand --first stops at the introduction."},
 			{Flag: "doctor", Desc: "Report whether the session hooks are actually FIRING in this\nrepository, not merely configured. `install --hooks` can write a\nconfiguration your agent silently ignores — it reports success\neither way — so this asks the only question that settles it: when\ndid each hook last run, and what did it conclude? A report, not a\ngate: always exits 0."},
 		},
 		Flags: []FlagDoc{

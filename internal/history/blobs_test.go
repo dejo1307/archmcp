@@ -351,3 +351,48 @@ func TestBlobs_AnUnchangedGraphStoresAnEmptyPatch(t *testing.T) {
 		t.Error("a chained member must record its parent")
 	}
 }
+
+// gitAt is a committed git state at one commit, for fixtures that build entries directly.
+func gitAt(commit string) *facts.GitInfo {
+	return &facts.GitInfo{Commit: commit, Ref: "main"}
+}
+
+// Contents may arrive in any order, because a reconstruction always comes back SORTED.
+//
+// writeBlob used to hash the caller's order while Apply returned the canonical one, so a
+// caller handing over unsorted lines wrote a blob that failed its own integrity check the
+// first time it was read — reporting DAMAGE for a history that was perfectly intact. It
+// stayed invisible because the only caller passes facts.jsonl, which WriteJSONL has already
+// sorted; it surfaced from a test fixture that happened to list a dependency after a symbol.
+//
+// Asserted explicitly rather than left to the fixture that found it: a defect whose only
+// coverage is incidental fails, when it returns, as somebody else's test breaking for a
+// reason that names the wrong thing.
+func TestBlobs_ContentsNeedNotArriveSorted(t *testing.T) {
+	root := t.TempDir()
+
+	// Deliberately reversed: "dependency" sorts before "symbol", so this is not canonical.
+	dep := `{"kind":"dependency","name":"x -> y","file":"pkg/x/x.go","line":3}`
+	unsorted := []string{factLine("A", 10), dep}
+
+	e := pkghistory.Entry{
+		ID: "sha256:aaaa1111", Repo: "github.com/org/repo",
+		At: "2026-08-03T10:00:00Z", Epoch: "epoch1", Git: gitAt("c1"),
+	}
+	if _, err := Append(root, e, Options{WorkingKeep: -1, Contents: contents(e.ID, unsorted, nil)}); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := pkghistory.Read(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The integrity check runs inside Load; an order-sensitive hash fails here.
+	snap, err := pkghistory.Load(root, entries[0])
+	if err != nil {
+		t.Fatalf("a revision stored from unsorted input must still verify: %v", err)
+	}
+	if len(snap.Facts) != 2 {
+		t.Errorf("want both facts back, got %d", len(snap.Facts))
+	}
+}
