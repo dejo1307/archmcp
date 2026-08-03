@@ -50,3 +50,53 @@ carry edges without being architecture themselves. Facts are name-keyed, carry a
 `file:line`, and hold typed relations (`imports`, `calls`, `declares`, `handled_by`,
 `depends_on`, …). [ARCHITECTURE.md](../../ARCHITECTURE.md#the-fact-model) has the full
 model; these pages assume it only loosely.
+
+## If you are adding one
+
+Two things are contracts rather than conventions, and both are enforced by tests.
+
+**Register the `source` value of any route you emit.** A route's `source` prop says which
+pass produced it, and the cross-repo linker branches on it. The values live in
+[`internal/facts/contract.go`](../../internal/facts/contract.go); emit the constant, never
+the literal. When you add one, decide whether it is a **hand-written call site** (a human
+wrote this request — `ts-http-client`, `retrofit`, `urlsession`) or **contract-derived**
+(read from a spec or IDL — `openapi`, `grpc-proto`). Hand-written sources belong in
+`HandWrittenClientSources` and link as `via: "http-client"`; the rest link as `via: "http"`.
+
+That choice is the whole difference between "someone wrote this call" and "a spec implies
+this call", which is what a reader of the graph wants to know. It is enforced because it
+was once wrong: the linker kept a private copy of the hand-written set that had never
+included the Java extractor's two values, so every `RestTemplate` and `@FeignClient` call
+site linked as generic `via: "http"` for as long as that extractor had existed. Nothing
+failed, because nothing tied the reading side to the writing side.
+
+**The `source` prop carries two unrelated vocabularies.** On a `route` fact it is
+provenance (`ts-http-client`, `grpc-proto`, …). On a `dependency` fact it is where an
+import *resolves to* (`internal` / `external` / `stdlib`). Reading it without checking
+`Kind` first gets you a value from the wrong vocabulary. The overload is historical and not
+worth a migration — renaming a prop key rewrites every golden and every saved snapshot —
+but it is a real trap.
+
+### Reading a file the globs exclude
+
+Extractors receive the walked file list, which the `ignore` globs have already filtered.
+That is right for source files and wrong for the handful of config-format files that carry
+architectural meaning — an OpenAPI spec, Symfony's route YAML, `package.json`'s package
+name, `tsconfig.json`'s path aliases. Those are read **directly from disk**, because the
+globs exist to suppress config/data noise, not to hide files the graph depends on.
+
+If you add such a read, walk from `repoPath` yourself and skip the excluded directories
+explicitly — the globs no longer protect you, and `node_modules` is the one that matters:
+a dependency's `package.json` read as if the repo published it is a fabricated cross-repo
+edge.
+
+This is not hypothetical. `package.json` was read from the filtered list, and the bundled
+`mcp-arch.yaml` ignores `**/*.json`. Under it no `package_name` prop was emitted at all, so
+the linker's own-`@scope` guard could not fire and a repo importing a sibling package it
+publishes itself was reported as depending on another repo entirely. The golden fixtures
+kept passing throughout, because they build their engine from `config.Default()`, which has
+no such glob — the fixture and the shipped config had been disagreeing for as long as the
+guard existed.
+
+[docs/EXTENDING.md](../EXTENDING.md) covers the rest: binders, cross-repo signals, and the
+`linking:` vocabulary.

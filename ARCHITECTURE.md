@@ -127,8 +127,8 @@ Repository
 └──────────────────┘
    │
    ▼
-┌──────────────────┐
-│ Cross-Repo Linker│  only with 2+ repos loaded
+┌──────────────────┐  binders (pre-link) · cross-repo signals ·
+│   Linking        │  binders (post-link)   — signals only with 2+ repos
 └──────────────────┘
    │
    ▼
@@ -157,13 +157,17 @@ Stage by stage:
 1. **File walker** — enumerates files under the repo, applying the `ignore` globs from config so build output, vendored code, tests, and generated files never reach the parsers. Beyond the path globs, the TypeScript extractor additionally detects **minified/bundled** files by content (any line longer than ~2000 chars) and skips them, so a hash-named vendor bundle checked in outside a build directory (e.g. a minified third-party bundle served from a static assets dir) does not pollute the fact graph with obfuscated symbols and spurious complexity/hotspot findings. A few extractors (OpenAPI, and PHP's Symfony route config) deliberately scan specific config-format files (YAML/JSON) directly from disk, bypassing these globs — because the globs exist to suppress config/data noise, not to hide those architecturally meaningful files (see [Supported languages](#supported-languages)).
 2. **Extractors** — each enabled language extractor first *detects* whether it applies (e.g. Go runs when there's a `go.mod`), then *parses* the matching files and emits facts. This is pure parsing; see [Supported languages](#supported-languages) for what each one understands.
 3. **Fact store** — facts land in an in-memory store ([`internal/facts/store.go`](internal/facts/store.go)) indexed by kind, file, name, and repo for fast queries. In append mode, facts are tagged with a repo label and file paths are repo-prefixed.
-4. **Cross-repo linker** — only when two or more repos are loaded. It connects the per-repo graphs by matching HTTP client/server routes, resolving Kafka topic ownership (async producer/consumer coupling), and following shared-library imports, emitting `service` nodes and cross-repo dependency edges. The link set is recomputed from scratch on every append, so it always reflects exactly the repos currently loaded.
+4. **Linking** — resolves the edges no single extractor could see, in three ordered steps.
+   **Pre-link binders** run first: a binder resolves references *within* the assembled fact set, and this stage is for the ones that change what the linker will match on (the Python gRPC client's short service name is rewritten to its fully qualified wire path here — after linking it would be too late, and the dependency would silently vanish).
+   **Cross-repo signals** run next, and only when two or more repos are loaded. Each is an independent plugin reporting evidence — HTTP route role matching, imports, Kafka topic ownership, shared code — which the linker materializes into `service` nodes and cross-repo dependency facts. Directional signals run before symmetric ones, because the only honest way to orient a symmetric finding is to defer to a direction something else established.
+   **Post-link binders** run last: route-to-handler binding for gRPC and HTTP, and the pass that records which routes went unmatched.
+   The whole stage is recomputed from scratch on every append, so it always reflects exactly the repos currently loaded.
 5. **Graph index** — builds the bidirectional graph (with the synthetic edges above) that powers `traverse`, `find_path`, and `impact_analysis`.
 6. **Explainers** — run deterministic analyses over the facts and emit insights (next section).
 7. **Renderer** — produces `llm_context.md`, a compact, token-budgeted architecture summary an agent can read directly.
 8. **Artifacts** — everything is written to `.enola/` (see [Output artifacts](#output-artifacts)). Content hashes enable incremental re-extraction on the next run.
 
-Three plugin roles drive the middle of the pipeline — **extractors** (source → facts), **explainers** (facts → insights), and **renderers** (snapshot → artifacts). Each is a small Go interface with a registry, so adding a language or an analysis is a self-contained addition rather than a change to the engine.
+Five plugin roles drive the middle of the pipeline — **extractors** (source → facts), **binders** (resolve references across an assembled fact set), **cross-repo signals** (evidence that one repo depends on another), **explainers** (facts → insights), and **renderers** (snapshot → artifacts). Each is a small Go interface in [`pkg/plugin`](pkg/plugin/) with a registry, so adding a language, a connection, or an analysis is a self-contained addition rather than a change to the engine. [docs/EXTENDING.md](docs/EXTENDING.md) is the guide to the middle three, including which one a given problem calls for.
 
 **One-shot explain mode.** `enola --explain [repo_path]` is an alternative exit path through the pipeline: stages 1–6 run normally, but instead of proceeding to stage 7 (Renderer) and stage 8 (Artifacts), `pkg/explain.Compute()` reads the fact store, produces a `Report` struct, and `report.Render()` prints a human-readable statistical summary to stdout. No artifacts are written; `.enola/` is not touched. See [The explain package (`pkg/explain`)](#the-explain-package-pkgexplain) below.
 
@@ -761,12 +765,12 @@ enola can analyze multiple repositories together. Use `append` mode to increment
 
 ### Linking, not just co-locating
 
-Appending several repos does more than pool their facts — a linking pass connects the per-repo graphs using four signals the extractors already capture:
+Appending several repos does more than pool their facts — a linking pass connects the per-repo graphs using four signals the extractors already capture. Each is an independent plugin ([`internal/linkers/crossrepo/signals/`](internal/linkers/crossrepo/signals/)) that reports *evidence* rather than building facts; the linker materializes the accumulated evidence into service nodes and dependency facts. Adding a fifth is a new package and a registration line — see [docs/EXTENDING.md](docs/EXTENDING.md).
 
 - **HTTP route role matching** — a route a repo *calls* (`role:"client"`, e.g. from a generated OpenAPI client) is matched to a route another repo *serves* (`role:"server"`, or a framework route) by normalized path + method. The caller is recorded as depending on the servee.
 - **Kafka topic producer/consumer** — a repo that references a topic *owned by another loaded repo* consumes that repo's events, so it depends on it. The edge is drawn **consumer → producer**, mirroring HTTP client → server. Direction comes from the topic name rather than from call-site analysis: topics are conventionally named `<owning-service>.<event>` (`svc-orders.order_placed`, `core.items.item_uploaded`), so the leading segment identifies the producer, resolved to a repo by the same normalized leading-segment lookup the import signal uses. That makes the edge resolvable **from the consumer side alone** — it holds even when the producer's own publish code isn't parsed, which is the common case for a service whose events you consume but whose repo is loaded only shallowly. Two cases deliberately draw nothing: a repo referencing its *own* topic (it is the producer — intra-repo, not a dependency), and a topic owned by no loaded repo (an export sink, a third-party bus), which is left unlinked rather than guessed at. Edges are tagged `via:"kafka"` and carry `topic_count` / `topic_samples`.
 - **Import / shared-lib references** — an import whose scope or leading segment names another loaded repo (e.g. `@app-web/lib-api`, `lib-core/money`) records a dependency on that repo.
-- **Shared symbol surface** — when two repos declare enough of the same distinctive types (e.g. a vendored protocol header copied between them — the `onelab::*` / `GmshClient` / `GmshServer` classes shared by *gmsh* and *getdp*), they are coupled. The match is on each type's portable identity (the namespace-qualified name with the repo-specific directory prefix stripped), filtered to type-like symbols (class/struct/interface/enum) and to distinctive names — namespaced identities always count; bare names must be non-generic and reasonably long. A pair links only above a small shared-type threshold, so an incidental `Config`/`JsonParser` collision can't fabricate a dependency. This relationship is symmetric, so it is emitted as a **bidirectional** pair of edges marked `via:"shared_symbols"`.
+- **Shared symbol surface** — when two repos declare enough of the same distinctive types (e.g. a vendored protocol header copied between them — the `onelab::*` / `GmshClient` / `GmshServer` classes shared by *gmsh* and *getdp*), they are coupled. The match is on each type's portable identity (the namespace-qualified name with the repo-specific directory prefix stripped), filtered to type-like symbols (class/struct/interface/enum) and to distinctive names — namespaced identities always count; bare names must be non-generic and reasonably long. A pair links only above a small shared-type threshold, so an incidental `Config`/`JsonParser` collision can't fabricate a dependency. This relationship is symmetric, which is why it never invents a direction: it annotates an edge one of the directional signals already drew, and when none exists it records a **coupling** (`type:"cross_repo_shared_code"`) that carries no relation and stays out of the traversable graph. That distinction is load-bearing — `depends_on` composes across hops and shared code does not, so a repo calling one side of a copy-paste pair does not thereby reach the other. Names are also verified against the files behind them where source is available, so the count of shared *code* is reported separately from the count that merely matched by *name*.
 
 These become real, queryable facts:
 
@@ -774,6 +778,26 @@ These become real, queryable facts:
 - A cross-repo dependency edge per `consumer → provider` pair, carrying the matched endpoints, import samples, shared topics, and shared-symbol samples.
 
 Because they're ordinary graph nodes and edges, the traversal tools become cross-repo aware with no extra steps — `traverse`, `find_path`, and `impact_analysis` all reach across repo boundaries. The cross-repo dependencies also appear as a **Cross-Repo Dependencies** section in `llm_context.md`, so an agent reading the snapshot sees them without running a tool.
+
+### Tuning what links
+
+Every one of those signals rests on judgements about names — which single-segment paths are
+too generic to match on, which type names are framework boilerplate rather than shared code,
+which file paths hold generated stubs instead of contract surface. Those judgements are data,
+not code: they live in [`internal/linkers/vocab`](internal/linkers/vocab/) and can be
+overlaid from a `linking:` block in `enola.yaml`, so a false edge from a framework enola has
+never seen is a config change rather than a patch and a release.
+
+The lists are additive (`add:` / `remove:`), never replacing, so fixing one thing cannot
+silently discard the rest. Thresholds are validated rather than clamped. And because the
+vocabulary decides which edges get drawn, it is folded into the snapshot's config hash — two
+snapshots taken under different vocabularies are not comparable, and the receipt says so.
+
+What the config deliberately *cannot* express is a matching rule. A config language able to
+describe how to match would let a user manufacture an edge, and every fact in the graph is
+supposed to be derived rather than asserted. Widening what counts as "too generic to link on"
+can only ever remove edges — the safe direction. See
+[docs/EXTENDING.md](docs/EXTENDING.md#tuning-without-code).
 
 ### What is deliberately not linked
 

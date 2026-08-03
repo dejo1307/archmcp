@@ -76,6 +76,26 @@ same belief that produced it.
 If you cannot run it, say so in the PR so a reviewer can. `enola doctor` is the
 same question asked after the fact, on a real repository.
 
+## Adding a language, a connection, or an analysis
+
+enola's middle is plugins, and which kind you need is worth two minutes before you start:
+
+| You want to… | See |
+|---|---|
+| Parse a language or framework enola cannot read | [docs/extraction/README.md](docs/extraction/README.md) |
+| Connect facts within one repo that no single extractor could see (a binder) | [docs/EXTENDING.md](docs/EXTENDING.md#adding-a-binder) |
+| Establish that one repo depends on another (a cross-repo signal) | [docs/EXTENDING.md](docs/EXTENDING.md#adding-a-cross-repo-signal) |
+| Stop a wrong edge, or teach enola a framework's boilerplate | [docs/EXTENDING.md](docs/EXTENDING.md#tuning-without-code) — usually config, not code |
+
+One rule governs all of it: **a missing edge beats a wrong one.** A missing edge shows up
+in `enola coverage` as an unresolved count somebody can go and look at; a wrong edge is
+invisible and gets acted on. If you are unsure whether to draw one, don't.
+
+Two mechanical things that are easy to miss: an **extractor** change needs a `cacheVersion`
+bump in `internal/engine/cache.go` plus an entry in `internal/cachecov` (binders, signals
+and linkers sit outside that cache and need neither), and any guard you add should be made
+to fail once before you trust it — a test that has never failed is not a guard.
+
 ## Code style
 
 - Follow standard Go conventions (`gofmt`, `go vet`).

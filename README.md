@@ -199,6 +199,7 @@ Framework- and platform-specific detection for each language is described in **[
 - **[docs/GLOSSARY.md](docs/GLOSSARY.md)** — the words enola uses in its own output — finding, baseline, receipt, coverage gap, incidental shift — defined in one place.
 - **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** — what the ten explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 24,012 findings about a corpus into the one that is about your change.
 - **[docs/extraction/](docs/extraction/)** — per language, what specific code produces which facts, from committed fixtures, and what each extractor deliberately does not resolve.
+- **[docs/EXTENDING.md](docs/EXTENDING.md)** — teaching enola a connection it does not know: binders, cross-repo signals, and the `linking:` vocabulary that fixes a wrong edge from config rather than a patch.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — the concept, the fact model, the pipeline, the MCP tool reference, and the value model.
 - **[examples/](examples/)** — ready-made per-language and multi-repo configs, plus a pre-commit hook and a CI workflow.
 
