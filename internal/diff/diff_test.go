@@ -756,3 +756,40 @@ func TestCompareMeta_SameSecondIsNotInverted(t *testing.T) {
 		t.Errorf("identical timestamps must be comparable, got warnings: %v", same.Warnings)
 	}
 }
+
+// A caveat that fires on most rows is one readers learn to skip.
+//
+// Comparability spans a spectrum: at one end "these are different repositories", at the
+// other "these two snapshots are four days apart". Treating the whole spectrum as
+// "incomparable" was fine for a pinned baseline and wrong for a TIMELINE, where revisions
+// months apart are the normal shape — sampling a repository by release tag marked 57 of 80
+// revisions suspect purely on elapsed time, drowning the three that meant a rebuild.
+func TestComparability_InvalidatesDeltaSeparatesRebuildsFromElapsedTime(t *testing.T) {
+	for kind, want := range map[WarningKind]bool{
+		WarnDifferentRepo:   true,
+		WarnVersionMismatch: true,
+		WarnExtractorSet:    true,
+		WarnIgnoreGlobs:     true,
+		WarnInvertedPair:    true,
+		WarnUnclassified:    true,
+		// Advisory: the fact delta stands, it just also contains the repo's own drift or
+		// a finding misattribution.
+		WarnStaleBaseline: false,
+		WarnPreReceipt:    false,
+		WarnExplainerSet:  false,
+	} {
+		c := Comparability{Kinds: []WarningKind{kind}}
+		if got := c.InvalidatesDelta(); got != want {
+			t.Errorf("%s: InvalidatesDelta() = %v, want %v", kind, got, want)
+		}
+	}
+
+	if (Comparability{Comparable: true}).InvalidatesDelta() {
+		t.Error("a clean comparison invalidates nothing")
+	}
+	// A mixture: one blocking kind is enough.
+	mixed := Comparability{Kinds: []WarningKind{WarnStaleBaseline, WarnExtractorSet}}
+	if !mixed.InvalidatesDelta() {
+		t.Error("a real mismatch alongside an advisory one must still invalidate")
+	}
+}

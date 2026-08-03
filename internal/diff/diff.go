@@ -127,6 +127,31 @@ const (
 	WarnUnclassified WarningKind = "unclassified"
 )
 
+// InvalidatesDelta reports whether a warning means the numbers describe something OTHER
+// than the change being examined — a different repository, a different enola, a different
+// extractor set or ignore list. Those make a delta a fiction.
+//
+// It deliberately excludes the advisory kinds, and the reason is a history rather than a
+// live diff. WarnStaleBaseline fires whenever two snapshots are more than a few days apart,
+// which for a pinned baseline means "your baseline went stale while you worked" and is worth
+// saying — but in a TIMELINE, revisions being months apart is the normal shape, not a
+// defect. Sampling a repository by release tag marked 57 of 80 revisions incomparable purely
+// on elapsed time, and a caveat that fires on seven rows in ten is one readers learn to skip
+// — including on the three rows where it meant a rebuild.
+//
+// WarnPreReceipt and WarnExplainerSet are advisory for the reasons given at their
+// declarations: neither disturbs the fact delta.
+func (c Comparability) InvalidatesDelta() bool {
+	for _, k := range c.Kinds {
+		switch k {
+		case WarnDifferentRepo, WarnVersionMismatch, WarnExtractorSet,
+			WarnIgnoreGlobs, WarnInvertedPair, WarnUnclassified:
+			return true
+		}
+	}
+	return false
+}
+
 // HasKind reports whether kind was raised.
 func (c Comparability) HasKind(kind WarningKind) bool {
 	for _, k := range c.Kinds {

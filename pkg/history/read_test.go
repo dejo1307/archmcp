@@ -219,3 +219,48 @@ func TestResolve_EmptyHistory(t *testing.T) {
 		t.Fatalf("want ErrNoHistory, got %v", err)
 	}
 }
+
+// RFC3339 sorts lexically only when every timestamp shares one UTC offset, and a history
+// that mixes live and backfilled revisions never does: the recorder stamps UTC, a backfill
+// stamps each commit's own committer date with its author's offset.
+//
+// Seen on a Rust repository carrying +03:00 and +02:00, where the lexically-first revision
+// is forty minutes LATER than the real first — enough to put the wrong revision at the start
+// of the timeline, and from there to mislabel which one began the history.
+func TestSortedByTime_ComparesInstantsNotStrings(t *testing.T) {
+	// 20:27+03:00 is 17:27 UTC; 20:05+02:00 is 18:05 UTC. Chronologically the first is
+	// earlier; lexically it is not.
+	earlier := entry("aaa", "2026-06-25T20:27:26+03:00", "c1")
+	later := entry("bbb", "2026-06-25T20:05:30+02:00", "c2")
+
+	got := SortedByTime([]Entry{later, earlier})
+	if got[0].ID != earlier.ID {
+		t.Errorf("want the chronologically earlier revision first, got %s (%s) before %s (%s)",
+			got[0].ID, got[0].At, got[1].ID, got[1].At)
+	}
+}
+
+// The same rule for Merge, and it matters more there: two machines is exactly where offsets
+// differ.
+func TestMerge_OrdersByInstant(t *testing.T) {
+	got := Merge(
+		[]Entry{entry("bbb", "2026-06-25T20:05:30+02:00", "c2")},
+		[]Entry{entry("aaa", "2026-06-25T20:27:26+03:00", "c1")},
+	)
+	if got[0].ID != "sha256:aaa" {
+		t.Errorf("want the chronologically earlier revision first, got %s at %s", got[0].ID, got[0].At)
+	}
+}
+
+// An unparseable timestamp is still a revision. Placing it where its text says beats
+// dropping it or guessing an end to sort it to.
+func TestSortedByTime_ToleratesAnUnreadableTimestamp(t *testing.T) {
+	got := SortedByTime([]Entry{
+		entry("bbb", "2026-06-26T10:00:00Z", "c2"),
+		entry("zzz", "not a timestamp", "c3"),
+		entry("aaa", "2026-06-25T10:00:00Z", "c1"),
+	})
+	if len(got) != 3 {
+		t.Fatalf("want every revision kept, got %d", len(got))
+	}
+}

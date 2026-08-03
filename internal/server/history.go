@@ -106,7 +106,8 @@ func (s *Server) readHistory(repoPath string) ([]history.Entry, string, error) {
 		}
 		return nil, "", err
 	}
-	return entries, root, nil
+	// Timeline order — see history.SortedByTime.
+	return history.SortedByTime(entries), root, nil
 }
 
 func committedOnly(entries []history.Entry) []history.Entry {

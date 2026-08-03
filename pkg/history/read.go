@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrNoHistory is returned when a root holds no log at all. It is a normal state — a
@@ -85,6 +86,47 @@ func Parse(data []byte, name string) ([]Entry, error) {
 	return entries, nil
 }
 
+// SortedByTime returns the entries in the order they describe rather than the order they
+// were written, oldest first.
+//
+// Those are the same thing until a BACKFILL, which appends revisions for old commits after
+// revisions for new ones — so a log read as written would show last month's architecture
+// below this morning's. Every surface that presents a TIMELINE (log, blame, the MCP tools)
+// sorts; nothing that WRITES does.
+//
+// That split is deliberate and load-bearing. Blobs chain in append order, so the writer
+// asks "what did I store last" and must get the answer in append order: sorting inside Read
+// would make a backfilled revision chain off the newest graph instead of its own
+// predecessor, turning every patch into a near-complete rewrite and every revision into its
+// own segment.
+//
+// Compared as INSTANTS, not as strings. RFC3339 only sorts lexically when every timestamp
+// shares one UTC offset, and a history that mixes live and backfilled revisions never does:
+// the recorder stamps UTC ("…Z"), while a backfill stamps each commit's own committer date
+// with its author's offset. Seen on a Rust repository carrying +03:00 and +02:00, where the
+// lexically-first revision (20:05:30+02:00 = 18:05 UTC) is forty minutes LATER than the real
+// first (20:27:26+03:00 = 17:27 UTC) — enough to put the wrong revision at the start of the
+// timeline, and from there to mislabel which one began the history.
+//
+// An unparseable timestamp keeps its string for comparison rather than being dropped or
+// sorted to one end: it is still a revision, and guessing where it belongs is worse than
+// placing it where its text says.
+//
+// Stable, so revisions sharing an instant keep the order they were recorded in — a second's
+// resolution is coarse enough that an agent loop lands several in one.
+func SortedByTime(entries []Entry) []Entry {
+	out := append([]Entry(nil), entries...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ti, oki := time.Parse(time.RFC3339, out[i].At)
+		tj, okj := time.Parse(time.RFC3339, out[j].At)
+		if oki == nil && okj == nil {
+			return ti.Before(tj)
+		}
+		return out[i].At < out[j].At
+	})
+	return out
+}
+
 // Last returns the most recently appended entry, or false when there is none. The last
 // LINE, not the greatest Seq or the latest At: it is what a writer compares against to
 // decide whether a new snapshot is worth recording.
@@ -105,9 +147,11 @@ func Last(entries []Entry) (Entry, bool) {
 // possible at all — identity by ID, repo by portable identity, and Seq as local
 // bookkeeping that must never be used for ordering.
 //
-// Ordering is by At, then by ID as a tiebreak so the result is deterministic when two
-// machines record the same second. Seq is renumbered locally: it describes THIS
-// machine's log, so carrying the other side's would produce duplicates and gaps.
+// Ordering is by At — as an INSTANT, see SortedByTime — then by ID as a tiebreak so the
+// result is deterministic when two machines record the same second. Two machines is
+// precisely where offsets differ, so comparing the strings would interleave them wrong.
+// Seq is renumbered locally: it describes THIS machine's log, so carrying the other side's
+// would produce duplicates and gaps.
 func Merge(a, b []Entry) []Entry {
 	seen := make(map[string]struct{}, len(a)+len(b))
 	out := make([]Entry, 0, len(a)+len(b))
@@ -123,7 +167,12 @@ func Merge(a, b []Entry) []Entry {
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].At != out[j].At {
+		ti, oki := time.Parse(time.RFC3339, out[i].At)
+		tj, okj := time.Parse(time.RFC3339, out[j].At)
+		switch {
+		case oki == nil && okj == nil && !ti.Equal(tj):
+			return ti.Before(tj)
+		case (oki != nil || okj != nil) && out[i].At != out[j].At:
 			return out[i].At < out[j].At
 		}
 		return out[i].ID < out[j].ID

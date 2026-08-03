@@ -396,3 +396,46 @@ func TestBlobs_ContentsNeedNotArriveSorted(t *testing.T) {
 		t.Errorf("want both facts back, got %d", len(snap.Facts))
 	}
 }
+
+// Retention promises REVISIONS and must deliver revisions, not segments.
+//
+// It first kept ceil(keep/segmentLen)+1 segments, reasoning that a segment holds at most
+// segmentLen revisions so the approximation could only over-retain. Segments are frequently
+// cut early by the delta-ratio rule, so they are often far from full: on a real 90-revision
+// backfill they averaged 8 members, and keeping 4 segments retained 12 revisions against a
+// promised 200.
+func TestBlobs_RetentionCountsRevisionsNotSegments(t *testing.T) {
+	root := t.TempDir()
+
+	// 12 revisions, each in its own segment (a new epoch every time), so segments are as
+	// far from full as they can be — the case the old approximation got wrong.
+	for i := 0; i < 12; i++ {
+		e := pkghistory.Entry{
+			ID: fmt.Sprintf("sha256:%08d", i), Repo: "github.com/org/repo",
+			At:    fmt.Sprintf("2026-08-03T%02d:00:00Z", i),
+			Epoch: fmt.Sprintf("epoch%d", i), Git: gitAt(fmt.Sprintf("c%d", i)),
+		}
+		if _, err := Append(root, e, Options{
+			WorkingKeep: -1,
+			BlobKeep:    10,
+			Contents:    contents(e.ID, []string{factLine("A", 10+i)}, nil),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := pkghistory.Read(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayable := 0
+	for _, e := range entries {
+		if _, err := pkghistory.Load(root, e); err == nil {
+			replayable++
+		}
+	}
+	if replayable < 10 {
+		t.Errorf("BlobKeep=10 retained only %d replayable revisions of %d — the window counts "+
+			"revisions, and one-member segments must not shrink it", replayable, len(entries))
+	}
+}

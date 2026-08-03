@@ -148,7 +148,9 @@ func (r *Runner) historyFor(repoArg string) ([]history.Entry, string) {
 		}
 		r.showFatal("%v", err)
 	}
-	return entries, root
+	// Timeline order, not write order: parentOf means "the revision before this one" and a
+	// backfill appends old revisions after new ones.
+	return history.SortedByTime(entries), root
 }
 
 // reconstruct loads a revision's stored contents, translating the one expected failure —

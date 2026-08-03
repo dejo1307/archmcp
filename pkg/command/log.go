@@ -36,6 +36,10 @@ func (r *Runner) Log(args []string) {
 		limit   = fs.Int("n", 20, "show at most this many revisions (0 for all)")
 		asJSON  = fs.Bool("json", false, "emit the entries as JSON")
 		all     = fs.Bool("all", false, "include working revisions (uncommitted trees)")
+
+		backfill = fs.Bool("backfill", false, "build the timeline from the repository's own commit history")
+		sample   = fs.String("sample", "all", "which commits to backfill: all, merges, tags or daily")
+		dryRun   = fs.Bool("dry-run", false, "with --backfill, list what would be snapshotted and stop")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr,
@@ -47,6 +51,10 @@ func (r *Runner) Log(args []string) {
 				"landed recently\", and this answers \"how did it get like this\", which runs\n"+
 				"forward. With --graph, lines therefore diverge downward at a branch and\n"+
 				"converge downward at a merge.\n\n"+
+				"With --backfill it instead BUILDS that timeline from the repository's own\n"+
+				"commit history, snapshotting past commits so a repo enola has never seen still\n"+
+				"has a past to read. It only reads the repository — trees are extracted to a\n"+
+				"temp dir — and re-running resumes rather than repeating.\n\n"+
 				"EXPERIMENTAL. Every snapshot is recorded as a revision; turn that off with\n"+
 				"`history:` / `enabled: false` in your config.\n\n"+
 				"Flags:\n")
@@ -61,6 +69,28 @@ func (r *Runner) Log(args []string) {
 	if rest := fs.Args(); len(rest) > 0 {
 		arg = rest[0]
 	}
+
+	// Backfill WRITES, and everything else here reads. It is a flag on `log` rather than a
+	// command of its own because it answers the same question — "what has this
+	// architecture done over time" — for a repository that has no answer yet.
+	if *backfill {
+		// -n is a DISPLAY default for reading a log, and inheriting it here silently caps
+		// how much history gets BUILT: the first backfill of a 108-commit repository
+		// produced 20 revisions and said nothing about the 88 it dropped. A limit on what
+		// you look at and a limit on what you record are different promises, so this one is
+		// honoured only when it was actually typed.
+		explicitLimit := 0
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "n" {
+				explicitLimit = *limit
+			}
+		})
+		r.runBackfill(backfillArgs{
+			repoArg: arg, since: *since, sample: *sample, limit: explicitLimit, dryRun: *dryRun,
+		})
+		return
+	}
+
 	repoPath, cfg := r.logTarget(arg)
 
 	root, err := history.Root(repoPath, cfg.History.Dir)
@@ -75,6 +105,10 @@ func (r *Runner) Log(args []string) {
 		}
 		r.logFatal("%v", err)
 	}
+
+	// Presented as a timeline, so ordered by when each revision describes rather than when
+	// it was written — the two diverge after a backfill. See history.SortedByTime.
+	entries = history.SortedByTime(entries)
 
 	recorded := len(entries)
 	if !*all {

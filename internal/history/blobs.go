@@ -260,11 +260,17 @@ func writeRevisionFile(path string, rev pkghistory.Revision) error {
 // segment is the only unit removable without damaging what remains — which is also why a
 // pruned revision reads as thinned rather than as corruption.
 //
-// The window is counted in SEGMENTS rather than revisions, so it over-retains rather than
-// under-retains: a segment holds at most segmentLen revisions, so keeping
-// ceil(keep/segmentLen)+1 of them guarantees at least `keep` revisions survive. Counting
-// exact revisions would mean deciding what to do with a segment that is half inside the
-// window, and the only safe answer is to keep all of it anyway.
+// The window counts REVISIONS, by asking the log how many members each segment actually
+// holds, and keeps whole segments until that count reaches `keep`.
+//
+// It first approximated instead: keep ceil(keep/segmentLen)+1 segments, on the reasoning
+// that a segment holds at most segmentLen revisions so this "over-retains rather than
+// under-retains". That is true only when segments are FULL, and they very often are not —
+// the delta-ratio cut ends a segment early whenever a revision changes a lot, which in a
+// growing repository is most of them. Measured on a real 90-revision backfill: segments
+// averaged 8 members, so keeping 4 of them retained 12 revisions against a promise of 200,
+// and 78 revisions were silently unreplayable. Off by a factor of sixteen, in the direction
+// the comment claimed was impossible.
 //
 // keep < 0 disables pruning.
 func pruneSegments(root string, keep int) error {
@@ -274,15 +280,35 @@ func pruneSegments(root string, keep int) error {
 	if keep == 0 {
 		keep = DefaultBlobKeep
 	}
+	entries, err := pkghistory.Read(root)
+	if err != nil {
+		return nil // nothing recorded yet; nothing to prune against
+	}
 	segments, err := pkghistory.Segments(root)
 	if err != nil {
 		return err
 	}
-	maxSegments := keep/segmentLen + 1
-	if len(segments) <= maxSegments {
-		return nil
+
+	// How many revisions each segment accounts for, from the log rather than from the
+	// files: the log is the record of what was stored where, and it survives a segment
+	// being removed.
+	members := map[int]int{}
+	for _, e := range entries {
+		if e.Blob != nil {
+			members[e.Blob.Segment]++
+		}
 	}
-	for _, seg := range segments[:len(segments)-maxSegments] {
+
+	kept := 0
+	keepFrom := len(segments) // index of the oldest segment inside the window
+	for i := len(segments) - 1; i >= 0; i-- {
+		if kept >= keep {
+			break
+		}
+		kept += members[segments[i]]
+		keepFrom = i
+	}
+	for _, seg := range segments[:keepFrom] {
 		if err := os.RemoveAll(pkghistory.SegmentDir(root, seg)); err != nil {
 			return fmt.Errorf("pruning segment %d: %w", seg, err)
 		}

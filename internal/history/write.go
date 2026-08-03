@@ -140,6 +140,44 @@ func Append(root string, e pkghistory.Entry, opts Options) (bool, error) {
 	return true, nil
 }
 
+// RewriteSummary replaces one entry's summary in place, identified by its revision id and
+// sequence number.
+//
+// It exists for one situation: `initial` is a claim that a revision is where the recorded
+// history BEGINS, and a later backfill can add revisions older than it, making the claim
+// false after the fact. The entry cannot simply be edited on read — its stored counts are
+// absolute rather than a delta, so a reader that ignored the flag would report a repository's
+// entire graph as one revision's work.
+//
+// Rewrites the whole log under the lock, like eviction does. A summary is a few hundred
+// bytes and this runs once at the end of a backfill, so the cost is a file write against an
+// operation that just spent a minute snapshotting.
+func RewriteSummary(root, id string, seq int, summary pkghistory.Summary) error {
+	logPath := filepath.Join(root, pkghistory.LogFileName)
+	lock, err := filelock.Acquire(logPath)
+	if err != nil {
+		lock = nil
+	}
+	defer lock.Release()
+
+	entries, err := pkghistory.Read(root)
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range entries {
+		if entries[i].ID == id && entries[i].Seq == seq {
+			entries[i].Summary = summary
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("no revision %s (seq %d) to rewrite", pkghistory.ShortID(id), seq)
+	}
+	return rewrite(logPath, entries)
+}
+
 // sameRevision reports whether a new entry describes the same observation as the last one
 // already recorded: the same graph, at the same commit, in the same state of cleanliness.
 //

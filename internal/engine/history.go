@@ -140,7 +140,9 @@ func summarize(current *facts.Snapshot, previous *facts.Snapshot) pkghistory.Sum
 	// that distinction should be dropped.
 	s.FindingsNew = len(d.FindingsNew)
 	s.FindingsResolved = len(d.FindingsResolved)
-	s.Incomparable = !d.Comparability.Comparable
+	// Not simply !Comparable: elapsed time between two revisions is the normal shape of a
+	// timeline, and flagging it would mark most of a release-sampled history as suspect.
+	s.Incomparable = d.Comparability.InvalidatesDelta()
 
 	byKind := map[string]int{}
 	for kind, n := range diff.KindCounts(d.FactsAdded) {
