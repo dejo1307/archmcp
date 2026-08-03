@@ -437,6 +437,17 @@ func composeAxumPrefixes(allFacts []facts.Fact, builders []axumBuilder, crates [
 		for _, p := range ps {
 			nf := f
 			nf.Name = facts.JoinRoutePath(p, f.Name)
+			// Each copy needs its OWN props map. `nf := f` copies the struct but not
+			// the map behind Props, so without this every copy of a router nested at
+			// several mount points shares one map — and the binders that run later
+			// write per-route verdicts into it (unmatched_by_clients, unmatched_reason,
+			// handler), so the last write would win for all of them.
+			//
+			// The failure was cache-dependent, which is worse than the bug: cached facts
+			// round-trip through json.Unmarshal and come back with independent maps, so
+			// it could only ever appear on a cache MISS. Same tree, different answer
+			// depending on whether .enola was warm.
+			nf.Props = f.CloneProps()
 			out = append(out, nf)
 		}
 	}

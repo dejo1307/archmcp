@@ -459,7 +459,7 @@ func composeRouterPrefixes(allFacts []facts.Fact, topos []pyRouterTopology, file
 		for _, p := range ps {
 			nf := f
 			nf.Name = facts.JoinRoutePath(p, f.Name)
-			nf.Props = copyProps(f.Props)
+			nf.Props = f.CloneProps()
 			nf.Props["path"] = nf.Name
 			out = append(out, nf)
 		}
@@ -494,12 +494,4 @@ func baseName(key string) string {
 		return key[i+1:]
 	}
 	return key
-}
-
-func copyProps(p map[string]any) map[string]any {
-	out := make(map[string]any, len(p))
-	for k, v := range p {
-		out[k] = v
-	}
-	return out
 }

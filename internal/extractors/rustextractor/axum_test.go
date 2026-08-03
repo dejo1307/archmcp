@@ -2,6 +2,7 @@ package rustextractor
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -325,5 +326,57 @@ fn build() -> Router {
 	}
 	if !got["/real"] {
 		t.Error("/real should still be extracted")
+	}
+}
+
+// TestAxum_NestedAtTwoMounts_PropsAreNotShared pins that each emitted copy of a router
+// mounted at several paths gets its OWN props map.
+//
+// The rewrite builds copies with `nf := f`, which copies the struct but not the map
+// behind Props. Sharing it is invisible at extraction — every copy holds identical props
+// — and only bites afterwards, when the binders write PER-ROUTE verdicts into them
+// (unmatched_by_clients, unmatched_reason, handler). One router nested at two mount
+// points then has one of its paths' verdicts written over both.
+//
+// The failure was also cache-dependent, which is worse than the bug itself: cached facts
+// round-trip through json.Unmarshal and come back with independent maps, so this could
+// only ever appear on a cache MISS — the same tree giving a different answer depending
+// on whether .enola happened to be warm.
+//
+// Asserting on props EQUALITY would pass either way, so this mutates one copy and
+// requires the other not to move.
+func TestAxum_NestedAtTwoMounts_PropsAreNotShared(t *testing.T) {
+	ff := extractComposed(t, map[string]string{
+		"src/main.rs": `
+fn build() -> Router {
+    Router::new()
+        .nest("/api/v1/items", routers::items::router())
+        .nest("/api/v2/items", routers::items::router())
+}`,
+		"src/routers/items.rs": `
+pub fn router() -> Router {
+    Router::new().route("/list", get(list))
+}`,
+	})
+
+	var copies []*facts.Fact
+	for i := range ff {
+		if ff[i].Kind == facts.KindRoute && strings.HasSuffix(ff[i].Name, "/items/list") {
+			copies = append(copies, &ff[i])
+		}
+	}
+	if len(copies) != 2 {
+		t.Fatalf("expected the router to compose at both mounts, got %d copies", len(copies))
+	}
+	if copies[0].Props == nil || copies[1].Props == nil {
+		t.Fatal("route copies carry no props")
+	}
+
+	// What a binder does: write a verdict onto one route.
+	copies[0].Props["unmatched_by_clients"] = true
+
+	if _, leaked := copies[1].Props["unmatched_by_clients"]; leaked {
+		t.Errorf("props are shared between mount copies: a verdict written to %q appeared on %q",
+			copies[0].Name, copies[1].Name)
 	}
 }
