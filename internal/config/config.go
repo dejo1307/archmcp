@@ -145,11 +145,32 @@ type HistoryConfig struct {
 	// WorkingKeep caps how many unanchored revisions (dirty tree, or no git at all) are
 	// kept per base commit. Zero means the built-in default; negative keeps every one.
 	WorkingKeep int `yaml:"working_keep,omitempty"`
+
+	// Blobs stores each revision's facts and findings, not just the line describing what
+	// changed — the difference between a timeline you can read and one you can replay
+	// (`enola show`, `enola diff A..B`). Nil (absent) means on.
+	//
+	// It is a SEPARATE switch from Enabled because the two cost different orders of
+	// magnitude: a header is ~600 bytes and kept forever, contents are ~4 KB a revision
+	// plus a ~128 KB base per segment and bounded by BlobKeep. One flag governing both
+	// would silently change meaning by two orders of magnitude the moment blobs shipped.
+	Blobs *bool `yaml:"blobs,omitempty"`
+
+	// BlobKeep is roughly how many recent revisions keep their stored contents. Older ones
+	// keep their header and report themselves as replayable-by-re-snapshotting. Zero means
+	// the built-in default; negative keeps every one.
+	BlobKeep int `yaml:"blob_keep,omitempty"`
 }
 
 // HistoryEnabled reports whether snapshots are recorded as history (the default).
 func (c *Config) HistoryEnabled() bool {
 	return c.History.Enabled == nil || *c.History.Enabled
+}
+
+// HistoryBlobsEnabled reports whether each revision's contents are stored (the default).
+// Always false when recording is off — there is nothing to attach contents to.
+func (c *Config) HistoryBlobsEnabled() bool {
+	return c.HistoryEnabled() && (c.History.Blobs == nil || *c.History.Blobs)
 }
 
 // OutputConfig controls where and how output artifacts are generated.

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -36,6 +37,15 @@ type Options struct {
 	// DefaultWorkingKeep; negative means keep everything (for a caller that has decided
 	// it wants the full loop, e.g. while debugging enola itself).
 	WorkingKeep int
+
+	// Contents is the revision's storable payload. Nil records a header-only revision —
+	// the timeline still shows it and says what it changed, but `show` cannot reconstruct
+	// it. Set when blob storage is on.
+	Contents *Contents
+
+	// BlobKeep is roughly how many recent revisions keep their contents. Zero means
+	// DefaultBlobKeep; negative keeps every one.
+	BlobKeep int
 }
 
 func (o Options) workingKeep() int {
@@ -85,6 +95,23 @@ func Append(root string, e pkghistory.Entry, opts Options) (bool, error) {
 	}
 
 	e.Seq = nextSeq(entries)
+
+	// Store the contents before the header, so the log never advertises a blob that was
+	// not written. The reverse order would make a crash between the two look like
+	// corruption on the next read; this way it looks like a revision that was never
+	// recorded, which is what it is.
+	//
+	// A failure to store contents is NOT a failure to record the revision: the header
+	// still belongs in the timeline, and losing the whole revision because a compression
+	// step failed would be a worse outcome than losing the ability to replay it.
+	if opts.Contents != nil {
+		blob, err := writeBlob(root, entries, e, *opts.Contents, opts.BlobKeep)
+		if err != nil {
+			log.Printf("[history] warning: could not store the contents of revision %s: %v", e.Short(), err)
+		} else {
+			e.Blob = blob
+		}
+	}
 
 	// Evicting rewrites the log, so it has to happen before the append rather than as a
 	// separate pass — otherwise the line just written would itself be a candidate.

@@ -1060,10 +1060,16 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 		e.current.CompareAndSwap(b, &snapshotBundle{store: b.store, snapshot: &snapCopy, repoPaths: b.repoPaths})
 	}
 
-	// Record this revision in the architecture history (off unless configured). Last,
-	// and non-fatal: it reads previous/, which the rotation above has just filled, and a
-	// snapshot must never fail because the log of snapshots could not be appended to.
-	e.recordHistory(repoPath, meta, b)
+	// Record this revision in the architecture history. Last, and non-fatal: it reads
+	// previous/, which the rotation above has just filled, and a snapshot must never fail
+	// because the log of snapshots could not be appended to.
+	//
+	// The facts bytes are handed over rather than re-derived. They are the exact canonical
+	// serialization already written to facts.jsonl, which is what the history stores, so
+	// re-serializing here would repeat a few thousand marshals to produce bytes that are in
+	// hand — and would introduce a second serialization path that could differ from the
+	// first.
+	e.recordHistory(repoPath, meta, b, factsBuf.Bytes())
 
 	return nil
 }

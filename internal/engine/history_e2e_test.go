@@ -120,6 +120,56 @@ func defaultConfigRepo(t *testing.T, cfg *config.Config) (repo, home string, eng
 	return repo, home, eng
 }
 
+// The strongest assertion available for the storage layer: what the history reconstructs
+// must be byte-identical to what the snapshot actually wrote to facts.jsonl.
+//
+// Everything else in P1 is machinery in service of this. It compares against the receipt's
+// own recorded output hash for facts.jsonl — a number computed by WriteArtifacts from the
+// bytes it wrote, with no knowledge that a history exists — so the two sides cannot agree
+// by sharing a bug.
+func TestHistory_ReconstructsTheExactBytesTheSnapshotWrote(t *testing.T) {
+	repo, hist, eng := historyRepo(t)
+
+	snapshot(t, eng, repo)
+	writeFile(t, filepath.Join(repo, "pkg", "b", "b.go"), "package b\n\nimport \"testmod/pkg/a\"\n\nfunc B() { a.A() }\n")
+	snapshot(t, eng, repo)
+	// A third, with a line-only move: an edit above a symbol shifts every symbol below it,
+	// which is the commonest change of all and the one a semantic delta would discard.
+	writeFile(t, filepath.Join(repo, "pkg", "a", "a.go"), "package a\n\n// a comment that pushes A down a line\nfunc A() {}\n")
+	snapshot(t, eng, repo)
+
+	entries, err := history.Read(hist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("want 3 revisions, got %d", len(entries))
+	}
+
+	for i, e := range entries {
+		if e.Blob == nil {
+			t.Fatalf("revision %d stored no contents", i)
+		}
+		factLines, _, rev, err := history.LoadLines(hist, e.Blob.Segment, e.Blob.Member)
+		if err != nil {
+			t.Fatalf("revision %d: %v", i, err)
+		}
+		want := rev.Receipt.OutputHashes["facts.jsonl"]
+		if want == "" {
+			t.Fatalf("revision %d recorded no facts.jsonl hash to check against", i)
+		}
+		if got := history.HashLines(factLines); got != want {
+			t.Errorf("revision %d does not reproduce the bytes the snapshot wrote:\n got %s\nwant %s", i, got, want)
+		}
+	}
+
+	// And the last one must chain rather than stand alone, or none of the above exercised
+	// the reconstruction path.
+	if last := entries[len(entries)-1]; last.Blob.Member == 1 {
+		t.Error("the final revision is its own base — the chain was never exercised")
+	}
+}
+
 // Recording is ON by default, and that is the whole point rather than an oversight: a
 // history answers questions about the PAST, so a version of this that has to be switched
 // on first guarantees there is nothing to read the first time anybody wants it — and the

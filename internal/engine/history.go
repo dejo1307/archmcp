@@ -23,7 +23,7 @@ import (
 // holds the immediately preceding run — the parent revision by construction. That is the
 // same pair diff_snapshot compares under `--baseline=previous`, computed by the same
 // function, so the log's counts and the diff's counts cannot drift apart.
-func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snapshotBundle) {
+func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snapshotBundle, factsJSONL []byte) {
 	if !e.cfg.HistoryEnabled() || b.snapshot == nil {
 		return
 	}
@@ -50,7 +50,12 @@ func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snap
 		Summary: summarize(&current, previousSnapshotFor(repoPath, e.cfg.Output.Dir)),
 	}
 
-	recorded, err := inthistory.Append(root, entry, inthistory.Options{WorkingKeep: e.cfg.History.WorkingKeep})
+	opts := inthistory.Options{
+		WorkingKeep: e.cfg.History.WorkingKeep,
+		BlobKeep:    e.cfg.History.BlobKeep,
+		Contents:    e.historyContents(meta, &current, factsJSONL),
+	}
+	recorded, err := inthistory.Append(root, entry, opts)
 	if err != nil {
 		log.Printf("[engine] warning: could not record history: %v", err)
 		return
@@ -58,6 +63,44 @@ func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snap
 	if recorded {
 		log.Printf("[engine] recorded history revision %s (%s)", entry.Short(), entry.Summary.Headline())
 	}
+}
+
+// historyContents assembles the revision's storable payload, or nil when blob storage is
+// off — in which case the revision is still recorded as a header, and only `show` and
+// `diff` on it are unavailable.
+//
+// factsJSONL is the exact byte serialization already written to facts.jsonl, split back
+// into its lines. Splitting is cheap and, more to the point, it is the ONLY thing that
+// guarantees the stored lines are the ones the snapshot actually produced: any path that
+// re-marshals facts here would be a second serialization that could disagree with the
+// first, and the disagreement would be written into the history rather than caught.
+func (e *Engine) historyContents(meta facts.SnapshotMeta, snap *facts.Snapshot, factsJSONL []byte) *inthistory.Contents {
+	if !e.cfg.HistoryBlobsEnabled() {
+		return nil
+	}
+	insightLines, err := pkghistory.InsightLines(snap.Insights)
+	if err != nil {
+		log.Printf("[engine] warning: could not serialize insights for the history: %v", err)
+		return nil
+	}
+	return &inthistory.Contents{
+		FactLines:    splitLines(factsJSONL),
+		InsightLines: insightLines,
+		Receipt:      meta.Receipt(),
+	}
+}
+
+// splitLines splits canonical JSONL into its lines, dropping the trailing empty element the
+// final newline produces.
+func splitLines(b []byte) []string {
+	if len(b) == 0 {
+		return nil
+	}
+	s := strings.TrimSuffix(string(b), "\n")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
 }
 
 // previousSnapshotFor loads the rotated preceding snapshot, or nil when there is none
