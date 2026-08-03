@@ -910,7 +910,42 @@ import (
 // descended into are named in the extractor instead: tsSkipDirs (shared with the
 // alias-root walk), dot-directories, and testdata — node_modules being the critical one,
 // since a dependency's package.json would otherwise read as one the repo publishes.
-const cacheVersion = "v146"
+// v147: the Go extractor no longer reads ENGLISH PROSE as SQL. `reSelectFrom` matched a
+// bare `FROM <word>` anywhere in any string literal, and "from the", "from what", "from
+// one" and "from in" are ordinary English — so a help string or an error message produced a
+// storage fact for a table named `the`, `what`, `one` or `in`. It now requires the literal
+// to contain a SELECT before a bare FROM is trusted.
+//
+// Found four separate times while building an unrelated feature, each time as an
+// unexplained `storage: +N` in a diff of a change that touched no storage — which is how it
+// became clear this was a defect rather than a curiosity. Every instance came from this
+// repository's own text; the phrases are quoted in selectGate.
+//
+// It is worth a version bump for what it is rather than for how many facts it moves. A
+// false FINDING is an opinion a reader weighs and can discard. A false FACT is part of the
+// layer every finding, every edge and every diff is computed from, and the graph's central
+// claim is that its contents are derived rather than guessed. A regex reading prose as SQL
+// is guessing; it is simply a regex doing it rather than a model.
+//
+// Four rules, each measured against Grafana's 6,184 Go files rather than argued for:
+//
+//  1. A bare FROM is trusted only when the literal also contains SELECT. Not a clause-word
+//     list — WHERE, ORDER, GROUP and LIMIT are ordinary English too, and that variant was
+//     measured to admit 844 prose literals, which is worse than the bug.
+//  2. JOINed tables are now read, but only inside the FROM CLAUSE. Reading them literal-wide
+//     reported a table called `time` from a JSON schema whose SELECT was 50 KB away.
+//  3. Literals over 16 KB are not searched. 403 real SELECT+FROM literals in Grafana: median
+//     65 B, p99 2.9 KB, largest 6.4 KB, none over 8 KB. A document contains every keyword
+//     eventually, so only a bound helps.
+//  4. `-- …` comments are stripped first: a comment inside a query is prose surrounded by
+//     SQL, and removing it is reading the language correctly rather than guessing.
+//
+// Net on Grafana: 419 storage facts over 108 distinct names that read as a real schema,
+// where the previous code produced `IF`, `as`, `by`, `time` and `was` AND missed five real
+// tables in one Postgres catalog query. Residual, measured: ~1% still come from English
+// genuinely shaped like SQL ("unable to create table response"), which no rule separates
+// without also losing lowercase SQL.
+const cacheVersion = "v147"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -29,7 +29,10 @@ func (r *Runner) Log(args []string) {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var (
-		oneline = fs.Bool("oneline", true, "one line per revision (currently the only format)")
+		oneline = fs.Bool("oneline", true, "one line per revision")
+		graph   = fs.Bool("graph", false, "draw the branch topology beside the revisions")
+		stat    = fs.Bool("stat", false, "break each revision's delta down by fact kind")
+		since   = fs.String("since", "", "only revisions taken after this time (RFC3339, or a duration like 72h)")
 		limit   = fs.Int("n", 20, "show at most this many revisions (0 for all)")
 		asJSON  = fs.Bool("json", false, "emit the entries as JSON")
 		all     = fs.Bool("all", false, "include working revisions (uncommitted trees)")
@@ -40,6 +43,10 @@ func (r *Runner) Log(args []string) {
 				"Show what this repository's architecture has done over time: one line per\n"+
 				"snapshot enola recorded, with what changed since the one before it.\n\n"+
 				"Read-only. It reports what was observed and never snapshots to fill a gap.\n\n"+
+				"Oldest first, which is the opposite of `git log`: a changelog answers \"what\n"+
+				"landed recently\", and this answers \"how did it get like this\", which runs\n"+
+				"forward. With --graph, lines therefore diverge downward at a branch and\n"+
+				"converge downward at a merge.\n\n"+
 				"EXPERIMENTAL. Every snapshot is recorded as a revision; turn that off with\n"+
 				"`history:` / `enabled: false` in your config.\n\n"+
 				"Flags:\n")
@@ -73,6 +80,17 @@ func (r *Runner) Log(args []string) {
 	if !*all {
 		entries = onlyCommitted(entries)
 	}
+	if *since != "" {
+		cutoff, err := parseSince(*since)
+		if err != nil {
+			r.logFatal("%v", err)
+		}
+		entries = takenAfter(entries, cutoff)
+	}
+	// Narrowing happens BEFORE the topology is derived, so the shape describes what is
+	// actually on screen: edges collapse across whatever was filtered out, exactly as they
+	// collapse across commits enola never observed. Deriving first and filtering after
+	// would leave a picture referring to rows that are not there.
 	if *limit > 0 && len(entries) > *limit {
 		entries = entries[len(entries)-*limit:]
 	}
@@ -90,11 +108,27 @@ func (r *Runner) Log(args []string) {
 		// to see" are different situations, and on a dirty tree — which is where anybody
 		// running an agent loop spends their time — the second is the common one.
 		fmt.Fprintf(os.Stderr,
-			"No committed revisions recorded yet (%d working revision%s hidden — pass --all to see them).\n",
+			"No committed revisions recorded yet (%d revision%s hidden by the filters — try --all).\n",
 			recorded, pluralS(recorded))
 		return
 	}
-	fmt.Print(renderOneline(entries))
+
+	_ = oneline // the default and only text format; the flag exists so scripts can be explicit
+	if *graph {
+		if note := multiRepoNote(entries); note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
+		topo := history.BuildTopology(entries, repoPath)
+		if note := topologyNote(topo.Source); note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
+		if note := observationOrderNote(topo, r.name()); note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
+		fmt.Print(renderGraphLog(topo, *stat))
+		return
+	}
+	fmt.Print(renderOneline(entries, *stat))
 }
 
 // logTarget resolves the positional argument to a repository and the config that governs
@@ -207,19 +241,184 @@ func onlyCommitted(entries []history.Entry) []history.Entry {
 // Columns: short id · date · decorations · headline. An epoch change gets its own line
 // above the revision that opens it, since a delta across that seam is rebuild noise and a
 // reader who is not told that will read it as somebody's change.
-func renderOneline(entries []history.Entry) string {
+func renderOneline(entries []history.Entry, stat bool) string {
 	var b strings.Builder
 	prevEpoch := ""
 	for i, e := range entries {
 		if i > 0 && e.Epoch != prevEpoch {
-			fmt.Fprintf(&b, "  ══ epoch changed (%s → %s) — the delta below is rebuild noise, not a change to the code\n",
-				shortEpoch(prevEpoch), shortEpoch(e.Epoch))
+			b.WriteString("  " + epochSeam(prevEpoch, e.Epoch) + "\n")
 		}
 		prevEpoch = e.Epoch
 
 		fmt.Fprintf(&b, "%-7s  %s  %s%s\n", e.Short(), shortDate(e.At), decorations(e), e.Summary.Headline())
+		if stat {
+			b.WriteString(statLines(e, "         "))
+		}
 	}
 	return b.String()
+}
+
+// renderGraphLog prints the same lines with the branch topology drawn beside them.
+//
+// Every row is padded to the widest graph column so the text stays aligned: a graph that
+// makes the dates ragged has traded the thing people actually read for the thing they
+// glance at.
+func renderGraphLog(topo history.Topology, stat bool) string {
+	rows := history.RenderGraph(topo)
+	width := history.GraphWidth(rows)
+
+	var b strings.Builder
+	prevEpoch := ""
+	for i, row := range rows {
+		e := row.Entry
+		if row.Before != "" {
+			fmt.Fprintf(&b, "%s\n", row.Before)
+		}
+		if i > 0 && e.Epoch != prevEpoch {
+			fmt.Fprintf(&b, "%-*s%s\n", width, verticalRule(width), epochSeam(prevEpoch, e.Epoch))
+		}
+		prevEpoch = e.Epoch
+
+		fmt.Fprintf(&b, "%-*s%-7s  %s  %s%s\n",
+			width, row.Prefix, e.Short(), shortDate(e.At), decorations(e), e.Summary.Headline())
+		if stat {
+			b.WriteString(statLines(e, strings.Repeat(" ", width)+"         "))
+		}
+		if row.After != "" {
+			fmt.Fprintf(&b, "%s\n", row.After)
+		}
+	}
+	return b.String()
+}
+
+// verticalRule keeps the graph's lines unbroken through an interleaved note, so a seam
+// drawn between two revisions does not look like the branch ended there.
+func verticalRule(width int) string {
+	if width < 2 {
+		return "| "
+	}
+	return strings.Repeat("| ", width/2)
+}
+
+// epochSeam is the note marking where enola itself changed between two revisions.
+func epochSeam(before, after string) string {
+	return fmt.Sprintf("══ epoch changed (%s → %s) — the delta below is rebuild noise, not a change to the code",
+		shortEpoch(before), shortEpoch(after))
+}
+
+// statLines breaks a revision's delta down by fact kind, indented under its line.
+//
+// Net per kind, not added-and-removed: the question `--stat` answers is "what KIND of thing
+// changed here" — did this revision move modules, or symbols, or routes — and a pair of
+// numbers per kind buries that under arithmetic the headline already gave.
+func statLines(e history.Entry, indent string) string {
+	if len(e.Summary.ByKind) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, kind := range sortedKeys(e.Summary.ByKind) {
+		n := e.Summary.ByKind[kind]
+		sign := "+"
+		if n < 0 {
+			sign, n = "-", -n
+		}
+		fmt.Fprintf(&b, "%s%-12s %s%d\n", indent, kind, sign, n)
+	}
+	return b.String()
+}
+
+// topologyNote discloses a shape that was not derived from the repository. A picture
+// assembled from a fallback must not be presented as though it came from the commit graph —
+// the reader cannot tell by looking, and the two support different conclusions.
+func topologyNote(source history.TopologySource) string {
+	switch source {
+	case history.SourceRecordedParents:
+		return "note: the repository could not be read, so the shape below uses the parent\n" +
+			"commits each snapshot recorded. Revisions whose parent was never observed appear\n" +
+			"unconnected even where the repository would join them."
+	case history.SourceTime:
+		return "note: no commit ancestry is available, so the revisions below are strung together\n" +
+			"in the order they were taken. This is a timeline, not a history: it says what\n" +
+			"happened next, never which revision descends out of which."
+	default:
+		return ""
+	}
+}
+
+// observationOrderNote warns when the drawn shape and the printed numbers answer different
+// questions — which happens exactly when somebody switches branches.
+//
+// A revision's summary is the delta from the snapshot taken BEFORE it, because that is the
+// only pair enola had in hand at the time. The graph shows ANCESTRY. Usually they coincide,
+// and the numbers read as "what this revision did". Snapshot a branch, switch back to main
+// and snapshot again, and the second summary reports the branch's work as removed — true of
+// the pair that was compared, and not at all what the row's position in the graph implies.
+//
+// The honest fix is not to recompute (the same revision would then show different numbers
+// in different views, which is worse) but to say so, and to point at the command that
+// answers the ancestry question directly.
+func observationOrderNote(topo history.Topology, bin string) string {
+	for i, row := range topo.Rows {
+		if i == 0 || len(row.Parents) == 0 {
+			continue
+		}
+		// The common, quiet case: this revision follows the one printed above it.
+		if len(row.Parents) == 1 && row.Parents[0] == i-1 {
+			continue
+		}
+		return fmt.Sprintf(
+			"note: some revisions below do not follow the one printed above them — work moved\n"+
+				"between branches. Each summary is the delta from the PREVIOUS SNAPSHOT, not from\n"+
+				"the revision it descends from in the graph, so those rows report what changed\n"+
+				"since enola last looked. For the ancestry delta use `%s diff <a>..<b>`.", bin)
+	}
+	return ""
+}
+
+// multiRepoNote warns that a drawn shape describes only the primary repository.
+//
+// A multi-repo graph has no single commit — it has a VECTOR of them, one per repository, and
+// a snapshot advances some of them and not others. There is no DAG over that, and inventing
+// one by drawing the primary repository's commits would state a relationship between
+// revisions that the other repositories may flatly contradict. So the shape is drawn from
+// the primary repository and the reader is told that is what it is; the per-repository
+// positions are on each row's decoration, where they can be compared without being
+// fabricated into edges.
+func multiRepoNote(entries []history.Entry) string {
+	for _, e := range entries {
+		if len(e.Repos) > 1 {
+			return fmt.Sprintf("note: this history covers %d repositories. A multi-repo graph has one commit\n"+
+				"per repository rather than one overall, so the shape below follows the primary\n"+
+				"repository only; each row lists where the others stood.", len(e.Repos))
+		}
+	}
+	return ""
+}
+
+// parseSince accepts either an RFC3339 instant or a duration back from now, because both
+// are things people mean by "since": a date they remember, or "the last few days".
+func parseSince(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return time.Now().Add(-d), nil
+	}
+	return time.Time{}, fmt.Errorf("--since %q is neither a time (2026-08-01T00:00:00Z) nor a duration (72h)", s)
+}
+
+// takenAfter narrows entries to those recorded after cutoff. An unparseable timestamp is
+// KEPT: dropping a revision because its clock reading is unreadable would silently shorten
+// the history for a reason that has nothing to do with what was asked.
+func takenAfter(entries []history.Entry, cutoff time.Time) []history.Entry {
+	out := make([]history.Entry, 0, len(entries))
+	for _, e := range entries {
+		at, err := time.Parse(time.RFC3339, e.At)
+		if err != nil || !at.Before(cutoff) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // decorations is the bracketed context before the headline: the commit, the branch, any
@@ -238,6 +437,13 @@ func decorations(e history.Entry) string {
 	}
 	if e.Summary.Incomparable {
 		parts = append(parts, "incomparable")
+	}
+	// In a multi-repo graph the other repositories' positions belong on the row, because
+	// the drawn shape cannot express them (see multiRepoNote).
+	for _, r := range e.Repos {
+		if r.Commit != "" {
+			parts = append(parts, fmt.Sprintf("%s@%s", r.Label, shortCommit(r.Commit)))
+		}
 	}
 	if len(parts) == 0 {
 		return ""
