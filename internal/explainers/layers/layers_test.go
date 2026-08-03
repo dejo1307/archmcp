@@ -825,3 +825,50 @@ func TestDetectPatterns_ConfidenceStaysBelowOne(t *testing.T) {
 		}
 	}
 }
+
+// TestGoStdLayers_VisibilityIsNotLayering pins the one ordering the Go standard layout
+// actually expresses, and the three it does not.
+//
+// `internal` and `pkg` are a visibility distinction the compiler enforces, not a
+// dependency ordering: pkg/ over internal/ is how you publish an API over a private
+// implementation, and internal/ importing pkg/ is how a published plugin interface gets
+// implemented. Ranking them reported both as violations on essentially every Go
+// repository with both directories — enola's own snapshot carried 15, all false.
+//
+// What remains is real: `cmd` holds entrypoints, so a library importing INTO cmd is a
+// package reaching into a binary.
+func TestGoStdLayers_VisibilityIsNotLayering(t *testing.T) {
+	level := func(name string) int {
+		t.Helper()
+		for _, d := range goStdLayers {
+			if d.Name == name {
+				return d.Level
+			}
+		}
+		t.Fatalf("no layer named %q", name)
+		return 0
+	}
+	// A violation is reported when source.Level < target.Level (see detectViolations).
+	violates := func(from, to string) bool { return level(from) < level(to) }
+
+	for _, tc := range []struct{ from, to string }{
+		{"pkg", "internal"},      // publishing an API over a private implementation
+		{"internal", "pkg"},      // implementing a contract published in pkg
+		{"internal", "api"},      // depending on a contract definition
+		{"pkg", "api"},           //
+		{"cmd", "internal"},      // an entrypoint wiring the implementation
+		{"cmd", "pkg"},           //
+		{"internal", "internal"}, //
+	} {
+		if violates(tc.from, tc.to) {
+			t.Errorf("%s -> %s reported as a layer violation; it is idiomatic Go", tc.from, tc.to)
+		}
+	}
+
+	// The one the layout does express.
+	for _, from := range []string{"internal", "pkg", "api"} {
+		if !violates(from, "cmd") {
+			t.Errorf("%s -> cmd must be a violation: a library reaching into an entrypoint", from)
+		}
+	}
+}

@@ -55,12 +55,33 @@ var (
 		{Name: "types", Patterns: []string{"types"}, Level: 0},
 	}
 
-	// Go standard project layout
+	// Go standard project layout.
+	//
+	// `internal` and `pkg` are not layers. They are a VISIBILITY distinction the
+	// compiler enforces — code under internal/ may only be imported from within the
+	// module — and either may hold any layer. pkg/ wrapping internal/ is the standard
+	// way to publish an API over a private implementation, and internal/ importing a
+	// contract published in pkg/ is how a plugin interface gets implemented. Ranking
+	// them made the explainer report both as violations on essentially every Go
+	// repository that has both directories, including enola itself.
+	//
+	// So they are collapsed to one tier, exactly as the Rails layout below collapses
+	// its domain directories and for the same reason: a distinction that is not a
+	// dependency ordering must not be modelled as one, or the finding is noise and
+	// readers learn to skip it.
+	//
+	// `api` joins them: in the standard layout it holds contract definitions (OpenAPI
+	// specs, .proto files and the code generated from them), which implementations are
+	// supposed to depend on.
+	//
+	// That leaves one genuine ordering, and the explainer still catches it: `cmd` holds
+	// entrypoints, so anything importing INTO cmd is a library reaching into a binary —
+	// a real smell, and the only one this layout expresses.
 	goStdLayers = []layerDef{
-		{Name: "cmd", Patterns: []string{"cmd"}, Level: 3},
+		{Name: "cmd", Patterns: []string{"cmd"}, Level: 2},
 		{Name: "internal", Patterns: []string{"internal"}, Level: 1},
-		{Name: "pkg", Patterns: []string{"pkg"}, Level: 0},
-		{Name: "api", Patterns: []string{"api"}, Level: 2},
+		{Name: "pkg", Patterns: []string{"pkg"}, Level: 1},
+		{Name: "api", Patterns: []string{"api"}, Level: 1},
 	}
 
 	// Ruby on Rails layout.
