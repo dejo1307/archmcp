@@ -96,12 +96,12 @@ func extractURLSessionFactsWithDir(src []byte, relFile, dir string) []facts.Fact
 		}
 		method := methodNear(lines, i)
 		props := map[string]any{
-			"role":      "client",
-			"method":    method,
-			"framework": "urlsession",
-			"language":  "swift",
-			"source":    "urlsession",
-			"api":       api,
+			facts.PropRole:   facts.RoleClient,
+			"method":         method,
+			"framework":      "urlsession",
+			"language":       "swift",
+			facts.PropSource: facts.RouteSourceURLSession,
+			"api":            api,
 		}
 		applyExternal(props, host)
 		out = append(out, facts.Fact{
@@ -369,12 +369,12 @@ func extractEndpointFacts(src []byte, relFile, dir, defaultPrefix string) []fact
 		}
 		seen[key] = true
 		props := map[string]any{
-			"role":      "client",
-			"method":    method,
-			"framework": "apiendpoint",
-			"language":  "swift",
-			"source":    "swift-endpoint",
-			"api":       api,
+			facts.PropRole:   facts.RoleClient,
+			"method":         method,
+			"framework":      "apiendpoint",
+			"language":       "swift",
+			facts.PropSource: facts.RouteSourceSwiftEndpoint,
+			"api":            api,
 		}
 		applyExternal(props, host)
 		out = append(out, facts.Fact{
@@ -986,12 +986,12 @@ func extractCallSiteEndpointFacts(repoPath string, files []string, defaultPrefix
 			File: file,
 			Line: line,
 			Props: map[string]any{
-				"role":      "client",
-				"method":    method,
-				"framework": "apiendpoint",
-				"language":  "swift",
-				"source":    "swift-endpoint",
-				"api":       swiftAPIHint(file),
+				facts.PropRole:   facts.RoleClient,
+				"method":         method,
+				"framework":      "apiendpoint",
+				"language":       "swift",
+				facts.PropSource: facts.RouteSourceSwiftEndpoint,
+				"api":            swiftAPIHint(file),
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})

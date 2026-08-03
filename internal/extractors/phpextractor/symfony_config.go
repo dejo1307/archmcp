@@ -146,12 +146,12 @@ func symfonyConfigFact(name, method, path, controller, relFile, dir string) fact
 		path = "/" + path
 	}
 	props := map[string]any{
-		"role":      "server",
-		"method":    method,
-		"framework": "symfony",
-		"language":  "php",
-		"source":    "symfony-config",
-		"path":      path,
+		facts.PropRole:   facts.RoleServer,
+		"method":         method,
+		"framework":      "symfony",
+		"language":       "php",
+		facts.PropSource: facts.RouteSourceSymfonyConfig,
+		"path":           path,
 	}
 	if controller != "" {
 		props["handler"] = controller

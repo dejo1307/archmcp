@@ -190,7 +190,7 @@ type routeRef struct {
 func indexServerRoutes(all []facts.Fact) map[string][]routeRef {
 	server := map[string][]routeRef{}
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) == "client" {
+		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) == facts.RoleClient {
 			continue
 		}
 		method := normalizeMethod(propString(f, "method"))
@@ -214,7 +214,7 @@ func indexServerRoutes(all []facts.Fact) map[string][]routeRef {
 func indexServerPathSuffixes(all []facts.Fact) map[string]bool {
 	set := map[string]bool{}
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) == "client" {
+		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) == facts.RoleClient {
 			continue
 		}
 		if normalizeMethod(propString(f, "method")) == "" {
@@ -236,7 +236,7 @@ func linkHTTP(all []facts.Fact, edges map[string]*edge, cov map[string]*httpCove
 
 	// Match client routes against the server index.
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) != "client" {
+		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) != facts.RoleClient {
 			continue
 		}
 		// Every client call site is a detected outbound edge. Counting here, before
@@ -347,23 +347,19 @@ func pickProvider(client facts.Fact, matches []routeRef) (string, bool) {
 	return "", false
 }
 
-// handWrittenClientSources are the `source` prop values emitted by hand-written
-// HTTP-client extractors, as opposed to generated OpenAPI client specs.
-var handWrittenClientSources = map[string]bool{
-	"ts-http-client": true, "retrofit": true, "urlsession": true,
-	"swift-endpoint": true, "ruby-http-client": true, "go-http-client": true,
-	"php-http-client": true, "ts-grpc-client": true, "go-grpc-client": true,
-	"python-grpc-client": true,
-}
-
 // httpVia returns the via label for an HTTP edge derived from a client route:
 // "grpc" for a gRPC call site, "http-client" for a hand-written HTTP client call
 // site, "http" for an OpenAPI client spec (the default).
+//
+// The hand-written set is facts.HandWrittenClientSources, declared beside the
+// RouteSource constants the extractors emit. It used to be a private copy here, which
+// is precisely how it came to omit the two Java sources for as long as the Java
+// HTTP-client extractor existed: nothing tied this reader to those writers.
 func httpVia(client facts.Fact) string {
-	if propString(client, "framework") == "grpc" {
+	if propString(client, facts.PropFramework) == facts.FrameworkGRPC {
 		return "grpc"
 	}
-	if handWrittenClientSources[propString(client, "source")] {
+	if facts.HandWrittenClientSources[propString(client, facts.PropSource)] {
 		return "http-client"
 	}
 	return "http"
@@ -450,7 +446,7 @@ func UnmatchedServerRouteKeys(all []facts.Fact) map[string]bool {
 	server := map[string][]routeRef{}
 	identities := map[string]bool{}
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) == "client" {
+		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) == facts.RoleClient {
 			continue
 		}
 		method := normalizeMethod(propString(f, "method"))
@@ -483,7 +479,7 @@ func UnmatchedServerRouteKeys(all []facts.Fact) map[string]bool {
 	matched := map[string]bool{}
 	providerRepos := map[string]bool{}
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) != "client" {
+		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) != facts.RoleClient {
 			continue
 		}
 		method := normalizeMethod(propString(f, "method"))
@@ -548,7 +544,7 @@ func UnmatchedClientRouteKeys(all []facts.Fact) map[string]string {
 	serverSuffixes := indexServerPathSuffixes(all)
 	unmatched := map[string]string{}
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) != "client" {
+		if f.Kind != facts.KindRoute || f.Repo == "" || roleOf(f) != facts.RoleClient {
 			continue
 		}
 		if isExternalClient(f) {
@@ -1563,7 +1559,7 @@ func materialize(edges map[string]*edge, couplings map[string]*coupling, allRepo
 
 // --- small helpers ---
 
-func roleOf(f facts.Fact) string { return propString(f, "role") }
+func roleOf(f facts.Fact) string { return propString(f, facts.PropRole) }
 
 // isExternalClient reports whether a client route targets a hardcoded external host
 // (tagged external=true by the extractor). Tolerates the bool surviving a JSON

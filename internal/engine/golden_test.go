@@ -98,6 +98,17 @@ var fixtures = []fixture{
 	// Two different-language repos sharing only nested type names. The linker must
 	// draw no shared_symbols edge between them; see GAP-LK-03.
 	{name: "kotlin_swift_multirepo", subRepos: []string{"android", "ios"}},
+	// A Spring backend plus a Java consumer calling it through BOTH hand-written
+	// client forms — RestTemplate (source="java-http-client") and @FeignClient
+	// (source="feign"). Pins the contract-vocabulary fix that no unit test could:
+	// the cross-repo linker kept its own private copy of the hand-written client
+	// source set and had never included either Java value, so every Java call site
+	// linked as via="http" — indistinguishable from an edge merely implied by an
+	// OpenAPI spec. The golden now pins via=["http-client"] end to end, through the
+	// real extractor rather than synthetic facts. java_sample cannot cover this:
+	// it is single-repo, and a single-repo snapshot draws no cross-repo edge at
+	// all, which is exactly why the omission survived undetected.
+	{name: "java_httpclient_multirepo", subRepos: []string{"inventory", "storefront"}},
 	// A decorator-routed TypeScript backend plus an SDK that calls it. Pins v142 end
 	// to end, which the unit tests cannot: the server routes the @Controller classes
 	// compose to have to RESOLVE against the SDK's client calls and draw a cross-repo

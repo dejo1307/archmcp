@@ -57,13 +57,13 @@ func extractHTTPClientFacts(fset *token.FileSet, f *ast.File, relFile, pkgDir st
 			return true
 		}
 		props := map[string]any{
-			"role":        "client",
-			"method":      method,
-			"framework":   "net-http",
-			"language":    "go",
-			"source":      "go-http-client",
-			"api":         api,
-			"target_hint": envHintFromExpr(urlArg),
+			facts.PropRole:   facts.RoleClient,
+			"method":         method,
+			"framework":      "net-http",
+			"language":       "go",
+			facts.PropSource: facts.RouteSourceGoHTTPClient,
+			"api":            api,
+			"target_hint":    envHintFromExpr(urlArg),
 		}
 		// extractStringExpr discards the host of a `baseURL + "/path"` concat and
 		// keeps only the path. Recover it here so the linker can bucket a call to

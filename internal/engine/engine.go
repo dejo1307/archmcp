@@ -589,7 +589,7 @@ func (e *Engine) flagUnmatchedRoutes() {
 		}
 		// A client-role route is a call site, never a served endpoint: it carries the
 		// reverse (unmatched_by_server) verdict, never unmatched_by_clients.
-		if f.Props != nil && f.Props["role"] == "client" {
+		if f.Props != nil && f.Props[facts.PropRole] == facts.RoleClient {
 			delete(f.Props, "unmatched_by_clients")
 			if reason, ok := clientKeys[crossrepo.RouteIdentity(*f)]; ok {
 				f.Props["unmatched_by_server"] = true

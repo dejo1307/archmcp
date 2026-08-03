@@ -64,12 +64,12 @@ func (w *astWalker) detectRestTemplateCall(node *sitter.Node, name string) {
 		File: w.relFile,
 		Line: int(node.StartPosition().Row) + 1,
 		Props: map[string]any{
-			"role":      "client",
-			"method":    method,
-			"framework": "resttemplate",
-			"language":  "java",
-			"source":    "java-http-client",
-			"api":       javaAPIHint(w.relFile),
+			facts.PropRole:   facts.RoleClient,
+			"method":         method,
+			"framework":      "resttemplate",
+			"language":       "java",
+			facts.PropSource: facts.RouteSourceJavaHTTPClient,
+			"api":            javaAPIHint(w.relFile),
 		},
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
@@ -96,12 +96,12 @@ func feignClientFacts(basePath, hint string, methodAnns []javaAnnotation, relFil
 		full := cleanJavaClientPath(facts.JoinRoutePath(basePath, sub))
 		for _, m := range methods {
 			props := map[string]any{
-				"role":      "client",
-				"method":    m,
-				"framework": "feign",
-				"language":  "java",
-				"source":    "feign",
-				"api":       javaAPIHint(relFile),
+				facts.PropRole:   facts.RoleClient,
+				"method":         m,
+				"framework":      "feign",
+				"language":       "java",
+				facts.PropSource: facts.RouteSourceFeign,
+				"api":            javaAPIHint(relFile),
 			}
 			if hint != "" {
 				props["target_hint"] = hint

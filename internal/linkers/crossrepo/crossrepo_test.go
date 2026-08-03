@@ -776,11 +776,11 @@ func topicFact(repo, topic string) facts.Fact {
 // a repo's own topic and a topic owned by no loaded repo draw no edge.
 func TestComputeLinks_Kafka(t *testing.T) {
 	in := []facts.Fact{
-		module("svc-alpha", "app"), // consumer
-		module("svc-beta", "app"),  // producer / owner
-		topicFact("svc-alpha", "svc-beta.things_updated"),       // alpha consumes beta's topic
-		topicFact("svc-alpha", "svc-alpha.cache.v1.evictions"),  // alpha's own topic — no edge
-		topicFact("svc-alpha", "sink.third_party.user_state"),   // owner not loaded — no edge
+		module("svc-alpha", "app"),                             // consumer
+		module("svc-beta", "app"),                              // producer / owner
+		topicFact("svc-alpha", "svc-beta.things_updated"),      // alpha consumes beta's topic
+		topicFact("svc-alpha", "svc-alpha.cache.v1.evictions"), // alpha's own topic — no edge
+		topicFact("svc-alpha", "sink.third_party.user_state"),  // owner not loaded — no edge
 	}
 	out := ComputeLinks(in, nil)
 
@@ -1332,6 +1332,31 @@ func TestComputeLinks_HTTPClientViaTag(t *testing.T) {
 	}
 	if via, _ := e.Props["via"].([]string); !reflect.DeepEqual(via, []string{"http-client"}) {
 		t.Errorf("via = %v, want [http-client]", e.Props["via"])
+	}
+}
+
+// TestComputeLinks_HandWrittenClientViaTag covers EVERY source registered as
+// hand-written, not just the one that happened to have a test. The linker used to keep
+// its own copy of this set and silently omitted the two Java sources, so a Spring
+// RestTemplate or Feign call linked as a generic via="http" — indistinguishable from an
+// edge implied by an OpenAPI spec. Iterating the registry rather than listing sources
+// here means a source added to facts.HandWrittenClientSources is covered the moment it
+// is registered, which is the property that was missing.
+func TestComputeLinks_HandWrittenClientViaTag(t *testing.T) {
+	for source := range facts.HandWrittenClientSources {
+		t.Run(source, func(t *testing.T) {
+			in := []facts.Fact{
+				clientRoute("svc-alpha", "/api/items/list", "GET", map[string]any{"source": source}),
+				serverRoute("svc-beta", "/api/items/list", "GET"),
+			}
+			e := findEdge(ComputeLinks(in, nil), "svc-alpha", "svc-beta")
+			if e == nil {
+				t.Fatal("missing svc-alpha -> svc-beta edge")
+			}
+			if via, _ := e.Props["via"].([]string); !reflect.DeepEqual(via, []string{"http-client"}) {
+				t.Errorf("via = %v, want [http-client]", e.Props["via"])
+			}
+		})
 	}
 }
 

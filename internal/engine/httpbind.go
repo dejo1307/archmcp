@@ -77,7 +77,7 @@ func (e *Engine) bindHTTPHandlers() {
 		// no http_handler prop so it could not bind anyway, but skip it explicitly:
 		// binding middleware to a route would pollute the very edges this exists to make
 		// trustworthy.
-		if t, _ := f.Props["type"].(string); t == "middleware" {
+		if t, _ := f.Props[facts.PropRouteType].(string); t == facts.RouteTypeMiddleware {
 			return
 		}
 		handler := propStr(f, "handler")

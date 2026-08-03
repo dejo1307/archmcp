@@ -46,11 +46,11 @@ func extractServletRouteFacts(src []byte, relFile string) []facts.Fact {
 			File: relFile,
 			Line: i + 1,
 			Props: map[string]any{
-				"role":      "server",
-				"method":    facts.MethodAny,
-				"framework": "servlet",
-				"language":  "kotlin",
-				"handler":   strings.TrimSpace(m[2]),
+				facts.PropRole: facts.RoleServer,
+				"method":       facts.MethodAny,
+				"framework":    "servlet",
+				"language":     "kotlin",
+				"handler":      strings.TrimSpace(m[2]),
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})

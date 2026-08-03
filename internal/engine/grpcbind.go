@@ -74,7 +74,7 @@ func (e *Engine) bindGRPCHandlers() {
 		if f.Kind != facts.KindRoute || f.Props == nil {
 			return
 		}
-		if f.Props["type"] != "grpc" || f.Props["role"] != "server" {
+		if f.Props[facts.PropRouteType] != facts.RouteTypeGRPC || f.Props[facts.PropRole] != facts.RoleServer {
 			return
 		}
 		short := lastDotSegment(propStr(f, "rpc_service"))
@@ -124,7 +124,7 @@ func (e *Engine) resolvePyGRPCClientRoutes() {
 	ambiguous := map[string]bool{}
 	methodsOf := map[string]map[string]bool{}
 	for _, r := range e.store.ByKind(facts.KindRoute) {
-		if valProp(r, "type") != "grpc" || valProp(r, "role") != "server" {
+		if valProp(r, facts.PropRouteType) != facts.RouteTypeGRPC || valProp(r, facts.PropRole) != facts.RoleServer {
 			continue
 		}
 		fq := valProp(r, "rpc_service")
@@ -150,7 +150,7 @@ func (e *Engine) resolvePyGRPCClientRoutes() {
 	var replaced []facts.Fact
 	found := false
 	for _, r := range e.store.ByKind(facts.KindRoute) {
-		if valProp(r, "source") != "python-grpc-client" {
+		if valProp(r, facts.PropSource) != facts.RouteSourcePythonGRPCClient {
 			continue
 		}
 		found = true
@@ -168,7 +168,7 @@ func (e *Engine) resolvePyGRPCClientRoutes() {
 		return
 	}
 	e.store.RemoveWhere(func(f facts.Fact) bool {
-		return f.Kind == facts.KindRoute && valProp(f, "source") == "python-grpc-client"
+		return f.Kind == facts.KindRoute && valProp(f, facts.PropSource) == facts.RouteSourcePythonGRPCClient
 	})
 	e.store.Add(replaced...)
 }

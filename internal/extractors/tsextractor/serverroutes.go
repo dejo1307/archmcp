@@ -139,10 +139,10 @@ func extractServerRouteFacts(src []byte, relFile string) []facts.Fact {
 			File: relFile,
 			Line: line,
 			Props: map[string]any{
-				"role":      "server",
-				"method":    verb,
-				"framework": b.framework,
-				"language":  "typescript",
+				facts.PropRole: facts.RoleServer,
+				"method":       verb,
+				"framework":    b.framework,
+				"language":     "typescript",
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})

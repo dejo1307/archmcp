@@ -203,12 +203,12 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 			File: relFile,
 			Line: line,
 			Props: map[string]any{
-				"role":      "client",
-				"method":    method,
-				"framework": framework,
-				"language":  "typescript",
-				"source":    "ts-http-client",
-				"api":       api,
+				facts.PropRole:   facts.RoleClient,
+				"method":         method,
+				"framework":      framework,
+				"language":       "typescript",
+				facts.PropSource: facts.RouteSourceTSHTTPClient,
+				"api":            api,
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})

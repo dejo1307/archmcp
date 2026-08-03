@@ -96,12 +96,12 @@ func (w *symfonyRouteWalker) emit(node *sitter.Node, method, path, handler, name
 		path = "/"
 	}
 	props := map[string]any{
-		"role":      "server",
-		"method":    method,
-		"framework": "symfony",
-		"language":  "php",
-		"path":      path,
-		"handler":   handler,
+		facts.PropRole: facts.RoleServer,
+		"method":       method,
+		"framework":    "symfony",
+		"language":     "php",
+		"path":         path,
+		"handler":      handler,
 	}
 	if name != "" {
 		props["name"] = name

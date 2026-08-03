@@ -172,12 +172,12 @@ func parseOpenAPIFile(absPath, relFile string) ([]facts.Fact, error) {
 			}
 
 			props := map[string]any{
-				"method":    httpMethod,
-				"source":    "openapi",
-				"spec_file": relFile,
-				"framework": "openapi",
-				"language":  "openapi",
-				"role":      role,
+				"method":         httpMethod,
+				facts.PropSource: facts.RouteSourceOpenAPI,
+				"spec_file":      relFile,
+				"framework":      "openapi",
+				"language":       "openapi",
+				"role":           role,
 			}
 
 			if gatewayPrefix != "" {

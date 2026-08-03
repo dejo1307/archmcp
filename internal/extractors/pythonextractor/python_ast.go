@@ -32,8 +32,8 @@ func extractFileAST(src []byte, relFile string, isDjango, isFlask, isFastAPI boo
 	dir := filepath.Dir(relFile)
 
 	w := &pyWalker{
-		src:      src,
-		relFile:  relFile,
+		src:       src,
+		relFile:   relFile,
 		module:    module,
 		dir:       dir,
 		isDjango:  isDjango,
@@ -115,7 +115,7 @@ type pyWalker struct {
 	// It differs from scalingDepth for `while True:`, which adds no factor of n but whose
 	// body still runs many times — so a query inside it is still an N+1 candidate.
 	repeatDepth int
-	selfName     string
+	selfName    string
 
 	// funcScope is the qualified name of the OUTERMOST enclosing function whose
 	// body is being walked ("" at module/class level). Unlike selfName it is
@@ -647,11 +647,11 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 						File: w.relFile,
 						Line: int(c.StartPosition().Row) + 1,
 						Props: map[string]any{
-							"role":      "server",
-							"method":    meth,
-							"framework": "django",
-							"handler":   handlerName,
-							"language":  "python",
+							facts.PropRole: facts.RoleServer,
+							"method":       meth,
+							"framework":    "django",
+							"handler":      handlerName,
+							"language":     "python",
 						},
 					})
 				}
@@ -739,11 +739,11 @@ func (w *pyWalker) emitRoutes(path string, methods []string, framework string, l
 			File: w.relFile,
 			Line: line,
 			Props: map[string]any{
-				"role":      "server",
-				"method":    method,
-				"path":      path,
-				"framework": framework,
-				"language":  "python",
+				facts.PropRole: facts.RoleServer,
+				"method":       method,
+				"path":         path,
+				"framework":    framework,
+				"language":     "python",
 			},
 		})
 		*pending = append(*pending, len(w.out)-1)
@@ -1273,10 +1273,10 @@ func (w *pyWalker) handleExprStatement(node *sitter.Node) {
 				File: w.relFile,
 				Line: int(node.StartPosition().Row) + 1,
 				Props: map[string]any{
-					"role":      "server",
-					"path":      m[1],
-					"handler":   m[2],
-					"framework": "django",
+					facts.PropRole: facts.RoleServer,
+					"path":         m[1],
+					"handler":      m[2],
+					"framework":    "django",
 				},
 			})
 		}
@@ -1296,10 +1296,10 @@ func (w *pyWalker) handleAssignment(node *sitter.Node) {
 				File: w.relFile,
 				Line: int(node.StartPosition().Row) + 1,
 				Props: map[string]any{
-					"role":      "server",
-					"path":      m[1],
-					"handler":   m[2],
-					"framework": "django",
+					facts.PropRole: facts.RoleServer,
+					"path":         m[1],
+					"handler":      m[2],
+					"framework":    "django",
 				},
 			})
 		}

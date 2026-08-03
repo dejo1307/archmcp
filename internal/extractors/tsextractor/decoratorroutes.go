@@ -117,11 +117,11 @@ func methodRouteFacts(decorators []*sitter.Node, method *sitter.Node, src []byte
 			Props: map[string]any{
 				// Stated explicitly rather than left to the linker's unset=>server
 				// default, so a reader of the fact does not have to know that rule.
-				"role":      "server",
-				"method":    verb,
-				"framework": framework,
-				"language":  "typescript",
-				"handler":   handler,
+				facts.PropRole: facts.RoleServer,
+				"method":       verb,
+				"framework":    framework,
+				"language":     "typescript",
+				"handler":      handler,
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})

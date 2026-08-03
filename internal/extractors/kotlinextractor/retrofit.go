@@ -79,12 +79,12 @@ func extractRetrofitFacts(src []byte, relFile string) []facts.Fact {
 			continue
 		}
 		props := map[string]any{
-			"role":      "client",
-			"method":    method,
-			"framework": "retrofit",
-			"language":  "kotlin",
-			"source":    "retrofit",
-			"api":       api,
+			facts.PropRole:   facts.RoleClient,
+			"method":         method,
+			"framework":      "retrofit",
+			"language":       "kotlin",
+			facts.PropSource: facts.RouteSourceRetrofit,
+			"api":            api,
 		}
 		// A full http(s):// URL targets a fixed external host: tag it external + host
 		// and reduce the Name to the base-relative path so it reads consistently.

@@ -117,12 +117,12 @@ func extractOpenAPITypescriptFacts(src []byte, relFile string) []facts.Fact {
 				if m := methodAvailRe.FindStringSubmatch(line); m != nil {
 					method := strings.ToUpper(m[1])
 					props := map[string]any{
-						"method":    method,
-						"source":    "openapi-typescript",
-						"role":      "client",
-						"framework": "openapi",
-						"language":  "typescript",
-						"spec_file": relFile,
+						"method":         method,
+						facts.PropSource: facts.RouteSourceOpenAPITypeScript,
+						facts.PropRole:   facts.RoleClient,
+						"framework":      "openapi",
+						"language":       "typescript",
+						"spec_file":      relFile,
 					}
 					if apiName != "" {
 						props["api"] = apiName

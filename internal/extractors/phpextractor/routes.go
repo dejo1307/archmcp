@@ -203,11 +203,11 @@ func (w *laravelRouteWalker) emitRoute(node *sitter.Node, stack []phpRouteScope,
 		return
 	}
 	props := map[string]any{
-		"role":      "server",
-		"method":    method,
-		"framework": "laravel",
-		"language":  "php",
-		"path":      path,
+		facts.PropRole: facts.RoleServer,
+		"method":       method,
+		"framework":    "laravel",
+		"language":     "php",
+		"path":         path,
 	}
 	if handler != "" {
 		props["handler"] = handler
