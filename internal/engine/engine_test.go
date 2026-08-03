@@ -10,6 +10,10 @@ import (
 	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/explainers/coverage"
 	"github.com/enola-labs/enola/internal/facts"
+	httpsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/http"
+	importsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/imports"
+	kafkasignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/kafka"
+	sharedcodesignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/sharedcode"
 )
 
 func TestIsIgnored(t *testing.T) {
@@ -346,6 +350,7 @@ func TestResolveFactFile_MultiRepo(t *testing.T) {
 func TestLinkCrossRepo_ConnectsServicesInGraph(t *testing.T) {
 	cfg := config.Default()
 	eng, _ := New(cfg)
+	registerOSSSignals(eng)
 
 	// Two repos: svc-alpha calls an endpoint svc-beta serves.
 	eng.Store().Add(
@@ -408,6 +413,7 @@ func TestLinkCrossRepo_ConnectsServicesInGraph(t *testing.T) {
 func TestLinkCrossRepo_CoverageGapInsight(t *testing.T) {
 	cfg := config.Default()
 	eng, _ := New(cfg)
+	registerOSSSignals(eng)
 
 	// svc-alpha calls a path no loaded repo serves; svc-beta serves something else.
 	eng.Store().Add(
@@ -522,4 +528,18 @@ func TestSourceReaderFor_NilWithoutRepoPaths(t *testing.T) {
 	if sourceReaderFor(map[string]string{}) != nil {
 		t.Error("empty repo paths should yield a nil reader (verification disabled)")
 	}
+}
+
+// registerOSSSignals wires the production cross-repo signal set onto a bare engine.
+//
+// An engine created with New() has no signals registered, exactly as it has no
+// extractors: linking is plugin-driven, so a test that exercises it must register them
+// the way bootstrap does. Without this, cross-repo linking silently produces service
+// nodes and no edges — which is the correct behavior for an engine with no signals, and
+// a confusing test failure if you expected the old hardcoded set.
+func registerOSSSignals(e *Engine) {
+	e.RegisterCrossRepoSignal(httpsignal.New())
+	e.RegisterCrossRepoSignal(importsignal.New())
+	e.RegisterCrossRepoSignal(kafkasignal.New())
+	e.RegisterCrossRepoSignal(sharedcodesignal.New())
 }

@@ -68,3 +68,178 @@ type Binder interface {
 	// Bind resolves references over the assembled store, in place.
 	Bind(ctx context.Context, store *facts.Store) error
 }
+
+// ---------------------------------------------------------------------------
+// Cross-repo signals
+// ---------------------------------------------------------------------------
+
+// SignalPhase is when a CrossRepoSignal runs. There are exactly two, and the split
+// is a correctness constraint rather than a convenience.
+type SignalPhase string
+
+const (
+	// PhaseDirectional signals establish a DIRECTION: one repo calls, imports, or
+	// consumes from another, so consumer and provider are distinguishable. They run
+	// first and may not observe each other's evidence — which is what makes their
+	// registration order unable to affect the output.
+	PhaseDirectional SignalPhase = "directional"
+	// PhaseSymmetric signals find a relationship with no inherent direction (two
+	// repos sharing code). They run after every directional signal and MAY read the
+	// accumulated evidence, because the only honest way to orient a symmetric signal
+	// is to defer to a direction something else established. A symmetric signal that
+	// found no such direction must record a coupling, not invent an edge.
+	PhaseSymmetric SignalPhase = "symmetric"
+)
+
+// CrossRepoSignal derives evidence that one repository depends on another.
+//
+// Each signal reads the whole multi-repo fact set through SignalInput and reports what
+// it found to an EvidenceSink; it never builds facts itself. That split is what lets a
+// signal be added without touching the code that turns evidence into the graph — the
+// four built-in signals (HTTP, imports, Kafka topics, shared code) previously had a
+// dedicated field on one struct and a dedicated block in one materializer, so a fifth
+// meant editing both.
+//
+// CONTRACT. Implementations must be deterministic and must not depend on registration
+// order within their phase. A signal that needs to see another's evidence belongs in
+// PhaseSymmetric; one that would need to see a symmetric signal's evidence is asking
+// for something the model does not provide, and is probably really a directional
+// signal.
+//
+// The governing bias is that a MISSING edge beats a WRONG one. Every gate in the
+// built-in signals exists because a real false positive was found, and a signal that
+// cannot confidently attribute a relationship should record nothing: an absent edge
+// shows up as a coverage gap someone can go and look at, while a fabricated one is
+// invisible and gets acted on.
+type CrossRepoSignal interface {
+	// Name identifies the signal (e.g. "http", "import", "kafka", "shared-code").
+	Name() string
+	// Phase reports when this signal runs.
+	Phase() SignalPhase
+	// Contribute reads the fact set and reports evidence.
+	Contribute(in SignalInput, out EvidenceSink)
+}
+
+// SignalInput is the read side: the multi-repo fact set plus the derived indexes a
+// signal would otherwise have to compute itself.
+//
+// The derived accessors exist because every one of them used to be a package-level
+// function that walked the entire fact set on each call, several of them more than
+// once per link. Behind this interface they are computed lazily and at most once per
+// snapshot, so adding a signal that needs the same index costs nothing.
+type SignalInput interface {
+	// Facts returns the whole multi-repo fact set.
+	Facts() []facts.Fact
+	// Repos returns every loaded repo label, sorted.
+	Repos() []string
+	// ResolveRepo maps a candidate name (an import scope, a topic-name prefix) to a
+	// loaded repo label, comparing normalized. Reports false when nothing matches.
+	ResolveRepo(candidate string) (string, bool)
+	// PrimaryLanguage returns a repo's dominant source language, or "" if unknown.
+	PrimaryLanguage(repo string) string
+	// TopDirs returns a repo's own top-level source directories.
+	TopDirs(repo string) map[string]bool
+	// OwnScopes returns the npm @scopes a repo publishes under.
+	OwnScopes(repo string) map[string]bool
+	// ModuleNames returns a repo's module names, longest first.
+	ModuleNames(repo string) []string
+	// HasSource reports whether source is available at all. It is distinct from a
+	// failed ReadSource: "no reader was supplied" means verification cannot run and
+	// must be skipped entirely, while "this one file would not read" means this one
+	// candidate is unverifiable. Collapsing the two would silently turn every
+	// name-matched candidate into a rejected one whenever source is absent.
+	HasSource() bool
+	// ReadSource returns the text of the file a fact came from. Reports false when
+	// source is unavailable, which every caller must treat as "cannot verify" rather
+	// than "does not match".
+	ReadSource(f facts.Fact) (string, bool)
+}
+
+// Bucket names one class of evidence an edge can carry, together with the props it
+// materializes into. It is what lets a new signal introduce its own evidence without
+// editing the accumulator or the materializer: declare a Bucket, report samples into
+// it, and the props appear.
+type Bucket struct {
+	// Name is the bucket's identity, and the sort key that makes materialization
+	// order deterministic.
+	Name string
+	// CountProp receives the number of distinct samples.
+	CountProp string
+	// SamplesProp receives the samples themselves, sorted and capped.
+	SamplesProp string
+	// UnverifiedProp, when set, receives the signal's PRE-verification tally — but
+	// only when it exceeds the number of samples that survived verification. It is
+	// how a signal reports the gap between "matched by name" and "confirmed", which
+	// is meaningless to hide and noise to always show.
+	UnverifiedProp string
+}
+
+// The built-in buckets. The prop names are load-bearing: they are the queryable
+// surface of a cross-repo dependency fact, so changing one changes what
+// query_facts(kind=dependency) returns.
+var (
+	BucketEndpoints = Bucket{Name: "endpoints", CountProp: "endpoint_count", SamplesProp: "endpoints"}
+	BucketImports   = Bucket{Name: "imports", CountProp: "import_count", SamplesProp: "import_samples"}
+	BucketTopics    = Bucket{Name: "topics", CountProp: "topic_count", SamplesProp: "topic_samples"}
+	BucketSymbols   = Bucket{Name: "symbols", CountProp: "symbol_count", SamplesProp: "symbol_samples", UnverifiedProp: "name_match_count"}
+)
+
+// Coverage tallies, per consumer repo, how many outbound call sites a signal detected
+// and how many it resolved. The difference is the blind spot — call sites enola saw
+// but could not attribute — so a repo with no outbound edges but a non-zero unresolved
+// count is a coverage gap rather than a genuine isolate. Reporting it is what keeps a
+// signal's misses visible instead of silent.
+type Coverage struct {
+	Detected int
+	Resolved int
+	// External counts call sites aimed at a hardcoded third-party host. They are
+	// expected non-matches, so they are bucketed apart from the blind spot.
+	External int
+}
+
+// EvidenceSink is the write side: what a signal reports into.
+type EvidenceSink interface {
+	// Edge returns the evidence accumulator for a directional consumer -> provider
+	// dependency, creating it on first use.
+	Edge(consumer, provider string) EdgeEvidence
+	// Coupling returns the accumulator for a SYMMETRIC relationship between two
+	// repos — recorded as queryable evidence that carries no relation, so it never
+	// enters the traversable graph. Shared code is not a dependency, and unlike a
+	// dependency it does not compose across hops.
+	Coupling(a, b string) CouplingEvidence
+	// Coverage returns the mutable coverage tally for one repo and one class of
+	// outbound edge ("http_client", …). Keyed by edge type because a repo can have a
+	// blind spot in one transport and full coverage in another, and collapsing them
+	// would hide exactly the gap the tally exists to expose.
+	Coverage(repo, edgeType string) *Coverage
+	// DirectedPairs reports the consumer -> provider orientations already established
+	// between two repos by directional signals, and whether any exists. A symmetric
+	// signal uses it to decide between annotating a real dependency and recording a
+	// standalone coupling. It is meaningful only in PhaseSymmetric; during
+	// PhaseDirectional the answer is still being computed.
+	DirectedPairs(a, b string) (pairs [][2]string, ok bool)
+}
+
+// EdgeEvidence accumulates the justification for one directional dependency.
+type EdgeEvidence interface {
+	// Via records HOW this dependency was observed ("http", "import", "kafka", …).
+	// One edge may carry several.
+	Via(label string)
+	// Confidence records how trustworthy the match was; the strongest seen wins.
+	Confidence(c string)
+	// Sample records one piece of evidence in a bucket. Duplicates collapse.
+	Sample(b Bucket, value string)
+	// Unverified records the pre-verification tally for a bucket — see
+	// Bucket.UnverifiedProp.
+	Unverified(b Bucket, n int)
+}
+
+// CouplingEvidence accumulates a symmetric relationship. It deliberately has no
+// Confidence: with no consumer and no provider there is no match to be confident
+// about, only the samples themselves. It does carry Via, because which signal
+// observed the coupling is still worth recording.
+type CouplingEvidence interface {
+	Via(label string)
+	Sample(b Bucket, value string)
+	Unverified(b Bucket, n int)
+}

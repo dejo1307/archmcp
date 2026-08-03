@@ -43,6 +43,10 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcimpl"
 	"github.com/enola-labs/enola/internal/linkers/binders/httphandler"
 	"github.com/enola-labs/enola/internal/linkers/binders/unmatchedroutes"
+	httpsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/http"
+	importsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/imports"
+	kafkasignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/kafka"
+	sharedcodesignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/sharedcode"
 	"github.com/enola-labs/enola/internal/renderers/llmcontext"
 	"github.com/enola-labs/enola/internal/server"
 	"github.com/enola-labs/enola/pkg/plugin"
@@ -381,6 +385,13 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterBinder(grpcimpl.New())
 	eng.RegisterBinder(httphandler.New())
 	eng.RegisterBinder(unmatchedroutes.New())
+
+	// Register all OSS cross-repo signals. Phase() decides when each runs, so the
+	// order here is presentation only — see plugin.CrossRepoSignal.
+	eng.RegisterCrossRepoSignal(httpsignal.New())
+	eng.RegisterCrossRepoSignal(importsignal.New())
+	eng.RegisterCrossRepoSignal(kafkasignal.New())
+	eng.RegisterCrossRepoSignal(sharedcodesignal.New())
 
 	// Register all OSS explainers
 	eng.RegisterExplainer(cycles.New())

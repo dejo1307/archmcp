@@ -6,7 +6,8 @@ import (
 	"log"
 
 	"github.com/enola-labs/enola/internal/facts"
-	"github.com/enola-labs/enola/internal/linkers/crossrepo"
+	"github.com/enola-labs/enola/internal/linkers/crossrepo/routeindex"
+	httpsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/http"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -51,8 +52,8 @@ func (b *Binder) Stage() plugin.BindStage { return plugin.StagePostLink }
 
 func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	all := store.All()
-	serverKeys := crossrepo.UnmatchedServerRouteKeys(all)
-	clientKeys := crossrepo.UnmatchedClientRouteKeys(all)
+	serverKeys := httpsignal.UnmatchedServerRouteKeys(all)
+	clientKeys := httpsignal.UnmatchedClientRouteKeys(all)
 
 	flaggedServer, flaggedClient := 0, 0
 	store.UpdateWhere(func(f *facts.Fact) {
@@ -63,7 +64,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		// reverse (unmatched_by_server) verdict, never unmatched_by_clients.
 		if f.Props != nil && f.Props[facts.PropRole] == facts.RoleClient {
 			delete(f.Props, PropUnmatchedByClients)
-			if reason, ok := clientKeys[crossrepo.RouteIdentity(*f)]; ok {
+			if reason, ok := clientKeys[routeindex.RouteIdentity(*f)]; ok {
 				f.Props[PropUnmatchedByServer] = true
 				f.Props[PropUnmatchedReason] = reason
 				flaggedClient++
@@ -73,7 +74,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 			}
 			return
 		}
-		if serverKeys[crossrepo.RouteIdentity(*f)] {
+		if serverKeys[routeindex.RouteIdentity(*f)] {
 			if f.Props == nil {
 				f.Props = map[string]any{}
 			}

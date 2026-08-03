@@ -108,3 +108,17 @@ func repoDirName(path string) string {
 	}
 	return p
 }
+
+// NormalizeRepoLabel lowercases a repo label and strips '-' and '_', so "app-web",
+// "app_web" and "AppWeb" all compare equal.
+//
+// It lives here rather than in the linker because two callers need it that cannot share
+// a linker-internal helper: the cross-repo signals, which resolve an import scope or a
+// topic prefix to a loaded repo, and the standalone unused-route passes, which run from
+// a binder with no linker context at all.
+func NormalizeRepoLabel(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "-", "")
+	s = strings.ReplaceAll(s, "_", "")
+	return s
+}

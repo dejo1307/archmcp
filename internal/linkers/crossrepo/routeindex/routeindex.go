@@ -1,0 +1,367 @@
+// Package routeindex holds the route/path primitives the cross-repo HTTP signal is
+// built from: path normalization, the server-route suffix index, and the matching
+// rules that decide whether a client call and a server route are the same endpoint.
+//
+// It is its own package because three passes have to agree on those rules EXACTLY —
+// the HTTP signal that draws the edge, and the two inverse passes that report what
+// went unmatched. When they lived beside each other as unexported helpers, "must stay
+// in lockstep with linkHTTP" appeared three separate times as a comment. Here it is a
+// type, and the compiler enforces what the comment asked for.
+package routeindex
+
+import (
+	"strings"
+
+	"github.com/enola-labs/enola/internal/facts"
+)
+
+// keeps the join specific enough to avoid false positives while tolerating the
+// base-path/prefix differences between a server's full path ("/api/settings/...")
+// and a client's base-relative call ("settings/...").
+const minSharedSegments = 2
+
+type RouteRef struct {
+	Repo     string
+	Method   string
+	Path     string
+	FullPath string // the complete normalized server path this ref was indexed from
+}
+
+// IndexServerRoutes builds the suffix+method -> server route index the HTTP linker
+// matches client calls against: every trailing-segment suffix of every server
+// route's normalized path(s), keyed by RouteKey. Shared by linkHTTP and
+// UnmatchedClientRouteKeys so both resolve a client call identically. ServerPaths
+// already returns normalized paths; fullPath records which full path a suffix came
+// from, so a match can tell a full-path hit from a fragment hit.
+func IndexServerRoutes(all []facts.Fact) map[string][]RouteRef {
+	server := map[string][]RouteRef{}
+	for _, f := range all {
+		if f.Kind != facts.KindRoute || f.Repo == "" || RoleOf(f) == facts.RoleClient {
+			continue
+		}
+		method := NormalizeMethod(f.PropString("method"))
+		if method == "" {
+			continue
+		}
+		for _, p := range ServerPaths(f) {
+			ref := RouteRef{Repo: f.Repo, Method: method, Path: f.Name, FullPath: p}
+			for _, suf := range PathMatchKeys(p) {
+				server[RouteKey(suf, method)] = append(server[RouteKey(suf, method)], ref)
+			}
+		}
+	}
+	return server
+}
+
+// IndexServerPathSuffixes returns the set of server route path-suffixes ignoring
+// method — the method-agnostic counterpart to IndexServerRoutes. It lets the
+// unmatched-client pass tell "the endpoint exists but we have the wrong verb"
+// (method_mismatch) from "no server route serves this path at all" (path_unknown).
+func IndexServerPathSuffixes(all []facts.Fact) map[string]bool {
+	set := map[string]bool{}
+	for _, f := range all {
+		if f.Kind != facts.KindRoute || f.Repo == "" || RoleOf(f) == facts.RoleClient {
+			continue
+		}
+		if NormalizeMethod(f.PropString("method")) == "" {
+			continue
+		}
+		for _, p := range ServerPaths(f) {
+			for _, suf := range PathMatchKeys(p) {
+				set[suf] = true
+			}
+		}
+	}
+	return set
+}
+
+// ServerPaths returns the normalized paths a server route is reachable at: its
+// own path and, when present, its gateway path (prefix + path).
+func ServerPaths(f facts.Fact) []string {
+	out := []string{NormalizePath(f.Name)}
+	if gw := f.PropString("gateway_path"); gw != "" {
+		out = append(out, NormalizePath(gw))
+	}
+	return out
+}
+
+// RouteIdentity returns the stable identity key of a route fact — its repo, HTTP
+// method (normalized the same way the matcher normalizes), and path (the fact
+// Name). The keys in the set returned by UnmatchedServerRouteKeys use this exact
+// form, so a caller can flag the matching route facts without re-deriving any
+// path or method normalization of its own.
+func RouteIdentity(f facts.Fact) string {
+	return RouteIdentityKey(f.Repo, NormalizeMethod(f.PropString("method")), f.Name)
+}
+
+func RouteIdentityKey(repo, method, path string) string {
+	return repo + "\x00" + method + "\x00" + path
+}
+
+// UnmatchedServerRouteKeys returns the identities (see RouteIdentity) of server
+// routes that no loaded client route resolves to — endpoints unused by every
+// client in the snapshot. It reuses the cross-repo HTTP linker's exact server
+// index and suffix/method matching, so a route flagged here is precisely one the
+// linker found no caller for; only the verdict differs from linkHTTP.
+//
+// Matching is deliberately generous: a server route counts as used on any
+// suffix+method hit, regardless of match confidence or which repo the caller is
+// in. This biases the unused set toward false negatives — it will never flag a
+// route that shows any sign of use, which is the safe direction when the output
+// may drive endpoint removal. Returns nil for single-repo snapshots: with no
+
+// ClientPathHasServer reports whether any of a client path's trailing-segment
+// suffixes matches a server route path suffix regardless of verb (mirrors
+// LookupClientMatches' key generation, minus the method filter — including its
+// whole-path fallback, so a single-segment client path is tested against the
+// index rather than reported path_unknown without ever being looked up).
+func ClientPathHasServer(serverSuffixes map[string]bool, clientPath string) bool {
+	for _, suf := range PathMatchKeys(clientPath) {
+		if serverSuffixes[suf] {
+			return true
+		}
+	}
+	return false
+}
+
+// RepoFromIdentity extracts the repo label from a route identity key (see
+// routeIdentityKey, which prefixes the repo before the first NUL separator).
+func RepoFromIdentity(id string) string {
+	if i := strings.IndexByte(id, '\x00'); i >= 0 {
+		return id[:i]
+	}
+	return id
+}
+
+func RoleOf(f facts.Fact) string { return f.PropString(facts.PropRole) }
+
+// IsExternalClient reports whether a client route targets a hardcoded external host
+// (tagged external=true by the extractor). Tolerates the bool surviving a JSON
+// round-trip as a bool literal.
+func IsExternalClient(f facts.Fact) bool {
+	if f.Props == nil {
+		return false
+	}
+	v, _ := f.Props["external"].(bool)
+	return v
+}
+
+func NormalizeMethod(m string) string {
+	m = strings.ToUpper(strings.TrimSpace(m))
+	switch m {
+	case "", "USE", "ALL", "MIDDLEWARE", "DRAW":
+		// DRAW is a Rails route-delegation placeholder (config/routes.rb draw(:pkg)),
+		// not a real HTTP method — inert for matching and unused-route flagging.
+		return ""
+	}
+	return m
+}
+
+// RouteKey is the index key for one (path-suffix, method) pair. Exported because the
+// unused-route pass builds its own index over the same keyspace.
+func RouteKey(normPath, method string) string { return normPath + "|" + method }
+
+// formatExtensions are response-format suffixes a client may append to a path
+// (Rails renders these as an optional ".:format" that never appears in the route
+// path) — so they must be stripped before comparing a client call to a server route.
+var formatExtensions = []string{".json", ".xml"}
+
+// stripFormatExtension removes a trailing response-format extension from a single
+// path segment: "orders.json" -> "orders", "{id}.json" -> "{id}" (so the later
+// {}-collapse still fires). Only the known format suffixes are stripped, so a
+// version-like segment ("v2.5") or a real dotted name is left intact.
+func stripFormatExtension(seg string) string {
+	for _, ext := range formatExtensions {
+		if len(seg) > len(ext) && strings.HasSuffix(seg, ext) {
+			return seg[:len(seg)-len(ext)]
+		}
+	}
+	return seg
+}
+
+// NormalizePath trims a trailing slash, strips a trailing response-format extension
+// (.json/.xml) from the final segment, and collapses path parameters in any
+// framework syntax ({id}, :id, <id>) to a single "{}" placeholder, so a client
+// path matches the server path it calls regardless of param naming or format suffix.
+func NormalizePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if len(p) > 1 {
+		p = strings.TrimRight(p, "/")
+	}
+	segs := strings.Split(p, "/")
+	// Strip a format extension from the final segment before param collapse, so a
+	// client call "/devices/{id}.json" normalizes to the same "/devices/{}" the
+	// server route "/devices/:id" produces.
+	if n := len(segs); n > 0 {
+		segs[n-1] = stripFormatExtension(segs[n-1])
+	}
+	for i, s := range segs {
+		switch {
+		case strings.HasPrefix(s, ":"):
+			segs[i] = "{}"
+		case strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}"):
+			segs[i] = "{}"
+		case strings.HasPrefix(s, "<") && strings.HasSuffix(s, ">"):
+			segs[i] = "{}"
+		case strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]"):
+			// Next.js dynamic segments: [id], [slug], [...rest].
+			segs[i] = "{}"
+		}
+	}
+	return strings.Join(segs, "/")
+}
+
+// pathSuffixes returns every trailing-segment suffix of a normalized path that
+// has at least minSharedSegments non-empty segments, longest first. Each suffix
+// is rendered leading-slash-canonical ("/seg/seg/..."), so a server path
+// "/api/settings/entitlements/definitions" yields:
+//
+//	/api/settings/entitlements/definitions
+//	/settings/entitlements/definitions
+//	/entitlements/definitions
+//
+// ("definitions" alone is dropped: below minSharedSegments). This lets a client
+// calling a base-relative subpath match the server serving the full path.
+func pathSuffixes(normPath string) []string {
+	var segs []string
+	for _, s := range strings.Split(normPath, "/") {
+		if s != "" {
+			segs = append(segs, s)
+		}
+	}
+	var out []string
+	for start := 0; start+minSharedSegments <= len(segs); start++ {
+		out = append(out, "/"+strings.Join(segs[start:], "/"))
+	}
+	return out
+}
+
+// PathMatchKeys returns the path forms to join a route on — its suffixes, or the
+// whole path when it is too short to have any.
+//
+// pathSuffixes yields nothing below minSharedSegments, because a lone trailing
+// segment is too weak to join a PREFIXED path on. But used bare it also drops
+// single-segment routes from the join entirely: a server serving GET /widgets
+// was indexed under no key at all, so no client could ever match it, and the
+// client side reported path_unknown against an index the path had never been
+// admitted to. LookupClientMatches already worked around this on one side with a
+// whole-path fallback; centralizing it here makes every builder and lookup agree.
+//
+// Only the exact full path is ever added, never a bare trailing segment of a
+// longer path, so this admits exact single-segment matches without weakening
+// suffix matching. Fabrication is held off on the client side instead, where
+// IsGenericPath drops infra names (/health, /status) and linkHTTP demands an
+// unambiguous provider before drawing a one-segment edge.
+func PathMatchKeys(normPath string) []string {
+	if sufs := pathSuffixes(normPath); len(sufs) > 0 {
+		return sufs
+	}
+	return []string{normPath}
+}
+
+// LookupClientMatches resolves a client path against the server suffix index by
+// trying the client path's own trailing-segment suffixes longest-first and
+// returning the first (most specific) hit, plus the suffix that matched. The
+// longest suffix is the full client path, so an exact full-path match still wins
+// first; shorter suffixes then let a prefixed client path ("/api/settings/x/y")
+// match a server serving the un-prefixed path ("/x/y"). For sub-minSharedSegments
+// paths (no suffixes) it falls back to a single full-path lookup, preserving the
+// original behavior.
+func LookupClientMatches(server map[string][]RouteRef, clientPath, method string) ([]RouteRef, string) {
+	sufs := pathSuffixes(clientPath)
+	if len(sufs) == 0 {
+		if m := server[RouteKey(clientPath, method)]; len(m) > 0 {
+			return m, clientPath
+		}
+		return server[RouteKey(clientPath, facts.MethodAny)], clientPath
+	}
+	for _, suf := range sufs {
+		// Prefer an exact-verb server route at this suffix, then fall back to a
+		// wildcard route (facts.MethodAny — a servlet or verb-less mapping that serves
+		// every method), so a concrete client call still resolves to it.
+		if m := server[RouteKey(suf, method)]; len(m) > 0 {
+			return m, suf
+		}
+		if m := server[RouteKey(suf, facts.MethodAny)]; len(m) > 0 {
+			return m, suf
+		}
+	}
+	return nil, clientPath
+}
+
+// CanonicalLeadingSlash ensures a non-empty path starts with "/", so a
+// base-relative client path ("settings/x") compares equal to the indexed
+// suffix form ("/settings/x").
+func CanonicalLeadingSlash(p string) string {
+	if p == "" || strings.HasPrefix(p, "/") {
+		return p
+	}
+	return "/" + p
+}
+
+// genericSegments are single-segment endpoint names so widely reused that a
+// path/method match between two repos carries no evidence they talk to each
+// other: infra probes, discovery roots, and API mount points. Nearly every
+// service serves some of these, so linking on them fabricates edges.
+var genericSegments = map[string]bool{
+	"health": true, "healthz": true, "healthcheck": true,
+	"status": true, "ping": true, "metrics": true,
+	"ready": true, "readyz": true, "live": true, "livez": true,
+	"version": true, "info": true, "api": true, "graphql": true,
+}
+
+// IsGenericPath reports whether a path is too low-signal to safely link on.
+//
+// This was originally a pure segment count (fewer than two segments = generic),
+// which swept up every legitimate single-segment endpoint — a client POSTing to
+// /activate could never resolve to the service serving POST /activate, and the
+// missed edge surfaced only as an unresolved coverage gap. The count is a proxy
+// for the real property (is this name so common that a match proves nothing?),
+// so test that property directly: a lone segment is generic when it is one of
+// the well-known infra/mount names above, not merely because it is alone.
+//
+// A single-segment path that clears the vocabulary is still weaker evidence
+// than a multi-segment one, so linkHTTP additionally requires its match to be
+// unambiguous — see the SingleSegmentPath gate there.
+func IsGenericPath(normPath string) bool {
+	var segs []string
+	for _, s := range strings.Split(normPath, "/") {
+		if s != "" {
+			segs = append(segs, s)
+		}
+	}
+	if strings.Contains(normPath, "{}") {
+		return false
+	}
+	if len(segs) == 0 {
+		return true // bare "/"
+	}
+	if len(segs) == 1 {
+		return genericSegments[strings.ToLower(segs[0])]
+	}
+	return false
+}
+
+// SingleSegmentPath reports whether a normalized path has exactly one segment
+// and no path parameter. Such a path passes IsGenericPath only by clearing the
+// generic vocabulary; linkHTTP still demands an unambiguous provider before
+// drawing an edge from one, keeping the linker's preference for a missing edge
+// over a fabricated one.
+func SingleSegmentPath(normPath string) bool {
+	if strings.Contains(normPath, "{}") {
+		return false
+	}
+	n := 0
+	for _, s := range strings.Split(normPath, "/") {
+		if s != "" {
+			n++
+		}
+	}
+	return n == 1
+}
+
+// normalizeLabel lowercases and strips '-'/'_' so "app-web",
+// "app_web", and "AppWeb" all compare equal.

@@ -25,6 +25,7 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/linkers/binders"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo"
+	"github.com/enola-labs/enola/internal/linkers/crossrepo/signals"
 	"github.com/enola-labs/enola/internal/renderers"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/plugin"
@@ -50,6 +51,7 @@ type Engine struct {
 	explainers *explainers.Registry
 	renderers  *renderers.Registry
 	binders    *binders.Registry
+	signals    *signals.Registry
 
 	// store is BUILD SCRATCH: it is reassigned to a fresh store at the top of each
 	// GenerateSnapshot and read only by the pipeline helpers, all under mu. It is
@@ -88,6 +90,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		explainers:   explainers.NewRegistry(),
 		renderers:    renderers.NewRegistry(),
 		binders:      binders.NewRegistry(),
+		signals:      signals.NewRegistry(),
 		store:        st,
 		persistCache: true,
 	}
@@ -119,6 +122,13 @@ func (e *Engine) RegisterRenderer(rnd renderers.Renderer) {
 // the stage it declares; see plugin.Binder.
 func (e *Engine) RegisterBinder(b plugin.Binder) {
 	e.binders.Register(b)
+}
+
+// RegisterCrossRepoSignal adds a cross-repo signal to the engine. Signals only
+// contribute in multi-repo (append) mode, where there is more than one repo for an edge
+// to run between; see plugin.CrossRepoSignal.
+func (e *Engine) RegisterCrossRepoSignal(s plugin.CrossRepoSignal) {
+	e.signals.Register(s)
 }
 
 // Store returns the published fact store. The returned store is immutable for as
@@ -578,7 +588,7 @@ func (e *Engine) linkCrossRepo(repoPaths map[string]string) {
 		return f.Props["synthetic"] == crossrepo.SyntheticMarker
 	})
 
-	links := crossrepo.ComputeLinks(e.store.All(), sourceReaderFor(repoPaths))
+	links := crossrepo.ComputeLinks(e.store.All(), sourceReaderFor(repoPaths), e.signals.All())
 	if len(links) == 0 {
 		return
 	}
