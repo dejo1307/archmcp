@@ -208,12 +208,13 @@ func (e *Engine) CurrentMeta(repoPath string) *facts.SnapshotMeta {
 		}
 	}
 	return &facts.SnapshotMeta{
-		RepoPath:       absRepo,
-		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
-		Extractors:     used,
-		EnolaVersion:   version.Version,
-		Git:            gitInfo(absRepo, e.cfg.Output.Dir),
-		ConfigHash:     computeConfigHash(e.cfg),
-		IgnoreGlobHash: computeIgnoreGlobHash(e.cfg),
+		RepoPath:         absRepo,
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		Extractors:       used,
+		EnolaVersion:     version.Version,
+		ExtractorVersion: cacheVersion,
+		Git:              gitInfo(absRepo, e.cfg.Output.Dir),
+		ConfigHash:       computeConfigHash(e.cfg),
+		IgnoreGlobHash:   computeIgnoreGlobHash(e.cfg),
 	}
 }

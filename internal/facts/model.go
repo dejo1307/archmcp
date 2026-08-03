@@ -231,6 +231,25 @@ type SnapshotMeta struct {
 	Git          *GitInfo `json:"git,omitempty"`           // repo VCS state, nil when not a git repo
 	ConfigHash   string   `json:"config_hash,omitempty"`   // hash of the effective config (extractors, explainers, renderers, globs, output) — a superset of IgnoreGlobHash
 
+	// ExtractorVersion identifies the EXTRACTION BEHAVIOUR that produced this graph:
+	// internal/engine.cacheVersion, the constant bumped whenever an extractor starts
+	// reading something differently (and guarded by internal/cachecov, which refuses a
+	// bump without a covering test).
+	//
+	// It is provenance EnolaVersion cannot supply. A released binary carries a version
+	// that moves with every release, so an upgrade is visible; a local build carries the
+	// constant "dev" forever, so an extractor change is invisible in it. Every field
+	// beside this one then reads identical across a change that rewrote the graph — which
+	// is exactly how a fix that removed 21 fabricated facts came to be recorded, in this
+	// repository's own architecture history, as somebody deleting 21 things from the
+	// codebase.
+	//
+	// The alternative — identifying the binary itself by size and mtime, as the cache does
+	// in buildIdentity — catches undeclared changes too, and was rejected: it would mark
+	// every recompile as a new extraction regime, which for anyone developing enola is
+	// several times an hour, and a marker that fires constantly stops carrying meaning.
+	ExtractorVersion string `json:"extractor_version,omitempty"`
+
 	// Extraction-quality fields (the loop signal).
 	FilesSeen      int      `json:"files_seen,omitempty"`       // source files the walker enumerated (excludes ignored)
 	FilesParsed    int      `json:"files_parsed,omitempty"`     // distinct files that produced at least one fact
@@ -305,18 +324,22 @@ type CoverageSummary struct {
 // improving enola can act on. It deliberately omits the large per-file FileHashes
 // list that lives in snapshot.meta.json (the internal superset).
 type Receipt struct {
-	SnapshotID     string            `json:"snapshot_id"`
-	EnolaVersion   string            `json:"enola_version"`
-	GeneratedAt    string            `json:"generated_at"`
-	Duration       string            `json:"duration"`
-	RepoPath       string            `json:"repo_path"`
-	Git            *GitInfo          `json:"git,omitempty"`
-	Extractors     []string          `json:"extractors"`
-	Explainers     []string          `json:"explainers"`
-	Renderers      []string          `json:"renderers,omitempty"`
-	ConfigHash     string            `json:"config_hash,omitempty"`
-	IgnoreGlobHash string            `json:"ignore_glob_hash,omitempty"`
-	OutputHashes   map[string]string `json:"output_hashes,omitempty"`
+	SnapshotID string `json:"snapshot_id"`
+	// EnolaVersion is the build; ExtractorVersion is what that build EXTRACTS LIKE. They
+	// differ for every local build, where the former is the constant "dev". See
+	// SnapshotMeta.ExtractorVersion.
+	EnolaVersion     string            `json:"enola_version"`
+	ExtractorVersion string            `json:"extractor_version,omitempty"`
+	GeneratedAt      string            `json:"generated_at"`
+	Duration         string            `json:"duration"`
+	RepoPath         string            `json:"repo_path"`
+	Git              *GitInfo          `json:"git,omitempty"`
+	Extractors       []string          `json:"extractors"`
+	Explainers       []string          `json:"explainers"`
+	Renderers        []string          `json:"renderers,omitempty"`
+	ConfigHash       string            `json:"config_hash,omitempty"`
+	IgnoreGlobHash   string            `json:"ignore_glob_hash,omitempty"`
+	OutputHashes     map[string]string `json:"output_hashes,omitempty"`
 
 	FactCount    int            `json:"fact_count"`
 	InsightCount int            `json:"insight_count"`
@@ -340,20 +363,21 @@ type ReceiptQuality struct {
 // Receipt projects a SnapshotMeta into the compact receipt manifest.
 func (m SnapshotMeta) Receipt() Receipt {
 	return Receipt{
-		SnapshotID:     m.SnapshotID,
-		EnolaVersion:   m.EnolaVersion,
-		GeneratedAt:    m.GeneratedAt,
-		Duration:       m.Duration,
-		RepoPath:       m.RepoPath,
-		Git:            m.Git,
-		Extractors:     m.Extractors,
-		Explainers:     m.Explainers,
-		Renderers:      m.Renderers,
-		ConfigHash:     m.ConfigHash,
-		IgnoreGlobHash: m.IgnoreGlobHash,
-		OutputHashes:   m.OutputHashes,
-		FactCount:      m.FactCount,
-		InsightCount:   m.InsightCount,
+		SnapshotID:       m.SnapshotID,
+		EnolaVersion:     m.EnolaVersion,
+		ExtractorVersion: m.ExtractorVersion,
+		GeneratedAt:      m.GeneratedAt,
+		Duration:         m.Duration,
+		RepoPath:         m.RepoPath,
+		Git:              m.Git,
+		Extractors:       m.Extractors,
+		Explainers:       m.Explainers,
+		Renderers:        m.Renderers,
+		ConfigHash:       m.ConfigHash,
+		IgnoreGlobHash:   m.IgnoreGlobHash,
+		OutputHashes:     m.OutputHashes,
+		FactCount:        m.FactCount,
+		InsightCount:     m.InsightCount,
 		Quality: ReceiptQuality{
 			FilesSeen:         m.FilesSeen,
 			FilesParsed:       m.FilesParsed,

@@ -13,19 +13,24 @@ import (
 // edited, an explainer toggled.
 func TestEpoch_ChangesWithEveryInputThatChangesTheGraph(t *testing.T) {
 	base := facts.SnapshotMeta{
-		EnolaVersion:   "0.9.1",
-		ConfigHash:     "sha256:cfg",
-		IgnoreGlobHash: "sha256:glob",
-		Extractors:     []string{"go", "ts"},
-		Explainers:     []string{"cycles"},
+		EnolaVersion:     "0.9.1",
+		ExtractorVersion: "v146",
+		ConfigHash:       "sha256:cfg",
+		IgnoreGlobHash:   "sha256:glob",
+		Extractors:       []string{"go", "ts"},
+		Explainers:       []string{"cycles"},
 	}
 	want := Epoch(base)
 
 	for name, mutate := range map[string]func(m *facts.SnapshotMeta){
-		"version":     func(m *facts.SnapshotMeta) { m.EnolaVersion = "0.9.2" },
-		"config":      func(m *facts.SnapshotMeta) { m.ConfigHash = "sha256:other" },
-		"ignoreGlobs": func(m *facts.SnapshotMeta) { m.IgnoreGlobHash = "sha256:other" },
-		"extractors":  func(m *facts.SnapshotMeta) { m.Extractors = []string{"go", "ts", "swift"} },
+		"version": func(m *facts.SnapshotMeta) { m.EnolaVersion = "0.9.2" },
+		// The one that was missing, and the only one that moves for a locally built
+		// binary: EnolaVersion is the constant "dev" until a release sets it, so without
+		// this an extractor change is invisible to every other field here.
+		"extractorVersion": func(m *facts.SnapshotMeta) { m.ExtractorVersion = "v147" },
+		"config":           func(m *facts.SnapshotMeta) { m.ConfigHash = "sha256:other" },
+		"ignoreGlobs":      func(m *facts.SnapshotMeta) { m.IgnoreGlobHash = "sha256:other" },
+		"extractors":       func(m *facts.SnapshotMeta) { m.Extractors = []string{"go", "ts", "swift"} },
 		// Explainers change no fact, but findings are keyed by their source, so an
 		// explainer present on one side contributes its entire output as a delta — and
 		// Summary counts findings.
@@ -47,6 +52,24 @@ func TestEpoch_IgnoresPluginOrder(t *testing.T) {
 	b := facts.SnapshotMeta{Extractors: []string{"ts", "go"}, Explainers: []string{"layers", "cycles"}}
 	if Epoch(a) != Epoch(b) {
 		t.Fatal("plugin order must not open a new epoch")
+	}
+}
+
+// The scenario that produced the fix, end to end: two builds reporting the same version,
+// the same config and the same plugins, differing only in how their extractors read code.
+// Before ExtractorVersion entered the fingerprint these were one epoch, so a graph rewritten
+// by an enola change was recorded as a change to the codebase.
+func TestEpoch_SeparatesTwoLocalBuildsThatExtractDifferently(t *testing.T) {
+	before := facts.SnapshotMeta{
+		EnolaVersion: "dev", ExtractorVersion: "v146",
+		ConfigHash: "sha256:cfg", Extractors: []string{"go"},
+	}
+	after := before
+	after.ExtractorVersion = "v147"
+
+	if Epoch(before) == Epoch(after) {
+		t.Fatal("two builds that extract differently must not share an epoch — the delta between " +
+			"them is enola's work, not the author's")
 	}
 }
 

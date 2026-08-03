@@ -276,6 +276,15 @@ func ShortID(id string) string {
 // reduces the same inputs to one comparable token, so a log can group revisions into
 // stretches that mean something relative to each other and mark the seams between them.
 //
+// ExtractorVersion is the load-bearing one for anybody running a build they made
+// themselves, and it was missing from the first version of this function — a gap that
+// showed up the first time it mattered. EnolaVersion is the constant "dev" in every local
+// build, the config had not changed, and the extractor set had not changed, so a fix that
+// removed 21 fabricated facts was recorded in this repository's own history as somebody
+// deleting 21 things from the codebase: the exact misreading the epoch exists to prevent.
+// A released binary is covered by EnolaVersion alone; a development one is covered by
+// nothing else.
+//
 // Explainers are included even though they do not change a single fact: findings are
 // keyed by their source, so an explainer present on one side only contributes its ENTIRE
 // output as a delta, and Summary counts findings.
@@ -287,6 +296,7 @@ func Epoch(m facts.SnapshotMeta) string {
 	h := sha256.New()
 	write := func(s string) { h.Write([]byte(s)); h.Write([]byte{0}) }
 	write(m.EnolaVersion)
+	write(m.ExtractorVersion)
 	write(m.ConfigHash)
 	write(m.IgnoreGlobHash)
 	writeSet := func(vals []string) {

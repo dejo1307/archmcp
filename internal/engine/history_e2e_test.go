@@ -312,3 +312,27 @@ func TestHistory_ARerunOnAnUntouchedTreeAddsNothing(t *testing.T) {
 		t.Fatalf("want 1 revision for 3 identical snapshots, got %d", len(entries))
 	}
 }
+
+// The provenance a local build cannot get from its version. Asserted end to end because the
+// field is only useful if the ENGINE sets it — a receipt shape that nothing populates would
+// pass every unit test in facts and still leave the epoch blind.
+func TestHistory_RecordsWhatTheBuildExtractsLike(t *testing.T) {
+	repo, hist, eng := historyRepo(t)
+	snapshot(t, eng, repo)
+
+	entries, err := history.Read(hist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, rev, err := history.LoadLines(hist, entries[0].Blob.Segment, entries[0].Blob.Member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Receipt.ExtractorVersion == "" {
+		t.Error("the receipt records no extractor version, so the epoch cannot tell two builds apart")
+	}
+	if rev.Receipt.ExtractorVersion == rev.Receipt.EnolaVersion {
+		t.Errorf("the extractor version is just the build version (%q) — it must track extraction behaviour",
+			rev.Receipt.ExtractorVersion)
+	}
+}

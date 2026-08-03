@@ -454,9 +454,12 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			InsightCount: len(allInsights),
 
 			EnolaVersion: version.Version,
-			SnapshotID:   computeSnapshotID(factsBuf.Bytes(), version.Version, configHash),
-			Git:          gitInfo(absRepo, e.cfg.Output.Dir),
-			ConfigHash:   configHash,
+			// What this build EXTRACTS LIKE, which for a local build the version cannot
+			// say — see facts.SnapshotMeta.ExtractorVersion.
+			ExtractorVersion: cacheVersion,
+			SnapshotID:       computeSnapshotID(factsBuf.Bytes(), version.Version, configHash),
+			Git:              gitInfo(absRepo, e.cfg.Output.Dir),
+			ConfigHash:       configHash,
 
 			FilesSeen:          len(files),
 			FilesParsed:        e.store.CountFilesWithFacts(files, parsedPrefix),
