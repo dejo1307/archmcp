@@ -2016,3 +2016,62 @@ func allSignals() []plugin.CrossRepoSignal {
 		httpsignal.New(vocab.Default()), importsignal.New(), kafkasignal.New(vocab.Default()), sharedcodesignal.New(vocab.Default()),
 	}
 }
+
+// TestComputeLinks_BaseRelativeClientResolvesAsProbable pins the commonest real-world
+// client shape there is, which no other test here covered end to end: a frontend whose
+// HTTP client is configured with a base URL ending in a mount prefix, so every call site
+// in the source is written base-relative and format-suffixed ("/v2/categories.json")
+// while the backend serves the full path ("/api/v2/categories").
+//
+// Two properties matter and they pull in opposite directions:
+//
+//   - The call MUST resolve. The prefix lives in a base-URL constant the extractor
+//     cannot see, so demanding a full-path match here would drop every call site in the
+//     repo and report the whole frontend as a coverage blind spot.
+//   - The match MUST be "probable", not "verified". The client never named the
+//     provider's complete path, so a second backend mounted at a different prefix could
+//     serve the same suffix. Reporting it as verified would overstate what was checked.
+//
+// The estate deliberately contains a second backend, so the suffix match is happening
+// with an alternative present rather than in a one-candidate vacuum.
+func TestComputeLinks_BaseRelativeClientResolvesAsProbable(t *testing.T) {
+	in := []facts.Fact{
+		serverRoute("api", "/api/v2/categories", "GET"),
+		serverRoute("api", "/api/public/v1/complaints", "POST"),
+		// A second backend, serving something else entirely.
+		serverRoute("billing", "/api/v1/invoices", "GET"),
+		// Base-relative, format-suffixed call sites, as a base-URL-configured client emits.
+		clientRoute("web", "/v2/categories.json", "GET", nil),
+		clientRoute("web", "/public/v1/complaints.json", "POST", nil),
+	}
+	out := ComputeLinks(in, nil, allSignals(), vocab.Default())
+
+	e := findEdge(out, "web", "api")
+	if e == nil {
+		t.Fatalf("base-relative client calls must still resolve; edges=%+v", crossRepoEdges(out))
+	}
+	if got := e.Props["confidence"]; got != "probable" {
+		t.Errorf("confidence = %v, want probable — the client never named the provider's complete path", got)
+	}
+	if got := e.Props["endpoint_count"]; got != 2 {
+		t.Errorf("endpoint_count = %v, want 2", got)
+	}
+	if findEdge(out, "web", "billing") != nil {
+		t.Error("a suffix match must not spill onto the second backend")
+	}
+
+	// And the resolution must be visible as full coverage, not a blind spot: this is the
+	// number a frontend team looks at to decide whether enola saw their API surface.
+	for _, f := range out {
+		if f.Kind != facts.KindService || f.Repo != "web" {
+			continue
+		}
+		cov, ok := f.Props["edge_coverage"].([]map[string]any)
+		if !ok || len(cov) != 1 {
+			t.Fatalf("web edge_coverage = %+v, want one entry", f.Props["edge_coverage"])
+		}
+		if cov[0]["detected"] != 2 || cov[0]["resolved"] != 2 || cov[0]["unresolved"] != 0 {
+			t.Errorf("coverage = %+v, want 2 detected / 2 resolved / 0 unresolved", cov[0])
+		}
+	}
+}

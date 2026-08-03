@@ -3,6 +3,7 @@ package tsextractor
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -192,7 +193,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	}
 
 	// Emit module facts for each directory
-	pkgNames := collectPackageNames(repoPath, files)
+	pkgNames := collectPackageNames(repoPath)
 	for dir := range modules {
 		props := map[string]any{
 			"language": "typescript",
@@ -887,24 +888,61 @@ func detectNextJS(repoPath string) bool {
 // collectPackageNames maps each directory holding a package.json to the package
 // name it declares. Read off-glob (package.json is not a TypeScript file), the
 // same way tsconfig aliases and ORM flags already are.
-func collectPackageNames(repoPath string, files []string) map[string]string {
+// collectPackageNames maps each directory that declares an npm package to its name,
+// read from the "name" field of the package.json it contains.
+//
+// It WALKS THE REPO ITSELF rather than consuming the engine's ignore-glob-filtered file
+// list, following the precedent set by the OpenAPI and Symfony-config extractors: the
+// globs exist to suppress config/data noise, not to hide architecturally meaningful
+// files. That distinction is load-bearing here. A config that ignores "**/*.json" — a
+// reasonable thing to write, and what the bundled mcp-arch.yaml does — removed every
+// package.json from the file list, so this returned nothing, no module carried a
+// package_name, and the cross-repo linker's own-@scope guard silently could not fire. A
+// repo importing a sibling package it publishes itself was then reported as depending
+// on whatever other repo happened to be labelled like the scope.
+//
+// The failure was invisible in two directions at once: nothing errored, and the golden
+// fixtures kept passing because they build their engine from config.Default(), which has
+// no such glob. Reading the file directly removes the config's ability to break the
+// guard at all.
+//
+// Because the globs no longer apply, every directory that must not be descended into is
+// named here instead — tsSkipDirs (shared with the alias-root walk) plus dot-directories
+// and testdata. node_modules is the critical one: a dependency's package.json would
+// otherwise be read as if the repo published it.
+func collectPackageNames(repoPath string) map[string]string {
 	out := map[string]string{}
-	for _, relFile := range files {
-		if filepath.Base(relFile) != "package.json" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(repoPath, relFile))
+	_ = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			continue
+			return nil // unreadable subtree: skip it rather than fail extraction
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != repoPath && (strings.HasPrefix(name, ".") || tsSkipDirs[name] || name == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "package.json" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
 		}
 		var pkg struct {
 			Name string `json:"name"`
 		}
 		if err := json.Unmarshal(data, &pkg); err != nil || pkg.Name == "" {
-			continue
+			return nil
 		}
-		out[filepath.ToSlash(filepath.Dir(relFile))] = pkg.Name
-	}
+		rel, err := filepath.Rel(repoPath, filepath.Dir(path))
+		if err != nil {
+			return nil
+		}
+		out[filepath.ToSlash(rel)] = pkg.Name
+		return nil
+	})
 	return out
 }
 

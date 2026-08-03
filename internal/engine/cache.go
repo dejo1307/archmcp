@@ -884,7 +884,33 @@ import (
 //
 // Longest matching prefix now wins, ties broken on the prefix string so the result is
 // a total order rather than a less-arbitrary one.
-const cacheVersion = "v145"
+// v146: package.json is now read DIRECTLY FROM DISK by the TypeScript extractor rather
+// than from the engine's ignore-glob-filtered file list, so a config that drops JSON as
+// data noise can no longer disable the module `package_name` prop.
+//
+// The bundled mcp-arch.yaml ignores "**/*.json" — a reasonable thing to write, and the
+// only config most snapshots actually run under. Under it, collectPackageNames saw no
+// package.json at all, so NO module carried package_name, so the cross-repo linker's
+// own-@scope guard could not fire. A repo importing a sibling package it publishes
+// itself ("@acme/native-darwin-arm64" from the repo that publishes "@acme/sdk") was
+// reported as depending on whatever other repo happened to be labelled "acme".
+//
+// Observed on a real pair: a Rust repo publishing @scope-prefixed platform packages drew
+// a fabricated import edge to the Python repo of the same name — an edge pointing the
+// wrong way down a dependency that does not exist.
+//
+// Nothing caught it in either direction. No error was raised, and the golden fixtures
+// kept passing because TestGolden builds its engine from config.Default(), which has no
+// such glob — so the fixture and the shipped config had been disagreeing for as long as
+// the guard existed. This is the same principle the OpenAPI and Symfony-config
+// extractors already apply: the globs exist to suppress config/data noise, not to hide
+// architecturally meaningful files.
+//
+// Because the globs no longer apply to this read, the directories that must not be
+// descended into are named in the extractor instead: tsSkipDirs (shared with the
+// alias-root walk), dot-directories, and testdata — node_modules being the critical one,
+// since a dependency's package.json would otherwise read as one the repo publishes.
+const cacheVersion = "v146"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
