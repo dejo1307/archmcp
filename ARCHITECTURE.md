@@ -991,6 +991,12 @@ After `generate_snapshot`, these are written to the output directory (default `.
 | `previous/` | The immediately-preceding snapshot, auto-rotated on each write — the `baseline='previous'` source for `diff_snapshot` |
 | `baseline/` | A snapshot pinned by `set_baseline`, preserved across re-snapshots — the default `diff_snapshot` baseline |
 
+Outside the repository, `~/.enola/graphs/<workspace>/history/` holds the **architecture history**: one append-only line per snapshot, plus each revision's graph stored as a patch against the previous one. See [docs/HISTORY.md](docs/HISTORY.md).
+
+It sits outside `.enola/` for a reason that is not convenience. Every artifact in the table above is derivable from the tree — delete them all and the next run reproduces the same `snapshot_id` — and a history is the first thing enola keeps that the working tree has forgotten. So it is bounded: every revision is replayable (`enola log --backfill` reproduces it from the commit), **nothing that judges the present reads it** (`check`, `diff_snapshot`, freshness and drift consult only the current snapshot and the pinned baseline), and deleting it changes no verdict and no `snapshot_id`. Both halves are regression tests, not intentions.
+
+That rule is also why `previous/` and `baseline/` above are still full copies rather than references into the history. Making them references would save the duplication and would make removing the history able to change what the gate says — precisely the dependency the rule forbids.
+
 ### The snapshot receipt
 
 `receipt.json` (and the same fields inside `snapshot.meta.json`) exists to answer *"what was this graph deterministic over, and how complete is it?"* — the trust question before an agent relies on an `impact_analysis` or a `diff_snapshot`. It serves two consumers:

@@ -201,11 +201,16 @@ that column is a call to a local binary.
 
 Two more things are worth knowing, and neither follows from the trade above.
 
-- **Three snapshots, not a timeline.** Current, `previous/` one step back, and one pinned
-  `baseline/`. Each run publishes a complete artifact set and rotates the old one out; nothing
-  accumulates. enola cannot tell you what your architecture looked like in March unless you pinned it
-  in March — and if you want that history, committing the artifacts is a thing you can do, not a
-  thing enola does for you.
+- **Three snapshots for grading, plus an optional timeline.** The gate still works from exactly
+  three: current, `previous/` one step back, and one pinned `baseline/`. Each run publishes a
+  complete artifact set and rotates the old one out.
+  Alongside them, enola now records each snapshot as a revision in an append-only **architecture
+  history** ([HISTORY.md](HISTORY.md)) — so it can answer what your architecture looked like in
+  March, and `enola log --backfill` can build that answer from your commits even for a repository it
+  has never seen. That history is deliberately kept OUT of the three above: it is derived, it is
+  replayable, and nothing that judges the present reads it, so deleting it changes no verdict and no
+  `snapshot_id`. The duplication between `previous/`, `baseline/` and the history is the price of
+  that separation, and it is the reason the paragraph below still holds.
 - **A cross-repo edge is only as current as the least recently indexed side.** Appending re-links
   from scratch but does not re-extract what is already loaded, so a graph built up across an
   afternoon holds each repository as of the run that added it. This does not touch a per-repo
