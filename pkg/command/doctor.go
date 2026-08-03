@@ -67,12 +67,16 @@ func (r *Runner) Doctor(args []string) {
 	installed := hooksConfigured(repoDir)
 	baselineIssue := r.baselineUsability(repoDir, outDir)
 
+	memLimit, memSource := bootstrap.MemoryLimit()
+
 	if *asJSON {
 		out := map[string]any{
 			"repo":              repoDir,
 			"hooks_configured":  installed,
 			"state":             state,
 			"baseline_unusable": baselineIssue,
+			"memory_limit":      memLimit,
+			"memory_limit_from": memSource,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -81,6 +85,13 @@ func (r *Runner) Doctor(args []string) {
 	}
 
 	fmt.Printf(r.name()+" doctor: %s\n\n", repoDir)
+
+	// The runtime settings this process applied to itself. Reported here — and only
+	// here, plus the server's startup log — because it belongs in a diagnostic and not
+	// at the top of every command's output, which is where it used to be.
+	fmt.Println("Runtime")
+	fmt.Printf("  %s\n", bootstrap.MemoryLimitLine())
+	fmt.Println()
 
 	// Asked and answered BEFORE a session ends, which is the difference between this
 	// and reading the last outcome below: an unusable baseline makes the hooks decline

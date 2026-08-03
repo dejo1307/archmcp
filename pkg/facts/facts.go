@@ -26,6 +26,11 @@ type (
 // out-of-module tool checking provenance or extraction quality — unmarshal into
 // the engine's own shapes instead of hand-written JSON mirrors that drift.
 type (
+	// SnapshotMeta is the full provenance record a snapshot carries. Re-exported
+	// because a consumer that derives anything from a snapshot's IDENTITY (the
+	// architecture history's epoch fingerprint and repo identity) needs the fields
+	// the Receipt projection drops, and must read them from the engine's own shape.
+	SnapshotMeta    = internal.SnapshotMeta
 	Receipt         = internal.Receipt
 	ReceiptQuality  = internal.ReceiptQuality
 	GraphReceipt    = internal.GraphReceipt
@@ -43,6 +48,18 @@ type (
 	ImpactResult  = internal.ImpactResult
 	TraversalNode = internal.TraversalNode
 )
+
+// RepoIdentity returns the portable identity of the repository a snapshot describes —
+// its normalized git remote, falling back to the checkout directory name. Re-exported
+// because anything that PERSISTS a reference to a repository (the architecture history)
+// must key on something that survives being read on another machine, and an absolute
+// path is not that. See internal/facts for the full contract.
+func RepoIdentity(m SnapshotMeta) string { return internal.RepoIdentity(m) }
+
+// NormalizeRemote reduces a git remote URL to a comparable repository identity (host
+// plus path, no scheme, credentials, port or ".git"). Re-exported alongside RepoIdentity
+// for consumers holding a raw remote rather than a whole SnapshotMeta.
+func NormalizeRemote(raw string) string { return internal.NormalizeRemote(raw) }
 
 // NewStore builds an empty fact store; callers Add() facts (e.g. those read from a
 // persisted baseline snapshot) to rebuild an in-memory store off the graph path.

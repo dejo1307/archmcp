@@ -1,0 +1,156 @@
+package engine
+
+import (
+	"log"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/enola-labs/enola/internal/diff"
+	"github.com/enola-labs/enola/internal/facts"
+	inthistory "github.com/enola-labs/enola/internal/history"
+	pkghistory "github.com/enola-labs/enola/pkg/history"
+)
+
+// recordHistory appends one revision to the repository's architecture history.
+//
+// It runs at the END of WriteArtifacts, after every artifact is on disk, and every
+// failure inside it is logged and swallowed. A history is a convenience built on top of
+// a snapshot; a snapshot that fails because its history could not be written would have
+// inverted that relationship.
+//
+// The delta is computed against previous/, which WriteArtifacts has just rotated, so it
+// holds the immediately preceding run — the parent revision by construction. That is the
+// same pair diff_snapshot compares under `--baseline=previous`, computed by the same
+// function, so the log's counts and the diff's counts cannot drift apart.
+func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snapshotBundle) {
+	if !e.cfg.HistoryEnabled() || b.snapshot == nil {
+		return
+	}
+	root, err := pkghistory.Root(repoPath, e.cfg.History.Dir)
+	if err != nil {
+		log.Printf("[engine] warning: cannot locate history dir: %v", err)
+		return
+	}
+
+	// The published snapshot carries the meta WITHOUT output hashes; the copy passed in
+	// has them. Neither matters to the delta, but the entry should describe the
+	// artifacts that were actually written, so record from the passed copy.
+	current := *b.snapshot
+	current.Meta = meta
+
+	entry := pkghistory.Entry{
+		ID:      meta.SnapshotID,
+		Repo:    facts.RepoIdentity(meta),
+		At:      meta.GeneratedAt,
+		Epoch:   pkghistory.Epoch(meta),
+		Git:     meta.Git,
+		Parents: gitParents(repoPath),
+		Repos:   repoRefs(e, b),
+		Summary: summarize(&current, previousSnapshotFor(repoPath, e.cfg.Output.Dir)),
+	}
+
+	recorded, err := inthistory.Append(root, entry, inthistory.Options{WorkingKeep: e.cfg.History.WorkingKeep})
+	if err != nil {
+		log.Printf("[engine] warning: could not record history: %v", err)
+		return
+	}
+	if recorded {
+		log.Printf("[engine] recorded history revision %s (%s)", entry.Short(), entry.Summary.Headline())
+	}
+}
+
+// previousSnapshotFor loads the rotated preceding snapshot, or nil when there is none
+// (the first snapshot of a repository, or a history enabled after the fact).
+func previousSnapshotFor(repoPath, outputDir string) *facts.Snapshot {
+	prev, err := LoadSnapshotDir(filepath.Join(repoPath, outputDir, PreviousSubdir))
+	if err != nil {
+		return nil
+	}
+	return prev
+}
+
+// summarize reduces a snapshot pair to the counts a log line needs.
+//
+// With no predecessor the result is marked Initial and carries absolute counts rather
+// than a delta: the first snapshot of a repository did not ADD ten thousand facts, it
+// found them, and a renderer shown a delta there reports the entire codebase as the work
+// of whoever ran enola first.
+func summarize(current *facts.Snapshot, previous *facts.Snapshot) pkghistory.Summary {
+	s := pkghistory.Summary{
+		FactCount:    len(current.Facts),
+		InsightCount: len(current.Insights),
+	}
+	if previous == nil {
+		s.Initial = true
+		return s
+	}
+
+	d := diff.Compute(previous, current)
+	s.FactsAdded = len(d.FactsAdded)
+	s.FactsRemoved = len(d.FactsRemoved)
+	s.FactsChanged = len(d.FactsChanged)
+	s.EdgesAdded = len(d.EdgesAdded)
+	s.EdgesRemoved = len(d.EdgesRemoved)
+	// The structural-cause buckets only. The incidental ones exist precisely because a
+	// finding can appear without this change causing it, and a log line is the last place
+	// that distinction should be dropped.
+	s.FindingsNew = len(d.FindingsNew)
+	s.FindingsResolved = len(d.FindingsResolved)
+	s.Incomparable = !d.Comparability.Comparable
+
+	byKind := map[string]int{}
+	for kind, n := range diff.KindCounts(d.FactsAdded) {
+		byKind[kind] += n
+	}
+	for kind, n := range diff.KindCounts(d.FactsRemoved) {
+		byKind[kind] -= n
+	}
+	for kind, n := range byKind {
+		if n == 0 {
+			delete(byKind, kind)
+		}
+	}
+	if len(byKind) > 0 {
+		s.ByKind = byKind
+	}
+	return s
+}
+
+// gitParents returns the parent commits of HEAD, for the case where the topology has to
+// be drawn without the repository in hand. It is a fallback and not the source of truth:
+// enola observes a sparse subset of the commit graph, so the edges BETWEEN observed
+// revisions are derived by ancestry at render time, not remembered here.
+func gitParents(repoPath string) []string {
+	out, err := runGit(repoPath, "rev-list", "--parents", "-n", "1", "HEAD")
+	if err != nil {
+		return nil
+	}
+	// "<commit> <parent>…" — the first field is HEAD itself.
+	fields := strings.Fields(out)
+	if len(fields) < 2 {
+		return nil // a root commit has no parents
+	}
+	return fields[1:]
+}
+
+// repoRefs records where each repository of a MULTI-repo graph sat at snapshot time. A
+// multi-repo snapshot has no single commit, so a renderer needs the vector; single-repo
+// graphs get nil, since Entry.Git already says everything.
+func repoRefs(e *Engine, b *snapshotBundle) []pkghistory.RepoRef {
+	if len(b.repoPaths) < 2 {
+		return nil
+	}
+	refs := make([]pkghistory.RepoRef, 0, len(b.repoPaths))
+	for label, abs := range b.repoPaths {
+		r := pkghistory.RepoRef{Label: label}
+		if gi := gitInfo(abs, e.cfg.Output.Dir); gi != nil {
+			r.Commit, r.Dirty = gi.Commit, gi.Dirty
+		}
+		refs = append(refs, r)
+	}
+	// Sorted by label: repoPaths is a map, so an unsorted vector would reorder itself
+	// between runs and make two byte-identical graphs produce two different log lines.
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Label < refs[j].Label })
+	return refs
+}

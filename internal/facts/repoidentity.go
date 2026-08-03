@@ -84,6 +84,29 @@ func SameRepo(a, b SnapshotMeta) bool {
 	return repoDirName(a.RepoPath) == repoDirName(b.RepoPath)
 }
 
+// RepoIdentity returns the PORTABLE identity of the repository a snapshot describes:
+// its normalized remote when it has one, otherwise its checkout directory name. Empty
+// only when a snapshot carries neither.
+//
+// It is the same two signals SameRepo compares, exposed as a value so a caller can
+// RECORD an identity rather than only compare two snapshots that both happen to be in
+// hand. Anything that persists a reference to a repository across machines needs that:
+// an absolute path names where a checkout sits on one machine and identifies nothing
+// anywhere else, so a stored path can never be reconciled with the same repository seen
+// from a CI runner, from a second workstation, or from the same machine after the
+// directory is moved.
+//
+// Deliberately NOT expressed as "the thing SameRepo compares": SameRepo answers true for
+// a missing RepoPath on either side (nothing can be concluded, and inventing a mismatch
+// would block a diff for no reason), which is the right answer to "are these the same?"
+// and the wrong one to "what is this?".
+func RepoIdentity(m SnapshotMeta) string {
+	if r := remoteIdentity(m); r != "" {
+		return r
+	}
+	return repoDirName(m.RepoPath)
+}
+
 // remoteIdentity returns the normalized remote recorded on a snapshot, if any.
 func remoteIdentity(m SnapshotMeta) string {
 	if m.Git == nil {

@@ -69,6 +69,16 @@ type Config struct {
 	// server. Optional: the zero value keeps the built-in defaults.
 	Dashboard DashboardConfig `yaml:"dashboard"`
 
+	// History records each snapshot as a revision in an append-only architecture
+	// history, so a repository has a timeline rather than only a current state and one
+	// baseline. Optional; the zero value keeps the built-in defaults.
+	//
+	// Deliberately ABSENT from computeConfigHash: it changes what enola remembers, never
+	// what it extracts. Folding it in would make every snapshot taken with history on
+	// incomparable with every snapshot taken with it off — turning an experimental,
+	// per-user setting into a reason to decline to grade somebody's change.
+	History HistoryConfig `yaml:"history"`
+
 	// Incremental enables per-extractor caching: an extractor's facts are reused
 	// across snapshots when the files it owns (and the repo's shared config files)
 	// are unchanged. Defaults to true. Set `incremental: false` to force a full
@@ -98,6 +108,48 @@ func (c *Config) IncrementalEnabled() bool {
 // environment variable overrides it.
 type DashboardConfig struct {
 	Port int `yaml:"port"`
+}
+
+// HistoryConfig controls the architecture history — the append-only record of the
+// revisions a repository has passed through.
+//
+// Recording is ON by default, which is a deliberate reversal of how a feature like this
+// usually ships. The questions a history exists to answer — when did this coupling
+// appear, which revision introduced this cycle — are questions about the PAST, so
+// opt-in guarantees that the first time anybody wants one, there is nothing to read.
+// Reconstructing it afterwards means re-snapshotting the repository commit by commit,
+// which is by far the most expensive thing in this feature. The data has to already be
+// there.
+//
+// What makes that affordable is that a revision is a ~450-byte line, the working-revision
+// ring bounds what an agent loop can produce, and the default location is outside the
+// repository — so the cost of being wrong about this default is a few megabytes in a
+// directory enola already owns, not a dirty git status or a surprise in someone's tree.
+//
+// It stays honest about enola's central rule (docs/SNAPSHOTS.md: everything enola writes
+// is derivable, and nothing that judges the present may read an accumulated file) because
+// that rule is enforced by tests rather than by leaving the feature switched off —
+// TestVerdictPathsDoNotReadTheHistory and
+// TestHistory_DeletingItChangesNothingAboutThePresent.
+type HistoryConfig struct {
+	// Enabled turns recording on. Nil (absent) means on; set it to false to stop
+	// recording without removing what is already there.
+	Enabled *bool `yaml:"enabled,omitempty"`
+
+	// Dir overrides where the history is kept. Empty means outside the repository, under
+	// ~/.enola/graphs/<workspace>/history — see history.Root for why that is the default.
+	// A relative path resolves against the repository; set it when the history should
+	// travel with the checkout (to commit it, or to publish it from CI).
+	Dir string `yaml:"dir,omitempty"`
+
+	// WorkingKeep caps how many unanchored revisions (dirty tree, or no git at all) are
+	// kept per base commit. Zero means the built-in default; negative keeps every one.
+	WorkingKeep int `yaml:"working_keep,omitempty"`
+}
+
+// HistoryEnabled reports whether snapshots are recorded as history (the default).
+func (c *Config) HistoryEnabled() bool {
+	return c.History.Enabled == nil || *c.History.Enabled
 }
 
 // OutputConfig controls where and how output artifacts are generated.

@@ -1060,6 +1060,11 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 		e.current.CompareAndSwap(b, &snapshotBundle{store: b.store, snapshot: &snapCopy, repoPaths: b.repoPaths})
 	}
 
+	// Record this revision in the architecture history (off unless configured). Last,
+	// and non-fatal: it reads previous/, which the rotation above has just filled, and a
+	// snapshot must never fail because the log of snapshots could not be appended to.
+	e.recordHistory(repoPath, meta, b)
+
 	return nil
 }
 

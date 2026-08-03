@@ -428,6 +428,13 @@ func NewServer(eng *Engine, cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The one place the soft memory limit is worth announcing. ConfigureRuntime is
+	// silent (see its doc) because a working default is not news on every CLI
+	// invocation — but a server is long-lived, holds whole graphs in memory, and its
+	// log is what somebody reads after it was OOM-killed. Logged here rather than in
+	// internal/server so it cannot depend on which binary started the server, and
+	// because internal/server cannot reach this package.
+	log.Printf("[runtime] %s", MemoryLimitLine())
 	return &Server{srv: srv}, nil
 }
 
