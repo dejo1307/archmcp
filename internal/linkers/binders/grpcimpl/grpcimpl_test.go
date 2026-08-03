@@ -1,11 +1,20 @@
-package engine
+package grpcimpl
 
 import (
+	"context"
+	"regexp"
 	"testing"
 
-	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/facts"
 )
+
+// bind runs the binder over the store, failing the test on error.
+func bind(t *testing.T, store *facts.Store) {
+	t.Helper()
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+}
 
 // grpcServerRoute builds a server-role gRPC route fact like the grpc extractor emits.
 func grpcServerRoute(service, method string) facts.Fact {
@@ -13,8 +22,11 @@ func grpcServerRoute(service, method string) facts.Fact {
 		Kind: facts.KindRoute,
 		Name: "/" + service + "/" + method,
 		Props: map[string]any{
-			"type": "grpc", "role": "server", "framework": "grpc",
-			"rpc_service": service, "rpc_method": method,
+			facts.PropRouteType: facts.RouteTypeGRPC,
+			facts.PropRole:      facts.RoleServer,
+			facts.PropFramework: facts.FrameworkGRPC,
+			"rpc_service":       service,
+			"rpc_method":        method,
 		},
 	}
 }
@@ -29,8 +41,8 @@ func routeHandledBy(f facts.Fact) (string, bool) {
 }
 
 func TestBindGRPCHandlers_BindsViaEmbedConvention(t *testing.T) {
-	eng, _ := New(config.Default())
-	eng.Store().Add(
+	store := facts.NewStore()
+	store.Add(
 		grpcServerRoute("users.v1.UserService", "GetUser"),
 		grpcServerRoute("users.v1.UserService", "CreateUser"),
 		facts.Fact{
@@ -44,10 +56,10 @@ func TestBindGRPCHandlers_BindsViaEmbedConvention(t *testing.T) {
 		facts.Fact{Kind: facts.KindSymbol, Name: "users.UserService.CreateUser", Props: map[string]any{"symbol_kind": facts.SymbolMethod}},
 	)
 
-	eng.bindGRPCHandlers()
+	bind(t, store)
 
 	for _, method := range []string{"GetUser", "CreateUser"} {
-		routes, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/" + method})
+		routes, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/" + method})
 		if len(routes) != 1 {
 			t.Fatalf("route lookup for %s = %d, want 1", method, len(routes))
 		}
@@ -65,26 +77,12 @@ func TestBindGRPCHandlers_BindsViaEmbedConvention(t *testing.T) {
 	}
 }
 
-// pyGRPCClientRoute builds a provisional (short-name) Python gRPC client route like
-// the Python extractor emits before the engine resolves it to the FQ wire path.
-func pyGRPCClientRoute(short, method string) facts.Fact {
-	return facts.Fact{
-		Kind: facts.KindRoute,
-		Name: "/" + short + "/" + method,
-		Props: map[string]any{
-			"role": "client", "method": "POST", "framework": "grpc",
-			"language": "python", "source": "python-grpc-client", "type": "grpc",
-			"rpc_method": method, "grpc_service_short": short,
-		},
-	}
-}
-
 // TestBindGRPCHandlers_BindsPythonServicer: a Python servicer class subclassing a
 // generated <Service>Servicer base binds the proto route to its handler method,
 // exactly as the Go embed convention does.
 func TestBindGRPCHandlers_BindsPythonServicer(t *testing.T) {
-	eng, _ := New(config.Default())
-	eng.Store().Add(
+	store := facts.NewStore()
+	store.Add(
 		grpcServerRoute("vosk.stt.v1.SttService", "StreamingRecognize"),
 		facts.Fact{
 			Kind: facts.KindSymbol, Name: "grpc/stt_server.SttServiceServicer",
@@ -99,9 +97,9 @@ func TestBindGRPCHandlers_BindsPythonServicer(t *testing.T) {
 		},
 	)
 
-	eng.bindGRPCHandlers()
+	bind(t, store)
 
-	routes, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/vosk.stt.v1.SttService/StreamingRecognize"})
+	routes, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/vosk.stt.v1.SttService/StreamingRecognize"})
 	if len(routes) != 1 {
 		t.Fatalf("route lookup = %d, want 1", len(routes))
 	}
@@ -115,53 +113,9 @@ func TestBindGRPCHandlers_BindsPythonServicer(t *testing.T) {
 	}
 }
 
-// TestResolvePyGRPCClientRoutes_RewritesToFQ: a provisional short client route is
-// rewritten to the fully-qualified wire path (matching the proto server route) and
-// the short route no longer exists.
-func TestResolvePyGRPCClientRoutes_RewritesToFQ(t *testing.T) {
-	eng, _ := New(config.Default())
-	eng.Store().Add(
-		grpcServerRoute("vosk.stt.v1.SttService", "StreamingRecognize"),
-		pyGRPCClientRoute("SttService", "StreamingRecognize"),
-	)
-
-	eng.resolvePyGRPCClientRoutes()
-
-	if got, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/SttService/StreamingRecognize"}); len(got) != 0 {
-		t.Errorf("short client route still present: %d", len(got))
-	}
-	routes, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/vosk.stt.v1.SttService/StreamingRecognize"})
-	foundClient := false
-	for _, r := range routes {
-		if r.Props["source"] == "python-grpc-client" {
-			foundClient = true
-			if r.Props["rpc_service"] != "vosk.stt.v1.SttService" {
-				t.Errorf("rpc_service = %v, want vosk.stt.v1.SttService", r.Props["rpc_service"])
-			}
-		}
-	}
-	if !foundClient {
-		t.Error("client route was not rewritten to the fully-qualified name")
-	}
-}
-
-// TestResolvePyGRPCClientRoutes_UnresolvedLeftShort: with no proto in the snapshot,
-// the client route stays provisional (short) rather than being dropped or corrupted.
-func TestResolvePyGRPCClientRoutes_UnresolvedLeftShort(t *testing.T) {
-	eng, _ := New(config.Default())
-	eng.Store().Add(pyGRPCClientRoute("SttService", "StreamingRecognize"))
-
-	eng.resolvePyGRPCClientRoutes()
-
-	routes, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/SttService/StreamingRecognize"})
-	if len(routes) != 1 {
-		t.Errorf("unresolved client route should be left short, got %d routes", len(routes))
-	}
-}
-
 func TestBindGRPCHandlers_NoEmbedNoBind(t *testing.T) {
-	eng, _ := New(config.Default())
-	eng.Store().Add(
+	store := facts.NewStore()
+	store.Add(
 		grpcServerRoute("users.v1.UserService", "GetUser"),
 		// Struct implements some unrelated interface, not Unimplemented*Server.
 		facts.Fact{
@@ -172,17 +126,17 @@ func TestBindGRPCHandlers_NoEmbedNoBind(t *testing.T) {
 		facts.Fact{Kind: facts.KindSymbol, Name: "users.UserService.GetUser", Props: map[string]any{"symbol_kind": facts.SymbolMethod}},
 	)
 
-	eng.bindGRPCHandlers()
+	bind(t, store)
 
-	routes, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
+	routes, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
 	if _, ok := routeHandledBy(routes[0]); ok {
 		t.Error("route was bound despite no Unimplemented*Server embed")
 	}
 }
 
 func TestBindGRPCHandlers_MissingMethodNotBound(t *testing.T) {
-	eng, _ := New(config.Default())
-	eng.Store().Add(
+	store := facts.NewStore()
+	store.Add(
 		grpcServerRoute("users.v1.UserService", "GetUser"),
 		facts.Fact{
 			Kind: facts.KindSymbol, Name: "users.UserService",
@@ -192,17 +146,17 @@ func TestBindGRPCHandlers_MissingMethodNotBound(t *testing.T) {
 		// No users.UserService.GetUser method symbol present.
 	)
 
-	eng.bindGRPCHandlers()
+	bind(t, store)
 
-	routes, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
+	routes, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
 	if _, ok := routeHandledBy(routes[0]); ok {
 		t.Error("route bound to a nonexistent method")
 	}
 }
 
 func TestBindGRPCHandlers_AmbiguousShortNameSkipped(t *testing.T) {
-	eng, _ := New(config.Default())
-	eng.Store().Add(
+	store := facts.NewStore()
+	store.Add(
 		grpcServerRoute("users.v1.UserService", "GetUser"),
 		// Two distinct structs both embed UnimplementedUserServiceServer.
 		facts.Fact{
@@ -219,17 +173,17 @@ func TestBindGRPCHandlers_AmbiguousShortNameSkipped(t *testing.T) {
 		facts.Fact{Kind: facts.KindSymbol, Name: "b.UserService.GetUser", Props: map[string]any{"symbol_kind": facts.SymbolMethod}},
 	)
 
-	eng.bindGRPCHandlers()
+	bind(t, store)
 
-	routes, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
+	routes, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
 	if _, ok := routeHandledBy(routes[0]); ok {
 		t.Error("ambiguous service short name should not bind")
 	}
 }
 
 func TestBindGRPCHandlers_Idempotent(t *testing.T) {
-	eng, _ := New(config.Default())
-	eng.Store().Add(
+	store := facts.NewStore()
+	store.Add(
 		grpcServerRoute("users.v1.UserService", "GetUser"),
 		facts.Fact{
 			Kind: facts.KindSymbol, Name: "users.UserService",
@@ -239,10 +193,10 @@ func TestBindGRPCHandlers_Idempotent(t *testing.T) {
 		facts.Fact{Kind: facts.KindSymbol, Name: "users.UserService.GetUser", Props: map[string]any{"symbol_kind": facts.SymbolMethod}},
 	)
 
-	eng.bindGRPCHandlers()
-	eng.bindGRPCHandlers() // second run must not duplicate the relation
+	bind(t, store)
+	bind(t, store) // second run must not duplicate the relation
 
-	routes, _ := eng.Store().QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
+	routes, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
 	n := 0
 	for _, r := range routes[0].Relations {
 		if r.Kind == facts.RelHandledBy {
@@ -251,5 +205,45 @@ func TestBindGRPCHandlers_Idempotent(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("handled_by relations = %d, want 1 (idempotent)", n)
+	}
+}
+
+// TestServerBases_AreExtensible pins the point of the convention table: a gRPC codegen
+// enola has never seen is supported by adding a row, with no change to the binding
+// logic. It uses a fabricated convention deliberately — if this ever needs the binder
+// edited to pass, the table has stopped being the extension point it claims to be.
+func TestServerBases_AreExtensible(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		grpcServerRoute("users.v1.UserService", "GetUser"),
+		facts.Fact{
+			Kind: facts.KindSymbol, Name: "users.UserService",
+			Props:     map[string]any{"symbol_kind": facts.SymbolClass},
+			Relations: []facts.Relation{{Kind: facts.RelImplements, Target: "gen.UserServiceGrpcBase"}},
+		},
+		facts.Fact{Kind: facts.KindSymbol, Name: "users.UserService.GetUser", Props: map[string]any{"symbol_kind": facts.SymbolMethod}},
+	)
+
+	// Not matched by either default convention.
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	routes, _ := store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
+	if _, ok := routeHandledBy(routes[0]); ok {
+		t.Fatal("unknown convention should not bind with the default table")
+	}
+
+	extended := append([]ServerBase{}, DefaultServerBases...)
+	extended = append(extended, ServerBase{
+		Generator: "test-codegen",
+		Pattern:   regexp.MustCompile(`^(?:.*\.)?(.+)GrpcBase$`),
+	})
+	if err := NewWith(extended).Bind(context.Background(), store); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	routes, _ = store.QueryAdvanced(facts.QueryOpts{Kind: facts.KindRoute, Name: "/users.v1.UserService/GetUser"})
+	target, ok := routeHandledBy(routes[0])
+	if !ok || target != "users.UserService.GetUser" {
+		t.Errorf("handled_by = %q (ok=%v), want users.UserService.GetUser", target, ok)
 	}
 }

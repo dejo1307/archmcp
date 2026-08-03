@@ -39,6 +39,10 @@ import (
 	"github.com/enola-labs/enola/internal/extractors/swiftextractor"
 	"github.com/enola-labs/enola/internal/extractors/tsextractor"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/binders/grpcclientfqn"
+	"github.com/enola-labs/enola/internal/linkers/binders/grpcimpl"
+	"github.com/enola-labs/enola/internal/linkers/binders/httphandler"
+	"github.com/enola-labs/enola/internal/linkers/binders/unmatchedroutes"
 	"github.com/enola-labs/enola/internal/renderers/llmcontext"
 	"github.com/enola-labs/enola/internal/server"
 	"github.com/enola-labs/enola/pkg/plugin"
@@ -370,6 +374,13 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExtractor(swiftextractor.New())
 	eng.RegisterExtractor(rubyextractor.New())
 	eng.RegisterExtractor(rustextractor.New())
+
+	// Register all OSS binders. Stage() decides when each runs relative to cross-repo
+	// linking, so the order here is presentation only — see plugin.Binder.
+	eng.RegisterBinder(grpcclientfqn.New())
+	eng.RegisterBinder(grpcimpl.New())
+	eng.RegisterBinder(httphandler.New())
+	eng.RegisterBinder(unmatchedroutes.New())
 
 	// Register all OSS explainers
 	eng.RegisterExplainer(cycles.New())

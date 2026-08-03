@@ -23,6 +23,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers"
 	"github.com/enola-labs/enola/internal/extractors"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/binders"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo"
 	"github.com/enola-labs/enola/internal/renderers"
 	"github.com/enola-labs/enola/internal/version"
@@ -48,6 +49,7 @@ type Engine struct {
 	extractors *extractors.Registry
 	explainers *explainers.Registry
 	renderers  *renderers.Registry
+	binders    *binders.Registry
 
 	// store is BUILD SCRATCH: it is reassigned to a fresh store at the top of each
 	// GenerateSnapshot and read only by the pipeline helpers, all under mu. It is
@@ -85,6 +87,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		extractors:   extractors.NewRegistry(),
 		explainers:   explainers.NewRegistry(),
 		renderers:    renderers.NewRegistry(),
+		binders:      binders.NewRegistry(),
 		store:        st,
 		persistCache: true,
 	}
@@ -110,6 +113,12 @@ func (e *Engine) RegisterExplainer(exp explainers.Explainer) {
 // RegisterRenderer adds a renderer to the engine.
 func (e *Engine) RegisterRenderer(rnd renderers.Renderer) {
 	e.renderers.Register(rnd)
+}
+
+// RegisterBinder adds a binder to the engine. Binders run in the link stage, each in
+// the stage it declares; see plugin.Binder.
+func (e *Engine) RegisterBinder(b plugin.Binder) {
+	e.binders.Register(b)
 }
 
 // Store returns the published fact store. The returned store is immutable for as
@@ -371,11 +380,9 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	// import/shared-lib references. Recomputed from scratch each run (prior
 	// synthetic facts are dropped first) so it stays idempotent across appends.
 	tStage = time.Now()
-	e.resolvePyGRPCClientRoutes()
+	e.runBinders(ctx, plugin.StagePreLink)
 	e.linkCrossRepo(workRepoPaths)
-	e.flagUnmatchedRoutes()
-	e.bindGRPCHandlers()
-	e.bindHTTPHandlers()
+	e.runBinders(ctx, plugin.StagePostLink)
 	tLink = time.Since(tStage)
 
 	// 3c. Build graph index for traversal queries
@@ -497,6 +504,26 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	return snapshot, nil
 }
 
+// runBinders runs every registered binder declaring the given stage, over the
+// build-scratch store.
+//
+// Order within a stage is registration order, but carries no meaning: the plugin.Binder
+// contract requires each binder to be independent of whether its stage-mates have run,
+// precisely so this loop can stay a loop. A binder that needs to observe another's output
+// is in the wrong stage.
+//
+// A binder error is logged and the run continues, matching how a failing explainer is
+// handled: a binder resolves edges that enrich the graph, so losing one degrades the
+// snapshot but does not invalidate the facts already extracted. Failing the whole
+// snapshot would trade a partial graph for none at all.
+func (e *Engine) runBinders(ctx context.Context, stage plugin.BindStage) {
+	for _, b := range e.binders.Stage(stage) {
+		if err := b.Bind(ctx, e.store); err != nil {
+			log.Printf("[engine] binder %s (%s) error: %v", b.Name(), stage, err)
+		}
+	}
+}
+
 // sourceReaderFor builds the crossrepo.SourceReader used to verify shared type names
 // against the code behind them. It mirrors ResolveFactFile's repo-prefix-strip-and-join,
 // but reads from the passed-in map rather than the published bundle (see linkCrossRepo).
@@ -567,55 +594,6 @@ func (e *Engine) linkCrossRepo(repoPaths map[string]string) {
 		}
 	}
 	log.Printf("[engine] cross-repo links: %d service nodes, %d dependency edges", services, edges)
-}
-
-// flagUnmatchedRoutes marks each route fact with its cross-repo resolution verdict,
-// recomputed idempotently on each (re-)link: a server route no loaded client calls
-// gets "unmatched_by_clients" (the unused-routes candidates); a client call site
-// that resolves to no loaded server route gets "unmatched_by_server" plus an
-// "unmatched_reason" (one of crossrepo's Reason* constants: no_method | generic_path |
-// method_mismatch | path_unknown) — the queryable counterpart to the aggregate
-// coverage counts. Both signals are only meaningful
-// with 2+ repos loaded; for a single-repo snapshot the key sets are empty and this
-// pass simply clears any stale flags. Surfaced via
-// query_facts(kind=route, prop=unmatched_by_clients|unmatched_by_server).
-func (e *Engine) flagUnmatchedRoutes() {
-	serverKeys := crossrepo.UnmatchedServerRouteKeys(e.store.All())
-	clientKeys := crossrepo.UnmatchedClientRouteKeys(e.store.All())
-	flaggedServer, flaggedClient := 0, 0
-	e.store.UpdateWhere(func(f *facts.Fact) {
-		if f.Kind != facts.KindRoute {
-			return
-		}
-		// A client-role route is a call site, never a served endpoint: it carries the
-		// reverse (unmatched_by_server) verdict, never unmatched_by_clients.
-		if f.Props != nil && f.Props[facts.PropRole] == facts.RoleClient {
-			delete(f.Props, "unmatched_by_clients")
-			if reason, ok := clientKeys[crossrepo.RouteIdentity(*f)]; ok {
-				f.Props["unmatched_by_server"] = true
-				f.Props["unmatched_reason"] = reason
-				flaggedClient++
-			} else {
-				delete(f.Props, "unmatched_by_server")
-				delete(f.Props, "unmatched_reason")
-			}
-			return
-		}
-		if serverKeys[crossrepo.RouteIdentity(*f)] {
-			if f.Props == nil {
-				f.Props = map[string]any{}
-			}
-			f.Props["unmatched_by_clients"] = true
-			flaggedServer++
-			return
-		}
-		if f.Props != nil {
-			delete(f.Props, "unmatched_by_clients")
-		}
-	})
-	if flaggedServer > 0 || flaggedClient > 0 {
-		log.Printf("[engine] flagged %d server route(s) unused by clients, %d client call(s) unresolved to a server", flaggedServer, flaggedClient)
-	}
 }
 
 // walkSkips is a lightweight tally of what the ignore globs dropped, kept so a
