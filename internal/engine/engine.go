@@ -210,6 +210,12 @@ func (e *Engine) RestoreFromDir(dir string, repoPaths map[string]string, singleR
 			snap.Meta = meta
 		}
 	}
+	// Same as the generation path: nothing writes this store again, so collapse the
+	// duplicate Props maps and Relations slices the snapshot was serialized with. A
+	// restored graph is the long-lived case this matters most for — the server holds
+	// it for hours without regenerating.
+	work.Freeze()
+
 	// FactsRef aliases the store's slice (never copied): `work` is published here and
 	// then never mutated again, so a reader iterating snap.Facts sees a frozen array.
 	snap.Facts = work.FactsRef()
@@ -493,6 +499,17 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	tRender = time.Since(tStage)
 	snapshot.Meta.Renderers = usedRenderers
 	log.Printf("[engine] produced %d artifacts using %d renderers", len(snapshot.Artifacts), len(usedRenderers))
+
+	// Every writer has now run: extraction, linking, binders, explainers, renderers.
+	// Collapse the structurally identical Props maps and Relations slices the
+	// extractors emitted independently onto shared instances before the store becomes
+	// visible. This must happen HERE — after the last mutation and before the
+	// publication below — because sharing is sound exactly for a store nothing writes
+	// again. Append mode carries these facts into a future mutable store via
+	// Store.All, which copies them back apart.
+	tStage = time.Now()
+	work.Freeze()
+	log.Printf("[engine] froze fact store in %s", time.Since(tStage).Round(time.Millisecond))
 
 	// Publish atomically. This single Store() is the linearization point: before it
 	// readers see the prior bundle, after it the new one — never a half-built store.

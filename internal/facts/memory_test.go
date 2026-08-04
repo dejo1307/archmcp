@@ -15,6 +15,7 @@ package facts
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"runtime"
 	"testing"
 )
@@ -137,6 +138,74 @@ func TestStore_InterningMemoryBudget(t *testing.T) {
 
 	if s.intern != nil {
 		t.Error("BuildGraph should have released the interning table")
+	}
+}
+
+// TestFreeze_MemoryBudget is the ratchet on publication-time deduplication.
+//
+// Extraction emits one Props map and one Relations slice per fact, and cannot know it
+// has emitted that exact shape before. On a real 1.89M-fact graph there were 211,692
+// distinct Props maps and 596,362 distinct Relations slices — Props alone accounted for
+// 858 MiB across 16.8M live objects. Freeze collapses them onto shared instances, which
+// no behavioural test can see, so the saving is asserted directly.
+func TestFreeze_MemoryBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates a 200k-fact store")
+	}
+	// A corpus with the real property: a small set of shapes, repeated endlessly.
+	const shapes = 50
+	s := NewStore()
+	batch := make([]Fact, 0, 1024)
+	for i := 0; i < memCorpus; i++ {
+		batch = append(batch, Fact{
+			Kind: KindSymbol,
+			Name: fmt.Sprintf("pkg%03d.Sym%d", i%500, i),
+			File: fmt.Sprintf("internal/pkg%03d/f.go", i%500),
+			Props: map[string]any{
+				"symbol_kind": "function",
+				"language":    "go",
+				"exported":    i%2 == 0,
+				"cyclomatic":  float64(i % shapes),
+			},
+			Relations: []Relation{
+				{Kind: RelCalls, Target: fmt.Sprintf("pkg%03d.Helper", i%shapes)},
+			},
+		})
+		if len(batch) == cap(batch) {
+			s.Add(batch...)
+			batch = batch[:0]
+		}
+	}
+	s.Add(batch...)
+
+	beforeBytes, beforeObjects := heapNow()
+	s.Freeze()
+	afterBytes, afterObjects := heapNow()
+
+	freedBytes := int64(beforeBytes) - int64(afterBytes)
+	freedObjects := int64(beforeObjects) - int64(afterObjects)
+	t.Logf("freeze freed %d bytes (%.1f/fact) and %d objects (%.2f/fact) over %d facts",
+		freedBytes, float64(freedBytes)/memCorpus, freedObjects, float64(freedObjects)/memCorpus, memCorpus)
+
+	// This corpus has 100 distinct Props maps and 50 distinct Relations slices across
+	// 200k facts, so nearly every one of both should end up shared. Requiring most of
+	// the objects back is what catches Freeze silently becoming a no-op — which is what
+	// happens if the encoder starts rejecting a value type the extractors emit.
+	const minObjectsPerFact = 3.0
+	if got := float64(freedObjects) / memCorpus; got < minObjectsPerFact {
+		t.Errorf("freeze reclaimed only %.2f objects/fact, want at least %.1f — deduplication is not happening",
+			got, minObjectsPerFact)
+	}
+
+	// And it must actually be sharing, not merely allocating less.
+	ff := s.FactsRef()
+	distinctProps := map[uintptr]struct{}{}
+	for i := range ff {
+		distinctProps[reflect.ValueOf(ff[i].Props).Pointer()] = struct{}{}
+	}
+	if len(distinctProps) > shapes*4 {
+		t.Errorf("%d distinct Props maps remain across %d facts; want at most %d",
+			len(distinctProps), memCorpus, shapes*4)
 	}
 }
 

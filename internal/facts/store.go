@@ -30,6 +30,11 @@ type Store struct {
 	// so N equal strings share one backing array instead of holding N. See Add.
 	// Released by BuildGraph and lazily recreated if facts are added afterwards.
 	intern map[string]string
+
+	// frozen records that Freeze has run, so structurally identical Props maps and
+	// Relations slices are now SHARED between facts. See Freeze for what that
+	// forbids.
+	frozen bool
 }
 
 // NewStore creates an empty fact store.
@@ -104,15 +109,21 @@ func (s *Store) Add(ff ...Fact) {
 }
 
 // All returns an independent copy of every fact in the store — including each fact's
-// Relations, which are copied rather than aliased.
+// Props map and Relations slice, which are copied rather than aliased.
 //
-// The Relations copy is what makes the word "independent" true. A plain slice copy
-// duplicates the Fact structs but leaves every Relations header pointing at the
-// ORIGINAL store's backing array, so a caller that appended to or rewrote a relation
-// wrote through into the store it had copied from. That store is often the published
-// snapshot bundle, which concurrent MCP readers are traversing — the append-mode path
-// in engine.GenerateSnapshot copies the previous bundle precisely so it can mutate the
-// result safely, and was relying on a guarantee this method did not provide.
+// Copying those two is what makes the word "independent" true. A plain slice copy
+// duplicates the Fact structs, but Props is a map and Relations is a slice header, so
+// every copy still pointed into the ORIGINAL store: a caller that added a prop or
+// appended a relation wrote through into the store it had copied from. That store is
+// often the published snapshot bundle, which concurrent MCP readers are traversing.
+// The append-mode path in engine.GenerateSnapshot copies the previous bundle precisely
+// so it can mutate the result safely — binders delete props (unmatchedroutes) and
+// annotators add them (the enterprise metrics/orphans passes) — and it was relying on
+// a guarantee this method did not provide.
+//
+// Freeze makes that guarantee load-bearing rather than merely correct: once a store is
+// frozen, one Props map is shared by ~9 facts on average, so a write through an
+// uncopied reference would corrupt all of them and the published bundle besides.
 //
 // Callers that only iterate and never retain should use FactsRef instead; this one
 // allocates proportionally to the fact set.
@@ -126,6 +137,9 @@ func (s *Store) All() []Fact {
 			rels := make([]Relation, len(result[i].Relations))
 			copy(rels, result[i].Relations)
 			result[i].Relations = rels
+		}
+		if len(result[i].Props) > 0 {
+			result[i].Props = result[i].CloneProps()
 		}
 	}
 	return result
@@ -785,6 +799,7 @@ func (s *Store) Clear() {
 	s.byRepo = make(map[string][]int)
 	s.graph = nil
 	s.intern = nil
+	s.frozen = false
 }
 
 // BuildGraph constructs the adjacency-list graph index from the current facts.
