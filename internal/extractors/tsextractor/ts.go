@@ -111,6 +111,32 @@ func hasTSMarkers(dir string) bool {
 			return true
 		}
 	}
+	// A dependency-free plain-JavaScript package is still a JavaScript project:
+	// a Node CLI with zero deps declares itself structurally (bin, main,
+	// exports, type, workspaces, or any dependency map). Only a bare
+	// name-holding stub — a marker file, not a package — stays undetected.
+	return packageJSONDeclaresPackage(dir)
+}
+
+func packageJSONDeclaresPackage(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return false
+	}
+	var p map[string]any
+	if err := json.Unmarshal(data, &p); err != nil {
+		return false
+	}
+	for _, key := range []string{"bin", "main", "exports", "type", "workspaces"} {
+		if _, ok := p[key]; ok {
+			return true
+		}
+	}
+	for _, key := range []string{"dependencies", "devDependencies"} {
+		if deps, ok := p[key].(map[string]any); ok && len(deps) > 0 {
+			return true
+		}
+	}
 	return false
 }
 

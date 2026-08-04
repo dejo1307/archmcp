@@ -185,13 +185,20 @@ func TestHasTSMarkers_PlainJSFramework(t *testing.T) {
 }
 
 func TestHasTSMarkers_PlainJSNoFramework(t *testing.T) {
+	// This used to assert the opposite: a plain-JS Express app with no
+	// TS-ecosystem dependency stayed UNDETECTED — which meant the very servers
+	// the Express route extraction exists for were invisible unless they also
+	// happened to use TypeScript. Any package.json that structurally declares a
+	// package (dependencies, bin, main, exports, type, workspaces) now counts;
+	// the boundary is pinned by TestDetect_PlainNodePackageWithoutDependencies,
+	// whose bare name-only stub still stays out.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "package.json"),
 		[]byte(`{"dependencies":{"express":"^4.0.0"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if hasTSMarkers(dir) {
-		t.Error("expected a plain JS project with no recognized framework to stay undetected")
+	if !hasTSMarkers(dir) {
+		t.Error("expected a plain-JS Express project to be detected — its routes are the point")
 	}
 }
 
@@ -1219,5 +1226,26 @@ func TestDetect_HotwireStimulusApp(t *testing.T) {
 	ok, err := New().Detect(dir)
 	if err != nil || !ok {
 		t.Fatalf("Detect = %v, %v — a plain-JS Hotwire app must be detected without tsconfig or TS deps", ok, err)
+	}
+}
+
+func TestDetect_PlainNodePackageWithoutDependencies(t *testing.T) {
+	dir := t.TempDir()
+	pkg := `{"name": "some-cli", "type": "module", "bin": {"some-cli": "./bin/cli.js"}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := New().Detect(dir)
+	if err != nil || !ok {
+		t.Fatalf("Detect = %v, %v — a dependency-free Node package must be detected", ok, err)
+	}
+
+	bare := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bare, "package.json"), []byte(`{"name": "marker-only"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = New().Detect(bare)
+	if err != nil || ok {
+		t.Fatalf("Detect = %v, %v — a bare name-holding stub is a marker file, not a package", ok, err)
 	}
 }
