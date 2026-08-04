@@ -142,12 +142,19 @@ symbol  app/components.BookCard   app/components/book-card.gts:5
 
 Two things worth noticing. The template's `<Badge>` reference resolved through the
 file's own imports — Glimmer strict mode guarantees that anything a template
-renders is either imported or local, so import bindings are the exact resolution
-set, and a `{{this.title}}` or an `@arg` can never produce a wrong edge. And the
-`injects` edge targets `LibraryService`, the class `app/services/library.ts`
-*actually declares* — not a name guessed from the service's `library` lookup key.
-That join happens in the post-link `ember-resolver` binder, where the whole store
-is visible.
+renders is either imported or local, so import bindings plus the file's own
+declarations are the exact resolution set, and a `{{this.title}}` or an `@arg`
+can never produce a wrong edge. And the `injects` edge targets `LibraryService`,
+the class `app/services/library.ts` *actually declares* — not a name guessed from
+the service's `library` lookup key. That join happens in the post-link
+`ember-resolver` binder, where the whole store is visible.
+
+All three template positions the RFC allows are handled, each owning its own
+template's references: a class-body template (above), a named binding
+(`export const Question = <template>…` — the symbol classifies as a component and
+carries exactly its own template's edges), and a standalone/default-export
+template (the file's default component, synthesized when nothing claims the
+segment). A class that embeds a template is a component whatever its superclass.
 
 Classic `.hbs` templates have no imports to anchor on, so their invocations are
 recorded and resolved the same way — via Ember's resolver layout, one candidate
@@ -157,12 +164,19 @@ file and one plausible symbol required, anything ambiguous skipped and counted i
 ```
 {{format-count this.rounded}}   →  calls -> app/helpers.formatCount
 <Badge>…</Badge>                →  calls -> app/components.Badge
+{{auto-focus}}                  →  calls -> app/modifiers.autoFocus
 {{title}}                       →  nothing: indistinguishable from a property
 ```
 
-A component template with no co-located class is a template-only component and
-synthesizes its component symbol; a `.hbs` file in a repo without `ember-source`
-emits nothing.
+Lookups anchor to the `app/` tree — Ember's own resolver rule — across
+`components/`, `helpers/` and `modifiers/`; a lookalike path elsewhere cannot
+shadow the real file, and a co-located template is one component with its class,
+not an ambiguity. A component template with no co-located class is a
+template-only component and synthesizes its component symbol. A **route
+template** (`app/templates/catalog.hbs`) is owned by its route class
+(`app/routes/catalog.ts`, falling back to the controller), so components
+rendered only from route templates still show their consumers in
+`impact_analysis`. A `.hbs` file in a repo without `ember-source` emits nothing.
 
 `Router.map` declarations become page routes with parent paths composed the way
 the router composes them:
@@ -178,7 +192,11 @@ These carry `type=page`, `framework=ember` — UI routes in the same sense as Nu
 pages and SvelteKit routes, never HTTP contracts. An ember-data `Model` subclass
 additionally emits a storage companion (`storage_kind=model`,
 `framework=ember-data`, `table` holding the dasherized model name), the same
-shape ActiveRecord models get in the Ruby extractor.
+shape ActiveRecord models get in the Ruby extractor — and its
+`@belongsTo`/`@hasMany` fields become `depends_on` edges to the storage facts of
+the models they name (`ember_relationships` records the declared set; a bare
+`@hasMany` is skipped, since recovering a singular model name from a plural
+field would be a guess).
 
 ## Storage — three ORMs, one shape
 

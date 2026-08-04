@@ -46,11 +46,13 @@ func (b *Binder) Stage() plugin.BindStage { return plugin.StagePostLink }
 // the TypeScript extractor's Ember pass emits. Spelled here rather than imported
 // so this package — like every binder — depends only on facts and plugin.
 const (
-	templateProp    = "ember_template"
-	invocationsProp = "ember_invocations"
-	ownerFileProp   = "ember_owner_file"
-	servicesProp    = "ember_injected_services"
-	unresolvedProp  = "ember_unresolved"
+	templateProp      = "ember_template"
+	invocationsProp   = "ember_invocations"
+	ownerFileProp     = "ember_owner_file"
+	servicesProp      = "ember_injected_services"
+	relationshipsProp = "ember_relationships"
+	defaultExportProp = "ember_default_export"
+	unresolvedProp    = "ember_unresolved"
 )
 
 var sourceExts = []string{".ts", ".js", ".gts", ".gjs", ".hbs"}
@@ -73,8 +75,10 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		w := &templateWork{}
 		if owner := f.PropString(ownerFileProp); owner != "" {
 			w.ownerSymbol = idx.primarySymbolIn(f.Repo, owner)
+		} else if sym := idx.primarySymbolIn(f.Repo, f.Name); sym != "" {
+			w.ownerSymbol = sym
 		} else {
-			w.ownerSymbol = idx.primarySymbolIn(f.Repo, f.Name)
+			w.ownerSymbol = idx.resolveRouteOwner(f.Repo, f.Name)
 		}
 		for _, name := range propStrings(f.Props[invocationsProp]) {
 			if target := idx.resolveInvocation(f.Repo, name, f.Name); target != "" {
@@ -104,6 +108,28 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		}
 	}
 
+	relationships := map[string][]string{}
+	for _, s := range store.ByKind(facts.KindStorage) {
+		entries := propStrings(s.Props[relationshipsProp])
+		if len(entries) == 0 {
+			continue
+		}
+		var targets []string
+		for _, entry := range entries {
+			_, name, ok := strings.Cut(entry, ":")
+			if !ok {
+				continue
+			}
+			if target := idx.resolveModel(s.Repo, name); target != "" {
+				targets = append(targets, target)
+			}
+		}
+		if len(targets) > 0 {
+			sort.Strings(targets)
+			relationships[s.Name] = targets
+		}
+	}
+
 	store.UpdateWhere(func(f *facts.Fact) {
 		if f.Kind == facts.KindFileRef {
 			if w, ok := work[f.Name]; ok && f.PropBool(templateProp) {
@@ -118,6 +144,17 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 				if len(w.unresolved) > 0 {
 					sort.Strings(w.unresolved)
 					f.Props[unresolvedProp] = w.unresolved
+				}
+			}
+			return
+		}
+		if f.Kind == facts.KindStorage {
+			if targets, ok := relationships[f.Name]; ok {
+				for _, t := range targets {
+					if t != f.Name && !f.HasRelation(facts.RelDependsOn, t) {
+						f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelDependsOn, Target: t})
+						bound++
+					}
 				}
 			}
 			return
@@ -157,20 +194,23 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 type index struct {
 	files       map[string]map[string]bool
 	fileSymbols map[string]map[string][]symbolInfo
+	fileStorage map[string]map[string][]string
 }
 
 type symbolInfo struct {
-	name      string
-	exported  bool
-	component bool
-	class     bool
-	receiver  bool
+	name          string
+	exported      bool
+	component     bool
+	class         bool
+	receiver      bool
+	defaultExport bool
 }
 
 func buildIndex(store *facts.Store) *index {
 	idx := &index{
 		files:       map[string]map[string]bool{},
 		fileSymbols: map[string]map[string][]symbolInfo{},
+		fileStorage: map[string]map[string][]string{},
 	}
 	addFile := func(repo, file string) {
 		if file == "" {
@@ -188,16 +228,33 @@ func buildIndex(store *facts.Store) *index {
 		}
 		file := filepath.ToSlash(s.File)
 		idx.fileSymbols[s.Repo][file] = append(idx.fileSymbols[s.Repo][file], symbolInfo{
-			name:      s.Name,
-			exported:  s.PropBool("exported"),
-			component: s.PropString("web_component") == "component",
-			class:     s.PropString("symbol_kind") == facts.SymbolClass,
-			receiver:  s.PropString("receiver") != "",
+			name:          s.Name,
+			exported:      s.PropBool("exported"),
+			component:     s.PropString("web_component") == "component",
+			class:         s.PropString("symbol_kind") == facts.SymbolClass,
+			receiver:      s.PropString("receiver") != "",
+			defaultExport: s.PropBool(defaultExportProp),
 		})
 	}
 	for _, f := range store.ByKind(facts.KindFileRef) {
 		if f.PropBool(templateProp) {
 			addFile(f.Repo, f.File)
+		}
+	}
+	for _, s := range store.ByKind(facts.KindStorage) {
+		if s.PropString("framework") != "ember-data" {
+			continue
+		}
+		addFile(s.Repo, s.File)
+		if idx.fileStorage[s.Repo] == nil {
+			idx.fileStorage[s.Repo] = map[string][]string{}
+		}
+		file := filepath.ToSlash(s.File)
+		idx.fileStorage[s.Repo][file] = append(idx.fileStorage[s.Repo][file], s.Name)
+	}
+	for repo := range idx.fileStorage {
+		for file := range idx.fileStorage[repo] {
+			sort.Strings(idx.fileStorage[repo][file])
 		}
 	}
 	return idx
@@ -216,7 +273,7 @@ func (idx *index) resolveInvocation(repo, name, selfFile string) string {
 		}
 		fragments = []string{"components/" + strings.Join(segs, "/")}
 	} else {
-		fragments = []string{"components/" + name, "helpers/" + name}
+		fragments = []string{"components/" + name, "helpers/" + name, "modifiers/" + name}
 	}
 	for _, frag := range fragments {
 		if file := idx.uniqueFile(repo, frag, selfFile); file != "" {
@@ -231,6 +288,44 @@ func (idx *index) resolveInvocation(repo, name, selfFile string) string {
 func (idx *index) resolveService(repo, name string) string {
 	if file := idx.uniqueFile(repo, "services/"+name, ""); file != "" {
 		return idx.primarySymbolIn(repo, file)
+	}
+	return ""
+}
+
+// resolveRouteOwner maps a route template — app/templates/<path>.hbs, outside
+// the components tree — to the route class (or, failing that, the controller)
+// that renders it, per the router's naming convention.
+func (idx *index) resolveRouteOwner(repo, templateFile string) string {
+	file := filepath.ToSlash(templateFile)
+	marker := "app/templates/"
+	pos := strings.Index(file, marker)
+	if pos < 0 || (pos > 0 && file[pos-1] != '/') {
+		return ""
+	}
+	fragment := file[pos+len(marker):]
+	if ext := filepath.Ext(fragment); ext != "" {
+		fragment = strings.TrimSuffix(fragment, ext)
+	}
+	if fragment == "" || strings.HasPrefix(fragment, "components/") {
+		return ""
+	}
+	for _, owner := range []string{"routes/" + fragment, "controllers/" + fragment} {
+		if f := idx.uniqueFile(repo, owner, templateFile); f != "" {
+			if sym := idx.primarySymbolIn(repo, f); sym != "" {
+				return sym
+			}
+		}
+	}
+	return ""
+}
+
+// resolveModel maps an ember-data relationship's model name to the storage fact
+// its app/models/<name> file declares.
+func (idx *index) resolveModel(repo, name string) string {
+	if file := idx.uniqueFile(repo, "models/"+name, ""); file != "" {
+		if names := idx.fileStorage[repo][filepath.ToSlash(file)]; len(names) == 1 {
+			return names[0]
+		}
 	}
 	return ""
 }
@@ -276,8 +371,11 @@ func (idx *index) uniqueFile(repo, fragment, selfFile string) string {
 }
 
 // primarySymbolIn picks the one symbol a resolver name means in a file: the
-// single exported component, else the single exported top-level class, else the
-// single exported top-level symbol. Anything plural is ambiguous and skipped.
+// default export when the extractor marked one (Ember resolution IS
+// default-export resolution — a module exporting a Base class beside its
+// default component is not ambiguous), else the single exported component,
+// else the single exported top-level class, else the single exported top-level
+// symbol. Anything still plural is ambiguous and skipped.
 func (idx *index) primarySymbolIn(repo, file string) string {
 	syms := idx.fileSymbols[repo][filepath.ToSlash(file)]
 	pick := func(match func(symbolInfo) bool) (string, int) {
@@ -292,6 +390,9 @@ func (idx *index) primarySymbolIn(repo, file string) string {
 			}
 		}
 		return name, n
+	}
+	if name, n := pick(func(s symbolInfo) bool { return s.defaultExport }); n == 1 {
+		return name
 	}
 	if name, n := pick(func(s symbolInfo) bool { return s.exported && s.component }); n == 1 {
 		return name

@@ -364,3 +364,124 @@ func TestScanHbsInvocations_DeterminismLine(t *testing.T) {
 		t.Errorf("scanHbsInvocations = %v, want %v", got, want)
 	}
 }
+
+// --- expression-position templates (RFC named + default forms) ---
+
+func TestBlankEmberTemplates_ExpressionPositionBecomesLiteral(t *testing.T) {
+	src := []byte("const Greet = <template>\n  Hi\n</template>;\n")
+	blanked, segments := blankEmberTemplates(src)
+	if len(blanked) != len(src) {
+		t.Fatalf("length changed: %d != %d", len(blanked), len(src))
+	}
+	s := string(blanked)
+	if !strings.Contains(s, "const Greet = `") || strings.Count(s, "`") != 2 {
+		t.Fatalf("expression-position template not replaced with a backtick literal: %q", s)
+	}
+	if len(segments) != 1 {
+		t.Fatalf("segments = %d, want 1", len(segments))
+	}
+}
+
+func TestEmberTemplateTag_NamedBindingComponents(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/components/icon.ts": `export default class Icon {}
+`,
+		"app/components/prompts.gjs": `import Icon from './icon';
+
+export const Question = <template>
+  <Icon @name="question" />
+</template>;
+
+export const Warning = <template>
+  plain
+</template>;
+`,
+	})
+	q := findEmberFact(result, facts.KindSymbol, "app/components.Question")
+	if q == nil {
+		t.Fatal("named template binding Question missing")
+	}
+	if q.Props["web_component"] != "component" || q.Props["framework"] != EmberFramework {
+		t.Errorf("Question props = %v, want component classification", q.Props)
+	}
+	if !q.HasRelation(facts.RelCalls, "app/components.Icon") {
+		t.Errorf("Question relations = %v, want its own template's Icon edge", q.Relations)
+	}
+	w := findEmberFact(result, facts.KindSymbol, "app/components.Warning")
+	if w == nil {
+		t.Fatal("named template binding Warning missing")
+	}
+	if w.HasRelation(facts.RelCalls, "app/components.Icon") {
+		t.Errorf("Warning relations = %v — it must not inherit Question's template refs", w.Relations)
+	}
+	if findEmberFact(result, facts.KindSymbol, "app/components.Prompts") != nil {
+		t.Error("no standalone component should be synthesized when every segment is claimed")
+	}
+}
+
+func TestEmberTemplateTag_ExportDefaultTemplate(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/components/icon.ts": `export default class Icon {}
+`,
+		"app/components/wave.gjs": `import Icon from './icon';
+
+export default <template>
+  <Icon @name="wave" />
+</template>;
+`,
+	})
+	wave := findEmberFact(result, facts.KindSymbol, "app/components.Wave")
+	if wave == nil {
+		t.Fatal("export default <template> did not produce the file component")
+	}
+	if !wave.HasRelation(facts.RelCalls, "app/components.Icon") {
+		t.Errorf("relations = %v, want Icon edge", wave.Relations)
+	}
+}
+
+func TestEmberTemplateTag_ClassWithTemplateIsComponentWhateverItsBase(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/components/base.ts": `export default class Base {}
+`,
+		"app/components/panel.gts": `import Base from './base';
+
+export default class Panel extends Base {
+  <template>
+    body
+  </template>
+}
+`,
+	})
+	panel := findEmberFact(result, facts.KindSymbol, "app/components.Panel")
+	if panel == nil {
+		t.Fatal("Panel missing")
+	}
+	if panel.Props["web_component"] != "component" {
+		t.Errorf("props = %v — an embedded template makes a component regardless of superclass", panel.Props)
+	}
+}
+
+// --- ember-data relationships ---
+
+func TestEmberDataRelationships_Recorded(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/models/post.ts": `import Model, { belongsTo, hasMany } from '@ember-data/model';
+
+export default class Post extends Model {
+  @belongsTo('author', { async: false, inverse: null }) author;
+  @hasMany('comment', { async: true, inverse: 'post' }) comments;
+  @belongsTo declare coverImage: unknown;
+  @hasMany declare tags: unknown;
+}
+`,
+	})
+	sf := findEmberFact(result, facts.KindStorage, "app/models.Post")
+	if sf == nil {
+		t.Fatal("Post storage fact missing")
+	}
+	got, _ := sf.Props[EmberRelationshipsProp].([]string)
+	want := []string{"belongs_to:author", "belongs_to:cover-image", "has_many:comment"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("%s = %v, want %v (bare @hasMany skipped — singularizing a plural field is a guess)", EmberRelationshipsProp, got, want)
+	}
+}

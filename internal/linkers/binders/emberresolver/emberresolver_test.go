@@ -175,3 +175,80 @@ func TestBind_Idempotent(t *testing.T) {
 		t.Errorf("calls edge appears %d times after re-bind, want exactly 1", count)
 	}
 }
+
+func TestBind_ModifierResolves(t *testing.T) {
+	store := bind(t,
+		symbol("app/modifiers.Autofocus", "app/modifiers/auto-focus.ts", nil),
+		symbol("app/components.Field", "app/components/field.js",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/components/field.hbs", "app/components/field.js", []string{"auto-focus"}),
+	)
+	field := factByName(t, store, facts.KindSymbol, "app/components.Field")
+	if !field.HasRelation(facts.RelCalls, "app/modifiers.Autofocus") {
+		t.Errorf("relations = %v, want the app-local modifier resolved", field.Relations)
+	}
+}
+
+func TestBind_RouteTemplateOwnedByRouteClass(t *testing.T) {
+	store := bind(t,
+		symbol("app/routes.CatalogRoute", "app/routes/catalog.ts", nil),
+		symbol("app/components.BookCard", "app/components/book-card.gts",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/templates/catalog.hbs", "", []string{"BookCard"}),
+	)
+	route := factByName(t, store, facts.KindSymbol, "app/routes.CatalogRoute")
+	if !route.HasRelation(facts.RelCalls, "app/components.BookCard") {
+		t.Errorf("route relations = %v, want the route class to own its template's edges", route.Relations)
+	}
+	ref := factByName(t, store, facts.KindFileRef, "app/templates/catalog.hbs")
+	if len(ref.Relations) != 0 {
+		t.Errorf("carrier relations = %v, want none once a route owner exists", ref.Relations)
+	}
+}
+
+func TestBind_RouteTemplateFallsBackToController(t *testing.T) {
+	store := bind(t,
+		symbol("app/controllers.SearchController", "app/controllers/search/results.ts", nil),
+		symbol("app/components.Hit", "app/components/hit.gts",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/templates/search/results.hbs", "", []string{"Hit"}),
+	)
+	ctrl := factByName(t, store, facts.KindSymbol, "app/controllers.SearchController")
+	if !ctrl.HasRelation(facts.RelCalls, "app/components.Hit") {
+		t.Errorf("controller relations = %v, want ownership when no route class exists", ctrl.Relations)
+	}
+}
+
+func TestBind_ModelRelationships(t *testing.T) {
+	author := facts.Fact{Kind: facts.KindStorage, Name: "app/models.Author",
+		File: "app/models/author.ts", Line: 1,
+		Props: map[string]any{"framework": "ember-data", "storage_kind": "model"}}
+	post := facts.Fact{Kind: facts.KindStorage, Name: "app/models.Post",
+		File: "app/models/post.ts", Line: 1,
+		Props: map[string]any{"framework": "ember-data", "storage_kind": "model",
+			relationshipsProp: []string{"belongs_to:author", "has_many:missing-model"}}}
+	store := bind(t, author, post)
+	got := factByName(t, store, facts.KindStorage, "app/models.Post")
+	if !got.HasRelation(facts.RelDependsOn, "app/models.Author") {
+		t.Errorf("relations = %v, want depends_on to the resolved Author model", got.Relations)
+	}
+	for _, r := range got.Relations {
+		if r.Kind == facts.RelDependsOn && r.Target != "app/models.Author" {
+			t.Errorf("unexpected edge %v for an unresolvable model", r)
+		}
+	}
+}
+
+func TestBind_DefaultExportBeatsSiblingBaseClass(t *testing.T) {
+	store := bind(t,
+		symbol("app/components/core.CoreDropdownMenuBase", "app/components/core/dropdown-menu.gts",
+			map[string]any{"web_component": "component"}),
+		symbol("app/components/core.CoreDropdownMenu", "app/components/core/dropdown-menu.gts",
+			map[string]any{"web_component": "component", defaultExportProp: true}),
+		templateRef("app/templates/index.hbs", "", []string{"Core::DropdownMenu"}),
+	)
+	ref := factByName(t, store, facts.KindFileRef, "app/templates/index.hbs")
+	if !ref.HasRelation(facts.RelCalls, "app/components/core.CoreDropdownMenu") {
+		t.Errorf("relations = %v, want the DEFAULT export — a sibling base class is not an ambiguity", ref.Relations)
+	}
+}

@@ -64,15 +64,24 @@ func detectEmber(repoPath string) bool {
 }
 
 // emberTemplateSegment is one <template> block sliced out of a .gts/.gjs file.
+// Start is the byte offset of its opening tag in the original source, used to
+// associate the segment with the class or binding that owns it.
 type emberTemplateSegment struct {
 	Content string
+	Start   int
 }
 
 // blankEmberTemplates replaces every <template>…</template> span (tags included)
-// with spaces, preserving newlines so tree-sitter positions in the remainder match
-// the original file exactly. Returns the blanked source and the sliced-out
-// template contents. An unclosed <template> is left untouched: half a blank would
-// corrupt the parse worse than an unparsed template block.
+// so the remainder parses with the standard grammar, preserving newlines so
+// tree-sitter positions match the original file exactly. The replacement depends
+// on syntactic position, because the RFC allows a template in two kinds of place:
+// as a statement (top-level standalone, or inside a class body), where blank
+// space is valid, and as an EXPRESSION (`const Greet = <template>…`,
+// `export default <template>…`), where blank space would leave a dangling `=` —
+// there the span becomes a backtick template literal of the same length, which
+// is a well-formed expression that may span lines. An unclosed <template> is
+// left untouched: half a blank would corrupt the parse worse than an unparsed
+// template block.
 func blankEmberTemplates(src []byte) ([]byte, []emberTemplateSegment) {
 	var segments []emberTemplateSegment
 	out := make([]byte, len(src))
@@ -90,15 +99,49 @@ func blankEmberTemplates(src []byte) ([]byte, []emberTemplateSegment) {
 		}
 		end := start + closeIdx + len(emberTemplateClose)
 		inner := string(src[start+len(emberTemplateOpen) : start+closeIdx])
-		segments = append(segments, emberTemplateSegment{Content: inner})
+		segments = append(segments, emberTemplateSegment{Content: inner, Start: start})
 		for i := start; i < end; i++ {
 			if out[i] != '\n' {
 				out[i] = ' '
 			}
 		}
+		if emberExpressionPosition(out, start) {
+			out[start] = '`'
+			out[end-1] = '`'
+		}
 		pos = end
 	}
 	return out, segments
+}
+
+// emberExpressionPosition reports whether the template at start sits where the
+// grammar needs an expression: after an assignment, an opening delimiter, a
+// `return`, an `export default`, or an arrow. Everything else — a top-level
+// standalone template, a class-body template — is a statement position where
+// blank space parses.
+func emberExpressionPosition(src []byte, start int) bool {
+	i := start - 1
+	for i >= 0 && (src[i] == ' ' || src[i] == '\t' || src[i] == '\n' || src[i] == '\r') {
+		i--
+	}
+	if i < 0 {
+		return false
+	}
+	switch src[i] {
+	case '=', '(', ',', ':', '[', '?':
+		return true
+	case '>':
+		return i > 0 && src[i-1] == '='
+	}
+	wordEnd := i + 1
+	for i >= 0 && ((src[i] >= 'a' && src[i] <= 'z') || (src[i] >= 'A' && src[i] <= 'Z')) {
+		i--
+	}
+	switch string(src[i+1 : wordEnd]) {
+	case "return", "default":
+		return true
+	}
+	return false
 }
 
 // emberImportBindings maps each locally-bound import name to its resolution:
@@ -244,25 +287,41 @@ var (
 )
 
 // emberClassInfo describes one top-level class declaration and the Ember role its
-// heritage and decorators imply.
+// heritage and decorators imply. start/end delimit the class node's byte span, so
+// a template segment can be attributed to the class that embeds it.
 type emberClassInfo struct {
-	name        string
-	line        int
-	isComponent bool
-	isModel     bool
-	isService   bool
-	services    []string
+	name          string
+	line          int
+	start, end    int
+	isDefault     bool
+	isComponent   bool
+	isModel       bool
+	isService     bool
+	services      []string
+	relationships []string
+}
+
+// emberBindingInfo describes a top-level `const Name = <template>…` binding — the
+// RFC's named-component form. start/end delimit the declarator's value span.
+type emberBindingInfo struct {
+	name       string
+	start, end int
 }
 
 // collectEmberClasses walks the top-level declarations (unwrapping export
 // statements) and classifies each class by what its superclass's local name was
-// imported from, plus the service names its @service-decorated fields inject.
+// imported from, plus the service names its @service-decorated fields inject and
+// the ember-data relationships its @belongsTo/@hasMany fields declare.
 func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBindings) []emberClassInfo {
 	serviceDecorators := emberServiceDecoratorNames(bindings)
+	relationshipDecorators := emberRelationshipDecoratorNames(bindings)
 	var classes []emberClassInfo
+	defaultName := emberDefaultExportName(root, src)
 	for i := range root.ChildCount() {
 		node := root.Child(i)
+		isDefault := false
 		if node.Kind() == "export_statement" {
+			isDefault = hasChildKind(node, "default")
 			if decl := firstDeclChild(node); decl != nil {
 				node = decl
 			} else if c := findChildByKind(node, "class"); c != nil {
@@ -274,7 +333,12 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 		default:
 			continue
 		}
-		info := emberClassInfo{line: int(node.StartPosition().Row) + 1}
+		info := emberClassInfo{
+			line:      int(node.StartPosition().Row) + 1,
+			start:     int(node.StartByte()),
+			end:       int(node.EndByte()),
+			isDefault: isDefault,
+		}
 		if name := findChildByKind(node, "type_identifier"); name != nil {
 			info.name = nodeText(name, src)
 		}
@@ -287,10 +351,70 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 		}
 		if body := findChildByKind(node, "class_body"); body != nil {
 			info.services = emberInjectedServices(body, src, serviceDecorators)
+			if info.isModel {
+				info.relationships = emberModelRelationships(body, src, relationshipDecorators)
+			}
+		}
+		if info.name != "" && info.name == defaultName {
+			info.isDefault = true
 		}
 		classes = append(classes, info)
 	}
 	return classes
+}
+
+// emberDefaultExportName returns the identifier of a separate
+// `export default Name;` statement, or "".
+func emberDefaultExportName(root *sitter.Node, src []byte) string {
+	for i := range root.ChildCount() {
+		node := root.Child(i)
+		if node.Kind() != "export_statement" || !hasChildKind(node, "default") {
+			continue
+		}
+		if firstDeclChild(node) != nil {
+			continue
+		}
+		if id := findChildByKind(node, "identifier"); id != nil {
+			return nodeText(id, src)
+		}
+	}
+	return ""
+}
+
+// collectEmberTemplateBindings walks top-level variable declarations (unwrapping
+// export statements) and returns each declarator's name and value span, so a
+// segment blanked into the declarator's backtick literal can classify the
+// binding as a component.
+func collectEmberTemplateBindings(root *sitter.Node, src []byte) []emberBindingInfo {
+	var bindings []emberBindingInfo
+	for i := range root.ChildCount() {
+		node := root.Child(i)
+		if node.Kind() == "export_statement" {
+			if decl := firstDeclChild(node); decl != nil {
+				node = decl
+			}
+		}
+		if node.Kind() != "lexical_declaration" && node.Kind() != "variable_declaration" {
+			continue
+		}
+		for j := range node.ChildCount() {
+			d := node.Child(j)
+			if d.Kind() != "variable_declarator" {
+				continue
+			}
+			name := findChildByKind(d, "identifier")
+			val := d.ChildByFieldName("value")
+			if name == nil || val == nil {
+				continue
+			}
+			bindings = append(bindings, emberBindingInfo{
+				name:  nodeText(name, src),
+				start: int(val.StartByte()),
+				end:   int(val.EndByte()),
+			})
+		}
+	}
+	return bindings
 }
 
 // emberServiceDecoratorNames returns the local names bound to the service
@@ -303,6 +427,76 @@ func emberServiceDecoratorNames(bindings emberImportBindings) map[string]bool {
 		}
 	}
 	return names
+}
+
+// emberRelationshipDecoratorNames maps the local names bound to ember-data's
+// belongsTo/hasMany exports to a relationship kind. An aliased import loses the
+// export name in the binding map and is not recognized — aliasing these
+// decorators is vanishingly rare, and a missed relationship is recoverable.
+func emberRelationshipDecoratorNames(bindings emberImportBindings) map[string]string {
+	names := make(map[string]string)
+	for local, mod := range bindings.external {
+		if !emberModelModules[mod] {
+			continue
+		}
+		switch local {
+		case "belongsTo":
+			names[local] = "belongs_to"
+		case "hasMany":
+			names[local] = "has_many"
+		}
+	}
+	return names
+}
+
+// emberModelRelationships reads @belongsTo/@hasMany fields off a model class
+// body. The explicit string argument names the related model; a bare @belongsTo
+// falls back to the dasherized field name (the decorator's own default), while a
+// bare @hasMany is skipped — recovering the singular model name from a plural
+// field requires an inflector, and a guessed edge is worse than a missing one.
+// Entries are "belongs_to:<name>" / "has_many:<name>", sorted.
+func emberModelRelationships(classBody *sitter.Node, src []byte, decorators map[string]string) []string {
+	if len(decorators) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for i := range classBody.ChildCount() {
+		member := classBody.Child(i)
+		if member.Kind() != "public_field_definition" && member.Kind() != "field_definition" {
+			continue
+		}
+		for j := range member.ChildCount() {
+			dec := member.Child(j)
+			if dec.Kind() != "decorator" {
+				continue
+			}
+			name, arg := emberDecoratorNameArg(dec, src)
+			kind, ok := decorators[name]
+			if !ok {
+				continue
+			}
+			if arg == "" {
+				if kind != "belongs_to" {
+					continue
+				}
+				field := emberFieldName(member, src)
+				if field == "" {
+					continue
+				}
+				arg = dasherize(field)
+			}
+			seen[kind+":"+arg] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	rels := make([]string, 0, len(seen))
+	for r := range seen {
+		rels = append(rels, r)
+	}
+	sort.Strings(rels)
+	return rels
 }
 
 func emberSuperclassName(classNode *sitter.Node, src []byte) string {
@@ -404,48 +598,102 @@ func emberFieldName(member *sitter.Node, src []byte) string {
 	return ""
 }
 
-// EmberServicesProp carries the sorted service names a class injects; the
-// ember-resolver binder resolves them to the declared service class symbols.
-const EmberServicesProp = "ember_injected_services"
+// EmberServicesProp carries the sorted service names a class injects, and
+// EmberRelationshipsProp the sorted "belongs_to:<name>" / "has_many:<name>"
+// entries of an ember-data model; the ember-resolver binder resolves both
+// against the store.
+const (
+	EmberServicesProp      = "ember_injected_services"
+	EmberRelationshipsProp = "ember_relationships"
+)
+
+// EmberDefaultExportProp marks the symbol a resolver name means when a module
+// exports several — Ember resolution is default-export resolution, so the
+// binder prefers the symbol carrying it.
+const EmberDefaultExportProp = "ember_default_export"
 
 // emberEnrich applies Ember classification to the already-extracted declaration
-// facts of one file: component/service classes gain their props, template
-// references attach to the component symbol as calls, ember-data models gain a
-// companion storage fact, and a template-only .gts/.gjs synthesizes its component
-// symbol the same way a script-less Vue SFC does.
+// facts of one file. Each template segment attaches to the declaration that owns
+// it — the class whose body embeds it (which is thereby a component, whatever
+// its superclass), or the `const Name = <template>…` binding it initializes —
+// and a segment owned by neither is the file's standalone default component,
+// synthesized the way a script-less Vue SFC is. Service classes, @service
+// injections and ember-data models gain their props and companion facts.
 func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile string,
 	aliases map[string]string, segments []emberTemplateSegment) []facts.Fact {
 
 	dir := filepath.Dir(relFile)
+	base := strings.TrimSuffix(filepath.Base(relFile), filepath.Ext(relFile))
 	bindings := buildEmberImportBindings(root, src, relFile, aliases)
 	classes := collectEmberClasses(root, src, bindings)
-	templateRefs := emberTemplateRefs(segments, bindings)
+	templateBindings := collectEmberTemplateBindings(root, src)
 
-	componentAttached := false
+	// A template may also render a component declared in its own file (a named
+	// sibling binding or class) — those locals are statically known, so they join
+	// the resolution set. Imports win on a name collision.
 	for _, cls := range classes {
+		if cls.name != "" {
+			if _, taken := bindings.internal[cls.name]; !taken {
+				bindings.internal[cls.name] = dir + "." + cls.name
+			}
+		}
+	}
+	for _, tb := range templateBindings {
+		if _, taken := bindings.internal[tb.name]; !taken {
+			bindings.internal[tb.name] = dir + "." + tb.name
+		}
+	}
+
+	refsFor := func(owns func(emberTemplateSegment) bool) []string {
+		var owned []emberTemplateSegment
+		for _, seg := range segments {
+			if owns(seg) {
+				owned = append(owned, seg)
+			}
+		}
+		return emberTemplateRefs(owned, bindings)
+	}
+	attachCalls := func(f *facts.Fact, targets []string) {
+		for _, t := range targets {
+			if t != f.Name && !f.HasRelation(facts.RelCalls, t) {
+				f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
+			}
+		}
+	}
+	markComponent := func(f *facts.Fact) {
+		f.Props["web_component"] = "component"
+		f.Props["framework"] = EmberFramework
+	}
+	claimed := make(map[int]bool)
+
+	for ci := range classes {
+		cls := &classes[ci]
 		if cls.name == "" {
 			continue
 		}
+		var classRefs []string
+		hasTemplate := false
+		classRefs = refsFor(func(seg emberTemplateSegment) bool {
+			owns := seg.Start >= cls.start && seg.Start < cls.end
+			if owns {
+				hasTemplate = true
+				claimed[seg.Start] = true
+			}
+			return owns
+		})
 		factName := dir + "." + cls.name
 		for i := range result {
 			if result[i].Kind != facts.KindSymbol || result[i].Name != factName {
 				continue
 			}
-			if cls.isComponent {
-				result[i].Props["web_component"] = "component"
-				result[i].Props["framework"] = EmberFramework
-				if !componentAttached {
-					for _, t := range templateRefs {
-						if !result[i].HasRelation(facts.RelCalls, t) {
-							result[i].Relations = append(result[i].Relations,
-								facts.Relation{Kind: facts.RelCalls, Target: t})
-						}
-					}
-					componentAttached = true
-				}
+			if cls.isComponent || hasTemplate {
+				markComponent(&result[i])
+				attachCalls(&result[i], classRefs)
+			}
+			if cls.isDefault {
+				result[i].Props[EmberDefaultExportProp] = true
 			}
 			if cls.isService {
-				base := strings.TrimSuffix(filepath.Base(relFile), filepath.Ext(relFile))
 				result[i].Props["ember_service"] = base
 			}
 			if len(cls.services) > 0 {
@@ -454,45 +702,89 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			break
 		}
 		if cls.isModel {
-			base := strings.TrimSuffix(filepath.Base(relFile), filepath.Ext(relFile))
+			props := map[string]any{
+				"storage_kind": "model",
+				"framework":    "ember-data",
+				"table":        base,
+				"language":     "typescript",
+			}
+			if len(cls.relationships) > 0 {
+				props[EmberRelationshipsProp] = cls.relationships
+			}
 			result = append(result, facts.Fact{
-				Kind: facts.KindStorage,
-				Name: factName,
-				File: relFile,
-				Line: cls.line,
-				Props: map[string]any{
-					"storage_kind": "model",
-					"framework":    "ember-data",
-					"table":        base,
-					"language":     "typescript",
-				},
+				Kind:      facts.KindStorage,
+				Name:      factName,
+				File:      relFile,
+				Line:      cls.line,
+				Props:     props,
 				Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 			})
 		}
 	}
 
-	if !componentAttached && len(segments) > 0 && isEmberTemplateTagFile(relFile) {
-		rels := []facts.Relation{{Kind: facts.RelDeclares, Target: dir}}
-		for _, t := range templateRefs {
-			rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: t})
-		}
-		result = append(result, facts.Fact{
-			Kind: facts.KindSymbol,
-			Name: dir + "." + fileSymbolName(relFile),
-			File: relFile,
-			Line: 1,
-			Props: map[string]any{
-				"symbol_kind":   facts.SymbolFunc,
-				"exported":      true,
-				"language":      "typescript",
-				"web_component": "component",
-				"framework":     EmberFramework,
-			},
-			Relations: rels,
+	for _, tb := range templateBindings {
+		refs := refsFor(func(seg emberTemplateSegment) bool {
+			owns := seg.Start >= tb.start && seg.Start < tb.end
+			if owns {
+				claimed[seg.Start] = true
+			}
+			return owns
 		})
+		if refs == nil && !anySegmentIn(segments, tb.start, tb.end) {
+			continue
+		}
+		factName := dir + "." + tb.name
+		for i := range result {
+			if result[i].Kind != facts.KindSymbol || result[i].Name != factName {
+				continue
+			}
+			markComponent(&result[i])
+			attachCalls(&result[i], refs)
+			break
+		}
+	}
+
+	if isEmberTemplateTagFile(relFile) {
+		refs := refsFor(func(seg emberTemplateSegment) bool { return !claimed[seg.Start] })
+		unclaimed := false
+		for _, seg := range segments {
+			if !claimed[seg.Start] {
+				unclaimed = true
+			}
+		}
+		if unclaimed {
+			rels := []facts.Relation{{Kind: facts.RelDeclares, Target: dir}}
+			for _, t := range refs {
+				rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: t})
+			}
+			result = append(result, facts.Fact{
+				Kind: facts.KindSymbol,
+				Name: dir + "." + fileSymbolName(relFile),
+				File: relFile,
+				Line: 1,
+				Props: map[string]any{
+					"symbol_kind":          facts.SymbolFunc,
+					"exported":             true,
+					"language":             "typescript",
+					"web_component":        "component",
+					"framework":            EmberFramework,
+					EmberDefaultExportProp: true,
+				},
+				Relations: rels,
+			})
+		}
 	}
 
 	return result
+}
+
+func anySegmentIn(segments []emberTemplateSegment, start, end int) bool {
+	for _, seg := range segments {
+		if seg.Start >= start && seg.Start < end {
+			return true
+		}
+	}
+	return false
 }
 
 // EmberTemplateProp marks the file_ref carrier an .hbs template emits;
@@ -546,11 +838,12 @@ func (e *TSExtractor) extractEmberHbs(src []byte, relFile string, knownFiles map
 			File: relFile,
 			Line: 1,
 			Props: map[string]any{
-				"symbol_kind":   facts.SymbolFunc,
-				"exported":      true,
-				"language":      "handlebars",
-				"web_component": "component",
-				"framework":     EmberFramework,
+				"symbol_kind":          facts.SymbolFunc,
+				"exported":             true,
+				"language":             "handlebars",
+				"web_component":        "component",
+				"framework":            EmberFramework,
+				EmberDefaultExportProp: true,
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})
