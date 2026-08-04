@@ -38,7 +38,12 @@ echo "==> Downloading enola v${VERSION} for ${OS}/${ARCH} ..."
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-curl -fsSL -o "$TMPDIR/$ASSET" "$URL"
+if ! curl -fsSL -o "$TMPDIR/$ASSET" "$URL"; then
+  echo "No prebuilt binary for ${OS}/${ARCH} in enola v${VERSION}." >&2
+  echo "See the available downloads at:" >&2
+  echo "  https://github.com/enola-labs/enola/releases/tag/v${VERSION}" >&2
+  exit 1
+fi
 curl -fsSL -o "$TMPDIR/$SHASUM" "$SUM_URL"
 
 echo "==> Verifying checksum ..."

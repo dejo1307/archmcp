@@ -36,7 +36,7 @@ jobs:
           - os: ubuntu-24.04-arm   # linux/arm64 — native arm64 runner
             goos: linux
             goarch: arm64
-          - os: macos-13           # darwin/amd64 — native Intel runner
+          - os: macos-15-intel     # darwin/amd64 — native Intel runner
             goos: darwin
             goarch: amd64
           - os: macos-latest       # darwin/arm64 — native Apple Silicon
@@ -90,6 +90,50 @@ jobs:
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
+          # Stays a draft until the publish job confirms every platform made it.
+          draft: true
           files: |
             enola-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
             enola-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+
+  # Publishes the draft only if all platform assets are present. If a build leg
+  # fails — or never gets scheduled, e.g. because its runner label was retired —
+  # this job is skipped and the release stays a visible draft instead of
+  # silently shipping a partial set of binaries.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify all platform assets are present
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The contract for a complete release. Keep in sync with the build matrix.
+          PLATFORMS="linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          ASSETS="$(gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+
+          missing=0
+          for platform in $PLATFORMS; do
+            for ext in tar.gz sha256; do
+              name="enola-${VERSION}-${platform}.${ext}"
+              if ! grep -qxF "$name" <<<"$ASSETS"; then
+                echo "::error::missing release asset: $name"
+                missing=1
+              fi
+            done
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" --draft=false
