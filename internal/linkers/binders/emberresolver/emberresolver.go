@@ -235,24 +235,44 @@ func (idx *index) resolveService(repo, name string) string {
 	return ""
 }
 
-// uniqueFile returns the single file matching "/<fragment><ext>" (or the
+// uniqueFile returns the single file backing "app/<fragment><ext>" (or the
 // folder-index form) across the repo's files, or "" when zero or several match.
+// Anchoring on the `app/` tree is Ember's own resolver rule — a lookalike path
+// elsewhere (a style-guide template under app/templates/…/components/, an
+// in-repo addon) is not resolvable by name and must not shadow the real one.
+// Several matches can still occur in a monorepo holding more than one Ember
+// app; that is a genuine ambiguity and skips.
+// Extensions are tried in priority order and the first that matches wins
+// outright: a classic component is a co-located pair (field.ts + field.hbs) that
+// backs ONE resolver name, so the class file must not be read as ambiguous with
+// its own template. Two matches at the SAME extension — two Ember apps in one
+// monorepo — are a genuine ambiguity and skip.
 func (idx *index) uniqueFile(repo, fragment, selfFile string) string {
-	found := ""
 	for _, ext := range sourceExts {
-		for _, suffix := range []string{"/" + fragment + ext, "/" + fragment + "/index" + ext} {
+		for _, anchored := range []string{"app/" + fragment + ext, "app/" + fragment + "/index" + ext} {
+			found := ""
+			ambiguous := false
 			for file := range idx.files[repo] {
-				if file == selfFile || !strings.HasSuffix(file, suffix) {
+				if file == selfFile {
+					continue
+				}
+				if file != anchored && !strings.HasSuffix(file, "/"+anchored) {
 					continue
 				}
 				if found != "" && found != file {
-					return ""
+					ambiguous = true
 				}
 				found = file
 			}
+			if ambiguous {
+				return ""
+			}
+			if found != "" {
+				return found
+			}
 		}
 	}
-	return found
+	return ""
 }
 
 // primarySymbolIn picks the one symbol a resolver name means in a file: the

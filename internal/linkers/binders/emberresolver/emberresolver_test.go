@@ -110,19 +110,46 @@ func TestBind_ServiceInjection_UsesDeclaredClassName(t *testing.T) {
 
 func TestBind_AmbiguousFileSkipped(t *testing.T) {
 	store := bind(t,
-		symbol("app/components.Badge", "app/components/badge.ts",
+		symbol("apps/main/app/components.Badge", "apps/main/app/components/badge.ts",
 			map[string]any{"web_component": "component"}),
-		symbol("engine/components.Badge", "engine/components/badge.ts",
+		symbol("apps/admin/app/components.Badge", "apps/admin/app/components/badge.ts",
 			map[string]any{"web_component": "component"}),
-		templateRef("app/templates/index.hbs", "", []string{"Badge"}),
+		templateRef("apps/main/app/templates/index.hbs", "", []string{"Badge"}),
 	)
-	ref := factByName(t, store, facts.KindFileRef, "app/templates/index.hbs")
+	ref := factByName(t, store, facts.KindFileRef, "apps/main/app/templates/index.hbs")
 	if len(ref.Relations) != 0 {
 		t.Errorf("relations = %v, want none — two candidate files means skip, not guess", ref.Relations)
 	}
 	unresolved, _ := ref.Props[unresolvedProp].([]string)
 	if !reflect.DeepEqual(unresolved, []string{"Badge"}) {
 		t.Errorf("unresolved = %v, want the ambiguous name recorded", unresolved)
+	}
+}
+
+func TestBind_CoLocatedTemplateIsNotAmbiguous(t *testing.T) {
+	store := bind(t,
+		symbol("app/components/core/form.Field", "app/components/core/form/field.ts",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/components/core/form/field.hbs", "app/components/core/form/field.ts", nil),
+		templateRef("app/templates/index.hbs", "", []string{"Core::Form::Field"}),
+	)
+	ref := factByName(t, store, facts.KindFileRef, "app/templates/index.hbs")
+	if !ref.HasRelation(facts.RelCalls, "app/components/core/form.Field") {
+		t.Errorf("relations = %v, want the class file to win over its own co-located template", ref.Relations)
+	}
+}
+
+func TestBind_LookalikePathOutsideAppTreeDoesNotShadow(t *testing.T) {
+	store := bind(t,
+		symbol("app/components.Icon", "app/components/icon.gts",
+			map[string]any{"web_component": "component"}),
+		symbol("app/templates/styleguide/components.Icon", "app/templates/styleguide/components/icon.hbs",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/templates/index.hbs", "", []string{"Icon"}),
+	)
+	ref := factByName(t, store, facts.KindFileRef, "app/templates/index.hbs")
+	if !ref.HasRelation(facts.RelCalls, "app/components.Icon") {
+		t.Errorf("relations = %v, want the app-tree component, unshadowed by the style-guide template", ref.Relations)
 	}
 }
 

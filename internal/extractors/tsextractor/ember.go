@@ -536,7 +536,9 @@ func (e *TSExtractor) extractEmberHbs(src []byte, relFile string, knownFiles map
 	}
 
 	var result []facts.Fact
-	isComponentTemplate := strings.Contains(filepath.ToSlash(relFile), "/components/")
+	slashed := filepath.ToSlash(relFile)
+	isComponentTemplate := strings.HasPrefix(slashed, "app/components/") ||
+		strings.Contains(slashed, "/app/components/")
 	if ownerFile == "" && isComponentTemplate {
 		result = append(result, facts.Fact{
 			Kind: facts.KindSymbol,
@@ -595,7 +597,7 @@ func scanHbsInvocations(text string) []string {
 				i = k
 			}
 		case '{', '(':
-			j := i
+			var j int
 			if text[i] == '{' {
 				if i+1 >= len(text) || text[i+1] != '{' {
 					continue
