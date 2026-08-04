@@ -1,0 +1,4 @@
+---
+- name: base config
+  import_role:
+    name: nginx

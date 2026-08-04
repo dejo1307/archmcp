@@ -1002,7 +1002,15 @@ import (
 // navigation edges from the enclosing symbol (the Ember router mechanism,
 // text-scanned because React Native writes JSX in .js). Sequel::Model classes
 // emit the ActiveRecord companion storage shape, the literal dataset argument
-// winning as the physical table.
+// winning as the physical table. Part 2, same version (unreleased): two new
+// extractors. hcl reads Terraform with an exact block scanner — blocks become
+// symbols addressed as Terraform addresses them, references (prefixed,
+// declared-set bare addresses, depends_on lists) become depends_on edges, and
+// a module block's literal local source draws the directory dependency, remote
+// sources marked external. ansible walks the repository itself (YAML is
+// ignore-globbed — the OpenAPI self-walk precedent): plays depend on the roles
+// they list, import_role/include_role literal names draw role-to-role edges,
+// and .j2 templates are counted without ever being rendered.
 const cacheVersion = "v151"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files

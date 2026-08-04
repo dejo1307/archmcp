@@ -78,6 +78,14 @@ var fixtures = []fixture{
 	// signal drawing client -> server on the exact field name, the unserved
 	// operation counted but unlinked, and GraphQL staying OUT of HTTP matching.
 	{name: "graphql_multirepo", subRepos: []string{"server", "client"}},
+	// Terraform: blocks as symbols, literal references (prefixed, declared bare
+	// addresses, depends_on lists) as edges, a local module source drawing the
+	// directory dependency. Pins v151's HCL extractor.
+	{name: "hcl_sample", subRepos: []string{"."}},
+	// Ansible: plays depend on the roles they list, import_role draws role-to-
+	// role edges, templates count without rendering. Self-walking (YAML is
+	// ignore-globbed), so the fixture also pins that the walk stays in bounds.
+	{name: "ansible_sample", subRepos: []string{"."}},
 	{name: "ruby_sample", subRepos: []string{"."}},
 	{name: "swift_sample", subRepos: []string{"."}},
 	{name: "kotlin_sample", subRepos: []string{"."}},

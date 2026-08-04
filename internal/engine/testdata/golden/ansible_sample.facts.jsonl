@@ -1,0 +1,5 @@
+{"kind":"module","name":"roles/app","file":"roles/app","repo":"ansible_sample","props":{"language":"ansible"}}
+{"kind":"module","name":"roles/nginx","file":"roles/nginx","repo":"ansible_sample","props":{"language":"ansible"}}
+{"kind":"symbol","name":"Provision web tier","file":"site.yml","line":1,"repo":"ansible_sample","props":{"ansible_kind":"play","exported":true,"language":"ansible","symbol_kind":"type"},"relations":[{"kind":"depends_on","target":"roles/app.app"},{"kind":"depends_on","target":"roles/nginx.nginx"}]}
+{"kind":"symbol","name":"roles/app.app","file":"roles/app","line":1,"repo":"ansible_sample","props":{"ansible_kind":"role","exported":true,"language":"ansible","symbol_kind":"type"},"relations":[{"kind":"declares","target":"roles/app"},{"kind":"depends_on","target":"roles/nginx.nginx"}]}
+{"kind":"symbol","name":"roles/nginx.nginx","file":"roles/nginx","line":1,"repo":"ansible_sample","props":{"ansible_kind":"role","exported":true,"language":"ansible","symbol_kind":"type","template_count":1},"relations":[{"kind":"declares","target":"roles/nginx"}]}

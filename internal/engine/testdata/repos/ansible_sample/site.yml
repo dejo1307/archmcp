@@ -1,0 +1,6 @@
+---
+- name: Provision web tier
+  hosts: web
+  roles:
+    - nginx
+    - role: app
