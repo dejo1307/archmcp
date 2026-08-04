@@ -184,9 +184,19 @@ func Default() *Config {
 	return &Config{
 		Repo: ".",
 		Ignore: []string{
-			"vendor/**",
-			"node_modules/**",
-			".git/**",
+			// Any-depth forms, deliberately: a monorepo's sub-app carries its own
+			// node_modules/dist, and the root-anchored globs these replace let a
+			// nested tree straight into the graph — on one production monolith the
+			// sub-app's node_modules alone contributed ~880k facts, dwarfing the
+			// repository's own ~150k. CI clones never install dependencies, which
+			// is why the corpus runs never caught it; live working trees do.
+			"**/vendor/**",
+			"**/node_modules/**",
+			"**/.git/**",
+			"**/dist/**",
+			"**/build/**",
+			"**/tmp/**",
+			"**/public/assets/**",
 			// Go reserves testdata/ for fixtures — the toolchain never compiles it.
 			// Fixture repos are whole miniature codebases (clients, servers, routes),
 			// so indexing them injects their call sites into the HOST repo's graph:

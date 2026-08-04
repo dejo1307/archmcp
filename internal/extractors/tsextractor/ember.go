@@ -1722,6 +1722,7 @@ func scanEmberYieldHash(text string) []string {
 		}
 		region := text[pos+idx+hashIdx:]
 		depth := 0
+		bounded := false
 		for i := 0; i < len(region); i++ {
 			if region[i] == '(' {
 				depth++
@@ -1729,9 +1730,16 @@ func scanEmberYieldHash(text string) []string {
 				depth--
 				if depth == 0 {
 					region = region[:i]
+					bounded = true
 					break
 				}
 			}
+		}
+		if !bounded {
+			// An unbalanced hash means a malformed template; scanning the whole
+			// remaining file for it would be quadratic on large templates.
+			pos += idx + hashIdx + 5
+			continue
 		}
 		// Strict-mode templates pass imported components directly:
 		// `(hash Header=ModalHeader)`. A bare-identifier value is recorded

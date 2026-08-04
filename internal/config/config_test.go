@@ -175,3 +175,24 @@ func TestPythonTestGlobsMatchRealPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultIgnores_NestedHeavyDirsExcluded(t *testing.T) {
+	cfg := Default()
+	match := func(path string) bool {
+		return facts.MatchAnyGlob(path, cfg.Ignore)
+	}
+	for _, p := range []string{
+		"ember_app/node_modules/lodash/index.js",
+		"apps/web/dist/bundle.js",
+		"sub/app/tmp/cache/x.rb",
+		"public/assets/app-abc123.js",
+		"packages/ui/vendor/lib.js",
+	} {
+		if !match(p) {
+			t.Errorf("nested heavy path %q escaped the default ignores — a monorepo sub-app's dependency tree would enter the graph", p)
+		}
+	}
+	if match("app/models/build.rb") || match("app/services/distribution.rb") {
+		t.Error("a production file merely containing a heavy-dir token must not be ignored")
+	}
+}

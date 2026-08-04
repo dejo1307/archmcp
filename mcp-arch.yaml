@@ -1,9 +1,16 @@
 repo: "."
 ignore:
   # Dependencies and tooling
-  - "vendor/**"
-  - "node_modules/**"
-  - ".git/**"
+  # Any-depth forms: a monorepo's sub-app carries its own node_modules/dist,
+  # and root-anchored globs let a nested tree straight into the graph (a
+  # production monolith's sub-app node_modules contributed ~880k facts).
+  - "**/vendor/**"
+  - "**/node_modules/**"
+  - "**/.git/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/tmp/**"
+  - "**/public/assets/**"
   - ".enola/**"
   # Go reserves testdata/ for fixtures and never compiles it. Fixture repos are
   # miniature codebases, so indexing them injects their routes and client call

@@ -213,6 +213,20 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		sort.Strings(templateOwners[owner])
 	}
 
+	ownerTargets := map[string][]string{}
+	for _, w := range work {
+		if w.ownerSymbol == "" {
+			continue
+		}
+		merged := ownerTargets[w.ownerSymbol]
+		merged = append(merged, w.targets...)
+		merged = append(merged, w.linkTargets...)
+		ownerTargets[w.ownerSymbol] = merged
+	}
+	for owner := range ownerTargets {
+		sort.Strings(ownerTargets[owner])
+	}
+
 	relationships := map[string][]string{}
 	for _, s := range store.ByKind(facts.KindStorage) {
 		entries := propStrings(s.Props[relationshipsProp])
@@ -322,15 +336,10 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 				bound++
 			}
 		}
-		for _, w := range work {
-			if w.ownerSymbol != f.Name {
-				continue
-			}
-			for _, t := range append(append([]string{}, w.targets...), w.linkTargets...) {
-				if t != f.Name && !f.HasRelation(facts.RelCalls, t) {
-					f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
-					bound++
-				}
+		for _, t := range ownerTargets[f.Name] {
+			if t != f.Name && !f.HasRelation(facts.RelCalls, t) {
+				f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
+				bound++
 			}
 		}
 	})
@@ -345,6 +354,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 // symbols each file declares.
 type index struct {
 	files       map[string]map[string]bool
+	byBase      map[string]map[string][]string
 	fileSymbols map[string]map[string][]symbolInfo
 	fileStorage map[string]map[string][]string
 	reexports   map[string]map[string]string
@@ -363,6 +373,7 @@ type symbolInfo struct {
 func buildIndex(store *facts.Store) *index {
 	idx := &index{
 		files:       map[string]map[string]bool{},
+		byBase:      map[string]map[string][]string{},
 		fileSymbols: map[string]map[string][]symbolInfo{},
 		fileStorage: map[string]map[string][]string{},
 		reexports:   map[string]map[string]string{},
@@ -372,10 +383,16 @@ func buildIndex(store *facts.Store) *index {
 		if file == "" {
 			return
 		}
+		slashed := filepath.ToSlash(file)
 		if idx.files[repo] == nil {
 			idx.files[repo] = map[string]bool{}
+			idx.byBase[repo] = map[string][]string{}
 		}
-		idx.files[repo][filepath.ToSlash(file)] = true
+		if !idx.files[repo][slashed] {
+			idx.files[repo][slashed] = true
+			base := slashed[strings.LastIndexByte(slashed, '/')+1:]
+			idx.byBase[repo][base] = append(idx.byBase[repo][base], slashed)
+		}
 	}
 	for _, s := range store.ByKind(facts.KindSymbol) {
 		addFile(s.Repo, s.File)
@@ -630,20 +647,27 @@ func (idx *index) resolveModel(repo, name string) string {
 // backs ONE resolver name, so the class file must not be read as ambiguous with
 // its own template. Two matches at the SAME extension — two Ember apps in one
 // monorepo — are a genuine ambiguity and skip.
+// The basename index narrows each lookup to the handful of same-named files
+// before the anchored-suffix check — the linear scan this replaces was
+// quadratic at monolith scale.
 func (idx *index) uniqueFile(repo, fragment, selfFile string) string {
 	anchorRoot := "app/"
 	if tree := engineTreeOf(selfFile); tree != "" {
 		anchorRoot = tree + "/"
 	}
+	lastSeg := fragment[strings.LastIndexByte(fragment, '/')+1:]
 	for _, ext := range sourceExts {
-		for _, anchored := range []string{anchorRoot + fragment + ext, anchorRoot + fragment + "/index" + ext} {
+		for _, form := range []struct{ base, anchored string }{
+			{lastSeg + ext, anchorRoot + fragment + ext},
+			{"index" + ext, anchorRoot + fragment + "/index" + ext},
+		} {
 			found := ""
 			ambiguous := false
-			for file := range idx.files[repo] {
+			for _, file := range idx.byBase[repo][form.base] {
 				if file == selfFile {
 					continue
 				}
-				if file != anchored && !strings.HasSuffix(file, "/"+anchored) {
+				if file != form.anchored && !strings.HasSuffix(file, "/"+form.anchored) {
 					continue
 				}
 				if found != "" && found != file {
