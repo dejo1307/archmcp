@@ -110,17 +110,23 @@ func TestExtractHTTPClientFacts_LowercaseVerbCalls(t *testing.T) {
 	}
 }
 
-// TestExtractHTTPClientFacts_LowercaseInterpolatedBaseNotMatched pins the boundary
-// v141 deliberately did NOT cross: a lowercase call whose template begins with an
-// interpolation is not a "/"-rooted literal, and admitting it would re-open the
-// collision that the leading-slash rule closes. Recorded as an assertion so the
-// omission reads as a decision rather than an oversight (see GAP-TS-06).
-func TestExtractHTTPClientFacts_LowercaseInterpolatedBaseNotMatched(t *testing.T) {
+// TestExtractHTTPClientFacts_LowercaseInterpolatedBase pins both sides of the
+// boundary v153 moved. v141 deliberately excluded interpolation-headed templates
+// from lowercase verb calls (recorded then as GAP-TS-06); litfold's template-tail
+// rule now admits exactly the shape whose tail is "/"-rooted — resolving that
+// gap — while a tail-less interpolation stays out, so a collection lookup can
+// still never match.
+func TestExtractHTTPClientFacts_LowercaseInterpolatedBase(t *testing.T) {
 	src := "async function load() {\n" +
 		"  await axios.get(`${baseUrl}/v1/charges`);\n" +
 		"}\n"
-	if ff := extractHTTPClientFacts([]byte(src), "client/pay.ts"); len(ff) != 0 {
-		t.Errorf("interpolated-base lowercase call must not be detected: %+v", ff)
+	ff := extractHTTPClientFacts([]byte(src), "client/pay.ts")
+	if len(ff) != 1 || ff[0].Name != "/v1/charges" || ff[0].Props["derived"] != "template-tail" {
+		t.Errorf("interpolated-base with /-rooted tail = %+v, want one derived /v1/charges", ff)
+	}
+	bare := "const v = registry.get(`${prefix}${key}`);\n"
+	if got := extractHTTPClientFacts([]byte(bare), "client/reg.ts"); len(got) != 0 {
+		t.Errorf("tail-less interpolation must stay excluded: %+v", got)
 	}
 }
 
@@ -447,5 +453,50 @@ func TestExtractHTTPClientFacts_VariableOptionsDefaultsToGet(t *testing.T) {
 	}
 	if got["/api/v1/others"] != "POST" {
 		t.Errorf("literal options = %v, want POST: %+v", got["/api/v1/others"], got)
+	}
+}
+
+func TestHTTPClient_SingleAssignmentFoldedFetch(t *testing.T) {
+	src := []byte("const url = `${config.TEAMTAILOR_HOST}/mcp`;\nconst res = await fetch(url, { method: 'POST' });\n")
+	ff := extractHTTPClientFacts(src, "src/index.ts")
+	if len(ff) != 1 || ff[0].Name != "/mcp" || ff[0].Props["method"] != "POST" {
+		t.Fatalf("folded fetch = %+v, want one POST /mcp", ff)
+	}
+	if ff[0].Props["derived"] != "single-assignment" {
+		t.Fatalf("folded route must carry its derivation form, got %v", ff[0].Props["derived"])
+	}
+	dup := []byte("let url = '/a';\nurl = '/b';\nfetch(url);\n")
+	if got := extractHTTPClientFacts(dup, "src/dup.ts"); len(got) != 0 {
+		t.Fatalf("a reassigned name folded: %+v", got)
+	}
+}
+
+func TestHTTPClient_TemplateTailLowerVerb(t *testing.T) {
+	src := []byte("const r = await apiClient.get(`${this.baseUrl}/widgets/${id}`);\n")
+	ff := extractHTTPClientFacts(src, "src/widgets.ts")
+	if len(ff) != 1 || ff[0].Name != "/widgets/{}" || ff[0].Props["method"] != "GET" {
+		t.Fatalf("template-tail verb call = %+v, want one GET /widgets/{}", ff)
+	}
+	if ff[0].Props["derived"] != "template-tail" {
+		t.Fatalf("template-tail route must carry its derivation form, got %v", ff[0].Props["derived"])
+	}
+	collection := []byte("const v = cache.get(`item-${id}`);\nconst w = map.get(key);\n")
+	if got := extractHTTPClientFacts(collection, "src/cache.ts"); len(got) != 0 {
+		t.Fatalf("collection lookups matched: %+v", got)
+	}
+}
+
+func TestHTTPClient_UrlPropertyIdentifierFolded(t *testing.T) {
+	src := []byte("const url = `${config.TEAMTAILOR_HOST}/mcp`;\nconst server = new MCPClient({\n  name: \"x\",\n  url: url,\n  requestInit: { headers: { authorization: token } },\n});\n")
+	ff := extractHTTPClientFacts(src, "src/index.ts")
+	if len(ff) != 1 || ff[0].Name != "/mcp" || ff[0].Props["derived"] != "single-assignment" {
+		t.Fatalf("identifier url: property = %+v, want one derived /mcp", ff)
+	}
+	if ff[0].Props["method"] != facts.MethodAny {
+		t.Fatalf("verb-less options object must carry MethodAny, got %v", ff[0].Props["method"])
+	}
+	plain := []byte("const target = compute();\nconst opts = { url: target, headers: {} };\n")
+	if got := extractHTTPClientFacts(plain, "src/other.ts"); len(got) != 0 {
+		t.Fatalf("unresolvable identifier url: derived something: %+v", got)
 	}
 }

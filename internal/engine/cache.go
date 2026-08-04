@@ -1024,7 +1024,18 @@ import (
 // extractor_version differs from this constant instead of carrying it: the
 // retroactive-tagging migration would bulk-claim a stale cross-version union
 // under one repo's label, manufacturing facts no repo's source states.
-const cacheVersion = "v152"
+// v153: literal derivation folding. One shared helper (litfold) owns the
+// bounded derivation set — a file-local single-assignment constant (a name
+// assigned twice folds nothing), a wrapper call's single "/"-rooted string
+// argument, and an interpolation-headed template whose tail is a "/"-rooted
+// literal. Applied at the HTTP-client scans: fetch/makeRequest with a bare
+// identifier argument resolves through the single-assignment store; Ruby
+// client calls admit connection.post(build_url("/pageview")); lowercase verb
+// calls admit `${base}/path` templates (the base-URL half formerly recorded
+// as GAP-TS-06), with cleanTSPath resolving or stripping the base as before.
+// Folded routes carry a descriptive `derived` prop naming the form. One step
+// only, never evaluation; derived and inline literals join identically.
+const cacheVersion = "v153"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

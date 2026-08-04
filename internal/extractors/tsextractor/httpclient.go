@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/litfold"
 )
 
 // httpClientCall matches a fetch()/makeRequest() call whose first argument is a
@@ -30,6 +31,34 @@ import (
 // parenthesis and spans any nesting depth. Same reasoning at verbNamedCall and
 // lowerVerbCall — all three shared the defect.
 var httpClientCall = regexp.MustCompile("(?:^|[^\\w])(fetch|makeRequest)\\s*(?:<[^()]*>)?\\s*\\(\\s*(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`)")
+
+// identArgCall matches a fetch()/makeRequest() call whose first argument is a
+// bare identifier — the single-assignment derivation site. The literal it was
+// assigned (if exactly once, per litfold) then flows through cleanTSPath
+// exactly as an inline argument would.
+var identArgCall = regexp.MustCompile(`(?:^|[^\w])(fetch|makeRequest)\s*(?:<[^()]*>)?\s*\(\s*([A-Za-z_$][\w$]*)\s*[,)]`)
+
+// urlAssignDecl matches a const/let/var binding of a string or template
+// literal to a name, feeding the single-assignment store. Broader than
+// baseLiteralDecl (which requires a "/"-rooted literal): a full-URL template
+// like `${config.HOST}/mcp` is exactly the value worth deriving, and
+// cleanTSPath applies its own path discipline downstream.
+var urlAssignDecl = regexp.MustCompile("(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*(?::[\\w<>\\[\\].,| ]*)?=\\s*(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`)")
+
+// bareAssign matches a line-anchored reassignment of a plain identifier —
+// `url = '/b'` or `url = compute()` — recorded so the single-assignment rule
+// can KILL the name (litfold: assigned twice folds nothing, whatever the
+// values). The `[^=>]` after "=" keeps ==, =>, and >= comparisons out; member
+// assignments (a.b = …) have a dot and never match the identifier form.
+var bareAssign = regexp.MustCompile(`(?m)^\s*([A-Za-z_$][\w$]*)\s*=[^=>]`)
+
+// lowerVerbTemplateCall admits the interpolation-headed template shape that
+// lowerVerbCall deliberately excludes: the argument must be a template whose
+// head is a single interpolation and whose tail is "/"-rooted (litfold's
+// template-tail rule), so a collection lookup like map.get(key) can still
+// never match. This is the base-URL half of the gap the lowerVerbCall comment
+// records as GAP-TS-06.
+var lowerVerbTemplateCall = regexp.MustCompile("\\.(get|post|put|delete|patch)\\s*(?:<[^()]*>)?\\s*\\(\\s*`(\\$\\{[^}]+\\}/[^`]*)`")
 
 // httpClientMethod matches a `method: 'POST'` option within a call's options
 // object.
@@ -61,10 +90,11 @@ var verbNamedCall = regexp.MustCompile("\\.(GET|POST|PUT|DELETE|PATCH)\\s*(?:<[^
 // A collection key beginning with "/" is vanishingly rare; a request path not
 // beginning with one is not a request path.
 //
-// Deliberately NOT matched: a lowercase call whose argument is a template starting
-// with an interpolation (axios.get(`${base}/x`)). Recovering those needs the base
-// resolution of cleanTSPath, and admitting them here would re-open the collision
-// this rule closes. They stay missed — see GAP-TS-06 for the base-URL half.
+// Deliberately NOT matched here: a lowercase call whose argument is a template
+// starting with an interpolation (axios.get(`${base}/x`)) — admitting it in THIS
+// pattern would re-open the collision the "/"-rooted rule closes. Those calls are
+// now handled by lowerVerbTemplateCall under litfold's template-tail rule, which
+// resolves the base-URL half formerly recorded as GAP-TS-06.
 var lowerVerbCall = regexp.MustCompile("\\.(get|post|put|delete|patch)\\s*(?:<[^()]*>)?\\s*\\(\\s*(?:\"(/[^\"]*)\"|'(/[^']*)'|`(/[^`]*)`)")
 
 // urlProperty matches a `url:` object property whose value is a string/template
@@ -73,6 +103,12 @@ var lowerVerbCall = regexp.MustCompile("\\.(get|post|put|delete|patch)\\s*(?:<[^
 //	request({ token, type: 'query', url: `/v2/messages/${id}.json` })
 //	{ type: 'post', payload: {…}, url: '/v2/messages.json' }
 var urlProperty = regexp.MustCompile("\\burl\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`)")
+
+// urlPropertyIdent matches a `url:` property whose value is a bare identifier
+// — `url: url` in an options object — the single-assignment derivation applied
+// at the options-object site. The identifier resolves through the same litfold
+// store as pass 1b; an unresolvable name contributes nothing.
+var urlPropertyIdent = regexp.MustCompile(`\burl\s*:\s*([A-Za-z_$][\w$]*)\s*[,}]`)
 
 // requestVerbProperty extracts the verb of a request-options object from its
 // `type:`/`method:` property. The value may be an HTTP verb or an action verb
@@ -182,11 +218,28 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 	api := tsAPIHint(relFile)
 	bases := fileBaseLiterals(src)
 
+	folds := litfold.NewAssignments()
+	declared := map[int]bool{}
+	for _, m := range urlAssignDecl.FindAllSubmatchIndex(src, -1) {
+		folds.Add(string(src[m[2]:m[3]]), firstNonEmptyGroup(src, m, 2, 3, 4))
+		declared[m[2]] = true
+	}
+	for _, m := range bareAssign.FindAllSubmatchIndex(src, -1) {
+		name := string(src[m[2]:m[3]])
+		if declared[m[2]] || name == "const" || name == "let" || name == "var" ||
+			name == "return" || name == "typeof" || name == "await" {
+			continue
+		}
+		folds.Add(name, "")
+	}
+
 	var out []facts.Fact
 	seen := map[string]bool{}
 	// add appends a client-route fact, de-duplicating on method+path+line so the
-	// three passes below cannot double-emit the same call site.
-	add := func(rawPath, method, framework string, off int) {
+	// passes below cannot double-emit the same call site. A non-empty derived
+	// names the litfold derivation form that produced the raw path, so a reader
+	// can tell a derived literal from an inline one.
+	add := func(rawPath, method, framework string, off int, derived string) {
 		path, ok := cleanTSPath(rawPath, bases)
 		if !ok {
 			return
@@ -197,19 +250,23 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 			return
 		}
 		seen[key] = true
+		props := map[string]any{
+			facts.PropRole:   facts.RoleClient,
+			"method":         method,
+			"framework":      framework,
+			"language":       "typescript",
+			facts.PropSource: facts.RouteSourceTSHTTPClient,
+			"api":            api,
+		}
+		if derived != "" {
+			props["derived"] = derived
+		}
 		out = append(out, facts.Fact{
-			Kind: facts.KindRoute,
-			Name: path,
-			File: relFile,
-			Line: line,
-			Props: map[string]any{
-				facts.PropRole:   facts.RoleClient,
-				"method":         method,
-				"framework":      framework,
-				"language":       "typescript",
-				facts.PropSource: facts.RouteSourceTSHTTPClient,
-				"api":            api,
-			},
+			Kind:      facts.KindRoute,
+			Name:      path,
+			File:      relFile,
+			Line:      line,
+			Props:     props,
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 		})
 	}
@@ -226,14 +283,33 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 				method = strings.ToUpper(string(mm[1]))
 			}
 		}
-		add(raw, method, "fetch", m[2])
+		add(raw, method, "fetch", m[2], "")
+	}
+
+	// Pass 1b — positional fetch()/makeRequest() whose argument is a bare
+	// identifier assigned a literal exactly once in this file (litfold's
+	// single-assignment rule). The resolved literal flows through cleanTSPath
+	// exactly as an inline argument would, so `const url = ` + "`${config.HOST}/mcp`" + `;
+	// fetch(url)` models identically to the inline form.
+	for _, m := range identArgCall.FindAllSubmatchIndex(src, -1) {
+		raw, ok := folds.Resolve(string(src[m[4]:m[5]]))
+		if !ok {
+			continue
+		}
+		method := "GET"
+		if opts := optionsObjectAfter(src, m[5]); opts != nil {
+			if mm := httpClientMethod.FindSubmatch(opts); mm != nil {
+				method = strings.ToUpper(string(mm[1]))
+			}
+		}
+		add(raw, method, "fetch", m[2], "single-assignment")
 	}
 
 	// Pass 2 — verb-named generated-client calls; the method is the call name.
 	for _, m := range verbNamedCall.FindAllSubmatchIndex(src, -1) {
 		method := strings.ToUpper(string(src[m[2]:m[3]]))
 		raw := firstNonEmptyGroup(src, m, 2, 3, 4)
-		add(raw, method, "openapi-fetch", m[0])
+		add(raw, method, "openapi-fetch", m[0], "")
 	}
 
 	// Pass 2b — lowercase verb-named calls (axios.get('/x'), http.post('/x')). The
@@ -253,7 +329,22 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 		}
 		method := strings.ToUpper(string(src[m[2]:m[3]]))
 		raw := firstNonEmptyGroup(src, m, 2, 3, 4)
-		add(raw, method, "axios", m[0])
+		add(raw, method, "axios", m[0], "")
+	}
+
+	// Pass 2c — lowercase verb calls whose argument is an interpolation-headed
+	// template with a "/"-rooted literal tail (litfold's template-tail rule).
+	// cleanTSPath resolves or strips the base; the tail is the path.
+	for _, m := range lowerVerbTemplateCall.FindAllSubmatchIndex(src, -1) {
+		if isServerReceiver(serverRecv, identifierEndingAt(src, m[0])) {
+			continue
+		}
+		raw := string(src[m[4]:m[5]])
+		if !litfold.TemplateTailPath(raw) {
+			continue
+		}
+		method := strings.ToUpper(string(src[m[2]:m[3]]))
+		add(raw, method, "axios", m[0], "template-tail")
 	}
 
 	// Pass 3 — options-object clients: a `url:` property inside an object literal
@@ -281,7 +372,38 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 			continue // a plain link / config / SEO-metadata object
 		}
 		raw := firstNonEmptyGroup(src, m, 1, 2, 3)
-		add(raw, method, "request-options", m[0])
+		add(raw, method, "request-options", m[0], "")
+	}
+
+	// Pass 3b — a `url:` property whose value is a bare identifier, resolved
+	// through the single-assignment store; the enclosing-object discipline is
+	// pass 3's, unchanged.
+	for _, m := range urlPropertyIdent.FindAllSubmatchIndex(src, -1) {
+		raw, ok := folds.Resolve(string(src[m[2]:m[3]]))
+		if !ok {
+			continue
+		}
+		window := enclosingObject(src, m[0], m[1])
+		if window == nil {
+			continue
+		}
+		// A verb-less options object states no method: the protocol library
+		// picks one at runtime, so the client route carries facts.MethodAny and
+		// the matcher pairs it with whichever verb serves the path (fetch's
+		// GET default does NOT apply — that default is fetch's spec, not this
+		// library's).
+		method := facts.MethodAny
+		haveVerb := false
+		if vm := requestVerbProperty.FindSubmatch(window); vm != nil {
+			if v := mapClientVerb(string(vm[1])); v != "" {
+				method = v
+				haveVerb = true
+			}
+		}
+		if !haveVerb && !requestPayloadKey.Match(window) {
+			continue
+		}
+		add(raw, method, "request-options", m[0], "single-assignment")
 	}
 
 	return out

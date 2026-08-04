@@ -300,7 +300,17 @@ func (m *Matcher) LookupClientMatches(server map[string][]RouteRef, clientPath, 
 		if m := server[RouteKey(clientPath, method)]; len(m) > 0 {
 			return m, clientPath
 		}
-		return server[RouteKey(clientPath, facts.MethodAny)], clientPath
+		if m := server[RouteKey(clientPath, facts.MethodAny)]; len(m) > 0 {
+			return m, clientPath
+		}
+		if method == facts.MethodAny {
+			for _, v := range clientAnyVerbs {
+				if m := server[RouteKey(clientPath, v)]; len(m) > 0 {
+					return m, clientPath
+				}
+			}
+		}
+		return nil, clientPath
 	}
 	for _, suf := range sufs {
 		// Prefer an exact-verb server route at this suffix, then fall back to a
@@ -312,9 +322,25 @@ func (m *Matcher) LookupClientMatches(server map[string][]RouteRef, clientPath, 
 		if m := server[RouteKey(suf, facts.MethodAny)]; len(m) > 0 {
 			return m, suf
 		}
+		// The symmetric wildcard: a CLIENT whose method the source does not state
+		// (facts.MethodAny — an options-object call with no verb property, where a
+		// protocol library chooses the verb at runtime) matches the path's server
+		// whichever verb serves it, in a fixed preference order so the choice is
+		// deterministic.
+		if method == facts.MethodAny {
+			for _, v := range clientAnyVerbs {
+				if m := server[RouteKey(suf, v)]; len(m) > 0 {
+					return m, suf
+				}
+			}
+		}
 	}
 	return nil, clientPath
 }
+
+// clientAnyVerbs is the deterministic verb-preference order a method-less
+// client call tries against a suffix's server routes.
+var clientAnyVerbs = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
 
 // CanonicalLeadingSlash ensures a non-empty path starts with "/", so a
 // base-relative client path ("settings/x") compares equal to the indexed

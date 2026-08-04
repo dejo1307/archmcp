@@ -101,3 +101,18 @@ client.get('https://api.stripe.com/v1/charges')
 		t.Fatalf("got %d client routes, want 0: %+v", len(got), got)
 	}
 }
+
+func TestRubyHTTPClient_WrapperLiteral(t *testing.T) {
+	src := []byte("class Insights\n  def pageview(attributes)\n    connection.post(build_url(\"/pageview\"), attributes)\n  end\nend\n")
+	ff := extractRubyHTTPClientFacts(src, "app/services/insights.rb")
+	if len(ff) != 1 || ff[0].Name != "/pageview" || ff[0].Props["method"] != "POST" {
+		t.Fatalf("wrapper-literal call = %+v, want one POST /pageview", ff)
+	}
+	if ff[0].Props["derived"] != "wrapper-literal" {
+		t.Fatalf("wrapper route must carry its derivation form, got %v", ff[0].Props["derived"])
+	}
+	nonPath := []byte("conn.post(build_url(\"pageview\"))\nconn.get(t(\"labels.title\"))\n")
+	if got := extractRubyHTTPClientFacts(nonPath, "app/services/other.rb"); len(got) != 0 {
+		t.Fatalf("non-/-rooted wrapper literals derived: %+v", got)
+	}
+}

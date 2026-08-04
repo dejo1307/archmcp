@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/litfold"
 )
 
 // rubyClientCall matches an outbound HTTP-client call whose first argument is a
@@ -19,6 +20,14 @@ import (
 // The leading (?:^|[^.\w@$]) ensures the receiver is not itself the tail of a
 // longer method chain (e.g. record.posts.get), which cuts ActiveRecord noise.
 var rubyClientCall = regexp.MustCompile(`(?:^|[^.\w@$])([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\.(get|post|put|patch|delete|head)\b\s*\(?\s*(?:"([^"]*)"|'([^']*)')`)
+
+// rubyWrapperCall matches a client call whose first argument is a WRAPPER CALL
+// carrying one string literal — connection.post(build_url("/pageview"), attrs)
+// — the wrapper-literal derivation form. The wrapper expression (identifier
+// plus its single quoted argument) is captured whole and handed to litfold,
+// which owns the rule: the wrapped literal must be "/"-rooted or it derives
+// nothing.
+var rubyWrapperCall = regexp.MustCompile(`(?:^|[^.\w@$])([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\.(get|post|put|patch|delete|head)\b\s*\(?\s*([a-z_][\w.]*[!?]?\(\s*(?:"[^"]*"|'[^']*')\s*\))`)
 
 // rubyInterpolation matches a Ruby string interpolation, e.g. #{id}.
 var rubyInterpolation = regexp.MustCompile(`#\{[^}]*\}`)
@@ -47,9 +56,18 @@ func extractRubyHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 
 	var out []facts.Fact
 	for i, line := range strings.Split(string(src), "\n") {
+		derived := ""
 		m := rubyClientCall.FindStringSubmatch(line)
 		if m == nil {
-			continue
+			if wm := rubyWrapperCall.FindStringSubmatch(line); wm != nil {
+				if lit, ok := litfold.WrapperLiteralPath(wm[3]); ok {
+					m = []string{wm[0], wm[1], wm[2], lit, ""}
+					derived = "wrapper-literal"
+				}
+			}
+			if m == nil {
+				continue
+			}
 		}
 		recv := m[1]
 		if !isHTTPClientReceiver(recv) {
@@ -87,6 +105,9 @@ func extractRubyHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: filepath.ToSlash(filepath.Dir(relFile))}},
 		})
+		if derived != "" {
+			out[len(out)-1].Props["derived"] = derived
+		}
 	}
 	return out
 }

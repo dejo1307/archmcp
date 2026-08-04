@@ -27,3 +27,13 @@ export async function banUser(id: string) {
 export async function unknown() {
   return axios.get("/not/served/anywhere");
 }
+
+const statusUrl = `${process.env.API_HOST}/healthcheck`;
+
+export async function pollStatus() {
+  return fetch(statusUrl, { method: "GET" });
+}
+
+export async function metricsTail(window: string) {
+  return axios.get(`${process.env.API_HOST}/admin/users`);
+}

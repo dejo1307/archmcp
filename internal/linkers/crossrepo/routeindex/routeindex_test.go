@@ -101,3 +101,18 @@ func TestIsUIRoute_PageRoutesExcludedFromServerIndex(t *testing.T) {
 		t.Errorf("server index = %v, want empty — a browser navigation URL is not a served endpoint", got)
 	}
 }
+
+func TestLookupClientMatches_ClientMethodAny(t *testing.T) {
+	m := New(vocab.Default())
+	server := m.IndexServerRoutes([]facts.Fact{{
+		Kind: facts.KindRoute, Name: "/mcp", Repo: "backend",
+		Props: map[string]any{"method": "POST", "role": "server"},
+	}})
+	refs, _ := m.LookupClientMatches(server, "/mcp", facts.MethodAny)
+	if len(refs) != 1 || refs[0].Repo != "backend" {
+		t.Fatalf("method-less client did not match the path's server: %+v", refs)
+	}
+	if refs, _ := m.LookupClientMatches(server, "/absent", facts.MethodAny); len(refs) != 0 {
+		t.Fatalf("method-less client matched an unserved path: %+v", refs)
+	}
+}
