@@ -101,7 +101,7 @@ func hasTSMarkers(dir string) bool {
 		}
 	}
 
-	for _, pkg := range []string{"typescript", "vue", "react", "svelte", "next", "nuxt"} {
+	for _, pkg := range []string{"typescript", "vue", "react", "svelte", "next", "nuxt", "ember-source"} {
 		if hasPkgDependency(dir, pkg) {
 			return true
 		}
@@ -118,6 +118,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	isVue := detectVue(repoPath)
 	isNuxt := detectNuxt(repoPath)
 	isSvelteKit := detectSvelteKit(repoPath)
+	isEmber := detectEmber(repoPath)
 	// ORM detection is gated on the package.json dependency, exactly as Vue/Nuxt are, so
 	// a class coincidentally decorated @Entity models nothing in a repo without TypeORM.
 	isTypeORM, isDrizzle, isPrisma := detectORMs(repoPath)
@@ -165,7 +166,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			return nil
 		}
 		aliases := aliasesForDir(aliasRoots, filepath.Dir(relFile))
-		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, orms, aliases, knownFiles, grpcStubs)
+		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, orms, aliases, knownFiles, grpcStubs)
 	})
 
 	// Group files by directory for module detection. Files that produced no
@@ -233,12 +234,30 @@ type extractCtx struct {
 	knownFiles  map[string]bool // repo-relative (slash) paths of all indexed TS/JS files
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit bool, orms ormFlags, aliases map[string]string, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber bool, orms ormFlags, aliases map[string]string, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
 	if isVueFile(relFile) {
 		return e.extractVueSFC(src, relFile, isNuxt, aliases)
 	}
 	if isSvelteFile(relFile) {
 		return e.extractSvelteSFC(src, relFile, isSvelteKit, aliases)
+	}
+	if isHbsFile(relFile) {
+		// Handlebars is only modeled where Ember's resolver gives the names
+		// deterministic meaning; a lone .hbs in a non-Ember repo stays out.
+		if !isEmber {
+			return nil
+		}
+		return e.extractEmberHbs(src, relFile, knownFiles)
+	}
+	// A Glimmer template-tag file is TypeScript/JavaScript with embedded
+	// <template> blocks: blank the blocks in place (newlines preserved, so every
+	// Line below stays true to the original file) and parse the remainder with
+	// the standard grammar. The sliced-out segments feed emberEnrich after the
+	// declaration pass.
+	var emberSegments []emberTemplateSegment
+	isEmberFile := isEmberTemplateTagFile(relFile)
+	if isEmberFile {
+		src, emberSegments = blankEmberTemplates(src)
 	}
 
 	var result []facts.Fact
@@ -333,6 +352,16 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		if routeFact := detectRoute(relFile); routeFact != nil {
 			result = append(result, *routeFact)
 		}
+	}
+
+	// Ember: classify component/service/model classes, attach strict-mode
+	// template references, record @service injections for the ember-resolver
+	// binder, and emit the router map's page routes.
+	if isEmberFile || isEmber {
+		result = emberEnrich(result, root, src, relFile, aliases, emberSegments)
+	}
+	if isEmber && isEmberRouterFile(relFile) {
+		result = append(result, extractEmberRoutes(root, src, relFile)...)
 	}
 
 	// Detect Vue Router configuration files
@@ -995,7 +1024,8 @@ func detectNextJSAt(dir string) bool {
 
 func isTypeScriptFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".ts" || ext == ".tsx" || ext == ".vue" || ext == ".js" || ext == ".jsx" || ext == ".svelte"
+	return ext == ".ts" || ext == ".tsx" || ext == ".vue" || ext == ".js" || ext == ".jsx" || ext == ".svelte" ||
+		ext == ".gts" || ext == ".gjs" || ext == ".hbs"
 }
 
 // minifiedLineThreshold is the line length above which a file is treated as
@@ -1497,7 +1527,7 @@ func resolveImportPath(importPath, fileDir string, aliases map[string]string) (s
 
 // tsModuleExts are the source extensions a bare import path may resolve to, tried in
 // TS-before-JS order (a project with both prefers the typed file).
-var tsModuleExts = []string{".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte"}
+var tsModuleExts = []string{".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte", ".gts", ".gjs"}
 
 // resolveModuleFile resolves an extensionless internal import path to the actual
 // source file backing it, using the set of known indexed files. It returns the

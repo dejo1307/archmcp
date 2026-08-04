@@ -57,6 +57,14 @@ var fixtures = []fixture{
 	// call in loadPostsFor() and calls it once per iteration, which is only detectable
 	// as an N+1 once the ORM call seeds performs_io through the wrapper.
 	{name: "ts_orm_sample", subRepos: []string{"."}},
+	// Ember app: two .gts template-tag components (one importing the other through a
+	// tsconfig path alias, one injecting a service), a classic .hbs + .js component
+	// pair invoking a component and a helper, a template-only .hbs, a route template,
+	// a Router.map with nested paths, an ember-data model, and a service. Pins v148
+	// end-to-end: template blanking preserves line numbers, strict-mode template refs
+	// resolve through imports, and the ember-resolver binder joins .hbs invocations
+	// and @service injections to the symbols the files actually declare.
+	{name: "ts_ember_sample", subRepos: []string{"."}},
 	{name: "ruby_sample", subRepos: []string{"."}},
 	{name: "swift_sample", subRepos: []string{"."}},
 	{name: "kotlin_sample", subRepos: []string{"."}},

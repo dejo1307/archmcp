@@ -1,0 +1,7 @@
+{
+  "name": "shelf",
+  "devDependencies": {
+    "ember-source": "^6.4.0",
+    "typescript": "^5.6.0"
+  }
+}

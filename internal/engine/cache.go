@@ -945,7 +945,20 @@ import (
 // tables in one Postgres catalog query. Residual, measured: ~1% still come from English
 // genuinely shaped like SQL ("unable to create table response"), which no rule separates
 // without also losing lowercase SQL.
-const cacheVersion = "v147"
+// v148: the TypeScript extractor gains Ember/Glimmer support. Template-tag files
+// (.gts/.gjs) are parsed by blanking their <template> blocks in place — newlines
+// preserved, so every fact's Line is true to the original file — and their
+// template references resolve through the file's own import bindings (strict
+// mode makes that exact: an identifier a template renders is either imported or
+// local). Classic .hbs templates emit a file_ref carrier with their invocation
+// names; the new ember-resolver binder joins those, and @service injections, to
+// the declared symbols after extraction, skipping anything ambiguous. Router.map
+// declarations become page routes with parent paths composed, and ember-data
+// model classes gain a storage companion — the same modelling Nuxt/SvelteKit
+// routes and ActiveRecord models already get. Before this, a .gts/.gjs/.hbs file
+// produced no facts at all: an Ember app's component architecture was invisible
+// while its plain-.ts half made the graph look populated.
+const cacheVersion = "v148"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

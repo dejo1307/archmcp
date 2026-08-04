@@ -3,13 +3,14 @@
 Parsed with tree-sitter's TypeScript grammar, which handles JavaScript natively — there
 is no separate JS extractor. Detected by `tsconfig.json`, `tsconfig.base.json`, or a
 `package.json` with TypeScript, at the root or one level deep, so monorepos are picked up
-per package. Vue and Svelte are the same extractor with their own single-file-component
-handling.
+per package. Vue, Svelte and Ember are the same extractor with their own
+single-file-component / template handling.
 
 Fixtures: [`ts_sample`](../../internal/engine/testdata/repos/ts_sample/) ·
 [`ts_express_multirepo`](../../internal/engine/testdata/repos/ts_express_multirepo/) ·
 [`ts_nest_multirepo`](../../internal/engine/testdata/repos/ts_nest_multirepo/) ·
-[`ts_orm_sample`](../../internal/engine/testdata/repos/ts_orm_sample/)
+[`ts_orm_sample`](../../internal/engine/testdata/repos/ts_orm_sample/) ·
+[`ts_ember_sample`](../../internal/engine/testdata/repos/ts_ember_sample/)
 
 ## At a glance
 
@@ -25,6 +26,9 @@ Fixtures: [`ts_sample`](../../internal/engine/testdata/repos/ts_sample/) ·
 | `pages/about.vue` (Nuxt) | a route derived from the file path | `route` |
 | `src/routes/blog/[slug]/+page.svelte` | a route derived from the file path | `route` |
 | a Prisma / TypeORM / Drizzle model | an entity with its table name | `storage` |
+| a `.gts`/`.gjs` Glimmer component | a component symbol with its template's references | `symbol` |
+| `this.route('book', { path: '/:book_id' })` (Ember) | a page route at the composed path | `route` |
+| an ember-data `Model` subclass | a model with its dasherized name | `storage` |
 | top-level statements | a `file_ref` carrying the call edges | `file_ref` |
 | `*.test.ts`, `*.spec.tsx` | a reference-only `test_ref` | `test_ref` |
 
@@ -106,6 +110,76 @@ Two deliberate non-routes, both covered by tests: `+page.server.ts` is a load fu
 rather than an endpoint and emits nothing, and a `.svelte` file outside `src/routes/`
 (a component in `src/lib/`) is not a route.
 
+## Ember — template tags, classic templates, and the resolver
+
+Detected by an `ember-source` dependency in `package.json`. A Glimmer template-tag
+file is TypeScript with embedded `<template>` blocks; the blocks are blanked in
+place (newlines preserved) so the remainder parses with the standard grammar and
+every fact's line number stays true to the original file:
+
+```ts
+// app/components/book-card.gts
+import Component from '@glimmer/component';
+import { service } from '@ember/service';
+import Badge from 'shelf/components/badge';
+
+export default class BookCard extends Component {   // line 5
+  @service declare library: unknown;
+
+  <template>
+    <Badge>{{@status}}</Badge>
+  </template>
+}
+```
+
+```
+symbol  app/components.BookCard   app/components/book-card.gts:5
+        props: symbol_kind=class, web_component=component, framework=ember,
+               ember_injected_services=[library]
+        relations: calls -> app/components.Badge
+                   injects -> app/services.LibraryService
+```
+
+Two things worth noticing. The template's `<Badge>` reference resolved through the
+file's own imports — Glimmer strict mode guarantees that anything a template
+renders is either imported or local, so import bindings are the exact resolution
+set, and a `{{this.title}}` or an `@arg` can never produce a wrong edge. And the
+`injects` edge targets `LibraryService`, the class `app/services/library.ts`
+*actually declares* — not a name guessed from the service's `library` lookup key.
+That join happens in the post-link `ember-resolver` binder, where the whole store
+is visible.
+
+Classic `.hbs` templates have no imports to anchor on, so their invocations are
+recorded and resolved the same way — via Ember's resolver layout, one candidate
+file and one plausible symbol required, anything ambiguous skipped and counted in
+`ember_unresolved` rather than guessed:
+
+```
+{{format-count this.rounded}}   →  calls -> app/helpers.formatCount
+<Badge>…</Badge>                →  calls -> app/components.Badge
+{{title}}                       →  nothing: indistinguishable from a property
+```
+
+A component template with no co-located class is a template-only component and
+synthesizes its component symbol; a `.hbs` file in a repo without `ember-source`
+emits nothing.
+
+`Router.map` declarations become page routes with parent paths composed the way
+the router composes them:
+
+```
+route  /catalog                    app/router.ts:6   ember_route_name=catalog
+route  /catalog/:book_id           app/router.ts:7   ember_route_name=catalog.book
+route  /catalog/:book_id/reviews   app/router.ts:8   ember_route_name=catalog.book.reviews
+route  /my-account                 app/router.ts:11  ember_route_name=account
+```
+
+These carry `type=page`, `framework=ember` — UI routes in the same sense as Nuxt
+pages and SvelteKit routes, never HTTP contracts. An ember-data `Model` subclass
+additionally emits a storage companion (`storage_kind=model`,
+`framework=ember-data`, `table` holding the dasherized model name), the same
+shape ActiveRecord models get in the Ruby extractor.
+
 ## Storage — three ORMs, one shape
 
 ```
@@ -132,6 +206,9 @@ reached from another repository in another language.
   request path.
 - **Runtime-registered routes** — an Express router assembled in a loop over a config
   array is not unrolled.
+- **Ember names the default resolver cannot map.** Addon components (they resolve
+  into `node_modules`), pods layout, custom resolvers, and engine mount points
+  produce no edge; the misses are recorded in `ember_unresolved`, not guessed at.
 
 ---
 

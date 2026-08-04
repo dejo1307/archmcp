@@ -176,6 +176,7 @@ reports, per service, how many outbound calls enola found, how many it resolved,
 | TypeScript | `tsconfig.json` / `package.json` with TypeScript (Next.js & monorepo aware) |
 | Vue        | `package.json` with `vue` dependency (Nuxt / Vue Router / Composition API aware) |
 | Svelte     | `package.json` with `svelte` dependency (SvelteKit routing / `$lib` alias aware) |
+| Ember      | `package.json` with `ember-source` dependency (`.gts`/`.gjs` template tags, `.hbs` templates, router map, ember-data) |
 | Python     | `pyproject.toml`, `requirements.txt`, `setup.py`, … (FastAPI / Django / SQLAlchemy aware) |
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
