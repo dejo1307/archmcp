@@ -1,6 +1,8 @@
 package tsextractor
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -31,5 +33,29 @@ func TestGraphQLDoc_OperationFileAndSchemaCopy(t *testing.T) {
 	schema := extractGraphQLClientOps("type Query {\n  me: User\n}\n", "graphql/schema.graphql", facts.RouteSourceGraphQLOperation)
 	if len(schema) != 0 {
 		t.Errorf("a schema COPY emitted %v — type-definition blocks are codegen inputs, not client operations", schema)
+	}
+}
+
+func TestGraphQLTag_FragmentInterpolation(t *testing.T) {
+	src := []byte("const Q = gql`\n  query Feed {\n    stories {\n      ...StoryFields\n    }\n  }\n  ${STORY_FIELDS}\n`;\n")
+	ff := extractGraphQLTagFacts(src, "src/feed.js")
+	if len(ff) != 1 || ff[0].Name != "Query.stories" {
+		t.Fatalf("interpolated-fragment operation = %+v, want exactly Query.stories", ff)
+	}
+}
+
+func TestReactNavDetect_MonorepoExampleApp(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "example"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"framework","workspaces":["example"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "example", "package.json"), []byte(`{"dependencies":{"@react-navigation/native":"^6.0.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !detectReactNavigation(dir) {
+		t.Error("a monorepo example app one level down must trigger detection")
 	}
 }

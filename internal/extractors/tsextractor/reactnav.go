@@ -1,6 +1,8 @@
 package tsextractor
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -30,8 +32,24 @@ const (
 
 func detectReactNavigation(repoPath string) bool {
 	tsRoot, _ := findTSRoot(repoPath)
-	return hasPkgDependency(tsRoot, "@react-navigation/native") ||
-		(tsRoot != repoPath && hasPkgDependency(repoPath, "@react-navigation/native"))
+	if hasPkgDependency(tsRoot, "@react-navigation/native") ||
+		(tsRoot != repoPath && hasPkgDependency(repoPath, "@react-navigation/native")) {
+		return true
+	}
+	// A monorepo's example/demo app declares the dependency in its own
+	// package.json one level down (the framework's own repository is the
+	// extreme case: the root IS the dependency and depends on nothing).
+	entries, err := os.ReadDir(repoPath)
+	if err != nil {
+		return false
+	}
+	for _, ent := range entries {
+		if ent.IsDir() && !strings.HasPrefix(ent.Name(), ".") && !tsSkipDirs[ent.Name()] &&
+			hasPkgDependency(filepath.Join(repoPath, ent.Name()), "@react-navigation/native") {
+			return true
+		}
+	}
+	return false
 }
 
 // screenTag matches `<Stack.Screen … >` openings; name/component are pulled

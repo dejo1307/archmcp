@@ -146,3 +146,23 @@ func TestHCL_BareTokensNeedDeclaredAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestHCL_MultipleLocalsBlocks(t *testing.T) {
+	ff := extractHCL(t, map[string]string{
+		"main.tf": `locals {
+  tags = { env = "prod" }
+}
+
+resource "aws_vpc" "core" {
+  cidr_block = "10.0.0.0/16"
+}
+
+locals {
+  region = "eu-north-1"
+}
+`,
+	})
+	if find(ff, facts.KindSymbol, "local.tags") == nil || find(ff, facts.KindSymbol, "local.region") == nil {
+		t.Error("a second locals block was not scanned — every locals block counts")
+	}
+}

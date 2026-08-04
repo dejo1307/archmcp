@@ -219,7 +219,13 @@ func scanHCLBlocks(text, relFile string) []hclBlock {
 		}
 		opens = append(opens, opening{kind: kind, address: addr, start: m[0], line: 1 + strings.Count(text[:m[0]], "\n")})
 	}
-	if idx := strings.Index(text, "locals {"); idx >= 0 {
+	searchFrom := 0
+	for {
+		idx := strings.Index(text[searchFrom:], "locals {")
+		if idx < 0 {
+			break
+		}
+		idx += searchFrom
 		body := hclBlockBody(text, idx)
 		for _, lm := range localsAssign.FindAllStringSubmatchIndex(body, -1) {
 			blocks = append(blocks, hclBlock{
@@ -230,6 +236,7 @@ func scanHCLBlocks(text, relFile string) []hclBlock {
 				body:    "",
 			})
 		}
+		searchFrom = idx + len("locals {") + len(body)
 	}
 	sort.Slice(opens, func(i, j int) bool { return opens[i].start < opens[j].start })
 	for _, o := range opens {
