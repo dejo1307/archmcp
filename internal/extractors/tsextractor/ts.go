@@ -1885,13 +1885,30 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 // future glob check agree.
 var tsTestSuffixes = []string{".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"}
 
+// emberTestSuffixes are Ember's hyphenated test suffixes, valid ONLY under a
+// tests/ directory segment — ember-cli generates and qunit discovers
+// tests/**/*-test.*, but a bare hyphenated suffix outside tests/ can collide
+// with production code (an experimentation util named ab-test.ts). Mirrors
+// config.Default().TestGlobs' "**/tests/**/*-test.*" entries.
+var emberTestSuffixes = []string{"-test.ts", "-test.js", "-test.gts", "-test.gjs"}
+
 // isTSTestFile reports whether a repo-relative path is a TypeScript test/spec file.
-// The convention reserves these dotted suffixes for tests, so — like Go's *_test.go
-// — no production file can legally collide.
+// The dotted convention reserves its suffixes everywhere, so — like Go's
+// *_test.go — no production file can legally collide; the Ember convention is
+// reserved only inside tests/, so the directory is demanded there.
 func isTSTestFile(relFile string) bool {
 	for _, suffix := range tsTestSuffixes {
 		if strings.HasSuffix(relFile, suffix) {
 			return true
+		}
+	}
+	for _, suffix := range emberTestSuffixes {
+		if strings.HasSuffix(relFile, suffix) {
+			for _, seg := range strings.Split(filepath.ToSlash(relFile), "/") {
+				if seg == "tests" {
+					return true
+				}
+			}
 		}
 	}
 	return false

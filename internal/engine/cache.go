@@ -958,7 +958,23 @@ import (
 // routes and ActiveRecord models already get. Before this, a .gts/.gjs/.hbs file
 // produced no facts at all: an Ember app's component architecture was invisible
 // while its plain-.ts half made the graph look populated.
-const cacheVersion = "v148"
+// v149: Ember routes become first-class graph citizens, and Ember's test tree
+// stops reading as production code. Router.map composition honors resetNamespace
+// (the route NAME restarts at the segment while the URL path keeps nesting — on
+// one production router this was the difference between 12 and 406 of 510
+// routes binding); each router-map route gains a handled_by edge to the route
+// class its dot-name resolves to; `<LinkTo @route=…>` names and literal
+// `transitionTo`/`replaceWith` arguments become navigation edges to route
+// facts, with the implicit `.index` child resolving to its parent. Page-type UI
+// routes (Ember, Nuxt, SvelteKit, Next pages, Vue router configs) are excluded
+// from cross-repo HTTP server indexing — a browser navigation URL is not a
+// served endpoint, and indexing one manufactured false unused-route findings.
+// tests/**/*-test.{js,ts,gjs,gts} joins the default ignore + test globs: the
+// hyphenated suffix is ember-cli's reserved convention INSIDE tests/, and
+// without the entry an app's acceptance suite indexed as production symbols
+// (the directory is demanded because a bare *-test.ts also swallows an
+// experimentation util named ab-test.ts — the Ruby _test.rb precedent).
+const cacheVersion = "v149"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

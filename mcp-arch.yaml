@@ -30,6 +30,14 @@ ignore:
   - "**/*.test.tsx"
   - "**/*.spec.ts"
   - "**/*.spec.tsx"
+  # Ember's convention is a HYPHENATED suffix under tests/ (ember-cli generates
+  # and qunit discovers tests/**/*-test.*). The directory is demanded for the
+  # same reason as Ruby's below: a bare "**/*-test.ts" also swallows production
+  # code that merely ends in the token (an experimentation util named ab-test.ts).
+  - "**/tests/**/*-test.js"
+  - "**/tests/**/*-test.ts"
+  - "**/tests/**/*-test.gjs"
+  - "**/tests/**/*-test.gts"
   # Ruby has no co-located test convention (RSpec requires spec/, Minitest
   # defaults to test/), so these demand the directory as well as the filename: a
   # bare "**/*_test.rb" also swallows production code that merely ends in the

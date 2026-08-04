@@ -190,12 +190,21 @@ route  /my-account                 app/router.ts:11  ember_route_name=account
 
 These carry `type=page`, `framework=ember` — UI routes in the same sense as Nuxt
 pages and SvelteKit routes, never HTTP contracts (page-type routes are excluded
-from cross-repo HTTP matching and can never surface as "unused routes"). Each
-route also gains a `handled_by` edge to the route class its dot-name resolves to
-(`catalog.book` → `app/routes/catalog/book.*`), and a template's
-`<LinkTo @route="catalog.book">` becomes a navigation edge from the linking
-component to the route fact, so the route graph answers both "what implements
-this route" and "what links to it". An ember-data `Model` subclass
+from cross-repo HTTP matching and can never surface as "unused routes").
+`resetNamespace: true` is honored as the router defines it: the route *name*
+restarts at that segment while the URL path keeps nesting. Each route gains a
+`handled_by` edge to the route class its dot-name resolves to (`catalog.book` →
+`app/routes/catalog/book.*`), and both a template's
+`<LinkTo @route="catalog.book">` and a literal
+`router.transitionTo('catalog.book')` / `replaceWith` in code become navigation
+edges to the route fact (the implicit `.index` child resolves to its parent), so
+the route graph answers "what implements this route" and "what navigates to it".
+
+Ember's test tree stays out of the production graph: `tests/**/*-test.{js,ts,gjs,gts}`
+is ignored for indexing and collected for reference-only `test_ref` extraction,
+exactly like the dotted `.test.ts` convention — the hyphenated suffix is only
+reserved *inside* `tests/`, so the directory is demanded (a production
+`ab-test.ts` keeps its facts). An ember-data `Model` subclass
 additionally emits a storage companion (`storage_kind=model`,
 `framework=ember-data`, `table` holding the dasherized model name), the same
 shape ActiveRecord models get in the Ruby extractor — and its

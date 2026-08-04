@@ -299,6 +299,7 @@ type emberClassInfo struct {
 	isService     bool
 	services      []string
 	relationships []string
+	codeLinks     []string
 }
 
 // emberBindingInfo describes a top-level `const Name = <template>…` binding — the
@@ -351,6 +352,7 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 		}
 		if body := findChildByKind(node, "class_body"); body != nil {
 			info.services = emberInjectedServices(body, src, serviceDecorators)
+			info.codeLinks = emberTransitionLinks(body, src)
 			if info.isModel {
 				info.relationships = emberModelRelationships(body, src, relationshipDecorators)
 			}
@@ -361,6 +363,52 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 		classes = append(classes, info)
 	}
 	return classes
+}
+
+// emberTransitionLinks collects the literal route names a class navigates to in
+// CODE — `this.router.transitionTo('jobs.job', …)` and `replaceWith` — the
+// programmatic counterpart of a template's `<LinkTo @route=…>`. Only a literal
+// first argument that looks like a route name (no leading slash: a URL form is
+// a path, not a name) produces a candidate; a computed name produces nothing.
+func emberTransitionLinks(classBody *sitter.Node, src []byte) []string {
+	seen := make(map[string]bool)
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		if n.Kind() == "call_expression" {
+			if fn := n.ChildByFieldName("function"); fn != nil && fn.Kind() == "member_expression" {
+				if prop := fn.ChildByFieldName("property"); prop != nil {
+					switch nodeText(prop, src) {
+					case "transitionTo", "replaceWith":
+						if args := n.ChildByFieldName("arguments"); args != nil {
+							if s := findChildByKind(args, "string"); s != nil {
+								name := strings.Trim(nodeText(s, src), `"'`)
+								if name != "" && !strings.HasPrefix(name, "/") &&
+									!strings.ContainsAny(name, " {}") {
+									seen[name] = true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(classBody)
+	if len(seen) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // emberDefaultExportName returns the identifier of a separate
@@ -709,9 +757,21 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			if cls.isComponent || hasTemplate {
 				markComponent(&result[i])
 				attachCalls(&result[i], classRefs)
-				if links := linksFor(cls.start, cls.end); len(links) > 0 {
-					result[i].Props[EmberRouteLinksProp] = links
+			}
+			merged := make(map[string]bool)
+			for _, l := range linksFor(cls.start, cls.end) {
+				merged[l] = true
+			}
+			for _, l := range cls.codeLinks {
+				merged[l] = true
+			}
+			if len(merged) > 0 {
+				links := make([]string, 0, len(merged))
+				for l := range merged {
+					links = append(links, l)
 				}
+				sort.Strings(links)
+				result[i].Props[EmberRouteLinksProp] = links
 			}
 			if cls.isDefault {
 				result[i].Props[EmberDefaultExportProp] = true

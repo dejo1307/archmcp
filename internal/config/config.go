@@ -202,6 +202,16 @@ func Default() *Config {
 			"**/*.test.tsx",
 			"**/*.spec.ts",
 			"**/*.spec.tsx",
+			// Ember's test convention is a HYPHENATED suffix under tests/ —
+			// ember-cli generates and qunit discovers tests/**/*-test.{js,ts,gjs,gts}.
+			// The directory is demanded for the same reason Ruby's is below: a bare
+			// "**/*-test.ts" also swallows production code that merely ends in the
+			// token (an experimentation util named ab-test.ts), deleting it from the
+			// graph. Inside tests/ the name is tool-reserved and cannot collide.
+			"**/tests/**/*-test.js",
+			"**/tests/**/*-test.ts",
+			"**/tests/**/*-test.gjs",
+			"**/tests/**/*-test.gts",
 			// Ruby, unlike Go and TS, has no co-located test convention: RSpec
 			// requires spec/, Minitest defaults to test/. Demand the directory as
 			// well as the filename — a bare "**/*_test.rb" also swallows production
@@ -294,6 +304,8 @@ func Default() *Config {
 		TestGlobs: []string{
 			"**/*_test.go",
 			"**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx",
+			"**/tests/**/*-test.js", "**/tests/**/*-test.ts",
+			"**/tests/**/*-test.gjs", "**/tests/**/*-test.gts",
 			"**/spec/**/*_spec.rb", "**/test/**/*_test.rb",
 			// Python has no TestRefExtractor yet, so these four are a deliberate
 			// no-op today: runTestRefExtractors skips non-implementers. They are

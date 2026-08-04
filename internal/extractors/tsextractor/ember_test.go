@@ -492,3 +492,33 @@ export default class Post extends Model {
 		t.Errorf("%s = %v, want %v (bare @hasMany skipped — singularizing a plural field is a guess)", EmberRelationshipsProp, got, want)
 	}
 }
+
+func TestEmberTransitionLinks_LiteralOnly(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/routes/checkout.ts": `import { service } from '@ember/service';
+
+export default class CheckoutRoute {
+  @service declare router: unknown;
+
+  finish() {
+    this.router.transitionTo('catalog.book', 1);
+  }
+
+  cancel(target: string) {
+    this.router.replaceWith('catalog');
+    this.router.transitionTo(target);
+    this.router.transitionTo('/raw/url');
+  }
+}
+`,
+	})
+	route := findEmberFact(result, facts.KindSymbol, "app/routes.CheckoutRoute")
+	if route == nil {
+		t.Fatal("CheckoutRoute missing")
+	}
+	got, _ := route.Props[EmberRouteLinksProp].([]string)
+	want := []string{"catalog", "catalog.book"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("%s = %v, want %v — computed names and URL forms produce nothing", EmberRouteLinksProp, got, want)
+	}
+}
