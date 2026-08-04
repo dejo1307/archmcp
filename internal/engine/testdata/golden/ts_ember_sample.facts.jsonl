@@ -15,7 +15,7 @@
 {"kind":"file_ref","name":"app/helpers/format-count.ts","file":"app/helpers/format-count.ts","line":1,"repo":"ts_ember_sample","props":{"language":"typescript"},"relations":[{"kind":"calls","target":"app/helpers.String"},{"kind":"calls","target":"app/helpers.value"}]}
 {"kind":"file_ref","name":"app/models/book.ts","file":"app/models/book.ts","line":1,"repo":"ts_ember_sample","props":{"language":"typescript"},"relations":[{"kind":"calls","target":"app/models.belongsTo"},{"kind":"calls","target":"app/models.hasMany"}]}
 {"kind":"file_ref","name":"app/templates/catalog.hbs","file":"app/templates/catalog.hbs","line":1,"repo":"ts_ember_sample","props":{"ember_invocations":["BookCard","auto-focus"],"ember_template":true,"language":"handlebars"}}
-{"kind":"file_ref","name":"app/templates/index.hbs","file":"app/templates/index.hbs","line":1,"repo":"ts_ember_sample","props":{"ember_invocations":["BookCard"],"ember_template":true,"language":"handlebars"},"relations":[{"kind":"calls","target":"app/components.BookCard"}]}
+{"kind":"file_ref","name":"app/templates/index.hbs","file":"app/templates/index.hbs","line":1,"repo":"ts_ember_sample","props":{"ember_invocations":["BookCard","LinkTo"],"ember_route_links":["catalog"],"ember_template":true,"ember_unresolved":["LinkTo"],"language":"handlebars"},"relations":[{"kind":"calls","target":"/catalog"},{"kind":"calls","target":"app/components.BookCard"}]}
 {"kind":"module","name":"app","file":"app","repo":"ts_ember_sample","props":{"language":"typescript","package_name":"shelf"}}
 {"kind":"module","name":"app/components","file":"app/components","repo":"ts_ember_sample","props":{"language":"typescript","package_name":"shelf"}}
 {"kind":"module","name":"app/helpers","file":"app/helpers","repo":"ts_ember_sample","props":{"language":"typescript","package_name":"shelf"}}
@@ -24,7 +24,7 @@
 {"kind":"module","name":"app/routes","file":"app/routes","repo":"ts_ember_sample","props":{"language":"typescript","package_name":"shelf"}}
 {"kind":"module","name":"app/services","file":"app/services","repo":"ts_ember_sample","props":{"language":"typescript","package_name":"shelf"}}
 {"kind":"module","name":"app/templates","file":"app/templates","repo":"ts_ember_sample","props":{"language":"typescript","package_name":"shelf"}}
-{"kind":"route","name":"/catalog","file":"app/router.ts","line":6,"repo":"ts_ember_sample","props":{"ember_route_name":"catalog","framework":"ember","language":"typescript","method":"GET","router":"map","type":"page"}}
+{"kind":"route","name":"/catalog","file":"app/router.ts","line":6,"repo":"ts_ember_sample","props":{"ember_route_name":"catalog","framework":"ember","language":"typescript","method":"GET","router":"map","type":"page"},"relations":[{"kind":"handled_by","target":"app/routes.CatalogRoute"}]}
 {"kind":"route","name":"/catalog/:book_id","file":"app/router.ts","line":7,"repo":"ts_ember_sample","props":{"ember_route_name":"catalog.book","framework":"ember","language":"typescript","method":"GET","router":"map","type":"page"}}
 {"kind":"route","name":"/catalog/:book_id/reviews","file":"app/router.ts","line":8,"repo":"ts_ember_sample","props":{"ember_route_name":"catalog.book.reviews","framework":"ember","language":"typescript","method":"GET","router":"map","type":"page"}}
 {"kind":"route","name":"/my-account","file":"app/router.ts","line":11,"repo":"ts_ember_sample","props":{"ember_route_name":"account","framework":"ember","language":"typescript","method":"GET","router":"map","type":"page"}}

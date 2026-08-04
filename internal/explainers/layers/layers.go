@@ -55,6 +55,28 @@ var (
 		{Name: "types", Patterns: []string{"types"}, Level: 0},
 	}
 
+	// Ember (Octane) app layout. The ordering expresses the real smells: a
+	// service or model importing a component, or anything importing a route,
+	// runs against the resolver's direction of flow. Peers are collapsed to one
+	// tier per the Rails/Go precedent — routes, controllers and route templates
+	// are all delivery; components, helpers and modifiers are all rendering
+	// (a modifier importing a service is normal, a service importing a
+	// component is not); services and the ember-data quartet are all domain.
+	emberLayers = []layerDef{
+		{Name: "route", Patterns: []string{"routes"}, Level: 3},
+		{Name: "controller", Patterns: []string{"controllers"}, Level: 3},
+		{Name: "template", Patterns: []string{"templates"}, Level: 3},
+		{Name: "component", Patterns: []string{"components"}, Level: 2},
+		{Name: "helper", Patterns: []string{"helpers"}, Level: 2},
+		{Name: "modifier", Patterns: []string{"modifiers"}, Level: 2},
+		{Name: "service", Patterns: []string{"services"}, Level: 1},
+		{Name: "model", Patterns: []string{"models"}, Level: 1},
+		{Name: "adapter", Patterns: []string{"adapters"}, Level: 1},
+		{Name: "serializer", Patterns: []string{"serializers"}, Level: 1},
+		{Name: "transform", Patterns: []string{"transforms"}, Level: 1},
+		{Name: "util", Patterns: []string{"utils", "lib", "constants"}, Level: 0},
+	}
+
 	// Go standard project layout.
 	//
 	// `internal` and `pkg` are not layers. They are a VISIBILITY distinction the
@@ -190,6 +212,7 @@ var patternDefs = []patternDef{
 	{name: "ios-clean", layers: iosLayers, frameworks: []string{"swiftui", "uikit"}},
 	{name: "spring-layered", layers: springLayers, frameworks: []string{"spring"}},
 	{name: "django", layers: djangoLayers, frameworks: []string{"django"}},
+	{name: "ember-octane", layers: emberLayers, frameworks: []string{"ember"}},
 
 	// Language-gated patterns.
 	{name: "go-standard", layers: goStdLayers, languages: []string{"go"}},

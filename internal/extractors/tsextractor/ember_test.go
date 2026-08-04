@@ -203,16 +203,23 @@ Router.map(function () {
     });
   });
   this.route('settings', { path: '/preferences' });
+  this.route('admin', function () {
+    this.route('billing', { resetNamespace: true }, function () {
+      this.route('invoices');
+    });
+  });
 });
 `,
 	})
 
 	cases := map[string]string{
-		"/login":                 "login",
-		"/jobs":                  "jobs",
-		"/jobs/:job_id":          "jobs.job",
-		"/jobs/:job_id/activity": "jobs.job.activity",
-		"/preferences":           "settings",
+		"/login":                  "login",
+		"/jobs":                   "jobs",
+		"/jobs/:job_id":           "jobs.job",
+		"/jobs/:job_id/activity":  "jobs.job.activity",
+		"/preferences":            "settings",
+		"/admin/billing":          "billing",
+		"/admin/billing/invoices": "billing.invoices",
 	}
 	for path, routeName := range cases {
 		r := findEmberFact(result, facts.KindRoute, path)

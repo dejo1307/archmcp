@@ -252,3 +252,41 @@ func TestBind_DefaultExportBeatsSiblingBaseClass(t *testing.T) {
 		t.Errorf("relations = %v, want the DEFAULT export — a sibling base class is not an ambiguity", ref.Relations)
 	}
 }
+
+func route(path, name string) facts.Fact {
+	return facts.Fact{Kind: facts.KindRoute, Name: path, File: "app/router.ts", Line: 1,
+		Props: map[string]any{"framework": "ember", "type": "page", "method": "GET",
+			routeNameProp: name}}
+}
+
+func TestBind_RouteHandledByRouteClass(t *testing.T) {
+	store := bind(t,
+		route("/catalog/:book_id", "catalog.book"),
+		symbol("app/routes/catalog.BookRoute", "app/routes/catalog/book.ts", nil),
+	)
+	r := factByName(t, store, facts.KindRoute, "/catalog/:book_id")
+	if !r.HasRelation(facts.RelHandledBy, "app/routes/catalog.BookRoute") {
+		t.Errorf("route relations = %v, want handled_by the nested route class", r.Relations)
+	}
+}
+
+func TestBind_RouteLinksBecomeNavigationEdges(t *testing.T) {
+	store := bind(t,
+		route("/catalog", "catalog"),
+		symbol("app/components.NavBar", "app/components/nav-bar.gts",
+			map[string]any{"web_component": "component",
+				routeLinksProp: []string{"catalog", "unknown.route"}}),
+		symbol("app/components.Footer", "app/components/footer.js",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/components/footer.hbs", "app/components/footer.js", nil),
+	)
+	nav := factByName(t, store, facts.KindSymbol, "app/components.NavBar")
+	if !nav.HasRelation(facts.RelCalls, "/catalog") {
+		t.Errorf("relations = %v, want a navigation edge to the /catalog route fact", nav.Relations)
+	}
+	for _, r := range nav.Relations {
+		if r.Kind == facts.RelCalls && r.Target != "/catalog" {
+			t.Errorf("unexpected edge %v for an unknown route name", r)
+		}
+	}
+}

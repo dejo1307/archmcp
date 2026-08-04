@@ -1,6 +1,7 @@
 package routeindex
 
 import (
+	"github.com/enola-labs/enola/internal/facts"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/linkers/vocab"
@@ -78,5 +79,25 @@ func TestSingleSegmentPath(t *testing.T) {
 		if SingleSegmentPath(m.NormalizePath(p)) {
 			t.Errorf("SingleSegmentPath(%q) = true, want false", p)
 		}
+	}
+}
+
+func TestIsUIRoute_PageRoutesExcludedFromServerIndex(t *testing.T) {
+	page := facts.Fact{Kind: facts.KindRoute, Name: "/catalog", Props: map[string]any{
+		"type": "page", "method": "GET", "framework": "ember"}}
+	api := facts.Fact{Kind: facts.KindRoute, Name: "/api/users", Props: map[string]any{
+		"type": "route", "method": "GET", "framework": "nextjs"}}
+	rails := facts.Fact{Kind: facts.KindRoute, Name: "/app/companies", Props: map[string]any{
+		"method": "GET", "framework": "rails"}}
+	if !IsUIRoute(page) {
+		t.Error("a page-type route must be a UI route")
+	}
+	if IsUIRoute(api) || IsUIRoute(rails) {
+		t.Error("API and backend routes must stay server-indexable")
+	}
+	page.Repo = "web"
+	m := New(vocab.Default())
+	if got := m.IndexServerRoutes([]facts.Fact{page}); len(got) != 0 {
+		t.Errorf("server index = %v, want empty — a browser navigation URL is not a served endpoint", got)
 	}
 }

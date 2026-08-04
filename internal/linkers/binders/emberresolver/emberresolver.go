@@ -52,6 +52,8 @@ const (
 	servicesProp      = "ember_injected_services"
 	relationshipsProp = "ember_relationships"
 	defaultExportProp = "ember_default_export"
+	routeLinksProp    = "ember_route_links"
+	routeNameProp     = "ember_route_name"
 	unresolvedProp    = "ember_unresolved"
 )
 
@@ -64,9 +66,58 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	type templateWork struct {
 		ownerSymbol string
 		targets     []string
+		linkTargets []string
 		unresolved  []string
 	}
 	work := map[string]*templateWork{}
+
+	// The router map gives every route a dot-name; a route's class file follows
+	// it (catalog.book -> app/routes/catalog/book.*), and templates link to it
+	// by exactly that name. Index both directions per repo.
+	routeByName := map[string]map[string]string{}
+	routeHandlers := map[string]string{}
+	for _, r := range store.ByKind(facts.KindRoute) {
+		name := r.PropString(routeNameProp)
+		if name == "" {
+			continue
+		}
+		if routeByName[r.Repo] == nil {
+			routeByName[r.Repo] = map[string]string{}
+		}
+		if _, taken := routeByName[r.Repo][name]; !taken {
+			routeByName[r.Repo][name] = r.Name
+		}
+		fragment := "routes/" + strings.ReplaceAll(name, ".", "/")
+		if f := idx.uniqueFile(r.Repo, fragment, ""); f != "" {
+			if sym := idx.primarySymbolIn(r.Repo, f); sym != "" {
+				routeHandlers[r.Repo+"\x00"+r.Name+"\x00"+name] = sym
+			}
+		}
+	}
+
+	// A link may name the implicit `.index` child Ember creates for every
+	// nesting level; it renders at the parent's own path, so the lookup strips
+	// the suffix rather than requiring a declared index route.
+	routeLinks := func(f *facts.Fact) []string {
+		names := propStrings(f.Props[routeLinksProp])
+		if len(names) == 0 {
+			return nil
+		}
+		var targets []string
+		for _, name := range names {
+			path, ok := routeByName[f.Repo][name]
+			if !ok {
+				if base, found := strings.CutSuffix(name, ".index"); found {
+					path, ok = routeByName[f.Repo][base]
+				}
+			}
+			if ok {
+				targets = append(targets, path)
+			}
+		}
+		sort.Strings(targets)
+		return targets
+	}
 
 	for _, f := range store.ByKind(facts.KindFileRef) {
 		if !f.PropBool(templateProp) {
@@ -87,6 +138,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 				w.unresolved = append(w.unresolved, name)
 			}
 		}
+		w.linkTargets = routeLinks(&f)
 		work[f.Name] = w
 	}
 
@@ -131,10 +183,19 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	}
 
 	store.UpdateWhere(func(f *facts.Fact) {
+		if f.Kind == facts.KindRoute {
+			if sym, ok := routeHandlers[f.Repo+"\x00"+f.Name+"\x00"+f.PropString(routeNameProp)]; ok {
+				if !f.HasRelation(facts.RelHandledBy, sym) {
+					f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelHandledBy, Target: sym})
+					bound++
+				}
+			}
+			return
+		}
 		if f.Kind == facts.KindFileRef {
 			if w, ok := work[f.Name]; ok && f.PropBool(templateProp) {
 				if w.ownerSymbol == "" {
-					for _, t := range w.targets {
+					for _, t := range append(append([]string{}, w.targets...), w.linkTargets...) {
 						if !f.HasRelation(facts.RelCalls, t) {
 							f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
 							bound++
@@ -170,11 +231,17 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 				}
 			}
 		}
+		for _, t := range routeLinks(f) {
+			if !f.HasRelation(facts.RelCalls, t) {
+				f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
+				bound++
+			}
+		}
 		for _, w := range work {
 			if w.ownerSymbol != f.Name {
 				continue
 			}
-			for _, t := range w.targets {
+			for _, t := range append(append([]string{}, w.targets...), w.linkTargets...) {
 				if t != f.Name && !f.HasRelation(facts.RelCalls, t) {
 					f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
 					bound++

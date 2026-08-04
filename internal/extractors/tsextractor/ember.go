@@ -653,6 +653,26 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 		}
 		return emberTemplateRefs(owned, bindings)
 	}
+	linksFor := func(start, end int) []string {
+		seen := make(map[string]bool)
+		for _, seg := range segments {
+			if seg.Start < start || seg.Start >= end {
+				continue
+			}
+			for _, l := range scanEmberRouteLinks(seg.Content) {
+				seen[l] = true
+			}
+		}
+		if len(seen) == 0 {
+			return nil
+		}
+		links := make([]string, 0, len(seen))
+		for l := range seen {
+			links = append(links, l)
+		}
+		sort.Strings(links)
+		return links
+	}
 	attachCalls := func(f *facts.Fact, targets []string) {
 		for _, t := range targets {
 			if t != f.Name && !f.HasRelation(facts.RelCalls, t) {
@@ -689,6 +709,9 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			if cls.isComponent || hasTemplate {
 				markComponent(&result[i])
 				attachCalls(&result[i], classRefs)
+				if links := linksFor(cls.start, cls.end); len(links) > 0 {
+					result[i].Props[EmberRouteLinksProp] = links
+				}
 			}
 			if cls.isDefault {
 				result[i].Props[EmberDefaultExportProp] = true
@@ -740,6 +763,9 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			}
 			markComponent(&result[i])
 			attachCalls(&result[i], refs)
+			if links := linksFor(tb.start, tb.end); len(links) > 0 {
+				result[i].Props[EmberRouteLinksProp] = links
+			}
 			break
 		}
 	}
@@ -757,19 +783,37 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			for _, t := range refs {
 				rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: t})
 			}
+			props := map[string]any{
+				"symbol_kind":          facts.SymbolFunc,
+				"exported":             true,
+				"language":             "typescript",
+				"web_component":        "component",
+				"framework":            EmberFramework,
+				EmberDefaultExportProp: true,
+			}
+			linkSeen := make(map[string]bool)
+			for _, seg := range segments {
+				if claimed[seg.Start] {
+					continue
+				}
+				for _, l := range scanEmberRouteLinks(seg.Content) {
+					linkSeen[l] = true
+				}
+			}
+			if len(linkSeen) > 0 {
+				links := make([]string, 0, len(linkSeen))
+				for l := range linkSeen {
+					links = append(links, l)
+				}
+				sort.Strings(links)
+				props[EmberRouteLinksProp] = links
+			}
 			result = append(result, facts.Fact{
-				Kind: facts.KindSymbol,
-				Name: dir + "." + fileSymbolName(relFile),
-				File: relFile,
-				Line: 1,
-				Props: map[string]any{
-					"symbol_kind":          facts.SymbolFunc,
-					"exported":             true,
-					"language":             "typescript",
-					"web_component":        "component",
-					"framework":            EmberFramework,
-					EmberDefaultExportProp: true,
-				},
+				Kind:      facts.KindSymbol,
+				Name:      dir + "." + fileSymbolName(relFile),
+				File:      relFile,
+				Line:      1,
+				Props:     props,
 				Relations: rels,
 			})
 		}
@@ -795,7 +839,45 @@ const (
 	EmberTemplateProp    = "ember_template"
 	EmberInvocationsProp = "ember_invocations"
 	EmberOwnerFileProp   = "ember_owner_file"
+	EmberRouteLinksProp  = "ember_route_links"
 )
+
+// scanEmberRouteLinks collects the route names a template links to —
+// `<LinkTo @route="jobs.job">`, `{{link-to route="…"}}` — sorted and deduped.
+// The name is matched against router-map facts by the binder, giving the
+// navigation graph the same treatment invocations get.
+func scanEmberRouteLinks(text string) []string {
+	seen := make(map[string]bool)
+	for _, marker := range []string{`@route="`, `@route='`, `route="`, `route='`} {
+		pos := 0
+		for {
+			idx := strings.Index(text[pos:], marker)
+			if idx < 0 {
+				break
+			}
+			start := pos + idx + len(marker)
+			quote := marker[len(marker)-1]
+			end := strings.IndexByte(text[start:], quote)
+			if end < 0 {
+				break
+			}
+			name := text[start : start+end]
+			if name != "" && !strings.ContainsAny(name, "{} \t\n") {
+				seen[name] = true
+			}
+			pos = start + end
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // emberHbsKeywords are Glimmer's built-in helpers and keywords: never component
 // invocations, so never candidates for resolution.
@@ -855,6 +937,9 @@ func (e *TSExtractor) extractEmberHbs(src []byte, relFile string, knownFiles map
 	}
 	if len(invocations) > 0 {
 		props[EmberInvocationsProp] = invocations
+	}
+	if links := scanEmberRouteLinks(string(src)); len(links) > 0 {
+		props[EmberRouteLinksProp] = links
 	}
 	if ownerFile != "" {
 		props[EmberOwnerFileProp] = ownerFile
@@ -950,11 +1035,11 @@ func extractEmberRoutes(root *sitter.Node, src []byte, relFile string) []facts.F
 		if n.Kind() == "call_expression" {
 			if fn := n.ChildByFieldName("function"); fn != nil &&
 				fn.Kind() == "member_expression" && nodeText(fn, src) == "this.route" {
-				name, path, callback := emberRouteArgs(n, src)
+				name, path, resetNamespace, callback := emberRouteArgs(n, src)
 				if name != "" {
 					full := joinEmberPath(prefix, path)
 					routeName := name
-					if namePrefix != "" {
+					if namePrefix != "" && !resetNamespace {
 						routeName = namePrefix + "." + name
 					}
 					result = append(result, facts.Fact{
@@ -987,13 +1072,15 @@ func extractEmberRoutes(root *sitter.Node, src []byte, relFile string) []facts.F
 	return result
 }
 
-// emberRouteArgs pulls (name, path, nested-callback) out of one this.route call.
-// path defaults to the route name when no {path: …} option is given, matching the
-// router's own default.
-func emberRouteArgs(call *sitter.Node, src []byte) (name, path string, callback *sitter.Node) {
+// emberRouteArgs pulls (name, path, resetNamespace, nested-callback) out of one
+// this.route call. path defaults to the route name when no {path: …} option is
+// given, matching the router's own default; resetNamespace restarts the route
+// NAME at this segment while the URL path keeps nesting — exactly the router's
+// semantics.
+func emberRouteArgs(call *sitter.Node, src []byte) (name, path string, resetNamespace bool, callback *sitter.Node) {
 	args := call.ChildByFieldName("arguments")
 	if args == nil {
-		return "", "", nil
+		return "", "", false, nil
 	}
 	for i := range args.ChildCount() {
 		a := args.Child(i)
@@ -1010,8 +1097,16 @@ func emberRouteArgs(call *sitter.Node, src []byte) (name, path string, callback 
 				}
 				key := pair.ChildByFieldName("key")
 				val := pair.ChildByFieldName("value")
-				if key != nil && val != nil && nodeText(key, src) == "path" && val.Kind() == "string" {
-					path = strings.Trim(nodeText(val, src), `"'`)
+				if key == nil || val == nil {
+					continue
+				}
+				switch nodeText(key, src) {
+				case "path":
+					if val.Kind() == "string" {
+						path = strings.Trim(nodeText(val, src), `"'`)
+					}
+				case "resetNamespace":
+					resetNamespace = nodeText(val, src) == "true"
 				}
 			}
 		case "function_expression", "arrow_function":
@@ -1021,7 +1116,7 @@ func emberRouteArgs(call *sitter.Node, src []byte) (name, path string, callback 
 	if path == "" {
 		path = name
 	}
-	return name, path, callback
+	return name, path, resetNamespace, callback
 }
 
 func joinEmberPath(prefix, path string) string {

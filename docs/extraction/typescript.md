@@ -189,7 +189,13 @@ route  /my-account                 app/router.ts:11  ember_route_name=account
 ```
 
 These carry `type=page`, `framework=ember` — UI routes in the same sense as Nuxt
-pages and SvelteKit routes, never HTTP contracts. An ember-data `Model` subclass
+pages and SvelteKit routes, never HTTP contracts (page-type routes are excluded
+from cross-repo HTTP matching and can never surface as "unused routes"). Each
+route also gains a `handled_by` edge to the route class its dot-name resolves to
+(`catalog.book` → `app/routes/catalog/book.*`), and a template's
+`<LinkTo @route="catalog.book">` becomes a navigation edge from the linking
+component to the route fact, so the route graph answers both "what implements
+this route" and "what links to it". An ember-data `Model` subclass
 additionally emits a storage companion (`storage_kind=model`,
 `framework=ember-data`, `table` holding the dasherized model name), the same
 shape ActiveRecord models get in the Ruby extractor — and its

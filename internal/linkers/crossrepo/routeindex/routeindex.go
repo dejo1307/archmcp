@@ -48,7 +48,7 @@ type RouteRef struct {
 func (m *Matcher) IndexServerRoutes(all []facts.Fact) map[string][]RouteRef {
 	server := map[string][]RouteRef{}
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || RoleOf(f) == facts.RoleClient {
+		if f.Kind != facts.KindRoute || f.Repo == "" || RoleOf(f) == facts.RoleClient || IsUIRoute(f) {
 			continue
 		}
 		method := NormalizeMethod(f.PropString("method"))
@@ -146,6 +146,21 @@ func RepoFromIdentity(id string) string {
 }
 
 func RoleOf(f facts.Fact) string { return f.PropString(facts.PropRole) }
+
+// uiRouteTypes are the `type` values the file-based/DSL UI routers stamp on
+// page-navigation routes (Next.js pages, Nuxt pages, SvelteKit +page/+layout/
+// +error, Ember's router map, Vue router-config files). A UI route is a URL the
+// BROWSER navigates to, not an HTTP contract this repo serves to other services
+// — indexing one as a server route makes every page a candidate cross-repo
+// match and, worse, an "unused route no client calls" finding. Next.js App
+// Router API handlers carry type "route" and are deliberately NOT here.
+var uiRouteTypes = map[string]bool{
+	"page": true, "layout": true, "error": true, "router_config": true,
+}
+
+// IsUIRoute reports whether a route fact is a client-side navigation route
+// rather than a served HTTP endpoint.
+func IsUIRoute(f facts.Fact) bool { return uiRouteTypes[f.PropString("type")] }
 
 // IsExternalClient reports whether a client route targets a hardcoded external host
 // (tagged external=true by the extractor). Tolerates the bool surviving a JSON

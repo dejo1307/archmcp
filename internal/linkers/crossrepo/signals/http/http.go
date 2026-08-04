@@ -216,7 +216,8 @@ func UnmatchedServerRouteKeys(m *routeindex.Matcher, all []facts.Fact) map[strin
 	server := map[string][]routeindex.RouteRef{}
 	identities := map[string]bool{}
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || routeindex.RoleOf(f) == facts.RoleClient {
+		if f.Kind != facts.KindRoute || f.Repo == "" || routeindex.RoleOf(f) == facts.RoleClient ||
+			routeindex.IsUIRoute(f) {
 			continue
 		}
 		method := routeindex.NormalizeMethod(f.PropString("method"))
