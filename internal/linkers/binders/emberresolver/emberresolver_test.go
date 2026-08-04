@@ -290,3 +290,38 @@ func TestBind_RouteLinksBecomeNavigationEdges(t *testing.T) {
 		}
 	}
 }
+
+func TestBind_DataRoleLinksToItsModel(t *testing.T) {
+	book := facts.Fact{Kind: facts.KindStorage, Name: "app/models.Book",
+		File: "app/models/book.ts", Line: 1,
+		Props: map[string]any{"framework": "ember-data", "storage_kind": "model"}}
+	store := bind(t, book,
+		symbol("app/serializers.BookSerializer", "app/serializers/book.ts",
+			map[string]any{dataRoleProp: "serializer"}),
+		symbol("app/adapters.ApplicationAdapter", "app/adapters/application.ts",
+			map[string]any{dataRoleProp: "adapter"}),
+	)
+	ser := factByName(t, store, facts.KindSymbol, "app/serializers.BookSerializer")
+	if !ser.HasRelation(facts.RelDependsOn, "app/models.Book") {
+		t.Errorf("relations = %v, want the serializer bound to its model", ser.Relations)
+	}
+	ad := factByName(t, store, facts.KindSymbol, "app/adapters.ApplicationAdapter")
+	for _, r := range ad.Relations {
+		if r.Kind == facts.RelDependsOn {
+			t.Errorf("application adapter gained %v — the app-wide fallback names no model", r)
+		}
+	}
+}
+
+func TestBind_TemplateTagRouteTemplateOwnedByRouteClass(t *testing.T) {
+	store := bind(t,
+		symbol("app/routes.AccountRoute", "app/routes/account.ts", nil),
+		symbol("app/templates.Account", "app/templates/account.gjs",
+			map[string]any{"web_component": "component", "framework": "ember",
+				"symbol_kind": facts.SymbolFunc}),
+	)
+	route := factByName(t, store, facts.KindSymbol, "app/routes.AccountRoute")
+	if !route.HasRelation(facts.RelCalls, "app/templates.Account") {
+		t.Errorf("relations = %v, want the route class to own its .gjs template component", route.Relations)
+	}
+}

@@ -211,7 +211,12 @@ shape ActiveRecord models get in the Ruby extractor — and its
 `@belongsTo`/`@hasMany` fields become `depends_on` edges to the storage facts of
 the models they name (`ember_relationships` records the declared set; a bare
 `@hasMany` is skipped, since recovering a singular model name from a plural
-field would be a guess).
+field would be a guess). The rest of the per-model quartet joins the graph:
+classes under `adapters/`, `serializers/` and `transforms/` carry
+`ember_data_role` and bind `depends_on` to the model their file base names (the
+reserved `application` base is the app-wide fallback and names none). Container
+lookups with a literal `service:` key — `owner.lookup('service:current')` —
+merge into the same injection pipeline as `@service` fields.
 
 ## Storage — three ORMs, one shape
 

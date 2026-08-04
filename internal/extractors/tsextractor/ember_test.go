@@ -522,3 +522,55 @@ export default class CheckoutRoute {
 		t.Errorf("%s = %v, want %v — computed names and URL forms produce nothing", EmberRouteLinksProp, got, want)
 	}
 }
+
+func TestEmberLookupServices_MergedWithDecorators(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/components/panel.ts": `import Component from '@glimmer/component';
+import { service } from '@ember/service';
+
+export default class Panel extends Component {
+  @service declare session: unknown;
+
+  boot(owner: { lookup(k: string): unknown }) {
+    owner.lookup('service:current');
+    owner.lookup('route:index');
+    owner.lookup(this.dynamicKey);
+  }
+}
+`,
+	})
+	panel := findEmberFact(result, facts.KindSymbol, "app/components.Panel")
+	if panel == nil {
+		t.Fatal("Panel missing")
+	}
+	got, _ := panel.Props[EmberServicesProp].([]string)
+	want := []string{"current", "session"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("%s = %v, want %v — service: lookups merge, other container types and computed keys do not", EmberServicesProp, got, want)
+	}
+}
+
+func TestEmberDataRole_Classified(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/serializers/book.ts": `export default class BookSerializer {}
+`,
+		"app/adapters/application.ts": `export default class ApplicationAdapter {}
+`,
+		"app/components/plain.ts": `export default class Plain {}
+`,
+	})
+	ser := findEmberFact(result, facts.KindSymbol, "app/serializers.BookSerializer")
+	if ser == nil || ser.Props[EmberDataRoleProp] != "serializer" {
+		t.Errorf("serializer fact = %+v, want ember_data_role=serializer", ser)
+	}
+	ad := findEmberFact(result, facts.KindSymbol, "app/adapters.ApplicationAdapter")
+	if ad == nil || ad.Props[EmberDataRoleProp] != "adapter" {
+		t.Errorf("adapter fact = %+v, want ember_data_role=adapter", ad)
+	}
+	plain := findEmberFact(result, facts.KindSymbol, "app/components.Plain")
+	if plain != nil {
+		if _, has := plain.Props[EmberDataRoleProp]; has {
+			t.Error("a component must not carry a data role")
+		}
+	}
+}

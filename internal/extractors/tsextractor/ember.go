@@ -352,6 +352,7 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 		}
 		if body := findChildByKind(node, "class_body"); body != nil {
 			info.services = emberInjectedServices(body, src, serviceDecorators)
+			info.services = mergeSorted(info.services, emberLookupServices(body, src))
 			info.codeLinks = emberTransitionLinks(body, src)
 			if info.isModel {
 				info.relationships = emberModelRelationships(body, src, relationshipDecorators)
@@ -409,6 +410,92 @@ func emberTransitionLinks(classBody *sitter.Node, src []byte) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// emberLookupServices collects the literal service names a class resolves
+// through the container — `owner.lookup('service:current')` — the string-form
+// counterpart of an @service field. Only the `service:` type is read: it is
+// effectively all real-world usage, and each container type would need its own
+// resolution rule.
+func emberLookupServices(classBody *sitter.Node, src []byte) []string {
+	seen := make(map[string]bool)
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		if n.Kind() == "call_expression" {
+			if fn := n.ChildByFieldName("function"); fn != nil && fn.Kind() == "member_expression" {
+				if prop := fn.ChildByFieldName("property"); prop != nil && nodeText(prop, src) == "lookup" {
+					if args := n.ChildByFieldName("arguments"); args != nil {
+						if s := findChildByKind(args, "string"); s != nil {
+							arg := strings.Trim(nodeText(s, src), `"'`)
+							if name, ok := strings.CutPrefix(arg, "service:"); ok && name != "" {
+								seen[name] = true
+							}
+						}
+					}
+				}
+			}
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(classBody)
+	if len(seen) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func mergeSorted(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[string]bool, len(a)+len(b))
+	for _, s := range a {
+		seen[s] = true
+	}
+	for _, s := range b {
+		seen[s] = true
+	}
+	merged := make([]string, 0, len(seen))
+	for s := range seen {
+		merged = append(merged, s)
+	}
+	sort.Strings(merged)
+	return merged
+}
+
+// EmberDataRoleProp classifies a class under adapters/, serializers/ or
+// transforms/ — the rest of ember-data's per-model quartet. The value is the
+// directory role; the file base names the model it serves, which the binder
+// links (the reserved `application` base is the app-wide fallback and names no
+// model).
+const EmberDataRoleProp = "ember_data_role"
+
+var emberDataRoleDirs = map[string]string{
+	"adapters":    "adapter",
+	"serializers": "serializer",
+	"transforms":  "transform",
+}
+
+// emberDataRoleForFile returns the data-layer role the app tree assigns relFile,
+// or "".
+func emberDataRoleForFile(relFile string) string {
+	slashed := filepath.ToSlash(relFile)
+	for dir, role := range emberDataRoleDirs {
+		if strings.HasPrefix(slashed, "app/"+dir+"/") || strings.Contains(slashed, "/app/"+dir+"/") {
+			return role
+		}
+	}
+	return ""
 }
 
 // emberDefaultExportName returns the identifier of a separate
@@ -778,6 +865,9 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			}
 			if cls.isService {
 				result[i].Props["ember_service"] = base
+			}
+			if role := emberDataRoleForFile(relFile); role != "" {
+				result[i].Props[EmberDataRoleProp] = role
 			}
 			if len(cls.services) > 0 {
 				result[i].Props[EmberServicesProp] = cls.services

@@ -6,4 +6,8 @@ export default class CatalogRoute {
   openAccount() {
     this.router.transitionTo('account');
   }
+
+  libraryVia(owner: { lookup(k: string): unknown }) {
+    return owner.lookup('service:library');
+  }
 }

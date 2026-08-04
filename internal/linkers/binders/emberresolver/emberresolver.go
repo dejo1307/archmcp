@@ -54,6 +54,7 @@ const (
 	defaultExportProp = "ember_default_export"
 	routeLinksProp    = "ember_route_links"
 	routeNameProp     = "ember_route_name"
+	dataRoleProp      = "ember_data_role"
 	unresolvedProp    = "ember_unresolved"
 )
 
@@ -143,21 +144,45 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	}
 
 	injections := map[string][]string{}
+	dataRoleTargets := map[string]string{}
+	templateOwners := map[string][]string{}
 	for _, s := range store.ByKind(facts.KindSymbol) {
-		names := propStrings(s.Props[servicesProp])
-		if len(names) == 0 {
-			continue
-		}
-		var targets []string
-		for _, name := range names {
-			if target := idx.resolveService(s.Repo, name); target != "" {
-				targets = append(targets, target)
+		if names := propStrings(s.Props[servicesProp]); len(names) > 0 {
+			var targets []string
+			for _, name := range names {
+				if target := idx.resolveService(s.Repo, name); target != "" {
+					targets = append(targets, target)
+				}
+			}
+			if len(targets) > 0 {
+				sort.Strings(targets)
+				injections[s.Name] = targets
 			}
 		}
-		if len(targets) > 0 {
-			sort.Strings(targets)
-			injections[s.Name] = targets
+		// An adapter/serializer/transform serves the model its file base names;
+		// the reserved `application` base is the app-wide fallback and names none.
+		if s.PropString(dataRoleProp) != "" {
+			base := strings.TrimSuffix(filepath.Base(s.File), filepath.Ext(s.File))
+			if base != "application" {
+				if target := idx.resolveModel(s.Repo, base); target != "" {
+					dataRoleTargets[s.Name] = target
+				}
+			}
 		}
+		// A template-tag route template (app/templates/<path>.gjs) synthesizes its
+		// component; the route class that renders it owns an edge to it, exactly as
+		// an .hbs route template's edges land on its route class.
+		if s.PropString("web_component") == "component" && s.PropString("framework") == "ember" {
+			file := filepath.ToSlash(s.File)
+			if strings.HasSuffix(file, ".gjs") || strings.HasSuffix(file, ".gts") {
+				if owner := idx.resolveRouteOwner(s.Repo, file); owner != "" && owner != s.Name {
+					templateOwners[owner] = append(templateOwners[owner], s.Name)
+				}
+			}
+		}
+	}
+	for owner := range templateOwners {
+		sort.Strings(templateOwners[owner])
 	}
 
 	relationships := map[string][]string{}
@@ -227,6 +252,20 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 			for _, t := range targets {
 				if t != f.Name && !f.HasRelation(facts.RelInjects, t) {
 					f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelInjects, Target: t})
+					bound++
+				}
+			}
+		}
+		if t, ok := dataRoleTargets[f.Name]; ok {
+			if !f.HasRelation(facts.RelDependsOn, t) {
+				f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelDependsOn, Target: t})
+				bound++
+			}
+		}
+		if comps, ok := templateOwners[f.Name]; ok {
+			for _, t := range comps {
+				if !f.HasRelation(facts.RelCalls, t) {
+					f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
 					bound++
 				}
 			}
