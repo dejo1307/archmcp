@@ -65,15 +65,13 @@ func TestNewGraph_BuildsAdjacencyLists(t *testing.T) {
 	}
 
 	// Check forward adjacency for A
-	fwd := g.Forward()
-	aEdges := fwd["A"]
+	aEdges := g.ForwardEdges("A")
 	if len(aEdges) != 2 {
 		t.Errorf("A forward edges = %d, want 2", len(aEdges))
 	}
 
 	// Check reverse adjacency for C (B and E both call C)
-	rev := g.Reverse()
-	cEdges := rev["C"]
+	cEdges := g.ReverseEdges("C")
 	if len(cEdges) != 2 {
 		t.Errorf("C reverse edges = %d, want 2", len(cEdges))
 	}
@@ -738,8 +736,7 @@ func TestNewGraph_DeduplicatesEdges(t *testing.T) {
 
 	// dep1->User and dep2->User are distinct source nodes, so both edges exist.
 	// But A->imports->B should appear only once despite two facts creating it.
-	fwd := g.Forward()
-	aEdges := fwd["A"]
+	aEdges := g.ForwardEdges("A")
 	count := 0
 	for _, e := range aEdges {
 		if e.RelKind == RelImports && e.Target == "B" {
@@ -751,8 +748,7 @@ func TestNewGraph_DeduplicatesEdges(t *testing.T) {
 	}
 
 	// Reverse: B should have exactly one incoming imports edge from A.
-	rev := g.Reverse()
-	bEdges := rev["B"]
+	bEdges := g.ReverseEdges("B")
 	count = 0
 	for _, e := range bEdges {
 		if e.RelKind == RelImports && e.Target == "A" {
@@ -829,7 +825,7 @@ func TestNewGraph_CrossRepoCallNormalisation(t *testing.T) {
 
 	// The forward edge from golf's LoginWrapper.Login should point to the
 	// normalised fact name "adapters.AuthHandler.Login", not the full import path.
-	edges := g.forward["internal/auth.LoginWrapper.Login"]
+	edges := g.ForwardEdges("internal/auth.LoginWrapper.Login")
 	if len(edges) == 0 {
 		t.Fatal("expected at least one forward edge from LoginWrapper.Login")
 	}
@@ -891,18 +887,18 @@ func TestNewGraph_StructToMethodEdges(t *testing.T) {
 	g, _ := buildTypeMethodStore()
 
 	var found bool
-	for _, e := range g.Forward()["auth.AuthHandler"] {
+	for _, e := range g.ForwardEdges("auth.AuthHandler") {
 		if e.RelKind == RelHasMethod && e.Target == "auth.AuthHandler.Login" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected has_method edge auth.AuthHandler -> auth.AuthHandler.Login, got %+v", g.Forward()["auth.AuthHandler"])
+		t.Fatalf("expected has_method edge auth.AuthHandler -> auth.AuthHandler.Login, got %+v", g.ForwardEdges("auth.AuthHandler"))
 	}
 
 	// A package-level function whose owner ("jwt") is not a type must NOT get a
 	// has_method edge.
-	for _, e := range g.Forward()["jwt"] {
+	for _, e := range g.ForwardEdges("jwt") {
 		if e.RelKind == RelHasMethod {
 			t.Errorf("unexpected has_method edge from non-type owner: %+v", e)
 		}
@@ -1089,12 +1085,12 @@ func TestArchitecturalReverse_ExcludesReferenceKinds(t *testing.T) {
 	g := s.Graph()
 
 	// Unfiltered: all three sources (symbol + test_ref + file_ref) are dependents.
-	if got := len(g.Reverse()["Prod"]); got != 3 {
+	if got := len(g.ReverseEdges("Prod")); got != 3 {
 		t.Fatalf("Reverse()[Prod] = %d edges, want 3 (Caller + test_ref + file_ref)", got)
 	}
 
 	// Architectural: only the symbol dependent survives.
-	arch := g.ArchitecturalReverse()["Prod"]
+	arch := g.ArchitecturalReverseEdges("Prod")
 	if len(arch) != 1 {
 		t.Fatalf("ArchitecturalReverse()[Prod] = %d edges, want 1 (symbol only): %+v", len(arch), arch)
 	}
@@ -1135,13 +1131,13 @@ func TestArchitecturalReverse_ExcludesRouteSources(t *testing.T) {
 	g := s.Graph()
 
 	// The architectural view counts the one real symbol caller, not the route.
-	if got := len(g.ArchitecturalReverse()["http/plan.HandlerV2.UpdatePlan"]); got != 1 {
+	if got := len(g.ArchitecturalReverseEdges("http/plan.HandlerV2.UpdatePlan")); got != 1 {
 		t.Errorf("architectural fan-in = %d, want 1 — a route is not an architectural dependent", got)
 	}
 	// But the handled_by edge must still be there for everyone else: it is what lets
 	// impact_analysis walk a route to its handler, and the perf analyzer escalate it.
 	var sawRoute bool
-	for _, e := range g.Reverse()["http/plan.HandlerV2.UpdatePlan"] {
+	for _, e := range g.ReverseEdges("http/plan.HandlerV2.UpdatePlan") {
 		if e.Target == "/plans/{id}" && e.RelKind == RelHandledBy {
 			sawRoute = true
 		}
@@ -1165,8 +1161,8 @@ func TestArchitecturalReverse_ExcludesInstantiate(t *testing.T) {
 	s.BuildGraph()
 	g := s.Graph()
 
-	countSrc := func(m map[string][]Edge, target, src string) bool {
-		for _, e := range m[target] {
+	hasSrc := func(edges []Edge, src string) bool {
+		for _, e := range edges {
 			if e.Target == src {
 				return true
 			}
@@ -1174,22 +1170,26 @@ func TestArchitecturalReverse_ExcludesInstantiate(t *testing.T) {
 		return false
 	}
 
-	// Raw Reverse keeps both the instantiate and the call source.
-	rev := g.Reverse()
-	if !countSrc(rev, "pkg.Data", "pkg.build") || !countSrc(rev, "pkg.Data", "pkg.call") {
-		t.Errorf("Reverse should keep both instantiate and call sources; got %v", rev["pkg.Data"])
+	// Raw reverse keeps both the instantiate and the call source.
+	rev := g.ReverseEdges("pkg.Data")
+	if !hasSrc(rev, "pkg.build") || !hasSrc(rev, "pkg.call") {
+		t.Errorf("ReverseEdges should keep both instantiate and call sources; got %v", rev)
 	}
-	// ArchitecturalReverse drops the instantiate source, keeps the call source.
-	arch := g.ArchitecturalReverse()
-	if countSrc(arch, "pkg.Data", "pkg.build") {
-		t.Errorf("ArchitecturalReverse must exclude the RelInstantiates source; got %v", arch["pkg.Data"])
+	// The architectural view drops the instantiate source, keeps the call source.
+	arch := g.ArchitecturalReverseEdges("pkg.Data")
+	if hasSrc(arch, "pkg.build") {
+		t.Errorf("ArchitecturalReverseEdges must exclude the RelInstantiates source; got %v", arch)
 	}
-	if !countSrc(arch, "pkg.Data", "pkg.call") {
-		t.Errorf("ArchitecturalReverse must keep the RelCalls source; got %v", arch["pkg.Data"])
+	if !hasSrc(arch, "pkg.call") {
+		t.Errorf("ArchitecturalReverseEdges must keep the RelCalls source; got %v", arch)
+	}
+	// The count must agree with the filtered edge list it summarizes.
+	if got, want := g.ArchitecturalFanIn("pkg.Data"), len(arch); got != want {
+		t.Errorf("ArchitecturalFanIn = %d but ArchitecturalReverseEdges has %d", got, want)
 	}
 	// Forward keeps the constructing side (fan-out is unaffected).
-	if !countSrc(g.Forward(), "pkg.build", "pkg.Data") {
-		t.Errorf("Forward must keep the instantiate edge; got %v", g.Forward()["pkg.build"])
+	if !hasSrc(g.ForwardEdges("pkg.build"), "pkg.Data") {
+		t.Errorf("ForwardEdges must keep the instantiate edge; got %v", g.ForwardEdges("pkg.build"))
 	}
 }
 

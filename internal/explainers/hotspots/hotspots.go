@@ -46,13 +46,14 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 	if graph == nil {
 		return nil, nil
 	}
-	forward := graph.Forward()
+	// Degrees are asked per symbol rather than by pulling whole adjacency maps out of
+	// the graph: the graph stores its adjacency as CSR, and the map form used to
+	// build a full filtered copy of the reverse index on every call.
+	//
 	// Architectural fan-in only: reference-only facts (test_ref/file_ref) are not
 	// symbols, so counting their RelCalls edges inflates the centrality score and
 	// the outlier distribution (GAP-XL-15). Fan-out is unaffected — a symbol never
 	// calls a reference node.
-	reverse := graph.ArchitecturalReverse()
-
 	symbols := store.ByKind(facts.KindSymbol)
 	if len(symbols) == 0 {
 		return nil, nil
@@ -76,8 +77,8 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 	scores := make(map[string]int, len(distinct))
 	values := make([]float64, 0, len(distinct))
 	for _, s := range distinct {
-		in := len(reverse[s.Name])
-		out := len(forward[s.Name])
+		in := graph.ArchitecturalFanIn(s.Name)
+		out := graph.FanOut(s.Name)
 		score := in * out
 		scores[s.Name] = score
 		values = append(values, float64(score))
@@ -106,8 +107,8 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		if facts.IsTestPath(s.File) {
 			continue
 		}
-		in := len(reverse[s.Name])
-		out := len(forward[s.Name])
+		in := graph.ArchitecturalFanIn(s.Name)
+		out := graph.FanOut(s.Name)
 		if in < minDegree || out < minDegree {
 			continue
 		}
@@ -131,10 +132,10 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 			File:   c.fact.File,
 			Detail: fmt.Sprintf("fan-in %d × fan-out %d = score %d", c.in, c.out, c.score),
 		}}
-		for _, edge := range firstN(reverse[c.fact.Name], maxNeighbors) {
+		for _, edge := range firstN(graph.ArchitecturalReverseEdges(c.fact.Name), maxNeighbors) {
 			evidence = append(evidence, facts.Evidence{Symbol: edge.Target, Detail: "calls into " + c.fact.Name})
 		}
-		for _, edge := range firstN(forward[c.fact.Name], maxNeighbors) {
+		for _, edge := range firstN(graph.ForwardEdges(c.fact.Name), maxNeighbors) {
 			evidence = append(evidence, facts.Evidence{Symbol: edge.Target, Detail: "called by " + c.fact.Name})
 		}
 

@@ -25,6 +25,11 @@ type Store struct {
 
 	// Graph provides adjacency-list traversal over fact relations
 	graph *Graph
+
+	// intern canonicalizes the two string fields that repeat heavily across facts,
+	// so N equal strings share one backing array instead of holding N. See Add.
+	// Released by BuildGraph and lazily recreated if facts are added afterwards.
+	intern map[string]string
 }
 
 // NewStore creates an empty fact store.
@@ -37,11 +42,52 @@ func NewStore() *Store {
 	}
 }
 
+// canonical returns the interned copy of s, adding it if this is the first sighting.
+// Callers must hold the write lock.
+func (s *Store) canonical(str string) string {
+	if str == "" {
+		return str
+	}
+	if s.intern == nil {
+		s.intern = make(map[string]string)
+	}
+	if c, ok := s.intern[str]; ok {
+		return c
+	}
+	s.intern[str] = str
+	return str
+}
+
 // Add adds facts to the store.
+//
+// File and Relation.Target are interned on the way in. Both are populations of a few
+// distinct values repeated across a great many facts, and every extractor produces
+// each occurrence as its own allocation — a parser has no way to know it has emitted
+// that path or that callee before. Measured on the Linux kernel (1.89M facts): 1.89M
+// File strings holding 60 MiB of bytes that are only 1 MiB distinct, and 5.42M
+// relation targets holding 157 MiB that are only 46 MiB distinct. Interning collapses
+// both to one allocation per distinct value.
+//
+// Name is deliberately NOT interned: it is near-unique by construction (1.83M distinct
+// of 1.89M on the same corpus), so a map over it would cost more than it saved.
+//
+// Interning changes only which backing array a string header points at. Equal strings
+// stay equal, the fields keep their types, and nothing downstream can observe the
+// difference — including WriteJSONL, whose output is unchanged byte for byte.
 func (s *Store) Add(ff ...Fact) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, f := range ff {
+		f.File = s.canonical(f.File)
+		if len(f.Relations) > 0 {
+			// Rewrite in place: Relations is the caller's slice, but Add already
+			// takes ownership of the fact (it is stored, not copied), and the
+			// targets are being replaced with equal values.
+			for i := range f.Relations {
+				f.Relations[i].Target = s.canonical(f.Relations[i].Target)
+			}
+		}
+
 		idx := len(s.facts)
 		s.facts = append(s.facts, f)
 		s.byKind[f.Kind] = append(s.byKind[f.Kind], idx)
@@ -57,12 +103,31 @@ func (s *Store) Add(ff ...Fact) {
 	}
 }
 
-// All returns all facts in the store.
+// All returns an independent copy of every fact in the store — including each fact's
+// Relations, which are copied rather than aliased.
+//
+// The Relations copy is what makes the word "independent" true. A plain slice copy
+// duplicates the Fact structs but leaves every Relations header pointing at the
+// ORIGINAL store's backing array, so a caller that appended to or rewrote a relation
+// wrote through into the store it had copied from. That store is often the published
+// snapshot bundle, which concurrent MCP readers are traversing — the append-mode path
+// in engine.GenerateSnapshot copies the previous bundle precisely so it can mutate the
+// result safely, and was relying on a guarantee this method did not provide.
+//
+// Callers that only iterate and never retain should use FactsRef instead; this one
+// allocates proportionally to the fact set.
 func (s *Store) All() []Fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]Fact, len(s.facts))
 	copy(result, s.facts)
+	for i := range result {
+		if len(result[i].Relations) > 0 {
+			rels := make([]Relation, len(result[i].Relations))
+			copy(rels, result[i].Relations)
+			result[i].Relations = rels
+		}
+	}
 	return result
 }
 
@@ -719,6 +784,7 @@ func (s *Store) Clear() {
 	s.byName = make(map[string][]int)
 	s.byRepo = make(map[string][]int)
 	s.graph = nil
+	s.intern = nil
 }
 
 // BuildGraph constructs the adjacency-list graph index from the current facts.
@@ -727,6 +793,12 @@ func (s *Store) BuildGraph() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.graph = NewGraph(s.facts)
+	// The interning table has done its job: the strings it canonicalized are held by
+	// the facts themselves now, and the map is pure overhead (1.3M entries on the
+	// kernel) for the rest of the store's life. Add recreates it if more facts
+	// arrive — interning is an optimization, so a fresh table is merely less
+	// effective, never incorrect.
+	s.intern = nil
 }
 
 // Graph returns the current graph index, or nil if BuildGraph has not been called.

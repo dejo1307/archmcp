@@ -51,7 +51,8 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 	// Architectural fan-in only: reference-only facts (test_ref/file_ref) carry
 	// RelCalls edges into production code but are not symbols. Counting them
 	// inflates fan-in and drifts the outlier threshold below (GAP-XL-15).
-	reverse := graph.ArchitecturalReverse()
+	// Fan-in is asked per symbol: the graph holds its adjacency as CSR, and the map
+	// form built a filtered copy of the whole reverse index on every call.
 
 	symbols := store.ByKind(facts.KindSymbol)
 	if len(symbols) == 0 {
@@ -85,7 +86,7 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 	fanIn := make(map[string]int, len(distinct))
 	values := make([]float64, 0, len(distinct))
 	for _, s := range distinct {
-		n := len(reverse[s.Name])
+		n := graph.ArchitecturalFanIn(s.Name)
 		fanIn[s.Name] = n
 		values = append(values, float64(n))
 	}
@@ -127,8 +128,9 @@ func (e *GodClassExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 		if n < minFanIn || float64(n) <= threshold {
 			continue
 		}
-		dependents := make([]string, 0, len(reverse[s.Name]))
-		for _, edge := range reverse[s.Name] {
+		edges := graph.ArchitecturalReverseEdges(s.Name)
+		dependents := make([]string, 0, len(edges))
+		for _, edge := range edges {
 			dependents = append(dependents, edge.Target)
 		}
 		sort.Strings(dependents)

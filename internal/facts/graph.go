@@ -8,13 +8,90 @@ import (
 
 // Graph provides adjacency-list indexes and traversal operations over a Store.
 // It is a derived index rebuilt from the Store's facts after each snapshot generation.
+//
+// Node names are interned to dense uint32 IDs and the adjacency is held in CSR
+// (compressed sparse row) form: one offset array indexed by node ID, plus flat target
+// and relation-kind arrays shared by every node. Nothing here is per-node-allocated.
+//
+// The shape it replaced — two map[string][]Edge plus a map[string][]int fact index —
+// cost 854 MiB on the Linux kernel's 1.89M facts: ~1.8M map keys times three,
+// ~3.6M separately allocated edge slices, and 5.4M 32-byte Edge structs holding string
+// headers. Those slices are also what made the graph ~21 live objects per fact, which
+// for a long-running MCP server is a GC scan cost paid on every query, not just once.
 type Graph struct {
-	mu       sync.RWMutex
-	forward  map[string][]Edge   // fact name → outgoing edges
-	reverse  map[string][]Edge   // fact name → incoming edges
-	facts    []Fact              // reference to the store's facts (for metadata lookups)
-	factIdx  map[string][]int    // fact name → every index in facts slice declaring that name
-	edgeSeen map[string]struct{} // deduplication: "source\x00kind\x00target"
+	mu sync.RWMutex
+
+	facts []Fact // reference to the store's facts (for metadata lookups)
+
+	// Node ID space. Every name a fact declares AND every name an edge targets gets
+	// an ID. IDs below declaredNodes were assigned while walking the facts, so they
+	// are exactly the names some fact declares; anything at or above it is a dangling
+	// edge target with no backing fact.
+	ids           map[string]uint32
+	names         []string
+	declaredNodes uint32
+
+	// Relation-kind table. The vocabulary is closed and tiny (the RelXxx constants,
+	// plus anything an extractor invents), so an ID indexes it instead of repeating
+	// the string on all 5.4M edges.
+	relKinds []string
+	relIDs   map[string]uint16
+
+	// CSR adjacency over node IDs. fwdOff has len(names)+1 entries; the edges of node
+	// n are the half-open range [fwdOff[n], fwdOff[n+1]) in fwdTgt/fwdRel. Within a
+	// node's range, edges keep the order they were added — traversal output, and so
+	// every golden file, depends on it.
+	fwdOff []uint32
+	fwdTgt []uint32
+	fwdRel []uint16
+
+	// Reverse adjacency, same layout. revTgt holds the SOURCE of each incoming edge.
+	revOff []uint32
+	revTgt []uint32
+	revRel []uint16
+
+	// Node ID → the indices in facts of every fact declaring that name, also CSR.
+	// Only covers IDs below declaredNodes.
+	factOff  []uint32
+	factIdxs []int32
+}
+
+// noNode marks "this fact declares no name" in the per-fact ID scratch array.
+const noNode = ^uint32(0)
+
+// graphBuilder accumulates edges as three parallel arrays of IDs during construction
+// and lays them out as CSR at the end.
+//
+// Edges are appended in INSERTION ORDER and that order is preserved through to the
+// final layout, because the old map-of-slices appended in the same order and
+// traversal walks it. Dedup keeps the FIRST occurrence for the same reason.
+type graphBuilder struct {
+	g   *Graph
+	src []uint32
+	tgt []uint32
+	rel []uint16
+}
+
+// idFor returns the node ID for name, assigning the next one if it is new.
+func (b *graphBuilder) idFor(name string) uint32 {
+	if id, ok := b.g.ids[name]; ok {
+		return id
+	}
+	id := uint32(len(b.g.names))
+	b.g.ids[name] = id
+	b.g.names = append(b.g.names, name)
+	return id
+}
+
+// relIDFor returns the ID for a relation kind, assigning the next one if it is new.
+func (b *graphBuilder) relIDFor(kind string) uint16 {
+	if id, ok := b.g.relIDs[kind]; ok {
+		return id
+	}
+	id := uint16(len(b.g.relKinds))
+	b.g.relIDs[kind] = id
+	b.g.relKinds = append(b.g.relKinds, kind)
+	return id
 }
 
 // Edge represents a directed relationship between two facts.
@@ -104,22 +181,23 @@ type PathResult struct {
 // allows edges to land on the correct fact in the loaded external repo.
 func NewGraph(ff []Fact) *Graph {
 	g := &Graph{
-		forward:  make(map[string][]Edge),
-		reverse:  make(map[string][]Edge),
-		facts:    ff,
-		factIdx:  make(map[string][]int, len(ff)),
-		edgeSeen: make(map[string]struct{}),
+		facts:  ff,
+		ids:    make(map[string]uint32, len(ff)),
+		relIDs: make(map[string]uint16, 16),
 	}
+	b := &graphBuilder{g: g}
 
-	// First pass: index all fact names, collect module names and Go module paths.
+	// First pass: assign a node ID to every name a fact declares, and collect module
+	// names and Go module paths. Doing declared names first is what makes
+	// declaredNodes a usable boundary: after this loop, an ID below it is a name some
+	// fact declares and an ID at or above it is a dangling edge target.
 	moduleNames := make(map[string]bool)
 	modulePaths := make(map[string]struct{}) // Go module paths for cross-repo normalisation
+	nameID := make([]uint32, len(ff))        // per-fact node ID, so the next pass needn't re-hash
 	for i, f := range ff {
+		nameID[i] = noNode
 		if f.Name != "" {
-			// Every fact declaring the name is recorded, not just the first: which
-			// one a node means depends on the edge that reaches it, and that is not
-			// known until traversal time.
-			g.factIdx[f.Name] = append(g.factIdx[f.Name], i)
+			nameID[i] = b.idFor(f.Name)
 		}
 		if f.Kind == KindModule {
 			moduleNames[f.Name] = true
@@ -128,23 +206,48 @@ func NewGraph(ff []Fact) *Graph {
 			}
 		}
 	}
+	g.declaredNodes = uint32(len(g.names))
+
+	// Index which facts declare each node, as CSR. Every fact declaring the name is
+	// recorded, not just the first: which one a node means depends on the edge that
+	// reaches it, and that is not known until traversal time. Counting first and
+	// filling in fact order keeps each node's list in ascending fact index, as
+	// appending to a per-name slice did.
+	g.factOff = make([]uint32, g.declaredNodes+1)
+	for _, id := range nameID {
+		if id != noNode {
+			g.factOff[id+1]++
+		}
+	}
+	for i := uint32(0); i < g.declaredNodes; i++ {
+		g.factOff[i+1] += g.factOff[i]
+	}
+	g.factIdxs = make([]int32, g.factOff[g.declaredNodes])
+	fillPos := make([]uint32, g.declaredNodes)
+	copy(fillPos, g.factOff[:g.declaredNodes])
+	for i, id := range nameID {
+		if id != noNode {
+			g.factIdxs[fillPos[id]] = int32(i)
+			fillPos[id]++
+		}
+	}
 
 	// Second pass: build adjacency lists
-	for _, f := range ff {
+	for fi, f := range ff {
 		for _, rel := range f.Relations {
 			target := rel.Target
 			// For unresolved call targets, attempt cross-repo normalisation by
 			// stripping known Go module path prefixes.
 			if rel.Kind == RelCalls {
-				if _, exists := g.factIdx[target]; !exists {
+				if !g.declares(target) {
 					if normalized := normalizeExternalTarget(target, modulePaths); normalized != "" {
-						if _, exists := g.factIdx[normalized]; exists {
+						if g.declares(normalized) {
 							target = normalized
 						}
 					}
 				}
 			}
-			g.addEdge(f.Name, rel.Kind, target)
+			b.addEdge(b.srcID(nameID[fi], f.Name), rel.Kind, target)
 		}
 
 		// For dependency facts with imports, also create module→target edges
@@ -159,7 +262,7 @@ func NewGraph(ff []Fact) *Graph {
 					if rel.Kind == RelImports {
 						target := resolveToModule(rel.Target, moduleNames)
 						if target != "" && target != modName {
-							g.addEdge(modName, RelImports, target)
+							b.addEdge(b.idFor(modName), RelImports, target)
 						}
 					}
 				}
@@ -182,15 +285,211 @@ func NewGraph(ff []Fact) *Graph {
 			continue
 		}
 		if owner := g.methodOwner(f.Name); owner != "" {
-			g.addEdge(owner, RelHasMethod, f.Name)
+			b.addEdge(b.idFor(owner), RelHasMethod, f.Name)
 		}
 	}
 
-	// edgeSeen is only needed during construction; release it so the GC can
-	// reclaim the O(edges × 3 strings) backing memory.
-	g.edgeSeen = nil
-
+	b.finish()
 	return g
+}
+
+// srcID resolves the source node of a fact's edges. A fact with no name still gets a
+// node — the map-based graph created a forward[""] bucket for it, and silently dropping
+// those edges would change the graph rather than tidy it.
+func (b *graphBuilder) srcID(id uint32, name string) uint32 {
+	if id != noNode {
+		return id
+	}
+	return b.idFor(name)
+}
+
+// addEdge records one directed edge. Duplicates are tolerated here and removed in
+// finish, which is cheaper than the map of concatenated "source\x00kind\x00target"
+// keys this replaced: on the Linux kernel that map held 5.4M freshly built strings,
+// all of them garbage the moment construction ended.
+func (b *graphBuilder) addEdge(src uint32, relKind, target string) {
+	b.src = append(b.src, src)
+	b.tgt = append(b.tgt, b.idFor(target))
+	b.rel = append(b.rel, b.relIDFor(relKind))
+}
+
+// declares reports whether some fact declares this name — the CSR equivalent of the
+// old `_, exists := g.factIdx[name]` test. Only IDs below declaredNodes qualify:
+// anything above was minted for an edge target that nothing declares.
+func (g *Graph) declares(name string) bool {
+	id, ok := g.ids[name]
+	return ok && id < g.declaredNodes
+}
+
+// finish deduplicates the accumulated edges and lays them out as CSR.
+func (b *graphBuilder) finish() {
+	g := b.g
+	n := uint32(len(g.names))
+
+	keep := b.dedup(n)
+	if keep < len(b.src) {
+		// Compact in place, preserving insertion order.
+		w := 0
+		for i := range b.src {
+			if b.src[i] == noNode {
+				continue // marked as a duplicate by dedup
+			}
+			b.src[w], b.tgt[w], b.rel[w] = b.src[i], b.tgt[i], b.rel[i]
+			w++
+		}
+		b.src, b.tgt, b.rel = b.src[:w], b.tgt[:w], b.rel[:w]
+	}
+
+	g.fwdOff, g.fwdTgt, g.fwdRel = buildCSR(b.src, b.tgt, b.rel, n)
+	g.revOff, g.revTgt, g.revRel = buildCSR(b.tgt, b.src, b.rel, n)
+}
+
+// dedup marks duplicate (source, relation, target) triples by setting their source to
+// noNode, and returns how many edges survive. The FIRST occurrence of a triple is the
+// one kept, matching the old edgeSeen map.
+//
+// Duplicates can only occur within one source's edges, so grouping by source bounds
+// every comparison to a single node's fan-out — which is 2.9 on average even on the
+// Linux kernel, where a global structure would need 5.4M entries.
+func (b *graphBuilder) dedup(n uint32) int {
+	e := len(b.src)
+	if e == 0 {
+		return 0
+	}
+
+	off, order := groupBy(b.src, n)
+	dropped := 0
+	var seen map[uint64]struct{}
+	for s := uint32(0); s < n; s++ {
+		run := order[off[s]:off[s+1]]
+		if len(run) < 2 {
+			continue
+		}
+		if len(run) <= dedupScanLimit {
+			// Pairwise for small fan-outs: no allocation, and the run is short
+			// enough that the quadratic term is smaller than a map's constant.
+			for i := 1; i < len(run); i++ {
+				for j := 0; j < i; j++ {
+					if b.src[run[j]] == noNode {
+						continue // already dropped; not a valid comparison partner
+					}
+					if b.tgt[run[i]] == b.tgt[run[j]] && b.rel[run[i]] == b.rel[run[j]] {
+						b.src[run[i]] = noNode
+						dropped++
+						break
+					}
+				}
+			}
+			continue
+		}
+		if seen == nil {
+			seen = make(map[uint64]struct{}, len(run))
+		} else {
+			clear(seen)
+		}
+		for _, ei := range run {
+			k := uint64(b.tgt[ei])<<16 | uint64(b.rel[ei])
+			if _, dup := seen[k]; dup {
+				b.src[ei] = noNode
+				dropped++
+				continue
+			}
+			seen[k] = struct{}{}
+		}
+	}
+	return e - dropped
+}
+
+// dedupScanLimit is the fan-out below which pairwise comparison beats a hash set.
+const dedupScanLimit = 16
+
+// groupBy counting-sorts edge indices by key, returning CSR offsets and the indices
+// grouped under them. It is STABLE — within a group, indices stay in ascending order,
+// which is what preserves insertion order in the final adjacency.
+func groupBy(key []uint32, n uint32) (off, order []uint32) {
+	off = make([]uint32, n+1)
+	for _, k := range key {
+		if k != noNode {
+			off[k+1]++
+		}
+	}
+	for i := uint32(0); i < n; i++ {
+		off[i+1] += off[i]
+	}
+	order = make([]uint32, off[n])
+	pos := make([]uint32, n)
+	copy(pos, off[:n])
+	for i, k := range key {
+		if k == noNode {
+			continue
+		}
+		order[pos[k]] = uint32(i)
+		pos[k]++
+	}
+	return off, order
+}
+
+// buildCSR lays out edges keyed by `from`, storing `to` and `rel` in the flat arrays.
+// Forward and reverse adjacency are the same call with the two ends swapped.
+func buildCSR(from, to []uint32, rel []uint16, n uint32) (off, tgt []uint32, kinds []uint16) {
+	off, order := groupBy(from, n)
+	tgt = make([]uint32, len(order))
+	kinds = make([]uint16, len(order))
+	for i, ei := range order {
+		tgt[i] = to[ei]
+		kinds[i] = rel[ei]
+	}
+	return off, tgt, kinds
+}
+
+// lookup resolves a node name to its ID. A name with no node is not in the graph at
+// all — neither declared by a fact nor targeted by an edge.
+func (g *Graph) lookup(name string) (uint32, bool) {
+	id, ok := g.ids[name]
+	return id, ok
+}
+
+// adjOf returns node id's edges as parallel target/relation-ID slices, sub-slices of
+// the flat CSR arrays. They alias the graph's storage and must not be modified.
+func (g *Graph) adjOf(id uint32, reverse bool) ([]uint32, []uint16) {
+	off, tgt, rel := g.fwdOff, g.fwdTgt, g.fwdRel
+	if reverse {
+		off, tgt, rel = g.revOff, g.revTgt, g.revRel
+	}
+	if id >= uint32(len(off)-1) {
+		return nil, nil
+	}
+	lo, hi := off[id], off[id+1]
+	return tgt[lo:hi], rel[lo:hi]
+}
+
+// degreeOf returns how many edges node id has in the given direction, without
+// materializing them.
+func (g *Graph) degreeOf(id uint32, reverse bool) int {
+	off := g.fwdOff
+	if reverse {
+		off = g.revOff
+	}
+	if id >= uint32(len(off)-1) {
+		return 0
+	}
+	return int(off[id+1] - off[id])
+}
+
+// relName maps a relation-kind ID back to its string.
+func (g *Graph) relName(id uint16) string {
+	if int(id) >= len(g.relKinds) {
+		return ""
+	}
+	return g.relKinds[id]
+}
+
+// factIdxsOf returns the indices in g.facts of every fact declaring node id.
+func (g *Graph) factIdxsOf(id uint32) []int32 {
+	if id >= g.declaredNodes {
+		return nil
+	}
+	return g.factIdxs[g.factOff[id]:g.factOff[id+1]]
 }
 
 // methodOwner returns the owner type name for a method fact name of the form
@@ -267,31 +566,37 @@ func (g *Graph) traverseFrom(starts []string, direction string, relKinds, nodeKi
 		maxNodes = 500
 	}
 
-	adj := g.forward
-	if direction == "reverse" {
-		adj = g.reverse
-	}
+	reverse := direction == "reverse"
 
-	relSet := toSet(relKinds)
+	relSet := g.relIDSet(relKinds)
 	kindSet := toSet(nodeKinds)
 
 	var result TraversalResult
-	visited := make(map[string]bool)
+	// Keyed by node ID rather than name: same asymptotics, but hashing a uint32
+	// instead of a string, and no key strings retained for the walk's duration.
+	visited := make(map[uint32]struct{})
 
 	type queueItem struct {
-		name  string
+		id    uint32
 		depth int
 	}
 
-	// Seed every start node at depth 0.
+	// Seed every start node at depth 0. A start name with no node at all still
+	// produces a node in the result — an unresolved one — because callers ask about
+	// names that may not be in the graph and an empty answer would not say so.
 	var queue []queueItem
 	for _, start := range starts {
-		if visited[start] {
+		id, ok := g.lookup(start)
+		if !ok {
+			result.Nodes = append(result.Nodes, TraversalNode{Name: start, Depth: 0, Unresolved: true})
 			continue
 		}
-		visited[start] = true
-		queue = append(queue, queueItem{name: start, depth: 0})
-		result.Nodes = append(result.Nodes, g.nodeFor(start, 0, ""))
+		if _, seen := visited[id]; seen {
+			continue
+		}
+		visited[id] = struct{}{}
+		queue = append(queue, queueItem{id: id, depth: 0})
+		result.Nodes = append(result.Nodes, g.nodeForID(id, 0, ""))
 	}
 
 	truncated := false
@@ -306,48 +611,50 @@ func (g *Graph) traverseFrom(starts []string, direction string, relKinds, nodeKi
 			continue
 		}
 
-		edges := adj[item.name]
-		for _, e := range edges {
+		tgts, rels := g.adjOf(item.id, reverse)
+		for i, tid := range tgts {
+			relID := rels[i]
 			if relSet != nil {
-				if _, ok := relSet[e.RelKind]; !ok {
+				if _, ok := relSet[relID]; !ok {
 					continue
 				}
 			}
+			relKind := g.relName(relID)
 
 			result.Stats.EdgesTraversed++
 
 			// Record the edge
-			if direction == "reverse" {
+			if reverse {
 				result.Edges = append(result.Edges, TraversalEdge{
-					Source: e.Target,
-					Target: item.name,
-					Kind:   e.RelKind,
+					Source: g.names[tid],
+					Target: g.names[item.id],
+					Kind:   relKind,
 				})
 			} else {
 				result.Edges = append(result.Edges, TraversalEdge{
-					Source: item.name,
-					Target: e.Target,
-					Kind:   e.RelKind,
+					Source: g.names[item.id],
+					Target: g.names[tid],
+					Kind:   relKind,
 				})
 			}
 
-			if visited[e.Target] {
+			if _, seen := visited[tid]; seen {
 				continue
 			}
-			visited[e.Target] = true
+			visited[tid] = struct{}{}
 
 			newDepth := item.depth + 1
 			if newDepth > maxDepthReached {
 				maxDepthReached = newDepth
 			}
 
-			node := g.nodeFor(e.Target, newDepth, e.RelKind)
+			node := g.nodeForID(tid, newDepth, relKind)
 
 			// Apply node kind filter
 			if kindSet != nil {
 				if _, ok := kindSet[node.Kind]; !ok {
 					// Still traverse through this node but don't include it in results
-					queue = append(queue, queueItem{name: e.Target, depth: newDepth})
+					queue = append(queue, queueItem{id: tid, depth: newDepth})
 					continue
 				}
 			}
@@ -362,12 +669,12 @@ func (g *Graph) traverseFrom(starts []string, direction string, relKinds, nodeKi
 				// are unaffected, so the returned set stays the BFS-order prefix
 				// of an uncapped traversal.
 				truncated = true
-				queue = append(queue, queueItem{name: e.Target, depth: newDepth})
+				queue = append(queue, queueItem{id: tid, depth: newDepth})
 				continue
 			}
 
 			result.Nodes = append(result.Nodes, node)
-			queue = append(queue, queueItem{name: e.Target, depth: newDepth})
+			queue = append(queue, queueItem{id: tid, depth: newDepth})
 		}
 	}
 
@@ -421,19 +728,26 @@ func (g *Graph) FindPath(from, to string, relKinds []string, maxDepth int) PathR
 		}
 	}
 
-	relSet := toSet(relKinds)
+	relSet := g.relIDSet(relKinds)
+
+	fromID, fromOK := g.lookup(from)
+	toID, toOK := g.lookup(to)
+	if !fromOK || !toOK {
+		// One of the endpoints is not in the graph at all, so no path can exist.
+		return PathResult{From: from, To: to, Found: false}
+	}
 
 	type queueItem struct {
-		name  string
+		id    uint32
 		depth int
 	}
 
-	visited := make(map[string]bool)
-	parent := make(map[string]string)   // child → parent
-	parentEdge := make(map[string]Edge) // child → edge from parent
+	visited := make(map[uint32]struct{})
+	parent := make(map[uint32]uint32)    // child → parent
+	parentRel := make(map[uint32]uint16) // child → relation kind of the edge from parent
 
-	visited[from] = true
-	queue := []queueItem{{name: from, depth: 0}}
+	visited[fromID] = struct{}{}
+	queue := []queueItem{{id: fromID, depth: 0}}
 
 	found := false
 	// Use an index pointer to avoid keeping the full backing array alive.
@@ -444,24 +758,25 @@ func (g *Graph) FindPath(from, to string, relKinds []string, maxDepth int) PathR
 			continue
 		}
 
-		for _, e := range g.forward[item.name] {
+		tgts, rels := g.adjOf(item.id, false)
+		for i, tid := range tgts {
 			if relSet != nil {
-				if _, ok := relSet[e.RelKind]; !ok {
+				if _, ok := relSet[rels[i]]; !ok {
 					continue
 				}
 			}
-			if visited[e.Target] {
+			if _, seen := visited[tid]; seen {
 				continue
 			}
-			visited[e.Target] = true
-			parent[e.Target] = item.name
-			parentEdge[e.Target] = e
+			visited[tid] = struct{}{}
+			parent[tid] = item.id
+			parentRel[tid] = rels[i]
 
-			if e.Target == to {
+			if tid == toID {
 				found = true
 				break
 			}
-			queue = append(queue, queueItem{name: e.Target, depth: item.depth + 1})
+			queue = append(queue, queueItem{id: tid, depth: item.depth + 1})
 		}
 	}
 
@@ -471,30 +786,33 @@ func (g *Graph) FindPath(from, to string, relKinds []string, maxDepth int) PathR
 	}
 
 	// Reconstruct path
-	var path []string
-	for cur := to; cur != from; cur = parent[cur] {
+	var path []uint32
+	for cur := toID; cur != fromID; cur = parent[cur] {
 		path = append(path, cur)
 	}
-	path = append(path, from)
+	path = append(path, fromID)
 
 	// Reverse to get from → to order
 	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
 		path[i], path[j] = path[j], path[i]
 	}
 
-	for i, name := range path {
+	for i, id := range path {
 		// The origin has no incoming edge; every later hop is identified by the
 		// relation that reached it.
-		result.Path = append(result.Path, g.nodeFor(name, i, parentEdge[name].RelKind))
+		via := ""
+		if i > 0 {
+			via = g.relName(parentRel[id])
+		}
+		result.Path = append(result.Path, g.nodeForID(id, i, via))
 	}
 
 	// Reconstruct edges along the path
 	for i := 1; i < len(path); i++ {
-		e := parentEdge[path[i]]
 		result.Edges = append(result.Edges, TraversalEdge{
-			Source: path[i-1],
-			Target: path[i],
-			Kind:   e.RelKind,
+			Source: g.names[path[i-1]],
+			Target: g.names[path[i]],
+			Kind:   g.relName(parentRel[path[i]]),
 		})
 	}
 
@@ -613,15 +931,18 @@ func (g *Graph) impactSeeds(target string) []string {
 	}
 
 	// Methods: has_method edges point from the type to each of its methods.
-	for _, e := range g.forward[target] {
-		if e.RelKind == RelHasMethod {
-			seeds = append(seeds, e.Target)
+	if id, ok := g.lookup(target); ok {
+		tgts, rels := g.adjOf(id, false)
+		for i, tid := range tgts {
+			if g.relName(rels[i]) == RelHasMethod {
+				seeds = append(seeds, g.names[tid])
+			}
 		}
 	}
 	// Constructor: "<pkg>.New<Type>" in the same package, when it exists.
 	if dot := strings.LastIndex(target, "."); dot >= 0 {
 		ctor := target[:dot+1] + "New" + target[dot+1:]
-		if _, ok := g.factIdx[ctor]; ok {
+		if g.declares(ctor) {
 			seeds = append(seeds, ctor)
 		}
 	}
@@ -649,22 +970,6 @@ func normalizeExternalTarget(target string, modulePaths map[string]struct{}) str
 		}
 	}
 	return ""
-}
-
-func (g *Graph) addEdge(source, relKind, target string) {
-	key := source + "\x00" + relKind + "\x00" + target
-	if _, exists := g.edgeSeen[key]; exists {
-		return
-	}
-	g.edgeSeen[key] = struct{}{}
-	g.forward[source] = append(g.forward[source], Edge{
-		RelKind: relKind,
-		Target:  target,
-	})
-	g.reverse[target] = append(g.reverse[target], Edge{
-		RelKind: relKind,
-		Target:  source,
-	})
 }
 
 // resolveToModule finds the closest matching module for a target by trying
@@ -698,41 +1003,83 @@ func (g *Graph) ReverseFacts(targetName, relKind string) []Fact {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	edges := g.reverse[targetName]
-	if len(edges) == 0 {
+	id, ok := g.lookup(targetName)
+	if !ok {
+		return nil
+	}
+	srcs, rels := g.adjOf(id, true)
+	if len(srcs) == 0 {
 		return nil
 	}
 
-	result := make([]Fact, 0, len(edges))
-	seen := make(map[string]struct{}, len(edges))
-	for _, e := range edges {
-		if relKind != "" && e.RelKind != relKind {
+	result := make([]Fact, 0, len(srcs))
+	seen := make(map[uint32]struct{}, len(srcs))
+	for i, sid := range srcs {
+		rk := g.relName(rels[i])
+		if relKind != "" && rk != relKind {
 			continue
 		}
-		sourceName := e.Target // reverse edge stores the source in Target field
-		if _, already := seen[sourceName]; already {
+		if _, already := seen[sid]; already {
 			continue
 		}
-		seen[sourceName] = struct{}{}
-		if idx, ok := g.factIndexFor(sourceName, e.RelKind); ok {
+		seen[sid] = struct{}{}
+		if idx, ok := g.factIndexForID(sid, rk); ok {
 			result = append(result, g.facts[idx])
 		}
 	}
 	return result
 }
 
-// Forward returns the forward adjacency map (for use by explainers like cycles).
-func (g *Graph) Forward() map[string][]Edge {
+// ForwardEdges returns the outgoing edges of name as a fresh slice, or nil when the
+// name has no node. Materializing one node's edges on demand is what replaced
+// Forward(), which handed out the whole adjacency map — a shape that cannot exist
+// once the adjacency is CSR, and that callers only ever indexed by name anyway.
+func (g *Graph) ForwardEdges(name string) []Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.forward
+	id, ok := g.lookup(name)
+	if !ok {
+		return nil
+	}
+	return g.edgesOf(id, false)
 }
 
-// Reverse returns the reverse adjacency map.
-func (g *Graph) Reverse() map[string][]Edge {
+// ReverseEdges returns the incoming edges of name as a fresh slice — each Edge's
+// Target holds the SOURCE of that edge, matching the reverse index's convention.
+// Unlike ArchitecturalReverseEdges it applies no coupling filter, so it is what
+// traversal-style questions want: every reference, including from tests and routes.
+func (g *Graph) ReverseEdges(name string) []Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.reverse
+	id, ok := g.lookup(name)
+	if !ok {
+		return nil
+	}
+	return g.edgesOf(id, true)
+}
+
+// FanOut returns the number of outgoing edges of name, without materializing them.
+func (g *Graph) FanOut(name string) int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	id, ok := g.lookup(name)
+	if !ok {
+		return 0
+	}
+	return g.degreeOf(id, false)
+}
+
+// edgesOf materializes node id's edges in the given direction. Callers hold the lock.
+func (g *Graph) edgesOf(id uint32, reverse bool) []Edge {
+	tgts, rels := g.adjOf(id, reverse)
+	if len(tgts) == 0 {
+		return nil
+	}
+	out := make([]Edge, len(tgts))
+	for i, tid := range tgts {
+		out[i] = Edge{RelKind: g.relName(rels[i]), Target: g.names[tid]}
+	}
+	return out
 }
 
 // isReferenceOnlyKind reports whether a fact kind carries only reference
@@ -764,51 +1111,80 @@ func isReferenceOnlyKind(kind string) bool {
 // threshold over count only real symbol coupling. orphans, impact_analysis,
 // traverse and find_path keep using the unfiltered Reverse() index — they
 // intentionally surface those references. (GAP-XL-15)
-func (g *Graph) ArchitecturalReverse() map[string][]Edge {
+// It is answered per node rather than as a whole map. The map form built a filtered
+// copy of the ENTIRE reverse index on every call — two full copies per snapshot, since
+// both outlier explainers ask — to read the length of a few thousand buckets.
+func (g *Graph) ArchitecturalReverseEdges(name string) []Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	out := make(map[string][]Edge, len(g.reverse))
-	for target, edges := range g.reverse {
-		kept := make([]Edge, 0, len(edges))
-		for _, e := range edges {
-			// RelInstantiates keeps ubiquitous DATA structs out of the dead-code
-			// report, but it is not change-risk coupling: a data struct built at many
-			// sites is not a god class or a call-graph hotspot. Exclude it from fan-in
-			// / centrality (and the outlier distribution). Traversal, impact_analysis,
-			// find_path and orphans read the raw Reverse() index and still see it.
-			if e.RelKind == RelInstantiates {
-				continue
-			}
-			// In a reverse edge, e.Target holds the SOURCE fact name.
-			if idx, ok := g.factIndexFor(e.Target, e.RelKind); ok &&
-				isReferenceOnlyKind(g.facts[idx].Kind) {
-				continue
-			}
-			kept = append(kept, e)
+	id, ok := g.lookup(name)
+	if !ok {
+		return nil
+	}
+	srcs, rels := g.adjOf(id, true)
+	var out []Edge
+	for i, sid := range srcs {
+		if !g.isArchitecturalEdge(sid, rels[i]) {
+			continue
 		}
-		if len(kept) > 0 {
-			out[target] = kept
-		}
+		out = append(out, Edge{RelKind: g.relName(rels[i]), Target: g.names[sid]})
 	}
 	return out
 }
 
+// ArchitecturalFanIn counts the incoming architectural-coupling edges of name — the
+// same filter as ArchitecturalReverseEdges, without building the slice.
+func (g *Graph) ArchitecturalFanIn(name string) int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	id, ok := g.lookup(name)
+	if !ok {
+		return 0
+	}
+	srcs, rels := g.adjOf(id, true)
+	n := 0
+	for i, sid := range srcs {
+		if g.isArchitecturalEdge(sid, rels[i]) {
+			n++
+		}
+	}
+	return n
+}
+
+// isArchitecturalEdge applies the coupling filter to one incoming edge, given its
+// SOURCE node and relation kind. Callers hold the lock.
+func (g *Graph) isArchitecturalEdge(srcID uint32, relID uint16) bool {
+	rk := g.relName(relID)
+	// RelInstantiates keeps ubiquitous DATA structs out of the dead-code report, but
+	// it is not change-risk coupling: a data struct built at many sites is not a god
+	// class or a call-graph hotspot. Exclude it from fan-in / centrality (and the
+	// outlier distribution). Traversal, impact_analysis, find_path and orphans read
+	// the unfiltered index and still see it.
+	if rk == RelInstantiates {
+		return false
+	}
+	if idx, ok := g.factIndexForID(srcID, rk); ok && isReferenceOnlyKind(g.facts[idx].Kind) {
+		return false
+	}
+	return true
+}
+
 // NodeCount returns the number of unique nodes in the graph.
+//
+// "Unique nodes" means names some fact DECLARES, which is what the fact-index map it
+// used to measure contained. Dangling edge targets have IDs too, but they are not
+// nodes the graph knows anything about.
 func (g *Graph) NodeCount() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return len(g.factIdx)
+	return int(g.declaredNodes)
 }
 
 // EdgeCount returns the total number of edges in the graph.
 func (g *Graph) EdgeCount() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	count := 0
-	for _, edges := range g.forward {
-		count += len(edges)
-	}
-	return count
+	return len(g.fwdTgt)
 }
 
 // kindForRel maps the relation that reached a node to the fact kind that relation
@@ -854,20 +1230,31 @@ func rankOf(kind string) int {
 // kind natural for viaRel (the relation that reached the node; "" when there is none)
 // and otherwise falling back to kindRank. Returns false when no fact backs the name.
 func (g *Graph) factIndexFor(name, viaRel string) (int, bool) {
-	idxs := g.factIdx[name]
+	id, ok := g.lookup(name)
+	if !ok {
+		return 0, false
+	}
+	return g.factIndexForID(id, viaRel)
+}
+
+// factIndexForID is factIndexFor for a node whose ID is already known — every caller
+// on a traversal path, which reaches nodes by edge rather than by name.
+func (g *Graph) factIndexForID(id uint32, viaRel string) (int, bool) {
+	idxs := g.factIdxsOf(id)
 	if len(idxs) == 0 {
 		return 0, false
 	}
 	if len(idxs) == 1 {
-		if idxs[0] >= len(g.facts) {
+		if int(idxs[0]) >= len(g.facts) {
 			return 0, false
 		}
-		return idxs[0], true
+		return int(idxs[0]), true
 	}
 
 	want := kindForRel[viaRel]
 	best, found := 0, false
-	for _, idx := range idxs {
+	for _, i32 := range idxs {
+		idx := int(i32)
 		if idx >= len(g.facts) {
 			continue
 		}
@@ -884,14 +1271,14 @@ func (g *Graph) factIndexFor(name, viaRel string) (int, bool) {
 // conflatedKinds returns the distinct kinds sharing name, sorted, when more than one
 // fact declares it — the honest signal that this graph node merges several facts and
 // their edges. Returns nil for the common single-fact case.
-func (g *Graph) conflatedKinds(name string) []string {
-	idxs := g.factIdx[name]
+func (g *Graph) conflatedKindsOf(id uint32) []string {
+	idxs := g.factIdxsOf(id)
 	if len(idxs) < 2 {
 		return nil
 	}
 	seen := map[string]bool{}
 	for _, idx := range idxs {
-		if idx < len(g.facts) {
+		if int(idx) < len(g.facts) {
 			seen[g.facts[idx].Kind] = true
 		}
 	}
@@ -910,14 +1297,22 @@ func (g *Graph) conflatedKinds(name string) []string {
 // it, or "" for a traversal/path origin; it disambiguates which fact the node means
 // when a name is shared.
 func (g *Graph) nodeFor(name string, depth int, viaRel string) TraversalNode {
-	node := TraversalNode{Name: name, Depth: depth}
-	if idx, ok := g.factIndexFor(name, viaRel); ok {
+	if id, ok := g.lookup(name); ok {
+		return g.nodeForID(id, depth, viaRel)
+	}
+	return TraversalNode{Name: name, Depth: depth, Unresolved: true}
+}
+
+// nodeForID is nodeFor for a node reached by edge, where the ID is already in hand.
+func (g *Graph) nodeForID(id uint32, depth int, viaRel string) TraversalNode {
+	node := TraversalNode{Name: g.names[id], Depth: depth}
+	if idx, ok := g.factIndexForID(id, viaRel); ok {
 		f := g.facts[idx]
 		node.Kind = f.Kind
 		node.File = f.File
 		node.Line = f.Line
 		node.Repo = f.Repo
-		node.Conflated = g.conflatedKinds(name)
+		node.Conflated = g.conflatedKindsOf(id)
 	} else {
 		// No backing fact: this is a dangling edge target (e.g. an inferred call
 		// into an unanalyzed package or an interface method). Mark it honestly
@@ -992,21 +1387,22 @@ func (g *Graph) reachableCount(seeds []string, direction string, maxDepth int) i
 	if maxDepth <= 0 {
 		maxDepth = 3
 	}
-	adj := g.forward
-	if direction == "reverse" {
-		adj = g.reverse
-	}
+	reverse := direction == "reverse"
 
-	visited := make(map[string]bool)
+	visited := make(map[uint32]struct{})
 	type queueItem struct {
-		name  string
+		id    uint32
 		depth int
 	}
 	var queue []queueItem
 	for _, s := range seeds {
-		if !visited[s] {
-			visited[s] = true
-			queue = append(queue, queueItem{name: s, depth: 0})
+		id, ok := g.lookup(s)
+		if !ok {
+			continue
+		}
+		if _, seen := visited[id]; !seen {
+			visited[id] = struct{}{}
+			queue = append(queue, queueItem{id: id, depth: 0})
 		}
 	}
 	seedCount := len(visited)
@@ -1016,16 +1412,42 @@ func (g *Graph) reachableCount(seeds []string, direction string, maxDepth int) i
 		if item.depth >= maxDepth {
 			continue
 		}
-		for _, e := range adj[item.name] {
-			if visited[e.Target] {
+		tgts, _ := g.adjOf(item.id, reverse)
+		for _, tid := range tgts {
+			if _, seen := visited[tid]; seen {
 				continue
 			}
-			visited[e.Target] = true
-			queue = append(queue, queueItem{name: e.Target, depth: item.depth + 1})
+			visited[tid] = struct{}{}
+			queue = append(queue, queueItem{id: tid, depth: item.depth + 1})
 		}
 	}
 
 	return len(visited) - seedCount
+}
+
+// relIDSet maps a relation-kind filter to the IDs the adjacency arrays actually hold,
+// so the hot loop compares uint16s instead of strings. A kind the graph never saw has
+// no ID and is simply absent, which correctly matches nothing. Returns nil for "no
+// filter", matching toSet.
+func (g *Graph) relIDSet(kinds []string) map[uint16]struct{} {
+	if len(kinds) == 0 {
+		return nil
+	}
+	set := make(map[uint16]struct{}, len(kinds))
+	for _, k := range kinds {
+		if k == "" {
+			continue
+		}
+		if id, ok := g.relIDs[k]; ok {
+			set[id] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		// Every requested kind is absent from this graph. Returning nil would mean
+		// "no filter" and match everything, which is the opposite of what was asked.
+		return map[uint16]struct{}{}
+	}
+	return set
 }
 
 func toSet(ss []string) map[string]struct{} {

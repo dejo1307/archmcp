@@ -1627,7 +1627,13 @@ func (s *Server) registerTools() {
 
 		// Current = the live engine state (what the agent just generated). Build it
 		// from the store so it works even when the snapshot was auto-loaded.
-		current := &facts.Snapshot{Meta: snap.Meta, Facts: s.eng.Store().All(), Insights: snap.Insights}
+		//
+		// FactsRef, not All: diff.Compute only reads its inputs (it groups facts into
+		// its own slices and sorts those), and this store is the published bundle,
+		// which is immutable once swapped in — exactly FactsRef's contract. All would
+		// copy the entire fact set, plus every relation slice, for a read: on a
+		// kernel-sized graph that is gigabytes of transient garbage on a query path.
+		current := &facts.Snapshot{Meta: snap.Meta, Facts: s.eng.Store().FactsRef(), Insights: snap.Insights}
 
 		// Resolve the baseline directory from the selector.
 		sel := strings.TrimSpace(args.Baseline)

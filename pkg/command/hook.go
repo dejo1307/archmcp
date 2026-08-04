@@ -356,7 +356,10 @@ func (r *Runner) gradeQuietly(ctx context.Context, repoDir string) (check.Verdic
 	if snap == nil || eng.Store().Count() == 0 {
 		return check.Verdict{}, outDir, false
 	}
-	current := &facts.Snapshot{Meta: snap.Meta, Facts: eng.Store().All(), Insights: snap.Insights}
+	// FactsRef, not All: diff.Compute reads its inputs and the published bundle is
+	// immutable. The hook runs on every agent edit, so a full fact-set copy here is
+	// the one place the cost would be paid over and over.
+	current := &facts.Snapshot{Meta: snap.Meta, Facts: eng.Store().FactsRef(), Insights: snap.Insights}
 
 	return check.Evaluate(diff.Compute(base, current), check.Policy{}), outDir, true
 }

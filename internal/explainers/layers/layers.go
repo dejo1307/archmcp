@@ -462,7 +462,10 @@ func dominantLanguage(modules []facts.Fact) string {
 // symbols and modules (e.g. nextjs, rails, django, android, spring).
 func presentFrameworks(store *facts.Store) map[string]bool {
 	out := make(map[string]bool)
-	for _, f := range store.All() {
+	// FactsRef, not All: this only reads, and retains nothing past the loop. All
+	// would copy the whole fact set (and now every relation slice with it) to
+	// collect a handful of framework names.
+	for _, f := range store.FactsRef() {
 		if fw, ok := f.Props["framework"].(string); ok && fw != "" {
 			out[fw] = true
 		}

@@ -1,12 +1,11 @@
 package facts
 
-// Tests that target the four memory/performance improvements made in the
-// graph memory management pass:
+// Tests that target the memory/performance properties of the graph and store:
 //
-//  1. edgeSeen is nil'd after NewGraph (memory release)
+//  1. edge dedup holds no per-edge structure after construction
 //  2. BFS uses an index pointer instead of queue re-slicing (no backing-array leak)
 //  3. QueryAdvanced/Query use index-bounded candidate sets (O(K) instead of O(N))
-//  4. ReverseLookup delegates to Graph.reverse when available (O(1) vs O(N×R))
+//  4. ReverseLookup delegates to the graph's reverse index when available (O(1) vs O(N×R))
 
 import (
 	"fmt"
@@ -14,30 +13,15 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// 1. edgeSeen freed after graph construction
+// 1. edge dedup leaves nothing behind
 // ---------------------------------------------------------------------------
 
-func TestNewGraph_EdgeSeenNilAfterConstruction(t *testing.T) {
-	s := NewStore()
-	s.Add(
-		Fact{Kind: KindSymbol, Name: "X", File: "x.go", Relations: []Relation{
-			{Kind: RelCalls, Target: "Y"},
-		}},
-		Fact{Kind: KindSymbol, Name: "Y", File: "y.go"},
-	)
-	s.BuildGraph()
-	g := s.Graph()
-	if g == nil {
-		t.Fatal("graph should not be nil after BuildGraph")
-	}
-	// edgeSeen must be nil so its backing memory can be GC'd.
-	if g.edgeSeen != nil {
-		t.Errorf("edgeSeen should be nil after NewGraph returns, got map of len %d", len(g.edgeSeen))
-	}
-}
-
-// Deduplication must still work even though edgeSeen is nil'd at the end.
-func TestNewGraph_EdgeSeenNilDoesNotBreakDedup(t *testing.T) {
+// Dedup used to run through a map keyed by "source\x00kind\x00target", which had to be
+// explicitly nil'd after construction — on the Linux kernel that map held 5.4M freshly
+// concatenated strings. The CSR builder dedups within each source's edge run instead,
+// so there is no structure left to release; what remains to be pinned is that the
+// deduplication itself still happens, and that the graph retains only its CSR arrays.
+func TestNewGraph_DedupRetainsNothingPerEdge(t *testing.T) {
 	s := NewStore()
 	// Two facts that would produce the same A→imports→B edge.
 	s.Add(
@@ -51,16 +35,69 @@ func TestNewGraph_EdgeSeenNilDoesNotBreakDedup(t *testing.T) {
 	)
 	s.BuildGraph()
 	g := s.Graph()
+	if g == nil {
+		t.Fatal("graph should not be nil after BuildGraph")
+	}
 
-	fwd := g.Forward()
 	count := 0
-	for _, e := range fwd["A"] {
+	for _, e := range g.ForwardEdges("A") {
 		if e.RelKind == RelImports && e.Target == "B" {
 			count++
 		}
 	}
 	if count != 1 {
 		t.Errorf("A→imports→B should appear exactly once, got %d", count)
+	}
+
+	// The forward and reverse arrays must agree with each other and with the
+	// reported edge count: a dedup that dropped an edge from one direction only
+	// would leave the two indexes describing different graphs.
+	if len(g.fwdTgt) != len(g.revTgt) {
+		t.Errorf("forward holds %d edges but reverse holds %d", len(g.fwdTgt), len(g.revTgt))
+	}
+	if g.EdgeCount() != len(g.fwdTgt) {
+		t.Errorf("EdgeCount = %d but the forward array holds %d", g.EdgeCount(), len(g.fwdTgt))
+	}
+}
+
+// TestNewGraph_DedupAcrossFanOutSizes exercises both dedup strategies. Small edge runs
+// are compared pairwise and large ones through a hash set, and the boundary between
+// them is an implementation detail that must not be observable.
+func TestNewGraph_DedupAcrossFanOutSizes(t *testing.T) {
+	for _, fanOut := range []int{1, 2, dedupScanLimit - 1, dedupScanLimit, dedupScanLimit + 1, dedupScanLimit * 4} {
+		t.Run(fmt.Sprintf("fanOut=%d", fanOut), func(t *testing.T) {
+			s := NewStore()
+			// Every target listed twice, so half the relations are duplicates.
+			rels := make([]Relation, 0, fanOut*2)
+			for i := 0; i < fanOut; i++ {
+				rels = append(rels, Relation{Kind: RelCalls, Target: fmt.Sprintf("T%03d", i)})
+			}
+			rels = append(rels, rels[:fanOut]...)
+			s.Add(Fact{Kind: KindSymbol, Name: "Src", File: "src.go", Relations: rels})
+			for i := 0; i < fanOut; i++ {
+				s.Add(Fact{Kind: KindSymbol, Name: fmt.Sprintf("T%03d", i), File: "t.go"})
+			}
+			s.BuildGraph()
+			g := s.Graph()
+
+			edges := g.ForwardEdges("Src")
+			if len(edges) != fanOut {
+				t.Errorf("Src has %d forward edges, want %d (each duplicate removed)", len(edges), fanOut)
+			}
+			// Order must be first-occurrence, matching what the map-based dedup did.
+			for i, e := range edges {
+				if want := fmt.Sprintf("T%03d", i); e.Target != want {
+					t.Errorf("edge %d targets %q, want %q — dedup reordered the run", i, e.Target, want)
+				}
+			}
+			// Each target must see exactly one incoming edge.
+			for i := 0; i < fanOut; i++ {
+				name := fmt.Sprintf("T%03d", i)
+				if got := len(g.ReverseEdges(name)); got != 1 {
+					t.Errorf("%s has %d incoming edges, want 1", name, got)
+				}
+			}
+		})
 	}
 }
 

@@ -1,11 +1,15 @@
 package engine
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -1032,40 +1036,147 @@ func buildIdentity() string {
 	return id
 }
 
-// cacheFile is the on-disk shape of the extractor cache.
+// cacheFile is the on-disk shape of the extractor cache. Neither load nor save goes
+// through it — both stream (see decode/encode) so a large cache is never materialized
+// as one buffer — but it remains the authoritative declaration of the encoding, and
+// the field order here is the order encode writes: version and build BEFORE entries,
+// which is what lets decode reject a stale cache without parsing a single entry.
 type cacheFile struct {
 	Version string                     `json:"version"`
 	Build   string                     `json:"build,omitempty"`
 	Entries map[string]json.RawMessage `json:"entries"`
 }
 
+// errColdCache is the single internal signal for "this file cannot be reused" —
+// unreadable, malformed, a foreign schema, or a foreign build. Every one degrades to
+// a full run, so decode does not distinguish them to its caller.
+var errColdCache = errors.New("cold cache")
+
 // loadExtractorCache reads the cache file at path. A missing, unreadable, or
 // foreign-build file yields an empty (but usable) cache, so caching degrades to a
 // full run rather than to wrong facts.
+//
+// It STREAMS rather than reading the file whole. An extractor cache reaches 800 MB on
+// a kernel-sized repository, and os.ReadFile + json.Unmarshal held the file bytes and
+// the decoded entry map — each about that size — alive simultaneously, at the exact
+// point in a run where the fact store is also being built. Decoding entry by entry
+// retains only the entries.
 func loadExtractorCache(path string) *extractorCache {
 	c := &extractorCache{
 		prev: map[string]json.RawMessage{},
 		next: map[string]json.RawMessage{},
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return c
 	}
-	var on cacheFile
-	if err := json.Unmarshal(data, &on); err != nil || on.Version != cacheVersion {
-		return c // treat schema mismatch as a cold cache
-	}
-	// A cache written by a different binary is discarded wholesale. Entries carry no
-	// record of which extractor logic produced them, so there is no safe way to reuse
-	// part of it — and a cache written before this field existed has an empty Build,
-	// which correctly fails the comparison.
-	if on.Build != buildIdentity() {
-		return c
-	}
-	if on.Entries != nil {
-		c.prev = on.Entries
+	defer func() { _ = f.Close() }() // read-only; a close error cannot affect what was read
+
+	if err := c.decode(bufio.NewReaderSize(f, cacheBufSize)); err != nil {
+		// A mismatch or a truncated file may have left entries behind. Drop them:
+		// a partially populated cache would serve some extractors stale facts and
+		// re-parse the rest, which is the one outcome worse than a cold run.
+		c.prev = map[string]json.RawMessage{}
 	}
 	return c
+}
+
+// cacheBufSize buffers the streamed read and write. Large enough that an 800 MB cache
+// is not a syscall per entry, small enough to be irrelevant next to the entries.
+const cacheBufSize = 1 << 20
+
+// decode streams a cacheFile from r into c.prev.
+//
+// The version and build checks fire as their fields arrive, before `entries` is
+// reached, so the common invalidation cases (a cacheVersion bump, a rebuilt binary)
+// abort after a few dozen bytes instead of after decoding the whole file only to throw
+// it away.
+func (c *extractorCache) decode(r io.Reader) error {
+	dec := json.NewDecoder(r)
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return errColdCache
+	}
+	var sawVersion, sawBuild bool
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "version":
+			var v string
+			if err := dec.Decode(&v); err != nil {
+				return err
+			}
+			if v != cacheVersion {
+				return errColdCache // schema mismatch
+			}
+			sawVersion = true
+		case "build":
+			// A cache written by a different binary is discarded wholesale. Entries
+			// carry no record of which extractor logic produced them, so there is no
+			// safe way to reuse part of it — and a cache written before this field
+			// existed has no "build" key at all, so sawBuild stays false and the
+			// entries case below rejects it, exactly as the empty-string comparison
+			// used to.
+			var b string
+			if err := dec.Decode(&b); err != nil {
+				return err
+			}
+			if b != buildIdentity() {
+				return errColdCache
+			}
+			sawBuild = true
+		case "entries":
+			if !sawVersion || !sawBuild {
+				// Both must have been seen AND matched by now. encode always writes
+				// them first; a file that does not is not one of ours.
+				return errColdCache
+			}
+			if err := c.decodeEntries(dec); err != nil {
+				return err
+			}
+		default:
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// decodeEntries reads the entries object one value at a time, so the largest single
+// allocation is the largest extractor's facts rather than the whole file.
+func (c *extractorCache) decodeEntries(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil {
+		return nil // "entries": null — a cache with nothing in it
+	}
+	if tok != json.Delim('{') {
+		return errColdCache
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := key.(string)
+		if !ok {
+			return errColdCache
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return err
+		}
+		c.prev[name] = raw
+	}
+	_, err = dec.Token() // closing '}' of entries
+	return err
 }
 
 // get returns the cached facts for key (deep-copied from JSON, so the caller may
@@ -1080,6 +1191,11 @@ func (c *extractorCache) get(key string) ([]facts.Fact, bool) {
 		return nil, false
 	}
 	c.next[key] = raw // keep the clean, pre-mutation bytes
+	// Hand the bytes over rather than sharing them. Each key is fetched at most once
+	// per run (one lookup per extractor in runExtractors), so leaving it in prev only
+	// pinned a second reference to every reused entry for the rest of the run — on a
+	// fully-warm kernel run, the entire 800 MB twice over.
+	delete(c.prev, key)
 	c.hits++
 	return ff, true
 }
@@ -1096,13 +1212,98 @@ func (c *extractorCache) put(key string, ff []facts.Fact) {
 
 // save writes the keys used this run to path, stamped with the binary that produced
 // them so a later run by a different build discards rather than reuses them.
+//
+// It streams into a temp file and renames, for two reasons. Marshalling the whole
+// cacheFile built one []byte as large as the file — 800 MB on a kernel-sized repo, on
+// top of the entries it was copying from — at the very end of a run, when the fact
+// store and graph are both still live. And the previous os.WriteFile left a truncated
+// file behind if the process died mid-write, which the next run would read as a cold
+// cache: correct, but it silently threw away a whole warm run.
 func (c *extractorCache) save(path string) error {
-	on := cacheFile{Version: cacheVersion, Build: buildIdentity(), Entries: c.next}
-	data, err := json.Marshal(on)
+	// Staged in the same directory so the rename stays on one filesystem: across a
+	// mount boundary os.Rename fails with EXDEV and the atomicity is lost.
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	tmpName := tmp.Name()
+	defer func() {
+		// No-op once the rename has succeeded; cleans up on every failure path.
+		_ = os.Remove(tmpName)
+	}()
+
+	w := bufio.NewWriterSize(tmp, cacheBufSize)
+	if err := c.encode(w); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := w.Flush(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return err // CreateTemp makes 0600; match the mode WriteFile used to produce
+	}
+	return os.Rename(tmpName, path)
+}
+
+// encode writes the cacheFile shape (see that type) entry by entry.
+//
+// Keys are emitted in sorted order because json.Marshal sorts map keys, and the file
+// stayed a pure function of its contents as a result. Nothing hashes the cache, so
+// this is not load-bearing — but a cache file that reorders itself on every write for
+// no reason is a bad thing to hand somebody debugging a stale-facts report.
+//
+// w is a *bufio.Writer rather than an io.Writer so that write errors can be ignored
+// here and collected once at Flush: bufio records the first error and turns every
+// subsequent write into a no-op.
+func (c *extractorCache) encode(w *bufio.Writer) error {
+	ver, err := json.Marshal(cacheVersion)
+	if err != nil {
+		return err
+	}
+	build, err := json.Marshal(buildIdentity())
+	if err != nil {
+		return err
+	}
+	_, _ = w.WriteString(`{"version":`)
+	_, _ = w.Write(ver)
+	_, _ = w.WriteString(`,"build":`)
+	_, _ = w.Write(build)
+	_, _ = w.WriteString(`,"entries":{`)
+
+	keys := make([]string, 0, len(c.next))
+	for k := range c.next {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	first := true
+	for _, k := range keys {
+		raw := c.next[k]
+		if len(raw) == 0 {
+			// put never stores an empty value and decode never produces one, so this
+			// is unreachable — but writing it would emit `"key":` with no value and
+			// make the whole file unparseable, which is worth one branch to prevent.
+			continue
+		}
+		if !first {
+			_, _ = w.WriteString(",")
+		}
+		first = false
+		kb, err := json.Marshal(k)
+		if err != nil {
+			return err
+		}
+		_, _ = w.Write(kb)
+		_, _ = w.WriteString(":")
+		_, _ = w.Write(raw)
+	}
+	_, _ = w.WriteString("}}")
+	return nil
 }
 
 // computeExtractorKeys returns a cache key for every extractor that implements

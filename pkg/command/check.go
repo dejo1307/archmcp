@@ -179,8 +179,10 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		r.checkFatal("snapshot produced no facts for %s", strings.Join(repoPaths, ", "))
 	}
 	// Build current from the store so it reflects the whole (possibly multi-repo) graph
-	// rather than only the last repo indexed — the same construction diff_snapshot uses.
-	current := &facts.Snapshot{Meta: snap.Meta, Facts: eng.Store().All(), Insights: snap.Insights}
+	// rather than only the last repo indexed — the same construction diff_snapshot uses,
+	// FactsRef included: diff.Compute reads its inputs and the published bundle is
+	// immutable, so copying the fact set here would buy nothing.
+	current := &facts.Snapshot{Meta: snap.Meta, Facts: eng.Store().FactsRef(), Insights: snap.Insights}
 
 	// The baseline is anchored on the FIRST repo: that is the one whose snapshot reset
 	// the graph, and it is where `enola baseline pin` writes.

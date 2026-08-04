@@ -149,7 +149,8 @@ func Compute(eng *bootstrap.Engine) *Report {
 	// Relation-kind tallies (edge counts, not fact counts) — relations live on
 	// facts of every kind, so this scans the whole store, not one ByKind slice.
 	relCount := map[string]int{}
-	for _, f := range store.All() {
+	// FactsRef, not All: a read-only tally that retains nothing needs no copy.
+	for _, f := range store.FactsRef() {
 		for _, rel := range f.Relations {
 			relCount[rel.Kind]++
 		}
