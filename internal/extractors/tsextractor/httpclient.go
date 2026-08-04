@@ -347,8 +347,14 @@ func mapClientVerb(tok string) string {
 
 // firstNonEmptyGroup returns the text of the first matched capture group among
 // the given group indices (FindAllSubmatchIndex layout).
+// A group index beyond the match layout is skipped rather than read: the
+// layout's length depends on the regex, and a caller drifting out of sync with
+// its pattern must degrade to a non-match, not a panic mid-extraction.
 func firstNonEmptyGroup(src []byte, m []int, groups ...int) string {
 	for _, g := range groups {
+		if 2*g+1 >= len(m) {
+			continue
+		}
 		s, e := m[2*g], m[2*g+1]
 		if s >= 0 && e > s {
 			return string(src[s:e])

@@ -180,3 +180,48 @@ app.get('/fixture/route', handler);
 		}
 	}
 }
+
+func TestServerRoutes_QuoteStyleDoesNotDecideExtraction(t *testing.T) {
+	// Group indices for the path captures were off by one: a double-quoted path
+	// read the single-quote group, a single-quoted path read the backtick group,
+	// and a path that only populated the double-quote group walked past the
+	// match layout — a PANIC on `api.get("/health")`, the most ordinary
+	// registration there is. All three styles must extract identically.
+	src := []byte(`import Fastify from 'fastify';
+const api = Fastify();
+api.get("/health", handler);
+api.post('/jobs', handler);
+api.put(` + "`/queue`" + `, handler);
+`)
+	ff := extractServerRouteFacts(src, "src/index.ts")
+	want := map[string]bool{"/health": false, "/jobs": false, "/queue": false}
+	for _, f := range ff {
+		if _, ok := want[f.Name]; ok {
+			want[f.Name] = true
+		}
+	}
+	for path, found := range want {
+		if !found {
+			t.Errorf("route %q missing — quote style must not decide extraction", path)
+		}
+	}
+}
+
+func TestServerRoutes_DoubleQuotedMountPrefix(t *testing.T) {
+	src := []byte(`const express = require('express');
+const app = express();
+const router = express.Router();
+app.use("/api", router);
+router.get("/health", handler);
+`)
+	ff := extractServerRouteFacts(src, "server/index.js")
+	found := false
+	for _, f := range ff {
+		if f.Name == "/api/health" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("double-quoted mount prefix did not compose; got %+v", ff)
+	}
+}

@@ -120,7 +120,7 @@ func extractServerRouteFacts(src []byte, relFile string) []facts.Fact {
 		if !ok || !b.mounted {
 			continue
 		}
-		raw := firstNonEmptyGroup(src, m, 4, 5, 6)
+		raw := firstNonEmptyGroup(src, m, 3, 4, 5)
 		path, ok := cleanServerPath(raw)
 		if !ok {
 			continue
