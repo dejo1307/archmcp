@@ -101,7 +101,12 @@ func hasTSMarkers(dir string) bool {
 		}
 	}
 
-	for _, pkg := range []string{"typescript", "vue", "react", "svelte", "next", "nuxt", "ember-source"} {
+	// @hotwired/stimulus marks the plain-JavaScript Rails frontend: a Hotwire
+	// app has no tsconfig and none of the TS-ecosystem dependencies, yet ships
+	// hundreds of production controllers this extractor parses natively — on one
+	// Rails 8 app, 350+ files were invisible until this marker.
+	for _, pkg := range []string{"typescript", "vue", "react", "svelte", "next", "nuxt", "ember-source",
+		"@hotwired/stimulus", "@hotwired/turbo-rails"} {
 		if hasPkgDependency(dir, pkg) {
 			return true
 		}

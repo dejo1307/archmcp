@@ -1209,3 +1209,15 @@ func TestResolveImportPath_NonAliasPathsUnchanged(t *testing.T) {
 		t.Errorf("bare package should stay external, got %q external=%v", got, ext)
 	}
 }
+
+func TestDetect_HotwireStimulusApp(t *testing.T) {
+	dir := t.TempDir()
+	pkg := `{"dependencies": {"@hotwired/stimulus": "^3.2.0", "@hotwired/turbo-rails": "^8.0.0"}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := New().Detect(dir)
+	if err != nil || !ok {
+		t.Fatalf("Detect = %v, %v — a plain-JS Hotwire app must be detected without tsconfig or TS deps", ok, err)
+	}
+}
