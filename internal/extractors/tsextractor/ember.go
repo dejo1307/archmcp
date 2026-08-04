@@ -290,16 +290,17 @@ var (
 // heritage and decorators imply. start/end delimit the class node's byte span, so
 // a template segment can be attributed to the class that embeds it.
 type emberClassInfo struct {
-	name          string
-	line          int
-	start, end    int
-	isDefault     bool
-	isComponent   bool
-	isModel       bool
-	isService     bool
-	services      []string
-	relationships []string
-	codeLinks     []string
+	name           string
+	line           int
+	start, end     int
+	isDefault      bool
+	isComponent    bool
+	isModel        bool
+	isService      bool
+	services       []string
+	relationships  []string
+	attrTransforms []string
+	codeLinks      []string
 }
 
 // emberBindingInfo describes a top-level `const Name = <template>…` binding — the
@@ -313,9 +314,15 @@ type emberBindingInfo struct {
 // statements) and classifies each class by what its superclass's local name was
 // imported from, plus the service names its @service-decorated fields inject and
 // the ember-data relationships its @belongsTo/@hasMany fields declare.
-func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBindings) []emberClassInfo {
+func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBindings, folds map[string]string) []emberClassInfo {
 	serviceDecorators := emberServiceDecoratorNames(bindings)
 	relationshipDecorators := emberRelationshipDecoratorNames(bindings)
+	attrNames := make(map[string]bool)
+	for local, mod := range bindings.external {
+		if emberModelModules[mod] && local == "attr" {
+			attrNames[local] = true
+		}
+	}
 	var classes []emberClassInfo
 	defaultName := emberDefaultExportName(root, src)
 	for i := range root.ChildCount() {
@@ -352,10 +359,11 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 		}
 		if body := findChildByKind(node, "class_body"); body != nil {
 			info.services = emberInjectedServices(body, src, serviceDecorators)
-			info.services = mergeSorted(info.services, emberLookupServices(body, src))
-			info.codeLinks = emberTransitionLinks(body, src)
+			info.services = mergeSorted(info.services, emberLookupServices(body, src, folds))
+			info.codeLinks = emberTransitionLinks(body, src, folds)
 			if info.isModel {
 				info.relationships = emberModelRelationships(body, src, relationshipDecorators)
+				info.attrTransforms = emberModelAttrTransforms(body, src, attrNames)
 			}
 		}
 		if info.name != "" && info.name == defaultName {
@@ -371,7 +379,7 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 // programmatic counterpart of a template's `<LinkTo @route=…>`. Only a literal
 // first argument that looks like a route name (no leading slash: a URL form is
 // a path, not a name) produces a candidate; a computed name produces nothing.
-func emberTransitionLinks(classBody *sitter.Node, src []byte) []string {
+func emberTransitionLinks(classBody *sitter.Node, src []byte, folds map[string]string) []string {
 	seen := make(map[string]bool)
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
@@ -384,12 +392,15 @@ func emberTransitionLinks(classBody *sitter.Node, src []byte) []string {
 					switch nodeText(prop, src) {
 					case "transitionTo", "replaceWith":
 						if args := n.ChildByFieldName("arguments"); args != nil {
+							name := ""
 							if s := findChildByKind(args, "string"); s != nil {
-								name := strings.Trim(nodeText(s, src), `"'`)
-								if name != "" && !strings.HasPrefix(name, "/") &&
-									!strings.ContainsAny(name, " {}") {
-									seen[name] = true
-								}
+								name = strings.Trim(nodeText(s, src), `"'`)
+							} else if id := findChildByKind(args, "identifier"); id != nil {
+								name = folds[nodeText(id, src)]
+							}
+							if name != "" && !strings.HasPrefix(name, "/") &&
+								!strings.ContainsAny(name, " {}") {
+								seen[name] = true
 							}
 						}
 					}
@@ -417,7 +428,7 @@ func emberTransitionLinks(classBody *sitter.Node, src []byte) []string {
 // counterpart of an @service field. Only the `service:` type is read: it is
 // effectively all real-world usage, and each container type would need its own
 // resolution rule.
-func emberLookupServices(classBody *sitter.Node, src []byte) []string {
+func emberLookupServices(classBody *sitter.Node, src []byte, folds map[string]string) []string {
 	seen := make(map[string]bool)
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
@@ -428,11 +439,14 @@ func emberLookupServices(classBody *sitter.Node, src []byte) []string {
 			if fn := n.ChildByFieldName("function"); fn != nil && fn.Kind() == "member_expression" {
 				if prop := fn.ChildByFieldName("property"); prop != nil && nodeText(prop, src) == "lookup" {
 					if args := n.ChildByFieldName("arguments"); args != nil {
+						arg := ""
 						if s := findChildByKind(args, "string"); s != nil {
-							arg := strings.Trim(nodeText(s, src), `"'`)
-							if name, ok := strings.CutPrefix(arg, "service:"); ok && name != "" {
-								seen[name] = true
-							}
+							arg = strings.Trim(nodeText(s, src), `"'`)
+						} else if id := findChildByKind(args, "identifier"); id != nil {
+							arg = folds[nodeText(id, src)]
+						}
+						if name, ok := strings.CutPrefix(arg, "service:"); ok && name != "" {
+							seen[name] = true
 						}
 					}
 				}
@@ -471,6 +485,35 @@ func mergeSorted(a, b []string) []string {
 	}
 	sort.Strings(merged)
 	return merged
+}
+
+// EmberYieldHashProp carries a component's literal yield-hash entries
+// ("Key=name"); EmberContextualProp the "<component>#<Key>" consumption pairs;
+// EmberAttrTransformsProp a model's @attr type names; the dynamic props count
+// irreducibly runtime resolution sites with capped samples — visibility, never
+// speculation.
+const (
+	EmberYieldHashProp      = "ember_yield_hash"
+	EmberContextualProp     = "ember_contextual"
+	EmberAttrTransformsProp = "ember_attr_transforms"
+	EmberDynamicCountProp   = "ember_dynamic_count"
+	EmberDynamicSamplesProp = "ember_dynamic_samples"
+)
+
+func propStringsLocal(v any) []string {
+	switch vv := v.(type) {
+	case []string:
+		return vv
+	case []any:
+		out := make([]string, 0, len(vv))
+		for _, x := range vv {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // EmberDataRoleProp classifies a class under adapters/, serializers/ or
@@ -760,8 +803,10 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 	dir := filepath.Dir(relFile)
 	base := strings.TrimSuffix(filepath.Base(relFile), filepath.Ext(relFile))
 	bindings := buildEmberImportBindings(root, src, relFile, aliases)
-	classes := collectEmberClasses(root, src, bindings)
+	folds := emberBuildFoldMap(root, src)
+	classes := collectEmberClasses(root, src, bindings, folds)
 	templateBindings := collectEmberTemplateBindings(root, src)
+	frameworkRegistered := emberFrameworkRegisteredFile(relFile)
 
 	// A template may also render a component declared in its own file (a named
 	// sibling binding or class) — those locals are statically known, so they join
@@ -788,6 +833,59 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 		}
 		return emberTemplateRefs(owned, bindings)
 	}
+	segmentText := func(start, end int) string {
+		var b strings.Builder
+		for _, seg := range segments {
+			if seg.Start >= start && seg.Start < end {
+				b.WriteString(seg.Content)
+				b.WriteByte(0)
+			}
+		}
+		return b.String()
+	}
+	applySegmentProps := func(f *facts.Fact, start, end int) {
+		text := segmentText(start, end)
+		if text == "" {
+			return
+		}
+		if typed := scanTypedLiteralInvocations(text, folds); len(typed) > 0 {
+			f.Props[EmberInvocationsProp] = mergeSorted(propStringsLocal(f.Props[EmberInvocationsProp]), typed)
+		}
+		if yh := scanEmberYieldHash(text); len(yh) > 0 {
+			resolved := make([]string, 0, len(yh))
+			for _, e := range yh {
+				if k, v, ok := strings.Cut(e, "=?"); ok {
+					if target, bound := bindings.internal[v]; bound {
+						resolved = append(resolved, k+"=@"+target)
+					}
+					continue
+				}
+				resolved = append(resolved, e)
+			}
+			if len(resolved) > 0 {
+				sort.Strings(resolved)
+				f.Props[EmberYieldHashProp] = resolved
+			}
+		}
+		if ctx := scanEmberContextualUses(text); len(ctx) > 0 {
+			resolved := make([]string, 0, len(ctx))
+			for _, pair := range ctx {
+				comp, key, _ := strings.Cut(pair, "#")
+				if target, ok := bindings.internal[comp]; ok {
+					resolved = append(resolved, target+"#"+key)
+				} else {
+					resolved = append(resolved, pair)
+				}
+			}
+			sort.Strings(resolved)
+			f.Props[EmberContextualProp] = resolved
+		}
+		if n, samples := countDynamicInvocations(text, folds); n > 0 {
+			f.Props[EmberDynamicCountProp] = n
+			f.Props[EmberDynamicSamplesProp] = samples
+		}
+	}
+
 	linksFor := func(start, end int) []string {
 		seen := make(map[string]bool)
 		for _, seg := range segments {
@@ -821,6 +919,14 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 	}
 	claimed := make(map[int]bool)
 
+	if frameworkRegistered {
+		for i := range result {
+			if result[i].Kind == facts.KindSymbol && result[i].Props["receiver"] == nil {
+				result[i].Props["framework_registered"] = true
+			}
+		}
+	}
+
 	for ci := range classes {
 		cls := &classes[ci]
 		if cls.name == "" {
@@ -844,7 +950,9 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			if cls.isComponent || hasTemplate {
 				markComponent(&result[i])
 				attachCalls(&result[i], classRefs)
+				applySegmentProps(&result[i], cls.start, cls.end)
 			}
+
 			merged := make(map[string]bool)
 			for _, l := range linksFor(cls.start, cls.end) {
 				merged[l] = true
@@ -884,6 +992,9 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			if len(cls.relationships) > 0 {
 				props[EmberRelationshipsProp] = cls.relationships
 			}
+			if len(cls.attrTransforms) > 0 {
+				props[EmberAttrTransformsProp] = cls.attrTransforms
+			}
 			result = append(result, facts.Fact{
 				Kind:      facts.KindStorage,
 				Name:      factName,
@@ -916,6 +1027,7 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			if links := linksFor(tb.start, tb.end); len(links) > 0 {
 				result[i].Props[EmberRouteLinksProp] = links
 			}
+			applySegmentProps(&result[i], tb.start, tb.end)
 			break
 		}
 	}
@@ -932,6 +1044,13 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 			rels := []facts.Relation{{Kind: facts.RelDeclares, Target: dir}}
 			for _, t := range refs {
 				rels = append(rels, facts.Relation{Kind: facts.RelCalls, Target: t})
+			}
+			var unclaimedText strings.Builder
+			for _, seg := range segments {
+				if !claimed[seg.Start] {
+					unclaimedText.WriteString(seg.Content)
+					unclaimedText.WriteByte(0)
+				}
 			}
 			props := map[string]any{
 				"symbol_kind":          facts.SymbolFunc,
@@ -957,6 +1076,33 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 				}
 				sort.Strings(links)
 				props[EmberRouteLinksProp] = links
+			}
+			text := unclaimedText.String()
+			if typed := scanTypedLiteralInvocations(text, folds); len(typed) > 0 {
+				props[EmberInvocationsProp] = typed
+			}
+			if yh := scanEmberYieldHash(text); len(yh) > 0 {
+				resolvedYH := make([]string, 0, len(yh))
+				for _, e := range yh {
+					if k, v, ok := strings.Cut(e, "=?"); ok {
+						if target, bound := bindings.internal[v]; bound {
+							resolvedYH = append(resolvedYH, k+"=@"+target)
+						}
+						continue
+					}
+					resolvedYH = append(resolvedYH, e)
+				}
+				if len(resolvedYH) > 0 {
+					sort.Strings(resolvedYH)
+					props[EmberYieldHashProp] = resolvedYH
+				}
+			}
+			if ctx := scanEmberContextualUses(text); len(ctx) > 0 {
+				props[EmberContextualProp] = ctx
+			}
+			if n, samples := countDynamicInvocations(text, folds); n > 0 {
+				props[EmberDynamicCountProp] = n
+				props[EmberDynamicSamplesProp] = samples
 			}
 			result = append(result, facts.Fact{
 				Kind:      facts.KindSymbol,
@@ -1048,25 +1194,51 @@ var emberHbsKeywords = map[string]bool{
 // binder may never add facts.
 func (e *TSExtractor) extractEmberHbs(src []byte, relFile string, knownFiles map[string]bool) []facts.Fact {
 	dir := filepath.Dir(relFile)
-	invocations := scanHbsInvocations(string(src))
+	text := string(src)
+	invocations := mergeSorted(scanHbsInvocations(text), scanTypedLiteralInvocations(text, nil))
 
+	slashed := filepath.ToSlash(relFile)
 	ownerFile := ""
-	base := strings.TrimSuffix(relFile, filepath.Ext(relFile))
-	for _, ext := range []string{".ts", ".js", ".gts", ".gjs"} {
-		if knownFiles[filepath.ToSlash(base+ext)] {
-			ownerFile = filepath.ToSlash(base + ext)
+	ownerBases := []string{strings.TrimSuffix(slashed, filepath.Ext(slashed))}
+	// The classic pre-Octane split keeps a component's template under
+	// app/templates/components/ with its class under app/components/; a pods
+	// component keeps them as siblings named template/component. Both are
+	// additional owner candidates, not a mode.
+	if idx := strings.Index(slashed, "app/templates/components/"); idx >= 0 {
+		ownerBases = append(ownerBases,
+			slashed[:idx]+"app/components/"+strings.TrimSuffix(slashed[idx+len("app/templates/components/"):], filepath.Ext(slashed)))
+	}
+	if filepath.Base(slashed) == "template.hbs" {
+		ownerBases = append(ownerBases, filepath.ToSlash(filepath.Join(filepath.Dir(slashed), "component")))
+	}
+	for _, ob := range ownerBases {
+		for _, ext := range []string{".ts", ".js", ".gts", ".gjs"} {
+			if knownFiles[ob+ext] {
+				ownerFile = ob + ext
+				break
+			}
+		}
+		if ownerFile != "" {
 			break
 		}
 	}
 
 	var result []facts.Fact
-	slashed := filepath.ToSlash(relFile)
+	isPodsComponentTemplate := filepath.Base(slashed) == "template.hbs" &&
+		(strings.HasPrefix(slashed, "app/pods/") || strings.Contains(slashed, "/app/pods/"))
 	isComponentTemplate := strings.HasPrefix(slashed, "app/components/") ||
-		strings.Contains(slashed, "/app/components/")
+		strings.Contains(slashed, "/app/components/") ||
+		strings.HasPrefix(slashed, "app/templates/components/") ||
+		strings.Contains(slashed, "/app/templates/components/") ||
+		isPodsComponentTemplate
 	if ownerFile == "" && isComponentTemplate {
+		synthName := fileSymbolName(relFile)
+		if isPodsComponentTemplate {
+			synthName = toPascal(filepath.Base(dir))
+		}
 		result = append(result, facts.Fact{
 			Kind: facts.KindSymbol,
-			Name: dir + "." + fileSymbolName(relFile),
+			Name: dir + "." + synthName,
 			File: relFile,
 			Line: 1,
 			Props: map[string]any{
@@ -1088,8 +1260,26 @@ func (e *TSExtractor) extractEmberHbs(src []byte, relFile string, knownFiles map
 	if len(invocations) > 0 {
 		props[EmberInvocationsProp] = invocations
 	}
-	if links := scanEmberRouteLinks(string(src)); len(links) > 0 {
+	if links := scanEmberRouteLinks(text); len(links) > 0 {
 		props[EmberRouteLinksProp] = links
+	}
+	if yh := scanEmberYieldHash(text); len(yh) > 0 {
+		kept := make([]string, 0, len(yh))
+		for _, e := range yh {
+			if !strings.Contains(e, "=?") {
+				kept = append(kept, e)
+			}
+		}
+		if len(kept) > 0 {
+			props[EmberYieldHashProp] = kept
+		}
+	}
+	if ctx := scanEmberContextualUses(text); len(ctx) > 0 {
+		props[EmberContextualProp] = ctx
+	}
+	if n, samples := countDynamicInvocations(text, nil); n > 0 {
+		props[EmberDynamicCountProp] = n
+		props[EmberDynamicSamplesProp] = samples
 	}
 	if ownerFile != "" {
 		props[EmberOwnerFileProp] = ownerFile
@@ -1183,6 +1373,27 @@ func extractEmberRoutes(root *sitter.Node, src []byte, relFile string) []facts.F
 			return
 		}
 		if n.Kind() == "call_expression" {
+			if fn := n.ChildByFieldName("function"); fn != nil &&
+				fn.Kind() == "member_expression" && nodeText(fn, src) == "this.mount" {
+				name, path, _, _ := emberRouteArgs(n, src)
+				if name != "" {
+					result = append(result, facts.Fact{
+						Kind: facts.KindRoute,
+						Name: joinEmberPath(prefix, path),
+						File: relFile,
+						Line: int(n.StartPosition().Row) + 1,
+						Props: map[string]any{
+							"method":       "GET",
+							"type":         "engine_mount",
+							"router":       "map",
+							"language":     "typescript",
+							"framework":    EmberFramework,
+							"ember_engine": name,
+						},
+					})
+					return
+				}
+			}
 			if fn := n.ChildByFieldName("function"); fn != nil &&
 				fn.Kind() == "member_expression" && nodeText(fn, src) == "this.route" {
 				name, path, resetNamespace, callback := emberRouteArgs(n, src)
@@ -1282,4 +1493,462 @@ func joinEmberPath(prefix, path string) string {
 		return "/" + path
 	}
 	return prefix + "/" + path
+}
+
+// emberFrameworkRegisteredDirs are the role directories whose classes Ember's
+// container instantiates by name — nothing in-repo imports them, so without the
+// stamp the dead-code detector flags live classes. The list is the resolver's
+// own layout, not a heuristic; the stamp is additive metadata (fabricating
+// inbound edges would pollute impact analysis).
+var emberFrameworkRegisteredDirs = map[string]bool{
+	"adapters": true, "serializers": true, "transforms": true,
+	"initializers": true, "instance-initializers": true,
+	"routes": true, "controllers": true,
+}
+
+// emberFrameworkRegisteredFile reports whether relFile sits in a
+// container-resolved role directory under the app tree.
+func emberFrameworkRegisteredFile(relFile string) bool {
+	slashed := filepath.ToSlash(relFile)
+	for dir := range emberFrameworkRegisteredDirs {
+		if strings.HasPrefix(slashed, "app/"+dir+"/") || strings.Contains(slashed, "/app/"+dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// emberBuildFoldMap collects file-local single-assignment string constants
+// (`const NAME = 'literal'`) so scanners can fold an identifier argument the
+// file states outright. Reassigned or non-string bindings never enter the map —
+// the fold stops where single-file certainty stops.
+func emberBuildFoldMap(root *sitter.Node, src []byte) map[string]string {
+	folds := make(map[string]string)
+	poisoned := make(map[string]bool)
+	for i := range root.ChildCount() {
+		node := root.Child(i)
+		if node.Kind() == "export_statement" {
+			if decl := firstDeclChild(node); decl != nil {
+				node = decl
+			}
+		}
+		if node.Kind() != "lexical_declaration" || !strings.HasPrefix(nodeText(node, src), "const") {
+			continue
+		}
+		for j := range node.ChildCount() {
+			d := node.Child(j)
+			if d.Kind() != "variable_declarator" {
+				continue
+			}
+			name := findChildByKind(d, "identifier")
+			val := d.ChildByFieldName("value")
+			if name == nil || val == nil {
+				continue
+			}
+			n := nodeText(name, src)
+			if val.Kind() == "string" && !poisoned[n] {
+				if _, dup := folds[n]; dup {
+					delete(folds, n)
+					poisoned[n] = true
+					continue
+				}
+				folds[n] = strings.Trim(nodeText(val, src), `"'`)
+			} else {
+				delete(folds, n)
+				poisoned[n] = true
+			}
+		}
+	}
+	return folds
+}
+
+// emberModelAttrTransforms reads @attr('type') fields off a model class body;
+// the type string names a transform the way relationships name models. A bare
+// @attr has no transform and draws nothing.
+func emberModelAttrTransforms(classBody *sitter.Node, src []byte, attrNames map[string]bool) []string {
+	if len(attrNames) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for i := range classBody.ChildCount() {
+		member := classBody.Child(i)
+		if member.Kind() != "public_field_definition" && member.Kind() != "field_definition" {
+			continue
+		}
+		for j := range member.ChildCount() {
+			dec := member.Child(j)
+			if dec.Kind() != "decorator" {
+				continue
+			}
+			name, arg := emberDecoratorNameArg(dec, src)
+			if attrNames[name] && arg != "" {
+				seen[arg] = true
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	types := make([]string, 0, len(seen))
+	for t := range seen {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+	return types
+}
+
+// scanTypedLiteralInvocations collects `{{component "x"}}` / `(helper "y")` /
+// `(modifier "z")` forms — the dynamic helpers with a literal (or foldable)
+// name argument, exactly as deterministic as a direct invocation. Entries are
+// "component:x"-style, the explicit type replacing the hyphen requirement.
+func scanTypedLiteralInvocations(text string, folds map[string]string) []string {
+	seen := make(map[string]bool)
+	for _, kind := range []string{"component", "helper", "modifier"} {
+		for _, opener := range []string{"{{" + kind + " ", "(" + kind + " "} {
+			pos := 0
+			for {
+				idx := strings.Index(text[pos:], opener)
+				if idx < 0 {
+					break
+				}
+				start := pos + idx + len(opener)
+				for start < len(text) && text[start] == ' ' {
+					start++
+				}
+				if start < len(text) {
+					if text[start] == '"' || text[start] == '\'' {
+						quote := text[start]
+						if end := strings.IndexByte(text[start+1:], quote); end >= 0 {
+							name := text[start+1 : start+1+end]
+							if name != "" && !strings.ContainsAny(name, " {}") {
+								seen[kind+":"+name] = true
+							}
+						}
+					} else if folds != nil {
+						k := start
+						for k < len(text) && isHbsNameByte(text[k]) {
+							k++
+						}
+						if lit, ok := folds[text[start:k]]; ok {
+							seen[kind+":"+lit] = true
+						}
+					}
+				}
+				pos = start
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// countDynamicInvocations counts the same helper forms whose argument is
+// neither literal nor foldable — the irreducibly runtime sites. Visibility,
+// never speculation: the count and capped samples are all that is asserted.
+func countDynamicInvocations(text string, folds map[string]string) (int, []string) {
+	count := 0
+	var samples []string
+	for _, kind := range []string{"component", "helper", "modifier"} {
+		for _, opener := range []string{"{{" + kind + " ", "(" + kind + " "} {
+			pos := 0
+			for {
+				idx := strings.Index(text[pos:], opener)
+				if idx < 0 {
+					break
+				}
+				start := pos + idx + len(opener)
+				for start < len(text) && text[start] == ' ' {
+					start++
+				}
+				if start < len(text) && text[start] != '"' && text[start] != '\'' {
+					k := start
+					for k < len(text) && isHbsNameByte(text[k]) {
+						k++
+					}
+					expr := text[start:k]
+					if _, folded := folds[expr]; !folded && expr != "" {
+						count++
+						if len(samples) < 3 {
+							samples = append(samples, kind+" "+expr)
+						}
+					}
+				}
+				pos = start
+			}
+		}
+	}
+	sort.Strings(samples)
+	return count, samples
+}
+
+// scanEmberYieldHash reads `{{yield (hash Key=(component "name") …)}}` forms,
+// returning the sorted "Key=name" entries — the yielding half of a contextual
+// component. Only literal component names qualify.
+func scanEmberYieldHash(text string) []string {
+	seen := make(map[string]bool)
+	pos := 0
+	for {
+		idx := strings.Index(text[pos:], "{{yield")
+		if idx < 0 {
+			break
+		}
+		hashIdx := strings.Index(text[pos+idx:], "(hash")
+		if hashIdx < 0 {
+			pos += idx + 7
+			continue
+		}
+		region := text[pos+idx+hashIdx:]
+		depth := 0
+		for i := 0; i < len(region); i++ {
+			if region[i] == '(' {
+				depth++
+			} else if region[i] == ')' {
+				depth--
+				if depth == 0 {
+					region = region[:i]
+					break
+				}
+			}
+		}
+		// Strict-mode templates pass imported components directly:
+		// `(hash Header=ModalHeader)`. A bare-identifier value is recorded
+		// with a "?" marker; the caller resolves it against the file's import
+		// bindings, and an unbindable identifier drops.
+		identPos := 0
+		for identPos < len(region) {
+			eq := strings.IndexByte(region[identPos:], '=')
+			if eq < 0 {
+				break
+			}
+			at := identPos + eq
+			keyEnd := at
+			keyStart := keyEnd
+			for keyStart > 0 && isHbsNameByte(region[keyStart-1]) {
+				keyStart--
+			}
+			key := region[keyStart:keyEnd]
+			vStart := at + 1
+			if vStart < len(region) && region[vStart] != '(' &&
+				key != "" && key[0] >= 'A' && key[0] <= 'Z' {
+				vEnd := vStart
+				for vEnd < len(region) && isHbsNameByte(region[vEnd]) {
+					vEnd++
+				}
+				val := region[vStart:vEnd]
+				if val != "" && val[0] >= 'A' && val[0] <= 'Z' {
+					seen[key+"=?"+val] = true
+				}
+			}
+			identPos = at + 1
+		}
+		scanPos := 0
+		for {
+			cIdx := strings.Index(region[scanPos:], "=(component")
+			if cIdx < 0 {
+				break
+			}
+			keyEnd := scanPos + cIdx
+			keyStart := keyEnd
+			for keyStart > 0 && isHbsNameByte(region[keyStart-1]) {
+				keyStart--
+			}
+			key := region[keyStart:keyEnd]
+			argStart := keyEnd + len("=(component")
+			for argStart < len(region) && (region[argStart] == ' ' || region[argStart] == '\n' ||
+				region[argStart] == '\t' || region[argStart] == '\r') {
+				argStart++
+			}
+			if argStart < len(region) && key != "" && key[0] >= 'A' && key[0] <= 'Z' {
+				if region[argStart] == '"' || region[argStart] == '\'' {
+					quote := region[argStart]
+					if qEnd := strings.IndexByte(region[argStart+1:], quote); qEnd >= 0 {
+						name := region[argStart+1 : argStart+1+qEnd]
+						if name != "" {
+							seen[key+"="+name] = true
+						}
+					}
+				} else if region[argStart] >= 'A' && region[argStart] <= 'Z' {
+					vEnd := argStart
+					for vEnd < len(region) && isHbsNameByte(region[vEnd]) {
+						vEnd++
+					}
+					seen[key+"=?"+region[argStart:vEnd]] = true
+				}
+			}
+			scanPos = argStart
+		}
+		pos += idx + hashIdx + 5
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	entries := make([]string, 0, len(seen))
+	for e := range seen {
+		entries = append(entries, e)
+	}
+	sort.Strings(entries)
+	return entries
+}
+
+// scanEmberContextualUses tracks angle-bracket block params (`<Card as |card|>`
+// … `<card.Item />`) within one template, returning sorted "Card#Item" pairs —
+// the consuming half of a contextual component. Innermost binding wins on
+// shadowing; anything crossing a template boundary is out of scope.
+func scanEmberContextualUses(text string) []string {
+	type frame struct {
+		tag    string
+		params map[string]bool
+	}
+	var stack []frame
+	seen := make(map[string]bool)
+	lookup := func(name string) string {
+		for i := len(stack) - 1; i >= 0; i-- {
+			if stack[i].params[name] {
+				return stack[i].tag
+			}
+		}
+		return ""
+	}
+	i := 0
+	for i < len(text) {
+		if text[i] != '<' {
+			i++
+			continue
+		}
+		if i+1 < len(text) && text[i+1] == '/' {
+			j := i + 2
+			for j < len(text) && (isHbsNameByte(text[j]) || text[j] == ':') {
+				j++
+			}
+			closing := text[i+2 : j]
+			for len(stack) > 0 {
+				top := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				if top.tag == closing || top.tag == "" {
+					break
+				}
+			}
+			i = j
+			continue
+		}
+		j := i + 1
+		for j < len(text) && (isHbsNameByte(text[j]) || text[j] == ':' || text[j] == '.') {
+			j++
+		}
+		tagName := text[i+1 : j]
+		if tagName == "" {
+			i++
+			continue
+		}
+		tagEnd := j
+		depth := 0
+		for tagEnd < len(text) && (text[tagEnd] != '>' || depth > 0) {
+			switch text[tagEnd] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+			}
+			tagEnd++
+		}
+		if tagEnd >= len(text) {
+			break
+		}
+		tagBody := text[i:tagEnd]
+		selfClosing := strings.HasSuffix(strings.TrimSpace(tagBody), "/")
+
+		if dot := strings.IndexByte(tagName, '.'); dot > 0 && tagName[0] >= 'a' && tagName[0] <= 'z' {
+			paramName, key := tagName[:dot], tagName[dot+1:]
+			if owner := lookup(paramName); owner != "" && key != "" && key[0] >= 'A' && key[0] <= 'Z' {
+				seen[owner+"#"+key] = true
+			}
+		}
+
+		params := map[string]bool{}
+		if asIdx := strings.Index(tagBody, " as |"); asIdx >= 0 {
+			pEnd := strings.IndexByte(tagBody[asIdx+5:], '|')
+			if pEnd >= 0 {
+				for _, p := range strings.Fields(tagBody[asIdx+5 : asIdx+5+pEnd]) {
+					params[p] = true
+				}
+			}
+		}
+		if !selfClosing && tagName[0] >= 'A' && tagName[0] <= 'Z' {
+			stack = append(stack, frame{tag: tagName, params: params})
+		}
+		i = tagEnd + 1
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	pairs := make([]string, 0, len(seen))
+	for p := range seen {
+		pairs = append(pairs, p)
+	}
+	sort.Strings(pairs)
+	return pairs
+}
+
+// isEmberEngineRoutesFile reports whether relFile is an in-repo engine's route
+// map (lib/<engine>/addon/routes.{js,ts}).
+func isEmberEngineRoutesFile(relFile string) (engine string, ok bool) {
+	slashed := filepath.ToSlash(relFile)
+	base := filepath.Base(slashed)
+	if base != "routes.js" && base != "routes.ts" {
+		return "", false
+	}
+	parts := strings.Split(slashed, "/")
+	for i := 0; i+2 < len(parts); i++ {
+		if parts[i] == "lib" && parts[i+2] == "addon" && i+3 == len(parts)-1 {
+			return parts[i+1], true
+		}
+	}
+	return "", false
+}
+
+// extractEmberEngineRoutes walks a buildRoutes callback with the same DSL walk
+// as Router.map, emitting engine-relative routes labeled for composition. The
+// composition itself happens in the repo-level post-pass, where every mount is
+// visible.
+func extractEmberEngineRoutes(root *sitter.Node, src []byte, relFile, engine string) []facts.Fact {
+	routes := extractEmberRoutes(root, src, relFile)
+	for i := range routes {
+		routes[i].Props["ember_engine"] = engine
+		routes[i].Props["router"] = "engine"
+	}
+	return routes
+}
+
+// composeEngineMounts rewrites engine-relative route paths onto their mount
+// point when the repo mounts that engine exactly once. Two mounts genuinely
+// serve both paths, and picking one would be a wrong fact — those skip, and
+// the relative facts remain, labeled. Runs inside Extract, where the whole
+// repo's facts are already in hand.
+func composeEngineMounts(all []facts.Fact) {
+	mounts := map[string][]string{}
+	for _, f := range all {
+		if f.Kind == facts.KindRoute && f.PropString("type") == "engine_mount" {
+			name := f.PropString("ember_engine")
+			mounts[name] = append(mounts[name], f.Name)
+		}
+	}
+	for i := range all {
+		f := &all[i]
+		if f.Kind != facts.KindRoute || f.PropString("router") != "engine" {
+			continue
+		}
+		ms := mounts[f.PropString("ember_engine")]
+		if len(ms) != 1 {
+			continue
+		}
+		f.Name = joinEmberPath(ms[0], strings.TrimPrefix(f.Name, "/"))
+		f.Props["ember_mounted"] = true
+	}
 }

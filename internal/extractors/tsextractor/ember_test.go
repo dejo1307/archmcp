@@ -574,3 +574,149 @@ func TestEmberDataRole_Classified(t *testing.T) {
 		}
 	}
 }
+
+// --- epic children: tier-1, runtime edge, contextual, engines ---
+
+func TestEmberFrameworkRegistered_ContainerResolvedDirs(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/serializers/book.ts":      "export default class BookSerializer {}\n",
+		"app/initializers/tracking.ts": "export function initialize(): void {}\nexport default { initialize };\n",
+		"app/components/plain.ts":      "export default class Plain {}\n",
+	})
+	if f := findEmberFact(result, facts.KindSymbol, "app/serializers.BookSerializer"); f == nil || f.Props["framework_registered"] != true {
+		t.Errorf("serializer = %+v, want framework_registered", f)
+	}
+	if f := findEmberFact(result, facts.KindSymbol, "app/initializers.initialize"); f == nil || f.Props["framework_registered"] != true {
+		t.Errorf("initializer = %+v, want framework_registered", f)
+	}
+	if f := findEmberFact(result, facts.KindSymbol, "app/components.Plain"); f != nil {
+		if _, has := f.Props["framework_registered"]; has {
+			t.Error("components are template-reachable and must not carry the stamp")
+		}
+	}
+}
+
+func TestEmberAttrTransforms_Recorded(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/models/book.ts": `import Model, { attr } from '@ember-data/model';
+
+export default class Book extends Model {
+  @attr('duration') readTime;
+  @attr('duration') writeTime;
+  @attr title;
+}
+`,
+	})
+	sf := findEmberFact(result, facts.KindStorage, "app/models.Book")
+	if sf == nil {
+		t.Fatal("Book storage missing")
+	}
+	got, _ := sf.Props[EmberAttrTransformsProp].([]string)
+	if !reflect.DeepEqual(got, []string{"duration"}) {
+		t.Errorf("attr transforms = %v, want [duration] — bare @attr draws nothing, duplicates dedupe", got)
+	}
+}
+
+func TestScanTypedLiteralInvocations_AndFolding(t *testing.T) {
+	folds := map[string]string{"KIND": "fancy-badge"}
+	got := scanTypedLiteralInvocations(`{{component "star-icon"}} (helper "sum") {{component KIND}} {{component this.dyn}}`, folds)
+	want := []string{"component:fancy-badge", "component:star-icon", "helper:sum"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("typed = %v, want %v", got, want)
+	}
+	n, samples := countDynamicInvocations(`{{component this.dyn}} {{component KIND}}`, folds)
+	if n != 1 || len(samples) != 1 {
+		t.Errorf("dynamic = %d %v, want exactly the unfoldable site counted", n, samples)
+	}
+}
+
+func TestEmberBuildFoldMap_SingleAssignmentOnly(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/routes/kiosk.ts": `import { service } from '@ember/service';
+
+const TARGET = 'catalog.book';
+let mutable = 'nope';
+
+export default class KioskRoute {
+  @service declare router: unknown;
+
+  go() {
+    this.router.transitionTo(TARGET);
+  }
+}
+`,
+	})
+	route := findEmberFact(result, facts.KindSymbol, "app/routes.KioskRoute")
+	got, _ := route.Props[EmberRouteLinksProp].([]string)
+	if !reflect.DeepEqual(got, []string{"catalog.book"}) {
+		t.Errorf("route links = %v, want the folded constant", got)
+	}
+}
+
+func TestScanEmberYieldHashAndContextualUses(t *testing.T) {
+	yh := scanEmberYieldHash(`{{yield (hash Item=(component "card-item") count=this.n Body=(component "card-body"))}}`)
+	if !reflect.DeepEqual(yh, []string{"Body=card-body", "Item=card-item"}) {
+		t.Errorf("yield hash = %v", yh)
+	}
+	uses := scanEmberContextualUses(`<Card as |card|>
+  <card.Item />
+  <Inner as |card|><card.Body /></Inner>
+</Card>
+<card.After />`)
+	want := []string{"Card#Item", "Inner#Body"}
+	if !reflect.DeepEqual(uses, want) {
+		t.Errorf("contextual uses = %v, want %v — innermost binding wins, out-of-scope use drops", uses, want)
+	}
+}
+
+func TestEmberEngines_MountAndComposition(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/router.ts": `import EmberRouter from '@ember/routing/router';
+export default class Router extends EmberRouter {}
+Router.map(function () {
+  this.mount('shop', { path: '/store' });
+});
+`,
+		"lib/shop/addon/routes.js": `import buildRoutes from 'ember-engines/routes';
+export default buildRoutes(function () {
+  this.route('cart', function () {
+    this.route('checkout');
+  });
+});
+`,
+	})
+	mount := findEmberFact(result, facts.KindRoute, "/store")
+	if mount == nil || mount.Props["type"] != "engine_mount" || mount.Props["ember_engine"] != "shop" {
+		t.Fatalf("mount = %+v", mount)
+	}
+	cart := findEmberFact(result, facts.KindRoute, "/store/cart")
+	if cart == nil || cart.Props["router"] != "engine" || cart.Props["ember_mounted"] != true {
+		t.Fatalf("composed engine route = %+v", cart)
+	}
+	if findEmberFact(result, facts.KindRoute, "/store/cart/checkout") == nil {
+		t.Error("nested engine route did not compose")
+	}
+}
+
+func TestEmberEngines_DualMountSkipsComposition(t *testing.T) {
+	result := extractEmber(t, map[string]string{
+		"app/router.ts": `import EmberRouter from '@ember/routing/router';
+export default class Router extends EmberRouter {}
+Router.map(function () {
+  this.mount('shop', { path: '/store' });
+  this.mount('shop', { path: '/boutique' });
+});
+`,
+		"lib/shop/addon/routes.js": `export default buildRoutes(function () {
+  this.route('cart');
+});
+`,
+	})
+	if f := findEmberFact(result, facts.KindRoute, "/store/cart"); f != nil {
+		t.Errorf("dual-mounted engine composed anyway: %+v", f)
+	}
+	rel := findEmberFact(result, facts.KindRoute, "/cart")
+	if rel == nil || rel.Props["ember_mounted"] == true {
+		t.Errorf("relative engine route = %+v, want present and unmounted", rel)
+	}
+}

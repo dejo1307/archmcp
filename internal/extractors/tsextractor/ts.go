@@ -187,6 +187,12 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// enterprise performance analyzer. Mirrors the Swift extractor's computePerformsIO.
 	computeTSPerformsIO(allFacts)
 
+	// Engine-relative routes compose onto their mount point here, where every
+	// mount in the repo is visible; a per-file pass cannot see both sides.
+	if isEmber {
+		composeEngineMounts(allFacts)
+	}
+
 	// Prisma models live in schema.prisma — a separate DSL, so tree-sitter never sees it.
 	// Read it off-glob, the same way package.json and tsconfig.json already are.
 	if isPrisma {
@@ -362,6 +368,11 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	}
 	if isEmber && isEmberRouterFile(relFile) {
 		result = append(result, extractEmberRoutes(root, src, relFile)...)
+	}
+	if isEmber {
+		if engine, ok := isEmberEngineRoutesFile(relFile); ok {
+			result = append(result, extractEmberEngineRoutes(root, src, relFile, engine)...)
+		}
 	}
 
 	// Detect Vue Router configuration files

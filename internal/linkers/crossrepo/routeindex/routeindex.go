@@ -156,6 +156,7 @@ func RoleOf(f facts.Fact) string { return f.PropString(facts.PropRole) }
 // Router API handlers carry type "route" and are deliberately NOT here.
 var uiRouteTypes = map[string]bool{
 	"page": true, "layout": true, "error": true, "router_config": true,
+	"engine_mount": true,
 }
 
 // IsUIRoute reports whether a route fact is a client-side navigation route

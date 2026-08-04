@@ -325,3 +325,124 @@ func TestBind_TemplateTagRouteTemplateOwnedByRouteClass(t *testing.T) {
 		t.Errorf("relations = %v, want the route class to own its .gjs template component", route.Relations)
 	}
 }
+
+func reexportStub(stub, target string) facts.Fact {
+	return facts.Fact{Kind: facts.KindDependency, Name: "x -> " + target, File: stub, Line: 1,
+		Props:     map[string]any{"reexport": true, "source": "internal"},
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: target}}}
+}
+
+func TestBind_ReexportChaseResolvesAddonPublish(t *testing.T) {
+	store := bind(t,
+		symbol("lib/badge-kit/addon/components.KitBadge", "lib/badge-kit/addon/components/kit-badge.gjs",
+			map[string]any{"web_component": "component", defaultExportProp: true}),
+		reexportStub("lib/badge-kit/app/components/kit-badge.js", "lib/badge-kit/addon/components/kit-badge"),
+		symbol("app/components.Host", "app/components/host.js",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/components/host.hbs", "app/components/host.js", []string{"KitBadge"}),
+	)
+	host := factByName(t, store, facts.KindSymbol, "app/components.Host")
+	if !host.HasRelation(facts.RelCalls, "lib/badge-kit/addon/components.KitBadge") {
+		t.Errorf("relations = %v, want the addon component through its app-tree re-export stub", host.Relations)
+	}
+}
+
+func TestBind_ContextualComponentJoins(t *testing.T) {
+	store := bind(t,
+		symbol("app/components.Card", "app/components/card.gjs",
+			map[string]any{"web_component": "component", defaultExportProp: true,
+				yieldHashProp: []string{"Item=card-item"}}),
+		symbol("app/components.CardItem", "app/components/card-item.ts",
+			map[string]any{"web_component": "component", defaultExportProp: true}),
+		symbol("app/components.List", "app/components/list.js",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/components/list.hbs", "app/components/list.js", nil),
+	)
+	store.UpdateWhere(func(f *facts.Fact) {
+		if f.Kind == facts.KindFileRef && f.Name == "app/components/list.hbs" {
+			f.Props[contextualProp] = []string{"Card#Item", "Card#Missing"}
+		}
+	})
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	list := factByName(t, store, facts.KindSymbol, "app/components.List")
+	if !list.HasRelation(facts.RelCalls, "app/components.CardItem") {
+		t.Errorf("relations = %v, want Card#Item joined through Card's yield hash", list.Relations)
+	}
+	ref := factByName(t, store, facts.KindFileRef, "app/components/list.hbs")
+	unresolved, _ := ref.Props[unresolvedProp].([]string)
+	found := false
+	for _, u := range unresolved {
+		if u == "Card#Missing" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("unresolved = %v, want the unknown key recorded", unresolved)
+	}
+}
+
+func TestBind_AttrTransformBindsToAppTransform(t *testing.T) {
+	book := facts.Fact{Kind: facts.KindStorage, Name: "app/models.Book",
+		File: "app/models/book.ts", Line: 1,
+		Props: map[string]any{"framework": "ember-data", "storage_kind": "model",
+			attrTransformsProp: []string{"duration", "date"}}}
+	store := bind(t, book,
+		symbol("app/transforms.Duration", "app/transforms/duration.ts", nil),
+	)
+	got := factByName(t, store, facts.KindStorage, "app/models.Book")
+	if !got.HasRelation(facts.RelDependsOn, "app/transforms.Duration") {
+		t.Errorf("relations = %v, want the app-defined transform bound", got.Relations)
+	}
+	for _, r := range got.Relations {
+		if r.Kind == facts.RelDependsOn && r.Target != "app/transforms.Duration" {
+			t.Errorf("built-in 'date' has no app file and must draw nothing; got %v", r)
+		}
+	}
+}
+
+func TestBind_PodsComponentResolves(t *testing.T) {
+	store := bind(t,
+		symbol("app/pods/user-card.UserCard", "app/pods/user-card/component.js",
+			map[string]any{"web_component": "component", defaultExportProp: true}),
+		templateRef("app/templates/index.hbs", "", []string{"UserCard"}),
+	)
+	ref := factByName(t, store, facts.KindFileRef, "app/templates/index.hbs")
+	if !ref.HasRelation(facts.RelCalls, "app/pods/user-card.UserCard") {
+		t.Errorf("relations = %v, want the pods component resolved", ref.Relations)
+	}
+}
+
+func TestBind_SubstateTemplateOwnedByParentRoute(t *testing.T) {
+	store := bind(t,
+		symbol("app/routes.CatalogRoute", "app/routes/catalog.ts", nil),
+		symbol("app/components.Spinner", "app/components/spinner.hbs",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/templates/catalog-loading.hbs", "", []string{"Spinner"}),
+	)
+	route := factByName(t, store, facts.KindSymbol, "app/routes.CatalogRoute")
+	if !route.HasRelation(facts.RelCalls, "app/components.Spinner") {
+		t.Errorf("relations = %v, want the loading substate owned by catalog's route", route.Relations)
+	}
+}
+
+func TestBind_EngineTemplatesResolveInOwnTreeOnly(t *testing.T) {
+	store := bind(t,
+		symbol("lib/shop/addon/components.Price", "lib/shop/addon/components/price.js",
+			map[string]any{"web_component": "component", defaultExportProp: true}),
+		symbol("app/components.Price", "app/components/price.js",
+			map[string]any{"web_component": "component", defaultExportProp: true}),
+		symbol("lib/shop/addon/components.Cart", "lib/shop/addon/components/cart.js",
+			map[string]any{"web_component": "component"}),
+		templateRef("lib/shop/addon/components/cart.hbs", "lib/shop/addon/components/cart.js",
+			[]string{"Price"}),
+	)
+	cart := factByName(t, store, facts.KindSymbol, "lib/shop/addon/components.Cart")
+	if !cart.HasRelation(facts.RelCalls, "lib/shop/addon/components.Price") {
+		t.Errorf("relations = %v, want the ENGINE's Price, isolated from the host's", cart.Relations)
+	}
+	if cart.HasRelation(facts.RelCalls, "app/components.Price") {
+		t.Error("engine template resolved into the host tree — isolation broken")
+	}
+}

@@ -9,4 +9,5 @@ Router.map(function () {
     });
   });
   this.route('account', { path: '/my-account' });
+  this.mount('shop', { path: '/store' });
 });

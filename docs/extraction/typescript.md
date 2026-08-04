@@ -169,7 +169,24 @@ file and one plausible symbol required, anything ambiguous skipped and counted i
 ```
 
 Lookups anchor to the `app/` tree — Ember's own resolver rule — across
-`components/`, `helpers/` and `modifiers/`; a lookalike path elsewhere cannot
+`components/`, `helpers/`, `modifiers/` and pods (`pods/<name>/component`),
+with the classic `app/templates/components/` split recognized too — layouts
+are candidate fragments, never a per-repo mode, so a mid-migration app
+resolves all its vintages at once. A declaration-less re-export stub (a v1
+addon's `app/`-tree publish, or any barrel) is chased to the file it
+republishes, so `lib/<addon>/` components resolve into the host namespace;
+engine templates (`lib/<engine>/addon/`) resolve in their own isolated tree.
+Container-resolved classes (adapters, serializers, transforms, initializers,
+routes, controllers) carry `framework_registered`, so the dead-code detector
+stops flagging live singletons; `@attr('type')` binds a model to its
+app-defined transform. `this.mount('shop')` becomes an `engine_mount` route
+and the engine's own `buildRoutes` map composes onto it when the mount is
+unique. Contextual components join two recorded literals — a yield-hash entry
+(`(hash Item=(component "card-item"))`, or a strict-mode imported identifier)
+and a block-param consumption (`<Card as |card|> … <card.Item/>`). File-local
+single-assignment string constants fold into name arguments (derivation, not
+inference), and irreducibly dynamic sites are counted with capped samples
+(`ember_dynamic_count`/`_samples`) — visible, never guessed; a lookalike path elsewhere cannot
 shadow the real file, and a co-located template is one component with its class,
 not an ambiguity. A component template with no co-located class is a
 template-only component and synthesizes its component symbol. A **route

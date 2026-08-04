@@ -974,7 +974,23 @@ import (
 // without the entry an app's acceptance suite indexed as production symbols
 // (the directory is demanded because a bare *-test.ts also swallows an
 // experimentation util named ab-test.ts — the Ruby _test.rb precedent).
-const cacheVersion = "v149"
+// v150: the ember-complete-coverage epic lands in one pass. Container-resolved
+// role classes (adapters, serializers, transforms, initializers, routes,
+// controllers) gain framework_registered so live singletons stop reading as
+// dead code — the Python v139 precedent applied to Ember's container.
+// @attr('type') binds models to their app-defined transforms; literal
+// {{component "x"}}/(helper …)/(modifier …) forms resolve as typed
+// invocations; loading/error substate and index templates find their parent
+// routes. V1 addon publishes resolve by chasing the recorded re-export stubs
+// (which also resolves barrels everywhere); engines compose this.mount with
+// their buildRoutes maps when the mount is unique, and engine templates
+// resolve in their own isolated tree. Contextual components join two recorded
+// literals — a yield-hash entry and a block-param consumption. Pods and the
+// classic templates/components split join the candidate fragments (layouts
+// are fragments, never a mode). File-local single-assignment string constants
+// fold into name arguments (derivation, not inference), and irreducibly
+// dynamic sites are counted with capped samples — visible, never guessed.
+const cacheVersion = "v150"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -46,16 +46,19 @@ func (b *Binder) Stage() plugin.BindStage { return plugin.StagePostLink }
 // the TypeScript extractor's Ember pass emits. Spelled here rather than imported
 // so this package — like every binder — depends only on facts and plugin.
 const (
-	templateProp      = "ember_template"
-	invocationsProp   = "ember_invocations"
-	ownerFileProp     = "ember_owner_file"
-	servicesProp      = "ember_injected_services"
-	relationshipsProp = "ember_relationships"
-	defaultExportProp = "ember_default_export"
-	routeLinksProp    = "ember_route_links"
-	routeNameProp     = "ember_route_name"
-	dataRoleProp      = "ember_data_role"
-	unresolvedProp    = "ember_unresolved"
+	templateProp       = "ember_template"
+	invocationsProp    = "ember_invocations"
+	ownerFileProp      = "ember_owner_file"
+	servicesProp       = "ember_injected_services"
+	relationshipsProp  = "ember_relationships"
+	defaultExportProp  = "ember_default_export"
+	routeLinksProp     = "ember_route_links"
+	routeNameProp      = "ember_route_name"
+	dataRoleProp       = "ember_data_role"
+	yieldHashProp      = "ember_yield_hash"
+	contextualProp     = "ember_contextual"
+	attrTransformsProp = "ember_attr_transforms"
+	unresolvedProp     = "ember_unresolved"
 )
 
 var sourceExts = []string{".ts", ".js", ".gts", ".gjs", ".hbs"}
@@ -89,7 +92,11 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 			routeByName[r.Repo][name] = r.Name
 		}
 		fragment := "routes/" + strings.ReplaceAll(name, ".", "/")
-		if f := idx.uniqueFile(r.Repo, fragment, ""); f != "" {
+		anchorHint := ""
+		if engine := r.PropString("ember_engine"); engine != "" && r.PropString("router") == "engine" {
+			anchorHint = "lib/" + engine + "/addon/_"
+		}
+		if f := idx.uniqueFile(r.Repo, fragment, anchorHint); f != "" {
 			if sym := idx.primarySymbolIn(r.Repo, f); sym != "" {
 				routeHandlers[r.Repo+"\x00"+r.Name+"\x00"+name] = sym
 			}
@@ -137,6 +144,13 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 				w.targets = append(w.targets, target)
 			} else {
 				w.unresolved = append(w.unresolved, name)
+			}
+		}
+		for _, pair := range propStrings(f.Props[contextualProp]) {
+			if target := idx.resolveContextual(f.Repo, pair, f.Name); target != "" {
+				w.targets = append(w.targets, target)
+			} else {
+				w.unresolved = append(w.unresolved, pair)
 			}
 		}
 		w.linkTargets = routeLinks(&f)
@@ -243,6 +257,12 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 					}
 				}
 			}
+			for _, tname := range propStrings(f.Props[attrTransformsProp]) {
+				if t := idx.resolveTransform(f.Repo, tname); t != "" && !f.HasRelation(facts.RelDependsOn, t) {
+					f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelDependsOn, Target: t})
+					bound++
+				}
+			}
 			return
 		}
 		if f.Kind != facts.KindSymbol {
@@ -276,6 +296,18 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 				bound++
 			}
 		}
+		for _, name := range propStrings(f.Props[invocationsProp]) {
+			if t := idx.resolveInvocation(f.Repo, name, f.File); t != "" && t != f.Name && !f.HasRelation(facts.RelCalls, t) {
+				f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
+				bound++
+			}
+		}
+		for _, pair := range propStrings(f.Props[contextualProp]) {
+			if t := idx.resolveContextual(f.Repo, pair, f.File); t != "" && t != f.Name && !f.HasRelation(facts.RelCalls, t) {
+				f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
+				bound++
+			}
+		}
 		for _, w := range work {
 			if w.ownerSymbol != f.Name {
 				continue
@@ -301,6 +333,8 @@ type index struct {
 	files       map[string]map[string]bool
 	fileSymbols map[string]map[string][]symbolInfo
 	fileStorage map[string]map[string][]string
+	reexports   map[string]map[string]string
+	yieldHashes map[string]map[string]map[string]string
 }
 
 type symbolInfo struct {
@@ -317,6 +351,8 @@ func buildIndex(store *facts.Store) *index {
 		files:       map[string]map[string]bool{},
 		fileSymbols: map[string]map[string][]symbolInfo{},
 		fileStorage: map[string]map[string][]string{},
+		reexports:   map[string]map[string]string{},
+		yieldHashes: map[string]map[string]map[string]string{},
 	}
 	addFile := func(repo, file string) {
 		if file == "" {
@@ -347,6 +383,49 @@ func buildIndex(store *facts.Store) *index {
 			addFile(f.Repo, f.File)
 		}
 	}
+	// A v1 addon publishes through bare re-export stubs that declare no
+	// symbols; the extractor records each as a reexport-flagged dependency
+	// whose imports relation carries the resolved target. Indexing those files
+	// and their targets is what lets the primary-symbol pick chase the chain.
+	for _, d := range store.ByKind(facts.KindDependency) {
+		if !d.PropBool("reexport") || d.File == "" {
+			continue
+		}
+		target := ""
+		for _, r := range d.Relations {
+			if r.Kind == facts.RelImports {
+				target = r.Target
+			}
+		}
+		if target == "" || strings.Contains(target, "://") {
+			continue
+		}
+		stub := filepath.ToSlash(d.File)
+		target = filepath.ToSlash(target)
+		// Inside lib/<addon>/, the addon's OWN name is a module prefix for its
+		// addon/ tree — `badge-kit/components/x` from within lib/badge-kit/ is
+		// lib/badge-kit/addon/components/x. That is the v1 addon module-naming
+		// rule, not a guess.
+		if libIdx := strings.Index(stub, "lib/"); libIdx >= 0 {
+			rest := stub[libIdx+4:]
+			if slash := strings.IndexByte(rest, '/'); slash > 0 {
+				addonName := rest[:slash]
+				if cut, ok := strings.CutPrefix(target, addonName+"/"); ok {
+					target = stub[:libIdx] + "lib/" + addonName + "/addon/" + cut
+				}
+			}
+		}
+		addFile(d.Repo, d.File)
+		if idx.reexports[d.Repo] == nil {
+			idx.reexports[d.Repo] = map[string]string{}
+		}
+		idx.reexports[d.Repo][stub] = target
+	}
+	for _, sym := range store.ByKind(facts.KindSymbol) {
+		if entries := propStrings(sym.Props[yieldHashProp]); len(entries) > 0 {
+			idx.addYieldHash(sym.Repo, sym.Name, entries)
+		}
+	}
 	for _, s := range store.ByKind(facts.KindStorage) {
 		if s.PropString("framework") != "ember-data" {
 			continue
@@ -372,14 +451,21 @@ func buildIndex(store *facts.Store) *index {
 // one primary symbol.
 func (idx *index) resolveInvocation(repo, name, selfFile string) string {
 	var fragments []string
-	if name[0] >= 'A' && name[0] <= 'Z' {
+	if kind, lit, ok := strings.Cut(name, ":"); ok && (kind == "component" || kind == "helper" || kind == "modifier") {
+		fragments = []string{kind + "s/" + lit}
+		if kind == "component" {
+			fragments = append(fragments, "pods/"+lit+"/component")
+		}
+	} else if name[0] >= 'A' && name[0] <= 'Z' {
 		segs := strings.Split(name, "::")
 		for i, s := range segs {
 			segs[i] = dasherize(s)
 		}
-		fragments = []string{"components/" + strings.Join(segs, "/")}
+		joined := strings.Join(segs, "/")
+		fragments = []string{"components/" + joined, "pods/" + joined + "/component"}
 	} else {
-		fragments = []string{"components/" + name, "helpers/" + name, "modifiers/" + name}
+		fragments = []string{"components/" + name, "helpers/" + name, "modifiers/" + name,
+			"pods/" + name + "/component"}
 	}
 	for _, frag := range fragments {
 		if file := idx.uniqueFile(repo, frag, selfFile); file != "" {
@@ -391,9 +477,27 @@ func (idx *index) resolveInvocation(repo, name, selfFile string) string {
 	return ""
 }
 
+// engineTreeOf returns the "lib/<engine>/addon" prefix owning file, or "".
+// An engine's templates resolve against its own isolated tree, never the
+// host's — sharing is explicit in Ember, and a cross-tree match would be a
+// wrong edge.
+func engineTreeOf(file string) string {
+	parts := strings.Split(filepath.ToSlash(file), "/")
+	for i := 0; i+2 < len(parts); i++ {
+		if parts[i] == "lib" && parts[i+2] == "addon" {
+			return strings.Join(parts[:i+3], "/")
+		}
+	}
+	return ""
+}
+
 func (idx *index) resolveService(repo, name string) string {
-	if file := idx.uniqueFile(repo, "services/"+name, ""); file != "" {
-		return idx.primarySymbolIn(repo, file)
+	for _, frag := range []string{"services/" + name, "pods/" + name + "/service"} {
+		if file := idx.uniqueFile(repo, frag, ""); file != "" {
+			if sym := idx.primarySymbolIn(repo, file); sym != "" {
+				return sym
+			}
+		}
 	}
 	return ""
 }
@@ -415,9 +519,73 @@ func (idx *index) resolveRouteOwner(repo, templateFile string) string {
 	if fragment == "" || strings.HasPrefix(fragment, "components/") {
 		return ""
 	}
-	for _, owner := range []string{"routes/" + fragment, "controllers/" + fragment} {
-		if f := idx.uniqueFile(repo, owner, templateFile); f != "" {
-			if sym := idx.primarySymbolIn(repo, f); sym != "" {
+	fragments := []string{fragment}
+	// Substate templates (foo-loading, foo-error) belong to foo's route; an
+	// index template belongs to the implicit index route, falling back to the
+	// parent when no index class exists.
+	for _, suffix := range []string{"-loading", "-error"} {
+		if base, found := strings.CutSuffix(fragment, suffix); found && base != "" {
+			fragments = append(fragments, base)
+		}
+	}
+	if base, found := strings.CutSuffix(fragment, "/index"); found && base != "" {
+		fragments = append(fragments, base)
+	}
+	for _, frag := range fragments {
+		for _, owner := range []string{"routes/" + frag, "controllers/" + frag,
+			"pods/" + frag + "/route", "pods/" + frag + "/controller"} {
+			if f := idx.uniqueFile(repo, owner, templateFile); f != "" {
+				if sym := idx.primarySymbolIn(repo, f); sym != "" {
+					return sym
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func (idx *index) addYieldHash(repo, symbolName string, entries []string) {
+	if idx.yieldHashes[repo] == nil {
+		idx.yieldHashes[repo] = map[string]map[string]string{}
+	}
+	m := map[string]string{}
+	for _, e := range entries {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			m[k] = v
+		}
+	}
+	idx.yieldHashes[repo][symbolName] = m
+}
+
+// resolveContextual maps a "Comp#Key" consumption pair to the component the
+// yielding template bound under Key. Comp is either an already-resolved symbol
+// name (strict-mode consumer) or a bare invocation name (.hbs consumer).
+func (idx *index) resolveContextual(repo, pair, selfFile string) string {
+	comp, key, ok := strings.Cut(pair, "#")
+	if !ok {
+		return ""
+	}
+	compSym := comp
+	if !strings.ContainsAny(comp, "./") {
+		compSym = idx.resolveInvocation(repo, comp, selfFile)
+	}
+	if compSym == "" {
+		return ""
+	}
+	name := idx.yieldHashes[repo][compSym][key]
+	if name == "" {
+		return ""
+	}
+	if direct, ok := strings.CutPrefix(name, "@"); ok {
+		return direct
+	}
+	return idx.resolveInvocation(repo, "component:"+name, selfFile)
+}
+
+func (idx *index) resolveTransform(repo, name string) string {
+	for _, frag := range []string{"transforms/" + name, "pods/" + name + "/transform"} {
+		if file := idx.uniqueFile(repo, frag, ""); file != "" {
+			if sym := idx.primarySymbolIn(repo, file); sym != "" {
 				return sym
 			}
 		}
@@ -449,8 +617,12 @@ func (idx *index) resolveModel(repo, name string) string {
 // its own template. Two matches at the SAME extension — two Ember apps in one
 // monorepo — are a genuine ambiguity and skip.
 func (idx *index) uniqueFile(repo, fragment, selfFile string) string {
+	anchorRoot := "app/"
+	if tree := engineTreeOf(selfFile); tree != "" {
+		anchorRoot = tree + "/"
+	}
 	for _, ext := range sourceExts {
-		for _, anchored := range []string{"app/" + fragment + ext, "app/" + fragment + "/index" + ext} {
+		for _, anchored := range []string{anchorRoot + fragment + ext, anchorRoot + fragment + "/index" + ext} {
 			found := ""
 			ambiguous := false
 			for file := range idx.files[repo] {
@@ -483,7 +655,29 @@ func (idx *index) uniqueFile(repo, fragment, selfFile string) string {
 // else the single exported top-level class, else the single exported top-level
 // symbol. Anything still plural is ambiguous and skipped.
 func (idx *index) primarySymbolIn(repo, file string) string {
-	syms := idx.fileSymbols[repo][filepath.ToSlash(file)]
+	return idx.primarySymbolChase(repo, file, 0)
+}
+
+// primarySymbolChase follows a declaration-less re-export stub to the file it
+// republishes, bounded so a cycle terminates. Depth 3 covers addon app-tree
+// stubs and one barrel hop beyond them.
+func (idx *index) primarySymbolChase(repo, file string, depth int) string {
+	slashed := filepath.ToSlash(file)
+	if len(idx.fileSymbols[repo][slashed]) == 0 {
+		if target, ok := idx.reexports[repo][slashed]; ok && depth < 3 {
+			for _, ext := range sourceExts {
+				for _, candidate := range []string{target + ext, target + "/index" + ext} {
+					if idx.files[repo][candidate] {
+						if sym := idx.primarySymbolChase(repo, candidate, depth+1); sym != "" {
+							return sym
+						}
+					}
+				}
+			}
+		}
+		return ""
+	}
+	syms := idx.fileSymbols[repo][slashed]
 	pick := func(match func(symbolInfo) bool) (string, int) {
 		name, n := "", 0
 		for _, s := range syms {
