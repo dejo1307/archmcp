@@ -1249,3 +1249,14 @@ func TestDetect_PlainNodePackageWithoutDependencies(t *testing.T) {
 		t.Fatalf("Detect = %v, %v — a bare name-holding stub is a marker file, not a package", ok, err)
 	}
 }
+
+func TestDetect_DenoProject(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "deno.jsonc"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := New().Detect(dir)
+	if err != nil || !ok {
+		t.Fatalf("Detect = %v, %v — a Deno project has TypeScript and no package.json", ok, err)
+	}
+}

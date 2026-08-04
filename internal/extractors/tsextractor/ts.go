@@ -94,8 +94,12 @@ func searchTSRoot(dir string, depth, maxDepth int) (string, bool) {
 // hasTSMarkers returns true if the directory looks like a project root this
 // extractor should handle (TypeScript, or a JS framework it also parses).
 func hasTSMarkers(dir string) bool {
-	// tsconfig.json (standard) or tsconfig.base.json (Nx monorepo)
-	for _, name := range []string{"tsconfig.json", "tsconfig.base.json"} {
+	// tsconfig.json (standard), tsconfig.base.json (Nx monorepo), or a Deno
+	// project's config — Deno ships TypeScript with no package.json at all
+	// (deno.json/deno.jsonc, import_map.json), so a Deno Slack app or service
+	// was undetectable by every package.json rule below.
+	for _, name := range []string{"tsconfig.json", "tsconfig.base.json",
+		"deno.json", "deno.jsonc", "import_map.json"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			return true
 		}
