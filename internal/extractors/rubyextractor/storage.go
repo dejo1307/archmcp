@@ -120,3 +120,23 @@ func singularize(s string) string {
 	}
 	return s
 }
+
+// sequelModelBase reports whether a superclass expression marks a Sequel model,
+// returning the literal dataset table when the `Sequel::Model(:table)` form
+// names one. A dynamic argument yields an empty table — the caller falls back
+// to the class-name inference rather than guessing.
+func sequelModelBase(superclass string) (table string, ok bool) {
+	if superclass == "Sequel::Model" {
+		return "", true
+	}
+	rest, found := strings.CutPrefix(superclass, "Sequel::Model(")
+	if !found {
+		return "", false
+	}
+	rest = strings.TrimSuffix(rest, ")")
+	rest = strings.TrimSpace(rest)
+	if t, isSym := strings.CutPrefix(rest, ":"); isSym && t != "" && !strings.ContainsAny(t, " ()") {
+		return t, true
+	}
+	return "", true
+}

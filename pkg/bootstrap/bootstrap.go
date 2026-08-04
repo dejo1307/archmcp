@@ -44,6 +44,7 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcimpl"
 	"github.com/enola-labs/enola/internal/linkers/binders/httphandler"
 	"github.com/enola-labs/enola/internal/linkers/binders/unmatchedroutes"
+	graphqlsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/graphqlsig"
 	httpsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/http"
 	importsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/imports"
 	kafkasignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/kafka"
@@ -404,6 +405,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterCrossRepoSignal(httpsignal.New(linkVocab))
 	eng.RegisterCrossRepoSignal(importsignal.New())
 	eng.RegisterCrossRepoSignal(kafkasignal.New(linkVocab))
+	eng.RegisterCrossRepoSignal(graphqlsignal.New())
 	eng.RegisterCrossRepoSignal(sharedcodesignal.New(linkVocab))
 
 	// Register all OSS explainers

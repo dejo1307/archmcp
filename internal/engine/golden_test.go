@@ -69,6 +69,15 @@ var fixtures = []fixture{
 	// locals, and the ember-resolver binder joins .hbs invocations, @service
 	// injections and model relationships to the symbols the files actually declare.
 	{name: "ts_ember_sample", subRepos: []string{"."}},
+	// React Navigation: screen registrations become page routes handled_by their
+	// imported components; a literal navigate() becomes a navigation edge from
+	// the enclosing symbol. Pins v151's RN half.
+	{name: "ts_reactnav_sample", subRepos: []string{"."}},
+	// A graphql-ruby server beside a gql-tag client. Pins the GraphQL seam end
+	// to end: root-field route facts on both sides, the graphql cross-repo
+	// signal drawing client -> server on the exact field name, the unserved
+	// operation counted but unlinked, and GraphQL staying OUT of HTTP matching.
+	{name: "graphql_multirepo", subRepos: []string{"server", "client"}},
 	{name: "ruby_sample", subRepos: []string{"."}},
 	{name: "swift_sample", subRepos: []string{"."}},
 	{name: "kotlin_sample", subRepos: []string{"."}},

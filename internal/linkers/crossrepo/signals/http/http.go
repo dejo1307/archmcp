@@ -43,7 +43,8 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 
 	// Match client routes against the server index.
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || routeindex.RoleOf(f) != facts.RoleClient {
+		if f.Kind != facts.KindRoute || f.Repo == "" || routeindex.RoleOf(f) != facts.RoleClient ||
+			f.PropString(facts.PropRouteType) == facts.RouteTypeGraphQL {
 			continue
 		}
 		// Every client call site is a detected outbound edge. Counting here, before
@@ -217,7 +218,7 @@ func UnmatchedServerRouteKeys(m *routeindex.Matcher, all []facts.Fact) map[strin
 	identities := map[string]bool{}
 	for _, f := range all {
 		if f.Kind != facts.KindRoute || f.Repo == "" || routeindex.RoleOf(f) == facts.RoleClient ||
-			routeindex.IsUIRoute(f) {
+			routeindex.IsUIRoute(f) || f.PropString(facts.PropRouteType) == facts.RouteTypeGraphQL {
 			continue
 		}
 		method := routeindex.NormalizeMethod(f.PropString("method"))

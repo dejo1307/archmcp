@@ -143,7 +143,8 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 		// and ActiveRecord storage/associations in a single AST pass;
 		// extractRubyHTTPClientFacts adds outbound HTTP-client routes.
 		ff := extractFileAST(src, relFile, isRails, exported)
-		return append(ff, extractRubyHTTPClientFacts(src, relFile)...)
+		ff = append(ff, extractRubyHTTPClientFacts(src, relFile)...)
+		return append(ff, extractGraphQLRubyRoutes(src, relFile)...)
 	})
 
 	// Track directories that contain Ruby files for module emission.

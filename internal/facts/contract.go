@@ -53,6 +53,12 @@ const (
 	// call site, rather than an HTTP path. Its path is the wire path
 	// "/pkg.Service/Method", and grpcimpl binding keys on it.
 	RouteTypeGRPC = "grpc"
+
+	// RouteTypeGraphQL marks a GraphQL operation-surface route: a server root
+	// field (`Query.pageViews`) or a client operation's root field. Kept out of
+	// HTTP path matching the way gRPC is; the graphql cross-repo signal owns
+	// the join.
+	RouteTypeGraphQL = "graphql"
 	// RouteTypeMiddleware marks a registration that wraps other routes rather than
 	// serving one. Handler binding skips these: a middleware's "handler" is a
 	// middleware func, and binding it to a route would pollute handled_by.
@@ -99,6 +105,13 @@ const (
 	RouteSourceGRPCProto         = "grpc-proto"         // .proto service definition
 	RouteSourceOpenAPI           = "openapi"            // OpenAPI/Swagger spec
 	RouteSourceOpenAPITypeScript = "openapi-typescript" // generated TS client from a spec
+
+	// GraphQL contract sources: the graphql-ruby field DSL (server), gql-tagged
+	// template literals (hand-written client operations), and standalone
+	// .graphql operation documents (Apollo codegen inputs — client operations).
+	RouteSourceGraphQLRubyDSL   = "graphql-ruby-dsl"
+	RouteSourceGraphQLTag       = "graphql-tag"
+	RouteSourceGraphQLOperation = "graphql-operation-file"
 	RouteSourceSymfonyConfig     = "symfony-config"     // Symfony YAML/XML route config
 )
 
@@ -117,6 +130,7 @@ const (
 // via="grpc" first (FrameworkGRPC wins), so their membership only matters if that
 // framework prop is ever absent.
 var HandWrittenClientSources = map[string]bool{
+	RouteSourceGraphQLTag:       true,
 	RouteSourceGoHTTPClient:     true,
 	RouteSourceTSHTTPClient:     true,
 	RouteSourceRubyHTTPClient:   true,
@@ -136,6 +150,9 @@ var HandWrittenClientSources = map[string]bool{
 // does not know about — the check that catches a new extractor pass inventing a value
 // and never telling the linker.
 var AllRouteSources = map[string]bool{
+	RouteSourceGraphQLRubyDSL:   true,
+	RouteSourceGraphQLTag:       true,
+	RouteSourceGraphQLOperation: true,
 	RouteSourceGoHTTPClient:      true,
 	RouteSourceTSHTTPClient:      true,
 	RouteSourceRubyHTTPClient:    true,

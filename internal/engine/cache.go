@@ -990,7 +990,20 @@ import (
 // are fragments, never a mode). File-local single-assignment string constants
 // fold into name arguments (derivation, not inference), and irreducibly
 // dynamic sites are counted with capped samples — visible, never guessed.
-const cacheVersion = "v150"
+// v151: the deterministic-coverage epic, part 1 — GraphQL contracts, React
+// Navigation, Sequel. graphql-ruby root-type `field` declarations and client
+// gql-tagged/.graphql operations emit route facts named by root field
+// (`Query.pageViews`, type=graphql), joined cross-repo by a new directional
+// signal on the exact name — the HTTP linker's shape for GraphQL — while
+// staying out of HTTP path matching the way gRPC does; schema COPIES on the
+// client side (type-definition blocks, codegen inputs) deliberately emit
+// nothing. React Navigation screen registrations become page routes handled_by
+// their imported components, and literal navigate()/push() calls become
+// navigation edges from the enclosing symbol (the Ember router mechanism,
+// text-scanned because React Native writes JSX in .js). Sequel::Model classes
+// emit the ActiveRecord companion storage shape, the literal dataset argument
+// winning as the physical table.
+const cacheVersion = "v151"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

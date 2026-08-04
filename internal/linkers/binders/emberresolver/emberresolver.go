@@ -54,6 +54,8 @@ const (
 	defaultExportProp  = "ember_default_export"
 	routeLinksProp     = "ember_route_links"
 	routeNameProp      = "ember_route_name"
+	navLinksProp       = "nav_route_links"
+	navNameProp        = "nav_route_name"
 	dataRoleProp       = "ember_data_role"
 	yieldHashProp      = "ember_yield_hash"
 	contextualProp     = "ember_contextual"
@@ -83,6 +85,9 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	for _, r := range store.ByKind(facts.KindRoute) {
 		name := r.PropString(routeNameProp)
 		if name == "" {
+			name = r.PropString(navNameProp)
+		}
+		if name == "" {
 			continue
 		}
 		if routeByName[r.Repo] == nil {
@@ -107,7 +112,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	// nesting level; it renders at the parent's own path, so the lookup strips
 	// the suffix rather than requiring a declared index route.
 	routeLinks := func(f *facts.Fact) []string {
-		names := propStrings(f.Props[routeLinksProp])
+		names := append(propStrings(f.Props[routeLinksProp]), propStrings(f.Props[navLinksProp])...)
 		if len(names) == 0 {
 			return nil
 		}

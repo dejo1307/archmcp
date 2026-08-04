@@ -449,9 +449,22 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 	clsIdx := len(w.out) - 1
 
 	// ActiveRecord model: emit a storage fact and flag the scope so the body
-	// scan picks up associations, scopes, and explicit table names.
+	// scan picks up associations, scopes, and explicit table names. Sequel
+	// models get the same companion shape: `class X < Sequel::Model` and the
+	// dataset form `Sequel::Model(:table)`, whose literal argument is the
+	// physical table (inferTableName is the fallback when the argument is
+	// absent or dynamic).
 	isModel := isARBaseClass(superclass)
-	if isModel {
+	sequelTable, isSequel := sequelModelBase(superclass)
+	if isModel || isSequel {
+		table := inferTableName(qual)
+		framework := "rails"
+		if isSequel {
+			framework = "sequel"
+			if sequelTable != "" {
+				table = sequelTable
+			}
+		}
 		w.out = append(w.out, facts.Fact{
 			Kind: facts.KindStorage,
 			Name: qual,
@@ -459,12 +472,13 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 			Line: line(node),
 			Props: map[string]any{
 				"storage_kind": "model",
-				"table":        inferTableName(qual),
+				"table":        table,
 				"language":     "ruby",
-				"framework":    "rails",
+				"framework":    framework,
 			},
 			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 		})
+		isModel = true
 	}
 
 	w.push(rubyScope{name: name, kind: "class", visibility: "public", isModel: isModel,

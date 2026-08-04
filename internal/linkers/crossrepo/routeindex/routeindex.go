@@ -48,7 +48,8 @@ type RouteRef struct {
 func (m *Matcher) IndexServerRoutes(all []facts.Fact) map[string][]RouteRef {
 	server := map[string][]RouteRef{}
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || RoleOf(f) == facts.RoleClient || IsUIRoute(f) {
+		if f.Kind != facts.KindRoute || f.Repo == "" || RoleOf(f) == facts.RoleClient || IsUIRoute(f) ||
+			f.PropString(facts.PropRouteType) == facts.RouteTypeGraphQL {
 			continue
 		}
 		method := NormalizeMethod(f.PropString("method"))
