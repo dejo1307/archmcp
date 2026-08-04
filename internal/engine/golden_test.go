@@ -77,7 +77,7 @@ var fixtures = []fixture{
 	// to end: root-field route facts on both sides, the graphql cross-repo
 	// signal drawing client -> server on the exact field name, the unserved
 	// operation counted but unlinked, and GraphQL staying OUT of HTTP matching.
-	{name: "graphql_multirepo", subRepos: []string{"server", "client"}},
+	{name: "graphql_multirepo", subRepos: []string{"server", "client", "reporter"}},
 	// Terraform: blocks as symbols, literal references (prefixed, declared bare
 	// addresses, depends_on lists) as edges, a local module source drawing the
 	// directory dependency. Pins v151's HCL extractor.

@@ -1,10 +1,13 @@
 package tsextractor
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/gqlscan"
 )
 
 // GraphQL client operations — the client half of the GraphQL seam.
@@ -16,11 +19,52 @@ import (
 // definition blocks (`type Query { … }`) are schema COPIES on the client side
 // (codegen inputs) and deliberately emit nothing — the operations are the
 // client truth.
-
-var gqlOperationHead = regexp.MustCompile(`(?m)^\s*(query|mutation|subscription)\b[^{]*\{`)
+//
+// The operation grammar itself lives in internal/gqlscan, shared with the Ruby
+// client scanner so both languages name the same document identically.
 
 func isGraphQLDocFile(path string) bool {
 	return strings.HasSuffix(path, ".graphql") || strings.HasSuffix(path, ".gql")
+}
+
+// detectGraphQLDocs probes for .graphql/.gql operation documents. A Swift or
+// Kotlin repository carries its Apollo operation documents with no
+// package.json anywhere (aboard-ios being the measured case: 41 documents,
+// zero TypeScript), so doc presence must activate the extractor on its own —
+// the rest of the TypeScript machinery no-ops with no TS files to read, and
+// schema COPIES stay inert because type-definition blocks emit nothing.
+// Search depth adapts exactly as findTSRoot's does: Gradle nests Apollo
+// documents deep (aboard-android keeps them at app/src/main/graphql/), so a
+// deep-nested project searches further.
+func detectGraphQLDocs(repoPath string) bool {
+	maxDepth := 3
+	if isDeepNestedProject(repoPath) {
+		maxDepth = 8
+	}
+	found := false
+	root := filepath.Clean(repoPath)
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != root && (strings.HasPrefix(name, ".") || tsSkipDirs[name]) {
+				return filepath.SkipDir
+			}
+			rel, _ := filepath.Rel(root, path)
+			if rel != "." && strings.Count(filepath.ToSlash(rel), "/") >= maxDepth {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isGraphQLDocFile(path) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // extractGraphQLClientOps scans text (a gql template body or a .graphql file)
@@ -28,10 +72,10 @@ func isGraphQLDocFile(path string) bool {
 func extractGraphQLClientOps(text, relFile, source string) []facts.Fact {
 	var out []facts.Fact
 	seen := map[string]bool{}
-	for _, m := range gqlOperationHead.FindAllStringSubmatchIndex(text, -1) {
+	for _, m := range gqlscan.OperationHead.FindAllStringSubmatchIndex(text, -1) {
 		kind := text[m[2]:m[3]]
 		kindName := strings.ToUpper(kind[:1]) + kind[1:]
-		for _, field := range gqlRootFields(text[m[1]:]) {
+		for _, field := range gqlscan.RootFields(text[m[1]:]) {
 			full := kindName + "." + field
 			if seen[full] {
 				continue
@@ -53,74 +97,6 @@ func extractGraphQLClientOps(text, relFile, source string) []facts.Fact {
 		}
 	}
 	return out
-}
-
-// gqlRootFields returns the depth-1 field names of an operation body starting
-// just after its opening brace. Fragment spreads, directives and arguments are
-// skipped; a field is the identifier that opens a depth-1 selection.
-func gqlRootFields(body string) []string {
-	var fields []string
-	depth := 1
-	i := 0
-	expectField := true
-	for i < len(body) && depth > 0 {
-		c := body[i]
-		switch {
-		case c == '{':
-			depth++
-			expectField = depth == 1
-			i++
-		case c == '}':
-			depth--
-			expectField = depth == 1
-			i++
-		case c == '#':
-			for i < len(body) && body[i] != '\n' {
-				i++
-			}
-		case c == '(':
-			par := 1
-			i++
-			for i < len(body) && par > 0 {
-				switch body[i] {
-				case '(':
-					par++
-				case ')':
-					par--
-				}
-				i++
-			}
-		case c == '.':
-			i++ // fragment spread "..."
-		case depth == 1 && expectField && (c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')):
-			j := i
-			for j < len(body) && (body[j] == '_' || (body[j] >= 'a' && body[j] <= 'z') ||
-				(body[j] >= 'A' && body[j] <= 'Z') || (body[j] >= '0' && body[j] <= '9')) {
-				j++
-			}
-			word := body[i:j]
-			k := j
-			for k < len(body) && (body[k] == ' ' || body[k] == '\t') {
-				k++
-			}
-			// `alias: field` — the FIELD is the contract name, the alias local.
-			if k < len(body) && body[k] == ':' {
-				i = k + 1
-				continue
-			}
-			if word != "on" && word != "fragment" {
-				fields = append(fields, word)
-			}
-			expectField = false
-			i = j
-		case c == '\n' || c == ',':
-			expectField = depth == 1
-			i++
-		default:
-			i++
-		}
-	}
-	return fields
 }
 
 // gqlTag matches gql`…` / graphql`…` tagged template literals.

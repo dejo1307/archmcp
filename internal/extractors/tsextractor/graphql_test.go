@@ -59,3 +59,55 @@ func TestReactNavDetect_MonorepoExampleApp(t *testing.T) {
 		t.Error("a monorepo example app one level down must trigger detection")
 	}
 }
+
+func TestGraphQLDocDetect_NoTSRoot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "graphql"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := filepath.Join(dir, "graphql", "CurrentProfile.graphql")
+	if err := os.WriteFile(doc, []byte("query CurrentProfile {\n  currentProfile {\n    id\n  }\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	found, err := e.Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("a repo carrying .graphql operation documents with no TS root must detect — the Swift Apollo case")
+	}
+	bare := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bare, "main.swift"), []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	found, err = e.Detect(bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("a repo with neither TS markers nor GraphQL documents must not detect")
+	}
+}
+
+func TestGraphQLDocDetect_GradleNestedDocuments(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.gradle"), []byte("plugins {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(dir, "app", "src", "main", "graphql")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "Profile.graphql"), []byte("query Profile {\n  me {\n    id\n  }\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	found, err := e.Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("Gradle-nested Apollo documents (app/src/main/graphql/) must detect — the aboard-android case")
+	}
+}

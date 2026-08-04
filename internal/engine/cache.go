@@ -1011,7 +1011,20 @@ import (
 // ignore-globbed — the OpenAPI self-walk precedent): plays depend on the roles
 // they list, import_role/include_role literal names draw role-to-role edges,
 // and .j2 templates are counted without ever being rendered.
-const cacheVersion = "v151"
+// v152: the deterministic-coverage epic, part 3 — the seams the estate probe
+// found dark. GraphQL operation documents activate the TypeScript extractor on
+// their own (a Swift/Kotlin Apollo repo carries .graphql documents and no
+// package.json; the machinery no-ops without TS files and schema copies stay
+// inert). Ruby operation-string literals — a quoted literal or heredoc body
+// opening with an operation head — emit client-role graphql routes through the
+// shared gqlscan grammar, so a Rails service calling a sibling's GraphQL API
+// joins the same cross-repo signal as a JS client; Ruby's own block syntax
+// (`query { |x| … }`) can never match, and graphql/ trees plus root-type files
+// are excluded as server side. Append mode discards a prior state whose
+// extractor_version differs from this constant instead of carrying it: the
+// retroactive-tagging migration would bulk-claim a stale cross-version union
+// under one repo's label, manufacturing facts no repo's source states.
+const cacheVersion = "v152"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

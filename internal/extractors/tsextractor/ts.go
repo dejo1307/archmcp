@@ -31,8 +31,10 @@ func (e *TSExtractor) Name() string {
 // Detect returns true if the repository (or one of its immediate subdirectories
 // in the case of a monorepo) contains TypeScript markers.
 func (e *TSExtractor) Detect(repoPath string) (bool, error) {
-	_, found := findTSRoot(repoPath)
-	return found, nil
+	if _, found := findTSRoot(repoPath); found {
+		return true, nil
+	}
+	return detectGraphQLDocs(repoPath), nil
 }
 
 // findTSRoot returns the directory that is the TypeScript project root, along

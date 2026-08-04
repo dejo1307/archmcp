@@ -107,12 +107,15 @@ const (
 	RouteSourceOpenAPITypeScript = "openapi-typescript" // generated TS client from a spec
 
 	// GraphQL contract sources: the graphql-ruby field DSL (server), gql-tagged
-	// template literals (hand-written client operations), and standalone
-	// .graphql operation documents (Apollo codegen inputs — client operations).
-	RouteSourceGraphQLRubyDSL   = "graphql-ruby-dsl"
-	RouteSourceGraphQLTag       = "graphql-tag"
-	RouteSourceGraphQLOperation = "graphql-operation-file"
-	RouteSourceSymfonyConfig     = "symfony-config"     // Symfony YAML/XML route config
+	// template literals (hand-written client operations), standalone .graphql
+	// operation documents (Apollo codegen inputs — client operations), and
+	// Ruby operation-string literals (a Rails service calling a sibling
+	// service's GraphQL API — client operations).
+	RouteSourceGraphQLRubyDSL    = "graphql-ruby-dsl"
+	RouteSourceGraphQLTag        = "graphql-tag"
+	RouteSourceGraphQLOperation  = "graphql-operation-file"
+	RouteSourceGraphQLRubyString = "graphql-ruby-string"
+	RouteSourceSymfonyConfig     = "symfony-config" // Symfony YAML/XML route config
 )
 
 // HandWrittenClientSources is the set of RouteSource values that mean "a human wrote
@@ -130,19 +133,20 @@ const (
 // via="grpc" first (FrameworkGRPC wins), so their membership only matters if that
 // framework prop is ever absent.
 var HandWrittenClientSources = map[string]bool{
-	RouteSourceGraphQLTag:       true,
-	RouteSourceGoHTTPClient:     true,
-	RouteSourceTSHTTPClient:     true,
-	RouteSourceRubyHTTPClient:   true,
-	RouteSourcePHPHTTPClient:    true,
-	RouteSourceJavaHTTPClient:   true,
-	RouteSourceFeign:            true,
-	RouteSourceRetrofit:         true,
-	RouteSourceURLSession:       true,
-	RouteSourceSwiftEndpoint:    true,
-	RouteSourceGoGRPCClient:     true,
-	RouteSourceTSGRPCClient:     true,
-	RouteSourcePythonGRPCClient: true,
+	RouteSourceGraphQLTag:        true,
+	RouteSourceGraphQLRubyString: true,
+	RouteSourceGoHTTPClient:      true,
+	RouteSourceTSHTTPClient:      true,
+	RouteSourceRubyHTTPClient:    true,
+	RouteSourcePHPHTTPClient:     true,
+	RouteSourceJavaHTTPClient:    true,
+	RouteSourceFeign:             true,
+	RouteSourceRetrofit:          true,
+	RouteSourceURLSession:        true,
+	RouteSourceSwiftEndpoint:     true,
+	RouteSourceGoGRPCClient:      true,
+	RouteSourceTSGRPCClient:      true,
+	RouteSourcePythonGRPCClient:  true,
 }
 
 // AllRouteSources is every registered RouteSource value. It exists for the conformance
@@ -150,9 +154,10 @@ var HandWrittenClientSources = map[string]bool{
 // does not know about — the check that catches a new extractor pass inventing a value
 // and never telling the linker.
 var AllRouteSources = map[string]bool{
-	RouteSourceGraphQLRubyDSL:   true,
-	RouteSourceGraphQLTag:       true,
-	RouteSourceGraphQLOperation: true,
+	RouteSourceGraphQLRubyDSL:    true,
+	RouteSourceGraphQLTag:        true,
+	RouteSourceGraphQLOperation:  true,
+	RouteSourceGraphQLRubyString: true,
 	RouteSourceGoHTTPClient:      true,
 	RouteSourceTSHTTPClient:      true,
 	RouteSourceRubyHTTPClient:    true,

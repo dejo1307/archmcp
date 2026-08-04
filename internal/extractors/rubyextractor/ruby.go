@@ -144,7 +144,8 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 		// extractRubyHTTPClientFacts adds outbound HTTP-client routes.
 		ff := extractFileAST(src, relFile, isRails, exported)
 		ff = append(ff, extractRubyHTTPClientFacts(src, relFile)...)
-		return append(ff, extractGraphQLRubyRoutes(src, relFile)...)
+		ff = append(ff, extractGraphQLRubyRoutes(src, relFile)...)
+		return append(ff, extractGraphQLRubyClientOps(src, relFile)...)
 	})
 
 	// Track directories that contain Ruby files for module emission.

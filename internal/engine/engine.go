@@ -285,6 +285,20 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	work := facts.NewStore()
 	var workRepoPaths map[string]string
 
+	// A prior state produced by a different extraction behaviour cannot be
+	// carried: its facts may be unlabeled (or labeled under different rules),
+	// and the retroactive-tagging migration below would bulk-claim a stale
+	// multi-repo union under one repo's label — manufacturing facts no repo's
+	// source states. Discarding is the missing-edge-beats-wrong-one rule
+	// applied to append mode; the discarded repos re-extract on their next
+	// generate with the current behaviour.
+	if appendMode && prev.snapshot != nil &&
+		prev.snapshot.Meta.ExtractorVersion != cacheVersion {
+		log.Printf("[engine] discarding prior state (extractor version %q != %q) — append would mislabel carried facts",
+			prev.snapshot.Meta.ExtractorVersion, cacheVersion)
+		appendMode = false
+	}
+
 	if appendMode {
 		// Carry prior repos forward. All() returns an independent COPY, so mutating
 		// `work` (TagUntagged/TagRange/SetRepoRange) can never touch prev.store, which
