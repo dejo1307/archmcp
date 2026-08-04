@@ -549,7 +549,13 @@ func emberDefaultExportName(root *sitter.Node, src []byte) string {
 		if node.Kind() != "export_statement" || !hasChildKind(node, "default") {
 			continue
 		}
-		if firstDeclChild(node) != nil {
+		if decl := firstDeclChild(node); decl != nil {
+			switch decl.Kind() {
+			case "function_declaration", "generator_function_declaration":
+				if id := findChildByKind(decl, "identifier"); id != nil {
+					return nodeText(id, src)
+				}
+			}
 			continue
 		}
 		if id := findChildByKind(node, "identifier"); id != nil {
@@ -918,6 +924,16 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 		f.Props["framework"] = EmberFramework
 	}
 	claimed := make(map[int]bool)
+
+	if defaultName := emberDefaultExportName(root, src); defaultName != "" {
+		factName := dir + "." + defaultName
+		for i := range result {
+			if result[i].Kind == facts.KindSymbol && result[i].Name == factName {
+				result[i].Props[EmberDefaultExportProp] = true
+				break
+			}
+		}
+	}
 
 	if frameworkRegistered {
 		for i := range result {

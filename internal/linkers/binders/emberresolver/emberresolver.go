@@ -127,6 +127,9 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		return targets
 	}
 
+	// First pass: owners, and carrier-side yield hashes registered onto them —
+	// a classic component's yield map lives in its .hbs, and a consumer in a
+	// different template must see it regardless of iteration order.
 	for _, f := range store.ByKind(facts.KindFileRef) {
 		if !f.PropBool(templateProp) {
 			continue
@@ -139,6 +142,18 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		} else {
 			w.ownerSymbol = idx.resolveRouteOwner(f.Repo, f.Name)
 		}
+		if w.ownerSymbol != "" {
+			if entries := propStrings(f.Props[yieldHashProp]); len(entries) > 0 {
+				idx.addYieldHash(f.Repo, w.ownerSymbol, entries)
+			}
+		}
+		work[f.Name] = w
+	}
+	for _, f := range store.ByKind(facts.KindFileRef) {
+		if !f.PropBool(templateProp) {
+			continue
+		}
+		w := work[f.Name]
 		for _, name := range propStrings(f.Props[invocationsProp]) {
 			if target := idx.resolveInvocation(f.Repo, name, f.Name); target != "" {
 				w.targets = append(w.targets, target)
@@ -154,7 +169,6 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 			}
 		}
 		w.linkTargets = routeLinks(&f)
-		work[f.Name] = w
 	}
 
 	injections := map[string][]string{}

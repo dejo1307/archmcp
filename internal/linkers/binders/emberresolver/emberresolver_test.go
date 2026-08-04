@@ -446,3 +446,45 @@ func TestBind_EngineTemplatesResolveInOwnTreeOnly(t *testing.T) {
 		t.Error("engine template resolved into the host tree — isolation broken")
 	}
 }
+
+func TestBind_CarrierYieldHashReachesConsumers(t *testing.T) {
+	store := bind(t,
+		symbol("app/components/core/form.Field", "app/components/core/form/field.ts",
+			map[string]any{"web_component": "component", defaultExportProp: true}),
+		func() facts.Fact {
+			f := templateRef("app/components/core/form/field.hbs", "app/components/core/form/field.ts", nil)
+			f.Props[yieldHashProp] = []string{"Input=core/input"}
+			return f
+		}(),
+		symbol("app/components/core.Input", "app/components/core/input.ts",
+			map[string]any{"web_component": "component", defaultExportProp: true}),
+		symbol("app/components.Form", "app/components/form.js",
+			map[string]any{"web_component": "component"}),
+		func() facts.Fact {
+			f := templateRef("app/components/form.hbs", "app/components/form.js", nil)
+			f.Props[contextualProp] = []string{"Core::Form::Field#Input"}
+			return f
+		}(),
+	)
+	form := factByName(t, store, facts.KindSymbol, "app/components.Form")
+	if !form.HasRelation(facts.RelCalls, "app/components/core.Input") {
+		t.Errorf("relations = %v, want the .hbs-declared yield hash visible across carriers", form.Relations)
+	}
+}
+
+func TestBind_DefaultFunctionBeatsSiblingTypeExports(t *testing.T) {
+	store := bind(t,
+		symbol("app/helpers.translateResources", "app/helpers/translate-resources.ts",
+			map[string]any{"symbol_kind": "function", defaultExportProp: true}),
+		symbol("app/helpers.GroupedResource", "app/helpers/translate-resources.ts",
+			map[string]any{"symbol_kind": "interface"}),
+		symbol("app/components.Picker", "app/components/picker.js",
+			map[string]any{"web_component": "component"}),
+		templateRef("app/components/picker.hbs", "app/components/picker.js",
+			[]string{"translate-resources"}),
+	)
+	picker := factByName(t, store, facts.KindSymbol, "app/components.Picker")
+	if !picker.HasRelation(facts.RelCalls, "app/helpers.translateResources") {
+		t.Errorf("relations = %v, want the default-exported helper, unambiguous beside its type exports", picker.Relations)
+	}
+}
