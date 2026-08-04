@@ -24,9 +24,11 @@ func NewAssignments() *Assignments {
 
 // Add records one assignment to a name. An empty literal records a
 // NON-literal assignment: it counts toward the single-assignment rule (so a
-// second assignment kills the name) but resolves to nothing itself.
+// second assignment kills the name) but resolves to nothing itself. A nil
+// store ignores the call — the nil-map ergonomics consumers had before this
+// type existed (a template scanner with no source file passes nil).
 func (a *Assignments) Add(name, literal string) {
-	if a.dup[name] {
+	if a == nil || a.dup[name] {
 		return
 	}
 	if _, seen := a.value[name]; seen {
@@ -38,8 +40,11 @@ func (a *Assignments) Add(name, literal string) {
 }
 
 // Resolve returns the literal a name was assigned exactly once, and whether
-// the derivation holds.
+// the derivation holds. A nil store resolves nothing.
 func (a *Assignments) Resolve(name string) (string, bool) {
+	if a == nil {
+		return "", false
+	}
 	v, ok := a.value[name]
 	return v, ok && v != ""
 }

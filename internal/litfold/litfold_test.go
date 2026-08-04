@@ -38,3 +38,11 @@ func TestLitfold_WrapperLiteralPath(t *testing.T) {
 		t.Fatal("non-tail shapes must not pass")
 	}
 }
+
+func TestLitfold_NilStoreIsEmpty(t *testing.T) {
+	var a *Assignments
+	a.Add("name", "/x")
+	if _, ok := a.Resolve("name"); ok {
+		t.Fatal("a nil store must resolve nothing")
+	}
+}

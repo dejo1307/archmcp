@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/litfold"
 )
 
 func setupEmberProject(t *testing.T, files map[string]string) string {
@@ -618,7 +619,8 @@ export default class Book extends Model {
 }
 
 func TestScanTypedLiteralInvocations_AndFolding(t *testing.T) {
-	folds := map[string]string{"KIND": "fancy-badge"}
+	folds := litfold.NewAssignments()
+	folds.Add("KIND", "fancy-badge")
 	got := scanTypedLiteralInvocations(`{{component "star-icon"}} (helper "sum") {{component KIND}} {{component this.dyn}}`, folds)
 	want := []string{"component:fancy-badge", "component:star-icon", "helper:sum"}
 	if !reflect.DeepEqual(got, want) {

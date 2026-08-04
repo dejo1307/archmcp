@@ -8,6 +8,7 @@ import (
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/litfold"
 )
 
 // Ember/Glimmer support — the third framework dialect the TypeScript extractor
@@ -314,7 +315,7 @@ type emberBindingInfo struct {
 // statements) and classifies each class by what its superclass's local name was
 // imported from, plus the service names its @service-decorated fields inject and
 // the ember-data relationships its @belongsTo/@hasMany fields declare.
-func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBindings, folds map[string]string) []emberClassInfo {
+func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBindings, folds *litfold.Assignments) []emberClassInfo {
 	serviceDecorators := emberServiceDecoratorNames(bindings)
 	relationshipDecorators := emberRelationshipDecoratorNames(bindings)
 	attrNames := make(map[string]bool)
@@ -379,7 +380,7 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 // programmatic counterpart of a template's `<LinkTo @route=…>`. Only a literal
 // first argument that looks like a route name (no leading slash: a URL form is
 // a path, not a name) produces a candidate; a computed name produces nothing.
-func emberTransitionLinks(classBody *sitter.Node, src []byte, folds map[string]string) []string {
+func emberTransitionLinks(classBody *sitter.Node, src []byte, folds *litfold.Assignments) []string {
 	seen := make(map[string]bool)
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
@@ -396,7 +397,7 @@ func emberTransitionLinks(classBody *sitter.Node, src []byte, folds map[string]s
 							if s := findChildByKind(args, "string"); s != nil {
 								name = strings.Trim(nodeText(s, src), `"'`)
 							} else if id := findChildByKind(args, "identifier"); id != nil {
-								name = folds[nodeText(id, src)]
+								name, _ = folds.Resolve(nodeText(id, src))
 							}
 							if name != "" && !strings.HasPrefix(name, "/") &&
 								!strings.ContainsAny(name, " {}") {
@@ -428,7 +429,7 @@ func emberTransitionLinks(classBody *sitter.Node, src []byte, folds map[string]s
 // counterpart of an @service field. Only the `service:` type is read: it is
 // effectively all real-world usage, and each container type would need its own
 // resolution rule.
-func emberLookupServices(classBody *sitter.Node, src []byte, folds map[string]string) []string {
+func emberLookupServices(classBody *sitter.Node, src []byte, folds *litfold.Assignments) []string {
 	seen := make(map[string]bool)
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
@@ -443,7 +444,7 @@ func emberLookupServices(classBody *sitter.Node, src []byte, folds map[string]st
 						if s := findChildByKind(args, "string"); s != nil {
 							arg = strings.Trim(nodeText(s, src), `"'`)
 						} else if id := findChildByKind(args, "identifier"); id != nil {
-							arg = folds[nodeText(id, src)]
+							arg, _ = folds.Resolve(nodeText(id, src))
 						}
 						if name, ok := strings.CutPrefix(arg, "service:"); ok && name != "" {
 							seen[name] = true
@@ -1536,11 +1537,11 @@ func emberFrameworkRegisteredFile(relFile string) bool {
 
 // emberBuildFoldMap collects file-local single-assignment string constants
 // (`const NAME = 'literal'`) so scanners can fold an identifier argument the
-// file states outright. Reassigned or non-string bindings never enter the map —
-// the fold stops where single-file certainty stops.
-func emberBuildFoldMap(root *sitter.Node, src []byte) map[string]string {
-	folds := make(map[string]string)
-	poisoned := make(map[string]bool)
+// file states outright. The single-assignment discipline — a reassigned or
+// non-string binding folds nothing — is litfold's, the shared definition of
+// derivable; this function owns only the AST walk that feeds it.
+func emberBuildFoldMap(root *sitter.Node, src []byte) *litfold.Assignments {
+	folds := litfold.NewAssignments()
 	for i := range root.ChildCount() {
 		node := root.Child(i)
 		if node.Kind() == "export_statement" {
@@ -1561,17 +1562,10 @@ func emberBuildFoldMap(root *sitter.Node, src []byte) map[string]string {
 			if name == nil || val == nil {
 				continue
 			}
-			n := nodeText(name, src)
-			if val.Kind() == "string" && !poisoned[n] {
-				if _, dup := folds[n]; dup {
-					delete(folds, n)
-					poisoned[n] = true
-					continue
-				}
-				folds[n] = strings.Trim(nodeText(val, src), `"'`)
+			if val.Kind() == "string" {
+				folds.Add(nodeText(name, src), strings.Trim(nodeText(val, src), `"'`))
 			} else {
-				delete(folds, n)
-				poisoned[n] = true
+				folds.Add(nodeText(name, src), "")
 			}
 		}
 	}
@@ -1617,7 +1611,7 @@ func emberModelAttrTransforms(classBody *sitter.Node, src []byte, attrNames map[
 // `(modifier "z")` forms — the dynamic helpers with a literal (or foldable)
 // name argument, exactly as deterministic as a direct invocation. Entries are
 // "component:x"-style, the explicit type replacing the hyphen requirement.
-func scanTypedLiteralInvocations(text string, folds map[string]string) []string {
+func scanTypedLiteralInvocations(text string, folds *litfold.Assignments) []string {
 	seen := make(map[string]bool)
 	for _, kind := range []string{"component", "helper", "modifier"} {
 		for _, opener := range []string{"{{" + kind + " ", "(" + kind + " "} {
@@ -1645,7 +1639,7 @@ func scanTypedLiteralInvocations(text string, folds map[string]string) []string 
 						for k < len(text) && isHbsNameByte(text[k]) {
 							k++
 						}
-						if lit, ok := folds[text[start:k]]; ok {
+						if lit, ok := folds.Resolve(text[start:k]); ok {
 							seen[kind+":"+lit] = true
 						}
 					}
@@ -1668,7 +1662,7 @@ func scanTypedLiteralInvocations(text string, folds map[string]string) []string 
 // countDynamicInvocations counts the same helper forms whose argument is
 // neither literal nor foldable — the irreducibly runtime sites. Visibility,
 // never speculation: the count and capped samples are all that is asserted.
-func countDynamicInvocations(text string, folds map[string]string) (int, []string) {
+func countDynamicInvocations(text string, folds *litfold.Assignments) (int, []string) {
 	count := 0
 	var samples []string
 	for _, kind := range []string{"component", "helper", "modifier"} {
@@ -1689,7 +1683,7 @@ func countDynamicInvocations(text string, folds map[string]string) (int, []strin
 						k++
 					}
 					expr := text[start:k]
-					if _, folded := folds[expr]; !folded && expr != "" {
+					if _, folded := folds.Resolve(expr); !folded && expr != "" {
 						count++
 						if len(samples) < 3 {
 							samples = append(samples, kind+" "+expr)
