@@ -88,7 +88,12 @@ func TestSingleSegmentPath_FileNameIsNotAHint(t *testing.T) {
 	}
 }
 
-func TestUnmatched_HintedExternalAndIntentAttribution(t *testing.T) {
+// A hint that resolves to no loaded repo is not evidence the call leaves the
+// estate: it is equally consistent with a derivation that named no provider.
+// Externality is claimed from the URL literal, so a hinted non-match stays in
+// the residue and is triaged like any other — here by the repo's sole declared
+// seam. Omitting it instead deleted real blind spots from the report.
+func TestUnmatched_HintDoesNotProveExternalAndIntentAttribution(t *testing.T) {
 	hinted := facts.Fact{Kind: facts.KindRoute, Name: "/collections/x", Repo: "app",
 		Props: map[string]any{"role": "client", "method": "GET",
 			"source": facts.RouteSourceRubyHTTPClient, "target_hint": "fastlyapikey"}}
@@ -107,7 +112,9 @@ func TestUnmatched_HintedExternalAndIntentAttribution(t *testing.T) {
 	for id, reason := range un {
 		switch {
 		case strings.Contains(id, "/collections/x"):
-			t.Errorf("hinted external must be omitted, got reason %q", reason)
+			if reason != ReasonDeclaredTarget {
+				t.Errorf("an unresolvable hint must not omit the call site; want %q, got %q", ReasonDeclaredTarget, reason)
+			}
 		case strings.Contains(id, "/activities"):
 			if reason != ReasonDeclaredTarget {
 				t.Errorf("declared-target attribution expected, got %q", reason)

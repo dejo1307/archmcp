@@ -122,12 +122,12 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 			continue
 		}
 		if !matched {
-			if hint := f.PropString("target_hint"); hint != "" {
-				if _, loaded := in.ResolveRepo(hint); !loaded {
-					out.Coverage(f.Repo, CoverageEdgeType).External++
-					continue
-				}
-			}
+			// A hint that resolves to no loaded repo proves nothing: it is exactly
+			// as consistent with a derivation that named no provider (`${baseUrl}`
+			// hints "base") as with a genuine third-party host. Externality is
+			// claimed from the URL literal (IsExternalClient above), never from a
+			// failure to identify the target — a blind spot filed as an expected
+			// non-match stops being reported at all.
 			// Attribution by declared intent: when the calling repo's declaration
 			// names exactly one http-client seam, an unmatched call is attributed
 			// to that declared target — counted in its own bucket, never as a
@@ -407,11 +407,8 @@ func UnmatchedClientRouteKeys(m *routeindex.Matcher, all []facts.Fact) map[strin
 		cp := routeindex.CanonicalLeadingSlash(np)
 		matches, _ := m.LookupClientMatches(server, cp, method)
 		if provider, _ := pickProvider(f, matches); provider == "" {
-			if hint := f.PropString("target_hint"); hint != "" {
-				if _, loaded := resolveRepoIn(all, hint); !loaded {
-					continue // hinted external: an expected non-match, mirrored from linkHTTP
-				}
-			}
+			// No hinted-external skip here either: mirrored from linkHTTP, an
+			// unresolvable hint is not evidence that the call leaves the estate.
 			if target, one := soleDeclaredHTTPTarget(all, f.Repo); one && target != f.Repo {
 				unmatched[id] = ReasonDeclaredTarget
 				continue
