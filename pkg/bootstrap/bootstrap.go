@@ -23,6 +23,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/depth"
 	"github.com/enola-labs/enola/internal/explainers/godclass"
 	"github.com/enola-labs/enola/internal/explainers/hotspots"
+	"github.com/enola-labs/enola/internal/explainers/intentcheck"
 	"github.com/enola-labs/enola/internal/explainers/layers"
 	"github.com/enola-labs/enola/internal/explainers/surface"
 	"github.com/enola-labs/enola/internal/explainers/unusedroutes"
@@ -33,6 +34,7 @@ import (
 	"github.com/enola-labs/enola/internal/extractors/hclextractor"
 	"github.com/enola-labs/enola/internal/extractors/javaextractor"
 	"github.com/enola-labs/enola/internal/extractors/kotlinextractor"
+	"github.com/enola-labs/enola/internal/extractors/mdintent"
 	"github.com/enola-labs/enola/internal/extractors/openapiextractor"
 	"github.com/enola-labs/enola/internal/extractors/phpextractor"
 	"github.com/enola-labs/enola/internal/extractors/pythonextractor"
@@ -373,6 +375,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	// Register all OSS extractors
 	eng.RegisterExtractor(cppextractor.New())
 	eng.RegisterExtractor(goextractor.New())
+	eng.RegisterExtractor(mdintent.New())
 	eng.RegisterExtractor(grpcextractor.New())
 	eng.RegisterExtractor(hclextractor.New())
 	eng.RegisterExtractor(ansibleextractor.New())
@@ -423,6 +426,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExplainer(depth.New())
 	eng.RegisterExplainer(surface.New())
 	eng.RegisterExplainer(complexity.New())
+	eng.RegisterExplainer(intentcheck.New())
 
 	// Register all OSS renderers
 	eng.RegisterRenderer(llmcontext.New(cfg.Output.MaxContextTokens))

@@ -192,9 +192,14 @@ var (
 type Coverage struct {
 	Detected int
 	Resolved int
-	// External counts call sites aimed at a hardcoded third-party host. They are
+	// External counts call sites aimed at a hardcoded third-party host, or ones
+	// whose host-derived target hint resolves to no loaded repo. They are
 	// expected non-matches, so they are bucketed apart from the blind spot.
 	External int
+	// Declared counts unmatched call sites attributed to the repo's single
+	// declared http-client seam — intent supplying the attribution measurement
+	// could not. Labeled, never resolved into an edge.
+	Declared int
 }
 
 // EvidenceSink is the write side: what a signal reports into.

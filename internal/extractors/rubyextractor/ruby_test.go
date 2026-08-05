@@ -2094,3 +2094,38 @@ end
 		t.Errorf("/v2/settings method = %v, want PUT", names["/v2/settings"])
 	}
 }
+
+func TestRoutes_BareVerbInResourcesNestsUnderMember(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  namespace :api do
+    resources :steps, only: :update do
+      get :status
+      post :reset
+      collection do
+        get :get_custom_fields
+      end
+      post :callback, on: :collection
+      get :audit, on: :member
+    end
+  end
+end
+`
+	result := parseRouteFileAST([]byte(src), "config/routes.rb")
+	names := make(map[string]string)
+	for _, f := range result {
+		if f.Kind == facts.KindRoute {
+			names[f.Name] = f.Props["method"].(string)
+		}
+	}
+	for path, method := range map[string]string{
+		"/api/steps/:step_id/status":   "GET",
+		"/api/steps/:step_id/reset":    "POST",
+		"/api/steps/:step_id/audit":    "GET",
+		"/api/steps/get_custom_fields": "GET",
+		"/api/steps/callback":          "POST",
+	} {
+		if names[path] != method {
+			t.Errorf("route %s %s missing or wrong method (got %v)", method, path, names)
+		}
+	}
+}

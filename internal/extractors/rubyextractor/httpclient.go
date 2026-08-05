@@ -42,7 +42,28 @@ var rubyEnvVar = regexp.MustCompile(`ENV(?:\.fetch)?\s*[\(\[]\s*['"]([A-Za-z_][A
 var httpClientReceivers = map[string]bool{
 	"conn": true, "connection": true, "http": true,
 	"client": true, "faraday": true, "req": true, "request": true,
+	"typhoeus": true,
 }
+
+// typhoeusRequestNew matches the start of a Typhoeus::Request.new call. The URL
+// and the method: kwarg usually sit on following lines, so detection is a small
+// forward window rather than a single-line match.
+var typhoeusRequestNew = regexp.MustCompile(`Typhoeus::Request\.new\s*\(`)
+
+// rubyMethodKwarg matches a literal HTTP-verb symbol kwarg, e.g. `method: :get`.
+var rubyMethodKwarg = regexp.MustCompile(`method:\s*:(get|post|put|patch|delete|head)\b`)
+
+// rubyTemplateTailParam matches a request-URL template whose tail is a bare
+// identifier — "#{base_url}#{path}" — capturing the base and tail identifiers.
+// Only the two-part base+tail shape qualifies; anything longer derives nothing.
+var rubyTemplateTailParam = regexp.MustCompile(`"#\{@?([a-z_][\w]*)\}#\{([a-z_][\w]*)\}"`)
+
+// rubyDefLine captures a method definition's name and parameter list.
+var rubyDefLine = regexp.MustCompile(`^\s*def\s+([a-z_][\w!?]*)\s*\(([^)]*)\)`)
+
+// rubyPathKwarg matches a rooted string literal passed as a named kwarg,
+// capturing kwarg name and literal.
+var rubyPathKwarg = regexp.MustCompile(`([a-z_][\w]*):\s*"(/[^"]*)"`)
 
 // extractRubyHTTPClientFacts emits a client-route fact for every hand-written
 // HTTP-client call (Faraday / Net::HTTP / wrapper clients) in a Ruby source
@@ -54,7 +75,7 @@ func extractRubyHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 	api := rubyAPIHint(relFile)
 	envHint := envVarHint(string(src)) // file-level fallback
 
-	var out []facts.Fact
+	out := extractWrapperMethodClientFacts(string(src), relFile, api, envHint)
 	for i, line := range strings.Split(string(src), "\n") {
 		derived := ""
 		m := rubyClientCall.FindStringSubmatch(line)
@@ -112,6 +133,105 @@ func extractRubyHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 	return out
 }
 
+// extractWrapperMethodClientFacts derives client facts through a request-wrapper
+// method: a private helper holding the file's ONLY HTTP sink whose URL template
+// tails a parameter — `Typhoeus::Request.new("#{base_url}#{path}", method: :get)`
+// inside `def make_request(path:, params:)` — with the real paths living as
+// rooted string-literal kwargs at the same-file call sites. The single-sink rule
+// mirrors litfold's single-assignment doctrine: two sinks, or a tail identifier
+// that is not a parameter of the enclosing def, derive nothing. The verb must be
+// a literal symbol on the sink.
+func extractWrapperMethodClientFacts(src, relFile, api, envHint string) []facts.Fact {
+	lines := strings.Split(src, "\n")
+
+	sinkLine := -1
+	for i, line := range lines {
+		if typhoeusRequestNew.MatchString(line) {
+			if sinkLine >= 0 {
+				return nil // two sinks: ambiguous, derive nothing
+			}
+			sinkLine = i
+		}
+	}
+	if sinkLine < 0 {
+		return nil
+	}
+
+	baseIdent, tailParam, verb := "", "", ""
+	for j := sinkLine; j < len(lines) && j <= sinkLine+6; j++ {
+		if m := rubyTemplateTailParam.FindStringSubmatch(lines[j]); m != nil && tailParam == "" {
+			baseIdent, tailParam = m[1], m[2]
+		}
+		if m := rubyMethodKwarg.FindStringSubmatch(lines[j]); m != nil && verb == "" {
+			verb = m[1]
+		}
+	}
+	if tailParam == "" || verb == "" {
+		return nil
+	}
+
+	// The base identifier's own assignment is the precise hint source: the env
+	// var behind `@base_url = ENV["ANALYTICS_BASE_URL"]` names the provider,
+	// where a file-level first-env fallback can grab an unrelated variable.
+	baseAssign := regexp.MustCompile(`@?` + regexp.QuoteMeta(baseIdent) + `\s*=\s*ENV`)
+	for _, line := range lines {
+		if baseAssign.MatchString(line) {
+			if h := envVarHint(line); h != "" {
+				envHint = h
+			}
+			break
+		}
+	}
+
+	wrapper := ""
+	for j := sinkLine; j >= 0; j-- {
+		if m := rubyDefLine.FindStringSubmatch(lines[j]); m != nil {
+			if strings.Contains(m[2], tailParam) {
+				wrapper = m[1]
+			}
+			break
+		}
+	}
+	if wrapper == "" {
+		return nil
+	}
+
+	var out []facts.Fact
+	callOpen := regexp.MustCompile(`\b` + regexp.QuoteMeta(wrapper) + `\s*\(`)
+	for i, line := range lines {
+		if !callOpen.MatchString(line) || rubyDefLine.MatchString(line) {
+			continue
+		}
+		for j := i; j < len(lines) && j <= i+2; j++ {
+			m := rubyPathKwarg.FindStringSubmatch(lines[j])
+			if m == nil || m[1] != tailParam {
+				continue
+			}
+			if path, ok := cleanRubyPath(m[2]); ok {
+				out = append(out, facts.Fact{
+					Kind: facts.KindRoute,
+					Name: path,
+					File: relFile,
+					Line: j + 1,
+					Props: map[string]any{
+						facts.PropRole:   facts.RoleClient,
+						"method":         strings.ToUpper(verb),
+						"framework":      "typhoeus",
+						"language":       "ruby",
+						facts.PropSource: facts.RouteSourceRubyHTTPClient,
+						"api":            api,
+						"target_hint":    envHint,
+						"derived":        "wrapper-method",
+					},
+					Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: filepath.ToSlash(filepath.Dir(relFile))}},
+				})
+			}
+			break
+		}
+	}
+	return out
+}
+
 // isHTTPClientReceiver reports whether a receiver token names an HTTP client: a
 // constant ending in "Client", or a known client variable name. The base name
 // after the last "::" is used so Net::HTTP and similar scoped receivers match.
@@ -137,6 +257,8 @@ func rubyFramework(recv string) string {
 		return "net-http"
 	case strings.EqualFold(base, "faraday") || strings.EqualFold(base, "conn") || strings.EqualFold(base, "connection"):
 		return "faraday"
+	case strings.EqualFold(base, "typhoeus"):
+		return "typhoeus"
 	default:
 		return "http-client"
 	}
@@ -202,15 +324,16 @@ var urlVarSuffixes = []string{
 
 // stripURLVarSuffix removes the longest matching base-URL suffix from an env-var
 // name and lowercases the remainder (dropping underscores), yielding a provider
-// hint. Returns "" if nothing is left after stripping.
+// hint. An env name carrying NO base-URL suffix yields nothing: a rate-limit or
+// token variable must never become a hint, because a garbage hint steers the
+// cross-repo matcher toward a wrong edge — and a wrong edge is worse than none.
 func stripURLVarSuffix(name string) string {
 	for _, suf := range urlVarSuffixes {
 		if strings.HasSuffix(name, suf) && len(name) > len(suf) {
-			name = name[:len(name)-len(suf)]
-			break
+			return strings.ReplaceAll(strings.ToLower(name[:len(name)-len(suf)]), "_", "")
 		}
 	}
-	return strings.ReplaceAll(strings.ToLower(name), "_", "")
+	return ""
 }
 
 // rubyAPIHint returns the source file's base name without extension, used as the

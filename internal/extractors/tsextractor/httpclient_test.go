@@ -457,7 +457,7 @@ func TestExtractHTTPClientFacts_VariableOptionsDefaultsToGet(t *testing.T) {
 }
 
 func TestHTTPClient_SingleAssignmentFoldedFetch(t *testing.T) {
-	src := []byte("const url = `${config.TEAMTAILOR_HOST}/mcp`;\nconst res = await fetch(url, { method: 'POST' });\n")
+	src := []byte("const url = `${config.ACME_HOST}/mcp`;\nconst res = await fetch(url, { method: 'POST' });\n")
 	ff := extractHTTPClientFacts(src, "src/index.ts")
 	if len(ff) != 1 || ff[0].Name != "/mcp" || ff[0].Props["method"] != "POST" {
 		t.Fatalf("folded fetch = %+v, want one POST /mcp", ff)
@@ -487,7 +487,7 @@ func TestHTTPClient_TemplateTailLowerVerb(t *testing.T) {
 }
 
 func TestHTTPClient_UrlPropertyIdentifierFolded(t *testing.T) {
-	src := []byte("const url = `${config.TEAMTAILOR_HOST}/mcp`;\nconst server = new MCPClient({\n  name: \"x\",\n  url: url,\n  requestInit: { headers: { authorization: token } },\n});\n")
+	src := []byte("const url = `${config.ACME_HOST}/mcp`;\nconst server = new MCPClient({\n  name: \"x\",\n  url: url,\n  requestInit: { headers: { authorization: token } },\n});\n")
 	ff := extractHTTPClientFacts(src, "src/index.ts")
 	if len(ff) != 1 || ff[0].Name != "/mcp" || ff[0].Props["derived"] != "single-assignment" {
 		t.Fatalf("identifier url: property = %+v, want one derived /mcp", ff)
@@ -498,5 +498,18 @@ func TestHTTPClient_UrlPropertyIdentifierFolded(t *testing.T) {
 	plain := []byte("const target = compute();\nconst opts = { url: target, headers: {} };\n")
 	if got := extractHTTPClientFacts(plain, "src/other.ts"); len(got) != 0 {
 		t.Fatalf("unresolvable identifier url: derived something: %+v", got)
+	}
+}
+
+func TestHTTPClient_StrippedBaseCarriesTargetHint(t *testing.T) {
+	src := []byte("const url = `${config.ACME_HOST}/mcp`;\nconst server = new MCPClient({\n  url: url,\n  requestInit: { headers: { authorization: token } },\n});\n")
+	ff := extractHTTPClientFacts(src, "src/index.ts")
+	if len(ff) != 1 || ff[0].Props["target_hint"] != "acme" {
+		t.Fatalf("stripped base must hint its host: %+v", ff)
+	}
+	inline := []byte("const r = await fetch(`${API_BASE_URL}/api/user/current`);\n")
+	got := extractHTTPClientFacts(inline, "src/user.ts")
+	if len(got) != 1 || got[0].Props["target_hint"] != "api" {
+		t.Fatalf("inline interpolated base hints too: %+v", got)
 	}
 }

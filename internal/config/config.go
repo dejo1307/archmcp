@@ -8,6 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/enola-labs/enola/internal/intent"
 	"github.com/enola-labs/enola/internal/linkers/vocab"
 )
 
@@ -31,6 +32,13 @@ type Config struct {
 	// directory, so a checked-in cluster config means the same thing wherever it is
 	// run from. (Repo keeps its historical cwd-relative behaviour.)
 	Repos []string `yaml:"repos"`
+
+	// Intent is the cluster config's intent block: declared architectural
+	// intent keyed by repo label, for repos the operator observes but does not
+	// own. An entry here overrides that repo's own enola-intent.yaml wholesale
+	// (never key-by-key), and the override is reported — see the intent
+	// package for the composition rule and vocabulary validation.
+	Intent map[string]*intent.Declaration `yaml:"intent"`
 
 	// SourcePath is the file this config was read from, or "" when the built-in
 	// defaults are in force. Not read from YAML — set by Load, and used to resolve
@@ -328,8 +336,8 @@ func Default() *Config {
 			"**/conftest.py", "**/test_*.py",
 			"**/tests/**/*.py", "**/test/**/*.py",
 		},
-		Extractors: []string{"cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible"},
-		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"},
+		Extractors: []string{"cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible", "mdintent"},
+		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
 			Dir:              defaultOutputDir,
@@ -367,6 +375,16 @@ func Load(path string) (*Config, error) {
 		cfg.SourcePath = abs
 	} else {
 		cfg.SourcePath = path
+	}
+
+	for label, decl := range cfg.Intent {
+		if decl == nil {
+			continue
+		}
+		if err := decl.Validate(); err != nil {
+			return nil, fmt.Errorf("in config %s, intent entry %q: %w", path, label, err)
+		}
+		decl.Source = intent.ClusterSource
 	}
 
 	if err := cfg.Normalize(); err != nil {

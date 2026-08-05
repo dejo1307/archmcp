@@ -36,7 +36,7 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 				continue
 			}
 			e := out.Edge(f.Repo, provider)
-			e.Via("import")
+			e.Via(facts.ViaImport)
 			e.Sample(plugin.BucketImports, rel.Target)
 		}
 	}

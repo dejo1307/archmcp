@@ -93,16 +93,16 @@ func TestBind_OwnerlessTemplateCarriesEdgesItself(t *testing.T) {
 
 func TestBind_ServiceInjection_UsesDeclaredClassName(t *testing.T) {
 	store := bind(t,
-		symbol("app/services.AboardApolloService", "app/services/aboard-apollo.ts", nil),
+		symbol("app/services.AcmeApolloService", "app/services/acme-apollo.ts", nil),
 		symbol("app/components.Toolbar", "app/components/toolbar.ts",
-			map[string]any{servicesProp: []string{"aboard-apollo", "unknown-service"}}),
+			map[string]any{servicesProp: []string{"acme-apollo", "unknown-service"}}),
 	)
 	toolbar := factByName(t, store, facts.KindSymbol, "app/components.Toolbar")
-	if !toolbar.HasRelation(facts.RelInjects, "app/services.AboardApolloService") {
+	if !toolbar.HasRelation(facts.RelInjects, "app/services.AcmeApolloService") {
 		t.Errorf("relations = %v, want injects edge to the DECLARED class name, not a guessed one", toolbar.Relations)
 	}
 	for _, r := range toolbar.Relations {
-		if r.Kind == facts.RelInjects && r.Target != "app/services.AboardApolloService" {
+		if r.Kind == facts.RelInjects && r.Target != "app/services.AcmeApolloService" {
 			t.Errorf("unexpected injects edge %v for an unresolvable service", r)
 		}
 	}

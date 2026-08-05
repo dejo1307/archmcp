@@ -1,0 +1,113 @@
+package http
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/crossrepo/routeindex"
+	"github.com/enola-labs/enola/internal/linkers/vocab"
+	"github.com/enola-labs/enola/pkg/plugin"
+)
+
+type fakeInput struct {
+	plugin.SignalInput
+	facts []facts.Fact
+}
+
+func (f fakeInput) Facts() []facts.Fact { return f.facts }
+
+func (f fakeInput) ResolveRepo(candidate string) (string, bool) {
+	return resolveRepoIn(f.facts, candidate)
+}
+
+type recordedEdge struct{ from, to string }
+
+type fakeEdge struct{}
+
+func (fakeEdge) Via(string)                    {}
+func (fakeEdge) Confidence(string)             {}
+func (fakeEdge) Sample(plugin.Bucket, string)  {}
+func (fakeEdge) Unverified(plugin.Bucket, int) {}
+
+type fakeSink struct {
+	plugin.EvidenceSink
+	edges []recordedEdge
+}
+
+func (s *fakeSink) Edge(consumer, provider string) plugin.EdgeEvidence {
+	s.edges = append(s.edges, recordedEdge{consumer, provider})
+	return fakeEdge{}
+}
+
+func (s *fakeSink) Coverage(string, string) *plugin.Coverage { return &plugin.Coverage{} }
+
+func runSignal(t *testing.T, ff ...facts.Fact) []recordedEdge {
+	t.Helper()
+	sink := &fakeSink{}
+	New(vocab.Default()).Contribute(fakeInput{facts: ff}, sink)
+	return sink.edges
+}
+
+// TestSingleSegmentPath_ExactHintCarveOut pins the one exception to the
+// single-segment demand for an outright unambiguous provider: a hint whose
+// normalized form EQUALS a provider's label (the source names the host —
+// `${config.BACKEND_HOST}/mcp`) disambiguates; a substring hint does not.
+func TestSingleSegmentPath_ExactHintCarveOut(t *testing.T) {
+	client := facts.Fact{Kind: facts.KindRoute, Name: "/mcp", Repo: "agent",
+		Props: map[string]any{"role": "client", "method": facts.MethodAny,
+			"source": facts.RouteSourceTSHTTPClient, "target_hint": "backend"}}
+	serverA := facts.Fact{Kind: facts.KindRoute, Name: "/mcp", Repo: "backend",
+		Props: map[string]any{"method": "POST"}}
+	serverB := facts.Fact{Kind: facts.KindRoute, Name: "/mcp", Repo: "other",
+		Props: map[string]any{"method": "POST"}}
+	edges := runSignal(t, client, serverA, serverB)
+	if len(edges) != 1 || edges[0].to != "backend" {
+		t.Fatalf("an exact-label hint must disambiguate a single-segment path: %+v", edges)
+	}
+	client.Props["target_hint"] = "back"
+	if edges := runSignal(t, client, serverA, serverB); len(edges) != 0 {
+		t.Fatalf("a substring hint must stay rejected for single-segment paths: %+v", edges)
+	}
+}
+
+func TestUnmatched_HintedExternalAndIntentAttribution(t *testing.T) {
+	hinted := facts.Fact{Kind: facts.KindRoute, Name: "/collections/x", Repo: "app",
+		Props: map[string]any{"role": "client", "method": "GET",
+			"source": facts.RouteSourceRubyHTTPClient, "target_hint": "fastlyapikey"}}
+	declared := facts.Fact{Kind: facts.KindRoute, Name: "/activities", Repo: "app",
+		Props: map[string]any{"role": "client", "method": "GET",
+			"source": facts.RouteSourceTSHTTPClient}}
+	intent := facts.Fact{Kind: facts.KindIntent, Repo: "app", Name: "consumes backend via http-client",
+		Props: map[string]any{"intent_kind": "consumes", "target": "backend", "via": "http-client"}}
+	server := facts.Fact{Kind: facts.KindRoute, Name: "/api/v1/widgets/list", Repo: "backend",
+		Props: map[string]any{"method": "GET"}}
+	gql := facts.Fact{Kind: facts.KindRoute, Name: "Query.pageViews", Repo: "app",
+		Props: map[string]any{"role": "client", "type": "graphql", "source": facts.RouteSourceGraphQLTag}}
+
+	m := routeindex.New(vocab.Default())
+	un := UnmatchedClientRouteKeys(m, []facts.Fact{hinted, declared, intent, server, gql})
+	for id, reason := range un {
+		switch {
+		case strings.Contains(id, "/collections/x"):
+			t.Errorf("hinted external must be omitted, got reason %q", reason)
+		case strings.Contains(id, "/activities"):
+			if reason != ReasonDeclaredTarget {
+				t.Errorf("declared-target attribution expected, got %q", reason)
+			}
+		case strings.Contains(id, "pageViews"):
+			t.Errorf("graphql op must be the graphql signal's domain, got reason %q", reason)
+		}
+	}
+	if _, ok := un["app\x00GET\x00/activities"]; !ok {
+		found := false
+		for id, reason := range un {
+			if strings.Contains(id, "/activities") && reason == ReasonDeclaredTarget {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected an attributed_by_intent entry for /activities, got %v", un)
+		}
+	}
+}

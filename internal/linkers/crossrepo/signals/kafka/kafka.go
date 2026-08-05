@@ -64,7 +64,7 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 			continue // owner not loaded, or the repo's own topic (it is the producer)
 		}
 		e := out.Edge(f.Repo, label)
-		e.Via("kafka")
+		e.Via(facts.ViaKafka)
 		e.Sample(plugin.BucketTopics, f.Name)
 	}
 }

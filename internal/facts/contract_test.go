@@ -184,3 +184,14 @@ func TestContract_NoHandWrittenContractLiterals(t *testing.T) {
 		}
 	}
 }
+
+func TestViaKinds_RegistryComplete(t *testing.T) {
+	for _, v := range []string{ViaHTTP, ViaHTTPClient, ViaGRPC, ViaGraphQL, ViaKafka, ViaImport, ViaSharedSymbols, ViaObjectStorage} {
+		if !AllViaKinds[v] {
+			t.Errorf("via constant %q missing from AllViaKinds — intent validation would reject a value a signal emits", v)
+		}
+	}
+	if len(AllViaKinds) != 8 {
+		t.Errorf("AllViaKinds has %d entries; a new via kind must be added to both the constants and this test", len(AllViaKinds))
+	}
+}

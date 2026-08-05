@@ -350,7 +350,7 @@ func TestEmberHbs_IgnoredOutsideEmberRepos(t *testing.T) {
 func TestDasherize(t *testing.T) {
 	cases := map[string]string{
 		"CurrentUser": "current-user", "session": "session",
-		"AboardApollo": "aboard-apollo", "a": "a",
+		"AcmeApollo": "acme-apollo", "a": "a",
 	}
 	for in, want := range cases {
 		if got := dasherize(in); got != want {

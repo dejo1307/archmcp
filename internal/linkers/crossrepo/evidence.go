@@ -351,7 +351,8 @@ func coverageProp(byType map[string]*plugin.Coverage) []map[string]any {
 			"detected":   c.Detected,
 			"resolved":   c.Resolved,
 			"external":   c.External,
-			"unresolved": c.Detected - c.Resolved - c.External,
+			"declared":   c.Declared,
+			"unresolved": c.Detected - c.Resolved - c.External - c.Declared,
 		})
 	}
 	return out

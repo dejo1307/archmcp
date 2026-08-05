@@ -39,19 +39,26 @@ find*. It is **what happens to a finding after you have found it** — and that 
 entirely on the thing [SNAPSHOTS.md](SNAPSHOTS.md) describes: whether your graph is a
 value you can compare against another one, or a picture of right now.
 
-## Ten explainers: one proof and nine estimates
+## Eleven explainers: two proofs and nine estimates
 
 An explainer reads the fact graph and emits **findings** — a claim, a confidence, and
-the entities the claim is about. There are ten, and they fall into four kinds:
+the entities the claim is about. There are eleven, and they fall into five kinds:
 
-- **The proof.** `cycles` runs Tarjan's SCC over the resolved import edges. A cycle
-  either exists or it does not.
+- **The proofs.** `cycles` runs Tarjan's SCC over the resolved import edges — a cycle
+  either exists or it does not. `intent` diffs DECLARED architecture (a repo's
+  enola-intent.yaml, or a cluster config's intent block) against the measured
+  cross-repo edges: an unexpected or mis-mechanism seam is set difference between
+  stated and measured, which either holds or it does not. Its one estimating verdict —
+  a declared seam the graph never measured — is capped below 1.0, because the absence
+  can be drift or an extraction miss.
 - **Outlier tests.** `god-class`, `hotspots` and `complexity-outliers` compute a
   distribution over your repository and flag what sits above `mean + 2σ`.
 - **Graph shape.** `dependency-depth` measures the longest transitive import chain;
   `exported-surface` flags large modules that export nearly everything.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
   against eight known taxonomies, then flags imports that run the wrong way through it.
+  A repo that DECLARES its layer order skips the recognition: the declared pattern is
+  stated, not guessed, and its violations are proof-class.
 - **Reporters.** `crossrepo`, `coverage` and `unused-routes` compute nothing of their
   own; they summarise what the cross-repo linker already resolved — which repositories
   depend on which, where enola failed to follow a call, and which routes no loaded
@@ -59,13 +66,14 @@ the entities the claim is about. There are ten, and they fall into four kinds:
 
 What each one computes, every threshold it uses and what it deliberately ignores is in
 [ARCHITECTURE.md → Insights](../ARCHITECTURE.md#insights-explainers). The distinction
-that matters here is smaller and blunter: **one of the ten proves something. The other
-nine estimate.** A cycle is a fact about your import graph. A god class is an opinion
+that matters here is smaller and blunter: **two of the eleven prove something. The
+other nine estimate.** A cycle is a fact about your import graph. A god class is an opinion
 about your repository, expressed as a number, and reasonable people can disagree with
 it.
 
 That distinction is carried in the confidence score, and it is exact rather than
-decorative: `1.0` means proven, and only `cycles` ever reaches it. Every explainer that
+decorative: `1.0` means proven, and only `cycles`, `intent`'s set-difference verdicts,
+and declared-layer violations ever reach it. Every explainer that
 computes a saturating score — a fan-in ratio, a coverage share — clamps strictly below
 `1.0`, so a statistical outlier can never present itself as a certainty.
 

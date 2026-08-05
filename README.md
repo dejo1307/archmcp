@@ -210,6 +210,7 @@ Framework- and platform-specific detection for each language is described in **[
 - **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** — what the ten explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 24,012 findings about a corpus into the one that is about your change.
 - **[docs/extraction/](docs/extraction/)** — per language, what specific code produces which facts, from committed fixtures, and what each extractor deliberately does not resolve.
 - **[docs/EXTENDING.md](docs/EXTENDING.md)** — teaching enola a connection it does not know: binders, cross-repo signals, and the `linking:` vocabulary that fixes a wrong edge from config rather than a patch.
+- **[docs/INTENT.md](docs/INTENT.md)** — declared intent: the `enola-intent.yaml` / cluster / `enola_intent:` frontmatter carriers, the full vocabulary (via, relations, origin channels), what compiles, how verdicts behave, and the working rules for keeping declarations truthful.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — the concept, the fact model, the pipeline, the MCP tool reference, and the value model.
 - **[examples/](examples/)** — ready-made per-language and multi-repo configs, plus a pre-commit hook and a CI workflow.
 
@@ -217,7 +218,7 @@ Framework- and platform-specific detection for each language is described in **[
 
 Apache License 2.0 — see [`LICENSE`](LICENSE).
 
-This repository is the full engine, not a trial edition. Every extractor and every language ships here (Go, TypeScript/JavaScript/Vue/Svelte/Ember, Python, Java, Kotlin, Ruby, PHP, Swift, Rust, C/C++, Terraform/HCL, Ansible, gRPC/Protobuf, OpenAPI, GraphQL), along with the cross-repo linker, all 13 MCP tools, all 10 explainers (cycles, layers, cross-repo, coverage, unused-routes, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers), baselines and `diff_snapshot`, snapshot receipts, the `--explain` report, and the localhost dashboard. None of this is gated, metered, or degraded without a key — there is no license check anywhere in this repository, and no snapshot, fact, or usage counter leaves your machine. (The only outbound request enola makes is to GitHub's release API, and only when you explicitly run `enola upgrade`.)
+This repository is the full engine, not a trial edition. Every extractor and every language ships here (Go, TypeScript/JavaScript/Vue/Svelte/Ember, Python, Java, Kotlin, Ruby, PHP, Swift, Rust, C/C++, Terraform/HCL, Ansible, gRPC/Protobuf, OpenAPI, GraphQL), along with the cross-repo linker, all 13 MCP tools, all 11 explainers (cycles, layers, cross-repo, coverage, unused-routes, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers, intent), baselines and `diff_snapshot`, snapshot receipts, the `--explain` report, and the localhost dashboard. None of this is gated, metered, or degraded without a key — there is no license check anywhere in this repository, and no snapshot, fact, or usage counter leaves your machine. (The only outbound request enola makes is to GitHub's release API, and only when you explicitly run `enola upgrade`.)
 
 ## Acknowledgements
 

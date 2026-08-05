@@ -261,6 +261,9 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 		if derived != "" {
 			props["derived"] = derived
 		}
+		if h := tsBaseHint(rawPath); h != "" {
+			props["target_hint"] = h
+		}
 		out = append(out, facts.Fact{
 			Kind:      facts.KindRoute,
 			Name:      path,
@@ -489,6 +492,35 @@ func firstNonEmptyGroup(src []byte, m []int, groups ...int) string {
 // or returns ok=false when it is not a backend path (fully dynamic, external,
 // or empty). It strips a leading ${...} base-URL token, drops the query string,
 // and collapses interpolations to the {} placeholder.
+// tsBaseHint derives a provider hint from an interpolated base the resolver
+// could not fold — the trailing identifier of the interpolation, lowered, with
+// URL/host/base suffixes stripped: `${config.ACME_HOST}/mcp` hints
+// "acme". The hint is a literal the source states (an env/config name
+// that names the host), and it is what disambiguates a short path served by
+// more than one loaded repo.
+func tsBaseHint(raw string) string {
+	p := strings.TrimSpace(raw)
+	if !strings.HasPrefix(p, "${") {
+		return ""
+	}
+	i := strings.IndexByte(p, '}')
+	if i < 0 {
+		return ""
+	}
+	token := p[2:i]
+	if dot := strings.LastIndexByte(token, '.'); dot >= 0 {
+		token = token[dot+1:]
+	}
+	token = strings.ToLower(strings.TrimSpace(token))
+	for _, suf := range []string{"_host_url", "_base_url", "_api_url", "_host", "_url", "_base", "host", "url"} {
+		if t, ok := strings.CutSuffix(token, suf); ok && t != "" {
+			token = t
+			break
+		}
+	}
+	return strings.Trim(strings.ReplaceAll(token, "_", ""), "-")
+}
+
 func cleanTSPath(raw string, bases map[string]string) (string, bool) {
 	p := strings.TrimSpace(raw)
 	// A leading ${...} token is the base URL. Prefer to RESOLVE it against a

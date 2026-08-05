@@ -86,3 +86,26 @@ func TestAppend_DiscardsCrossVersionPriorState(t *testing.T) {
 		}
 	}
 }
+
+func TestWalkRepo_SymlinkedRootExtracts(t *testing.T) {
+	real := t.TempDir()
+	writeFile(t, filepath.Join(real, "go.mod"), "module real\n\ngo 1.21\n")
+	writeFile(t, filepath.Join(real, "r.go"), "package real\n\nfunc R() {}\n")
+	linkParent := t.TempDir()
+	link := filepath.Join(linkParent, "aliased-label")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	eng, err := engine.New(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RegisterExtractor(goextractor.New())
+	snap, err := eng.GenerateSnapshot(context.Background(), link, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Meta.FactCount == 0 {
+		t.Fatal("a symlinked repo root must extract — WalkDir Lstats the root and walks nothing without resolution")
+	}
+}

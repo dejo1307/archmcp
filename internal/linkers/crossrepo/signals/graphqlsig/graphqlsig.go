@@ -47,12 +47,18 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 		cov := out.Coverage(f.Repo, CoverageEdgeType)
 		cov.Detected++
 		server, ok := servers[f.Name]
-		if !ok || ambiguous[f.Name] || server == f.Repo {
+		if !ok || ambiguous[f.Name] {
+			continue
+		}
+		// A self-match — a frontend querying its own repo's schema — is internal
+		// consumption: resolved, never a blind spot, and never an edge.
+		if server == f.Repo {
+			cov.Resolved++
 			continue
 		}
 		cov.Resolved++
 		e := out.Edge(f.Repo, server)
-		e.Via("graphql")
+		e.Via(facts.ViaGraphQL)
 		e.Sample(plugin.BucketEndpoints, f.Name)
 	}
 }

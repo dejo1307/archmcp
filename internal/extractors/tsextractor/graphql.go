@@ -29,12 +29,12 @@ func isGraphQLDocFile(path string) bool {
 
 // detectGraphQLDocs probes for .graphql/.gql operation documents. A Swift or
 // Kotlin repository carries its Apollo operation documents with no
-// package.json anywhere (aboard-ios being the measured case: 41 documents,
+// package.json anywhere (an iOS app being the measured case: 41 documents,
 // zero TypeScript), so doc presence must activate the extractor on its own —
 // the rest of the TypeScript machinery no-ops with no TS files to read, and
 // schema COPIES stay inert because type-definition blocks emit nothing.
 // Search depth adapts exactly as findTSRoot's does: Gradle nests Apollo
-// documents deep (aboard-android keeps them at app/src/main/graphql/), so a
+// documents deep (Android projects keep them at app/src/main/graphql/), so a
 // deep-nested project searches further.
 func detectGraphQLDocs(repoPath string) bool {
 	maxDepth := 3

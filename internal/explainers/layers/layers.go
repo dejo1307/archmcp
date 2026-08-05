@@ -304,6 +304,34 @@ func (e *LayerExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 
 	var insights []facts.Insight
 
+	// Declared layer patterns first: a repo whose intent facts declare layers
+	// is verdicted against its declaration at confidence 1.0 by the same
+	// violation machinery, and the heuristics below skip nothing — they still
+	// serve every repo without a declaration.
+	for _, dp := range declaredPatterns(store) {
+		mods := make([]string, 0, len(dp.Modules))
+		for mod := range dp.Modules {
+			mods = append(mods, mod)
+		}
+		sort.Strings(mods)
+		evidence := make([]facts.Evidence, 0, len(mods))
+		for _, mod := range mods {
+			evidence = append(evidence, facts.Evidence{Fact: mod, Detail: fmt.Sprintf("module %q maps to declared layer %q", mod, dp.Modules[mod])})
+		}
+		insights = append(insights, facts.Insight{
+			Title:       fmt.Sprintf("Architecture pattern: %s", dp.Name),
+			Description: fmt.Sprintf("Declared layer order with %d layers and %d classified modules. Declared, not recognised: confidence is exact.", len(dp.Layers), len(dp.Modules)),
+			Confidence:  1.0,
+			Evidence:    evidence,
+			Actions:     []string{"Keep the declaration beside the code it governs"},
+		})
+		violations := e.detectViolations(store, dp)
+		for i := range violations {
+			violations[i].Confidence = 1.0
+		}
+		insights = append(insights, violations...)
+	}
+
 	// Report detected architecture pattern
 	if best := e.bestPattern(patterns); best != nil {
 		// Sort the classified modules so the evidence order is deterministic —

@@ -108,6 +108,6 @@ func TestGraphQLDocDetect_GradleNestedDocuments(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !found {
-		t.Fatal("Gradle-nested Apollo documents (app/src/main/graphql/) must detect — the aboard-android case")
+		t.Fatal("Gradle-nested Apollo documents (app/src/main/graphql/) must detect — the Gradle-layout case")
 	}
 }

@@ -30,6 +30,13 @@ const (
 	KindStorage    = "storage"
 	KindDependency = "dependency"
 	KindService    = "service" // A whole repository, represented as a node in the cross-repo "graph of graphs".
+	// KindIntent is a DECLARED fact: one entry of a repo's architectural intent
+	// (a consumed seam, a served surface, a layer, a service identity), compiled
+	// into the store from enola-intent.yaml or a cluster config's intent block.
+	// Every other kind is measured from source; this one states what the source
+	// is SUPPOSED to do, and the intent explainer verdicts the two against each
+	// other. Carries intent_kind plus provenance (source, overridden).
+	KindIntent = "intent"
 	// KindTestRef is a reference-only fact emitted from a test/spec file. It carries
 	// solely RelCalls relations naming the production symbols the test exercises
 	// (Name/File are the test file path). Test files are excluded from normal

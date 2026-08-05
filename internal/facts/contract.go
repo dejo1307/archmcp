@@ -38,6 +38,45 @@ const (
 	PropRouteType = "type"
 )
 
+// Via kinds — the `via` labels a cross-repo edge carries, naming HOW the edge
+// was established. Signals write them; intent declarations (enola-intent.yaml
+// and the cluster config's intent: block) validate against AllViaKinds at
+// parse time, so a declared seam can never name a mechanism the linker does
+// not produce. The same drift rule as RouteSource: values live here, beside
+// the registry that makes free-form spellings impossible.
+const (
+	ViaHTTP       = "http"        // OpenAPI/spec-derived client call
+	ViaHTTPClient = "http-client" // hand-written HTTP client call site
+	ViaGRPC       = "grpc"        // gRPC call site or service stub
+	ViaGraphQL    = "graphql"     // GraphQL operation matched to a root field
+	ViaKafka      = "kafka"       // topic produced by one repo, consumed by another
+	ViaImport     = "import"      // shared-library import
+	// ViaSharedSymbols is the sharedcode signal's edge: two repos declaring the
+	// same exported symbols (a vendored or copied module), evidence of shared
+	// code rather than a call.
+	ViaSharedSymbols = "shared_symbols"
+	// ViaObjectStorage is a storage-mediated seam: one repo writes objects to a
+	// bucket path another repo reads (an S3-style export/import handoff). Like
+	// kafka it is asynchronous coupling a call graph structurally cannot see;
+	// unlike kafka no linker measures it yet, so today it exists for intent
+	// declarations — a declared object-storage seam states a data dependency
+	// extraction cannot confirm or deny.
+	ViaObjectStorage = "object-storage"
+)
+
+// AllViaKinds is every registered via value, for intent-declaration validation
+// and the conformance test that keeps signal emissions inside this registry.
+var AllViaKinds = map[string]bool{
+	ViaHTTP:          true,
+	ViaHTTPClient:    true,
+	ViaGRPC:          true,
+	ViaGraphQL:       true,
+	ViaKafka:         true,
+	ViaImport:        true,
+	ViaSharedSymbols: true,
+	ViaObjectStorage: true,
+}
+
 // Route role values (the PropRole prop on a KindRoute fact): which side of the call
 // this route represents. The cross-repo HTTP linker matches RoleClient routes against
 // RoleServer ones; a route with no role is treated as a server route, because an

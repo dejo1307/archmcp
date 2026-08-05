@@ -28,7 +28,7 @@ import (
 // "reported by a symmetric signal" rather than enumerating the directional kinds. An
 // enumeration silently mis-classified new signals: it once omitted "grpc", so a pair
 // linked only by gRPC calls still got a fabricated reverse edge.
-const Via = "shared_symbols"
+const Via = facts.ViaSharedSymbols
 
 // Signal detects repos sharing distinctive type declarations.
 type Signal struct {

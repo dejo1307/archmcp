@@ -116,3 +116,152 @@ func TestRubyHTTPClient_WrapperLiteral(t *testing.T) {
 		t.Fatalf("non-/-rooted wrapper literals derived: %+v", got)
 	}
 }
+
+// TestRubyHTTPClient_TyphoeusWrapperMethod pins the request-wrapper derivation:
+// a file whose single Typhoeus sink templates "#{base}#{path}" over a def
+// parameter threads the rooted path literals from same-file call sites, with
+// the sink's literal verb and the file's env-var hint.
+func TestRubyHTTPClient_TyphoeusWrapperMethod(t *testing.T) {
+	src := []byte(`class AnalyticsClient
+  def events(company_id:, date:, page:)
+    make_request(
+      path: "/exports/#{company_id}/events",
+      params: { date: date, page: page }
+    )
+  end
+
+  def visits(company_id:)
+    make_request(
+      path: "/exports/#{company_id}/visits",
+      params: {}
+    )
+  end
+
+  private
+
+  def initialize
+    @base_url = ENV["ANALYTICS_BASE_URL"]
+  end
+
+  def make_request(path:, params:)
+    request = Typhoeus::Request.new(
+      "#{base_url}#{path}",
+      method: :get,
+      params: params
+    )
+    request.run
+  end
+end
+`)
+	ff := extractRubyHTTPClientFacts(src, "app/models/analytics_client.rb")
+	var derived []facts.Fact
+	for _, f := range ff {
+		if f.Props["derived"] == "wrapper-method" {
+			derived = append(derived, f)
+		}
+	}
+	if len(derived) != 2 {
+		t.Fatalf("got %d wrapper-method routes, want 2: %+v", len(derived), derived)
+	}
+	if derived[0].Name != "/exports/{}/events" || derived[0].Props["method"] != "GET" {
+		t.Fatalf("first derived route = %+v, want GET /exports/{}/events", derived[0])
+	}
+	if derived[0].Props["target_hint"] != "analytics" {
+		t.Fatalf("env base must hint the provider, got %v", derived[0].Props["target_hint"])
+	}
+	if derived[0].Props["framework"] != "typhoeus" {
+		t.Fatalf("framework = %v, want typhoeus", derived[0].Props["framework"])
+	}
+}
+
+// TestRubyHTTPClient_TyphoeusWrapperAmbiguityDerivesNothing pins the single-sink
+// rule: two Typhoeus sinks in one file, or a tail identifier that is not a
+// parameter of the enclosing def, derive nothing.
+func TestRubyHTTPClient_TyphoeusWrapperAmbiguityDerivesNothing(t *testing.T) {
+	twoSinks := []byte(`class C
+  def a(path:)
+    Typhoeus::Request.new("#{base}#{path}", method: :get)
+  end
+  def b(path:)
+    Typhoeus::Request.new("#{base}#{path}", method: :post)
+  end
+  def use
+    a(path: "/x/y")
+  end
+end
+`)
+	if got := extractRubyHTTPClientFacts(twoSinks, "app/models/c.rb"); len(got) != 0 {
+		t.Fatalf("two sinks must derive nothing, got %+v", got)
+	}
+	notParam := []byte(`class C
+  def fire(other:)
+    Typhoeus::Request.new("#{base}#{path}", method: :get)
+  end
+  def use
+    fire(other: "/x/y")
+  end
+end
+`)
+	if got := extractRubyHTTPClientFacts(notParam, "app/models/c2.rb"); len(got) != 0 {
+		t.Fatalf("tail not a def parameter must derive nothing, got %+v", got)
+	}
+}
+
+// TestRubyHTTPClient_TyphoeusDirectVerb pins the direct form: Typhoeus.get with
+// a literal path is a plain client call under the typhoeus framework.
+func TestRubyHTTPClient_TyphoeusDirectVerb(t *testing.T) {
+	src := []byte("Typhoeus.get(\"/health/check\")\n")
+	ff := extractRubyHTTPClientFacts(src, "app/services/probe.rb")
+	if len(ff) != 1 || ff[0].Name != "/health/check" || ff[0].Props["framework"] != "typhoeus" {
+		t.Fatalf("direct Typhoeus verb = %+v, want one GET /health/check via typhoeus", ff)
+	}
+}
+
+// TestRubyHTTPClient_HintOnlyFromURLShapedEnvVars pins the garbage-hint
+// regression from the estate: a file whose FIRST env read is a rate limiter
+// (INSIGHTS_CONCURRENT_RATE_LIMIT) must not hint at all from it, and the
+// wrapper derivation must take its hint from the sink's base-identifier
+// assignment instead — a wrong hint steers the matcher toward a wrong edge.
+func TestRubyHTTPClient_HintOnlyFromURLShapedEnvVars(t *testing.T) {
+	if h := envVarHint(`LIMIT = Sidekiq::Limiter.concurrent("x", ENV.fetch("ANALYTICS_CONCURRENT_RATE_LIMIT", 1))`); h != "" {
+		t.Fatalf("a non-URL env name must yield no hint, got %q", h)
+	}
+	src := []byte(`LIMIT = ENV.fetch("ANALYTICS_CONCURRENT_RATE_LIMIT", 1)
+class AnalyticsClient
+  def events(company_id:)
+    make_request(
+      path: "/exports/#{company_id}/events",
+      params: {}
+    )
+  end
+
+  private
+
+  def initialize
+    @base_url = ENV["ANALYTICS_BASE_URL"]
+  end
+
+  def make_request(path:, params:)
+    request = Typhoeus::Request.new(
+      "#{base_url}#{path}",
+      method: :get,
+      params: params
+    )
+    request.run
+  end
+end
+`)
+	ff := extractRubyHTTPClientFacts(src, "app/models/analytics_client.rb")
+	found := false
+	for _, f := range ff {
+		if f.Props["derived"] == "wrapper-method" {
+			found = true
+			if f.Props["target_hint"] != "analytics" {
+				t.Fatalf("hint must come from the base assignment, got %v", f.Props["target_hint"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("wrapper-method route not derived")
+	}
+}

@@ -262,8 +262,8 @@ func identTokens(text string) []string {
 	return tokens
 }
 
-// dasherize converts CamelCase/PascalCase to kebab-case ("AboardApollo" →
-// "aboard-apollo"), matching Ember's name convention for services and models.
+// dasherize converts CamelCase/PascalCase to kebab-case ("AcmeApollo" →
+// "acme-apollo"), matching Ember's name convention for services and models.
 func dasherize(s string) string {
 	var b strings.Builder
 	for i, r := range s {

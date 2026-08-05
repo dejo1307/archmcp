@@ -89,6 +89,18 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		if !strings.HasPrefix(path, "/") {
 			path = "/" + path
 		}
+		// A bare verb directly inside a plural `resources` block nests under the
+		// parent member id (Rails serves `resources :steps do get :status end` at
+		// /steps/:step_id/status), as does `on: :member`; only `on: :collection`
+		// stays at the collection path. Explicit member/collection blocks push
+		// their own scope, whose memberParam is empty, so nothing doubles.
+		if len(stack) > 0 {
+			if mp := stack[len(stack)-1].memberParam; mp != "" {
+				if pairSymbol(args, "on", rw.src) != "collection" {
+					path = "/:" + mp + path
+				}
+			}
+		}
 		props := map[string]any{
 			"method":    strings.ToUpper(method),
 			"framework": "rails",

@@ -25,6 +25,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers"
 	"github.com/enola-labs/enola/internal/extractors"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/intent"
 	"github.com/enola-labs/enola/internal/linkers/binders"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo/signals"
@@ -70,6 +71,13 @@ type Engine struct {
 	// disk after a snapshot. The read path is always active when caching is
 	// enabled; one-shot --explain sets this false so it never touches .enola.
 	persistCache bool
+
+	// intentMu guards intentByRepo: each repo's resolved intent declaration
+	// (repo file, cluster entry, or the cluster's wholesale override of the
+	// file), populated as repos are snapshotted. Parsed and validated but
+	// otherwise inert — nothing consumes it until the verdict stage exists.
+	intentMu     sync.Mutex
+	intentByRepo map[string]*intent.Declaration
 }
 
 // New creates a new Engine with the given config.
@@ -145,6 +153,15 @@ func (e *Engine) Store() *facts.Store {
 // snapshot is immutable once published.
 func (e *Engine) Snapshot() *facts.Snapshot {
 	return e.current.Load().snapshot
+}
+
+// Intent returns the resolved intent declaration for a repo label, or nil
+// when the repo declares nothing. Inert carriage: parsed and validated at
+// snapshot time, consumed by nothing yet.
+func (e *Engine) Intent(repoLabel string) *intent.Declaration {
+	e.intentMu.Lock()
+	defer e.intentMu.Unlock()
+	return e.intentByRepo[repoLabel]
 }
 
 // Config returns the engine config.
@@ -285,6 +302,31 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 	repoLabel := filepath.Base(absRepo)
 
+	// Resolve this repo's declared intent: its own enola-intent.yaml, the
+	// cluster config's entry, or the cluster entry overriding the file
+	// wholesale (reported — an override must never be only implicit). An
+	// invalid declaration fails the snapshot: a declaration that cannot be
+	// trusted is worse than none, and silent skips are how vocabulary drift
+	// would creep back in.
+	fromFile, err := intent.LoadRepoFile(absRepo)
+	if err != nil {
+		return nil, err
+	}
+	resolved := intent.Resolve(fromFile, e.cfg.Intent[repoLabel])
+	if resolved != nil && resolved.Overridden {
+		log.Printf("[engine] intent for %q: cluster config overrides %s (wholesale)", repoLabel, intent.RepoFileName)
+	}
+	e.intentMu.Lock()
+	if e.intentByRepo == nil {
+		e.intentByRepo = map[string]*intent.Declaration{}
+	}
+	if resolved != nil {
+		e.intentByRepo[repoLabel] = resolved
+	} else {
+		delete(e.intentByRepo, repoLabel)
+	}
+	e.intentMu.Unlock()
+
 	// Build into a BRAND-NEW store off to the side. The currently-published bundle
 	// (prev) is never mutated, so any in-flight reader keeps iterating a consistent,
 	// frozen snapshot while we regenerate. We publish the new store atomically at the
@@ -388,6 +430,14 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	// cached with the main extractors) and adds only KindTestRef facts, so a
 	// production symbol exercised solely by a test is not mis-reported as dead.
 	e.runTestRefExtractors(ctx, absRepo, testFiles, files)
+
+	// Compile this repo's resolved intent declaration into intent facts, inside
+	// the extraction window so SetRepoRange/TagRange treat declared facts
+	// exactly as measured ones — snapshots carry them, diffs track them, and
+	// the intent explainer reads them with no side channel.
+	if resolved != nil {
+		e.store.Add(intent.CompileFacts(resolved)...)
+	}
 
 	tExtract = time.Since(tStage)
 	newCount := e.store.Count()
@@ -688,6 +738,14 @@ const skippedSampleCap = 20
 // extraction — see runTestRefExtractors), and a tally of what the ignore globs
 // dropped — ignored files, and pruned directories — for the snapshot receipt.
 func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips walkSkips, err error) {
+	// A symlinked repo root walks as a single non-directory entry (WalkDir
+	// Lstats the root), silently yielding zero files. Resolve the ROOT only —
+	// symlinks inside the tree keep their non-followed semantics — so a config
+	// may alias a checkout (a stable clone under the repo's own label) and
+	// still extract. The label was already derived from the unresolved path.
+	if resolved, rerr := filepath.EvalSymlinks(repoPath); rerr == nil && resolved != repoPath {
+		repoPath = resolved
+	}
 	err = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

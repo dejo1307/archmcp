@@ -1,0 +1,3 @@
+consumes:
+  - repo: server
+    via: graphql
