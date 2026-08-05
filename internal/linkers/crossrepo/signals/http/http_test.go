@@ -71,6 +71,23 @@ func TestSingleSegmentPath_ExactHintCarveOut(t *testing.T) {
 	}
 }
 
+// The carve-out reads target_hint and nothing else. serviceHint falls back to
+// the `api` prop, which is the client FILE's name: a file named api.ts would
+// otherwise elect the repo named api out of several candidates, and renaming
+// that file would move the dependency.
+func TestSingleSegmentPath_FileNameIsNotAHint(t *testing.T) {
+	client := facts.Fact{Kind: facts.KindRoute, Name: "/mcp", Repo: "agent",
+		Props: map[string]any{"role": "client", "method": facts.MethodAny,
+			"source": facts.RouteSourceTSHTTPClient, "api": "backend"}}
+	serverA := facts.Fact{Kind: facts.KindRoute, Name: "/mcp", Repo: "backend",
+		Props: map[string]any{"method": "POST"}}
+	serverB := facts.Fact{Kind: facts.KindRoute, Name: "/mcp", Repo: "other",
+		Props: map[string]any{"method": "POST"}}
+	if edges := runSignal(t, client, serverA, serverB); len(edges) != 0 {
+		t.Fatalf("a file name must not disambiguate a single-segment path: %+v", edges)
+	}
+}
+
 func TestUnmatched_HintedExternalAndIntentAttribution(t *testing.T) {
 	hinted := facts.Fact{Kind: facts.KindRoute, Name: "/collections/x", Repo: "app",
 		Props: map[string]any{"role": "client", "method": "GET",

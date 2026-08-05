@@ -85,8 +85,14 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 				// source names the host — `${config.ACME_HOST}/mcp` — and two
 				// loaded repos serving /mcp is precisely the case that hint exists
 				// for). Substring hint matches stay rejected for these paths.
+				//
+				// Only target_hint qualifies, for the same reason the external
+				// classification below says so: serviceHint falls back to the `api`
+				// prop, which is the client FILE's name. A file named api.ts would
+				// otherwise elect the repo named api out of several candidates, and
+				// renaming that file would move the dependency.
 				if provider != "" && routeindex.SingleSegmentPath(np) && !unambiguous &&
-					facts.NormalizeRepoLabel(serviceHint(f)) != facts.NormalizeRepoLabel(provider) {
+					facts.NormalizeRepoLabel(f.PropString("target_hint")) != facts.NormalizeRepoLabel(provider) {
 					provider = ""
 				}
 				// A non-empty provider means the call site matched a loaded service (a

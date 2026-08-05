@@ -513,3 +513,26 @@ func TestHTTPClient_StrippedBaseCarriesTargetHint(t *testing.T) {
 		t.Fatalf("inline interpolated base hints too: %+v", got)
 	}
 }
+
+// A base that names no provider must hint nothing. Every case here was taken
+// from the corpus, and each one resolved to no loaded repo — which is how a
+// blind spot gets filed as an expected third-party call.
+func TestHTTPClient_NonProviderBasesHintNothing(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"bare url", "const r = await fetch(`${url}/widgets/list`);\n"},
+		{"bare base", "const r = await fetch(`${base}/widgets/list`);\n"},
+		{"call expression", "const r = await fetch(`${getRootUrl()}/widgets/list`);\n"},
+		{"quoted lookup", "const r = await fetch(`${Cypress.env('baseUrl')}/widgets/list`);\n"},
+		{"no url suffix", "const r = await fetch(`${DEFAULT_REMOTE}/widgets/list`);\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractHTTPClientFacts([]byte(tc.src), "src/client.ts")
+			if len(got) != 1 {
+				t.Fatalf("want one client route, got %+v", got)
+			}
+			if h, ok := got[0].Props["target_hint"]; ok {
+				t.Fatalf("a base naming no provider must not hint: got %q", h)
+			}
+		})
+	}
+}

@@ -1124,7 +1124,19 @@ import (
 // stay unverdicted props by design: they speak the wiki's vocabulary, and
 // the wiki-to-cluster label mapping is the deriving toolchain's side of the
 // boundary.
-const cacheVersion = "v161"
+// v162: a hint must name a provider. tsBaseHint now derives nothing from a base
+// identifier carrying no URL/host suffix, and nothing at all from a token that
+// is not a bare identifier — `${base}`, `${url}`, `${getRootUrl()}` and
+// `${Cypress.env('baseUrl')}` named no provider, resolved to no loaded repo,
+// and so filed real internal blind spots as expected third-party calls: on a
+// three-repo estate 7 of 15 unresolved call sites vanished into `external` and
+// a coverage-gap finding stopped being reported. Same rule the Ruby side's
+// stripURLVarSuffix already applied, for the same reason. The single-segment
+// carve-out now reads target_hint alone rather than serviceHint, whose `api`
+// fallback is the client FILE's name: with two repos serving one short path, a
+// file named api.ts elected the repo named api, and renaming the file moved the
+// dependency.
+const cacheVersion = "v162"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

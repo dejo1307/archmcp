@@ -498,6 +498,12 @@ func firstNonEmptyGroup(src []byte, m []int, groups ...int) string {
 // "acme". The hint is a literal the source states (an env/config name
 // that names the host), and it is what disambiguates a short path served by
 // more than one loaded repo.
+//
+// An identifier carrying NO base-URL suffix yields nothing, exactly as the Ruby
+// side's stripURLVarSuffix does: `${base}`, `${url}` and `${getRootUrl()}` name
+// no provider, and a hint that names no provider steers the matcher toward a
+// wrong edge — worse than no edge at all. A token that is not a plain
+// identifier (a call, a quoted lookup) is not a name either.
 func tsBaseHint(raw string) string {
 	p := strings.TrimSpace(raw)
 	if !strings.HasPrefix(p, "${") {
@@ -512,13 +518,29 @@ func tsBaseHint(raw string) string {
 		token = token[dot+1:]
 	}
 	token = strings.ToLower(strings.TrimSpace(token))
+	if !tsPlainIdentifier(token) {
+		return ""
+	}
 	for _, suf := range []string{"_host_url", "_base_url", "_api_url", "_host", "_url", "_base", "host", "url"} {
 		if t, ok := strings.CutSuffix(token, suf); ok && t != "" {
-			token = t
-			break
+			return strings.Trim(strings.ReplaceAll(t, "_", ""), "-")
 		}
 	}
-	return strings.Trim(strings.ReplaceAll(token, "_", ""), "-")
+	return ""
+}
+
+// tsPlainIdentifier reports whether a token is a bare identifier — letters,
+// digits and underscores. `getrooturl()` and `env('baseurl')` are not.
+func tsPlainIdentifier(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func cleanTSPath(raw string, bases map[string]string) (string, bool) {
