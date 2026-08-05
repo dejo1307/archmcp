@@ -48,9 +48,10 @@ the entities the claim is about. There are eleven, and they fall into five kinds
   either exists or it does not. `intent` diffs DECLARED architecture (a repo's
   enola-intent.yaml, or a cluster config's intent block) against the measured
   cross-repo edges: an unexpected or mis-mechanism seam is set difference between
-  stated and measured, which either holds or it does not. Its one estimating verdict —
-  a declared seam the graph never measured — is capped below 1.0, because the absence
-  can be drift or an extraction miss.
+  stated and measured, which either holds or it does not. Its estimating verdicts — a
+  declared seam the graph never measured, a page relation to an uncompiled page, a
+  measurable code anchor no fact touches, a seam covered only by superseded intent —
+  are capped below 1.0, because each absence can be drift or an extraction miss.
 - **Outlier tests.** `god-class`, `hotspots` and `complexity-outliers` compute a
   distribution over your repository and flag what sits above `mean + 2σ`.
 - **Graph shape.** `dependency-depth` measures the longest transitive import chain;
