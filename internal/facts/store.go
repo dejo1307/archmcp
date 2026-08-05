@@ -2,6 +2,7 @@ package facts
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -823,6 +824,39 @@ func (s *Store) Graph() *Graph {
 	return s.graph
 }
 
+// estimateJSONLSize guesses the serialized size of ff by marshalling a sample and
+// extrapolating, so WriteJSONL can allocate its buffer once.
+//
+// It is a size hint and nothing more: too small merely restores the append growth it
+// was avoiding, and too large wastes the difference until the buffer is released. The
+// 10% margin and the sample size are chosen so that ordinary variation between facts
+// does not push a real corpus over the estimate.
+func estimateJSONLSize(ff []Fact) int {
+	const sampleSize = 512
+	if len(ff) == 0 {
+		return 0
+	}
+	// Sample evenly across the slice rather than the first N: facts are grouped by
+	// extractor and by file, so a prefix is a poor stand-in for the whole.
+	stride := len(ff) / sampleSize
+	if stride < 1 {
+		stride = 1
+	}
+	total, n := 0, 0
+	for i := 0; i < len(ff); i += stride {
+		b, err := json.Marshal(ff[i])
+		if err != nil {
+			continue // the real pass reports it; the estimate just skips it
+		}
+		total += len(b) + 1 // + the newline
+		n++
+	}
+	if n == 0 {
+		return 0
+	}
+	return (total / n) * len(ff) * 11 / 10
+}
+
 // WriteJSONL writes all facts as JSONL to the given writer in a deterministic
 // order. Extractors emit facts (and within-fact relations) in map-iteration
 // order, which varies run to run; sorting here makes facts.jsonl byte-stable for
@@ -831,7 +865,24 @@ func (s *Store) Graph() *Graph {
 // left untouched.
 func (s *Store) WriteJSONL(w io.Writer) error {
 	s.mu.RLock()
-	lines := make([]string, 0, len(s.facts))
+
+	// One contiguous buffer holding every marshalled line back to back, plus an index
+	// of where each begins. The sort then reorders 8-byte offsets rather than moving
+	// the lines, and the line bytes exist exactly once.
+	//
+	// Collecting a []string instead held each line TWICE — json.Marshal's []byte and
+	// the string(b) copy of it — and made 1.89M separate allocations of it, on top of
+	// whatever buffer the caller was writing into. Measured on a 1.89M-fact graph
+	// whose output is 792 MiB, this function moved live heap from 1,212 to 5,016 MiB,
+	// and the engine calls it twice per snapshot. That spike, not the graph, was what
+	// drove peak footprint to 11.3 GB.
+	// Pre-size the buffer from a sample of the first lines. Growing it by append
+	// instead means repeatedly allocating a larger array and copying into it, which
+	// at this size holds the old and the new one at once — the exact transient this
+	// function exists to avoid — and leaves up to 25% slack in the survivor.
+	// Over-estimating slightly is cheaper than either.
+	buf := make([]byte, 0, estimateJSONLSize(s.facts))
+	starts := make([]int, 0, len(s.facts)+1)
 	for _, f := range s.facts {
 		if len(f.Relations) > 1 {
 			rels := make([]Relation, len(f.Relations))
@@ -849,15 +900,27 @@ func (s *Store) WriteJSONL(w io.Writer) error {
 			s.mu.RUnlock()
 			return fmt.Errorf("encoding fact %q: %w", f.Name, err)
 		}
-		lines = append(lines, string(b))
+		starts = append(starts, len(buf))
+		buf = append(buf, b...)
 	}
+	starts = append(starts, len(buf)) // sentinel: one past the last line
 	s.mu.RUnlock()
 
-	sort.Strings(lines)
+	// Sort the index, comparing the lines it points at. bytes.Compare orders byte by
+	// byte and so did sort.Strings over the same lines, so the emitted order — and
+	// therefore facts.jsonl and every snapshot ID derived from it — is unchanged.
+	order := make([]int, len(starts)-1)
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(a, b int) bool {
+		x, y := order[a], order[b]
+		return bytes.Compare(buf[starts[x]:starts[x+1]], buf[starts[y]:starts[y+1]]) < 0
+	})
 
 	bw := bufio.NewWriter(w)
-	for _, line := range lines {
-		if _, err := bw.WriteString(line); err != nil {
+	for _, i := range order {
+		if _, err := bw.Write(buf[starts[i]:starts[i+1]]); err != nil {
 			return err
 		}
 		if err := bw.WriteByte('\n'); err != nil {

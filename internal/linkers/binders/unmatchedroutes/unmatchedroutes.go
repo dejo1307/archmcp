@@ -59,7 +59,11 @@ func (b *Binder) Name() string { return "unmatched-routes" }
 func (b *Binder) Stage() plugin.BindStage { return plugin.StagePostLink }
 
 func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
-	all := store.All()
+	// FactsRef, not All: both key builders only read, and both finish before the
+	// UpdateWhere below mutates anything. A copy here duplicated the entire fact set —
+	// including, since Freeze made sharing load-bearing, every Props map and Relations
+	// slice — during linking, on every snapshot.
+	all := store.FactsRef()
 	serverKeys := httpsignal.UnmatchedServerRouteKeys(b.m, all)
 	clientKeys := httpsignal.UnmatchedClientRouteKeys(b.m, all)
 

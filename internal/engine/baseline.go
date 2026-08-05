@@ -160,7 +160,16 @@ func LoadSnapshotDir(dir string) (*facts.Snapshot, error) {
 	if err := store.ReadJSONLFile(factsPath); err != nil {
 		return nil, fmt.Errorf("reading facts from %s: %w", factsPath, err)
 	}
-	snap := &facts.Snapshot{Facts: store.All()}
+	// FactsRef, not All. The store was created here, is never mutated, and goes out of
+	// scope at the return — the returned slice is the only thing that keeps it alive —
+	// so there is nothing for a copy to protect against.
+	//
+	// It mattered because this runs at the END of every snapshot: recordHistory loads
+	// the previous snapshot to summarize the delta, and on a 1.9M-fact graph All's deep
+	// copy of every fact, Props map and Relations slice cost as much again as the load
+	// itself. Measured on the kernel, the history step took footprint from 8.5 GB to
+	// 12.1 GB — after the snapshot was finished and FreeOSMemory had already run.
+	snap := &facts.Snapshot{Facts: store.FactsRef()}
 
 	if data, err := os.ReadFile(filepath.Join(dir, "insights.json")); err == nil {
 		var ins []facts.Insight

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"os/exec"
 	"sort"
 	"strings"
@@ -208,14 +209,25 @@ func readCoverageField(svc facts.Fact, field string) int {
 	return total
 }
 
-// computeSnapshotID returns a stable content fingerprint of "what the graph was
-// deterministic over": the byte-stable fact serialization plus the version and
-// the effective-config hash that gate what was parsed. It is deliberately NOT
-// random — rerunning on the same inputs yields the same ID, so it can key
-// equivalence. The result carries the "sha256:" prefix like every receipt hash.
-func computeSnapshotID(factsJSONL []byte, enolaVersion, configHash string) string {
-	h := sha256.New()
-	h.Write(factsJSONL)
+// The snapshot ID is a stable content fingerprint of "what the graph was deterministic
+// over": the byte-stable fact serialization, plus the version and the effective-config
+// hash that gate what was parsed. It is deliberately NOT random — rerunning on the same
+// inputs yields the same ID, so it can key equivalence. The result carries the
+// "sha256:" prefix like every receipt hash.
+//
+// It is computed in two steps because the serialization is STREAMED into the hash.
+// Buffering it first was the only reason GenerateSnapshot materialized the whole
+// thing — a 792 MiB allocation on a large graph, built solely to be hashed and thrown
+// away. The digest is the same either way: the same bytes reach the hash in the same
+// order.
+
+// newSnapshotIDHasher returns the hash to write the fact JSONL into. Pair with
+// finishSnapshotID.
+func newSnapshotIDHasher() hash.Hash { return sha256.New() }
+
+// finishSnapshotID closes out a streamed snapshot ID with the trailing fields that are
+// not part of the serialization.
+func finishSnapshotID(h hash.Hash, enolaVersion, configHash string) string {
 	h.Write([]byte(enolaVersion))
 	h.Write([]byte(configHash))
 	return hashPrefix + hex.EncodeToString(h.Sum(nil))

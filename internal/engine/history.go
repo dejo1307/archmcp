@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bufio"
 	"log"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,7 +25,7 @@ import (
 // holds the immediately preceding run — the parent revision by construction. That is the
 // same pair diff_snapshot compares under `--baseline=previous`, computed by the same
 // function, so the log's counts and the diff's counts cannot drift apart.
-func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snapshotBundle, factsJSONL []byte) {
+func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snapshotBundle, factsPath string) {
 	if !e.cfg.HistoryEnabled() || b.snapshot == nil {
 		return
 	}
@@ -53,7 +55,7 @@ func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snap
 	opts := inthistory.Options{
 		WorkingKeep: e.cfg.History.WorkingKeep,
 		BlobKeep:    e.cfg.History.BlobKeep,
-		Contents:    e.historyContents(meta, &current, factsJSONL),
+		Contents:    e.historyContents(meta, &current, factsPath),
 	}
 	recorded, err := inthistory.Append(root, entry, opts)
 	if err != nil {
@@ -69,12 +71,15 @@ func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snap
 // off — in which case the revision is still recorded as a header, and only `show` and
 // `diff` on it are unavailable.
 //
-// factsJSONL is the exact byte serialization already written to facts.jsonl, split back
-// into its lines. Splitting is cheap and, more to the point, it is the ONLY thing that
-// guarantees the stored lines are the ones the snapshot actually produced: any path that
-// re-marshals facts here would be a second serialization that could disagree with the
-// first, and the disagreement would be written into the history rather than caught.
-func (e *Engine) historyContents(meta facts.SnapshotMeta, snap *facts.Snapshot, factsJSONL []byte) *inthistory.Contents {
+// factsPath is the facts.jsonl this snapshot just wrote, read back line by line. Reading
+// the artifact is what guarantees the stored lines are the ones the snapshot actually
+// produced: any path that re-marshals facts here would be a second serialization that
+// could disagree with the first, and the disagreement would be written into the history
+// rather than caught. It previously received the in-memory buffer the file had been
+// written from, which gave the same guarantee — but only by keeping a whole extra copy
+// of the serialization alive, 792 MiB of it on a large graph, for a step that is
+// skipped entirely when blobs are off.
+func (e *Engine) historyContents(meta facts.SnapshotMeta, snap *facts.Snapshot, factsPath string) *inthistory.Contents {
 	if !e.cfg.HistoryBlobsEnabled() {
 		return nil
 	}
@@ -83,24 +88,41 @@ func (e *Engine) historyContents(meta facts.SnapshotMeta, snap *facts.Snapshot, 
 		log.Printf("[engine] warning: could not serialize insights for the history: %v", err)
 		return nil
 	}
+	factLines, err := readLines(factsPath)
+	if err != nil {
+		log.Printf("[engine] warning: could not read %s back for the history: %v", factsPath, err)
+		return nil
+	}
 	return &inthistory.Contents{
-		FactLines:    splitLines(factsJSONL),
+		FactLines:    factLines,
 		InsightLines: insightLines,
 		Receipt:      meta.Receipt(),
 	}
 }
 
-// splitLines splits canonical JSONL into its lines, dropping the trailing empty element the
-// final newline produces.
-func splitLines(b []byte) []string {
-	if len(b) == 0 {
-		return nil
+// readLines reads canonical JSONL into its lines, without the trailing empty element the
+// final newline would produce. The scanner buffer matches the one Store.ReadJSONL uses,
+// so a fact line this engine can write is a fact line it can read back.
+func readLines(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-	s := strings.TrimSuffix(string(b), "\n")
-	if s == "" {
-		return nil
+	defer func() { _ = f.Close() }()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+	var lines []string
+	for sc.Scan() {
+		if len(sc.Bytes()) == 0 {
+			continue
+		}
+		lines = append(lines, sc.Text())
 	}
-	return strings.Split(s, "\n")
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return lines, nil
 }
 
 // previousSnapshotFor loads the rotated preceding snapshot, or nil when there is none

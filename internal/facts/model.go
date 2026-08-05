@@ -227,7 +227,7 @@ type SnapshotMeta struct {
 
 	// Receipt / provenance fields. Hash values carry a "sha256:" prefix.
 	EnolaVersion string   `json:"enola_version,omitempty"` // build version that produced this snapshot
-	SnapshotID   string   `json:"snapshot_id,omitempty"`   // content fingerprint (see engine.computeSnapshotID); stable across reruns on the same inputs
+	SnapshotID   string   `json:"snapshot_id,omitempty"`   // content fingerprint (see engine.newSnapshotIDHasher); stable across reruns on the same inputs
 	Git          *GitInfo `json:"git,omitempty"`           // repo VCS state, nil when not a git repo
 	ConfigHash   string   `json:"config_hash,omitempty"`   // hash of the effective config (extractors, explainers, renderers, globs, output) — a superset of IgnoreGlobHash
 

@@ -1,12 +1,14 @@
 package engine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -443,8 +445,11 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	if appendMode {
 		parsedPrefix = repoLabel + "/"
 	}
-	var factsBuf bytes.Buffer
-	if err := e.store.WriteJSONL(&factsBuf); err != nil {
+	// Stream the serialization straight into the hash. The ID is the only thing this
+	// pass produces, so buffering the bytes to fingerprint and then discard them cost
+	// 792 MiB on a kernel-sized graph for nothing. The digest is identical either way.
+	idHasher := newSnapshotIDHasher()
+	if err := e.store.WriteJSONL(idHasher); err != nil {
 		return nil, fmt.Errorf("serializing facts for snapshot id: %w", err)
 	}
 	snapshot := &facts.Snapshot{
@@ -463,7 +468,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			// What this build EXTRACTS LIKE, which for a local build the version cannot
 			// say — see facts.SnapshotMeta.ExtractorVersion.
 			ExtractorVersion: cacheVersion,
-			SnapshotID:       computeSnapshotID(factsBuf.Bytes(), version.Version, configHash),
+			SnapshotID:       finishSnapshotID(idHasher, version.Version, configHash),
 			Git:              gitInfo(absRepo, e.cfg.Output.Dir),
 			ConfigHash:       configHash,
 
@@ -1009,16 +1014,16 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 		log.Printf("[engine] wrote %s (%d bytes)", path, len(a.Content))
 	}
 
-	// Write facts.jsonl (serialize to a buffer first so we can hash the exact bytes)
-	var factsBuf bytes.Buffer
-	if err := b.store.WriteJSONL(&factsBuf); err != nil {
-		return fmt.Errorf("serializing facts.jsonl: %w", err)
-	}
+	// Write facts.jsonl, hashing the bytes as they go past rather than building the
+	// whole file in memory to write and then hash it. On a kernel-sized graph that
+	// buffer was 792 MiB, allocated at the end of a run and never released before the
+	// process went back to idle.
 	factsPath := filepath.Join(outDir, "facts.jsonl")
-	if err := os.WriteFile(factsPath, factsBuf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("writing facts.jsonl: %w", err)
+	factsHash, err := writeFactsJSONL(b.store, factsPath)
+	if err != nil {
+		return err
 	}
-	outputHashes["facts.jsonl"] = hashBytes(factsBuf.Bytes())
+	outputHashes["facts.jsonl"] = factsHash
 	log.Printf("[engine] wrote %s", factsPath)
 
 	// Write insights.json. A nil slice marshals to `null`, not `[]`, so a repository
@@ -1084,14 +1089,44 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	// previous/, which the rotation above has just filled, and a snapshot must never fail
 	// because the log of snapshots could not be appended to.
 	//
-	// The facts bytes are handed over rather than re-derived. They are the exact canonical
-	// serialization already written to facts.jsonl, which is what the history stores, so
-	// re-serializing here would repeat a few thousand marshals to produce bytes that are in
-	// hand — and would introduce a second serialization path that could differ from the
-	// first.
-	e.recordHistory(repoPath, meta, b, factsBuf.Bytes())
+	// The history stores the fact lines, and they must be the exact canonical
+	// serialization that went into facts.jsonl — a second serialization path could
+	// diverge from the first. They used to be handed over as the buffer that had just
+	// been written. Now that nothing buffers the file, they are read back from it: the
+	// same requirement, satisfied by the strongest possible evidence, since the bytes
+	// come from the artifact itself. It also costs nothing when history blobs are off,
+	// which the previous arrangement could not manage.
+	e.recordHistory(repoPath, meta, b, factsPath)
 
 	return nil
+}
+
+// writeFactsJSONL serializes the store straight to path, returning the
+// "sha256:"-prefixed digest of exactly the bytes written.
+//
+// The digest comes from a hash tee'd off the same stream rather than from a second
+// pass over a buffer, so it cannot describe anything other than the file on disk.
+// Durability is deliberately unchanged from the os.WriteFile this replaced: neither is
+// atomic, and making facts.jsonl atomic is a separate decision from making it cheap.
+func writeFactsJSONL(store *facts.Store, path string) (string, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return "", fmt.Errorf("creating facts.jsonl: %w", err)
+	}
+	h := sha256.New()
+	bw := bufio.NewWriterSize(f, 1<<20)
+	if err := store.WriteJSONL(io.MultiWriter(bw, h)); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("serializing facts.jsonl: %w", err)
+	}
+	if err := bw.Flush(); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("writing facts.jsonl: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("writing facts.jsonl: %w", err)
+	}
+	return hashPrefix + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // hashBytes returns the "sha256:"-prefixed digest of b, used for output-artifact
