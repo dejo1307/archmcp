@@ -1332,3 +1332,46 @@ func TestFindPath_LabelsHopsByTraversingRelation(t *testing.T) {
 		t.Errorf("middle hop should report conflation, got %v", mid.Conflated)
 	}
 }
+
+// TestImpactSet_GoverningIntent pins the intent-aware traversal: an impact
+// analysis on a fact whose file is covered by a declared anchor — exactly or
+// as a directory prefix — reports the anchoring pages with their type and
+// status, and a fact nothing anchors reports none.
+func TestImpactSet_GoverningIntent(t *testing.T) {
+	ff := []Fact{
+		{Kind: KindSymbol, Repo: "backend", File: "app/services/formatter.rb", Name: "Formatter"},
+		{Kind: KindSymbol, Repo: "backend", File: "app/jobs/sync_job.rb", Name: "SyncJob"},
+		{Kind: KindSymbol, Repo: "backend", File: "lib/untouched.rb", Name: "Untouched"},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/adrs/fmt.md", Name: "page: wiki/adrs/fmt.md",
+			Props: map[string]any{"intent_kind": "page", "page_type": "decision", "status": "accepted"}},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/adrs/fmt.md", Name: "anchor: backend app/services/formatter.rb",
+			Props: map[string]any{"intent_kind": "anchor", "intent_owner": "backend", "path": "app/services/formatter.rb", "source": "wiki/adrs/fmt.md"}},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/prds/jobs.md", Name: "anchor: backend app/jobs",
+			Props: map[string]any{"intent_kind": "anchor", "intent_owner": "backend", "path": "app/jobs", "source": "wiki/prds/jobs.md"}},
+	}
+	g := NewGraph(ff)
+
+	got := g.ImpactSet("Formatter", 3, 100, false)
+	if len(got.GoverningIntent) != 1 || got.GoverningIntent[0].Page != "wiki/adrs/fmt.md" {
+		t.Fatalf("file anchor must govern its symbol, got %+v", got.GoverningIntent)
+	}
+	if got.GoverningIntent[0].Type != "decision" || got.GoverningIntent[0].Status != "accepted" {
+		t.Fatalf("governing page must join type/status from the page declaration, got %+v", got.GoverningIntent[0])
+	}
+	if !strings.Contains(got.Summary, "governed by 1 intent page(s)") {
+		t.Fatalf("summary must mention governing intent, got %q", got.Summary)
+	}
+
+	dir := g.ImpactSet("SyncJob", 3, 100, false)
+	if len(dir.GoverningIntent) != 1 || dir.GoverningIntent[0].Page != "wiki/prds/jobs.md" {
+		t.Fatalf("directory anchor must govern files under it, got %+v", dir.GoverningIntent)
+	}
+	if dir.GoverningIntent[0].Type != "" {
+		t.Fatalf("anchor without a page declaration joins no type, got %+v", dir.GoverningIntent[0])
+	}
+
+	none := g.ImpactSet("Untouched", 3, 100, false)
+	if len(none.GoverningIntent) != 0 {
+		t.Fatalf("unanchored code must report no governing intent, got %+v", none.GoverningIntent)
+	}
+}

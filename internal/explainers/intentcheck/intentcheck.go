@@ -51,9 +51,11 @@ type measuredEdge struct {
 // Explain computes seam verdicts and override notices.
 func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
 	declared := map[string][]declaredSeam{}
+	superseded := map[string][]declaredSeam{}
 	var overridden []facts.Fact
 	present := map[string]bool{}
 	hasIntent := false
+	retired := retiredPages(store)
 
 	for _, f := range store.All() {
 		if f.Repo != "" {
@@ -73,11 +75,16 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 		if owner == "" {
 			owner = f.Repo
 		}
-		declared[owner] = append(declared[owner], declaredSeam{
+		seam := declaredSeam{
 			target: f.PropString("target"),
 			via:    f.PropString("via"),
 			source: f.PropString("source"),
-		})
+		}
+		if retired[seam.source] {
+			superseded[owner] = append(superseded[owner], seam)
+			continue
+		}
+		declared[owner] = append(declared[owner], seam)
 	}
 	if !hasIntent {
 		return nil, nil
@@ -112,6 +119,14 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	}
 	sort.Strings(repos)
 
+	supersededSets := map[string]map[string]bool{}
+	for repo, seams := range superseded {
+		supersededSets[repo] = map[string]bool{}
+		for _, s := range seams {
+			supersededSets[repo][s.target+"\x00"+s.via] = true
+		}
+	}
+
 	for _, repo := range repos {
 		seams := declared[repo]
 		declaredSet := map[string]bool{}
@@ -134,6 +149,9 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 			for _, via := range m.vias {
 				if declaredSet[m.target+"\x00"+via] {
 					continue
+				}
+				if supersededSets[repo][m.target+"\x00"+via] {
+					continue // the superseded-intent pass reports this with the precise diagnosis
 				}
 				if declaredTargets[m.target] {
 					insights = append(insights, facts.Insight{
@@ -175,10 +193,44 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 		}
 	}
 
-	insights = append(insights, claimVerdicts(store)...)
+	supRepos := make([]string, 0, len(superseded))
+	for r := range superseded {
+		supRepos = append(supRepos, r)
+	}
+	sort.Strings(supRepos)
+	for _, repo := range supRepos {
+		livingSet := map[string]bool{}
+		for _, s := range declared[repo] {
+			livingSet[s.target+"\x00"+s.via] = true
+		}
+		supSet := map[string]string{}
+		for _, s := range superseded[repo] {
+			supSet[s.target+"\x00"+s.via] = s.source
+		}
+		seen := map[string]bool{}
+		for _, m := range measured[repo] {
+			for _, via := range m.vias {
+				key := m.target + "\x00" + via
+				src, ok := supSet[key]
+				if !ok || livingSet[key] || seen[key] {
+					continue
+				}
+				seen[key] = true
+				insights = append(insights, facts.Insight{
+					Title:       fmt.Sprintf("Superseded intent still measured: %s -> %s via %s", repo, m.target, via),
+					Description: "The graph measures this seam, and the only declaration covering it lives on a superseded page — the decision behind it was retired, and no living declaration replaced it. Either the code has not caught up with the superseding decision, or the successor's intent is not declared where enola can see it — this finding cannot tell which, so its confidence is capped.",
+					Confidence:  supersededIntentConfidence,
+					Evidence:    []facts.Evidence{{Fact: m.name, Detail: "matching declaration is on superseded page " + src}},
+					Actions:     []string{"Migrate the code if the superseding decision retires the seam", "Declare the seam on the superseding page if it survives the decision"},
+				})
+			}
+		}
+	}
+
+	insights = append(insights, claimVerdicts(store, retired)...)
 	insights = append(insights, relationVerdicts(store)...)
-	insights = append(insights, anchorVerdicts(store, present)...)
-	insights = append(insights, scopeVerdicts(store, present)...)
+	insights = append(insights, anchorVerdicts(store, present, retired)...)
+	insights = append(insights, scopeVerdicts(store, present, retired)...)
 
 	sort.Slice(overridden, func(i, j int) bool {
 		if overridden[i].Repo != overridden[j].Repo {
@@ -204,15 +256,57 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	return insights, nil
 }
 
+// supersededIntentConfidence caps the retired-intent estimate: a measured
+// seam matched only by a superseded page may be code that has not caught up
+// with the superseding decision, or a successor whose intent enola cannot
+// see.
+const supersededIntentConfidence = 0.8
+
+// retiredPages returns the compiled pages retired from current intent, in
+// both label-prefixed and repo-relative forms. Two signals mark a page
+// retired: an outgoing superseded-by relation (enola's own closed
+// vocabulary), or the status token "superseded" — the one status token
+// enola reads meaning into; the rest of the status taxonomy stays the
+// wiki's. A retired page's seams, claims, anchors and scope stop verdicting
+// as current intent; its relations still verdict, because the supersession
+// trail itself must not break.
+func retiredPages(store *facts.Store) map[string]bool {
+	out := map[string]bool{}
+	mark := func(f facts.Fact) {
+		out[f.File] = true
+		out[strings.TrimPrefix(f.File, f.Repo+"/")] = true
+	}
+	for _, f := range store.All() {
+		if f.Kind != facts.KindIntent {
+			continue
+		}
+		switch f.PropString("intent_kind") {
+		case "page":
+			if f.PropString("status") == "superseded" {
+				mark(f)
+			}
+		case "relation":
+			if f.PropString("rel") == "superseded-by" {
+				mark(f)
+			}
+		}
+	}
+	return out
+}
+
 // claimVerdicts evaluates claim-kind intent facts against the store: exact
 // counting for fact-count, edge existence for seam. Only failures become
 // findings (a passing claim is silence, like every agreeing verdict), and a
 // failure is proof-class — the claim is stated, the count is counted.
-func claimVerdicts(store *facts.Store) []facts.Insight {
+// Claims on retired pages are history, not current intent: skipped.
+func claimVerdicts(store *facts.Store, retired map[string]bool) []facts.Insight {
 	var out []facts.Insight
 	all := store.All()
 	for _, f := range all {
 		if f.Kind != facts.KindIntent || f.PropString("intent_kind") != "claim" {
+			continue
+		}
+		if retired[f.PropString("source")] {
 			continue
 		}
 		switch f.PropString("metric") {
@@ -330,13 +424,13 @@ const danglingAnchorConfidence = 0.8
 // sits under it (a directory anchor). A repo absent from the graph is
 // unasked, never failed — same counterparty rule as seams. A join is
 // silence; a miss is the stale-citation finding grooming otherwise hunts by
-// hand.
-func anchorVerdicts(store *facts.Store, present map[string]bool) []facts.Insight {
+// hand. Anchors on retired pages are historical citations: skipped.
+func anchorVerdicts(store *facts.Store, present, retired map[string]bool) []facts.Insight {
 	var anchors []facts.Fact
 	measured := map[string]map[string]bool{}
 	for _, f := range store.All() {
 		if f.Kind == facts.KindIntent {
-			if f.PropString("intent_kind") == "anchor" {
+			if f.PropString("intent_kind") == "anchor" && !retired[f.PropString("source")] {
 				anchors = append(anchors, f)
 			}
 			continue
@@ -388,11 +482,15 @@ const unknownScopeConfidence = 0.8
 // scopeVerdicts checks every page node's scope and affects entries against
 // the repo labels present in the graph. Before this check the two fields
 // were carried as unverdicted props — a page could claim to be about a repo
-// that does not exist and nothing fired.
-func scopeVerdicts(store *facts.Store, present map[string]bool) []facts.Insight {
+// that does not exist and nothing fired. Retired pages may name repos that
+// have legitimately left the cluster: skipped.
+func scopeVerdicts(store *facts.Store, present, retired map[string]bool) []facts.Insight {
 	var out []facts.Insight
 	for _, f := range store.All() {
 		if f.Kind != facts.KindIntent || f.PropString("intent_kind") != "page" {
+			continue
+		}
+		if retired[f.File] {
 			continue
 		}
 		for _, field := range []string{"scope", "affects"} {

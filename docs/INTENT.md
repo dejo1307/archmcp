@@ -124,6 +124,29 @@ confidences:
 | Dangling relation (edge to an uncompiled page) | 0.8 | the target may be deleted or merely not opted in |
 | Dangling code anchor (path no measured fact touches) | 0.8 | the code may have moved or died — or no extractor parses it |
 | Unknown scope repo (`scope`/`affects` names an unmeasured repo) | 0.8 | stale or mistyped — or deliberately outside the cluster |
+| Superseded intent still measured (edge covered only by a retired page) | 0.8 | the code may lag the superseding decision — or the successor's intent is undeclared |
+
+**Superseded pages retire from current intent.** Two signals mark a
+page retired: an outgoing `superseded-by` relation (enola's own
+closed vocabulary), or the status token `superseded` — the one
+status token enola reads meaning into; the rest of the status
+taxonomy stays yours. A retired page's seams, claims, anchors and
+scope stop verdicting — history must not nag as drift — while its
+relations still verdict, because the supersession trail itself must
+not break. The one thing a retired page still *says*: a measured
+seam that only a retired declaration covers surfaces as *superseded
+intent still measured* — the code has not caught up with the
+superseding decision, or the successor's intent is not declared
+where enola can see it. That finding replaces the generic
+unexpected-seam verdict for such edges, because it carries the
+diagnosis.
+
+**Anchored code is traversable back to its decisions.**
+`impact_analysis` on any node reports the knowledge pages whose
+anchors cover the node's file — the governing decision trail,
+surfaced exactly when someone is about to change the code it
+governs — with each page's type and status joined from its own
+declaration.
 
 Repos that declare nothing are unasked — adoption is per-repo, and
 undeclared is not a finding. A declared seam whose counterparty is

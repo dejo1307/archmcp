@@ -1463,6 +1463,7 @@ func (s *Server) registerTools() {
 		Name: "impact_analysis",
 		Description: "Compute the blast radius of changing a target node: all nodes that transitively depend on it, grouped by hop depth. " +
 			"Use for refactoring planning and change risk assessment. " +
+			"When knowledge pages declare anchors (enola_intent), the result also lists the pages anchored to the target's file — the decisions governing the code you are about to change. " +
 			"target= uses substring match with smart disambiguation. " +
 			"Default: reverse direction only (what breaks if target changes). " +
 			"Set include_forward=true to also see what the target itself depends on (useful for understanding what could break the target). " +
@@ -3464,6 +3465,31 @@ func writeNodesByDepth(sb *strings.Builder, nodes []facts.TraversalNode) {
 }
 
 // renderImpactCompact renders an impact analysis as a compact markdown summary.
+// writeGoverningIntent renders the knowledge pages anchored to the target's
+// file — the decision trail governing the code whose blast radius is being
+// analyzed. Silence when nothing anchors.
+func writeGoverningIntent(sb *strings.Builder, pages []facts.GoverningPage) {
+	if len(pages) == 0 {
+		return
+	}
+	sb.WriteString("## Governing intent\n\nKnowledge pages anchored to the target's file:\n\n")
+	for _, p := range pages {
+		line := "- " + p.Page
+		var meta []string
+		if p.Type != "" {
+			meta = append(meta, p.Type)
+		}
+		if p.Status != "" {
+			meta = append(meta, p.Status)
+		}
+		if len(meta) > 0 {
+			line += " (" + strings.Join(meta, ", ") + ")"
+		}
+		sb.WriteString(line + "\n")
+	}
+	sb.WriteString("\n")
+}
+
 func renderImpactCompact(resp impactResponse) string {
 	var sb strings.Builder
 	r := resp.ImpactResult
@@ -3481,6 +3507,8 @@ func renderImpactCompact(resp impactResponse) string {
 	} else {
 		sb.WriteString("No dependents found.\n\n")
 	}
+
+	writeGoverningIntent(&sb, r.GoverningIntent)
 
 	// Flatten ByDepth into a node slice for grouped rendering.
 	var nodes []facts.TraversalNode
@@ -3697,6 +3725,8 @@ func (s *Server) renderImpactSummary(resp impactResponse) string {
 	if len(r.CrossRepoImpact) > 0 {
 		fmt.Fprintf(&sb, "## Cross-repo impact\n\nOther repos with a dependent: %s\n\n", strings.Join(r.CrossRepoImpact, ", "))
 	}
+
+	writeGoverningIntent(&sb, r.GoverningIntent)
 
 	if r.Forward != nil && len(r.Forward.Nodes) > 0 {
 		fwd := map[string]int{}

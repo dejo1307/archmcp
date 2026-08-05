@@ -1,6 +1,7 @@
 package facts
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -155,6 +156,15 @@ type ImpactResult struct {
 	Stats           TraversalStats          `json:"stats"`
 	Forward         *TraversalResult        `json:"forward_dependencies,omitempty"`
 	CrossRepoImpact []string                `json:"cross_repo_impact,omitempty"` // other repos with a dependent on the target
+	GoverningIntent []GoverningPage         `json:"governing_intent,omitempty"`  // knowledge pages anchored to the target's file
+}
+
+// GoverningPage is a knowledge page whose declared anchors cover the file a
+// fact lives in — the decision/spec trail governing the code under analysis.
+type GoverningPage struct {
+	Page   string `json:"page"`
+	Type   string `json:"type,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 // PathResult holds a shortest-path result.
@@ -884,6 +894,11 @@ func (g *Graph) ImpactSet(target string, maxDepth, maxNodes int, includeForward 
 		result.Summary += " — spans repos: " + strings.Join(result.CrossRepoImpact, ", ")
 	}
 
+	result.GoverningIntent = g.GoverningIntent(target)
+	if n := len(result.GoverningIntent); n > 0 {
+		result.Summary += fmt.Sprintf(" — governed by %d intent page(s)", n)
+	}
+
 	// Optionally include forward dependencies
 	if includeForward {
 		fwd := g.Traverse(target, "forward", nil, nil, maxDepth, maxNodes)
@@ -891,6 +906,60 @@ func (g *Graph) ImpactSet(target string, maxDepth, maxNodes int, includeForward 
 	}
 
 	return result
+}
+
+// GoverningIntent reports the knowledge pages whose declared anchors cover
+// the file the named fact lives in — exactly (a file anchor) or as a
+// directory prefix. This is the reverse of the anchor declaration: the page
+// pins itself to code, and the traversal answers "which decisions govern
+// this code?" for any node under analysis. Page type and status join from
+// the page's own declaration when it carries one.
+func (g *Graph) GoverningIntent(target string) []GoverningPage {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	idx, ok := g.factIndexFor(target, "")
+	if !ok {
+		return nil
+	}
+	f := g.facts[idx]
+	if f.File == "" || f.Repo == "" {
+		return nil
+	}
+	file := strings.TrimPrefix(f.File, f.Repo+"/")
+	pages := map[string]bool{}
+	for _, af := range g.facts {
+		if af.Kind != KindIntent || af.PropString("intent_kind") != "anchor" ||
+			af.PropString("intent_owner") != f.Repo {
+			continue
+		}
+		path := af.PropString("path")
+		if path != "" && (path == file || strings.HasPrefix(file, path+"/")) {
+			pages[af.File] = true
+		}
+	}
+	if len(pages) == 0 {
+		return nil
+	}
+	info := map[string]GoverningPage{}
+	for _, pf := range g.facts {
+		if pf.Kind == KindIntent && pf.PropString("intent_kind") == "page" && pages[pf.File] {
+			info[pf.File] = GoverningPage{
+				Page:   pf.File,
+				Type:   pf.PropString("page_type"),
+				Status: pf.PropString("status"),
+			}
+		}
+	}
+	out := make([]GoverningPage, 0, len(pages))
+	for page := range pages {
+		gp, ok := info[page]
+		if !ok {
+			gp = GoverningPage{Page: page}
+		}
+		out = append(out, gp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Page < out[j].Page })
+	return out
 }
 
 // repoOf returns the repo label of the fact named name, or "" if absent.

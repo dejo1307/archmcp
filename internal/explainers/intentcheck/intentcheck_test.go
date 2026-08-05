@@ -227,3 +227,73 @@ func TestIntentCheck_UnknownScopeRepoCapped(t *testing.T) {
 		}
 	}
 }
+
+// TestIntentCheck_SupersededIntentRetires pins status-aware verdicting: a
+// page marked superseded (by status token or by an outgoing superseded-by
+// relation) stops verdicting as current intent — its missing seams, claims,
+// anchors and scope are silence — while a measured edge that only its
+// declaration covers surfaces as the precise superseded-intent finding, not
+// as an unexpected seam.
+func TestIntentCheck_SupersededIntentRetires(t *testing.T) {
+	oldPage := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/old.md",
+		Name: "page: wiki/adrs/old.md",
+		Props: map[string]any{"intent_kind": "page", "page_type": "decision",
+			"status": "superseded", "scope": []string{"ghost"}, "source": "wiki/adrs/old.md"}}
+	oldSeam := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/old.md",
+		Name: "app consumes legacy via http-client",
+		Props: map[string]any{"intent_kind": "consumes", "intent_owner": "app",
+			"target": "legacy", "via": "http-client", "source": "wiki/adrs/old.md"}}
+	oldAnchor := anchorFact("wiki/adrs/old.md", "app", "src/gone.rb")
+	oldClaim := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/old.md",
+		Name: "claim: app symbol  = 99",
+		Props: map[string]any{"intent_kind": "claim", "metric": "fact-count",
+			"intent_owner": "app", "fact_kind": facts.KindSymbol, "value": 99, "source": "wiki/adrs/old.md"}}
+
+	got := explain(t,
+		repoMarker("app"), repoMarker("legacy"),
+		fileFact("app", "src/app.rb"),
+		oldPage, oldSeam, oldAnchor, oldClaim,
+		edgeFact("app", "legacy", "http-client"),
+	)
+	if len(got) != 1 {
+		t.Fatalf("want only the superseded-intent finding, got: %s", titles(got))
+	}
+	if !strings.Contains(got[0].Title, "Superseded intent still measured: app -> legacy via http-client") ||
+		got[0].Confidence != supersededIntentConfidence {
+		t.Fatalf("measured edge covered only by superseded intent must surface capped, got %+v", got[0])
+	}
+
+	// Remove the measured edge: the superseded declaration is history, so its
+	// missing seam, dangling anchor, failed claim, and unknown scope all stay
+	// silent.
+	silent := explain(t,
+		repoMarker("app"), repoMarker("legacy"),
+		fileFact("app", "src/app.rb"),
+		oldPage, oldSeam, oldAnchor, oldClaim,
+	)
+	if len(silent) != 0 {
+		t.Fatalf("retired intent must not verdict as current, got: %s", titles(silent))
+	}
+}
+
+// TestIntentCheck_SupersededByRelationRetires pins the second retirement
+// signal: an outgoing superseded-by relation retires a page even when its
+// status token is outside the vocabulary enola interprets.
+func TestIntentCheck_SupersededByRelationRetires(t *testing.T) {
+	page := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/old.md",
+		Name:  "page: wiki/adrs/old.md",
+		Props: map[string]any{"intent_kind": "page", "page_type": "decision", "status": "shipped"}}
+	rel := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/old.md",
+		Name: "wiki/adrs/old.md superseded-by wiki/adrs/new.md",
+		Props: map[string]any{"intent_kind": "relation", "rel": "superseded-by",
+			"to": "wiki/adrs/new.md", "source": "wiki/adrs/old.md"}}
+	newPage := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/new.md",
+		Name:  "page: wiki/adrs/new.md",
+		Props: map[string]any{"intent_kind": "page", "page_type": "decision"}}
+	staleAnchor := anchorFact("wiki/adrs/old.md", "app", "src/gone.rb")
+
+	got := explain(t, repoMarker("app"), fileFact("app", "src/app.rb"), page, rel, newPage, staleAnchor)
+	if len(got) != 0 {
+		t.Fatalf("a superseded-by relation must retire the page's anchors, got: %s", titles(got))
+	}
+}
