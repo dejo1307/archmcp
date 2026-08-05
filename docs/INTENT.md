@@ -167,8 +167,14 @@ the boundary (working rule 5) — a page about one name may compile
 against a cluster that labels the same repo another way. Keeping
 those names truthful is the wiki's job, where the mapping is
 known. Declared layer
-patterns verdict at 1.0 through the layers explainer, replacing
-heuristic recognition for that repo.
+patterns verdict at 1.0 through the layers explainer, *alongside*
+heuristic recognition rather than instead of it: a declaring repo gets
+its declared pattern and its proof-class violations, and the
+snapshot-wide heuristic pattern is still reported next to them. The
+heuristic cannot be switched off per repo, because its confidence is a
+ratio over every module in the snapshot — suppressing one repo's
+modules would move the score, and possibly the verdict, for repos that
+declared nothing.
 
 Two consequences worth designing for. A **declared seam also earns
 coverage**: unresolved client calls in a repo with exactly one

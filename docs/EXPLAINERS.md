@@ -58,8 +58,10 @@ the entities the claim is about. There are eleven, and they fall into five kinds
   `exported-surface` flags large modules that export nearly everything.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
   against eight known taxonomies, then flags imports that run the wrong way through it.
-  A repo that DECLARES its layer order skips the recognition: the declared pattern is
-  stated, not guessed, and its violations are proof-class.
+  A repo that DECLARES its layer order is verdicted against the declaration as well:
+  that pattern is stated rather than guessed, so it and its violations are proof-class.
+  It sits beside the recognised pattern, not in place of it — recognition scores itself
+  over the whole snapshot, so it has no per-repo off switch.
 - **Reporters.** `crossrepo`, `coverage` and `unused-routes` compute nothing of their
   own; they summarise what the cross-repo linker already resolved — which repositories
   depend on which, where enola failed to follow a call, and which routes no loaded
