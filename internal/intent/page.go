@@ -36,6 +36,18 @@ type PageDecl struct {
 	Affects   []string       `yaml:"affects"`
 	Origin    []string       `yaml:"origin"`
 	Relations []PageRelation `yaml:"relations"`
+	Anchors   []PageAnchor   `yaml:"anchors"`
+}
+
+// PageAnchor pins a page to a code location: the repo and repo-relative path
+// (a file, or a directory prefix) the page's knowledge is about. Where a
+// relation joins page to page, an anchor joins page to the measured graph —
+// the reverse query ("which decisions govern this file?") becomes a
+// traversal, and an anchor whose path no measured fact touches is verdicted
+// as dangling instead of aging silently as a stale citation.
+type PageAnchor struct {
+	Repo string `yaml:"repo"`
+	Path string `yaml:"path"`
 }
 
 // AllowedOrigins is the closed channel vocabulary for a page's origin — WHERE
@@ -158,6 +170,15 @@ func (p *PageIntent) Validate() error {
 			}
 			if !strings.HasSuffix(r.To, ".md") {
 				problems = append(problems, fmt.Sprintf("page.relations[%d]: to %q must be a repo-relative markdown path", i, r.To))
+			}
+		}
+		for i, a := range pg.Anchors {
+			if a.Repo == "" || a.Path == "" {
+				problems = append(problems, fmt.Sprintf("page.anchors[%d]: needs repo and path", i))
+				continue
+			}
+			if strings.HasPrefix(a.Path, "/") || strings.HasPrefix(a.Path, "..") || strings.Contains(a.Path, "/../") {
+				problems = append(problems, fmt.Sprintf("page.anchors[%d]: path %q must be repo-relative", i, a.Path))
 			}
 		}
 	}

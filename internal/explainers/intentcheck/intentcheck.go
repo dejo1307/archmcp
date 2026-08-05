@@ -177,6 +177,8 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 
 	insights = append(insights, claimVerdicts(store)...)
 	insights = append(insights, relationVerdicts(store)...)
+	insights = append(insights, anchorVerdicts(store, present)...)
+	insights = append(insights, scopeVerdicts(store, present)...)
 
 	sort.Slice(overridden, func(i, j int) bool {
 		if overridden[i].Repo != overridden[j].Repo {
@@ -316,6 +318,115 @@ func relationVerdicts(store *facts.Store) []facts.Insight {
 		})
 	}
 	return out
+}
+
+// danglingAnchorConfidence caps the code-anchor estimate: a path no measured
+// fact touches may be moved or deleted, or may simply be a file no extractor
+// parses — the verdict cannot tell which.
+const danglingAnchorConfidence = 0.8
+
+// anchorVerdicts joins every declared code anchor against the measured graph:
+// an anchor holds when some measured fact's file equals the anchored path or
+// sits under it (a directory anchor). A repo absent from the graph is
+// unasked, never failed — same counterparty rule as seams. A join is
+// silence; a miss is the stale-citation finding grooming otherwise hunts by
+// hand.
+func anchorVerdicts(store *facts.Store, present map[string]bool) []facts.Insight {
+	var anchors []facts.Fact
+	measured := map[string]map[string]bool{}
+	for _, f := range store.All() {
+		if f.Kind == facts.KindIntent {
+			if f.PropString("intent_kind") == "anchor" {
+				anchors = append(anchors, f)
+			}
+			continue
+		}
+		if f.Repo == "" || f.File == "" {
+			continue
+		}
+		if measured[f.Repo] == nil {
+			measured[f.Repo] = map[string]bool{}
+		}
+		measured[f.Repo][strings.TrimPrefix(f.File, f.Repo+"/")] = true
+	}
+	var out []facts.Insight
+	for _, f := range anchors {
+		owner := f.PropString("intent_owner")
+		path := strings.TrimSuffix(f.PropString("path"), "/")
+		if owner == "" || path == "" || !present[owner] {
+			continue // no counterparty in this graph: not asked, never failed
+		}
+		files := measured[owner]
+		hit := files[path]
+		if !hit {
+			prefix := path + "/"
+			for file := range files {
+				if strings.HasPrefix(file, prefix) {
+					hit = true
+					break
+				}
+			}
+		}
+		if hit {
+			continue
+		}
+		out = append(out, facts.Insight{
+			Title:       fmt.Sprintf("Dangling code anchor: %s", f.Name),
+			Description: fmt.Sprintf("The page anchors to %s in %s, and no measured fact touches that path. Either the code moved or was deleted, or no extractor parses it — this verdict cannot tell which, so its confidence is capped.", path, owner),
+			Confidence:  danglingAnchorConfidence,
+			Evidence:    []facts.Evidence{{Fact: f.Name, Detail: "declared in " + f.PropString("source")}},
+			Actions:     []string{"Fix the path if the code moved", "Remove the anchor if the code is gone", "Record an extraction-gap verdict if the path is real but unparsed"},
+		})
+	}
+	return out
+}
+
+// unknownScopeConfidence caps the scope estimate: a repo name the graph has
+// never measured may be a typo, or a repo deliberately outside the cluster.
+const unknownScopeConfidence = 0.8
+
+// scopeVerdicts checks every page node's scope and affects entries against
+// the repo labels present in the graph. Before this check the two fields
+// were carried as unverdicted props — a page could claim to be about a repo
+// that does not exist and nothing fired.
+func scopeVerdicts(store *facts.Store, present map[string]bool) []facts.Insight {
+	var out []facts.Insight
+	for _, f := range store.All() {
+		if f.Kind != facts.KindIntent || f.PropString("intent_kind") != "page" {
+			continue
+		}
+		for _, field := range []string{"scope", "affects"} {
+			for _, repo := range stringsProp(f, field) {
+				if present[repo] {
+					continue
+				}
+				out = append(out, facts.Insight{
+					Title:       fmt.Sprintf("Unknown %s repo: %s in %s", field, repo, f.File),
+					Description: fmt.Sprintf("The page's %s names %q, and no repo with that label is measured in this graph. Either the name is stale or mistyped, or the repo is deliberately outside the cluster — this verdict cannot tell which, so its confidence is capped.", field, repo),
+					Confidence:  unknownScopeConfidence,
+					Evidence:    []facts.Evidence{{Fact: f.Name, Detail: fmt.Sprintf("%s: %s", field, repo)}},
+					Actions:     []string{"Fix the name if it is stale or mistyped", "Add the repo to the cluster if it should be measured"},
+				})
+			}
+		}
+	}
+	return out
+}
+
+func stringsProp(f facts.Fact, key string) []string {
+	switch v := f.Props[key].(type) {
+	case []string:
+		return v
+	case []any:
+		var out []string
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func intPropOf(f facts.Fact, key string) (int, bool) {

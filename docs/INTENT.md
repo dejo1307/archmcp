@@ -48,6 +48,9 @@ enola_intent:
       - {rel: part-of,       to: wiki/backend/epics/messaging.md}
       - {rel: depends-on,    to: wiki/backend/adrs/queue-choice.md}
       - {rel: supersedes,    to: wiki/backend/adrs/old-queue.md}
+    anchors:                 # code locations this knowledge is about
+      - {repo: backend, path: app/services/payment_processor.rb}
+      - {repo: backend, path: app/handlers}
   consumes:                  # seams: who intends to call whom, and how
     - {repo: mobile, target: backend, via: graphql}
   layers:                    # a repo's declared layer order, outermost first
@@ -76,6 +79,13 @@ decision lives, not inside the repo it governs.
 - **`rel`** — how pages relate: `depends-on`, `supersedes`,
   `superseded-by`, `part-of`, `relates-to`. Targets are
   repo-relative markdown paths.
+- **`anchors`** — where a relation joins page to page, an anchor
+  joins page to code: a repo label plus a repo-relative path,
+  either a file or a directory prefix. A validated shape rather
+  than a closed vocabulary: both fields required, the path
+  repo-relative. With anchors the reverse query — *which
+  decisions govern this file?* — becomes a graph traversal
+  instead of a grep through prose.
 - **`origin`** — where knowledge came from: `slack`, `langfuse`,
   `notion`, `github`, `web`, `repo`, `other`. Channels, not source
   files: the entry names the class of system the page's evidence was
@@ -95,7 +105,7 @@ time — snapshots carry them, diffs track them, receipts fingerprint
 them. Nothing about intent lives in a side channel:
 
 - a `page:` block → one **knowledge node** plus one **relation
-  edge** per relation
+  edge** per relation plus one **anchor fact** per anchor
 - each `consumes:` entry → a seam-intent fact with `intent_owner`
 - each `layers:` entry → per-layer facts feeding the layers explainer
 - each `claims:` entry → a claim fact the explainer re-evaluates
@@ -112,10 +122,17 @@ confidences:
 | Failed claim (count or seam doesn't hold) | 1.0 | the claim is stated, the count is counted |
 | Missing intended seam (declared, not measured) | 0.8 | could be drift *or* an extraction miss — an estimate never presents as certainty |
 | Dangling relation (edge to an uncompiled page) | 0.8 | the target may be deleted or merely not opted in |
+| Dangling code anchor (path no measured fact touches) | 0.8 | the code may have moved or died — or no extractor parses it |
+| Unknown scope repo (`scope`/`affects` names an unmeasured repo) | 0.8 | stale or mistyped — or deliberately outside the cluster |
 
 Repos that declare nothing are unasked — adoption is per-repo, and
 undeclared is not a finding. A declared seam whose counterparty is
-absent from the graph is skipped, never failed. Declared layer
+absent from the graph is skipped, never failed; an anchor into a
+repo the graph never measured is skipped the same way. An anchor
+that joins is silence — and the join is the point: it is the
+stale-citation check a wiki otherwise performs by hand, and it
+makes every anchored file's governing decisions reachable from the
+graph. Declared layer
 patterns verdict at 1.0 through the layers explainer, replacing
 heuristic recognition for that repo.
 
@@ -149,7 +166,9 @@ workflow keeps and it stays acknowledged.
    relations, source citations), generate the `enola_intent:` block
    from it with your own tooling and check the derivation in CI —
    enola validates the block; keeping it truthful to your
-   conventions is yours.
+   conventions is yours. Source citations that name code paths are
+   anchors waiting to be derived: the richest page-to-code signal a
+   wiki carries is usually already in its citation discipline.
 6. **Treat vocabulary gaps as decisions.** If a real seam has no
    via, that is a proposal for this page — not a reason to shoehorn
    it into a wrong one or drop it silently.

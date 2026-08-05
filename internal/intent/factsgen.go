@@ -110,6 +110,19 @@ func CompilePageFacts(p *PageIntent, pageFile string) []facts.Fact {
 				},
 			})
 		}
+		for _, a := range pg.Anchors {
+			out = append(out, facts.Fact{
+				Kind: facts.KindIntent,
+				Name: fmt.Sprintf("anchor: %s %s", a.Repo, a.Path),
+				File: pageFile,
+				Props: map[string]any{
+					"intent_kind":  "anchor",
+					"intent_owner": a.Repo,
+					"path":         a.Path,
+					"source":       pageFile,
+				},
+			})
+		}
 	}
 	for _, c := range p.Consumes {
 		out = append(out, facts.Fact{

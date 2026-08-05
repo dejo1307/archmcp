@@ -177,3 +177,41 @@ func TestMDIntent_OriginChannelsCompileAndValidate(t *testing.T) {
 		t.Fatalf("an unknown channel must fail with the vocabulary named, got %v", err)
 	}
 }
+
+// TestMDIntent_AnchorsCompileToOwnedFacts pins the page-to-code join: a page
+// declaring anchors compiles one anchor fact per entry, owned by the anchored
+// repo with the page as provenance, and an invalid anchor fails with the
+// shape named.
+func TestMDIntent_AnchorsCompileToOwnedFacts(t *testing.T) {
+	dir := t.TempDir()
+	good := "---\nenola_intent:\n  page:\n    type: decision\n    anchors:\n      - {repo: backend, path: app/services/formatter.rb}\n      - {repo: backend, path: app/jobs}\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "d.md"), []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ff, err := New().Extract(context.Background(), dir, []string{"d.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anchors []facts.Fact
+	for _, f := range ff {
+		if f.Props["intent_kind"] == "anchor" {
+			anchors = append(anchors, f)
+		}
+	}
+	if len(anchors) != 2 {
+		t.Fatalf("compiled %d anchor facts, want 2", len(anchors))
+	}
+	for _, f := range anchors {
+		if f.Props["intent_owner"] != "backend" || f.File != "d.md" {
+			t.Fatalf("anchor must be owned by the anchored repo with the page as provenance, got %v @ %s", f.Props, f.File)
+		}
+	}
+	bad := "---\nenola_intent:\n  page:\n    type: decision\n    anchors:\n      - {repo: backend, path: /etc/passwd}\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "b.md"), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = New().Extract(context.Background(), dir, []string{"b.md"})
+	if err == nil || !strings.Contains(err.Error(), "repo-relative") {
+		t.Fatalf("an absolute anchor path must fail as not repo-relative, got %v", err)
+	}
+}

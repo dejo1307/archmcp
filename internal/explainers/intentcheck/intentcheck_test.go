@@ -168,3 +168,62 @@ func TestIntentCheck_RelationJoinsAcrossLabelPrefix(t *testing.T) {
 		t.Fatalf("a label-prefixed page must satisfy its repo-relative relation, got %s", titles(insights))
 	}
 }
+
+func fileFact(repo, file string) facts.Fact {
+	return facts.Fact{Kind: facts.KindSymbol, Repo: repo, File: file, Name: file + ":fn"}
+}
+
+func anchorFact(page, owner, path string) facts.Fact {
+	return facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: page,
+		Name: "anchor: " + owner + " " + path,
+		Props: map[string]any{"intent_kind": "anchor", "intent_owner": owner,
+			"path": path, "source": page}}
+}
+
+// TestIntentCheck_AnchorJoinsOrDangles pins the page-to-code join: an anchor
+// whose path a measured fact touches (exactly, under a directory prefix, or
+// behind a repo-label file prefix) is silence; a path nothing touches is a
+// capped dangling finding; a repo absent from the graph is unasked.
+func TestIntentCheck_AnchorJoinsOrDangles(t *testing.T) {
+	got := explain(t,
+		fileFact("backend", "app/services/formatter.rb"),
+		fileFact("backend", "backend/app/jobs/x_job.rb"),
+		anchorFact("wiki/adrs/fmt.md", "backend", "app/services/formatter.rb"),
+		anchorFact("wiki/adrs/jobs.md", "backend", "app/jobs"),
+		anchorFact("wiki/adrs/gone.md", "backend", "app/services/gone.rb"),
+		anchorFact("wiki/adrs/mob.md", "mobile", "src/App.tsx"),
+	)
+	if len(got) != 1 {
+		t.Fatalf("want exactly the one dangling anchor, got: %s", titles(got))
+	}
+	if !strings.Contains(got[0].Title, "gone.rb") || got[0].Confidence != danglingAnchorConfidence {
+		t.Fatalf("dangling anchor must name the path at capped confidence, got %+v", got[0])
+	}
+}
+
+// TestIntentCheck_UnknownScopeRepoCapped pins scope/affects verdicting: an
+// entry naming a repo the graph never measured is a capped finding naming
+// the field; entries naming measured repos are silence. The affects list
+// arrives as []any to pin the JSON round-trip shape.
+func TestIntentCheck_UnknownScopeRepoCapped(t *testing.T) {
+	page := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/x.md",
+		Name: "page: wiki/adrs/x.md",
+		Props: map[string]any{"intent_kind": "page", "page_type": "decision",
+			"scope":   []string{"backend", "ghost"},
+			"affects": []any{"mobile"},
+			"source":  "wiki/adrs/x.md"}}
+	got := explain(t, repoMarker("backend"), page)
+	if len(got) != 2 {
+		t.Fatalf("want ghost (scope) + mobile (affects), got: %s", titles(got))
+	}
+	joined := titles(got)
+	if !strings.Contains(joined, "Unknown scope repo: ghost") ||
+		!strings.Contains(joined, "Unknown affects repo: mobile") {
+		t.Fatalf("findings must name field and repo, got: %s", joined)
+	}
+	for _, i := range got {
+		if i.Confidence != unknownScopeConfidence {
+			t.Fatalf("scope verdicts are estimates, want capped confidence, got %+v", i)
+		}
+	}
+}

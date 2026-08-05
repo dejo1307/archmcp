@@ -1113,7 +1113,13 @@ import (
 // knowledge came from, compiled onto the page node's props so receipts
 // fingerprint provenance and any explainer can key on it. An unknown channel
 // fails the snapshot with the vocabulary named.
-const cacheVersion = "v160"
+// v161: page declarations gain anchors — repo + repo-relative path pinning a
+// page to the code it is about, compiled as anchor intent facts and joined
+// against the measured graph (exact file or directory prefix; a miss is a
+// dangling-anchor finding at capped confidence, an absent repo is unasked).
+// Page scope/affects entries are now verdicted against measured repo labels
+// instead of riding along as unchecked props.
+const cacheVersion = "v161"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
