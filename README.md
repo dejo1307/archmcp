@@ -173,19 +173,22 @@ reports, per service, how many outbound calls enola found, how many it resolved,
 | Go         | `go.mod` (gorilla/mux + chi route composition / gRPC clients / Kafka topics aware) |
 | Java       | `pom.xml` (Maven) or `.java` sources (Spring routes / JPA / Lombok DI / Dubbo SPI aware) |
 | JavaScript | `tsconfig.json` / `package.json` with TypeScript (parsed by the TypeScript extractor) |
-| TypeScript | `tsconfig.json` / `package.json` with TypeScript (Next.js & monorepo aware) |
+| TypeScript | `tsconfig.json` / `package.json` with TypeScript (Next.js, React Navigation & monorepo aware) |
 | Vue        | `package.json` with `vue` dependency (Nuxt / Vue Router / Composition API aware) |
 | Svelte     | `package.json` with `svelte` dependency (SvelteKit routing / `$lib` alias aware) |
 | Ember      | `package.json` with `ember-source` dependency (`.gts`/`.gjs` template tags, `.hbs` templates, router map, ember-data) |
 | Python     | `pyproject.toml`, `requirements.txt`, `setup.py`, … (FastAPI / Django / SQLAlchemy aware) |
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
-| Ruby       | `Gemfile` (Rails / ActiveRecord / Packwerk aware) |
+| Ruby       | `Gemfile` (Rails / ActiveRecord / Sequel / Packwerk aware) |
 | Rust       | `Cargo.toml` (workspace or single crate; crate/module/`impl`/trait aware; Axum route DSL aware) |
 | C / C++    | `.c`/`.h` (tree-sitter-c) or `.cpp`/`.hpp`/… (tree-sitter-cpp), or `CMakeLists.txt`/`Makefile` + header (per-fact `language`, header/source method merging, namespaces, templates) |
 | PHP        | `composer.json`, WordPress markers, or any `.php` source (WordPress / Laravel / Symfony route + outbound HTTP-client aware) |
+| Terraform / HCL | any `.tf`/`.hcl` file (blocks as Terraform addresses; prefixed and declared-set bare references; local module sources draw directory dependencies) |
+| Ansible    | `ansible.cfg` or a `roles/` directory beside plays (plays → roles by name; `include_role`/`import_role`; templates counted, never rendered) |
 | OpenAPI    | any spec with an `openapi:` / `swagger:` key |
 | gRPC       | any `.proto` file (proto services → routes; TypeScript gRPC-web client calls detected) |
+| GraphQL    | graphql-ruby root types (server) + gql tags, `.graphql` operation documents and Ruby operation strings (clients); operation documents activate detection without a TypeScript root |
 
 Framework- and platform-specific detection for each language is described in **[ARCHITECTURE.md → Supported languages](ARCHITECTURE.md#supported-languages)**.
 
@@ -208,7 +211,7 @@ Framework- and platform-specific detection for each language is described in **[
 
 Apache License 2.0 — see [`LICENSE`](LICENSE).
 
-This repository is the full engine, not a trial edition. Every extractor and every language ships here (Go, TypeScript/JavaScript/Vue/Svelte, Python, Java, Kotlin, Ruby, PHP, Swift, Rust, C/C++, gRPC/Protobuf, OpenAPI), along with the cross-repo linker, all 13 MCP tools, all 10 explainers (cycles, layers, cross-repo, coverage, unused-routes, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers), baselines and `diff_snapshot`, snapshot receipts, the `--explain` report, and the localhost dashboard. None of this is gated, metered, or degraded without a key — there is no license check anywhere in this repository, and no snapshot, fact, or usage counter leaves your machine. (The only outbound request enola makes is to GitHub's release API, and only when you explicitly run `enola upgrade`.)
+This repository is the full engine, not a trial edition. Every extractor and every language ships here (Go, TypeScript/JavaScript/Vue/Svelte/Ember, Python, Java, Kotlin, Ruby, PHP, Swift, Rust, C/C++, Terraform/HCL, Ansible, gRPC/Protobuf, OpenAPI, GraphQL), along with the cross-repo linker, all 13 MCP tools, all 10 explainers (cycles, layers, cross-repo, coverage, unused-routes, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers), baselines and `diff_snapshot`, snapshot receipts, the `--explain` report, and the localhost dashboard. None of this is gated, metered, or degraded without a key — there is no license check anywhere in this repository, and no snapshot, fact, or usage counter leaves your machine. (The only outbound request enola makes is to GitHub's release API, and only when you explicitly run `enola upgrade`.)
 
 ## Acknowledgements
 
