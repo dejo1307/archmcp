@@ -21,6 +21,10 @@ Fixture: [`ruby_sample`](../../internal/engine/testdata/repos/ruby_sample/)
 | `public_send(:"report_#{t}")` | a `dynamic_send_prefixes` hint on the file | `file_ref` |
 | an ERB template | a `file_ref` carrying its helper and presenter calls | `file_ref` |
 | `spec/**/*_spec.rb`, `test/**/*_test.rb` | a reference-only `test_ref` | `test_ref` |
+| `class X < Sequel::Model(:customers)` | a model with the literal dataset table | `storage` |
+| `field :page_views` in a root type | a server GraphQL route `Query.pageViews` | `route` |
+| `"query { pageViews { total } }"` | a client GraphQL route per root field | `route` |
+| `connection.post(build_url("/pageview"))` | a client route derived through the wrapper literal | `route` |
 
 ## Routes — nested resource path shapes
 
@@ -170,6 +174,97 @@ test globs are **directory-scoped** (`**/test/**/*_test.rb`), not a bare `*_test
 suffix, so this file is indexed as source. A bare suffix glob both ignored it and routed
 it to reference-only extraction, and the class vanished from the graph entirely.
 
+## Storage — ActiveRecord and Sequel
+
+An ActiveRecord model emits a `storage` fact beside its class symbol, with the
+table inferred from the class name unless `self.table_name` states it. A
+`Sequel::Model` subclass gets the same companion shape, and the dataset form's
+literal argument wins as the physical table:
+
+```ruby
+class CustomerRecord < Sequel::Model(:customers)
+end
+```
+
+```
+symbol   CustomerRecord   props: superclass=Sequel::Model
+         relations: implements -> Sequel::Model
+storage  CustomerRecord   props: storage_kind=model, table=customers, framework=sequel
+```
+
+The call-form superclass is read whole so the table literal survives, and
+stripped back to the base name everywhere the class name alone is meant —
+`superclass` and the `implements` target say `Sequel::Model`, never
+`Sequel::Model(:customers)`. (Until v154 the call form was dropped entirely
+and the dataset idiom emitted no storage fact.)
+
+## GraphQL — the server half and the Ruby client half
+
+Root types declare the operation surface; each `field` in a
+`QueryType`/`MutationType`/`SubscriptionType` class — namespace-qualified
+forms like `class Types::QueryType` included — becomes a server route named by
+its camelized root field, the joinable name the graphql cross-repo signal
+matches:
+
+```ruby
+# app/graphql/types/query_type.rb
+class Types::QueryType < Types::BaseObject
+  field :page_views, [Types::PageViewType], null: false
+end
+```
+
+```
+route  Query.pageViews   props: role=server, type=graphql, source=graphql-ruby-dsl
+```
+
+Non-root types' fields are schema internals and emit nothing. Camelization
+follows graphql-ruby's default; a schema overriding it shows up as an
+unmatched client op, never as a wrong edge.
+
+A Rails service *calling* a sibling's GraphQL API writes the operation as a
+plain Ruby string, and that is the client half — a quoted literal or heredoc
+body whose content is structurally an operation head:
+
+```ruby
+def stats_query
+  "query {
+    pageViews {
+      total
+    }
+  }"
+end
+```
+
+```
+route  Query.pageViews   props: role=client, type=graphql, source=graphql-ruby-string
+```
+
+The anchor is an OPENING quote on the same line as the keyword, and the head
+must be structurally an operation (optional name, optional parenthesized
+variables, brace) — so Ruby's own block syntax (`query { |x| x.active }`) and
+a closing quote followed by Ruby code can never match. Files under a
+`graphql/` tree and files declaring a root type are excluded as server side.
+
+## Outbound HTTP — literal paths, and literals one derivation away
+
+Hand-written client calls with literal paths emit client routes as written
+(`conn.get "users/123"`). Two bounded derivations extend that reach (shared
+with the TypeScript extractor via `litfold`):
+
+```ruby
+connection.post(build_url("/pageview"), attributes)
+```
+
+```
+route  /pageview   props: role=client, method=POST, derived=wrapper-literal,
+                          target_hint=metricshost
+```
+
+A wrapper call's single string argument derives the path only when it is
+"/"-rooted — `t("labels.metrics")` derives nothing — and the `derived` prop
+says a folded literal apart from an inline one. The `target_hint` falls back
+to the first base-URL environment variable read in the file.
+
 ## What is deliberately not extracted
 
 - **Routes drawn dynamically** — a `routes.rb` that loops over a config array is not
@@ -179,6 +274,10 @@ it to reference-only extraction, and the class vanished from the graph entirely.
 - **`ApplicationRecord`, `*BaseController` and `*::Base`** are excluded from god-class
   candidacy: their fan-in comes from every subclass inheriting them, which is the
   framework working, not a design problem.
+- **GraphQL operations built by string concatenation or interpolation of the
+  operation head** — only a literal head names its root fields.
+- **Multi-step derivations** — `litfold` folds one step, never chases a chain,
+  and a name assigned twice folds nothing.
 
 ---
 

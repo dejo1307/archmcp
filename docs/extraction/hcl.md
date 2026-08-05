@@ -1,0 +1,95 @@
+# Terraform / HCL — the module directory as the unit of scope
+
+HCL is a data language whose block grammar is line-regular enough for an exact
+scanner — the gRPC/OpenAPI hand-rolled tradition, no grammar dependency. A
+Terraform directory is a module; blocks declare addresses and reference each
+other by exactly those addresses, so every edge below is a literal the source
+states.
+
+Fixture: [`hcl_sample`](../../internal/engine/testdata/repos/hcl_sample/)
+
+## Blocks become symbols, addressed as Terraform addresses them
+
+Detected by any `.tf`/`.hcl` file within three directory levels. Each block —
+`resource`, `data`, `module`, `variable`, `output`, `provider`, and every
+assignment inside a `locals` block (all of them, not just the first block) —
+becomes a symbol named by its Terraform address, prefixed with its directory
+when the module is not the repo root:
+
+```hcl
+# main.tf
+resource "aws_vpc" "core" {
+  cidr_block = "10.0.0.0/16"
+}
+
+resource "aws_instance" "web" {
+  subnet_id  = aws_vpc.core.id
+  region     = var.region
+  depends_on = [aws_vpc.core]
+}
+
+output "web_ip" {
+  value = aws_instance.web.public_ip
+}
+```
+
+```
+symbol  aws_vpc.core       main.tf   props: hcl_block=resource
+symbol  aws_instance.web   main.tf   props: hcl_block=resource
+        relations: depends_on -> aws_vpc.core, depends_on -> var.region
+symbol  output.web_ip      main.tf   props: hcl_block=output, exported=true
+        relations: depends_on -> aws_instance.web
+symbol  var.region         main.tf   props: hcl_block=variable, exported=true
+```
+
+`variable` and `output` blocks are `exported` — they are the module's public
+surface, exactly as Terraform treats them.
+
+## References are literals, scoped the way Terraform scopes them
+
+Three reference forms draw `depends_on` edges, and only three:
+
+- **Prefixed references** — `var.region`, `local.tags`, `module.dns`,
+  `data.aws_ami.base` — are unambiguous by construction and always count.
+- **Bare resource addresses** — `aws_vpc.core` in an expression — count *only*
+  when the same directory declares that exact address. Terraform's own scoping
+  rule, applied verbatim: prose in a description or a function name can never
+  fabricate an edge, because the declared set is the filter.
+- **`depends_on` lists** — explicit, and matched against the same declared set.
+
+## A module block's literal source draws the directory dependency
+
+```hcl
+module "dns" {
+  source = "./modules/dns"
+  zone   = var.region
+}
+```
+
+```
+symbol      module.dns          main.tf    props: hcl_block=module
+            relations: depends_on -> var.region
+dependency  . -> modules/dns    main.tf    props: source=internal
+            relations: imports -> modules/dns
+module      modules/dns
+symbol      modules/dns.var.zone      modules/dns/main.tf   props: hcl_block=variable
+symbol      modules/dns.output.fqdn   modules/dns/main.tf
+            relations: depends_on -> modules/dns.var.zone
+```
+
+A local source (`./` or `../`) resolves to the directory and draws the
+module-to-module edge. A remote source (registry, git) is recorded on the
+module symbol as `module_source` with `external=true` and draws nothing — a
+missing edge beats a wrong one.
+
+## What is deliberately not extracted
+
+- **Remote modules** are named, never followed — no registry fetch, no git
+  clone, no fabricated address space for code that is not in the repository.
+- **Expression evaluation** — `count`, `for_each`, conditionals, function
+  calls and string interpolation are never evaluated; a reference inside them
+  still counts as a reference, but no expansion is modeled.
+- **Cross-directory bare addresses** — a bare address only resolves inside its
+  own module directory, because that is the only scope Terraform gives it.
+- **State and providers** — what a provider does with a resource at apply time
+  is runtime, not architecture.

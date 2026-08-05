@@ -422,6 +422,10 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 	}
 	qual := w.qualify(name)
 	superclass := w.superclassName(node.ChildByFieldName("superclass"))
+	superclassBase := superclass
+	if i := strings.IndexByte(superclassBase, '('); i >= 0 {
+		superclassBase = strings.TrimSpace(superclassBase[:i])
+	}
 
 	props := map[string]any{
 		"symbol_kind": facts.SymbolClass,
@@ -431,12 +435,12 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 	if w.isRails {
 		props["framework"] = "rails"
 	}
-	if superclass != "" {
-		props["superclass"] = superclass
+	if superclassBase != "" {
+		props["superclass"] = superclassBase
 	}
 	rels := []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}}
-	if superclass != "" {
-		rels = append(rels, facts.Relation{Kind: facts.RelImplements, Target: superclass})
+	if superclassBase != "" {
+		rels = append(rels, facts.Relation{Kind: facts.RelImplements, Target: superclassBase})
 	}
 	w.out = append(w.out, facts.Fact{
 		Kind:      facts.KindSymbol,
@@ -454,7 +458,7 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 	// dataset form `Sequel::Model(:table)`, whose literal argument is the
 	// physical table (inferTableName is the fallback when the argument is
 	// absent or dynamic).
-	isModel := isARBaseClass(superclass)
+	isModel := isARBaseClass(superclassBase)
 	sequelTable, isSequel := sequelModelBase(superclass)
 	if isModel || isSequel {
 		table := inferTableName(qual)
@@ -1592,6 +1596,11 @@ func (w *rubyWalker) constName(node *sitter.Node) string {
 
 // superclassName extracts the superclass name from a `superclass` node
 // (the "< Base" part of a class declaration).
+// superclassName returns the superclass expression's text: a plain constant or
+// scope resolution as written, and a CALL-form superclass — Sequel's dataset
+// idiom `Sequel::Model(:customers)` — as receiver plus arguments, so
+// sequelModelBase can read the literal table. Callers strip the call arguments
+// (superclassBase) everywhere the base class name alone is meant.
 func (w *rubyWalker) superclassName(node *sitter.Node) string {
 	if node == nil {
 		return ""
@@ -1601,6 +1610,15 @@ func (w *rubyWalker) superclassName(node *sitter.Node) string {
 		switch c.Kind() {
 		case "constant", "scope_resolution":
 			return rubyText(c, w.src)
+		case "call":
+			recv := c.ChildByFieldName("receiver")
+			if recv == nil {
+				continue
+			}
+			switch recv.Kind() {
+			case "constant", "scope_resolution":
+				return rubyText(c, w.src)
+			}
 		}
 	}
 	return ""

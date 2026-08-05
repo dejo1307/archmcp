@@ -1039,7 +1039,16 @@ import (
 // as GAP-TS-06), with cleanTSPath resolving or stripping the base as before.
 // Folded routes carry a descriptive `derived` prop naming the form. One step
 // only, never evaluation; derived and inline literals join identically.
-const cacheVersion = "v153"
+// v154: the Sequel dataset form actually extracts. `class X <
+// Sequel::Model(:customers)` parses as a CALL-form superclass, which the
+// superclass reader dropped entirely — so the paren form emitted no storage
+// fact, no superclass prop, and no implements edge, and the ruby_sample
+// golden pinned the miss while the helper's unit test (fed the string
+// directly) passed. The reader now returns call-form superclasses whole;
+// consumers strip the arguments wherever the base name alone is meant, so
+// implements targets stay clean while sequelModelBase finally receives the
+// literal table.
+const cacheVersion = "v154"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

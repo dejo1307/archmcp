@@ -20,7 +20,7 @@ pages changing, the golden tests fail first.
 | [Go](go.md) | gorilla/mux, chi, Gin, Echo, `net/http` clients, gRPC, Kafka | prefix composition across function boundaries |
 | [TypeScript / JavaScript](typescript.md) | Express, NestJS, Next.js, `fetch`, axios, Prisma, TypeORM, Drizzle | Vue, Svelte, and file-based routing |
 | [Python](python.md) | FastAPI, Flask, Django, SQLAlchemy, gRPC | `include_router` prefixes folded repo-wide |
-| [Ruby](ruby.md) | Rails `routes.rb`, ActiveRecord, Packwerk | nested `resource`/`resources` path shapes |
+| [Ruby](ruby.md) | Rails `routes.rb`, ActiveRecord, Sequel, graphql-ruby, Packwerk | nested `resource`/`resources` path shapes, GraphQL operation strings |
 | [Java](java.md) | Spring MVC, RestTemplate, Feign, JPA, Dubbo SPI | |
 | [Kotlin](kotlin.md) | Retrofit, Room, Compose, Hilt | |
 | [Swift](swift.md) | URLSession, SwiftUI, UIKit | endpoint enums, protocol-extension prefixes |
@@ -28,6 +28,8 @@ pages changing, the golden tests fail first.
 | [Rust](rust.md) | Axum route DSL | `.nest()` mounts composed crate-wide |
 | [C / C++](cpp.md) | — | header/source method merging, namespaces, templates |
 | [gRPC and OpenAPI](grpc-openapi.md) | `.proto` services, OpenAPI specs | the contract as the server side of an edge |
+| [Terraform / HCL](hcl.md) | resources, modules, variables, outputs, locals | Terraform addresses as symbol names; declared-set bare references |
+| [Ansible](ansible.md) | plays, roles, `include_role`/`import_role` | by-name structure read without rendering a template |
 
 ## How to read a page
 
