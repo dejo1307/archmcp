@@ -2,9 +2,33 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
+
+// FatalError marks an extractor error the engine must NOT absorb. An ordinary
+// extractor error is a parse failure over one language in one repository: the
+// snapshot is still worth having, so the engine records it and carries on. That
+// is the right default for source code, where an unparseable file is a gap.
+//
+// It is the wrong default for a DECLARATION. A declaration states what the
+// architecture is supposed to be, and every verdict about that repo is computed
+// from it — so absorbing an invalid one silently deletes findings rather than
+// degrading a report, and a gate reading those findings passes because there is
+// nothing left to fail on. An extractor wraps its error in FatalError when
+// continuing would publish a snapshot that quietly says less than it should.
+type FatalError struct{ Err error }
+
+func (e *FatalError) Error() string { return e.Err.Error() }
+func (e *FatalError) Unwrap() error { return e.Err }
+
+// Fatalf builds a fatal error, so the engine fails the snapshot instead of
+// recording a parse error and continuing. Formatted rather than wrapping,
+// because every caller has a file to name; %w works as usual.
+func Fatalf(format string, args ...any) error {
+	return &FatalError{Err: fmt.Errorf(format, args...)}
+}
 
 // Extractor parses source files for a specific language and emits architectural facts.
 type Extractor interface {

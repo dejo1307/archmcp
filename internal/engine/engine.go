@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -876,6 +877,14 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 		tExt := time.Now()
 		extracted, err := ext.Extract(ctx, repoPath, files)
 		if err != nil {
+			// A fatal extractor error fails the snapshot rather than being recorded
+			// and stepped over. Declarations use it: an invalid one would otherwise
+			// remove every verdict computed from it while the run still reports
+			// success, which reads as "nothing to report" rather than "not asked".
+			var fatal *plugin.FatalError
+			if errors.As(err, &fatal) {
+				return nil, nil, nil, fmt.Errorf("extractor %s: %w", ext.Name(), fatal.Err)
+			}
 			log.Printf("[engine] extractor %s error: %v", ext.Name(), err)
 			parseErrs = append(parseErrs, facts.ParseError{Extractor: ext.Name(), Msg: err.Error()})
 			continue

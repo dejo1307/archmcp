@@ -2,12 +2,14 @@ package mdintent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/pkg/plugin"
 )
 
 const page = `---
@@ -76,6 +78,12 @@ func TestMDIntent_InvalidBlockFailsExtraction(t *testing.T) {
 	_, err := New().Extract(context.Background(), dir, []string{"page.md"})
 	if err == nil || !strings.Contains(err.Error(), "graphql") {
 		t.Fatalf("an invalid via must fail with the allowed set named, got %v", err)
+	}
+	// Fatal, so the engine fails the snapshot instead of recording a parse error
+	// and publishing a run that quietly lost every verdict the block carried.
+	var fatal *plugin.FatalError
+	if !errors.As(err, &fatal) {
+		t.Fatalf("an invalid declaration must be fatal, got %T: %v", err, err)
 	}
 }
 

@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/extractors/goextractor"
+	"github.com/enola-labs/enola/internal/extractors/mdintent"
 	"github.com/enola-labs/enola/internal/intent"
 )
 
@@ -87,5 +89,29 @@ func TestIntent_ConfigLoadValidatesEntries(t *testing.T) {
 	}
 	if _, err := config.Load(path); err == nil {
 		t.Fatal("an invalid cluster intent entry must fail config load")
+	}
+}
+
+// Both declaration carriers fail the snapshot alike. The repo file already did;
+// the markdown carrier reached the engine through the extractor path, whose
+// errors are recorded and stepped over — so an invalid block published a
+// successful run that had quietly lost every verdict the wiki declared, and a
+// gate reading those verdicts passed for want of anything left to fail on.
+func TestIntent_InvalidPageFailsTheSnapshot(t *testing.T) {
+	repo := writeGoRepo(t)
+	writeFile(t, filepath.Join(repo, "decision.md"),
+		"---\nenola_intent:\n  consumes:\n    - {repo: a, target: b, via: rest}\n---\nbody\n")
+	eng, err := engine.New(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RegisterExtractor(goextractor.New())
+	eng.RegisterExtractor(mdintent.New())
+	_, err = eng.GenerateSnapshot(context.Background(), repo, false)
+	if err == nil {
+		t.Fatal("an invalid enola_intent block must fail the snapshot, not degrade it")
+	}
+	if !strings.Contains(err.Error(), "decision.md") || !strings.Contains(err.Error(), "graphql") {
+		t.Fatalf("the error must name the page and the allowed set, got: %v", err)
 	}
 }

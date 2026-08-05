@@ -8,7 +8,6 @@ package mdintent
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/intent"
+	"github.com/enola-labs/enola/pkg/plugin"
 )
 
 // Extractor extracts enola_intent frontmatter from markdown pages.
@@ -81,7 +81,12 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, files []string
 		}
 		page, err := intent.ParsePage(src)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", relFile, err)
+			// Fatal, not recorded: an ordinary extractor error loses one file's
+			// facts, but losing a declaration loses every verdict computed from it
+			// while the snapshot still reports success. The repo-file carrier fails
+			// the run for the same reason; both carriers must behave alike, or which
+			// file you put a declaration in decides whether a typo is silent.
+			return nil, plugin.Fatalf("%s: %w", relFile, err)
 		}
 		if page == nil {
 			continue
