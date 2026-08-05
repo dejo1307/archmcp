@@ -1115,10 +1115,15 @@ import (
 // fails the snapshot with the vocabulary named.
 // v161: page declarations gain anchors — repo + repo-relative path pinning a
 // page to the code it is about, compiled as anchor intent facts and joined
-// against the measured graph (exact file or directory prefix; a miss is a
-// dangling-anchor finding at capped confidence, an absent repo is unasked).
-// Page scope/affects entries are now verdicted against measured repo labels
-// instead of riding along as unchecked props.
+// against the measured graph (exact file or directory prefix, in both the
+// label-prefixed and repo-relative file forms). A miss is a dangling-anchor
+// finding at capped confidence only when the repo measures files of that
+// kind; an absent repo, or a file kind no measured fact carries (READMEs,
+// manifests, docs), is unasked — a 60-repo regression run showed the
+// conflation flooding wikis with false dangling findings. Scope/affects
+// stay unverdicted props by design: they speak the wiki's vocabulary, and
+// the wiki-to-cluster label mapping is the deriving toolchain's side of the
+// boundary.
 const cacheVersion = "v161"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files

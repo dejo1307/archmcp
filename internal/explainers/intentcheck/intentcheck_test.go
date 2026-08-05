@@ -201,30 +201,51 @@ func TestIntentCheck_AnchorJoinsOrDangles(t *testing.T) {
 	}
 }
 
-// TestIntentCheck_UnknownScopeRepoCapped pins scope/affects verdicting: an
-// entry naming a repo the graph never measured is a capped finding naming
-// the field; entries naming measured repos are silence. The affects list
-// arrives as []any to pin the JSON round-trip shape.
-func TestIntentCheck_UnknownScopeRepoCapped(t *testing.T) {
+// TestIntentCheck_ScopeNamesNeverVerdict pins the boundary: a page's scope
+// and affects speak the wiki's own repo vocabulary, whose mapping to cluster
+// labels lives on the wiki's side — names the graph never measured must NOT
+// fire (a 60-repo regression showed them firing on correct pages, e.g. a
+// page scoped "recruitdb" over a cluster labeled "career-registry").
+func TestIntentCheck_ScopeNamesNeverVerdict(t *testing.T) {
 	page := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/x.md",
 		Name: "page: wiki/adrs/x.md",
 		Props: map[string]any{"intent_kind": "page", "page_type": "decision",
-			"scope":   []string{"backend", "ghost"},
+			"scope":   []string{"backend", "recruitdb"},
 			"affects": []any{"mobile"},
 			"source":  "wiki/adrs/x.md"}}
 	got := explain(t, repoMarker("backend"), page)
-	if len(got) != 2 {
-		t.Fatalf("want ghost (scope) + mobile (affects), got: %s", titles(got))
+	if len(got) != 0 {
+		t.Fatalf("scope/affects names must not verdict against cluster labels, got: %s", titles(got))
 	}
-	joined := titles(got)
-	if !strings.Contains(joined, "Unknown scope repo: ghost") ||
-		!strings.Contains(joined, "Unknown affects repo: mobile") {
-		t.Fatalf("findings must name field and repo, got: %s", joined)
+}
+
+// TestIntentCheck_UnparseableAnchorUnasked pins the unasked-vs-dangling
+// split for file kinds: an anchor to a file whose extension the repo's
+// graph never measures (a README, a manifest) is unasked, never dangling —
+// no extractor could have proven it either way. The same regression run
+// surfaced ~260 standing findings for exactly this shape.
+func TestIntentCheck_UnparseableAnchorUnasked(t *testing.T) {
+	got := explain(t,
+		fileFact("backend", "app/services/formatter.rb"),
+		anchorFact("wiki/adrs/readme.md", "backend", "README.md"),
+		anchorFact("wiki/adrs/manifest.md", "backend", "config/manifest.json"),
+	)
+	if len(got) != 0 {
+		t.Fatalf("anchors to unmeasured file kinds must be unasked, got: %s", titles(got))
 	}
-	for _, i := range got {
-		if i.Confidence != unknownScopeConfidence {
-			t.Fatalf("scope verdicts are estimates, want capped confidence, got %+v", i)
-		}
+}
+
+// TestIntentCheck_AnchorJoinsBothFileForms pins the normalization: measured
+// files join in the label-prefixed AND repo-relative forms, so a genuine
+// path that happens to start with the repo's own name (repo "app", file
+// app/models/x.rb) is not mis-trimmed into a false dangling anchor.
+func TestIntentCheck_AnchorJoinsBothFileForms(t *testing.T) {
+	got := explain(t,
+		fileFact("app", "app/models/x.rb"),
+		anchorFact("wiki/adrs/x.md", "app", "app/models/x.rb"),
+	)
+	if len(got) != 0 {
+		t.Fatalf("a path starting with the repo's own name must join, got: %s", titles(got))
 	}
 }
 
@@ -295,5 +316,26 @@ func TestIntentCheck_SupersededByRelationRetires(t *testing.T) {
 	got := explain(t, repoMarker("app"), fileFact("app", "src/app.rb"), page, rel, newPage, staleAnchor)
 	if len(got) != 0 {
 		t.Fatalf("a superseded-by relation must retire the page's anchors, got: %s", titles(got))
+	}
+}
+
+// TestIntentCheck_ClaimAboutAbsentRepoUnasked pins the counterparty rule
+// for claims: a fact-count claim owned by, or a seam claim touching, a repo
+// absent from the graph is unasked — "measures 0 because the repo is not
+// loaded" must never present as a proof-class failed claim. A
+// partial-cluster snapshot fails every out-of-graph claim otherwise.
+func TestIntentCheck_ClaimAboutAbsentRepoUnasked(t *testing.T) {
+	v := 42
+	countClaim := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/x.md",
+		Name: "claim: ghost route /api = 42",
+		Props: map[string]any{"intent_kind": "claim", "metric": "fact-count",
+			"intent_owner": "ghost", "fact_kind": "route", "value": v, "source": "wiki/adrs/x.md"}}
+	seamClaim := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/x.md",
+		Name: "claim: seam app -> ghost via graphql",
+		Props: map[string]any{"intent_kind": "claim", "metric": "seam",
+			"intent_owner": "app", "provider": "ghost", "via": "graphql", "source": "wiki/adrs/x.md"}}
+	got := explain(t, repoMarker("app"), countClaim, seamClaim)
+	if len(got) != 0 {
+		t.Fatalf("claims about absent repos must be unasked, got: %s", titles(got))
 	}
 }

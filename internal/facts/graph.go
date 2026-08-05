@@ -925,7 +925,13 @@ func (g *Graph) GoverningIntent(target string) []GoverningPage {
 	if f.File == "" || f.Repo == "" {
 		return nil
 	}
-	file := strings.TrimPrefix(f.File, f.Repo+"/")
+	// Join in both the label-prefixed and repo-relative file forms, same as
+	// every intent join — a single trimmed form mis-fires when a real path
+	// starts with the repo's own name.
+	forms := []string{f.File}
+	if trimmed := strings.TrimPrefix(f.File, f.Repo+"/"); trimmed != f.File {
+		forms = append(forms, trimmed)
+	}
 	pages := map[string]bool{}
 	for _, af := range g.facts {
 		if af.Kind != KindIntent || af.PropString("intent_kind") != "anchor" ||
@@ -933,8 +939,14 @@ func (g *Graph) GoverningIntent(target string) []GoverningPage {
 			continue
 		}
 		path := af.PropString("path")
-		if path != "" && (path == file || strings.HasPrefix(file, path+"/")) {
-			pages[af.File] = true
+		if path == "" {
+			continue
+		}
+		for _, file := range forms {
+			if path == file || strings.HasPrefix(file, path+"/") {
+				pages[af.File] = true
+				break
+			}
 		}
 	}
 	if len(pages) == 0 {

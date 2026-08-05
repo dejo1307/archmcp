@@ -122,8 +122,7 @@ confidences:
 | Failed claim (count or seam doesn't hold) | 1.0 | the claim is stated, the count is counted |
 | Missing intended seam (declared, not measured) | 0.8 | could be drift *or* an extraction miss — an estimate never presents as certainty |
 | Dangling relation (edge to an uncompiled page) | 0.8 | the target may be deleted or merely not opted in |
-| Dangling code anchor (path no measured fact touches) | 0.8 | the code may have moved or died — or no extractor parses it |
-| Unknown scope repo (`scope`/`affects` names an unmeasured repo) | 0.8 | stale or mistyped — or deliberately outside the cluster |
+| Dangling code anchor (a measurable path no fact touches) | 0.8 | the code moved or died — or this one file eluded extraction |
 | Superseded intent still measured (edge covered only by a retired page) | 0.8 | the code may lag the superseding decision — or the successor's intent is undeclared |
 
 **Superseded pages retire from current intent.** Two signals mark a
@@ -151,11 +150,23 @@ declaration.
 Repos that declare nothing are unasked — adoption is per-repo, and
 undeclared is not a finding. A declared seam whose counterparty is
 absent from the graph is skipped, never failed; an anchor into a
-repo the graph never measured is skipped the same way. An anchor
+repo the graph never measured is skipped the same way — and so is
+a file anchor whose extension the repo's graph never measures (a
+README, a manifest, a doc): no extractor could have proven it
+either way, so it is unasked, never dangling. Only a path the
+graph plausibly measures and does not touch is dangling. An anchor
 that joins is silence — and the join is the point: it is the
 stale-citation check a wiki otherwise performs by hand, and it
 makes every anchored file's governing decisions reachable from the
-graph. Declared layer
+graph.
+
+Scope and affects, by contrast, are **never verdicted**: they
+speak the wiki's own repo vocabulary, and the mapping from that
+vocabulary to cluster labels is the deriving toolchain's side of
+the boundary (working rule 5) — a page about one name may compile
+against a cluster that labels the same repo another way. Keeping
+those names truthful is the wiki's job, where the mapping is
+known. Declared layer
 patterns verdict at 1.0 through the layers explainer, replacing
 heuristic recognition for that repo.
 
