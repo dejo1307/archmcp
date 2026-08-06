@@ -390,9 +390,44 @@ func (e *GoExtractor) extractGenDecl(fset *token.FileSet, gd *ast.GenDecl, relFi
 		switch s := spec.(type) {
 		case *ast.TypeSpec:
 			result = append(result, e.extractTypeSpec(fset, gd, s, relFile, pkgDir, modulePath, fileImports)...)
+		case *ast.ValueSpec:
+			result = append(result, e.extractValueSpec(fset, gd, s, relFile, pkgDir)...)
 		}
 	}
 
+	return result
+}
+
+// extractValueSpec emits exported package-level consts and vars as symbols.
+// They are part of a package's declared surface — a shared vocabulary
+// constant or a sentinel error is exactly the kind of declaration other
+// packages branch on — and without them a const-only file is invisible to
+// the graph: parsed, yet contributing nothing an anchor or a coverage
+// question could join against. Unexported names stay out; they are
+// implementation detail, and emitting every private binding would drown
+// the symbol set in noise.
+func (e *GoExtractor) extractValueSpec(fset *token.FileSet, gd *ast.GenDecl, vs *ast.ValueSpec, relFile, pkgDir string) []facts.Fact {
+	kind := facts.SymbolVariable
+	if gd.Tok == token.CONST {
+		kind = facts.SymbolConstant
+	}
+	var result []facts.Fact
+	for _, ident := range vs.Names {
+		if !ident.IsExported() {
+			continue
+		}
+		result = append(result, facts.Fact{
+			Kind: facts.KindSymbol,
+			Name: pkgDir + "." + ident.Name,
+			File: relFile,
+			Line: fset.Position(ident.Pos()).Line,
+			Props: map[string]any{
+				"symbol_kind": kind,
+				"exported":    true,
+				"language":    "go",
+			},
+		})
+	}
 	return result
 }
 

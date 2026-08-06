@@ -1136,7 +1136,14 @@ import (
 // fallback is the client FILE's name: with two repos serving one short path, a
 // file named api.ts elected the repo named api, and renaming the file moved the
 // dependency.
-const cacheVersion = "v162"
+// v163: exported package-level Go consts and vars emit symbols. A const-only
+// file — a shared vocabulary, a sentinel-error set — was parsed yet invisible:
+// no fact carried its path, so an anchor to it verdicted dangling as "eluded
+// extraction" when the honest answer was that the extractor skipped every
+// ValueSpec by construction. Exported-only, package-level only: private
+// bindings and function-local declarations are implementation detail, and
+// emitting them would drown the symbol set.
+const cacheVersion = "v163"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

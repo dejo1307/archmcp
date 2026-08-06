@@ -152,6 +152,57 @@ type myType struct{}
 	}
 }
 
+// TestExtract_ExportedConstsAndVarsAreSymbols pins the declared-surface rule:
+// exported package-level consts and vars emit symbols — a const-only file
+// (a shared vocabulary, a sentinel-error set) is measured, not invisible —
+// while unexported bindings and function-local declarations stay out.
+func TestExtract_ExportedConstsAndVarsAreSymbols(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"pkg/contract.go": `package pkg
+
+const (
+	PropSource = "source"
+	viaDefault = "http"
+)
+
+var ErrNotFound = mkErr("not found")
+
+func mkErr(s string) error { return nil }
+
+func withLocal() {
+	const local = 1
+	_ = local
+}
+`,
+	})
+
+	c, ok := findFact(ff, "pkg.PropSource")
+	if !ok {
+		t.Fatal("expected fact for pkg.PropSource — a const-only surface must be measured")
+	}
+	if c.Props["symbol_kind"] != facts.SymbolConstant {
+		t.Errorf("PropSource symbol_kind = %v, want constant", c.Props["symbol_kind"])
+	}
+	if c.File != "pkg/contract.go" {
+		t.Errorf("PropSource file = %v, want pkg/contract.go", c.File)
+	}
+
+	v, ok := findFact(ff, "pkg.ErrNotFound")
+	if !ok {
+		t.Fatal("expected fact for pkg.ErrNotFound")
+	}
+	if v.Props["symbol_kind"] != facts.SymbolVariable {
+		t.Errorf("ErrNotFound symbol_kind = %v, want variable", v.Props["symbol_kind"])
+	}
+
+	if _, ok := findFact(ff, "pkg.viaDefault"); ok {
+		t.Error("unexported const must not emit a symbol")
+	}
+	if _, ok := findFact(ff, "pkg.local"); ok {
+		t.Error("function-local const must not emit a symbol")
+	}
+}
+
 func TestExtract_StructWithEmbedding(t *testing.T) {
 	ff := extractAll(t, map[string]string{
 		"pkg/embed.go": `package pkg
