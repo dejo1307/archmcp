@@ -135,3 +135,27 @@ func TestUnmatched_HintDoesNotProveExternalAndIntentAttribution(t *testing.T) {
 		}
 	}
 }
+
+// Attribution is stated, not inferred: a repo declaring two http-client seams
+// has no single target to attribute an unmatched call to, so the call stays in
+// the residue with an ordinary reason rather than being credited to whichever
+// declaration was read last.
+func TestUnmatched_SeveralDeclaredSeamsAttributeNothing(t *testing.T) {
+	call := facts.Fact{Kind: facts.KindRoute, Name: "/activities/recent", Repo: "app",
+		Props: map[string]any{"role": "client", "method": "GET",
+			"source": facts.RouteSourceTSHTTPClient}}
+	one := facts.Fact{Kind: facts.KindIntent, Repo: "app", Name: "consumes backend via http-client",
+		Props: map[string]any{"intent_kind": "consumes", "target": "backend", "via": "http-client"}}
+	two := facts.Fact{Kind: facts.KindIntent, Repo: "app", Name: "consumes billing via http-client",
+		Props: map[string]any{"intent_kind": "consumes", "target": "billing", "via": "http-client"}}
+	server := facts.Fact{Kind: facts.KindRoute, Name: "/api/v1/widgets/list", Repo: "backend",
+		Props: map[string]any{"method": "GET"}}
+
+	m := routeindex.New(vocab.Default())
+	un := UnmatchedClientRouteKeys(m, []facts.Fact{call, one, two, server})
+	for id, reason := range un {
+		if strings.Contains(id, "/activities/recent") && reason == ReasonDeclaredTarget {
+			t.Fatalf("two declared seams must attribute nothing, got %q", reason)
+		}
+	}
+}
