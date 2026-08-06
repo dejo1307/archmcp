@@ -27,6 +27,7 @@ pages changing, the golden tests fail first.
 | [PHP](php.md) | Laravel, Symfony, WordPress, Guzzle | `apiResource` expansion, YAML route config |
 | [Rust](rust.md) | Axum route DSL | `.nest()` mounts composed crate-wide |
 | [C / C++](cpp.md) | — | header/source method merging, namespaces, templates |
+| [C#](csharp.md) | — | `partial` types merged across files, project-wide name resolution |
 | [gRPC and OpenAPI](grpc-openapi.md) | `.proto` services, OpenAPI specs | the contract as the server side of an edge |
 | [Terraform / HCL](hcl.md) | resources, modules, variables, outputs, locals | Terraform addresses as symbol names; declared-set bare references |
 | [Ansible](ansible.md) | plays, roles, `include_role`/`import_role` | by-name structure read without rendering a template |

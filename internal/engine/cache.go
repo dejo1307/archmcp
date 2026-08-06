@@ -1143,7 +1143,20 @@ import (
 // ValueSpec by construction. Exported-only, package-level only: private
 // bindings and function-local declarations are implementation detail, and
 // emitting them would drown the symbol set.
-const cacheVersion = "v163"
+// v164: C# is extracted. Types (class/interface/struct/record/enum/delegate),
+// their members, `using` directives, base lists, constructor and primary-
+// constructor injection, same-type call resolution and the standard complexity /
+// io_direct metrics. Three decisions are C#-specific and load-bearing: a
+// `partial` type declared across several files merges into ONE symbol rather
+// than one per half (7,740 files in the benchmark corpus declare one, so left
+// alone it inflates every symbol count and scatters a type's edges); only public
+// and protected fields and properties become symbols, since a BCL-scale
+// repository's private state would otherwise dominate the fact set; and a bare
+// type reference resolves against a project-wide index rather than the file's
+// imports, because C# `using` opens a NAMESPACE and so names no type in
+// particular — an ambiguous simple name resolves to nothing rather than to a
+// guess.
+const cacheVersion = "v164"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

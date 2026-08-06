@@ -348,7 +348,7 @@ func Default() *Config {
 			"**/conftest.py", "**/test_*.py",
 			"**/tests/**/*.py", "**/test/**/*.py",
 		},
-		Extractors: []string{"cpp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible", "mdintent"},
+		Extractors: []string{"cpp", "csharp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible", "mdintent"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
