@@ -39,13 +39,19 @@ import (
 // snapshotBundle is the immutable, reader-visible snapshot state. GenerateSnapshot
 // builds a brand-new store off to the side and publishes a fresh bundle in a single
 // atomic swap; once published, none of its fields are ever mutated again. Readers
-// (Store/Snapshot/RepoPaths/ResolveFactFile) Load the current bundle lock-free and
-// use it for as long as they like — a concurrent regeneration builds a different
-// store and swaps the pointer, leaving the bundle an in-flight reader holds intact.
+// (Store/Snapshot/RepoPaths/Intent/ResolveFactFile) Load the current bundle
+// lock-free and use it for as long as they like — a concurrent regeneration
+// builds a different store and swaps the pointer, leaving the bundle an
+// in-flight reader holds intact.
 type snapshotBundle struct {
 	store     *facts.Store      // immutable once published
 	snapshot  *facts.Snapshot   // may be nil (no snapshot generated yet)
 	repoPaths map[string]string // repo label -> absolute path; immutable once published, may be nil
+	// intent is each repo's resolved declaration, label-keyed, immutable once
+	// published, may be nil. It rides the bundle rather than living beside it
+	// so a reader cannot observe a declaration that disagrees with the snapshot
+	// it is reading: both change in the same atomic swap, or neither does.
+	intent map[string]*intent.Declaration
 }
 
 // Engine orchestrates the snapshot generation pipeline.
@@ -64,21 +70,14 @@ type Engine struct {
 	// atomically once the build is complete. Never expose e.store to readers.
 	store *facts.Store
 
-	// current holds the published, immutable {store, snapshot, repoPaths} bundle.
-	// Readers Load it lock-free; GenerateSnapshot Stores a new bundle to publish.
+	// current holds the published, immutable {store, snapshot, repoPaths, intent}
+	// bundle. Readers Load it lock-free; GenerateSnapshot Stores a new bundle.
 	current atomic.Pointer[snapshotBundle]
 
 	// persistCache controls whether the per-extractor cache is written back to
 	// disk after a snapshot. The read path is always active when caching is
 	// enabled; one-shot --explain sets this false so it never touches .enola.
 	persistCache bool
-
-	// intentMu guards intentByRepo: each repo's resolved intent declaration
-	// (repo file, cluster entry, or the cluster's wholesale override of the
-	// file), populated as repos are snapshotted. Parsed and validated but
-	// otherwise inert — nothing consumes it until the verdict stage exists.
-	intentMu     sync.Mutex
-	intentByRepo map[string]*intent.Declaration
 }
 
 // New creates a new Engine with the given config.
@@ -156,13 +155,12 @@ func (e *Engine) Snapshot() *facts.Snapshot {
 	return e.current.Load().snapshot
 }
 
-// Intent returns the resolved intent declaration for a repo label, or nil
-// when the repo declares nothing. Inert carriage: parsed and validated at
-// snapshot time, consumed by nothing yet.
+// Intent returns the resolved intent declaration for a repo label, or nil when
+// the repo declares nothing. It reads the published bundle, so the declaration
+// it returns is the one the current snapshot was built from — the verdicts in
+// that snapshot are computed from the compiled intent facts, not from here.
 func (e *Engine) Intent(repoLabel string) *intent.Declaration {
-	e.intentMu.Lock()
-	defer e.intentMu.Unlock()
-	return e.intentByRepo[repoLabel]
+	return e.current.Load().intent[repoLabel]
 }
 
 // Config returns the engine config.
@@ -174,14 +172,14 @@ func (e *Engine) Config() *config.Config {
 // republishes the bundle preserving the current store and snapshot.
 func (e *Engine) SetRepoPaths(paths map[string]string) {
 	b := e.current.Load()
-	e.current.Store(&snapshotBundle{store: b.store, snapshot: b.snapshot, repoPaths: paths})
+	e.current.Store(&snapshotBundle{store: b.store, snapshot: b.snapshot, repoPaths: paths, intent: b.intent})
 }
 
 // SetSnapshot sets the snapshot (used in tests, and by AutoLoadSnapshot at
 // startup). It republishes the bundle preserving the current store and repoPaths.
 func (e *Engine) SetSnapshot(snap *facts.Snapshot) {
 	b := e.current.Load()
-	e.current.Store(&snapshotBundle{store: b.store, snapshot: snap, repoPaths: b.repoPaths})
+	e.current.Store(&snapshotBundle{store: b.store, snapshot: snap, repoPaths: b.repoPaths, intent: b.intent})
 }
 
 // RestoreFromDir rebuilds and publishes the snapshot bundle from a persisted
@@ -240,6 +238,10 @@ func (e *Engine) RestoreFromDir(dir string, repoPaths map[string]string, singleR
 	// then never mutated again, so a reader iterating snap.Facts sees a frozen array.
 	snap.Facts = work.FactsRef()
 
+	// intent is deliberately nil: a restore re-reads facts, not declaration files,
+	// so the parsed declarations are not known here. The compiled intent FACTS are
+	// in the restored store, which is what the explainer verdicts from; Intent()
+	// reports nothing until the next generate re-reads the files.
 	e.current.Store(&snapshotBundle{store: work, snapshot: snap, repoPaths: repoPaths})
 	log.Printf("[engine] restored %d facts, %d insights from %s", work.Count(), len(snap.Insights), dir)
 	return nil
@@ -317,16 +319,6 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	if resolved != nil && resolved.Overridden {
 		log.Printf("[engine] intent for %q: cluster config overrides %s (wholesale)", repoLabel, intent.RepoFileName)
 	}
-	e.intentMu.Lock()
-	if e.intentByRepo == nil {
-		e.intentByRepo = map[string]*intent.Declaration{}
-	}
-	if resolved != nil {
-		e.intentByRepo[repoLabel] = resolved
-	} else {
-		delete(e.intentByRepo, repoLabel)
-	}
-	e.intentMu.Unlock()
 
 	// Build into a BRAND-NEW store off to the side. The currently-published bundle
 	// (prev) is never mutated, so any in-flight reader keeps iterating a consistent,
@@ -335,6 +327,10 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	prev := e.current.Load()
 	work := facts.NewStore()
 	var workRepoPaths map[string]string
+	// Declarations accumulate exactly like repoPaths: carried forward from the
+	// published bundle in append mode, replaced wholesale otherwise, and handed
+	// to the swap at the end. Nothing is written into the published map.
+	workIntent := map[string]*intent.Declaration{}
 
 	// A prior state produced by a different extraction behaviour cannot be
 	// carried: its facts may be unlabeled (or labeled under different rules),
@@ -359,12 +355,24 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		for k, v := range prev.repoPaths {
 			workRepoPaths[k] = v
 		}
+		for k, v := range prev.intent {
+			workIntent[k] = v
+		}
 		if prev.store != nil {
 			work.Add(prev.store.All()...)
 		}
 
 		// Track repo label -> absolute path for multi-repo resolution.
 		workRepoPaths[repoLabel] = absRepo
+	}
+	if resolved != nil {
+		workIntent[repoLabel] = resolved
+	} else {
+		// A repo that stopped declaring must stop being declared, including when
+		// its entry was carried forward from the previous bundle.
+		delete(workIntent, repoLabel)
+	}
+	if appendMode {
 
 		// Retroactively tag facts from a prior single-repo snapshot so they
 		// are filterable by repo alongside the newly appended facts.
@@ -583,7 +591,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 	// Publish atomically. This single Store() is the linearization point: before it
 	// readers see the prior bundle, after it the new one — never a half-built store.
-	e.current.Store(&snapshotBundle{store: work, snapshot: snapshot, repoPaths: workRepoPaths})
+	e.current.Store(&snapshotBundle{store: work, snapshot: snapshot, repoPaths: workRepoPaths, intent: workIntent})
 	log.Printf("[engine] snapshot generated in %s", duration)
 	log.Printf("[engine] timings: walk=%s hash=%s extract=%s link=%s graph=%s explain=%s render=%s",
 		tWalk.Round(time.Millisecond), tHash.Round(time.Millisecond), tExtract.Round(time.Millisecond),
@@ -1163,7 +1171,7 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	if e.current.Load() == b {
 		snapCopy := *b.snapshot
 		snapCopy.Meta = meta
-		e.current.CompareAndSwap(b, &snapshotBundle{store: b.store, snapshot: &snapCopy, repoPaths: b.repoPaths})
+		e.current.CompareAndSwap(b, &snapshotBundle{store: b.store, snapshot: &snapCopy, repoPaths: b.repoPaths, intent: b.intent})
 	}
 
 	// Record this revision in the architecture history. Last, and non-fatal: it reads

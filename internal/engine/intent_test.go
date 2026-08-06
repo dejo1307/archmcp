@@ -115,3 +115,44 @@ func TestIntent_InvalidPageFailsTheSnapshot(t *testing.T) {
 		t.Fatalf("the error must name the page and the allowed set, got: %v", err)
 	}
 }
+
+// Declarations ride the published bundle, so append mode has to carry them the
+// way it carries repoPaths — and a repo that stops declaring has to stop being
+// declared, including when its entry came from the previous bundle.
+func TestIntent_AppendCarriesDeclarationsAndDropsWithdrawn(t *testing.T) {
+	a := writeGoRepo(t)
+	b := writeGoRepo(t)
+	writeFile(t, filepath.Join(a, intent.RepoFileName), "service:\n  name: a\n")
+	writeFile(t, filepath.Join(b, intent.RepoFileName), "service:\n  name: b\n")
+	eng, err := engine.New(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RegisterExtractor(goextractor.New())
+	if _, err := eng.GenerateSnapshot(context.Background(), a, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.GenerateSnapshot(context.Background(), b, true); err != nil {
+		t.Fatal(err)
+	}
+	if d := eng.Intent(filepath.Base(a)); d == nil || d.Service.Name != "a" {
+		t.Fatalf("append must carry the earlier repo's declaration, got %+v", d)
+	}
+	if d := eng.Intent(filepath.Base(b)); d == nil || d.Service.Name != "b" {
+		t.Fatalf("append must record the appended repo's declaration, got %+v", d)
+	}
+
+	// a withdraws its declaration and is re-snapshotted into the same graph.
+	if err := os.Remove(filepath.Join(a, intent.RepoFileName)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.GenerateSnapshot(context.Background(), a, true); err != nil {
+		t.Fatal(err)
+	}
+	if d := eng.Intent(filepath.Base(a)); d != nil {
+		t.Fatalf("a withdrawn declaration must not survive in the bundle, got %+v", d)
+	}
+	if d := eng.Intent(filepath.Base(b)); d == nil || d.Service.Name != "b" {
+		t.Fatalf("withdrawing one repo's declaration must not disturb another's, got %+v", d)
+	}
+}
