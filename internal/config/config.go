@@ -301,6 +301,18 @@ func Default() *Config {
 			"**/Pods/**",
 			"**/.gradle/**",
 			"**/target/**",
+			// .NET build output, at any depth (one obj/bin pair per project).
+			// `obj/` is the one that matters: the compiler writes generated C#
+			// there on every build — GlobalUsings.g.cs, AssemblyInfo.cs,
+			// source-generator output — which would otherwise be attributed to
+			// the project that merely built it. `obj` is not a source directory
+			// convention in any other ecosystem, so it is ignored outright.
+			// `bin` IS one (a Node package's bin/cli.js, a Rails bin/setup), so
+			// only .NET's own configuration subdirectories are excluded rather
+			// than every bin/ in every repo.
+			"**/obj/**",
+			"**/bin/Debug/**",
+			"**/bin/Release/**",
 			// Minified / bundled JS by name. The extractor also detects minified
 			// content heuristically (very long lines), but these globs cheaply skip
 			// the common named cases before a file is ever read. Keep in sync with
