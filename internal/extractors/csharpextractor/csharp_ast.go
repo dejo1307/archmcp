@@ -26,7 +26,15 @@ var grammarErrOnce sync.Once
 // import map cannot do this job the way Java's can: `using` opens a namespace
 // rather than naming a type, so the file's directives say which namespaces are in
 // scope and nothing about which one declares any particular name.
+// extractFileAST is the single-value form used by tests; production code calls
+// extractFileASTFull to also receive the file's ASP.NET routing evidence, which
+// can only be composed once every file is in (see aspnet.go).
 func extractFileAST(src []byte, relFile string) []facts.Fact {
+	ff, _ := extractFileASTFull(src, relFile)
+	return ff
+}
+
+func extractFileASTFull(src []byte, relFile string) ([]facts.Fact, aspnetScaffold) {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(csharp.Language())); err != nil {
@@ -37,11 +45,11 @@ func extractFileAST(src []byte, relFile string) []facts.Fact {
 		grammarErrOnce.Do(func() {
 			log.Printf("[csharp-extractor] tree-sitter grammar unusable, no C# will be extracted: %v", err)
 		})
-		return nil
+		return nil, aspnetScaffold{}
 	}
 	tree := parser.Parse(src, nil)
 	if tree == nil {
-		return nil
+		return nil, aspnetScaffold{}
 	}
 	defer tree.Close()
 
@@ -53,7 +61,7 @@ func extractFileAST(src []byte, relFile string) []facts.Fact {
 		fileRefI: -1,
 	}
 	w.walkTopLevelChildren(tree.RootNode())
-	return w.out
+	return w.out, w.scaffold
 }
 
 type astWalker struct {
@@ -95,6 +103,10 @@ type astWalker struct {
 	// than a pointer: nested declarations append to out, which can reallocate the
 	// backing array and strand a raw pointer.
 	ownerStack []int
+
+	// scaffold accumulates this file's ASP.NET routing evidence, composed into
+	// route facts once every file has been walked (see aspnet.go).
+	scaffold aspnetScaffold
 
 	// fileRefI indexes the lazily created file-scope reference fact, or -1. C#
 	// top-level statements (a Program.cs with no class) have no enclosing symbol,
@@ -387,6 +399,13 @@ func (w *astWalker) handleTypeDecl(node *sitter.Node, kind string) {
 	idx := len(w.out) - 1
 	w.pushOwner(idx)
 
+	// ASP.NET routing evidence: recorded for every type, decided later. Whether
+	// this one serves routes depends on its methods and on a base class that is
+	// usually in another file.
+	if kind == facts.SymbolClass {
+		w.noteController(node, f.Name, name)
+	}
+
 	body := node.ChildByFieldName("body")
 	w.typeStack = append(w.typeStack, name)
 	w.methodStack = append(w.methodStack, collectMemberNames(body, w.src))
@@ -593,6 +612,10 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 	})
 	idx := len(w.out) - 1
 	w.pushOwner(idx)
+
+	if node.Kind() == "method_declaration" && len(w.typeStack) > 0 {
+		w.noteAction(node, w.canonicalName(w.enclosingType()), w.out[idx].Name, name)
+	}
 
 	// A constructor is where dependency injection lands in C#. Injecting from
 	// every constructor rather than only a sole one (Java's rule) would turn a

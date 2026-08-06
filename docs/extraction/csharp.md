@@ -28,6 +28,7 @@ Unit coverage in
 | a sole constructor's parameters | `injects` relations | relation |
 | `new Order()` | an `instantiates` relation | relation |
 | `Lookup(id)` inside the declaring type | a `calls` relation | relation |
+| `[Route("x")]` + `[HttpGet("y")]` | a server route at `/x/y`, `handled_by` its action | `route` |
 
 ## Names, namespaces and the two spellings
 
@@ -128,6 +129,70 @@ extractor applies, for the same reason.
 For a `record`, the primary constructor's parameters are additionally emitted as the
 public properties the compiler generates from them.
 
+## Routes — ASP.NET Core attribute routing
+
+An action's URL is assembled from two attributes in two places, and frequently from
+a third the file cannot see:
+
+```csharp
+// src/Acme.Api/BaseApiController.cs          // src/Acme.Api/Controllers/AudioController.cs
+[ApiController]                                public class AudioController : BaseApiController
+[Route("[controller]")]                        {
+public class BaseApiController : ControllerBase    [HttpGet("{itemId}/stream", Name = "GetAudioStream")]
+{ }                                                public IActionResult GetAudioStream(string itemId) => Ok();
+                                               }
+```
+
+```
+route  /Audio/{itemId}/stream   props: method=GET, framework=aspnetcore,
+                                       handler=src/Acme.Api/Controllers.AudioController.GetAudioStream
+                                --handled_by--> src/Acme.Api/Controllers.AudioController.GetAudioStream
+```
+
+Most controllers declare no `[Route]` of their own — 40 of jellyfin's 64 inherit
+one from a shared base — so composition runs over the whole fact set rather than
+per file, walking the resolved inheritance edges to find the nearest template.
+`[controller]` then resolves to each subclass's own name minus the `Controller`
+suffix, which is how one shared base attribute gives 40 controllers 40 distinct
+paths. `[action]` resolves to the method name.
+
+A method template beginning with `/` or `~/` is **absolute**: it replaces the
+controller's template rather than extending it. `Name = "…"` is a route's display
+name, not its path — only an attribute's first argument is a template, and only
+when it is a string literal.
+
+Measured on [jellyfin](https://github.com/jellyfin/jellyfin): 422 routes, exactly
+one per `[HttpGet]`/`[HttpPost]`/`[HttpDelete]`/`[HttpHead]` attribute in the
+source, with all 388 distinct handlers resolving to real symbol facts.
+
+### Conventional routing produces nothing
+
+A controller with verb attributes but **no `[Route]` anywhere in its hierarchy** is
+using *conventional* routing, where the URL comes from a template registered in
+`Program.cs`:
+
+```csharp
+public class AccountController : Controller     // really served at /Account/Login
+{
+    [HttpGet]  public IActionResult Login()  => View();
+    [HttpPost] public IActionResult Logout() => View();
+}
+```
+
+That template is not read here, so the path is genuinely unknown and **no route is
+emitted**. Composing from what is visible is what this used to do, and it was wrong
+twice over: a bare `[HttpGet]` carries no template, so every action came out as
+`/` — the wrong path, and, because facts are name-keyed, several actions collapsing
+onto a single root node. On eShop's Identity.API that turned 14 real endpoints into
+a handful of phantom roots.
+
+Guessing `/{controller}/{action}` instead would be inventing a template that lives
+in a file the extractor did not parse and can be anything. The count of skipped
+actions is logged, so the gap is visible rather than silent.
+
+Note that `[Route("")]` is **not** the same as declaring no `[Route]`: an empty
+template is a real one, and its actions are served at the method template alone.
+
 ## Complexity and I/O
 
 Like the other AST extractors, each member body is walked once for `cyclomatic`,
@@ -179,10 +244,11 @@ reason.
 - **Same-named types in different directories are never merged**, including partial ones.
   The name is directory-anchored, so they are different nodes by construction — the same
   limitation the C/C++ header/source merge has.
-- **No routes, storage or HTTP clients yet.** ASP.NET Core routing, EF Core and outbound
-  client detection are not in this extractor. A C# repository currently contributes
-  symbols, modules, dependencies and call edges to the graph, and no `route` or `storage`
-  facts.
+- **Minimal APIs, EF Core storage and outbound HTTP clients are not extracted yet.**
+  `app.MapGet("/x", …)` and `MapGroup` prefixes mint no routes, so a minimal-API service
+  contributes symbols and call edges but no endpoints; there are no `storage` facts and no
+  client-role routes for the cross-repo linker to match.
+- **Conventionally-routed controller actions mint no route** — see above.
 - **Test projects are indexed as production code.** The default test globs carry no C#
   patterns, so a `*Tests.cs` class becomes an ordinary symbol, and there is no
   `TestRefExtractor` for C# — meaning a production symbol exercised only by its tests

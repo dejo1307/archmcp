@@ -1156,7 +1156,19 @@ import (
 // imports, because C# `using` opens a NAMESPACE and so names no type in
 // particular — an ambiguous simple name resolves to nothing rather than to a
 // guess.
-const cacheVersion = "v164"
+// v165: ASP.NET Core attribute routing. A class-level [Route] composes with a
+// method-level [HttpGet("…")] into one route per verb, bound to its action by a
+// handled_by edge. Two rules carry it. The template is frequently INHERITED — 40
+// of jellyfin's 64 controllers declare no [Route] and take [Route("[controller]")]
+// from a shared base in another file — so composition runs after the whole fact
+// set exists and walks the resolved inheritance edges, resolving [controller] to
+// each subclass's own name. And a controller with no [Route] anywhere in its
+// hierarchy emits NOTHING: that is conventional routing, whose template lives in
+// Program.cs, and composing from what is visible gave every action the path "/" —
+// wrong, and (facts being name-keyed) collapsing a controller's actions onto one
+// root node. Measured on jellyfin: 422 routes, exactly one per verb attribute in
+// the source, all 388 distinct handlers resolving to real symbols.
+const cacheVersion = "v165"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

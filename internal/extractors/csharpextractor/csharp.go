@@ -114,27 +114,30 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 
 	projects := buildProjectIndex(projFiles)
 
-	perFileFacts := parallel.MapFiles(ctx, csFiles, func(relFile string) []facts.Fact {
+	perFileFacts := parallel.MapFiles(ctx, csFiles, func(relFile string) fileResult {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
-			return nil
+			return fileResult{}
 		}
 		if isGeneratedSource(relFile, src) {
-			return nil
+			return fileResult{generated: true}
 		}
-		return extractFileAST(src, relFile)
+		ff, sc := extractFileASTFull(src, relFile)
+		return fileResult{facts: ff, scaffold: sc}
 	})
 
 	var allFacts []facts.Fact
+	var scaffold aspnetScaffold
 	modules := make(map[string]bool)
 	parsed := 0
-	for i, ff := range perFileFacts {
-		if ff == nil {
+	for i, r := range perFileFacts {
+		if r.generated {
 			continue
 		}
 		parsed++
-		allFacts = append(allFacts, ff...)
+		allFacts = append(allFacts, r.facts...)
+		scaffold.merge(r.scaffold)
 		modules[filepath.ToSlash(filepath.Dir(csFiles[i]))] = true
 	}
 	if skipped := len(csFiles) - parsed; skipped > 0 {
@@ -143,6 +146,10 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 
 	allFacts = mergePartialTypes(allFacts)
 	resolveCSharpTargets(allFacts)
+	// After resolution: composeControllerRoutes walks the inheritance edges to find
+	// an inherited [Route], and those targets are bare type names until resolution
+	// canonicalises them.
+	allFacts = append(allFacts, composeControllerRoutes(allFacts, scaffold)...)
 	computeCSharpPerformsIO(allFacts)
 
 	for dir := range modules {
@@ -162,6 +169,16 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	}
 
 	return allFacts, nil
+}
+
+// fileResult holds one file's extracted facts plus its ASP.NET routing evidence,
+// returned together from the parallel per-file walk. `generated` distinguishes a
+// file that was deliberately skipped from one that merely produced nothing, so the
+// skip count stays honest.
+type fileResult struct {
+	facts     []facts.Fact
+	scaffold  aspnetScaffold
+	generated bool
 }
 
 // computeCSharpPerformsIO propagates the direct-I/O signal (io_direct, set by the

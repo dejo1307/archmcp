@@ -101,6 +101,13 @@ var fixtures = []fixture{
 	// src/Acme.Api/Generated module is what proves it was skipped rather than
 	// merely emptied.
 	{name: "csharp_sample", subRepos: []string{"."}},
+	// ASP.NET Core attribute routing. Pins v165: a controller inherits its
+	// [Route("[controller]")] from a base class in ANOTHER file and resolves the
+	// token to its own name, a named argument stays out of the path, a leading "/"
+	// makes a template absolute, and — by their ABSENCE from the golden —
+	// AccountController's conventionally-routed actions mint no route at all
+	// rather than collapsing onto "/".
+	{name: "csharp_aspnet_sample", subRepos: []string{"."}},
 	{name: "php_sample", subRepos: []string{"."}},
 	{name: "php_laravel_sample", subRepos: []string{"."}},
 	{name: "php_symfony_sample", subRepos: []string{"."}},
