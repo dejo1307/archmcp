@@ -135,21 +135,6 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 	}
 }
 
-// resolveRepoIn mirrors SignalInput.ResolveRepo for the fact-set-only callers:
-// a candidate resolves when its normalized form equals a loaded repo label's.
-func resolveRepoIn(all []facts.Fact, candidate string) (string, bool) {
-	want := facts.NormalizeRepoLabel(candidate)
-	if want == "" {
-		return "", false
-	}
-	for r := range reposOf(all) {
-		if facts.NormalizeRepoLabel(r) == want {
-			return r, true
-		}
-	}
-	return "", false
-}
-
 // soleDeclaredHTTPTargets maps every repo whose declaration names exactly ONE
 // http-client seam to that seam's target. Repos naming several are absent: with
 // more than one candidate the attribution would be a guess, and the whole point

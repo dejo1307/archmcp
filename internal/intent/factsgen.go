@@ -2,6 +2,7 @@ package intent
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -173,7 +174,14 @@ func CompilePageFacts(p *PageIntent, pageFile string) []facts.Fact {
 				props["name_prefix"] = c.NamePrefix
 			}
 			props["value"] = *c.Value
-			name = fmt.Sprintf("claim: %s %s %s%s = %d", c.Repo, c.Kind, c.FilePrefix, c.NamePrefix, *c.Value)
+			// The prefixes are optional, so they are appended only when present:
+			// interpolating them unconditionally left "claim: api route  = 99",
+			// and that name is what a failed-claim finding is titled with.
+			name = fmt.Sprintf("claim: %s %s", c.Repo, c.Kind)
+			if scope := strings.TrimSpace(c.FilePrefix + " " + c.NamePrefix); scope != "" {
+				name += " " + scope
+			}
+			name += fmt.Sprintf(" = %d", *c.Value)
 		case "seam":
 			props["intent_owner"] = c.Consumer
 			props["provider"] = c.Provider

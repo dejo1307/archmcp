@@ -17,8 +17,20 @@ type fakeInput struct {
 
 func (f fakeInput) Facts() []facts.Fact { return f.facts }
 
+// ResolveRepo mirrors the real SignalInput over a fact set: a candidate
+// resolves when its normalized form equals a loaded repo label's. It lives here
+// because only this fake needs it — production readers have in.ResolveRepo.
 func (f fakeInput) ResolveRepo(candidate string) (string, bool) {
-	return resolveRepoIn(f.facts, candidate)
+	want := facts.NormalizeRepoLabel(candidate)
+	if want == "" {
+		return "", false
+	}
+	for r := range reposOf(f.facts) {
+		if facts.NormalizeRepoLabel(r) == want {
+			return r, true
+		}
+	}
+	return "", false
 }
 
 type recordedEdge struct{ from, to string }

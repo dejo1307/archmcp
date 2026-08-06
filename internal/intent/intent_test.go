@@ -85,3 +85,28 @@ func TestResolve_ClusterOverridesWholesale(t *testing.T) {
 		t.Fatalf("cluster-only resolution mis-recorded: %+v", only)
 	}
 }
+
+// A claim's compiled name is what a failed-claim finding is titled with, so an
+// absent optional prefix must not leave a gap in it.
+func TestClaimNames_OmitAbsentPrefixes(t *testing.T) {
+	v := 99
+	for _, tc := range []struct {
+		name string
+		in   Claim
+		want string
+	}{
+		{"no prefixes", Claim{Metric: "fact-count", Repo: "api", Kind: "route", Value: &v},
+			"claim: api route = 99"},
+		{"name prefix", Claim{Metric: "fact-count", Repo: "api", Kind: "route", NamePrefix: "/api", Value: &v},
+			"claim: api route /api = 99"},
+		{"file prefix", Claim{Metric: "fact-count", Repo: "api", Kind: "symbol", FilePrefix: "app/", Value: &v},
+			"claim: api symbol app/ = 99"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ff := CompilePageFacts(&PageIntent{Claims: []Claim{tc.in}}, "wiki/p.md")
+			if len(ff) != 1 || ff[0].Name != tc.want {
+				t.Fatalf("name = %q, want %q", ff[0].Name, tc.want)
+			}
+		})
+	}
+}
