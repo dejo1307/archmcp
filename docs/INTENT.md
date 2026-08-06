@@ -161,10 +161,15 @@ Repos that declare nothing are unasked — adoption is per-repo, and
 undeclared is not a finding. A declared seam whose counterparty is
 absent from the graph is skipped, never failed; an anchor into a
 repo the graph never measured is skipped the same way — and so is
-a file anchor whose extension the repo's graph never measures (a
-README, a manifest, a doc): no extractor could have proven it
-either way, so it is unasked, never dangling. Only a path the
-graph plausibly measures and does not touch is dangling. An anchor
+a file anchor whose kind the repo's graph never measures: for a
+file with an extension the kind is the extension (a README, a
+doc), and for a file without one the kind is its exact basename
+(a Gemfile, a Dockerfile, a version dotfile — the manifests this
+rule exists for are extensionless almost by convention, and a
+repo measuring extensionless scripts has not thereby measured
+them). No extractor could have proven any of these either way, so
+they are unasked, never dangling. Only a path the graph plausibly
+measures and does not touch is dangling. An anchor
 that joins is silence — and the join is the point: it is the
 stale-citation check a wiki otherwise performs by hand, and it
 makes every anchored file's governing decisions reachable from the

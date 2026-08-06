@@ -235,6 +235,33 @@ func TestIntentCheck_UnparseableAnchorUnasked(t *testing.T) {
 	}
 }
 
+// TestIntentCheck_ExtensionlessKindIsTheBasename pins the completion of the
+// unasked rule for the manifests it was stated for: an extensionless file's
+// kind is its exact basename, so a repo measuring extensionless scripts has
+// not thereby measured its Gemfile, Dockerfile, or version dotfiles — those
+// anchors are unasked. An extensionless kind the repo DOES measure still
+// dangles when the anchored path goes untouched.
+func TestIntentCheck_ExtensionlessKindIsTheBasename(t *testing.T) {
+	got := explain(t,
+		fileFact("backend", "bin/setup"),
+		fileFact("backend", "Rakefile"),
+		anchorFact("wiki/adrs/deps.md", "backend", "Gemfile"),
+		anchorFact("wiki/adrs/deploy.md", "backend", "Dockerfile"),
+		anchorFact("wiki/adrs/ruby.md", "backend", ".ruby-version"),
+	)
+	if len(got) != 0 {
+		t.Fatalf("extensionless kinds the graph never measures must be unasked, got: %s", titles(got))
+	}
+
+	got = explain(t,
+		fileFact("backend", "Rakefile"),
+		anchorFact("wiki/adrs/build.md", "backend", "tools/Rakefile"),
+	)
+	if len(got) != 1 || !strings.Contains(got[0].Title, "tools/Rakefile") {
+		t.Fatalf("a measured extensionless kind at an untouched path must dangle, got: %s", titles(got))
+	}
+}
+
 // TestIntentCheck_AnchorJoinsBothFileForms pins the normalization: measured
 // files join in the label-prefixed AND repo-relative forms, so a genuine
 // path that happens to start with the repo's own name (repo "app", file

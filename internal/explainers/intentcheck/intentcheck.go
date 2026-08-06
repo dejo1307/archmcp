@@ -443,6 +443,7 @@ func anchorVerdicts(store *facts.Store, present, retired map[string]bool) []fact
 	var anchors []facts.Fact
 	measured := map[string]map[string]bool{}
 	measuredExts := map[string]map[string]bool{}
+	measuredBases := map[string]map[string]bool{}
 	for _, f := range store.All() {
 		if f.Kind == facts.KindIntent {
 			if f.PropString("intent_kind") == "anchor" && !retired[f.PropString("source")] {
@@ -456,11 +457,14 @@ func anchorVerdicts(store *facts.Store, present, retired map[string]bool) []fact
 		if measured[f.Repo] == nil {
 			measured[f.Repo] = map[string]bool{}
 			measuredExts[f.Repo] = map[string]bool{}
+			measuredBases[f.Repo] = map[string]bool{}
 		}
 		measured[f.Repo][f.File] = true
 		measured[f.Repo][strings.TrimPrefix(f.File, f.Repo+"/")] = true
 		if ext := fileExt(f.File); ext != "" {
 			measuredExts[f.Repo][ext] = true
+		} else {
+			measuredBases[f.Repo][fileBase(f.File)] = true
 		}
 	}
 	var out []facts.Insight
@@ -470,8 +474,20 @@ func anchorVerdicts(store *facts.Store, present, retired map[string]bool) []fact
 		if owner == "" || path == "" || !present[owner] {
 			continue // no counterparty in this graph: not asked, never failed
 		}
-		if ext := fileExt(path); ext != "" && !measuredExts[owner][ext] {
-			continue // a file kind this repo's graph never measures: not asked, never failed
+		if ext := fileExt(path); ext != "" {
+			if !measuredExts[owner][ext] {
+				continue // a file kind this repo's graph never measures: not asked, never failed
+			}
+		} else if !measuredBases[owner][fileBase(path)] {
+			// An extensionless file's kind is its exact basename — a repo
+			// measuring Rakefiles has not thereby measured Dockerfiles, and
+			// the manifests this rule exists for (Gemfile, Procfile,
+			// CODEOWNERS, version dotfiles) are extensionless almost by
+			// convention. A directory anchor whose tree nothing measures
+			// lands here too: the graph cannot tell an unmeasurable file
+			// from a moved directory, and undecidable is unasked, never a
+			// finding.
+			continue
 		}
 		files := measured[owner]
 		hit := files[path]
@@ -499,6 +515,7 @@ func anchorVerdicts(store *facts.Store, present, retired map[string]bool) []fact
 }
 
 // fileExt returns the lowercased extension of a path, "" when it has none.
+// A leading-dot name (.gitignore) is a bare name, not an extension.
 func fileExt(path string) string {
 	base := path[strings.LastIndexByte(path, '/')+1:]
 	i := strings.LastIndexByte(base, '.')
@@ -506,6 +523,12 @@ func fileExt(path string) string {
 		return ""
 	}
 	return strings.ToLower(base[i:])
+}
+
+// fileBase returns the lowercased final segment of a path — the kind
+// identity of an extensionless file.
+func fileBase(path string) string {
+	return strings.ToLower(path[strings.LastIndexByte(path, '/')+1:])
 }
 
 // Scope and affects deliberately do NOT verdict against measured repo
