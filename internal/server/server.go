@@ -111,7 +111,7 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 		cfg: cfg,
 	}
 
-	instructions := "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). To verify what a change did to the architecture, pin a baseline before editing and diff after: generate_snapshot → set_baseline → make changes → generate_snapshot → diff_snapshot. diff_snapshot is delta-only (it reports just what changed — new/resolved findings, new coupling, added/removed symbols — never pre-existing state), so prefer it over re-reading files to confirm a change. Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, gRPC/Protobuf, and OpenAPI."
+	instructions := "Use this server to explore a repository's architecture as queryable facts. Run generate_snapshot first to index a codebase, then use explore, query_facts, show_symbol, traverse, find_path, and impact_analysis to understand code structure, dependencies, and change impact. When knowledge pages compile into the snapshot (enola_intent), governing_intent answers the reverse query directly — which pages govern a file or fact, and which code a page governs. Explainers run automatically during generate_snapshot and compute findings (dependency cycles, layer violations, unused/dead routes, god-classes, hotspots, and more) — fetch them with query_insights rather than re-deriving them by hand. To find backend HTTP routes that no loaded client calls, take a multi-repo (append-mode) snapshot of the backend plus its clients, then call query_insights(explainer='unused-routes') or query_facts(kind=route, prop=unmatched_by_clients, prop_value=true). To verify what a change did to the architecture, pin a baseline before editing and diff after: generate_snapshot → set_baseline → make changes → generate_snapshot → diff_snapshot. diff_snapshot is delta-only (it reports just what changed — new/resolved findings, new coupling, added/removed symbols — never pre-existing state), so prefer it over re-reading files to confirm a change. Supports Go, TypeScript, Kotlin, Ruby, Python, Swift, Java, C++, PHP, gRPC/Protobuf, and OpenAPI."
 	if cfg != nil && cfg.ChangeVerifyHint != "" {
 		instructions += " " + cfg.ChangeVerifyHint
 	}
@@ -1218,6 +1218,15 @@ func (s *Server) registerTools() {
 			if comp, ok := fact.Props["ios_component"].(string); ok {
 				sb.WriteString(fmt.Sprintf("iOS Component: %s\n", comp))
 			}
+			if g := store.Graph(); g != nil {
+				if pages := g.GoverningIntentForFile(fact.Repo, fact.File); len(pages) > 0 {
+					var refs []string
+					for _, p := range pages {
+						refs = append(refs, p.Page+pageMeta(p.Type, p.Status))
+					}
+					sb.WriteString("Governed by: " + strings.Join(refs, "; ") + "\n")
+				}
+			}
 
 			sb.WriteString("\n")
 
@@ -1519,6 +1528,86 @@ func (s *Server) registerTools() {
 			return textResult(capTokens(s.renderImpactSummary(resp), args.MaxTokens, false)), nil, nil
 		}
 		return textResult(capTokens(renderImpactCompact(resp), args.MaxTokens, false)), nil, nil
+	})
+
+	// Tool: governing_intent
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "governing_intent",
+		Description: "Answer the reverse query between knowledge and code directly, in either direction. " +
+			"For a code target — a fact name (exact) or a file path (label-prefixed or repo-relative) — list the knowledge pages whose declared anchors cover its file, each with type, status, and its outgoing relations, so the trail continues past the first hop. " +
+			"For a compiled page path, list the page's declared anchors with measured coverage (files and facts under each). " +
+			"Cheaper than impact_analysis when the question is governance, not blast radius. " +
+			"An empty result distinguishes 'no knowledge pages compiled in this snapshot' (the graph was not asked) from 'nothing governs this target'.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args governingIntentArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		graph := store.Graph()
+		if graph == nil {
+			return errorResult("No graph available. Run generate_snapshot first."), nil, nil
+		}
+		if args.Target == "" {
+			return errorResult("target is required"), nil, nil
+		}
+		if !graph.HasCompiledPages() {
+			return textResult("No knowledge pages are compiled into this snapshot — the reverse query was not asked. " +
+				"Pages opt in with an enola_intent page declaration and compile at snapshot time; see docs/INTENT.md."), nil, nil
+		}
+
+		if cov, found := graph.GovernedByPage(args.Target); found {
+			return textResult(capTokens(renderGovernedCode(args.Target, cov), args.MaxTokens, false)), nil, nil
+		}
+
+		type site struct{ repo, file string }
+		var sites []site
+		seen := map[site]bool{}
+		add := func(repo, file string) {
+			st := site{repo, file}
+			if repo != "" && file != "" && !seen[st] {
+				seen[st] = true
+				sites = append(sites, st)
+			}
+		}
+		for _, m := range store.LookupByExactName(args.Target) {
+			if m.Kind == facts.KindIntent || (args.Repo != "" && m.Repo != args.Repo) {
+				continue
+			}
+			add(m.Repo, m.File)
+		}
+		if len(sites) == 0 {
+			for _, f := range store.All() {
+				if f.Kind == facts.KindIntent || f.File == "" || f.Repo == "" ||
+					(args.Repo != "" && f.Repo != args.Repo) {
+					continue
+				}
+				if f.File == args.Target || strings.TrimPrefix(f.File, f.Repo+"/") == args.Target {
+					add(f.Repo, f.File)
+				}
+			}
+		}
+		if len(sites) == 0 {
+			return textResult(fmt.Sprintf("Nothing measured matches %q — not a compiled page, an exact fact name, or a measured file path. "+
+				"File paths join in the label-prefixed and repo-relative forms; pass repo= to scope one.", args.Target)), nil, nil
+		}
+		if len(sites) > 5 {
+			sites = sites[:5]
+		}
+
+		var sb strings.Builder
+		for i, st := range sites {
+			if i > 0 {
+				sb.WriteString("\n---\n\n")
+			}
+			fmt.Fprintf(&sb, "### %s (%s)\n\n", st.file, st.repo)
+			pages := graph.GoverningIntentForFile(st.repo, st.file)
+			if len(pages) == 0 {
+				sb.WriteString("No knowledge page anchors this file — asked, none governs.\n")
+				continue
+			}
+			writeGoverningIntent(&sb, pages)
+		}
+		return textResult(capTokens(sb.String(), args.MaxTokens, false)), nil, nil
 	})
 
 	// Tool: coverage_report
@@ -3103,6 +3192,13 @@ type showSymbolArgs struct {
 	ContextLines int    `json:"context_lines,omitempty" jsonschema:"Number of source lines to show around the symbol (default 60)"`
 }
 
+// governingIntentArgs are the arguments for the governing_intent tool.
+type governingIntentArgs struct {
+	Target    string `json:"target" jsonschema:"required,A fact name (exact match)\\, a file path (label-prefixed or repo-relative)\\, or a compiled page path"`
+	Repo      string `json:"repo,omitempty" jsonschema:"Repo label to disambiguate a file path measured in more than one repo"`
+	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens)"`
+}
+
 // readSourceWindow reads lines from a file around the given line number.
 // The window is asymmetric: 1/4 of context before the line, 3/4 after,
 // since symbol declarations are at the start of the interesting code.
@@ -3474,20 +3570,45 @@ func writeGoverningIntent(sb *strings.Builder, pages []facts.GoverningPage) {
 	}
 	sb.WriteString("## Governing intent\n\nKnowledge pages anchored to the target's file:\n\n")
 	for _, p := range pages {
-		line := "- " + p.Page
-		var meta []string
-		if p.Type != "" {
-			meta = append(meta, p.Type)
+		sb.WriteString("- " + p.Page + pageMeta(p.Type, p.Status) + "\n")
+		for _, r := range p.Relations {
+			sb.WriteString("  - " + r.Rel + " " + r.To + pageMeta(r.ToType, r.ToStatus) + "\n")
 		}
-		if p.Status != "" {
-			meta = append(meta, p.Status)
-		}
-		if len(meta) > 0 {
-			line += " (" + strings.Join(meta, ", ") + ")"
-		}
-		sb.WriteString(line + "\n")
 	}
 	sb.WriteString("\n")
+}
+
+// pageMeta renders a page's type/status suffix, empty when neither is set.
+func pageMeta(pageType, status string) string {
+	var meta []string
+	if pageType != "" {
+		meta = append(meta, pageType)
+	}
+	if status != "" {
+		meta = append(meta, status)
+	}
+	if len(meta) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(meta, ", ") + ")"
+}
+
+// renderGovernedCode renders the forward half of the reverse query: the
+// anchors a page declares and the measured coverage under each — a zero is
+// visible rather than silent, since an anchor nothing measures is exactly
+// what the caller is looking for.
+func renderGovernedCode(page string, cov []facts.AnchorCoverage) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "### %s\n\n", page)
+	if len(cov) == 0 {
+		sb.WriteString("The page compiles but declares no anchors — it governs no code directly.\n")
+		return sb.String()
+	}
+	sb.WriteString("Declared anchors and measured coverage:\n\n")
+	for _, c := range cov {
+		fmt.Fprintf(&sb, "- %s %s — %d measured fact(s) in %d file(s)\n", c.Repo, c.Path, c.MeasuredFacts, c.MeasuredFiles)
+	}
+	return sb.String()
 }
 
 func renderImpactCompact(resp impactResponse) string {

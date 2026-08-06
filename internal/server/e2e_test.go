@@ -35,6 +35,7 @@ var expectedTools = []string{
 	"traverse",
 	"find_path",
 	"impact_analysis",
+	"governing_intent",
 	"coverage_report",
 }
 
@@ -274,6 +275,70 @@ func TestE2E_ImpactAnalysis(t *testing.T) {
 	out = text(s.call(t, "impact_analysis", map[string]any{"target": "pkg/a.Alpha", "output_mode": "compact"}))
 	if !strings.Contains(out, "Beta") {
 		t.Errorf("impact_analysis(Alpha, compact) should list Beta as a dependent; got:\n%s", out)
+	}
+}
+
+// TestE2E_GoverningIntent drives the reverse query through the wire in both
+// directions, plus its two distinct empty states: a snapshot with no compiled
+// pages answers "not asked", and a governed snapshot answers per target.
+func TestE2E_GoverningIntent(t *testing.T) {
+	s := startInMemory(t)
+	s.snapshot(t)
+
+	out := text(s.call(t, "governing_intent", map[string]any{"target": "pkg/a/a.go"}))
+	if !strings.Contains(out, "not asked") {
+		t.Errorf("a snapshot without compiled pages must answer 'not asked'; got:\n%s", out)
+	}
+
+	repo := filepath.Join(t.TempDir(), "backend")
+	if err := os.MkdirAll(filepath.Join(repo, "pkg/a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		"go.mod":      "module example.com/backend\n\ngo 1.21\n",
+		"main.go":     "package main\n\nfunc main() {}\n",
+		"pkg/a/a.go":  "package a\n\nfunc Alpha() {}\n",
+		"decision.md": "---\nenola_intent:\n  page:\n    type: decision\n    status: accepted\n    relations:\n      - {rel: part-of, to: epic.md}\n    anchors:\n      - {repo: backend, path: pkg/a}\n---\nbody\n",
+		"epic.md":     "---\nenola_intent:\n  page:\n    type: epic\n    status: living\n---\nbody\n",
+	} {
+		full := filepath.Join(repo, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if res := s.call(t, "generate_snapshot", map[string]any{"repo_path": repo, "fresh": true}); res.IsError {
+		t.Fatalf("generate_snapshot(backend) returned error: %s", text(res))
+	}
+
+	out = text(s.call(t, "governing_intent", map[string]any{"target": "pkg/a/a.go"}))
+	if !strings.Contains(out, "decision.md (decision, accepted)") {
+		t.Errorf("governed file must list its page with type/status; got:\n%s", out)
+	}
+	if !strings.Contains(out, "part-of epic.md (epic, living)") {
+		t.Errorf("governing page must carry its relation trail with joined target meta; got:\n%s", out)
+	}
+
+	out = text(s.call(t, "governing_intent", map[string]any{"target": "main.go"}))
+	if !strings.Contains(out, "asked, none governs") {
+		t.Errorf("an unanchored file in a governed snapshot must answer 'asked, none governs'; got:\n%s", out)
+	}
+
+	out = text(s.call(t, "governing_intent", map[string]any{"target": "decision.md"}))
+	if !strings.Contains(out, "backend pkg/a") || !strings.Contains(out, "measured fact(s)") {
+		t.Errorf("a page target must report anchor coverage; got:\n%s", out)
+	}
+
+	out = text(s.call(t, "governing_intent", map[string]any{"target": "no/such/thing.xyz"}))
+	if !strings.Contains(out, "Nothing measured matches") {
+		t.Errorf("an unmatched target must say so; got:\n%s", out)
+	}
+
+	out = text(s.call(t, "show_symbol", map[string]any{"name": "Alpha"}))
+	if !strings.Contains(out, "Governed by: decision.md (decision, accepted)") {
+		t.Errorf("show_symbol must surface the governing pages beside the source; got:\n%s", out)
 	}
 }
 

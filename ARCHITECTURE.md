@@ -460,7 +460,7 @@ One rule matters here: **the credit is persisted alongside the count**, not repr
 
 ## The tools
 
-enola is a stdio [MCP](https://modelcontextprotocol.io/) server. It exposes **thirteen tools** and no MCP resources — everything flows through tool calls. The tools defined in [`internal/server/server.go`](internal/server/server.go) are listed below, each leading with the question it answers.
+enola is a stdio [MCP](https://modelcontextprotocol.io/) server. It exposes **fourteen tools** and no MCP resources — everything flows through tool calls. The tools defined in [`internal/server/server.go`](internal/server/server.go) are listed below, each leading with the question it answers.
 
 > Most read tools share a **token-cost ladder** via `output_mode`: `summary` (smallest, aggregated counts) → `compact` (markdown, grouped) → `full` (raw JSON, can be large). Start with `summary` and escalate only when you need node-level detail. Most also accept `max_tokens` to hard-cap a response.
 
@@ -577,6 +577,20 @@ What makes it precise:
 - **Type rollup.** When the target is a type, the walk seeds from the type *plus its methods plus its constructor* (`NewType`), so it catches callers that reference the type only indirectly.
 - **Accurate totals.** `max_nodes` caps what's *shown*, not what's *counted* — the reported total dependent count reflects the true reachable set within `max_depth`.
 - **Cross-repo aware.** In multi-repo mode it reports which other repos contain a dependent.
+
+### `governing_intent` — "which decisions govern this code?"
+
+The reverse query between knowledge and code, answered directly. Where `impact_analysis` reports governing pages as a rider on the blast radius, this tool answers governance alone, in either direction:
+
+| Parameter | Description |
+|-----------|-------------|
+| `target` *(required)* | A fact name (exact), a file path (label-prefixed or repo-relative), or a compiled page path. |
+| `repo` | Repo label to disambiguate a file measured in more than one repo. |
+| `max_tokens` | Optional hard cap. |
+
+- **Code target.** Lists the knowledge pages whose declared anchors cover the target's file — each with its type, status, and outgoing relations, so the trail continues past the first hop (the page names what it is part of, depends on, or supersedes).
+- **Page target.** Lists the page's declared anchors with the measured coverage under each — files and facts — so an anchor nothing measures is visible rather than silent.
+- **Honest empty states.** A snapshot with no compiled pages answers *not asked* (the counterparty rule); a governed snapshot with no anchor on the target answers *asked, none governs*. The two never look the same.
 
 ### `coverage_report` — "which cross-repo edges did enola resolve, and which did it miss?"
 

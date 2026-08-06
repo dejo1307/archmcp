@@ -145,7 +145,17 @@ diagnosis.
 anchors cover the node's file — the governing decision trail,
 surfaced exactly when someone is about to change the code it
 governs — with each page's type and status joined from its own
-declaration.
+declaration, and each page's outgoing relations riding along so
+the trail continues past the first hop: the decision names what
+it is part of, depends on, or supersedes. `show_symbol` carries
+the same governing line beside the source. When the question is
+governance alone, the `governing_intent` tool answers it directly
+in either direction — a fact name or file path lists the pages
+that govern it; a compiled page path lists its anchors with the
+measured coverage under each — without computing a blast radius.
+Its empty states stay honest to the counterparty rule: a snapshot
+with no compiled pages answers *not asked*, which is never the
+same answer as *asked, none governs*.
 
 Repos that declare nothing are unasked — adoption is per-repo, and
 undeclared is not a finding. A declared seam whose counterparty is

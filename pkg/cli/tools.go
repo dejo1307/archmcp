@@ -37,6 +37,7 @@ func OSSTools() []ToolEntry {
 		{Name: "traverse", Description: "Walk the dependency/call graph from a starting node."},
 		{Name: "find_path", Description: "Find the shortest path between two nodes in the architectural graph."},
 		{Name: "impact_analysis", Description: "Compute the blast radius of changing a target node."},
+		{Name: "governing_intent", Description: "Which knowledge pages govern this code — and which code a page governs. The reverse query, without the blast radius."},
 		{Name: "coverage_report", Description: "Per-service edge coverage — tell a genuinely isolated service from one whose edges could not be resolved."},
 		{Name: "query_insights", Description: "Fetch the architectural findings explainers computed during generate_snapshot (cycles, god-class, unused routes, …)."},
 		{Name: "set_baseline", Description: "Pin the current snapshot as the baseline for diff_snapshot."},
