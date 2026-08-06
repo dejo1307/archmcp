@@ -1168,7 +1168,20 @@ import (
 // wrong, and (facts being name-keyed) collapsing a controller's actions onto one
 // root node. Measured on jellyfin: 422 routes, exactly one per verb attribute in
 // the source, all 388 distinct handlers resolving to real symbols.
-const cacheVersion = "v165"
+// v166: ASP.NET Core minimal APIs. `var api = app.MapGroup("api/orders")` binds a
+// prefix to a local variable and `api.MapPut("/cancel", H)` composes against it,
+// including nested groups and a fluent call after MapGroup; the handler binds when
+// it is a method group, and a lambda carries none rather than a fabricated one.
+// Scoped to one body, like the Go extractor's intra-function subrouter
+// composition. Two rules keep it honest: a string-literal first argument is the
+// discriminator, so MapControllers/MapRazorPages/MapHub — which take no path — are
+// excluded structurally rather than by a name list; and a group whose prefix is
+// NOT a literal (the MCP C# SDK mounts its whole surface at a caller-supplied
+// `pattern`) marks its routes unresolvable and emits nothing, since publishing the
+// registration path alone would claim endpoints the library does not serve and
+// collapse the `MapPost("")` ones onto "/". Measured: eShop 0 -> 30 routes with
+// composed prefixes; the SDK's caller-mounted file contributes 0.
+const cacheVersion = "v166"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

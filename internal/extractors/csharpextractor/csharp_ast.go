@@ -60,7 +60,9 @@ func extractFileASTFull(src []byte, relFile string) ([]facts.Fact, aspnetScaffol
 		aliases:  make(map[string]string),
 		fileRefI: -1,
 	}
-	w.walkTopLevelChildren(tree.RootNode())
+	root := tree.RootNode()
+	w.walkTopLevelChildren(root)
+	w.scaffold.minimal = collectMinimalAPIRoutes(root, src, relFile, w.dir)
 	return w.out, w.scaffold
 }
 

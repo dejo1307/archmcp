@@ -29,6 +29,7 @@ Unit coverage in
 | `new Order()` | an `instantiates` relation | relation |
 | `Lookup(id)` inside the declaring type | a `calls` relation | relation |
 | `[Route("x")]` + `[HttpGet("y")]` | a server route at `/x/y`, `handled_by` its action | `route` |
+| `app.MapGroup("api/x")` + `.MapGet("/y", H)` | a server route at `/api/x/y`, `handled_by` `H` | `route` |
 
 ## Names, namespaces and the two spellings
 
@@ -193,6 +194,75 @@ actions is logged, so the gap is visible rather than silent.
 Note that `[Route("")]` is **not** the same as declaring no `[Route]`: an empty
 template is a real one, and its actions are served at the method template alone.
 
+## Routes — minimal APIs
+
+A minimal-API endpoint is registered by a call rather than declared by an
+attribute, and its path is split between a group builder held in a local variable
+and the registrations that use it:
+
+```csharp
+public static RouteGroupBuilder MapOrdersApiV1(this IEndpointRouteBuilder app)
+{
+    var api = app.MapGroup("api/orders").HasApiVersion(1.0);
+
+    api.MapPut("/cancel", CancelOrderAsync);
+    api.MapGet("{orderId:int}", GetOrderAsync);
+
+    var admin = api.MapGroup("admin");
+    admin.MapDelete("/{orderId:int}", DeleteOrderAsync);
+}
+```
+
+```
+route  /api/orders/cancel                 props: method=PUT,    handler=…OrdersApi.CancelOrderAsync
+route  /api/orders/{orderId:int}          props: method=GET,    handler=…OrdersApi.GetOrderAsync
+route  /api/orders/admin/{orderId:int}    props: method=DELETE, handler=…OrdersApi.DeleteOrderAsync
+```
+
+Groups nest, and a fluent call after `MapGroup` does not hide the prefix. The
+analysis is scoped to **one method body** — which is what makes it resolvable
+without a whole-program pass, and equally what bounds it: a group passed across a
+function boundary is not followed. A group variable in one method never resolves a
+registration in another.
+
+A **method-group** handler (`GetOrderAsync`) binds to the sibling method it names;
+a **lambda** has no symbol to point at, so the route carries no `handler` at all
+rather than a fabricated one.
+
+A **string-literal first argument** is the discriminator. That is what keeps
+`MapControllers()`, `MapRazorPages()` and `MapHub<T>()` — none of which take a
+path — out of the route set, without a list of method names to exclude, and it
+also excludes a computed path (`app.MapGet(BuildPath(), H)`) that cannot be read.
+
+### An unresolvable group prefix drops its routes
+
+A library may mount its whole surface at a prefix its caller supplies:
+
+```csharp
+public static IEndpointConventionBuilder MapMcp(this IEndpointRouteBuilder endpoints,
+                                                string pattern = "")
+{
+    var mcpGroup = endpoints.MapGroup(pattern);   // ← not a literal
+    var streamable = mcpGroup.MapGroup("");
+
+    streamable.MapPost("", HandlePostAsync);
+    streamable.MapGet("/sse", HandleSseAsync);
+}
+```
+
+The real paths are whatever the host application passes, so the group is marked
+**unknown** and its registrations emit nothing. Publishing the registration path
+alone would claim endpoints the library does not serve — and since the first
+registers at `""`, it would land on `/`, recreating the phantom-root collapse
+[conventional routing](#conventional-routing-produces-nothing) produced.
+
+This is the one place the C# extractor is stricter than the Go extractor, which
+keeps a bare path when a mount is unresolved. A bare Go path is still a
+recognisable suffix; a bare path here is frequently the root itself.
+
+Measured on [eShop](https://github.com/dotnet/eShop): 30 routes, all with composed
+prefixes; the MCP SDK's caller-mounted file contributes 0.
+
 ## Complexity and I/O
 
 Like the other AST extractors, each member body is walked once for `cyclomatic`,
@@ -244,10 +314,11 @@ reason.
 - **Same-named types in different directories are never merged**, including partial ones.
   The name is directory-anchored, so they are different nodes by construction — the same
   limitation the C/C++ header/source merge has.
-- **Minimal APIs, EF Core storage and outbound HTTP clients are not extracted yet.**
-  `app.MapGet("/x", …)` and `MapGroup` prefixes mint no routes, so a minimal-API service
-  contributes symbols and call edges but no endpoints; there are no `storage` facts and no
-  client-role routes for the cross-repo linker to match.
+- **EF Core storage and outbound HTTP clients are not extracted yet.** There are no
+  `storage` facts and no client-role routes for the cross-repo linker to match, so a C#
+  service links to its neighbours only as a route *provider*.
+- **A minimal-API group is not followed across a function boundary**, and a group whose
+  prefix is not a string literal drops its routes entirely — see above.
 - **Conventionally-routed controller actions mint no route** — see above.
 - **Test projects are indexed as production code.** The default test globs carry no C#
   patterns, so a `*Tests.cs` class becomes an ordinary symbol, and there is no

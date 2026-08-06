@@ -26,15 +26,21 @@ import (
 type aspnetScaffold struct {
 	controllers []controllerDecl
 	actions     []actionDecl
+	// minimal holds resolved minimal-API registrations. They need no cross-file
+	// composition — a group and the endpoints using it live in one body — but they
+	// do need the merged symbol set to bind a handler, so they are carried here
+	// and materialised alongside the controller routes.
+	minimal []minimalRoute
 }
 
 func (s *aspnetScaffold) empty() bool {
-	return len(s.controllers) == 0 && len(s.actions) == 0
+	return len(s.controllers) == 0 && len(s.actions) == 0 && len(s.minimal) == 0
 }
 
 func (s *aspnetScaffold) merge(o aspnetScaffold) {
 	s.controllers = append(s.controllers, o.controllers...)
 	s.actions = append(s.actions, o.actions...)
+	s.minimal = append(s.minimal, o.minimal...)
 }
 
 // controllerDecl is a type that may serve routes: it carries a [Route] template, an
@@ -289,7 +295,7 @@ func composeControllerRoutes(allFacts []facts.Fact, sc aspnetScaffold) []facts.F
 		}
 	}
 
-	var out []facts.Fact
+	out := minimalRouteFacts(sc.minimal, symbols)
 	unrouted := 0
 	for _, a := range sc.actions {
 		c, ok := ctrl[a.Controller]
