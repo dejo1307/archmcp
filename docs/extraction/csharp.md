@@ -282,6 +282,46 @@ than as ordinary work.
 `&&`, `||` and `??` each add a decision point. `?.` does not, matching the other
 extractors' treatment of optional chaining.
 
+## Test projects
+
+Three directory patterns keep test code out of the production graph:
+
+```
+**/tests/**/*.cs      **/test/**/*.cs      **/*.Tests/**/*.cs
+```
+
+`*.Tests/` is not redundant with `tests/`: the dominant .NET solution layout puts a
+test project in `MyApp.Tests/` *beside* `MyApp/` rather than under a `tests/`
+directory, and 303 files in the benchmark corpus are reachable only that way.
+
+**There is deliberately no filename pattern**, and that is measured rather than
+cautious. Across 40,014 `.cs` files in the corpus, `**/*Tests.cs` would have added
+exactly **one** file the directory rules miss — `emitUnitTests.cs`, a generator
+that *emits* unit tests — while `**/*Test.cs` would have deleted
+`XmlQualifiedNameTest` (a real XPath node-test type in `System.Private.Xml`) and
+the Azure Load Testing tool's `LoadTest/Test.cs` model. That is the same hazard
+Ruby's `_test.rb` suffix presents, and it resolves the same way: the directory is
+the signal, the filename is not.
+
+What this changes, measured:
+
+| Repo | facts before | after | routes before | after |
+|---|---:|---:|---:|---:|
+| dotnet/runtime | 881,581 | **372,992** | 23 | 17 |
+| csharp-sdk | 9,156 | 4,122 | **31** | **0** |
+| mcp | 32,844 | 21,228 | 0 | 0 |
+| jellyfin | 30,012 | 26,882 | 422 | 420 |
+| eShop | 3,080 | 3,156 | 30 | 30 |
+
+csharp-sdk is the case that motivated it: every one of the 31 endpoints enola
+reported for it came from `tests/`, and the library serves no HTTP surface of its
+own. jellyfin keeps its real 420-endpoint API and loses two test-only routes.
+
+*Limits:* a test tree under a name these patterns do not know — dotnet/runtime's
+`src/mono/wasm/testassets/` — is still indexed, and a test-support library that
+happens to ship (`Microsoft.Extensions.DependencyInjection.Specification.Tests`) is
+excluded along with real tests.
+
 ## Generated code
 
 `.g.cs`, `.generated.cs`, `.Designer.cs`, `AssemblyInfo.cs` and anything carrying an
@@ -320,7 +360,7 @@ reason.
 - **A minimal-API group is not followed across a function boundary**, and a group whose
   prefix is not a string literal drops its routes entirely — see above.
 - **Conventionally-routed controller actions mint no route** — see above.
-- **Test projects are indexed as production code.** The default test globs carry no C#
-  patterns, so a `*Tests.cs` class becomes an ordinary symbol, and there is no
-  `TestRefExtractor` for C# — meaning a production symbol exercised only by its tests
-  reads as unreferenced.
+- **A symbol exercised only by its tests reads as unreferenced.** Test projects are
+  excluded from production indexing (see [Test projects](#test-projects)), and C# has no
+  `TestRefExtractor` yet, so the calls a test makes into production code are not
+  recovered — the same trade Python currently makes.

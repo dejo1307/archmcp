@@ -544,3 +544,78 @@ func registerOSSSignals(e *Engine) {
 	e.RegisterCrossRepoSignal(kafkasignal.New(vocab.Default()))
 	e.RegisterCrossRepoSignal(sharedcodesignal.New(vocab.Default()))
 }
+
+// TestMatchAnyGlob_GlobbedDirectorySegment covers the .NET solution layout, where
+// a test project sits in `MyApp.Tests/` BESIDE `MyApp/` rather than under a
+// `tests/` directory — so no literal directory segment names it, and the segment
+// itself has to be a glob.
+//
+// The literal cases are asserted alongside because generalising the comparison
+// must not widen them: `**/build/**` still has to mean a directory called exactly
+// "build".
+func TestMatchAnyGlob_GlobbedDirectorySegment(t *testing.T) {
+	csharpTestGlobs := []string{"**/tests/**/*.cs", "**/test/**/*.cs", "**/*.Tests/**/*.cs"}
+
+	tests := []struct {
+		name     string
+		relPath  string
+		patterns []string
+		want     bool
+	}{
+		{
+			"test project beside its app, the dominant .NET layout",
+			"src/MyApp.Tests/OrderServiceTests.cs",
+			csharpTestGlobs,
+			true,
+		},
+		{
+			"glob-named directory at the repo root",
+			"PlatformDocAnalyzer.Tests/AnalyzerTests.cs",
+			csharpTestGlobs,
+			true,
+		},
+		{
+			"a test directory still matches",
+			"src/libraries/System.Text.Json/tests/JsonTests.cs",
+			csharpTestGlobs,
+			true,
+		},
+		{
+			// The Ruby _test.rb hazard in its C# form. XmlQualifiedNameTest is a
+			// real XPath node-test type in System.Private.Xml, and Test.cs is a
+			// production model in the Azure Load Testing tool — which is why the
+			// C# globs are directory-scoped and carry no filename patterns.
+			"production type whose name ends in Test",
+			"src/System.Private.Xml/src/System/Xml/Xsl/XmlQualifiedNameTest.cs",
+			csharpTestGlobs,
+			false,
+		},
+		{
+			"production directory that merely contains the word",
+			"src/Contest/Entry.cs",
+			csharpTestGlobs,
+			false,
+		},
+		{
+			// Generalising the segment comparison must not widen a literal pattern.
+			"literal segment does not match a longer name",
+			"src/buildtools/Gen.cs",
+			[]string{"**/build/**"},
+			false,
+		},
+		{
+			"literal segment still matches exactly",
+			"src/build/Gen.cs",
+			[]string{"**/build/**"},
+			true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchAnyGlob(tt.relPath, tt.patterns); got != tt.want {
+				t.Errorf("matchAnyGlob(%q) = %v, want %v", tt.relPath, got, tt.want)
+			}
+		})
+	}
+}

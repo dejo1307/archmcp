@@ -262,6 +262,22 @@ func Default() *Config {
 			"**/test_*.py",
 			"**/tests/**/*.py",
 			"**/test/**/*.py",
+			// C# test projects. Directory-scoped, with NO filename pattern, and
+			// that is measured rather than cautious: across 40,014 .cs files in the
+			// benchmark corpus, `**/*Tests.cs` would have added exactly one file the
+			// directory rules miss — a generator that EMITS unit tests — while
+			// `**/*Test.cs` would have deleted `XmlQualifiedNameTest` (an XPath
+			// node-test type in System.Private.Xml) and the Azure Load Testing
+			// tool's `LoadTest/Test.cs` model. That is the Ruby `_test.rb` hazard
+			// above in its C# form.
+			//
+			// `**/*.Tests/**` is not redundant with `**/tests/**`: the dominant .NET
+			// solution layout puts a test project in `MyApp.Tests/` BESIDE `MyApp/`
+			// rather than under a `tests/` directory, and 303 files in the corpus
+			// are reachable only that way.
+			"**/tests/**/*.cs",
+			"**/test/**/*.cs",
+			"**/*.Tests/**/*.cs",
 			// enola's own output. This is the DEFAULT location only; the glob for the
 			// configured one is derived in Normalize, which is what makes a custom
 			// output.dir safe. The literal stays because a repository that used the
@@ -347,6 +363,15 @@ func Default() *Config {
 			// expect dead-code false positives on Python repos to rise.
 			"**/conftest.py", "**/test_*.py",
 			"**/tests/**/*.py", "**/test/**/*.py",
+			// C# has no TestRefExtractor either, so these three are the same
+			// deliberate no-op as Python's four: listed because Ignore above
+			// requires the two lists to agree, and so that implementing
+			// CSharpExtractor.ExtractTestRefs switches the signal on without a
+			// second config change. Until then, a C# symbol called only from a test
+			// reads as dead — the same trade Python already makes, and the right
+			// way round: a missing edge is visible in a dead-code review, while the
+			// 31 phantom endpoints csharp-sdk reported before this change were not.
+			"**/tests/**/*.cs", "**/test/**/*.cs", "**/*.Tests/**/*.cs",
 		},
 		Extractors: []string{"cpp", "csharp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible", "mdintent"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},

@@ -21,11 +21,19 @@ func MatchAnyGlob(relPath string, patterns []string) bool {
 //
 //	vendor/**                 anchored directory prefix
 //	**/build/**               a directory named "build" at any depth
+//	**/*.Tests/**             a directory whose NAME matches a glob, at any depth
 //	**/*_test.go              a basename glob at any depth
 //	**/spec/**/*_spec.rb      a basename glob under a directory named "spec"
+//	**/*.Tests/**/*.cs        a basename glob under a glob-named directory
 //
 // The last form is the only one that constrains directory and filename together;
 // see matchDirScopedGlob for why the Ruby test globs need it.
+//
+// The directory segment may itself be a glob. A literal is the common case and is
+// unaffected — filepath.Match on a pattern with no metacharacters is equality — but
+// .NET needs the general form: the dominant solution layout puts a test project in
+// `MyApp.Tests/` beside `MyApp/` rather than under a `tests/` directory, so no
+// literal segment names it.
 func MatchGlob(relPath string, patterns []string) (string, bool) {
 	for _, pattern := range patterns {
 		// "<prefix>/**/<fileglob>". Handled first and exclusively: the branches
@@ -45,7 +53,7 @@ func MatchGlob(relPath string, patterns []string) (string, bool) {
 			seg := strings.TrimSuffix(strings.TrimPrefix(pattern, "**/"), "/**")
 			if seg != "" && !strings.Contains(seg, "/") {
 				for _, part := range strings.Split(relPath, "/") {
-					if part == seg {
+					if matchSegment(seg, part) {
 						return pattern, true
 					}
 				}
@@ -71,6 +79,19 @@ func MatchGlob(relPath string, patterns []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// matchSegment compares one path segment against a pattern segment. A pattern
+// with no metacharacters costs an equality check inside filepath.Match, so the
+// literal case — every pattern that existed before .NET — behaves exactly as it
+// did. An unparseable pattern yields ErrBadPattern and therefore no match, which
+// is the safe direction: a malformed ignore entry hides nothing.
+func matchSegment(pattern, part string) bool {
+	if !strings.ContainsAny(pattern, "*?[") {
+		return pattern == part
+	}
+	m, err := filepath.Match(pattern, part)
+	return err == nil && m
 }
 
 // matchDirScopedGlob reports whether relPath's basename matches fileGlob AND
@@ -101,7 +122,9 @@ func matchDirScopedGlob(relPath, prefix, fileGlob string) bool {
 		if seg == "" || strings.Contains(seg, "/") {
 			return false
 		}
-		return slices.Contains(dirSegs, seg)
+		return slices.ContainsFunc(dirSegs, func(part string) bool {
+			return matchSegment(seg, part)
+		})
 	}
 	if prefix == "**" {
 		return true // any directory
