@@ -161,10 +161,24 @@ type ImpactResult struct {
 
 // GoverningPage is a knowledge page whose declared anchors cover the file a
 // fact lives in — the decision/spec trail governing the code under analysis.
+// Relations carry the page's own outgoing edges, resolved against the
+// compiled page set, so the trail continues past the first hop: the page
+// that governs a file names what it is part of, depends on, or supersedes.
 type GoverningPage struct {
-	Page   string `json:"page"`
-	Type   string `json:"type,omitempty"`
-	Status string `json:"status,omitempty"`
+	Page      string              `json:"page"`
+	Type      string              `json:"type,omitempty"`
+	Status    string              `json:"status,omitempty"`
+	Relations []GoverningRelation `json:"relations,omitempty"`
+}
+
+// GoverningRelation is one outgoing typed edge of a governing page. Target
+// type and status join from the target's own page declaration when the
+// target compiles; a target outside the compiled set keeps only its path.
+type GoverningRelation struct {
+	Rel      string `json:"rel"`
+	To       string `json:"to"`
+	ToType   string `json:"to_type,omitempty"`
+	ToStatus string `json:"to_status,omitempty"`
 }
 
 // PathResult holds a shortest-path result.
@@ -925,53 +939,188 @@ func (g *Graph) GoverningIntent(target string) []GoverningPage {
 	if f.File == "" || f.Repo == "" {
 		return nil
 	}
+	return g.governingForFile(f.Repo, f.File)
+}
+
+// GoverningIntentForFile answers the same reverse query for a file named
+// directly — repo label plus the file in either the label-prefixed or
+// repo-relative form — without resolving a fact first.
+func (g *Graph) GoverningIntentForFile(repo, file string) []GoverningPage {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	if repo == "" || file == "" {
+		return nil
+	}
+	return g.governingForFile(repo, file)
+}
+
+// governingForFile joins the file against every declared anchor of its repo
+// and resolves the matching pages with their declarations and outgoing
+// relations. Caller holds g.mu.
+func (g *Graph) governingForFile(repo, file string) []GoverningPage {
 	// Join in both the label-prefixed and repo-relative file forms, same as
 	// every intent join — a single trimmed form mis-fires when a real path
 	// starts with the repo's own name.
-	forms := []string{f.File}
-	if trimmed := strings.TrimPrefix(f.File, f.Repo+"/"); trimmed != f.File {
+	forms := []string{file}
+	if trimmed := strings.TrimPrefix(file, repo+"/"); trimmed != file {
 		forms = append(forms, trimmed)
 	}
 	pages := map[string]bool{}
-	for _, af := range g.facts {
-		if af.Kind != KindIntent || af.PropString("intent_kind") != "anchor" ||
-			af.PropString("intent_owner") != f.Repo {
+	pageInfo := map[string]*Fact{}
+	pageByForm := map[string]*Fact{}
+	relations := map[string][]*Fact{}
+	for i := range g.facts {
+		af := &g.facts[i]
+		if af.Kind != KindIntent {
 			continue
 		}
-		path := af.PropString("path")
-		if path == "" {
-			continue
-		}
-		for _, file := range forms {
-			if path == file || strings.HasPrefix(file, path+"/") {
-				pages[af.File] = true
-				break
+		switch af.PropString("intent_kind") {
+		case "anchor":
+			if af.PropString("intent_owner") != repo {
+				continue
 			}
+			path := af.PropString("path")
+			if path == "" {
+				continue
+			}
+			for _, form := range forms {
+				if path == form || strings.HasPrefix(form, path+"/") {
+					pages[af.File] = true
+					break
+				}
+			}
+		case "page":
+			pageInfo[af.File] = af
+			pageByForm[af.Repo+"\x00"+af.File] = af
+			pageByForm[af.Repo+"\x00"+strings.TrimPrefix(af.File, af.Repo+"/")] = af
+		case "relation":
+			relations[af.Repo+"\x00"+af.File] = append(relations[af.Repo+"\x00"+af.File], af)
 		}
 	}
 	if len(pages) == 0 {
 		return nil
 	}
-	info := map[string]GoverningPage{}
-	for _, pf := range g.facts {
-		if pf.Kind == KindIntent && pf.PropString("intent_kind") == "page" && pages[pf.File] {
-			info[pf.File] = GoverningPage{
-				Page:   pf.File,
-				Type:   pf.PropString("page_type"),
-				Status: pf.PropString("status"),
-			}
-		}
-	}
 	out := make([]GoverningPage, 0, len(pages))
 	for page := range pages {
-		gp, ok := info[page]
-		if !ok {
-			gp = GoverningPage{Page: page}
+		gp := GoverningPage{Page: page}
+		var pageRepo string
+		if pf, ok := pageInfo[page]; ok {
+			gp.Type = pf.PropString("page_type")
+			gp.Status = pf.PropString("status")
+			pageRepo = pf.Repo
 		}
+		for _, rf := range relations[pageRepo+"\x00"+page] {
+			gr := GoverningRelation{Rel: rf.PropString("rel"), To: rf.PropString("to")}
+			if tf, ok := pageByForm[rf.Repo+"\x00"+gr.To]; ok {
+				gr.ToType = tf.PropString("page_type")
+				gr.ToStatus = tf.PropString("status")
+			}
+			gp.Relations = append(gp.Relations, gr)
+		}
+		sort.Slice(gp.Relations, func(i, j int) bool {
+			if gp.Relations[i].Rel != gp.Relations[j].Rel {
+				return gp.Relations[i].Rel < gp.Relations[j].Rel
+			}
+			return gp.Relations[i].To < gp.Relations[j].To
+		})
 		out = append(out, gp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Page < out[j].Page })
 	return out
+}
+
+// AnchorCoverage is one declared anchor of a page joined against the
+// measured graph — the forward half of the reverse query: what code does
+// this page govern, and does the graph actually measure it.
+type AnchorCoverage struct {
+	Repo          string `json:"repo"`
+	Path          string `json:"path"`
+	MeasuredFiles int    `json:"measured_files"`
+	MeasuredFacts int    `json:"measured_facts"`
+}
+
+// GovernedByPage resolves a compiled page — by label-prefixed or
+// repo-relative path — and reports every anchor it declares with the
+// measured coverage under it. The bool reports whether the page compiles at
+// all, so a caller can keep "no such page" and "a page anchored to nothing"
+// apart.
+func (g *Graph) GovernedByPage(page string) ([]AnchorCoverage, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var pageFile string
+	for i := range g.facts {
+		pf := &g.facts[i]
+		if pf.Kind != KindIntent || pf.PropString("intent_kind") != "page" {
+			continue
+		}
+		if pf.File == page || strings.TrimPrefix(pf.File, pf.Repo+"/") == page {
+			pageFile = pf.File
+			break
+		}
+	}
+	if pageFile == "" {
+		return nil, false
+	}
+	var anchors []*Fact
+	for i := range g.facts {
+		af := &g.facts[i]
+		if af.Kind == KindIntent && af.PropString("intent_kind") == "anchor" && af.File == pageFile {
+			anchors = append(anchors, af)
+		}
+	}
+	out := make([]AnchorCoverage, len(anchors))
+	files := make([]map[string]bool, len(anchors))
+	for i, af := range anchors {
+		out[i] = AnchorCoverage{Repo: af.PropString("intent_owner"), Path: af.PropString("path")}
+		files[i] = map[string]bool{}
+	}
+	for i := range g.facts {
+		mf := &g.facts[i]
+		if mf.Kind == KindIntent || mf.Repo == "" || mf.File == "" {
+			continue
+		}
+		forms := []string{mf.File}
+		if trimmed := strings.TrimPrefix(mf.File, mf.Repo+"/"); trimmed != mf.File {
+			forms = append(forms, trimmed)
+		}
+		for a := range out {
+			if out[a].Repo != mf.Repo {
+				continue
+			}
+			for _, form := range forms {
+				if out[a].Path == form || strings.HasPrefix(form, out[a].Path+"/") {
+					out[a].MeasuredFacts++
+					files[a][mf.File] = true
+					break
+				}
+			}
+		}
+	}
+	for a := range out {
+		out[a].MeasuredFiles = len(files[a])
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Repo != out[j].Repo {
+			return out[i].Repo < out[j].Repo
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out, true
+}
+
+// HasCompiledPages reports whether any knowledge page compiles into this
+// graph at all — the counterparty question a reverse-query surface must
+// answer before rendering an empty result, so "no knowledge layer loaded"
+// and "asked, nothing governs this file" never look the same.
+func (g *Graph) HasCompiledPages() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for i := range g.facts {
+		if g.facts[i].Kind == KindIntent && g.facts[i].PropString("intent_kind") == "page" {
+			return true
+		}
+	}
+	return false
 }
 
 // repoOf returns the repo label of the fact named name, or "" if absent.

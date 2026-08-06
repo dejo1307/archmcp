@@ -1375,3 +1375,97 @@ func TestImpactSet_GoverningIntent(t *testing.T) {
 		t.Fatalf("unanchored code must report no governing intent, got %+v", none.GoverningIntent)
 	}
 }
+
+// TestGoverningIntent_RelationTrail pins the trail past the first hop: a
+// governing page's outgoing relations ride along, with target type/status
+// joined when the target compiles — in either file form — and only its path
+// when it does not.
+func TestGoverningIntent_RelationTrail(t *testing.T) {
+	ff := []Fact{
+		{Kind: KindSymbol, Repo: "backend", File: "app/services/formatter.rb", Name: "Formatter"},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/adrs/fmt.md", Name: "page: wiki/adrs/fmt.md",
+			Props: map[string]any{"intent_kind": "page", "page_type": "decision", "status": "accepted"}},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/adrs/fmt.md", Name: "anchor: backend app/services/formatter.rb",
+			Props: map[string]any{"intent_kind": "anchor", "intent_owner": "backend", "path": "app/services/formatter.rb", "source": "wiki/adrs/fmt.md"}},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/adrs/fmt.md", Name: "relation: part-of wiki/epics/text.md",
+			Props: map[string]any{"intent_kind": "relation", "rel": "part-of", "to": "wiki/epics/text.md", "source": "wiki/adrs/fmt.md"}},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/adrs/fmt.md", Name: "relation: depends-on wiki/prds/fmt.md",
+			Props: map[string]any{"intent_kind": "relation", "rel": "depends-on", "to": "wiki/prds/fmt.md", "source": "wiki/adrs/fmt.md"}},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/epics/text.md", Name: "page: wiki/epics/text.md",
+			Props: map[string]any{"intent_kind": "page", "page_type": "epic", "status": "living"}},
+	}
+	g := NewGraph(ff)
+
+	got := g.GoverningIntent("Formatter")
+	if len(got) != 1 || len(got[0].Relations) != 2 {
+		t.Fatalf("governing page must carry its two relations, got %+v", got)
+	}
+	dep, part := got[0].Relations[0], got[0].Relations[1]
+	if dep.Rel != "depends-on" || dep.To != "wiki/prds/fmt.md" || dep.ToType != "" {
+		t.Fatalf("relation to an uncompiled target keeps only its path, got %+v", dep)
+	}
+	if part.Rel != "part-of" || part.ToType != "epic" || part.ToStatus != "living" {
+		t.Fatalf("relation target type/status must join from the compiled target, got %+v", part)
+	}
+}
+
+// TestGoverningIntentForFile answers the reverse query for a file named
+// directly, in both the repo-relative and label-prefixed forms.
+func TestGoverningIntentForFile(t *testing.T) {
+	ff := []Fact{
+		{Kind: KindSymbol, Repo: "backend", File: "backend/app/jobs/sync_job.rb", Name: "SyncJob"},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/prds/jobs.md", Name: "anchor: backend app/jobs",
+			Props: map[string]any{"intent_kind": "anchor", "intent_owner": "backend", "path": "app/jobs", "source": "wiki/prds/jobs.md"}},
+	}
+	g := NewGraph(ff)
+
+	for _, file := range []string{"app/jobs/sync_job.rb", "backend/app/jobs/sync_job.rb"} {
+		got := g.GoverningIntentForFile("backend", file)
+		if len(got) != 1 || got[0].Page != "wiki/prds/jobs.md" {
+			t.Fatalf("file form %q must resolve its governing page, got %+v", file, got)
+		}
+	}
+	if got := g.GoverningIntentForFile("backend", "lib/other.rb"); len(got) != 0 {
+		t.Fatalf("ungoverned file must report nothing, got %+v", got)
+	}
+}
+
+// TestGovernedByPage pins the forward half of the reverse query: a page
+// resolves in either file form, reports each anchor's measured coverage,
+// and the found flag keeps "no such page" apart from "anchored to nothing".
+func TestGovernedByPage(t *testing.T) {
+	ff := []Fact{
+		{Kind: KindSymbol, Repo: "backend", File: "app/jobs/sync_job.rb", Name: "SyncJob"},
+		{Kind: KindSymbol, Repo: "backend", File: "app/jobs/retry_job.rb", Name: "RetryJob"},
+		{Kind: KindModule, Repo: "backend", File: "app/jobs/sync_job.rb", Name: "jobs"},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/prds/jobs.md", Name: "page: wiki/prds/jobs.md",
+			Props: map[string]any{"intent_kind": "page", "page_type": "initiative", "status": "living"}},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/prds/jobs.md", Name: "anchor: backend app/jobs",
+			Props: map[string]any{"intent_kind": "anchor", "intent_owner": "backend", "path": "app/jobs", "source": "wiki/prds/jobs.md"}},
+		{Kind: KindIntent, Repo: "wiki", File: "wiki/prds/jobs.md", Name: "anchor: backend docs/jobs.md",
+			Props: map[string]any{"intent_kind": "anchor", "intent_owner": "backend", "path": "docs/jobs.md", "source": "wiki/prds/jobs.md"}},
+	}
+	g := NewGraph(ff)
+
+	for _, page := range []string{"wiki/prds/jobs.md", "prds/jobs.md"} {
+		cov, found := g.GovernedByPage(page)
+		if !found || len(cov) != 2 {
+			t.Fatalf("page form %q must resolve with two anchors, got found=%v cov=%+v", page, found, cov)
+		}
+		if cov[0].Path != "app/jobs" || cov[0].MeasuredFiles != 2 || cov[0].MeasuredFacts != 3 {
+			t.Fatalf("directory anchor coverage must count measured files and facts, got %+v", cov[0])
+		}
+		if cov[1].Path != "docs/jobs.md" || cov[1].MeasuredFacts != 0 {
+			t.Fatalf("unmeasured anchor must report zero coverage, got %+v", cov[1])
+		}
+	}
+	if _, found := g.GovernedByPage("wiki/prds/missing.md"); found {
+		t.Fatal("a page outside the compiled set must report not found")
+	}
+	if !g.HasCompiledPages() {
+		t.Fatal("a graph with a page node must report compiled pages")
+	}
+	if NewGraph([]Fact{{Kind: KindSymbol, Repo: "backend", File: "a.rb", Name: "A"}}).HasCompiledPages() {
+		t.Fatal("a graph without page nodes must not report compiled pages")
+	}
+}
