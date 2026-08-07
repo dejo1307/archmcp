@@ -12,6 +12,8 @@
 #   - swift      (detection: Package.swift, .xcodeproj, or .xcworkspace)
 #   - ruby       (detection: Gemfile)
 #   - rust       (detection: Cargo.toml)
+#   - scala      (detection: build.sbt, project/build.properties, build.mill, a
+#                 Maven/Gradle build naming Scala, or any .scala source)
 #   - cpp        (detection: .cpp/.hpp/... or CMakeLists.txt/Makefile + header)
 #   - php        (detection: composer.json, WordPress markers, or any .php source)
 #   - python     (detection: pyproject.toml, setup.py, requirements.txt, Pipfile,
