@@ -275,24 +275,47 @@ func Default() *Config {
 			// solution layout puts a test project in `MyApp.Tests/` BESIDE `MyApp/`
 			// rather than under a `tests/` directory, and 303 files in the corpus
 			// are reachable only that way.
+			// BOTH casings. Glob matching is case-sensitive and .NET names these
+			// directories in PascalCase: dotnet/roslyn puts 784 files under Test/ and
+			// 73 under Tests/, none of which the lowercase patterns match. They were
+			// being indexed as production code.
 			"**/tests/**/*.cs",
 			"**/test/**/*.cs",
+			"**/Tests/**/*.cs",
+			"**/Test/**/*.cs",
 			"**/*.Tests/**/*.cs",
 			// Razor markup in the same test trees. A test project's .razor/.cshtml
 			// reference production members exactly as a test .cs does, so indexing
 			// them would vouch for symbols no production code uses — the same
 			// suppression of genuine dead-code findings the .cs rules avoid.
+			// VB.NET test trees, for the same reason as the .cs rules above. Roslyn's
+			// analyzer tests are themselves .vb files that embed VB source as XML
+			// literals, so indexing them contributes thousands of fixture types
+			// (`Class C`, `Interface I`, `Enum E`) that no production code declares.
+			"**/tests/**/*.vb",
+			"**/test/**/*.vb",
+			"**/Tests/**/*.vb",
+			"**/Test/**/*.vb",
+			"**/*.Tests/**/*.vb",
 			"**/tests/**/*.razor",
 			"**/test/**/*.razor",
+			"**/Tests/**/*.razor",
+			"**/Test/**/*.razor",
 			"**/*.Tests/**/*.razor",
 			"**/tests/**/*.cshtml",
 			"**/test/**/*.cshtml",
+			"**/Tests/**/*.cshtml",
+			"**/Test/**/*.cshtml",
 			"**/*.Tests/**/*.cshtml",
 			"**/tests/**/*.xaml",
 			"**/test/**/*.xaml",
+			"**/Tests/**/*.xaml",
+			"**/Test/**/*.xaml",
 			"**/*.Tests/**/*.xaml",
 			"**/tests/**/*.axaml",
 			"**/test/**/*.axaml",
+			"**/Tests/**/*.axaml",
+			"**/Test/**/*.axaml",
 			"**/*.Tests/**/*.axaml",
 			// enola's own output. This is the DEFAULT location only; the glob for the
 			// configured one is derived in Normalize, which is what makes a custom
@@ -387,11 +410,12 @@ func Default() *Config {
 			// reads as dead — the same trade Python already makes, and the right
 			// way round: a missing edge is visible in a dead-code review, while the
 			// 31 phantom endpoints csharp-sdk reported before this change were not.
-			"**/tests/**/*.cs", "**/test/**/*.cs", "**/*.Tests/**/*.cs",
-			"**/tests/**/*.razor", "**/test/**/*.razor", "**/*.Tests/**/*.razor",
-			"**/tests/**/*.cshtml", "**/test/**/*.cshtml", "**/*.Tests/**/*.cshtml",
-			"**/tests/**/*.xaml", "**/test/**/*.xaml", "**/*.Tests/**/*.xaml",
-			"**/tests/**/*.axaml", "**/test/**/*.axaml", "**/*.Tests/**/*.axaml",
+			"**/tests/**/*.cs", "**/test/**/*.cs", "**/Tests/**/*.cs", "**/Test/**/*.cs", "**/*.Tests/**/*.cs",
+			"**/tests/**/*.vb", "**/test/**/*.vb", "**/Tests/**/*.vb", "**/Test/**/*.vb", "**/*.Tests/**/*.vb",
+			"**/tests/**/*.razor", "**/test/**/*.razor", "**/Tests/**/*.razor", "**/Test/**/*.razor", "**/*.Tests/**/*.razor",
+			"**/tests/**/*.cshtml", "**/test/**/*.cshtml", "**/Tests/**/*.cshtml", "**/Test/**/*.cshtml", "**/*.Tests/**/*.cshtml",
+			"**/tests/**/*.xaml", "**/test/**/*.xaml", "**/Tests/**/*.xaml", "**/Test/**/*.xaml", "**/*.Tests/**/*.xaml",
+			"**/tests/**/*.axaml", "**/test/**/*.axaml", "**/Tests/**/*.axaml", "**/Test/**/*.axaml", "**/*.Tests/**/*.axaml",
 		},
 		Extractors: []string{"cpp", "csharp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible", "mdintent"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},

@@ -1,25 +1,33 @@
-# C# — what enola extracts
+# .NET — what enola extracts
 
-Sources parsed with tree-sitter; MSBuild project and solution files parsed as XML.
+Covers **C#, VB.NET, Razor and XAML**, plus the MSBuild project system that binds
+them into assemblies. One extractor reads all of them into one fact set, which is
+what lets a VB class reference a C# type, and a `.razor` or `.xaml` view merge with
+its code-behind.
+
+C# and VB.NET sources are parsed with tree-sitter and a line scanner respectively;
+Razor is scanned for its C# regions; XAML and the MSBuild project and solution
+files are parsed as XML.
+
 Detected by a solution or project file of any .NET language (`.sln`, `.slnx`,
-`.csproj`, `.fsproj`, `.vbproj`) or by any `.cs` source within four directory
-levels.
+`.csproj`, `.fsproj`, `.vbproj`), or by any `.cs`, `.vb`, `.razor`, `.cshtml`,
+`.xaml` or `.axaml` file, within four directory levels.
 
-> **"C#", not "all of .NET" — but the project system is the whole platform's.**
-> Source reading is C#-only. The MSBuild layer beneath it is not: every project
-> file is parsed whatever language it compiles, so the assembly graph — which
-> project references which — is complete even where the sources are not.
+> **What is still missing.** F# is not read. The MSBuild layer beneath it is, for
+> every language: each project file is parsed whatever it compiles, so the assembly
+> graph — which project references which — is complete even where the sources are
+> not.
 >
 > | Sources not extracted | Present in the benchmark corpus |
 > |---|---|
 > | F# (`.fs`) | 5,539 files |
-> | VB.NET (`.vb`) | 3,784 files |
 >
-> Razor (`.razor`, `.cshtml`) and XAML (`.xaml`, `.axaml`) **are** read — see
-> [Razor](#razor--blazor-components-and-mvc-views) and [XAML](#xaml--wpf-winui-maui-and-avalonia).
+> Razor (`.razor`, `.cshtml`), XAML (`.xaml`, `.axaml`) and VB.NET (`.vb`) **are**
+> read — see [Razor](#razor--blazor-components-and-mvc-views),
+> [XAML](#xaml--wpf-winui-maui-and-avalonia) and [VB.NET](#vbnet).
 >
 > A mixed solution therefore has all of its projects and all of its
-> `ProjectReference` edges, and symbols for its C# and Razor halves.
+> `ProjectReference` edges, and symbols for every half except F#.
 >
 > Reading `.fsproj` and `.vbproj` is also what keeps a claimed repository from
 > being an empty one. `giraffe-fsharp/Giraffe` ships `Giraffe.slnx`, seven
@@ -30,13 +38,16 @@ levels.
 
 Fixture: [`csharp_sample`](../../internal/engine/testdata/repos/csharp_sample/) ·
 Unit coverage in
-[`csharpextractor/csharp_test.go`](../../internal/extractors/csharpextractor/csharp_test.go)
+[`csharpextractor/`](../../internal/extractors/csharpextractor/) —
+`csharp_test.go`, `msbuild_test.go`, `razor_test.go`, `xaml_test.go`,
+`vbnet_test.go`
 
-> **Check your `mcp-arch.yaml` before you conclude C# is unsupported.** A config file's
+> **Check your `mcp-arch.yaml` before you conclude .NET is unsupported.** A config file's
 > `extractors:` list *replaces* the built-in default rather than merging with it, so a
 > config written before an extractor existed silently disables it. A repository indexed
-> with a stale list reports zero C# facts and says nothing about why. Either add `csharp`
-> to the list or delete the key to inherit the default.
+> with a stale list reports zero .NET facts and says nothing about why. Either add
+> `csharp` to the list or delete the key to inherit the default. (The extractor is
+> still named `csharp`; the rename is pending.)
 
 ## At a glance
 
@@ -334,6 +345,93 @@ on Avalonia's 481.
 file does not know is missed. `{Binding}` with no path names nothing. A reference
 is harvested by NAME, so an unrelated symbol sharing it is credited — the same
 bias, in the same safe direction, as `test_ref`.
+
+## VB.NET
+
+Read **into the same fact set as C#**, which is the whole point: a .NET solution
+mixes the two languages inside one assembly, so a VB class referencing a C# type
+must resolve through the one shared type index.
+
+Line-oriented rather than AST-driven, and that is a property of the language
+rather than a shortcut — VB terminates every construct with an explicit `End
+Class` / `End Sub`, has no braces, and no expression-level ambiguity about where a
+declaration begins. (There is also no maintained tree-sitter grammar for it.)
+
+```vb
+Namespace Microsoft.CodeAnalysis.VisualBasic.Symbols
+    Partial Friend Class SourceNamedTypeSymbol
+        Inherits SourceMemberContainerTypeSymbol
+        Implements IAttributeTargetSymbol
+
+        Friend Sub New(declaration As MergedTypeDeclaration,
+                       containingSymbol As NamespaceOrTypeSymbol)
+            MyBase.New(declaration)
+        End Sub
+    End Class
+End Namespace
+```
+
+```
+symbol  …/Symbols.SourceNamedTypeSymbol  props: symbol_kind=class, partial=true,
+                                                exported=false, language=vbnet,
+                                                namespace=Microsoft.CodeAnalysis.…
+          --implements--> SourceMemberContainerTypeSymbol, IAttributeTargetSymbol
+symbol  …/Symbols.SourceNamedTypeSymbol.New   props: symbol_kind=constructor
+```
+
+Details that are VB rather than C#:
+
+- **Case-insensitive.** `imports` and `End Sub` are legal VB, so every keyword
+  match folds case.
+- **`Friend` is `internal`**, so it is not part of the exported surface — the same
+  treatment the C# walker gives `internal`.
+- **A `Module` is a static class**, not a namespace. It carries `vb_module` but its
+  `symbol_kind` is `class`, because that prop is what puts a name into the type
+  index that resolves bare references.
+- **Line continuations are folded** — a trailing `_` or comma. roslyn's VB writes
+  multi-line parameter lists constantly, and without folding the second line parses
+  as a stray statement and the declaration is lost.
+- **`Handles ctl.Click`** is a reference. It is how a WinForms or WPF handler is
+  wired, and without it a handler nothing calls by name reads as dead — the VB
+  counterpart of XAML's `Click=`.
+- **`Implements IEquatable(Of T).Equals`** on a member names the interface member
+  it satisfies; generic arguments are dropped.
+- **Private fields are not symbols**, matching the C# rule.
+- `.Designer.vb`, `.Generated.vb`, `My Project/` and an `<auto-generated>` header
+  produce nothing.
+
+### What this changes, measured
+
+On dotnet/roslyn, whose VB compiler is the largest VB codebase in the open:
+
+| | orphans | rescued | regressed |
+|---|---:|---:|---:|
+| before | 60,726 | | |
+| after | **59,209** | 6,644 | 33 |
+
+Both sides measured with the test-glob fix below already applied, so the numbers
+are VB's contribution alone rather than the two changes mixed.
+
+The 33 are a documented rule firing correctly rather than a defect. roslyn ships
+two parallel compilers, and the VB one declares its own
+`CodeGen.CodeGenerator.CallKind` beside the C# one. A simple name that was unique
+no longer is, so [resolution](#resolution--why-it-is-a-whole-repository-pass) step
+3 declines to guess and the reference is left as written. Binding it would have
+pointed a C# reference at the VB compiler's type.
+
+*Cost:* +4.3s on roslyn's 2,752 VB files.
+
+### The test-directory globs were case-sensitive
+
+Found while measuring this, and it is not VB-specific. Glob matching is
+case-sensitive, and .NET names its test directories in **PascalCase** — roslyn puts
+784 files under `Test/` and 73 under `Tests/`, none of which `**/test/**` or
+`**/tests/**` ever matched. They were being indexed as production code, in C# as
+well as VB, since the C# extractor shipped.
+
+Both casings are now listed for every .NET source extension. On roslyn alone this
+moves 4,734 files out of the graph and drops the orphan count from 129,003 to
+60,726 — a larger effect than any extractor in this series.
 
 ## Names, namespaces and the two spellings
 

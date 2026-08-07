@@ -1262,7 +1262,15 @@ import (
 // binding stops reading as dead. Files reported 4,819 orphans, 15.9% of them
 // XAML-only. A document with no x:Class emits a file_ref instead of inventing a
 // class. Covers WPF, WinUI/UWP, MAUI and Avalonia (.axaml).
-const cacheVersion = "v174"
+// v175: VB.NET is read, into the SAME fact set as C# so a VB class referencing a
+// C# type resolves through one shared type index. Line-oriented: VB terminates
+// every construct explicitly and has no maintained tree-sitter grammar. Types,
+// members, Imports, Inherits/Implements, Handles clauses and complexity metrics.
+// roslyn's VB compiler is 3,652 files and 6,644 of its C# orphans had callers
+// only there. Also fixes a CASE-SENSITIVITY hole in the .NET test globs: .NET
+// names those directories Test/ and Tests/, which the lowercase-only patterns
+// never matched, so roslyn's 4,734 test files were indexed as production code.
+const cacheVersion = "v175"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

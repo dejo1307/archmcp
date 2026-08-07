@@ -77,7 +77,7 @@ func (e *CSharpExtractor) Detect(repoPath string) (bool, error) {
 			return nil
 		}
 		if isCSharpFile(path) || isProjectFile(path) || isSolutionFile(path) ||
-			isRazorFile(path) || isXamlFile(path) {
+			isRazorFile(path) || isXamlFile(path) || isVBFile(path) {
 			found = true
 		}
 		return nil
@@ -99,7 +99,7 @@ func isCSharpFile(path string) bool {
 // without touching a single .cs file.
 func (e *CSharpExtractor) OwnsFile(relFile string) bool {
 	return isCSharpFile(relFile) || isProjectFile(relFile) || isSolutionFile(relFile) ||
-		isRazorFile(relFile) || isXamlFile(relFile)
+		isRazorFile(relFile) || isXamlFile(relFile) || isVBFile(relFile)
 }
 
 // Extract parses C# files and emits architectural facts.
@@ -113,7 +113,7 @@ func (e *CSharpExtractor) OwnsFile(relFile string) bool {
 // so a bare type reference cannot be resolved from one file's imports the way
 // Java's can. Both are settled in resolveCSharp once every file is in.
 func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
-	var csFiles, projFiles, slnFiles, razorFiles, xamlFiles []string
+	var csFiles, projFiles, slnFiles, razorFiles, xamlFiles, vbFiles []string
 	for _, relFile := range files {
 		switch {
 		case isCSharpFile(relFile):
@@ -126,6 +126,8 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 			razorFiles = append(razorFiles, relFile)
 		case isXamlFile(relFile):
 			xamlFiles = append(xamlFiles, relFile)
+		case isVBFile(relFile):
+			vbFiles = append(vbFiles, relFile)
 		}
 	}
 
@@ -197,6 +199,34 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	}
 	if len(xamlFiles) > 0 {
 		log.Printf("[csharp-extractor] parsed %d XAML file(s)", len(xamlFiles))
+	}
+
+	// VB.NET. Emitted into the SAME fact set as C#, which is the point: a solution
+	// mixes the two languages inside one assembly, so a VB class referencing a C#
+	// type must resolve through the one shared type index resolveCSharpTargets
+	// builds below.
+	vbResults := parallel.MapFiles(ctx, vbFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
+			return nil
+		}
+		if isGeneratedVB(relFile, string(src)) {
+			return nil
+		}
+		return scanVB(string(src), relFile)
+	})
+	vbParsed := 0
+	for i, ff := range vbResults {
+		if ff == nil {
+			continue
+		}
+		vbParsed++
+		allFacts = append(allFacts, ff...)
+		modules[filepath.ToSlash(filepath.Dir(vbFiles[i]))] = true
+	}
+	if len(vbFiles) > 0 {
+		log.Printf("[csharp-extractor] parsed %d VB.NET file(s) of %d", vbParsed, len(vbFiles))
 	}
 
 	allFacts = mergePartialTypes(allFacts)

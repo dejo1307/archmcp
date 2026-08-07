@@ -84,21 +84,36 @@ ignore:
   # rather than under a tests/ directory.
   - "**/tests/**/*.cs"
   - "**/test/**/*.cs"
+  - "**/Tests/**/*.cs"
+  - "**/Test/**/*.cs"
   - "**/*.Tests/**/*.cs"
+  - "**/tests/**/*.vb"
+  - "**/test/**/*.vb"
+  - "**/Tests/**/*.vb"
+  - "**/Test/**/*.vb"
+  - "**/*.Tests/**/*.vb"
   # Razor markup in the same test trees: a test project's .razor/.cshtml reference
   # production members exactly as a test .cs does, so indexing them would vouch for
   # symbols no production code uses.
   - "**/tests/**/*.razor"
   - "**/test/**/*.razor"
+  - "**/Tests/**/*.razor"
+  - "**/Test/**/*.razor"
   - "**/*.Tests/**/*.razor"
   - "**/tests/**/*.cshtml"
   - "**/test/**/*.cshtml"
+  - "**/Tests/**/*.cshtml"
+  - "**/Test/**/*.cshtml"
   - "**/*.Tests/**/*.cshtml"
   - "**/tests/**/*.xaml"
   - "**/test/**/*.xaml"
+  - "**/Tests/**/*.xaml"
+  - "**/Test/**/*.xaml"
   - "**/*.Tests/**/*.xaml"
   - "**/tests/**/*.axaml"
   - "**/test/**/*.axaml"
+  - "**/Tests/**/*.axaml"
+  - "**/Test/**/*.axaml"
   - "**/*.Tests/**/*.axaml"
   # Minified / bundled JS (also detected heuristically by the extractor; kept in
   # sync with config.Default() in internal/config/config.go)
