@@ -58,6 +58,7 @@ Unit coverage in
 | `Lookup(id)` inside the declaring type | a `calls` relation | relation |
 | `[Route("x")]` + `[HttpGet("y")]` | a server route at `/x/y`, `handled_by` its action | `route` |
 | `app.MapGroup("api/x")` + `.MapGet("/y", H)` | a server route at `/api/x/y`, `handled_by` `H` | `route` |
+| `class X : DbContext` with `DbSet<T>` | a context, plus each `T` as an entity carrying its table | `storage` |
 
 ## The project system — where .NET's real dependency edges are
 
@@ -500,6 +501,81 @@ It is the obvious next thing to read and the corpus cannot validate it —
 which the ignore globs exclude for the same reason csharp-sdk's 31 test-only
 endpoints were. Shipping an unexercised route parser would add a claim no
 benchmark run can check.
+
+## Persistence — EF Core, Dapper, MongoDB
+
+`storage` was **zero in all fourteen .NET repositories** of the benchmark corpus
+before this, bitwarden-server and eShop included, both EF Core products.
+
+The hard part is that **EF Core entities carry no annotation**. Java looks for
+`@Entity`; a C# entity is a plain class, and what makes it one is that some
+DbContext elsewhere declares a `DbSet<T>` of it. Detection is therefore evidence
+collected per file and resolved once the whole fact set exists — the same shape
+`composeControllerRoutes` uses for an inherited `[Route]`.
+
+```csharp
+public class CatalogContext : DbContext                    // src/Catalog.API/Infrastructure
+{
+    public required DbSet<CatalogItem> CatalogItems { get; set; }
+}
+
+class CatalogItemEntityTypeConfiguration                   // …/EntityConfigurations
+    : IEntityTypeConfiguration<CatalogItem>
+{
+    public void Configure(EntityTypeBuilder<CatalogItem> b) => b.ToTable("Catalog");
+}
+```
+
+```
+storage  src/Catalog.API/Infrastructure.CatalogContext  props: storage_kind=context,
+                                                              framework=efcore
+                                                       --depends_on--> …/Model.CatalogItem
+storage  src/Catalog.API/Model.CatalogItem             props: storage_kind=entity,
+                                                              framework=efcore, table=Catalog
+```
+
+An entity fact is named for the **symbol that declares the type**, not for the
+directory that mentioned it: the `DbSet` is in `Infrastructure/` and the class is
+in `Model/`, and naming the fact for the mentioning directory would mint a node
+matching nothing. `ToTable` is the only place the physical table name appears.
+
+Also read: Dapper's generic query methods (`QueryAsync<Cipher>`) and
+`IMongoCollection<T>` name their row types, and a `Migration` subclass is recorded
+as one.
+
+### Two rules that stop it inventing things
+
+**Match the base list, never the declaration text.** Testing for the substring
+`DbContext` caught three things that are not one — a class merely *named*
+`MigrateDbContextExtensions`, a generic *constraint* (`where TContext :
+DbContext`), and a service whose type parameter is a context. eShop reported 8
+contexts where it has 4.
+
+**A duplicated short name resolves to the nearest declaration.** eShop declares
+`CatalogItem` three times: the API's model, the mobile client's, and the Blazor
+components'. The one in the context's own project is the table, so the candidate
+sharing the most leading path segments with the declaring directory wins — the
+storage counterpart of [resolution](#resolution--why-it-is-a-whole-repository-pass)
+step 1. A genuine tie is still dropped: attributing a table to the wrong subsystem
+is worse than attributing none. A type parameter (`DbSet<TEntity>` in a generic
+base) and a row type the repository does not declare are dropped outright.
+
+### What this changes, measured
+
+| Repo | contexts | entities | migrations |
+|---|---:|---:|---:|
+| bitwarden-server | 1 | 60 | 452 |
+| jellyfin | 1 | 65 | 51 |
+| OrchardCore | 0 | 14 | 0 |
+| eShop | 4 | 7 | 9 |
+
+All were zero. OrchardCore has no EF Core context — it uses YesSql, whose
+migrations derive from `DataMigration` rather than `Migration`, so they are
+correctly absent rather than mislabelled `framework=efcore`.
+
+*Not extracted:* a repository class is not itself a storage fact. C# has no
+`@Repository` annotation and the `*Repository` name is a convention, not a
+declaration — the entity and the context are what the code actually states.
 
 ## Names, namespaces and the two spellings
 

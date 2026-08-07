@@ -31,6 +31,10 @@ type aspnetScaffold struct {
 	// do need the merged symbol set to bind a handler, so they are carried here
 	// and materialised alongside the controller routes.
 	minimal []minimalRoute
+	// storage holds persistence evidence, decided after the walk for the same
+	// reason routing is: whether a class is a DbContext depends on a base list
+	// naming a type declared in another file.
+	storage storageScaffold
 }
 
 func (s *aspnetScaffold) empty() bool {
@@ -41,6 +45,7 @@ func (s *aspnetScaffold) merge(o aspnetScaffold) {
 	s.controllers = append(s.controllers, o.controllers...)
 	s.actions = append(s.actions, o.actions...)
 	s.minimal = append(s.minimal, o.minimal...)
+	s.storage.merge(o.storage)
 }
 
 // controllerDecl is a type that may serve routes: it carries a [Route] template, an

@@ -412,6 +412,7 @@ func (w *astWalker) handleTypeDecl(node *sitter.Node, kind string) {
 	// usually in another file.
 	if kind == facts.SymbolClass {
 		w.noteController(node, f.Name, name)
+		w.noteStorage(nodeText(node, w.src), f.Name, w.baseTypes(node), int(node.StartPosition().Row)+1)
 	}
 
 	body := node.ChildByFieldName("body")

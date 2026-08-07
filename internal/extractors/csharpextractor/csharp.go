@@ -267,6 +267,9 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	// an inherited [Route], and those targets are bare type names until resolution
 	// canonicalises them.
 	allFacts = append(allFacts, composeControllerRoutes(allFacts, scaffold)...)
+	// After resolution too: an entity fact is named for the SYMBOL that declares
+	// the type, which is only canonical once resolveCSharpTargets has run.
+	allFacts = append(allFacts, composeStorageFacts(allFacts, scaffold.storage)...)
 	computeCSharpPerformsIO(allFacts)
 
 	// Module facts are built into a map keyed by directory, then overlaid with the

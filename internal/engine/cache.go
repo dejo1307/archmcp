@@ -1279,7 +1279,17 @@ import (
 // `language` prop is now the dominant language of the files in it rather than a
 // hardcoded "csharp" — the layers explainer gates on that prop, and a directory
 // of .vb or .fs sources was claiming to be C#.
-const cacheVersion = "v176"
+// v177: persistence. `storage` was ZERO in all fourteen .NET repos of the corpus,
+// bitwarden-server and eShop included, both EF Core products. A DbContext becomes
+// a storage fact; the types its DbSet<T> and IEntityTypeConfiguration<T> name
+// become entities, with the physical table from ToTable("…"); Dapper's generic
+// query methods and IMongoCollection<T> name their row types; a Migration
+// subclass is recorded as one.
+//
+// EF Core entities carry NO ANNOTATION — Java can look for @Entity, a C# entity
+// is a plain class — so an entity is named for the SYMBOL that declares it, after
+// resolution, rather than for the directory that mentioned it.
+const cacheVersion = "v177"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
