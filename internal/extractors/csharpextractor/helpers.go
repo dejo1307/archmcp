@@ -197,6 +197,46 @@ func collectMemberNames(body *sitter.Node, src []byte) map[string]bool {
 	return out
 }
 
+// isDataHolderBody reports whether a type body declares state and no behaviour:
+// at least one field or property, and no methods.
+//
+// It exists because the package-metrics explainer spares "data holder" packages
+// its rigid — extract interfaces advice, which is not actionable for a bag of
+// values, and it recognises that only through a dedicated language construct
+// (Kotlin `data class`, Java/C# `record`). C# almost never uses one: jellyfin
+// declares 1,552 classes and 13 records, while 278 of those classes are
+// property-only carriers. So the exemption saw nothing, and a third of the
+// explainer's findings on that repository were DTO, constant and attribute
+// packages being told to extract interfaces.
+//
+// Constructors and destructors do not count as behaviour — a record has a
+// constructor too, and initialising state is not the same as having any. Nested
+// types are ignored, matching collectMemberNames: a nested class's methods belong
+// to the nested class.
+func isDataHolderBody(body *sitter.Node) bool {
+	if body == nil {
+		return false
+	}
+	hasState := false
+	var scan func(*sitter.Node) bool // returns false when a method is found
+	scan = func(node *sitter.Node) bool {
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			switch c := node.Child(i); c.Kind() {
+			case "method_declaration", "operator_declaration", "conversion_operator_declaration":
+				return false
+			case "field_declaration", "property_declaration", "event_field_declaration":
+				hasState = true
+			case "preproc_if", "preproc_else", "preproc_elif":
+				if !scan(c) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return scan(body) && hasState
+}
+
 // countConstructors returns how many constructors a type body declares. One means
 // its parameters are unambiguously injected dependencies; several means the type
 // has convenience overloads and no single injection point.

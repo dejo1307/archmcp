@@ -392,6 +392,12 @@ func (w *astWalker) handleTypeDecl(node *sitter.Node, kind string) {
 	if node.Kind() == "record_declaration" {
 		f.Props["record"] = true
 	}
+	// State and no behaviour: a DTO, a constants holder, an attribute. Read by the
+	// package-metrics explainer, which spares such packages advice that only makes
+	// sense for types with behaviour to abstract.
+	if kind != facts.SymbolInterface && isDataHolderBody(node.ChildByFieldName("body")) {
+		f.Props["data_holder"] = true
+	}
 
 	for _, t := range w.baseTypes(node) {
 		f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelImplements, Target: t})

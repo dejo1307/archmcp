@@ -1229,7 +1229,16 @@ import (
 // initializer runs once for the same reason; its condition and update genuinely
 // repeat and stay inside. On jellyfin this moved 26 methods from scaling depth 2
 // to 1 and 3 from 3 to 2, and dropped 21 spurious N+1 candidates.
-const cacheVersion = "v170"
+// v171: a C# class that declares state and no behaviour carries data_holder. The
+// package-metrics explainer spares "data holder" packages its rigid — extract
+// interfaces advice, but recognised only a dedicated construct (Kotlin data class,
+// Java/C# record). C# almost never uses one: jellyfin declares 1,552 classes and
+// 13 records, while 278 of those classes are property-only carriers — so the
+// exemption saw nothing and 12 of that repo's 37 package-metrics findings were
+// DTO, constant and attribute packages told to extract interfaces. Constructors
+// are not behaviour (a record has one too) and nested types are not counted, so a
+// class holding a nested handler stays a data holder.
+const cacheVersion = "v171"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

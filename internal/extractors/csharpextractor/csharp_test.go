@@ -955,3 +955,109 @@ public class C
 		t.Errorf("scaling_loop_depth = %v, want 1 — the initializer runs once", got)
 	}
 }
+
+// TestDataHolder_PropertyOnlyClass covers the C# DTO idiom. The package-metrics
+// explainer spares "data holder" packages its rigid — extract interfaces advice,
+// but recognised only a dedicated construct (Kotlin data class, Java/C# record).
+// jellyfin declares 1,552 classes and 13 records while 278 of those classes are
+// property-only carriers, so the exemption saw none of them and a third of the
+// explainer's findings there were DTO, constant and attribute packages.
+func TestDataHolder_PropertyOnlyClass(t *testing.T) {
+	ff := extractFileAST([]byte(`
+namespace Acme;
+
+// A DTO: state, no behaviour.
+public class UserDto
+{
+    public string Name { get; set; }
+    public int Age { get; set; }
+}
+
+// A constants holder counts too — "extract interfaces" is equally meaningless.
+public static class Policies
+{
+    public const string RequiresElevation = "RequiresElevation";
+}
+
+// Behaviour disqualifies it.
+public class UserService
+{
+    public string Name { get; set; }
+    public void Save() { }
+}
+
+// State is required: a marker class with neither is not a data holder.
+public class Marker
+{
+}
+`), "src/Types.cs")
+
+	for _, want := range []string{"src.UserDto", "src.Policies"} {
+		if f := factByName(ff, want); f == nil || f.Props["data_holder"] != true {
+			t.Errorf("%s should be a data holder; got %v", want, f.Props)
+		}
+	}
+	for _, notWant := range []string{"src.UserService", "src.Marker"} {
+		if f := factByName(ff, notWant); f != nil && f.Props["data_holder"] == true {
+			t.Errorf("%s should not be a data holder", notWant)
+		}
+	}
+}
+
+// TestDataHolder_ConstructorIsNotBehaviour pins that initialising state does not
+// count as having any — a record has a constructor too.
+func TestDataHolder_ConstructorIsNotBehaviour(t *testing.T) {
+	ff := extractFileAST([]byte(`
+namespace Acme;
+public class Point
+{
+    public Point(int x, int y) { X = x; Y = y; }
+    public int X { get; }
+    public int Y { get; }
+}
+`), "src/Point.cs")
+
+	if f := factByName(ff, "src.Point"); f == nil || f.Props["data_holder"] != true {
+		t.Errorf("a constructor should not disqualify a data holder; got %v", f.Props)
+	}
+}
+
+// TestDataHolder_NestedTypeMethodsDoNotDisqualify keeps the scan to a type's own
+// members, matching collectMemberNames.
+func TestDataHolder_NestedTypeMethodsDoNotDisqualify(t *testing.T) {
+	ff := extractFileAST([]byte(`
+namespace Acme;
+public class Envelope
+{
+    public string Id { get; set; }
+
+    public class Handler
+    {
+        public void Run() { }
+    }
+}
+`), "src/Envelope.cs")
+
+	if f := factByName(ff, "src.Envelope"); f == nil || f.Props["data_holder"] != true {
+		t.Errorf("a nested type's methods belong to the nested type; got %v", f.Props)
+	}
+	if f := factByName(ff, "src.Envelope.Handler"); f != nil && f.Props["data_holder"] == true {
+		t.Error("the nested type has behaviour and is not a data holder")
+	}
+}
+
+// TestDataHolder_InterfaceIsNotOne — an interface is already counted as an
+// abstract type, and marking it would double-count it as a value carrier.
+func TestDataHolder_InterfaceIsNotOne(t *testing.T) {
+	ff := extractFileAST([]byte(`
+namespace Acme;
+public interface IHasName
+{
+    string Name { get; set; }
+}
+`), "src/IHasName.cs")
+
+	if f := factByName(ff, "src.IHasName"); f != nil && f.Props["data_holder"] == true {
+		t.Error("an interface must not be marked a data holder")
+	}
+}
