@@ -33,11 +33,32 @@ import (
 // languages; the ignore globs draw the same boundary for the same reason (see
 // facts.matchDirScopedGlob).
 func ModuleRole(dir string) string {
+	if isMetaBuildDir(dir) {
+		return facts.ModuleRoleTooling
+	}
 	role := facts.ModuleRoleForPath(moduleRoleScope(dir))
 	if role == facts.ModuleRoleUnknown {
 		return facts.ModuleRoleProduction
 	}
 	return role
+}
+
+// isMetaBuildDir reports whether a directory holds BUILD DEFINITIONS rather than
+// application code. sbt compiles `project/` as a second, meta build and Gradle does
+// the same with `buildSrc/`; both are real source in the language, so an extractor
+// reads them like anything else and they land in the graph as production packages
+// unless told otherwise. That is the same category `scripts/` already occupies, and
+// getting it wrong feeds build plumbing into package metrics and dead-code review.
+//
+// Anchored at the FIRST path segment, which is where both tools require it. A
+// package named `project` further down a source tree is application code and is
+// unaffected.
+func isMetaBuildDir(dir string) bool {
+	first := filepath.ToSlash(dir)
+	if i := strings.Index(first, "/"); i >= 0 {
+		first = first[:i]
+	}
+	return first == "project" || first == "buildSrc"
 }
 
 // moduleRoleScope returns the part of dir that carries role information: everything

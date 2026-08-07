@@ -1330,7 +1330,26 @@ import (
 // because a one-segment glob deletes 183 production files across the benchmark
 // corpus, 175 of them zio's own test library whose package is `zio.test`; the
 // shared path matcher gained multi-segment directory prefixes for it.
-const cacheVersion = "v181"
+//
+// v182: Scala call graph, complexity metrics and the I/O closure. The load-bearing
+// decision is what counts as a LOOP, because Scala spells iteration and effect
+// sequencing the same way: `for (u <- users) yield load(u)` runs load once per user,
+// `for (a <- fetchA; b <- fetchB(a)) yield b` runs fetchB exactly once, and the two
+// are the same construct. Counting the second as a loop puts a per-iteration-I/O
+// finding on every effectful method in the language. Measured over the corpus (8,119
+// production files) rather than assumed: `for … yield` is 60.4% effect-typed and
+// `for` without yield only 9.7%, so the `yield` keyword is the discriminator; the
+// same split puts flatMap/fold (~49% effect) on the discounted side and
+// foreach/map/filter/foldLeft on the scaling side. Ambiguous constructs raise
+// loop_depth but not scaling_loop_depth, the discount Go and C# already use for
+// constant-trip loops, so a finding is downgraded rather than fabricated or lost.
+// Call resolution binds a receiver whose type the SOURCE declares (constructor and
+// method parameters), which is what lets performs_io cross the constructor-injection
+// boundary every Scala service is built on; an inferred or chained receiver stays a
+// bare short name rather than a guessed one. Also classifies sbt's `project/` and
+// Gradle's `buildSrc/` as tooling: both are build DEFINITIONS compiled as ordinary
+// source, so every JVM extractor read them as production packages.
+const cacheVersion = "v182"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

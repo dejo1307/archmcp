@@ -190,6 +190,10 @@ func (e *ScalaExtractor) Extract(ctx context.Context, repoPath string, files []s
 	}
 
 	canonicalizeTargets(allFacts, packageIndex, filePkg)
+	// After canonicalization, so the closure walks edges that point at real facts:
+	// run before it and every cross-file call target would still be a bare name and
+	// the propagation would stop at the first hop.
+	computeScalaPerformsIO(allFacts)
 
 	for dir := range modules {
 		allFacts = append(allFacts, facts.Fact{

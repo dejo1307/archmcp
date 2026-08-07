@@ -98,7 +98,111 @@ func canonicalizeTargets(allFacts []facts.Fact, crossLangIndex, filePkg map[stri
 			switch r.Kind {
 			case facts.RelImplements, facts.RelInstantiates, facts.RelInjects:
 				r.Target = resolveTypeTarget(r.Target, filePkg[f.File], typeIndex, packageDir)
+			case facts.RelCalls:
+				r.Target = resolveCallTarget(r.Target, filePkg[f.File], typeIndex)
 			}
+		}
+	}
+}
+
+// resolveCallTarget binds a call on a named object — `Registry.next()`, emitted by
+// the walker as `<Type>.<method>` — to the declaring type's canonical name, so the
+// edge lands on the real symbol rather than on a string.
+//
+// Only the TYPE half is resolved; the method name is appended as written. Whether
+// that method exists is not checked, because the alternative is worse: a companion
+// object's `apply`, an inherited member and a trait's default implementation are all
+// declared somewhere this pass cannot see, and dropping the edge for want of a
+// matching fact would lose the call graph's most common shapes. An edge to a
+// method that does not exist is a dangling target, which reads as unresolved —
+// the same outcome as not resolving it, but with the declaring type recovered.
+//
+// A bare target (no dot) is left alone: it is already a short name, which is what
+// dead-code matching consumes.
+func resolveCallTarget(target, filePackage string, typeIndex map[string]string) string {
+	i := strings.LastIndex(target, ".")
+	if i < 0 {
+		return target
+	}
+	recv, method := target[:i], target[i+1:]
+	if recv == "" || method == "" {
+		return target
+	}
+	// Already canonical (the walker qualified it against the enclosing type).
+	if strings.Contains(recv, "/") {
+		return target
+	}
+	if canon, ok := typeIndex[recv]; ok {
+		return canon + "." + method
+	}
+	if filePackage != "" {
+		if canon, ok := typeIndex[filePackage+"."+recv]; ok {
+			return canon + "." + method
+		}
+	}
+	return target
+}
+
+// computeScalaPerformsIO propagates the direct-I/O signal transitively over the
+// intra-repo call graph: a function is marked performs_io when it, or anything it
+// reaches through RelCalls edges to known symbols, does I/O.
+//
+// This is what lets the performance analyzer recognise an N+1 whose database call
+// sits behind two layers of service wrapper — the in-loop callee itself looks
+// innocent, and only the closure says otherwise. Mirrors the Rust and Python
+// extractors' fixpoint, and is cycle-safe because it iterates to stability rather
+// than recursing.
+func computeScalaPerformsIO(allFacts []facts.Fact) {
+	exists := make(map[string]bool)
+	for i := range allFacts {
+		if allFacts[i].Kind == facts.KindSymbol {
+			exists[allFacts[i].Name] = true
+		}
+	}
+
+	io := make(map[string]bool)
+	adj := make(map[string][]string)
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
+		}
+		if b, _ := f.Props["io_direct"].(bool); b {
+			io[f.Name] = true
+		}
+		seen := make(map[string]bool)
+		for _, r := range f.Relations {
+			if r.Kind != facts.RelCalls || r.Target == f.Name || seen[r.Target] || !exists[r.Target] {
+				continue
+			}
+			seen[r.Target] = true
+			adj[f.Name] = append(adj[f.Name], r.Target)
+		}
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for name, callees := range adj {
+			if io[name] {
+				continue
+			}
+			for _, c := range callees {
+				if io[c] {
+					io[name] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind == facts.KindSymbol && io[f.Name] {
+			if f.Props == nil {
+				f.Props = map[string]any{}
+			}
+			f.Props["performs_io"] = true
 		}
 	}
 }

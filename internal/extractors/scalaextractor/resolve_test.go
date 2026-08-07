@@ -24,7 +24,11 @@ func runPasses(t *testing.T, files map[string]string, crossLang map[string]strin
 	if crossLang == nil {
 		crossLang = map[string]string{}
 	}
+	// Same order as Extract: the I/O closure walks the call graph, so it must run
+	// after targets are canonical or every cross-file edge is still a bare name and
+	// the propagation stops at the first hop.
 	canonicalizeTargets(all, crossLang, filePkg)
+	computeScalaPerformsIO(all)
 	return all
 }
 

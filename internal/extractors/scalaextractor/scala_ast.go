@@ -69,6 +69,20 @@ type astWalker struct {
 	// extractors use.
 	typeStack []string
 
+	// memberStack[len-1] is the set of names the innermost enclosing type declares
+	// directly, so a bare call can be qualified to it only when it really is a
+	// sibling member. Parallel to typeStack.
+	memberStack []map[string]bool
+
+	// localTypes is a scope stack of binding name -> declared type name, built from
+	// class parameters, method parameters and type-ascribed vals. Scala writes those
+	// types down, so `repo.find(id)` where `repo: UserRepo` is resolvable without
+	// inference — and resolving it is what lets the I/O closure cross the
+	// constructor-injection boundary that essentially every Scala service is built
+	// on. Without it the edge is a bare short name and the closure stops dead at the
+	// first injected dependency.
+	localTypes []map[string]string
+
 	// ownerStack[len-1] indexes into out for the symbol currently being built.
 	// An index rather than a pointer: nested declarations append to out, which can
 	// reallocate the backing array and strand a raw pointer.
@@ -77,6 +91,129 @@ type astWalker struct {
 	// inExtension is set while walking an `extension (x: T) def f = …` block, so
 	// the methods it contributes are tagged rather than read as free functions.
 	inExtension bool
+
+	// --- per-function metric state (see complexity.go for the loop model) ---
+	//
+	// The depth counters track nesting at the CURRENT node; the fn-prefixed
+	// accumulators collect the per-function peak that becomes the symbol's props.
+	// All are saved and restored around a nested definition, so an inner `def` does
+	// not inherit or leak its parent's counters.
+	m metrics
+}
+
+// metrics is one function's complexity accumulation. Two depths are tracked because
+// they answer different questions: loopDepth is "how deeply is this nested in
+// anything that repeats", scalingDepth is "…in anything that repeats WITH THE INPUT".
+// Scala needs both because its ambiguous constructs are real repetition on a
+// collection and a single application on an effect (see complexity.go).
+type metrics struct {
+	inFunction bool
+
+	loopDepth    int // current nesting, all repetition constructs
+	scalingDepth int // current nesting, input-scaling constructs only
+
+	maxLoopDepth    int
+	maxScalingDepth int
+	loopCount       int
+	decisions       int // cyclomatic decision points
+	recursiveSelf   bool
+	ioDirect        bool
+
+	callsInLoop        []string
+	callsInScalingLoop []string
+	seenInLoop         map[string]bool
+	seenInScalingLoop  map[string]bool
+
+	// selfName is the unqualified name of the function being walked, so a call to
+	// it can be recognised as direct recursion.
+	selfName string
+}
+
+// enterLoop raises the counters for a repetition construct and returns a function
+// restoring them. scaling says whether the construct repeats with the input size.
+func (m *metrics) enterLoop(scaling bool) func() {
+	if !m.inFunction {
+		return func() {}
+	}
+	m.loopCount++
+	m.loopDepth++
+	if m.loopDepth > m.maxLoopDepth {
+		m.maxLoopDepth = m.loopDepth
+	}
+	if scaling {
+		m.scalingDepth++
+		if m.scalingDepth > m.maxScalingDepth {
+			m.maxScalingDepth = m.scalingDepth
+		}
+	}
+	return func() {
+		m.loopDepth--
+		if scaling {
+			m.scalingDepth--
+		}
+	}
+}
+
+// recordCall notes a call made at the current nesting, into the raw list and — only
+// when every enclosing construct scales — into the scaling list the analyzer reads
+// for N+1 candidates.
+func (m *metrics) recordCall(name string) {
+	if !m.inFunction || name == "" {
+		return
+	}
+	if m.loopDepth > 0 && !m.seenInLoop[name] {
+		if m.seenInLoop == nil {
+			m.seenInLoop = map[string]bool{}
+		}
+		m.seenInLoop[name] = true
+		m.callsInLoop = append(m.callsInLoop, name)
+	}
+	if m.scalingDepth > 0 && !m.seenInScalingLoop[name] {
+		if m.seenInScalingLoop == nil {
+			m.seenInScalingLoop = map[string]bool{}
+		}
+		m.seenInScalingLoop[name] = true
+		m.callsInScalingLoop = append(m.callsInScalingLoop, name)
+	}
+}
+
+// applyTo writes the accumulated metrics onto a function/method fact.
+//
+// The scaling variants are emitted whenever the body contains ANY loop — including
+// when they are zero or empty, which is exactly the case that matters. The analyzer
+// detects the discount by the PRESENCE of the key (`_, ok := Props[...]`) and falls
+// back to the raw values when it is absent, so a function whose only loop is an
+// ambiguous `for … yield` must still publish `scaling_loop_depth: 0` and an empty
+// `calls_in_scaling_loop`. Omitting them because they are empty would opt that
+// function out of the discount and hand every one of its in-loop calls back as an
+// N+1 candidate — precisely the false positives the loop model exists to prevent.
+//
+// A loop-free body emits neither, matching every other extractor: with no loops the
+// raw values are zero and empty too, so the fallback is identical and the props
+// would be pure bloat on a repository with a hundred thousand symbols.
+func (m *metrics) applyTo(props map[string]any) {
+	props["cyclomatic"] = m.decisions + 1
+	if m.recursiveSelf {
+		props["recursive_self"] = true
+	}
+	if m.ioDirect {
+		props["io_direct"] = true
+	}
+	if m.loopCount == 0 {
+		return
+	}
+	props["loop_depth"] = m.maxLoopDepth
+	props["loop_count"] = m.loopCount
+	props["scaling_loop_depth"] = m.maxScalingDepth
+	if len(m.callsInLoop) > 0 {
+		props["calls_in_loop"] = m.callsInLoop
+	}
+	// Always present alongside scaling_loop_depth, empty included — see above.
+	calls := m.callsInScalingLoop
+	if calls == nil {
+		calls = []string{}
+	}
+	props["calls_in_scaling_loop"] = calls
 }
 
 // text returns a node's source text.
@@ -150,11 +287,433 @@ func (w *astWalker) walk(n *sitter.Node) {
 	case "instance_expression":
 		// `new Foo(...)` — the one construction form that is unambiguous without
 		// type information. Scala's dominant form, `Foo(...)` through a companion
-		// `apply`, is syntactically a call and is left to the call-resolution pass.
+		// `apply`, is syntactically a call; handleCall recognises it by name shape.
 		w.handleInstanceExpression(n)
+		return
+
+	// --- repetition constructs (see complexity.go for why the split is here) ---
+	case "for_expression":
+		w.handleFor(n)
+		return
+	case "while_expression":
+		w.m.decisions++
+		defer w.m.enterLoop(true)()
+		w.walkChildren(n)
+		return
+	case "do_while_expression":
+		w.m.decisions++
+		defer w.m.enterLoop(true)()
+		w.walkChildren(n)
+		return
+
+	// --- cyclomatic decision points ---
+	case "if_expression":
+		w.m.decisions++
+	case "case_clause":
+		// A match arm and a catch clause are the same node; both branch.
+		w.m.decisions++
+	case "guard":
+		w.m.decisions++
+	case "infix_expression":
+		if w.isBooleanOperator(n) {
+			w.m.decisions++
+		}
+	case "call_expression":
+		w.handleCall(n)
 		return
 	}
 	w.walkChildren(n)
+}
+
+// isBooleanOperator reports whether an infix expression's operator is a
+// short-circuiting boolean, which adds a branch. Scala spells them `&&`/`||` and
+// their symbolic aliases.
+func (w *astWalker) isBooleanOperator(n *sitter.Node) bool {
+	for i := uint(0); i < n.ChildCount(); i++ {
+		c := n.Child(i)
+		if c.Kind() != "operator_identifier" {
+			continue
+		}
+		switch w.text(c) {
+		case "&&", "||":
+			return true
+		}
+	}
+	return false
+}
+
+// handleFor walks a for-comprehension, which is the construct the whole loop model
+// turns on: WITH `yield` it desugars to map/flatMap and is a monadic bind more often
+// than an iteration (60.4% of corpus sites sit in effect-importing files), WITHOUT
+// it is a side-effecting iteration nine times out of ten. So both raise loop_depth,
+// only the second raises scaling depth.
+//
+// The enumerators themselves are walked OUTSIDE the loop: `for (u <- loadUsers())`
+// evaluates its generator once, so a call there is not per-iteration work.
+func (w *astWalker) handleFor(n *sitter.Node) {
+	w.m.decisions++
+
+	var body []*sitter.Node
+	for i := uint(0); i < n.ChildCount(); i++ {
+		c := n.Child(i)
+		if !c.IsNamed() {
+			continue
+		}
+		if c.Kind() == "enumerators" {
+			w.walk(c) // evaluated once, at the enclosing depth
+			continue
+		}
+		body = append(body, c)
+	}
+
+	defer w.m.enterLoop(forExpressionScales(n))()
+	for _, c := range body {
+		w.walk(c)
+	}
+}
+
+// forExpressionScales reports whether a for-expression repeats with the input size.
+// The discriminator is the `yield` keyword; see complexity.go for the measurement
+// behind it.
+func forExpressionScales(n *sitter.Node) bool {
+	return !hasTokenChild(n, "yield")
+}
+
+// handleCall processes a call site: the edge it draws, the metrics it contributes,
+// and — when it carries a lambda — the loop it may represent.
+//
+// Target resolution is deliberately conservative, mirroring the Rust and Swift
+// extractors. A bare or `this.`-qualified call resolves against the enclosing type,
+// which is knowable from the walk. A call on a capitalized receiver is offered as
+// `<Type>.<method>` for the merge pass to bind. Anything else — a call on a local
+// variable, a parameter, an implicit conversion — becomes a bare short name: enough
+// for dead-code matching to see the method used, without inventing a canonical
+// target that the extractor cannot verify. Scala's implicit resolution and extension
+// methods are not recoverable without a compiler, and a wrong edge is worse than a
+// short one.
+func (w *astWalker) handleCall(n *sitter.Node) {
+	fn := firstNamedChild(n)
+	if fn == nil {
+		w.walkChildren(n)
+		return
+	}
+	// `f[T](x)` wraps the callee in a generic_function; unwrap to the callee.
+	if fn.Kind() == "generic_function" {
+		if inner := firstNamedChild(fn); inner != nil {
+			fn = inner
+		}
+	}
+
+	var recvNode *sitter.Node
+	receiver, method := "", ""
+	// walkCallee is true when the callee subtree still has to be walked — the
+	// curried case, where the inner call emits its own edge.
+	walkCallee := false
+
+	switch fn.Kind() {
+	case "field_expression":
+		recvNode, method = w.splitFieldExpression(fn)
+		receiver = w.simpleName(recvNode)
+	case "identifier", "operator_identifier":
+		method = w.text(fn)
+	case "call_expression":
+		// A curried application: `xs.foldLeft(0) { (a, x) => … }` is a call whose
+		// callee is itself a call. The trailing block belongs to the INNER call's
+		// method, so its name is what decides whether this is a loop — but the edge
+		// is emitted by the inner call when it is walked, not twice here.
+		method = w.calleeName(fn)
+		walkCallee = true
+	default:
+		w.walkChildren(n)
+		return
+	}
+	if method == "" {
+		w.walkChildren(n)
+		return
+	}
+
+	if !walkCallee {
+		if isIOCall(receiver, method) {
+			w.m.ioDirect = true
+		}
+		// `Foo(...)` on a capitalized bare name is a companion `apply` — Scala's
+		// dominant construction form, and the reason `new` alone under-reports
+		// instantiation badly. Treated as construction when the name resolves to a
+		// type the merge pass knows; otherwise it stays an ordinary call.
+		if recvNode == nil && isTypeName(method) && !effectConstructors[method] {
+			w.addEdge(facts.RelInstantiates, w.resolveTypeName(method))
+		} else {
+			w.emitCallEdge(recvNode, receiver, method)
+		}
+		// The receiver is evaluated ONCE, at the enclosing depth: in
+		// `loadUsers().map(f)` the load is not per-iteration work.
+		if recvNode != nil {
+			w.walk(recvNode)
+		}
+	} else {
+		// Same rule, one level out: the curried callee (receiver and first argument
+		// list alike) is evaluated once, before any iteration begins.
+		w.walk(fn)
+	}
+
+	kind := blockCallNone
+	if callHasBlockArg(n) {
+		kind = classifyBlockCall(method)
+	}
+	if kind != blockCallNone {
+		// A combinator loop carries the same back edge a `for` does, so it counts
+		// as a decision point for the same reason.
+		w.m.decisions++
+		defer w.m.enterLoop(kind == blockCallScaling)()
+	}
+	for i := uint(0); i < n.ChildCount(); i++ {
+		c := n.Child(i)
+		if !c.IsNamed() || sameNode(c, fn) {
+			continue
+		}
+		w.walk(c)
+	}
+}
+
+// calleeName returns the method name a (possibly curried, possibly generic) call
+// expression invokes, without emitting anything.
+func (w *astWalker) calleeName(n *sitter.Node) string {
+	fn := firstNamedChild(n)
+	if fn == nil {
+		return ""
+	}
+	switch fn.Kind() {
+	case "generic_function":
+		if inner := firstNamedChild(fn); inner != nil {
+			return w.calleeName(inner.Parent())
+		}
+	case "field_expression":
+		_, method := w.splitFieldExpression(fn)
+		return method
+	case "identifier", "operator_identifier":
+		return w.text(fn)
+	case "call_expression":
+		return w.calleeName(fn)
+	}
+	return ""
+}
+
+// emitCallEdge records the call relation and the in-loop metric for one call site.
+func (w *astWalker) emitCallEdge(recvNode *sitter.Node, receiver, method string) {
+	target := method
+	switch {
+	case recvNode == nil, receiver == "this", receiver == "self":
+		// A bare call qualifies to the enclosing type ONLY when that type actually
+		// declares the name. Qualifying unconditionally was wrong in the common
+		// case: most bare calls in a Scala body are to imported functions,
+		// inherited members, or implicit extensions, and turning `load(u)` into
+		// `dir.Service.load` invents a member the type never declared — which, in a
+		// name-keyed graph, becomes a phantom node that dead-code and impact
+		// analysis then reason about. Unqualified is honest and still matches by
+		// short name.
+		if w.declaresMember(method) {
+			target = w.qualify(method)
+		}
+		if method == w.m.selfName {
+			w.m.recursiveSelf = true
+		}
+	case isTypeName(receiver):
+		// An object or companion: `Registry.next()`. Offered qualified for the
+		// merge pass to bind against the declaring type.
+		target = w.resolveTypeName(receiver) + "." + method
+	default:
+		// A binding whose type the source declares — a constructor parameter, a
+		// method parameter, an ascribed val. `repo.find(id)` with `repo: UserRepo`
+		// binds to UserRepo.find. The declared type may be a trait the runtime
+		// value overrides, which is the honest answer rather than a guess: the
+		// implements edges say who else could serve it.
+		if typeName := w.lookupLocalType(receiver); typeName != "" {
+			target = w.resolveTypeName(typeName) + "." + method
+		}
+	}
+	w.addEdge(facts.RelCalls, target)
+	// A recognised block construct is syntax, not a callee: recording `foreach` and
+	// `synchronized` as in-loop calls buries the real per-iteration work under
+	// language machinery in every piece of evidence the analyzer prints.
+	if !isStructuralBlockCall(method) {
+		w.m.recordCall(target)
+	}
+}
+
+// lookupLocalType returns the declared type of a binding visible at the current
+// scope, innermost first, or "" when the name is not one enola can type.
+func (w *astWalker) lookupLocalType(name string) string {
+	if name == "" {
+		return ""
+	}
+	for i := len(w.localTypes) - 1; i >= 0; i-- {
+		if t, ok := w.localTypes[i][name]; ok {
+			return t
+		}
+	}
+	return ""
+}
+
+// pushScope collects `name: Type` bindings from a declaration's parameter lists and
+// pushes them as a scope frame, returning the pop.
+func (w *astWalker) pushScope(n *sitter.Node) func() {
+	scope := map[string]string{}
+	var scan func(node *sitter.Node)
+	scan = func(node *sitter.Node) {
+		for i := uint(0); i < node.ChildCount(); i++ {
+			c := node.Child(i)
+			if !c.IsNamed() {
+				continue
+			}
+			switch c.Kind() {
+			case "parameters", "class_parameters", "parameter_types":
+				scan(c)
+			case "parameter", "class_parameter":
+				var name, typeName string
+				for j := uint(0); j < c.ChildCount(); j++ {
+					g := c.Child(j)
+					if !g.IsNamed() {
+						continue
+					}
+					if g.Kind() == "identifier" && name == "" {
+						name = w.text(g)
+						continue
+					}
+					if isTypeNode(g.Kind()) && typeName == "" {
+						typeName = w.baseTypeName(g)
+					}
+				}
+				if name != "" && typeName != "" {
+					scope[name] = typeName
+				}
+			}
+		}
+	}
+	scan(n)
+	w.localTypes = append(w.localTypes, scope)
+	return func() { w.localTypes = w.localTypes[:len(w.localTypes)-1] }
+}
+
+// isStructuralBlockCall reports whether a method name is one of the block-taking
+// constructs the loop model classifies, rather than a callee worth recording.
+func isStructuralBlockCall(method string) bool {
+	return scalingCombinators[method] || ambiguousCombinators[method] ||
+		nonLoopBlockCalls[method] || effectConstructors[method]
+}
+
+// declaresMember reports whether the innermost enclosing type declares name. The
+// member set is collected up front per template body (see collectMembers), because
+// a body routinely calls a method declared further down the same block and a
+// walk-order check would miss it.
+func (w *astWalker) declaresMember(name string) bool {
+	if len(w.memberStack) == 0 {
+		return false
+	}
+	return w.memberStack[len(w.memberStack)-1][name]
+}
+
+// collectMembers returns the names a type body declares directly — one level only,
+// since a nested type's members belong to it rather than to its enclosing type.
+func (w *astWalker) collectMembers(body *sitter.Node) map[string]bool {
+	members := map[string]bool{}
+	if body == nil {
+		return members
+	}
+	var scan func(n *sitter.Node)
+	scan = func(n *sitter.Node) {
+		for i := uint(0); i < n.ChildCount(); i++ {
+			c := n.Child(i)
+			if !c.IsNamed() {
+				continue
+			}
+			switch c.Kind() {
+			case "function_definition", "function_declaration", "type_definition",
+				"class_definition", "object_definition", "trait_definition",
+				"enum_definition":
+				if nm := w.text(c.ChildByFieldName("name")); nm != "" {
+					members[nm] = true
+				}
+				continue // do not descend: nested members belong to the nested type
+			case "val_definition", "var_definition", "val_declaration", "var_declaration":
+				p := c.ChildByFieldName("pattern")
+				if p == nil {
+					p = c.ChildByFieldName("name")
+				}
+				if p != nil && p.Kind() == "identifier" {
+					members[w.text(p)] = true
+				}
+				continue
+			case "template_body", "indented_block", "with_template_body", "block":
+				scan(c)
+			}
+		}
+	}
+	scan(body)
+	return members
+}
+
+// splitFieldExpression returns the receiver node and the member name of a
+// `receiver.member` expression.
+func (w *astWalker) splitFieldExpression(fn *sitter.Node) (*sitter.Node, string) {
+	var named []*sitter.Node
+	for i := uint(0); i < fn.ChildCount(); i++ {
+		if c := fn.Child(i); c.IsNamed() {
+			named = append(named, c)
+		}
+	}
+	if len(named) == 0 {
+		return nil, ""
+	}
+	method := w.text(named[len(named)-1])
+	if len(named) == 1 {
+		return nil, method
+	}
+	return named[len(named)-2], method
+}
+
+// simpleName returns a receiver's text when it is a plain identifier, and "" when
+// it is anything more complex (a nested call, a literal, a chain). Callers use it
+// only to recognise a named object or a known I/O receiver, so a complex receiver
+// correctly yields no signal rather than a misleading one.
+func (w *astWalker) simpleName(n *sitter.Node) string {
+	if n == nil {
+		return ""
+	}
+	switch n.Kind() {
+	case "identifier", "type_identifier":
+		return w.text(n)
+	}
+	return ""
+}
+
+func firstNamedChild(n *sitter.Node) *sitter.Node {
+	for i := uint(0); i < n.ChildCount(); i++ {
+		if c := n.Child(i); c.IsNamed() {
+			return c
+		}
+	}
+	return nil
+}
+
+// callHasBlockArg reports whether a call carries a lambda or a brace block, which is
+// what makes a combinator name a candidate repetition construct rather than a plain
+// method call — `xs.map` without one is a method reference, not an iteration.
+func callHasBlockArg(call *sitter.Node) bool {
+	for i := uint(0); i < call.ChildCount(); i++ {
+		c := call.Child(i)
+		switch c.Kind() {
+		case "block", "lambda_expression":
+			return true
+		case "arguments":
+			for j := uint(0); j < c.ChildCount(); j++ {
+				switch c.Child(j).Kind() {
+				case "block", "lambda_expression", "case_block":
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (w *astWalker) walkChildren(n *sitter.Node) {
@@ -347,9 +906,13 @@ func (w *astWalker) handleTypeLike(n *sitter.Node, symbolKind string) {
 	w.addSupertypes(idx, n)
 
 	w.typeStack = append(w.typeStack, name)
+	w.memberStack = append(w.memberStack, w.collectMembers(n.ChildByFieldName("body")))
+	popScope := w.pushScope(n) // constructor parameters are in scope for the body
 	w.ownerStack = append(w.ownerStack, idx)
 	w.walkBodyAndParams(n)
 	w.ownerStack = w.ownerStack[:len(w.ownerStack)-1]
+	popScope()
+	w.memberStack = w.memberStack[:len(w.memberStack)-1]
 	w.typeStack = w.typeStack[:len(w.typeStack)-1]
 }
 
@@ -484,9 +1047,19 @@ func (w *astWalker) handleFunction(n *sitter.Node) {
 	// def as the owner so those edges attach here. Locals nested inside a def do
 	// NOT push typeStack beyond the def, so a local class is named through its
 	// enclosing type rather than through the method.
+	//
+	// Metrics are saved and restored around the body rather than accumulated
+	// globally, so a `def` nested inside another neither inherits its parent's loop
+	// nesting nor leaks its own back out.
+	saved := w.m
+	w.m = metrics{inFunction: true, selfName: name}
+	popScope := w.pushScope(n)
 	w.ownerStack = append(w.ownerStack, idx)
 	w.walkMembers(n, n.ChildByFieldName("name"))
 	w.ownerStack = w.ownerStack[:len(w.ownerStack)-1]
+	popScope()
+	w.m.applyTo(props)
+	w.m = saved
 }
 
 // handleValue emits a val/var. Scala's `val` is an immutable binding, so it maps
@@ -621,9 +1194,11 @@ func (w *astWalker) handleGiven(n *sitter.Node) {
 	// A `given … with { def … }` body declares real methods; push the given as
 	// their enclosing type so they are named and attributed through it.
 	w.typeStack = append(w.typeStack, name)
+	w.memberStack = append(w.memberStack, w.collectMembers(n.ChildByFieldName("body")))
 	w.ownerStack = append(w.ownerStack, idx)
 	w.walkMembers(n, n.ChildByFieldName("name"))
 	w.ownerStack = w.ownerStack[:len(w.ownerStack)-1]
+	w.memberStack = w.memberStack[:len(w.memberStack)-1]
 	w.typeStack = w.typeStack[:len(w.typeStack)-1]
 }
 

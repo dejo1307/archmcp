@@ -132,6 +132,17 @@ func TestModuleRole(t *testing.T) {
 		"ui-test-utils/src/main/java/de/x/test": facts.ModuleRoleTest,
 		// And a real test source set is unaffected whatever the package is called.
 		"core/src/test/scala/com/example/core": facts.ModuleRoleTest,
+
+		// Build DEFINITIONS, not application code: sbt compiles `project/` as a
+		// second meta build and Gradle does the same with `buildSrc/`. Both are
+		// real source in the language, so they reach the graph like anything else
+		// and would otherwise be counted as production packages.
+		"project":                       facts.ModuleRoleTooling,
+		"project/plugins":               facts.ModuleRoleTooling,
+		"buildSrc/src/main/kotlin/de/x": facts.ModuleRoleTooling,
+		// A package named `project` further down a source tree is ordinary code;
+		// only the first segment carries the meta-build meaning.
+		"app/src/main/scala/com/example/project": facts.ModuleRoleProduction,
 	}
 	for dir, want := range cases {
 		if got := ModuleRole(dir); got != want {
