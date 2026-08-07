@@ -3,6 +3,22 @@
 Parsed with tree-sitter. Detected by an MSBuild solution or project file (`.sln`,
 `.slnx`, `.csproj`) or by any `.cs` source within four directory levels.
 
+> **"C#", not "all of .NET".** This extractor reads `.cs`. It understands the .NET
+> *platform* around it — the MSBuild project system (solutions, per-module `project`
+> attribution, cycles judged against the assembly boundary), the build and test
+> layout conventions, generated-code conventions, and ASP.NET Core's two routing
+> mechanisms — but the other .NET languages and markup formats produce **nothing**:
+>
+> | Not extracted | Present in the benchmark corpus |
+> |---|---|
+> | F# (`.fs`, `.fsproj`) | 13 files |
+> | VB.NET (`.vb`, `.vbproj`) | 75 files |
+> | Razor / Blazor (`.razor`, `.cshtml`) | 91 files |
+> | XAML (`.xaml`) | 41 files |
+>
+> A mixed solution is indexed for its C# half only, and a Blazor front end
+> contributes its `.cs` symbols but none of its component or page routes.
+
 Fixture: [`csharp_sample`](../../internal/engine/testdata/repos/csharp_sample/) ·
 Unit coverage in
 [`csharpextractor/csharp_test.go`](../../internal/extractors/csharpextractor/csharp_test.go)
