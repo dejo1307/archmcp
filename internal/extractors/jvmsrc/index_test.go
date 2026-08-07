@@ -117,10 +117,100 @@ func TestModuleRole(t *testing.T) {
 		"app/src/main/java/de/x/latest":                     facts.ModuleRoleProduction,
 		"app/src/main/java/de/x/contest":                    facts.ModuleRoleProduction,
 		"business/src/main/java/de/example/business/abtest": facts.ModuleRoleProduction,
+
+		// A PACKAGE named `test` under a src/main source set is production. Both
+		// are real: Spark ships the first as production code, and the second is
+		// the shape of every fixture library that publishes helpers for consumers
+		// to test against. Before the source-set boundary, the segment scan saw
+		// `test` and dropped them from package metrics and layer analysis.
+		"sql/core/src/main/scala/org/apache/spark/sql/test": facts.ModuleRoleProduction,
+		"core/src/main/scala/com/example/core/test":         facts.ModuleRoleProduction,
+		"app/src/main/kotlin/de/x/spec":                     facts.ModuleRoleProduction,
+		// The boundary is directional: a test-purpose MODULE name still classifies,
+		// because it sits before `src/`. These are the cases above, restated as the
+		// control — the rule narrows what is scanned, it does not disable it.
+		"ui-test-utils/src/main/java/de/x/test": facts.ModuleRoleTest,
+		// And a real test source set is unaffected whatever the package is called.
+		"core/src/test/scala/com/example/core": facts.ModuleRoleTest,
 	}
 	for dir, want := range cases {
 		if got := ModuleRole(dir); got != want {
 			t.Errorf("ModuleRole(%q) = %q, want %q", dir, got, want)
 		}
+	}
+}
+
+// TestBuildPackageIndex_ScalaChainedPackages pins Scala's two header forms, both of
+// which produce a WRONG package rather than a missing one if mishandled — which is
+// worse, because every import resolving through them lands somewhere real but
+// incorrect.
+//
+// A chained clause names one package: `package com.example` followed by
+// `package model` is `com.example.model`. Reading only the first would map every
+// type in the file to `com.example`, and a sibling file that genuinely declares
+// `com.example` would then fight it for the index entry.
+func TestBuildPackageIndex_ScalaChainedPackages(t *testing.T) {
+	root, files := writeRepo(t, map[string]string{
+		"core/src/main/scala/com/example/model/Order.scala": "package com.example\npackage model\n\nclass Order\n",
+		"core/src/main/scala/com/example/Root.scala":        "package com.example\n\nclass Root\n",
+	})
+	idx := BuildPackageIndex(root, files)
+
+	if got, want := idx["com.example.model"], "core/src/main/scala/com/example/model"; got != want {
+		t.Errorf("chained package -> %q, want %q", got, want)
+	}
+	if got, want := idx["com.example"], "core/src/main/scala/com/example"; got != want {
+		t.Errorf("plain package -> %q, want %q", got, want)
+	}
+}
+
+// TestBuildPackageIndex_ScalaPackageObject pins the other trap: `package object util`
+// is a DECLARATION whose name is `util`, not a clause opening a package called
+// `object`. Matching it indexes a package no code ever imports and, worse, maps it
+// to a real directory.
+func TestBuildPackageIndex_ScalaPackageObject(t *testing.T) {
+	root, files := writeRepo(t, map[string]string{
+		"core/src/main/scala/com/example/util/package.scala": "package com.example\n\npackage object util {\n  val VERSION = \"1.0\"\n}\n",
+	})
+	idx := BuildPackageIndex(root, files)
+
+	if dir, ok := idx["object"]; ok {
+		t.Errorf("`package object` was read as a package clause: indexed \"object\" -> %q", dir)
+	}
+	if got, want := idx["com.example"], "core/src/main/scala/com/example/util"; got != want {
+		t.Errorf("enclosing package -> %q, want %q", got, want)
+	}
+}
+
+// TestBuildPackageIndex_HeaderCommentsDoNotBreakTheChain checks that a licence
+// header or scaladoc between chained clauses is stepped over. Apache-licensed Scala
+// (spark, pekko) puts one there in every file.
+func TestBuildPackageIndex_HeaderCommentsDoNotBreakTheChain(t *testing.T) {
+	src := "package com.example\n\n/*\n * Licensed to the Apache Software Foundation.\n */\n// and a line comment\npackage model\n\nclass Order\n"
+	root, files := writeRepo(t, map[string]string{
+		"core/src/main/scala/com/example/model/Order.scala": src,
+	})
+	idx := BuildPackageIndex(root, files)
+
+	if got, want := idx["com.example.model"], "core/src/main/scala/com/example/model"; got != want {
+		t.Errorf("comment between chained clauses broke the chain: %q, want %q", got, want)
+	}
+}
+
+// TestBuildPackageIndex_ChainStopsAtFirstDeclaration guards the other direction: a
+// later `package` inside the file body (a nested package block) must not extend the
+// header once real code has been seen.
+func TestBuildPackageIndex_ChainStopsAtFirstDeclaration(t *testing.T) {
+	src := "package com.example\n\nclass Order\n\npackage nested {\n  class Inner\n}\n"
+	root, files := writeRepo(t, map[string]string{
+		"core/src/main/scala/com/example/Order.scala": src,
+	})
+	idx := BuildPackageIndex(root, files)
+
+	if _, bad := idx["com.example.nested"]; bad {
+		t.Errorf("a package block after a declaration was folded into the header chain: %v", idx)
+	}
+	if got, want := idx["com.example"], "core/src/main/scala/com/example"; got != want {
+		t.Errorf("com.example -> %q, want %q", got, want)
 	}
 }

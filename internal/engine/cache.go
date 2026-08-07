@@ -1316,7 +1316,21 @@ import (
 // Foo has no inbound edge and reads as dead. 441 of bitwarden-server's 1,661
 // orphan classes (27%) and 59 of eShop's 202 were named in a registration and
 // nowhere else. A fix to the graph rather than to a confidence heuristic.
-const cacheVersion = "v180"
+//
+// v181: Scala. A fourth JVM language, and the first whose extractor must assume it
+// does NOT own the repository: apache/spark holds 1,355 .java beside 6,275 .scala
+// and apache/pekko 582, in the same packages, so jvmsrc's package index now reads
+// .scala too and the Java/Kotlin extractors invalidate on it. Symbols, extends/with
+// as implements, `new` as instantiates, and imports; call edges and complexity
+// metrics are not in this version. Two decisions are load-bearing and measured
+// rather than assumed. The grammar is pinned to tree-sitter-scala v0.24.1 — the
+// newest ABI-14 release, since v0.25.0+ are ABI 15 and the vendored runtime rejects
+// them SILENTLY, the C# failure mode. And the test globs are scoped to the sbt
+// source set (`src/test`, two segments) rather than to a directory named `test`,
+// because a one-segment glob deletes 183 production files across the benchmark
+// corpus, 175 of them zio's own test library whose package is `zio.test`; the
+// shared path matcher gained multi-segment directory prefixes for it.
+const cacheVersion = "v181"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

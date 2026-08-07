@@ -120,6 +120,12 @@ ignore:
   - "**/Tests/**/*.axaml"
   - "**/Test/**/*.axaml"
   - "**/*.Tests/**/*.axaml"
+  # Scala test source sets. Scoped to the source set, never a directory merely
+  # named `test`: a one-segment "**/test/**/*.scala" deletes zio's own test
+  # library (test-magnolia/src/main/.../zio/test/), which is production code.
+  - "**/src/test/**/*.scala"
+  - "**/src/it/**/*.scala"
+  - "**/src/multi-jvm/**/*.scala"
   # Minified / bundled JS (also detected heuristically by the extractor; kept in
   # sync with config.Default() in internal/config/config.go)
   - "**/*.min.js"

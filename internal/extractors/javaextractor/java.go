@@ -325,11 +325,15 @@ func isJavaFile(path string) bool {
 // OwnsFile implements plugin.FileOwner for incremental caching.
 func (e *JavaExtractor) OwnsFile(relFile string) bool { return isJavaFile(relFile) }
 
-// AffectsKey implements plugin.KeyDependent: a .kt file's package declaration
-// feeds the cross-language package index used to resolve Java imports of Kotlin
-// types, so a change to any Kotlin source must invalidate the Java extractor's cache.
+// AffectsKey implements plugin.KeyDependent: a .kt or .scala file's package
+// declaration feeds the cross-language package index used to resolve Java imports
+// of Kotlin and Scala types, so a change to either must invalidate the Java
+// extractor's cache. Scala matters here in practice, not only in principle —
+// apache/spark and apache/pekko both hold hundreds of .java files beside their
+// Scala sources, in the same packages.
 func (e *JavaExtractor) AffectsKey(relFile string) bool {
-	return strings.HasSuffix(strings.ToLower(relFile), ".kt")
+	l := strings.ToLower(relFile)
+	return strings.HasSuffix(l, ".kt") || strings.HasSuffix(l, ".scala") || strings.HasSuffix(l, ".sc")
 }
 
 // containsJavaSource reports whether any .java file exists under root within

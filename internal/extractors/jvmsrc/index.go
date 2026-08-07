@@ -20,23 +20,57 @@ import (
 // the Gradle src/test and src/androidTest layouts) and, since every JVM module
 // directory holds real source, treats an otherwise-unknown directory as
 // production so downstream analyses include it explicitly.
+//
+// Under a `src/main` source set, only the segments BEFORE it are classified. That
+// boundary is the whole rule, and each side of it means something different: the
+// module name ahead of `src/` states the module's purpose, so a Gradle module called
+// `ui-test-utils` is test tooling however it compiles; the path after `src/main` is
+// a PACKAGE, and a package named `test` says nothing about the role. Spark ships
+// `sql/core/src/main/scala/org/apache/spark/sql/test/SQLTestUtils.scala` as
+// production code, and classifying it as test would drop it from package metrics and
+// layer analysis on the strength of a package name. Without the split, the segment
+// scan sees `test` on both sides and cannot tell them apart. Applies to all four JVM
+// languages; the ignore globs draw the same boundary for the same reason (see
+// facts.matchDirScopedGlob).
 func ModuleRole(dir string) string {
-	role := facts.ModuleRoleForPath(dir)
+	role := facts.ModuleRoleForPath(moduleRoleScope(dir))
 	if role == facts.ModuleRoleUnknown {
 		return facts.ModuleRoleProduction
 	}
 	return role
 }
 
-// packageRe extracts a JVM source file's package declaration. It matches both
-// Kotlin (`package de.foo.bar`) and Java (`package de.foo.bar;`) — the trailing
-// `;` and any comment are excluded by the `[\w.]+` capture.
+// moduleRoleScope returns the part of dir that carries role information: everything
+// before a `src/main` source set, or the whole path when there is none (so a
+// `src/test` or `src/androidTest` set is still classified by the segment scan).
+func moduleRoleScope(dir string) string {
+	d := filepath.ToSlash(dir)
+	if i := strings.Index(d, "/src/main/"); i >= 0 {
+		return d[:i]
+	}
+	if strings.HasPrefix(d, "src/main/") || d == "src/main" {
+		return ""
+	}
+	if i := strings.Index(d, "/src/main"); i >= 0 && strings.HasSuffix(d, "/src/main") {
+		return d[:i]
+	}
+	return d
+}
+
+// packageRe extracts a JVM source file's package declaration. It matches Kotlin
+// and Scala (`package de.foo.bar`) as well as Java (`package de.foo.bar;`) — the
+// trailing `;` and any comment are excluded by the `[\w.]+` capture.
 var packageRe = regexp.MustCompile(`^\s*package\s+([\w.]+)`)
 
-// jvmSourceExts are the file extensions BuildPackageIndex reads.
+// jvmSourceExts are the file extensions BuildPackageIndex reads. All four JVM
+// languages enola supports share one package namespace, and a repository mixing
+// them is the norm rather than the exception — apache/spark holds 1,355 .java
+// beside 6,275 .scala — so an index that read only one of them would report a
+// sibling module's types as an external dependency.
 func isJVMSource(path string) bool {
 	p := strings.ToLower(path)
-	return strings.HasSuffix(p, ".kt") || strings.HasSuffix(p, ".java")
+	return strings.HasSuffix(p, ".kt") || strings.HasSuffix(p, ".java") ||
+		strings.HasSuffix(p, ".scala") || strings.HasSuffix(p, ".sc")
 }
 
 // isTestSource reports whether a file lives in a Gradle/Maven test source set
@@ -99,22 +133,55 @@ func isMainSourceSet(dir string) bool {
 	return strings.Contains(dir, "/src/main/") || strings.HasPrefix(dir, "src/main/")
 }
 
-// readPackage returns the package declared in a source file, reading only until
-// the first package line (declarations always precede any type). ok is false when
-// the file cannot be read or declares no package (the default/root package).
+// readPackage returns the package declared in a source file, reading only the
+// header (declarations always precede any type). ok is false when the file cannot
+// be read or declares no package (the default/root package).
+//
+// Two details are Scala's, and both are wrong answers rather than missing ones if
+// skipped. Scala permits CHAINED clauses — `package com.example` followed by
+// `package model` names `com.example.model`, not `com.example` — so consecutive
+// clauses are joined; Java and Kotlin allow only one, so they are unaffected.
+// And `package object util` is a package OBJECT, a declaration whose name is
+// `util`, not a clause opening a package called `object`: matching it would index
+// a package by that name and make every import resolve against a package that does
+// not exist.
 func readPackage(absFile string) (string, bool) {
 	f, err := os.Open(absFile)
 	if err != nil {
 		return "", false
 	}
 	defer func() { _ = f.Close() }()
+
+	var parts []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		if m := packageRe.FindStringSubmatch(scanner.Text()); m != nil {
-			return m[1], true
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || isCommentLine(line) {
+			continue
 		}
+		// `package object util` declares a MEMBER of the enclosing package rather
+		// than opening one called `object`, so it is not a clause.
+		m := packageRe.FindStringSubmatch(line)
+		if m == nil || m[1] == "object" {
+			if len(parts) > 0 {
+				break // the chain ended at the first real declaration
+			}
+			continue // still in the preamble, keep looking
+		}
+		parts = append(parts, m[1])
 	}
-	return "", false
+	if len(parts) == 0 {
+		return "", false
+	}
+	return strings.Join(parts, "."), true
+}
+
+// isCommentLine reports whether a trimmed line opens or continues a comment. It is
+// deliberately shallow — enough to step over a licence header or a scaladoc block
+// between chained package clauses, not a comment parser.
+func isCommentLine(line string) bool {
+	return strings.HasPrefix(line, "//") || strings.HasPrefix(line, "/*") ||
+		strings.HasPrefix(line, "*")
 }
 
 // ResolveImport maps a JVM import FQN to the directory of the package that holds

@@ -25,9 +25,11 @@ func MatchAnyGlob(relPath string, patterns []string) bool {
 //	**/*_test.go              a basename glob at any depth
 //	**/spec/**/*_spec.rb      a basename glob under a directory named "spec"
 //	**/*.Tests/**/*.cs        a basename glob under a glob-named directory
+//	**/src/test/**/*.scala    a basename glob under a directory PATH at any depth
 //
-// The last form is the only one that constrains directory and filename together;
-// see matchDirScopedGlob for why the Ruby test globs need it.
+// The last two are the only forms that constrain directory and filename together;
+// see matchDirScopedGlob for why the Ruby test globs need it and why Scala's need
+// two directory segments rather than one.
 //
 // The directory segment may itself be a glob. A literal is the common case and is
 // unaffected — filepath.Match on a pattern with no metacharacters is equality — but
@@ -105,8 +107,18 @@ func matchSegment(pattern, part string) bool {
 // to test/ — so the directory segment is the signal, and this predicate lets a
 // single pattern demand both halves.
 //
+// A prefix after "**/" may name SEVERAL consecutive segments, which Scala needs and
+// a single segment cannot express. sbt puts test sources under `src/test/`, but a
+// directory merely NAMED `test` is routinely production: zio's `test-magnolia`
+// module compiles `src/main/scala-3/zio/test/magnolia/*.scala`, and across the
+// benchmark corpus a one-segment `**/test/**/*.scala` would have deleted 183
+// production files — 175 of them ZIO's own test LIBRARY, whose package is literally
+// `zio.test`. Demanding the pair `src/test` distinguishes the source set from the
+// name, and leaves every existing one-segment pattern behaving exactly as before
+// (a single segment is the length-1 case of the same scan).
+//
 // Because every element of dirSegs is by construction an ancestor of the basename,
-// segment equality alone places the file under the directory: no depth bookkeeping,
+// segment matching alone places the file under the directory: no depth bookkeeping,
 // and "spec/user_spec.rb" (zero intervening directories) falls out for free.
 func matchDirScopedGlob(relPath, prefix, fileGlob string) bool {
 	segs := strings.Split(relPath, "/")
@@ -119,15 +131,43 @@ func matchDirScopedGlob(relPath, prefix, fileGlob string) bool {
 		return false
 	}
 	if seg, ok := strings.CutPrefix(prefix, "**/"); ok {
-		if seg == "" || strings.Contains(seg, "/") {
+		if seg == "" {
 			return false
 		}
-		return slices.ContainsFunc(dirSegs, func(part string) bool {
-			return matchSegment(seg, part)
-		})
+		want := strings.Split(seg, "/")
+		if len(want) == 1 {
+			return slices.ContainsFunc(dirSegs, func(part string) bool {
+				return matchSegment(want[0], part)
+			})
+		}
+		return containsSegmentRun(dirSegs, want)
 	}
 	if prefix == "**" {
 		return true // any directory
 	}
 	return strings.HasPrefix(relPath, prefix+"/")
+}
+
+// containsSegmentRun reports whether want appears as a run of CONSECUTIVE segments
+// anywhere in dirSegs. Consecutive rather than merely present in order: `src/test`
+// must mean a test source set, not a `src` directory that happens to have a `test`
+// somewhere beneath it — which is the distinction that keeps zio's
+// `src/main/scala-3/zio/test/` out of the test globs.
+func containsSegmentRun(dirSegs, want []string) bool {
+	if len(want) == 0 || len(want) > len(dirSegs) {
+		return false
+	}
+	for i := 0; i+len(want) <= len(dirSegs); i++ {
+		matched := true
+		for j, w := range want {
+			if !matchSegment(w, dirSegs[i+j]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }

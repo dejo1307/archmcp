@@ -41,6 +41,7 @@ import (
 	"github.com/enola-labs/enola/internal/extractors/pythonextractor"
 	"github.com/enola-labs/enola/internal/extractors/rubyextractor"
 	"github.com/enola-labs/enola/internal/extractors/rustextractor"
+	"github.com/enola-labs/enola/internal/extractors/scalaextractor"
 	"github.com/enola-labs/enola/internal/extractors/swiftextractor"
 	"github.com/enola-labs/enola/internal/extractors/tsextractor"
 	"github.com/enola-labs/enola/internal/facts"
@@ -390,6 +391,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExtractor(swiftextractor.New())
 	eng.RegisterExtractor(rubyextractor.New())
 	eng.RegisterExtractor(rustextractor.New())
+	eng.RegisterExtractor(scalaextractor.New())
 
 	// Resolve the linking vocabulary once and hand it to everything that matches under
 	// it, so the signals and the unmatched-route binder cannot disagree about what

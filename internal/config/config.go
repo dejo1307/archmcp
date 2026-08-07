@@ -322,6 +322,25 @@ func Default() *Config {
 			"**/Tests/**/*.axaml",
 			"**/Test/**/*.axaml",
 			"**/*.Tests/**/*.axaml",
+			// Scala test source sets. Scoped to the SOURCE SET (src/test, src/it,
+			// src/multi-jvm), never to a directory merely NAMED `test`, and with no
+			// filename pattern at all. Both restrictions are measured rather than
+			// cautious: a one-segment `**/test/**/*.scala` deletes 183 production
+			// files across the benchmark corpus — 175 of them zio's own test LIBRARY,
+			// which compiles from `test-magnolia/src/main/scala-3/zio/test/` and whose
+			// package is literally `zio.test`. That is the Ruby `cache_warmup_ab_test.rb`
+			// hazard in its Scala form, and a filename pattern like `**/*Spec.scala`
+			// would add a second one. sbt settles it by convention — test sources live
+			// in a test source set — so the source set is what is matched, which is
+			// also why the prefix needs TWO directory segments (see matchDirScopedGlob).
+			// The doubled `src/test` covers every layout in the corpus: `src/test/scala`,
+			// the cross-build variants `src/test/scala-3` and `src/test/scala-2.13`,
+			// and lila's bare `src/test`.
+			// Keep in sync with TestGlobs below: a file that stops being a test must
+			// stop being ignored, or it is dropped without being recovered.
+			"**/src/test/**/*.scala",
+			"**/src/it/**/*.scala",
+			"**/src/multi-jvm/**/*.scala",
 			// enola's own output. This is the DEFAULT location only; the glob for the
 			// configured one is derived in Normalize, which is what makes a custom
 			// output.dir safe. The literal stays because a repository that used the
@@ -422,8 +441,17 @@ func Default() *Config {
 			"**/tests/**/*.cshtml", "**/test/**/*.cshtml", "**/Tests/**/*.cshtml", "**/Test/**/*.cshtml", "**/*.Tests/**/*.cshtml",
 			"**/tests/**/*.xaml", "**/test/**/*.xaml", "**/Tests/**/*.xaml", "**/Test/**/*.xaml", "**/*.Tests/**/*.xaml",
 			"**/tests/**/*.axaml", "**/test/**/*.axaml", "**/Tests/**/*.axaml", "**/Test/**/*.axaml", "**/*.Tests/**/*.axaml",
+			// Scala has no TestRefExtractor yet, so these three are the same
+			// deliberate no-op as Python's and C#'s: listed because Ignore above
+			// requires the two lists to agree, and so that implementing
+			// ScalaExtractor.ExtractTestRefs switches the signal on without a second
+			// config change. Until then, a Scala symbol called only from a spec reads
+			// as dead — expect dead-code false positives on Scala repos until it lands.
+			"**/src/test/**/*.scala",
+			"**/src/it/**/*.scala",
+			"**/src/multi-jvm/**/*.scala",
 		},
-		Extractors: []string{"cpp", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible", "mdintent"},
+		Extractors: []string{"cpp", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{

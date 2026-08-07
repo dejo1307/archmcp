@@ -142,11 +142,12 @@ func isKotlinFile(path string) bool {
 // OwnsFile implements plugin.FileOwner for incremental caching.
 func (e *KotlinExtractor) OwnsFile(relFile string) bool { return isKotlinFile(relFile) }
 
-// AffectsKey implements plugin.KeyDependent: a .java file's package declaration
-// feeds the cross-language package index used to resolve Kotlin imports, so a
-// change to any Java source must invalidate the Kotlin extractor's cache.
+// AffectsKey implements plugin.KeyDependent: a .java or .scala file's package
+// declaration feeds the cross-language package index used to resolve Kotlin
+// imports, so a change to either must invalidate the Kotlin extractor's cache.
 func (e *KotlinExtractor) AffectsKey(relFile string) bool {
-	return strings.HasSuffix(strings.ToLower(relFile), ".java")
+	l := strings.ToLower(relFile)
+	return strings.HasSuffix(l, ".java") || strings.HasSuffix(l, ".scala") || strings.HasSuffix(l, ".sc")
 }
 
 // --- Android & framework detection helpers (called by the AST walker) ---
