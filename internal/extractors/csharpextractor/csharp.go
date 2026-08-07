@@ -271,6 +271,18 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	// the type, which is only canonical once resolveCSharpTargets has run.
 	allFacts = append(allFacts, composeStorageFacts(allFacts, scaffold.storage)...)
 	allFacts = append(allFacts, clientRouteFacts(scaffold.clients)...)
+	if len(scaffold.conventional) > 0 || scaffold.conventionalSkipped > 0 {
+		symbolNames := make(map[string]bool, len(allFacts))
+		for i := range allFacts {
+			if allFacts[i].Kind == facts.KindSymbol {
+				symbolNames[allFacts[i].Name] = true
+			}
+		}
+		allFacts = append(allFacts, conventionalRouteFacts(scaffold.conventional, symbolNames)...)
+		log.Printf("[csharp-extractor] conventional routing: %d registration(s) resolved, "+
+			"%d left generic (a {controller}/{action} template needs each controller's area)",
+			len(scaffold.conventional), scaffold.conventionalSkipped)
+	}
 	computeCSharpPerformsIO(allFacts)
 
 	// Module facts are built into a map keyed by directory, then overlaid with the

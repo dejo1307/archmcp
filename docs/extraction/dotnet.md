@@ -780,11 +780,11 @@ Measured on [jellyfin](https://github.com/jellyfin/jellyfin): 422 routes, exactl
 one per `[HttpGet]`/`[HttpPost]`/`[HttpDelete]`/`[HttpHead]` attribute in the
 source, with all 388 distinct handlers resolving to real symbol facts.
 
-### Conventional routing produces nothing
+### Conventional routing, when the registration can be read
 
 A controller with verb attributes but **no `[Route]` anywhere in its hierarchy** is
-using *conventional* routing, where the URL comes from a template registered in
-`Program.cs`:
+using *conventional* routing, where the URL comes from a template registered in a
+startup file:
 
 ```csharp
 public class AccountController : Controller     // really served at /Account/Login
@@ -794,16 +794,49 @@ public class AccountController : Controller     // really served at /Account/Log
 }
 ```
 
-That template is not read here, so the path is genuinely unknown and **no route is
-emitted**. Composing from what is visible is what this used to do, and it was wrong
-twice over: a bare `[HttpGet]` carries no template, so every action came out as
-`/` — the wrong path, and, because facts are name-keyed, several actions collapsing
-onto a single root node. On eShop's Identity.API that turned 14 real endpoints into
-a handful of phantom roots.
+Composing from the action alone is what this used to do, and it was wrong twice
+over: a bare `[HttpGet]` carries no template, so every action came out as `/` — the
+wrong path, and, because facts are name-keyed, several actions collapsing onto a
+single root node. On eShop's Identity.API that turned 14 real endpoints into a
+handful of phantom roots.
 
-Guessing `/{controller}/{action}` instead would be inventing a template that lives
-in a file the extractor did not parse and can be anything. The count of skipped
-actions is logged, so the gap is visible rather than silent.
+The registration itself **is** read now, which is what makes those URLs safe to
+emit:
+
+```csharp
+routes.MapAreaControllerRoute(
+    name: "ListFeed",
+    areaName: "OrchardCore.Feeds",
+    pattern: "Contents/Lists/{contentItemId}/rss",
+    defaults: new { controller = "Feed", action = "Index" });
+```
+
+```
+route  /Contents/Lists/{contentItemId}/rss   props: routing=conventional, method=GET,
+                                                    controller=Feed, action=Index
+                                             --handled_by--> …Controllers.FeedController.Index
+```
+
+The template is routinely a `const` field rather than an inline string —
+OrchardCore's default route is exactly that — so it resolves through the same
+literal environment the [client scan](#outbound-http--what-a-service-calls) builds.
+`areaName` and the `defaults` controller/action are substituted into their tokens.
+
+**A template still generic after substitution is not emitted.** OrchardCore's
+default is `{area}/{controller}/{action}/{id?}`, and expanding it needs each
+controller's area — from an `[Area]` attribute or a module convention this
+extractor does not read. A route at a literal `/{area}/…` would be a URL the
+application never serves. The count left generic is logged, so the gap stays
+visible rather than silent.
+
+The method is `GET`: a registration declares a URL, not a verb, and GET is what
+ASP.NET serves for an action with no verb attribute. A controller name that two
+declarations share binds no handler — the route still stands, only the binding is
+withheld.
+
+Measured on OrchardCore: **45 routes before, 82 after** — 30 registrations
+resolved, 20 left generic. jellyfin is unchanged at 420, which is the control:
+attribute routing must not move.
 
 Note that `[Route("")]` is **not** the same as declaring no `[Route]`: an empty
 template is a real one, and its actions are served at the method template alone.

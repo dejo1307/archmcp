@@ -66,6 +66,7 @@ func extractFileASTFull(src []byte, relFile string) ([]facts.Fact, aspnetScaffol
 	// APPEND: noteRefit already added this file's Refit declarations during the
 	// walk above, and assigning here would discard them.
 	w.scaffold.clients = append(w.scaffold.clients, collectHTTPClientCalls(root, src, relFile, w.dir)...)
+	w.scaffold.conventional, w.scaffold.conventionalSkipped = collectConventionalRoutes(root, src, relFile, w.dir)
 	return w.out, w.scaffold
 }
 

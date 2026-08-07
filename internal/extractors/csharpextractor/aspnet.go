@@ -39,6 +39,10 @@ type aspnetScaffold struct {
 	// attributes. They need no cross-file composition, only the file-local literal
 	// environment the scan already built.
 	clients []clientCall
+	// conventional holds MVC route registrations, and the count of those that were
+	// registrations but could not be resolved — kept so the gap stays visible.
+	conventional        []conventionalRoute
+	conventionalSkipped int
 }
 
 func (s *aspnetScaffold) empty() bool {
@@ -51,6 +55,8 @@ func (s *aspnetScaffold) merge(o aspnetScaffold) {
 	s.minimal = append(s.minimal, o.minimal...)
 	s.storage.merge(o.storage)
 	s.clients = append(s.clients, o.clients...)
+	s.conventional = append(s.conventional, o.conventional...)
+	s.conventionalSkipped += o.conventionalSkipped
 }
 
 // controllerDecl is a type that may serve routes: it carries a [Route] template, an

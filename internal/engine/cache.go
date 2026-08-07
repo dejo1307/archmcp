@@ -1300,7 +1300,17 @@ import (
 // dropped, which is what makes a client's items/{id} match a server template of
 // the same shape. An absolute URL keeps only its path: under Aspire the host is a
 // service NAME, not a hostname.
-const cacheVersion = "v178"
+// v179: conventional MVC routing. A MapControllerRoute / MapAreaControllerRoute
+// registration is READ, and its template — routinely a const field — resolved
+// through the same literal environment the client scan builds, with areaName and
+// the controller/action defaults substituted in. OrchardCore declares 288 verb
+// attributes across 114 controllers and only 7 carry a [Route].
+//
+// A template still containing {controller}/{action}/{area} after substitution is
+// NOT emitted: expanding it needs each controller's area, and a route at a literal
+// /{area}/… would be a URL the application never serves. The count left generic is
+// logged rather than silently absorbed.
+const cacheVersion = "v179"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
