@@ -1181,7 +1181,21 @@ import (
 // registration path alone would claim endpoints the library does not serve and
 // collapse the `MapPost("")` ones onto "/". Measured: eShop 0 -> 30 routes with
 // composed prefixes; the SDK's caller-mounted file contributes 0.
-const cacheVersion = "v166"
+// v167: CSharpExtractor implements plugin.TestRefExtractor. Excluding test
+// projects (v166's globs) left a production symbol whose only caller is a test
+// with no inbound edge at all, reading as dead; this restores that one signal
+// without putting test code back in the graph — one KindTestRef fact per test
+// file, carrying RelCalls to the production names it touches and no symbols, so a
+// test class still never becomes a dead-code candidate. Targets are emitted AS
+// WRITTEN (`OrderService.Find`, `Find`) rather than resolved, because the
+// production symbol index lives inside Extract and the orphan detector matches
+// both the full target and its last segment — the same shape Ruby emits. A
+// framework receiver (Assert, Mock, It, …) disqualifies the bare method name as
+// well as the qualified one: filtering only `Assert.Equal` let `Equal` through,
+// and production code really does declare Equal, so the harness would have vouched
+// for a symbol no test exercises. Measured on jellyfin: 210 test-ref facts, 2,826
+// distinct targets, 70% matching a production symbol.
+const cacheVersion = "v167"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

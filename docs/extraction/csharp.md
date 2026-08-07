@@ -322,6 +322,53 @@ own. jellyfin keeps its real 420-endpoint API and loses two test-only routes.
 happens to ship (`Microsoft.Extensions.DependencyInjection.Specification.Tests`) is
 excluded along with real tests.
 
+### …but what a test *references* is kept
+
+Excluding a test project has a cost: a production symbol whose only caller is a
+test then has no inbound edge at all, and reads as dead. So test files are parsed
+once more, for the sole purpose of capturing their outbound references:
+
+```csharp
+// tests/Acme.Api.Tests/OrderServiceTests.cs
+var svc = new OrderService(repo);
+var money = svc.Summarise(orders);
+Assert.Equal("EUR", money.Currency);
+```
+
+```
+test_ref  tests/Acme.Api.Tests/OrderServiceTests.cs
+            --calls--> OrderService     --calls--> Summarise
+            --calls--> svc.Summarise    --calls--> money.Currency
+```
+
+One `test_ref` fact per file, carrying **only** `calls` relations — no symbols, no
+modules, no routes. So a test class still never becomes a dead-code candidate, and
+no symbol/module/route explainer sees test code at all.
+
+Targets are emitted **as written** rather than resolved to canonical fact names.
+The production symbol index is built inside `Extract` and is not available to this
+pass, and the consumer does not need it: the orphan detector matches a target both
+exactly and by its last dot-separated segment, which is why the Ruby extractor
+emits the same `Const.method` shape.
+
+Assertion and mocking receivers (`Assert`, `Mock`, `It`, `Times`, …) are dropped,
+**including the bare method name**. Filtering only `Assert.Equal` let `Equal`
+through — and production code really does declare `Equal`, so the harness would
+have vouched for a symbol no test exercises, suppressing a genuine dead-code
+finding.
+
+| Repo | `test_ref` facts | distinct targets | matching a production symbol |
+|---|---:|---:|---:|
+| jellyfin | 210 | 2,796 | 1,974 (71%) |
+| csharp-sdk | 261 | 4,032 | 2,191 (54%) |
+| eShop | 34 | 330 | 170 (52%) |
+
+The remainder are BCL and framework calls (`Activator.CreateInstance`,
+`AddLogging`, `AddDays`) that match nothing and cost nothing.
+
+*Cost:* the pass parses every test file. On dotnet/runtime — 16,974 of them — it
+adds roughly 23s to a 20s snapshot.
+
 ## Generated code
 
 `.g.cs`, `.generated.cs`, `.Designer.cs`, `AssemblyInfo.cs` and anything carrying an
@@ -360,7 +407,7 @@ reason.
 - **A minimal-API group is not followed across a function boundary**, and a group whose
   prefix is not a string literal drops its routes entirely — see above.
 - **Conventionally-routed controller actions mint no route** — see above.
-- **A symbol exercised only by its tests reads as unreferenced.** Test projects are
-  excluded from production indexing (see [Test projects](#test-projects)), and C# has no
-  `TestRefExtractor` yet, so the calls a test makes into production code are not
-  recovered — the same trade Python currently makes.
+- **A test's references are captured by name, not resolved.** A `test_ref` target
+  matches a production symbol by its last segment, so an unrelated symbol sharing a
+  method name is credited with test coverage it does not have. That biases toward a
+  *missed* dead-code lead rather than a false accusation, which is the safe direction.
