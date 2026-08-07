@@ -34,6 +34,17 @@ func sameNode(a, b *sitter.Node) bool {
 		a.Kind() == b.Kind()
 }
 
+// containsAny reports whether node is one of the listed nodes. Used to skip the
+// loop parts already walked in the enclosing scope; nil entries never match.
+func containsAny(nodes []*sitter.Node, node *sitter.Node) bool {
+	for _, n := range nodes {
+		if n != nil && sameNode(n, node) {
+			return true
+		}
+	}
+	return false
+}
+
 func contains(outer, inner *sitter.Node) bool {
 	return outer != nil && inner != nil &&
 		outer.StartByte() <= inner.StartByte() && outer.EndByte() >= inner.EndByte()

@@ -1222,7 +1222,14 @@ import (
 // name a member call produces, and `foo.Order()` would bind to a class named
 // Order. Receivers are gated on PascalCase, C#'s type-naming convention. On
 // jellyfin: enums 105 -> 8 unreferenced, constants 802 -> 179, classes 848 -> 729.
-const cacheVersion = "v169"
+// v170: a loop's iterable is walked in the ENCLOSING scope, not inside the loop.
+// `foreach (x in items.Where(p))` enumerates once — the lambda runs per element of
+// `items`, the same n the loop runs, not n per iteration — so walking it inside
+// reported O(n²) for O(n) work on the most common C# iteration idiom. A `for`
+// initializer runs once for the same reason; its condition and update genuinely
+// repeat and stay inside. On jellyfin this moved 26 methods from scaling depth 2
+// to 1 and 3 from 3 to 2, and dropped 21 spurious N+1 candidates.
+const cacheVersion = "v170"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -869,3 +869,89 @@ public class Svc
 		t.Errorf("a camelCase receiver must emit no qualified reference; got %v", got)
 	}
 }
+
+// TestLoop_IterableIsEvaluatedInTheEnclosingScope pins a Big-O false positive on
+// the most common C# iteration idiom. `foreach (x in items.Where(p))` enumerates
+// its iterable once — the lambda runs per element of `items`, which is the same n
+// the loop itself runs, not n per iteration. Walking the iterable inside the loop
+// reported O(n²) for O(n) work, and LINQ puts a Where/Select/OrderBy in the
+// iterable position of a great many foreach statements.
+func TestLoop_IterableIsEvaluatedInTheEnclosingScope(t *testing.T) {
+	ff := extractFileAST([]byte(`
+namespace Acme;
+public class C
+{
+    public void M(System.Collections.Generic.List<int> items)
+    {
+        foreach (var item in items.Where(i => i > 0))
+        {
+            Use(item);
+        }
+    }
+    private void Use(int i) { }
+}
+`), "src/C.cs")
+
+	m := factByName(ff, "src.C.M")
+	if m == nil {
+		t.Fatal("M missing")
+	}
+	if got := m.Props["scaling_loop_depth"]; got != 1 {
+		t.Errorf("scaling_loop_depth = %v, want 1 — the iterable is not nested work", got)
+	}
+	if got := m.Props["loop_depth"]; got != 1 {
+		t.Errorf("loop_depth = %v, want 1", got)
+	}
+}
+
+// TestLoop_NestedBodyStillCounts is the control: a loop genuinely inside a loop
+// body must still compound, or the fix would erase real O(n²).
+func TestLoop_NestedBodyStillCounts(t *testing.T) {
+	ff := extractFileAST([]byte(`
+namespace Acme;
+public class C
+{
+    public void M(System.Collections.Generic.List<int> outer, System.Collections.Generic.List<int> inner)
+    {
+        foreach (var a in outer)
+        {
+            foreach (var b in inner)
+            {
+                Use(a + b);
+            }
+        }
+    }
+    private void Use(int i) { }
+}
+`), "src/C.cs")
+
+	m := factByName(ff, "src.C.M")
+	if got := m.Props["scaling_loop_depth"]; got != 2 {
+		t.Errorf("scaling_loop_depth = %v, want 2 — genuinely nested loops", got)
+	}
+}
+
+// TestLoop_ForInitializerRunsOnce covers the same rule for a `for`: its
+// initializer is evaluated once, while its condition and update genuinely repeat
+// and stay inside.
+func TestLoop_ForInitializerRunsOnce(t *testing.T) {
+	ff := extractFileAST([]byte(`
+namespace Acme;
+public class C
+{
+    public void M(System.Collections.Generic.List<int> items)
+    {
+        for (var i = items.Where(x => x > 0).Count(); i > 0; i--)
+        {
+            Use(i);
+        }
+    }
+    private void Use(int i) { }
+}
+`), "src/C.cs")
+
+	m := factByName(ff, "src.C.M")
+	if got := m.Props["scaling_loop_depth"]; got != 1 {
+		t.Errorf("scaling_loop_depth = %v, want 1 — the initializer runs once", got)
+	}
+}

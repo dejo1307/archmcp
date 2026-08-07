@@ -929,8 +929,29 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		return
 	case "for_statement", "foreach_statement", "while_statement", "do_statement":
 		class := syntacticLoopClass(node, w.src)
+		// The parts evaluated in the ENCLOSING scope are walked outside the loop.
+		// A `foreach (x in items.Where(p))` enumerates its iterable once — the
+		// lambda runs per element of `items`, which is the same n the loop itself
+		// runs, not n per iteration. Walking it inside made that idiom, which is
+		// everywhere in C#, report O(n²) for O(n) work. A `for` initializer runs
+		// once for the same reason; its condition and update genuinely repeat, so
+		// they stay inside.
+		var outer []*sitter.Node
+		switch node.Kind() {
+		case "foreach_statement":
+			outer = append(outer, node.ChildByFieldName("right"))
+		case "for_statement":
+			outer = append(outer, node.ChildByFieldName("initializer"))
+		}
+		for _, n := range outer {
+			w.walkForCalls(n)
+		}
 		w.enterLoop(class)
-		w.walkChildren(node)
+		for i := uint(0); i < uint(node.ChildCount()); i++ {
+			if c := node.Child(i); !containsAny(outer, c) {
+				w.walkForCalls(c)
+			}
+		}
 		w.exitLoop(class)
 		return
 	case "object_creation_expression":

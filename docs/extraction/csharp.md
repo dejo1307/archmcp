@@ -325,6 +325,14 @@ than as ordinary work.
 `&&`, `||` and `??` each add a decision point. `?.` does not, matching the other
 extractors' treatment of optional chaining.
 
+A loop's **iterable is evaluated in the enclosing scope**, so it is not counted as
+nested work. `foreach (var x in items.Where(p))` enumerates once — the lambda runs
+per element of `items`, which is the same *n* the loop itself runs, not *n* per
+iteration — so it is O(n), not O(n²). LINQ puts a `Where`/`Select`/`OrderBy` in
+the iterable position of a great many `foreach` statements, and counting it inside
+inflated the estimate for all of them. A `for` initializer runs once for the same
+reason; its condition and update genuinely repeat and stay inside.
+
 ## Test projects
 
 Three directory patterns keep test code out of the production graph:
