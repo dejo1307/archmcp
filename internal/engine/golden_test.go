@@ -95,8 +95,9 @@ var fixtures = []fixture{
 	// cross-LANGUAGE resolution are both exercised (spark and pekko are both
 	// majority-Scala repos holding hundreds of .java files). Also pins v181's two
 	// measured decisions, and pins them by ABSENCE and PRESENCE respectively:
-	// app/src/test/scala/.../ServiceSpec.scala contributes NOTHING (the sbt test
-	// source set is excluded), while core/src/main/scala/com/example/core/test/
+	// app/src/test/scala/.../ServiceSpec.scala contributes no symbols and no module
+	// (the sbt test source set is excluded) while still carrying its references as a
+	// test_ref, whereas core/src/main/scala/com/example/core/test/
 	// Fixtures.scala IS extracted — production code under a directory merely named
 	// `test`, which a one-segment glob would have deleted along with zio's entire
 	// test library. Plus Scala 3 braceless bodies, enum/given/extension, and a file

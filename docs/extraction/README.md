@@ -26,6 +26,7 @@ pages changing, the golden tests fail first.
 | [Swift](swift.md) | URLSession, SwiftUI, UIKit | endpoint enums, protocol-extension prefixes |
 | [PHP](php.md) | Laravel, Symfony, WordPress, Guzzle | `apiResource` expansion, YAML route config |
 | [Rust](rust.md) | Axum route DSL | `.nest()` mounts composed crate-wide |
+| [Scala](scala.md) | Play `conf/routes`, Pekko/Akka HTTP, http4s, Slick, sttp | `for … yield` discounted as a monadic bind, not a loop |
 | [C / C++](cpp.md) | — | header/source method merging, namespaces, templates |
 | [.NET](dotnet.md) | ASP.NET Core attribute + minimal-API routing, Blazor and Razor Pages `@page` | C#, VB.NET, Razor and XAML; MSBuild `ProjectReference` as the assembly graph; `partial` types merged across files and languages |
 | [gRPC and OpenAPI](grpc-openapi.md) | `.proto` services, OpenAPI specs | the contract as the server side of an edge |

@@ -126,6 +126,21 @@ func TestExtractionDocs_ComposedPathsStillHold(t *testing.T) {
 			},
 		},
 		{
+			fixture: "scala_sample",
+			page:    "scala.md",
+			// The page presents three composed shapes as the headline capability:
+			// a Play include mounted at its prefix, a Pekko pathPrefix composed into
+			// path, and an http4s extractor variable normalized to :id.
+			want: []string{
+				"/admin/users", "/admin/users/:id",
+				"/api/state", "/api/disable", "/api/v2/admin/ping",
+				"/users/:id", "/teams",
+			},
+			// And two it states are composed AWAY: the doubled mount prefix, and the
+			// bare sub-router path that would exist if the include were ignored.
+			absent: []string{"/team/team", "/state"},
+		},
+		{
 			fixture: "php_laravel_sample",
 			page:    "php.md",
 			// Route::apiResource('photos', …) expands to seven routes

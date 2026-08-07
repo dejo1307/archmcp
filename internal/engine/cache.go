@@ -1369,7 +1369,18 @@ import (
 //
 // Also fixes a non-determinism: Pekko verb selection scanned enclosing source text
 // and iterated a Go map, so a route's method varied between runs on identical input.
-const cacheVersion = "v183"
+//
+// v184: Scala test references. Excluding test source sets left a production symbol
+// whose only caller is a spec with no inbound edge at all, so it read as dead — a
+// large class in Scala, where a library's public API is frequently exercised only
+// from its own suite. One test_ref fact per file carries the outbound references and
+// no symbols, so specs still never become dead-code candidates themselves. Assertion,
+// matcher, mocking and spec-structure names are dropped, and a harness receiver
+// disqualifies the BARE method name too: filtering only `Assert.equals` lets `equals`
+// through, and production code declares `equals`, so the harness would vouch for a
+// symbol no test exercises and suppress a real finding. 50-85% of a spec's references
+// match a production symbol; the rest are library calls that match nothing.
+const cacheVersion = "v184"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
