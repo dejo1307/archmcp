@@ -14,9 +14,9 @@ levels.
 > |---|---|
 > | F# (`.fs`) | 5,539 files |
 > | VB.NET (`.vb`) | 3,784 files |
-> | XAML (`.xaml`, `.axaml`) | 727 files |
 >
-> Razor (`.razor`, `.cshtml`) **is** read — see [Razor](#razor--blazor-components-and-mvc-views).
+> Razor (`.razor`, `.cshtml`) and XAML (`.xaml`, `.axaml`) **are** read — see
+> [Razor](#razor--blazor-components-and-mvc-views) and [XAML](#xaml--wpf-winui-maui-and-avalonia).
 >
 > A mixed solution therefore has all of its projects and all of its
 > `ProjectReference` edges, and symbols for its C# and Razor halves.
@@ -251,6 +251,89 @@ no component and emit nothing. A Razor Pages route that comes from the `Pages/`
 directory convention rather than an explicit `@page` template is not derived. A
 reference is harvested by NAME, so an unrelated symbol sharing it is credited —
 the same bias, in the same safe direction, as `test_ref`.
+
+## XAML — WPF, WinUI, MAUI and Avalonia
+
+Unlike Razor, XAML *is* XML, so this is a real token walk rather than a scan. It
+looks for the three ways a view reaches into code:
+
+```xml
+<Page x:Class="Files.App.Views.SplashScreenPage"
+      xmlns:conv="using:Files.App.Converters">
+    <Image ImageFailed="Image_ImageFailed" />
+    <TextBlock Text="{x:Bind BranchLabel, Mode=OneTime}" />
+    <Button Click="OnGoClicked"
+            IsEnabled="{Binding Path=CanNavigate,
+                        Converter={StaticResource BoolNegationConverter}}" />
+    <conv:StatusCenterItem />
+</Page>
+```
+
+```
+symbol  src/Files.App/Views.SplashScreenPage
+          props: symbol_kind=class, xaml_view=true, framework=xaml, partial=true,
+                 fqn=Files.App.Views.SplashScreenPage, namespace=Files.App.Views
+          --instantiates-> StatusCenterItem
+          --calls-------> Image_ImageFailed, OnGoClicked, BranchLabel,
+                          CanNavigate, BoolNegationConverter
+```
+
+`x:Class` makes the document one half of a partial class, so it merges with
+`SplashScreenPage.xaml.cs` through the same partial-type merge a `.razor`
+component uses — and for the same reason `symbol_kind` is `class`, not a
+XAML-specific kind: that prop is what puts a name into the type index.
+
+A document with **no `x:Class`** — a ResourceDictionary, a style file — has no
+class to attach to and emits a `file_ref` rather than inventing one.
+
+### Namespaces are matched by URI, not by prefix
+
+`encoding/xml` resolves a prefix to its URI before reporting a name, so
+`<conv:StatusCenterItem>` arrives with `Space="using:Files.App.Converters"`. A
+tag is an instantiation when its namespace URI is a `clr-namespace:` or `using:`
+one — a type declared in this solution. Framework controls (`Grid`, `TextBlock`,
+`Button`) live in the schema-URL namespace and are not repository symbols.
+
+### Why handlers are gated rather than harvested
+
+`Click="OnSave"` names a method; `Stretch="None"` and `FontWeight="SemiBold"` do
+not, and they are the same syntax. A bare-identifier attribute value is far more
+often an enum member than a handler, so a value is taken as a method only when
+the attribute is a known event **or** the value follows one of the two dominant
+handler conventions (`OnSave`, `Image_ImageFailed`). Harvesting every bare value
+would vouch for symbols nothing uses, which *suppresses* genuine dead-code
+findings — the direction worth guarding, and the same rule the Razor scanner
+applies to string literals.
+
+Inside a markup extension only the ARGUMENTS are read. `Binding`,
+`StaticResource` and `x:Bind` are syntax, and so are the named arguments that
+configure a binding rather than name code — `Mode`, `RelativeSource`,
+`FallbackValue`, `ElementName`, `StringFormat`. Nested extensions are followed,
+which is how `Converter={StaticResource BoolNegationConverter}` reaches the
+converter class.
+
+`x:Name` and `x:Key` **declare**; they are not references.
+
+### What this changes, measured
+
+| Repo | orphans before | after | rescued | regressed |
+|---|---:|---:|---:|---:|
+| Files (WinUI) | 4,818 | **4,399** | 419 | **0** |
+| Avalonia | 14,827 | **14,213** | 615 | **0** |
+
+No symbols are added — a view merges into the code-behind symbol that already
+existed — so unlike Razor there is no orphan-candidate inflation and the totals
+fall directly. What comes back is what the corpus predicted: `AdaptiveGridView`,
+`BladeItem.CloseButtonForeground`, `BreadcrumbBar.EllipsisButtonToolTip`,
+Avalonia's `GenericValueConverter` and `TestItemView`.
+
+*Cost:* immeasurable at this scale — +3ms on Files' 145 documents, within noise
+on Avalonia's 481.
+
+*Limits:* a handler whose name follows neither convention and whose event this
+file does not know is missed. `{Binding}` with no path names nothing. A reference
+is harvested by NAME, so an unrelated symbol sharing it is credited — the same
+bias, in the same safe direction, as `test_ref`.
 
 ## Names, namespaces and the two spellings
 

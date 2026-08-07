@@ -76,7 +76,8 @@ func (e *CSharpExtractor) Detect(repoPath string) (bool, error) {
 			}
 			return nil
 		}
-		if isCSharpFile(path) || isProjectFile(path) || isSolutionFile(path) || isRazorFile(path) {
+		if isCSharpFile(path) || isProjectFile(path) || isSolutionFile(path) ||
+			isRazorFile(path) || isXamlFile(path) {
 			found = true
 		}
 		return nil
@@ -98,7 +99,7 @@ func isCSharpFile(path string) bool {
 // without touching a single .cs file.
 func (e *CSharpExtractor) OwnsFile(relFile string) bool {
 	return isCSharpFile(relFile) || isProjectFile(relFile) || isSolutionFile(relFile) ||
-		isRazorFile(relFile)
+		isRazorFile(relFile) || isXamlFile(relFile)
 }
 
 // Extract parses C# files and emits architectural facts.
@@ -112,7 +113,7 @@ func (e *CSharpExtractor) OwnsFile(relFile string) bool {
 // so a bare type reference cannot be resolved from one file's imports the way
 // Java's can. Both are settled in resolveCSharp once every file is in.
 func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
-	var csFiles, projFiles, slnFiles, razorFiles []string
+	var csFiles, projFiles, slnFiles, razorFiles, xamlFiles []string
 	for _, relFile := range files {
 		switch {
 		case isCSharpFile(relFile):
@@ -123,6 +124,8 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 			slnFiles = append(slnFiles, relFile)
 		case isRazorFile(relFile):
 			razorFiles = append(razorFiles, relFile)
+		case isXamlFile(relFile):
+			xamlFiles = append(xamlFiles, relFile)
 		}
 	}
 
@@ -176,6 +179,24 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	}
 	if len(razorFiles) > 0 {
 		log.Printf("[csharp-extractor] parsed %d Razor file(s)", len(razorFiles))
+	}
+
+	// XAML, for the same reason and before the same merge: an x:Class document is
+	// one half of a partial class whose other half is its .xaml.cs code-behind.
+	xamlResults := parallel.MapFiles(ctx, xamlFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
+			return nil
+		}
+		return xamlFacts(string(src), relFile)
+	})
+	for i, ff := range xamlResults {
+		allFacts = append(allFacts, ff...)
+		modules[filepath.ToSlash(filepath.Dir(xamlFiles[i]))] = true
+	}
+	if len(xamlFiles) > 0 {
+		log.Printf("[csharp-extractor] parsed %d XAML file(s)", len(xamlFiles))
 	}
 
 	allFacts = mergePartialTypes(allFacts)

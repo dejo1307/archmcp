@@ -94,6 +94,12 @@ ignore:
   - "**/tests/**/*.cshtml"
   - "**/test/**/*.cshtml"
   - "**/*.Tests/**/*.cshtml"
+  - "**/tests/**/*.xaml"
+  - "**/test/**/*.xaml"
+  - "**/*.Tests/**/*.xaml"
+  - "**/tests/**/*.axaml"
+  - "**/test/**/*.axaml"
+  - "**/*.Tests/**/*.axaml"
   # Minified / bundled JS (also detected heuristically by the extractor; kept in
   # sync with config.Default() in internal/config/config.go)
   - "**/*.min.js"
