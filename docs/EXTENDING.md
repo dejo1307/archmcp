@@ -338,6 +338,30 @@ existed. Nothing failed, because nothing tied the reading side to the writing si
 > (`internal` / `external` / `stdlib`) on `KindDependency`. Reading it without checking
 > `Kind` first gets you a value from the wrong one.
 
+### Props an explainer reads
+
+Routes are not the only contract. Two module/symbol props are read outside the
+package that writes them, and both are **tables rather than branches**, so teaching
+another language is a row:
+
+- **`CompilationUnitProps`** (`crate`, `project`) names the build unit a module
+  compiles into. The cycles explainer uses it to tell a build-order defect from a
+  cycle that is merely internal to one assembly or crate — MSBuild and Cargo both
+  forbid cycles *between* units, so a cycle found in C# or Rust is necessarily
+  within one. A prop belongs here only when several module facts can share a value:
+  Swift's `spm_target` is deliberately absent, because swiftextractor names each
+  module fact *by* its target and two never share one.
+- **`data_holder`** marks a type that declares state and no behaviour. The
+  enterprise package-metrics explainer spares such packages its "extract
+  interfaces" advice, and recognises a dedicated construct (`data_class`, `record`)
+  where one exists. Emit `data_holder` when your language has none in common use —
+  C# writes its DTOs as plain classes with auto-properties.
+
+An enterprise explainer cannot import `internal/facts`, so it mirrors these key
+strings locally. That is the same arrangement the route `source` values have, and it
+carries the same hazard: a prop renamed on one side goes silently unread on the
+other.
+
 ---
 
 ## Before you open the PR
