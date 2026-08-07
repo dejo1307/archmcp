@@ -1,23 +1,32 @@
 # C# — what enola extracts
 
-Parsed with tree-sitter. Detected by an MSBuild solution or project file (`.sln`,
-`.slnx`, `.csproj`) or by any `.cs` source within four directory levels.
+Sources parsed with tree-sitter; MSBuild project and solution files parsed as XML.
+Detected by a solution or project file of any .NET language (`.sln`, `.slnx`,
+`.csproj`, `.fsproj`, `.vbproj`) or by any `.cs` source within four directory
+levels.
 
-> **"C#", not "all of .NET".** This extractor reads `.cs`. It understands the .NET
-> *platform* around it — the MSBuild project system (solutions, per-module `project`
-> attribution, cycles judged against the assembly boundary), the build and test
-> layout conventions, generated-code conventions, and ASP.NET Core's two routing
-> mechanisms — but the other .NET languages and markup formats produce **nothing**:
+> **"C#", not "all of .NET" — but the project system is the whole platform's.**
+> Source reading is C#-only. The MSBuild layer beneath it is not: every project
+> file is parsed whatever language it compiles, so the assembly graph — which
+> project references which — is complete even where the sources are not.
 >
-> | Not extracted | Present in the benchmark corpus |
+> | Sources not extracted | Present in the benchmark corpus |
 > |---|---|
-> | F# (`.fs`, `.fsproj`) | 13 files |
-> | VB.NET (`.vb`, `.vbproj`) | 75 files |
-> | Razor / Blazor (`.razor`, `.cshtml`) | 91 files |
-> | XAML (`.xaml`) | 41 files |
+> | F# (`.fs`) | 5,539 files |
+> | VB.NET (`.vb`) | 3,784 files |
+> | Razor / Blazor (`.razor`, `.cshtml`) | 4,083 files |
+> | XAML (`.xaml`, `.axaml`) | 727 files |
 >
-> A mixed solution is indexed for its C# half only, and a Blazor front end
+> A mixed solution therefore has all of its projects and all of its
+> `ProjectReference` edges, and symbols for its C# half only. A Blazor front end
 > contributes its `.cs` symbols but none of its component or page routes.
+>
+> Reading `.fsproj` and `.vbproj` is also what keeps a claimed repository from
+> being an empty one. `giraffe-fsharp/Giraffe` ships `Giraffe.slnx`, seven
+> `.fsproj` and no `.cs` at all: detection matched the solution, this extractor
+> claimed the repository, emitted **zero facts** and reported a successful
+> snapshot — indistinguishable from an empty repo. It now emits the project graph,
+> and logs that the sources went unread.
 
 Fixture: [`csharp_sample`](../../internal/engine/testdata/repos/csharp_sample/) ·
 Unit coverage in
@@ -34,6 +43,9 @@ Unit coverage in
 | You write | enola stores | Kind |
 |---|---|---|
 | a directory of `.cs` files | one module carrying its `project` (the owning `.csproj`) | `module` |
+| a `.csproj` / `.fsproj` / `.vbproj` | that directory as a module carrying `project`, `target_framework`, `output_type`, `solution` | `module` |
+| `<ProjectReference Include="..\B\B.csproj" />` | a `depends_on` relation to B's directory | relation |
+| `<PackageReference Include="Serilog" />` | an external dependency tagged `package_manager=nuget` | `dependency` |
 | `class` / `interface` / `struct` / `record` / `enum` / `delegate` | a symbol with `symbol_kind`, `namespace` and `fqn` | `symbol` |
 | a method, constructor, operator | a symbol with `receiver` | `symbol` |
 | a **public or protected** field or property | a symbol | `symbol` |
@@ -46,6 +58,69 @@ Unit coverage in
 | `Lookup(id)` inside the declaring type | a `calls` relation | relation |
 | `[Route("x")]` + `[HttpGet("y")]` | a server route at `/x/y`, `handled_by` its action | `route` |
 | `app.MapGroup("api/x")` + `.MapGet("/y", H)` | a server route at `/api/x/y`, `handled_by` `H` | `route` |
+
+## The project system — where .NET's real dependency edges are
+
+Everywhere else in this extractor a fact is named after the **directory** it lives
+in. That is the right unit for a symbol and the wrong one for a dependency: .NET's
+dependency unit is the **assembly**, it is declared in a project file, and a
+`ProjectReference` between two of them is the one edge in a .NET solution that the
+build system itself enforces.
+
+```xml
+<!-- src/Acme.Api/Acme.Api.csproj -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Acme.Domain\Acme.Domain.csproj" />
+    <PackageReference Include="Serilog" Version="4.2.0" />
+  </ItemGroup>
+</Project>
+```
+
+```
+module  src/Acme.Api   props: project=Acme.Api, msbuild=true, target_framework=net9.0,
+                              output_type=Exe, language=csharp
+                       --depends_on--> src/Acme.Domain
+
+dependency  src/Acme.Api -> Serilog   props: package_manager=nuget, version=4.2.0,
+                                             source=external
+```
+
+A project root that also holds sources produces **one** module fact carrying both
+halves, not two. Facts are name-keyed so the graph would merge them anyway, but
+both would reach `facts.jsonl` and be counted twice in `fact_count` — a published
+benchmark number.
+
+Project files are read with a **token walk over `Name.Local`** rather than
+unmarshalled into a struct, because the two formats disagree about namespaces: an
+SDK-style project has none, a legacy one puts every element in the 2003 MSBuild
+namespace. `Include` paths use **backslashes on every host platform**, so they are
+normalised before any path operation — a plain `filepath.Dir` on macOS leaves them
+embedded and the edge points nowhere.
+
+**Conditions are ignored.** A `ProjectReference` guarded by
+`Condition="'$(TargetFramework)' == 'net48'"` is a real reference under some build
+configuration, and enola has no configuration to evaluate against. Taking every
+branch over-approximates the edge set, which is the safe direction: a missing edge
+hides a real dependency, an extra one describes a build that genuinely exists. The
+same target reached twice still yields one edge.
+
+A **solution** contributes grouping only — a `solution` prop naming which
+assemblies ship together — and never an edge. Two projects in one solution have no
+dependency by virtue of that alone, and drawing one would connect every project in
+a 148-project monorepo to every other. Both formats are read: `.slnx` as XML,
+`.sln` through its bespoke text format.
+
+`IsTestProject`, or a `Microsoft.NET.Test.Sdk` package reference, sets
+`module_role=test` and **outranks the path heuristic** — a test project named
+`Acme.Verification/` under `src/` is a test project whatever its path suggests.
+
+A reference escaping the repository root is dropped: it names a project that
+cannot be in this graph.
 
 ## Names, namespaces and the two spellings
 

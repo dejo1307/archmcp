@@ -16,6 +16,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -39,12 +40,20 @@ func (e *CSharpExtractor) Name() string { return "csharp" }
 const detectMaxDepth = 4
 
 // Detect returns true if the repository looks like a .NET project: an MSBuild
-// solution or project file, or any real C# source within detectMaxDepth levels.
+// solution or project file of ANY .NET language, or any real C# source, within
+// detectMaxDepth levels.
 //
 // A project file alone is not required, mirroring the Java extractor's reasoning
 // in reverse: `global.json` and `Directory.Build.props` are .NET-only but appear
 // in repositories that vendor a .NET tool without containing C#, while a `.cs`
 // file is unambiguous — no other ecosystem uses that extension.
+//
+// Detecting on `.fsproj` and `.vbproj` is what stops a claimed repository from
+// being an empty one. giraffe-fsharp/Giraffe ships `Giraffe.slnx`, 7 `.fsproj`
+// and no `.cs` at all: this extractor matched the solution, claimed the
+// repository, emitted zero facts and reported success — a green snapshot of 46
+// unread sources, indistinguishable from an empty repo. Now the project graph is
+// read whatever language the sources are in, so a claim always produces facts.
 func (e *CSharpExtractor) Detect(repoPath string) (bool, error) {
 	found := false
 	_ = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
@@ -67,8 +76,7 @@ func (e *CSharpExtractor) Detect(repoPath string) (bool, error) {
 			}
 			return nil
 		}
-		switch strings.ToLower(filepath.Ext(path)) {
-		case ".cs", ".csproj", ".sln", ".slnx":
+		if isCSharpFile(path) || isProjectFile(path) || isSolutionFile(path) {
 			found = true
 		}
 		return nil
@@ -80,15 +88,16 @@ func isCSharpFile(path string) bool {
 	return strings.HasSuffix(strings.ToLower(path), ".cs")
 }
 
-func isProjectFile(path string) bool {
-	return strings.HasSuffix(strings.ToLower(path), ".csproj")
-}
+// isProjectFile and isSolutionFile live in msbuild.go, which owns every MSBuild
+// format this extractor reads.
 
-// OwnsFile implements plugin.FileOwner for incremental caching. Project files are
-// owned alongside sources because they seed the project index every module fact
-// reads, so adding or renaming a .csproj must invalidate the cache.
+// OwnsFile implements plugin.FileOwner for incremental caching. Project and
+// solution files are owned alongside sources because they seed the project index
+// and the assembly graph every module fact reads, so adding, renaming or editing
+// one must invalidate the cache — editing a ProjectReference changes the graph
+// without touching a single .cs file.
 func (e *CSharpExtractor) OwnsFile(relFile string) bool {
-	return isCSharpFile(relFile) || isProjectFile(relFile)
+	return isCSharpFile(relFile) || isProjectFile(relFile) || isSolutionFile(relFile)
 }
 
 // Extract parses C# files and emits architectural facts.
@@ -102,17 +111,20 @@ func (e *CSharpExtractor) OwnsFile(relFile string) bool {
 // so a bare type reference cannot be resolved from one file's imports the way
 // Java's can. Both are settled in resolveCSharp once every file is in.
 func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
-	var csFiles, projFiles []string
+	var csFiles, projFiles, slnFiles []string
 	for _, relFile := range files {
 		switch {
 		case isCSharpFile(relFile):
 			csFiles = append(csFiles, relFile)
 		case isProjectFile(relFile):
 			projFiles = append(projFiles, relFile)
+		case isSolutionFile(relFile):
+			slnFiles = append(slnFiles, relFile)
 		}
 	}
 
 	projects := buildProjectIndex(projFiles)
+	msbuildProjects := parseProjects(repoPath, projFiles, slnFiles)
 
 	perFileFacts := parallel.MapFiles(ctx, csFiles, func(relFile string) fileResult {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
@@ -152,6 +164,10 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	allFacts = append(allFacts, composeControllerRoutes(allFacts, scaffold)...)
 	computeCSharpPerformsIO(allFacts)
 
+	// Module facts are built into a map keyed by directory, then overlaid with the
+	// MSBuild assembly graph, so a project root that also holds sources yields one
+	// fact rather than two facts the graph would have to merge.
+	mods := make(map[string]*facts.Fact, len(modules)+len(msbuildProjects))
 	for dir := range modules {
 		props := map[string]any{
 			"language":           "csharp",
@@ -160,12 +176,39 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 		if name, ok := projectForDir(dir, projects); ok {
 			props["project"] = name
 		}
-		allFacts = append(allFacts, facts.Fact{
+		mods[dir] = &facts.Fact{
 			Kind:  facts.KindModule,
 			Name:  dir,
 			File:  dir,
 			Props: props,
-		})
+		}
+	}
+	nugetDeps := applyMSBuild(mods, msbuildProjects)
+
+	dirs := make([]string, 0, len(mods))
+	for dir := range mods {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		allFacts = append(allFacts, *mods[dir])
+	}
+	allFacts = append(allFacts, nugetDeps...)
+
+	// len(csFiles), not `parsed`: a repository whose every .cs file was skipped as
+	// generated is a different situation, and the generated-skip count already
+	// reports it above.
+	if len(csFiles) == 0 && len(msbuildProjects) > 0 {
+		// The Giraffe case: projects found, no readable source. Say so rather than
+		// reporting a successful snapshot of nothing — the assembly graph below is
+		// real, but it is not the whole repository.
+		langs := map[string]int{}
+		for _, p := range msbuildProjects {
+			langs[p.language]++
+		}
+		log.Printf("[csharp-extractor] no C# sources: emitting the project graph only "+
+			"(%d project(s) by language %v); sources in other .NET languages are not read yet",
+			len(msbuildProjects), langs)
 	}
 
 	return allFacts, nil

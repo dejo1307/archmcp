@@ -1238,7 +1238,16 @@ import (
 // DTO, constant and attribute packages told to extract interfaces. Constructors
 // are not behaviour (a record has one too) and nested types are not counted, so a
 // class holding a nested handler stays a data holder.
-const cacheVersion = "v171"
+// v172: MSBuild project files are PARSED rather than read by path. A
+// ProjectReference becomes a module depends_on edge, so .NET's dependency unit —
+// the assembly — is finally in the graph; before this, cycles and package_metrics
+// judged .NET at directory granularity while MSBuild judged it at assembly
+// granularity. PackageReference becomes a nuget dependency fact, and
+// AssemblyName/TargetFramework/OutputType/IsTestProject/solution become module
+// props. Project files of EVERY .NET language are read (.fsproj, .vbproj), which
+// is what stops a claimed repository from being an empty one: Giraffe ships a
+// .slnx and no .cs, so the extractor matched, claimed it and emitted zero facts.
+const cacheVersion = "v172"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
