@@ -1310,7 +1310,13 @@ import (
 // NOT emitted: expanding it needs each controller's area, and a route at a literal
 // /{area}/… would be a URL the application never serves. The count left generic is
 // logged rather than silently absorbed.
-const cacheVersion = "v179"
+// v180: DI registrations are references. A .NET app calls almost everything
+// through an interface, and the only place the implementation is named is
+// `services.AddScoped<IFoo, Foo>()` in a startup file — so without reading those,
+// Foo has no inbound edge and reads as dead. 441 of bitwarden-server's 1,661
+// orphan classes (27%) and 59 of eShop's 202 were named in a registration and
+// nowhere else. A fix to the graph rather than to a confidence heuristic.
+const cacheVersion = "v180"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

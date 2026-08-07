@@ -993,6 +993,9 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		}
 	case "invocation_expression":
 		w.handleInvocation(node)
+		// A container registration is the only place a DI-wired implementation is
+		// named, so without this it has no inbound edge and reads as dead.
+		w.noteDIRegistration(node)
 		if w.metrics != nil {
 			if lam := iteratorLambda(node, w.src); lam != nil {
 				bounded := iteratorReceiverBounded(node, w.src)

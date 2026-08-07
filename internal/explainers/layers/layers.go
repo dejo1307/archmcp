@@ -170,6 +170,22 @@ var (
 		{Name: "config", Patterns: []string{"config", "configuration"}, Level: 2},
 	}
 
+	// .NET clean architecture. The layer is the last dot-separated component of a
+	// project name (Ordering.Domain, Catalog.API), which is why this pattern opts
+	// into dotted matching below.
+	// Only the four layers whose DEPENDENCY DIRECTION Clean Architecture actually
+	// fixes. `.Abstractions`, `.Shared`, `.Common` and `.Core` are deliberately
+	// absent: they name a shared kernel that sits at no particular level, and
+	// giving them one produced ~230 "violations" on OrchardCore — a modular CMS
+	// that is not clean architecture and never claimed to be. A pattern that fires
+	// on the wrong repo is worse than one that fires on fewer right ones.
+	dotnetCleanLayers = []layerDef{
+		{Name: "domain", Patterns: []string{"domain", "entities"}, Level: 0},
+		{Name: "application", Patterns: []string{"application", "usecases"}, Level: 1},
+		{Name: "infrastructure", Patterns: []string{"infrastructure", "persistence", "repositories"}, Level: 2},
+		{Name: "api", Patterns: []string{"api", "webapp", "grpc"}, Level: 3},
+	}
+
 	// Django layout
 	djangoLayers = []layerDef{
 		{Name: "models", Patterns: []string{"model", "models"}, Level: 0},
@@ -194,6 +210,13 @@ type patternDef struct {
 	// frameworks, if non-empty, requires at least one of these frameworks to be
 	// present in the facts for the pattern to be considered.
 	frameworks []string
+	// dottedSegments makes a path segment match on its dot-separated components as
+	// well as whole. .NET names a project `<Product>.<Layer>` — `Ordering.Domain`,
+	// `Catalog.API` — so the layer never equals the segment. Opt-in rather than
+	// global: a dotted directory in another ecosystem (`cal.com`, `foo.web`) would
+	// otherwise start matching layers it has nothing to do with.
+	dottedSegments bool
+
 	// signatureLayers, if non-empty, requires at least minSignatureLayers of the
 	// matched layers to be distinctive ones from this set (so a pattern built
 	// only from generic names — or from a single stray directory — does not
@@ -212,6 +235,9 @@ var patternDefs = []patternDef{
 	{name: "ios-clean", layers: iosLayers, frameworks: []string{"swiftui", "uikit"}},
 	{name: "spring-layered", layers: springLayers, frameworks: []string{"spring"}},
 	{name: "django", layers: djangoLayers, frameworks: []string{"django"}},
+	{name: "dotnet-clean", layers: dotnetCleanLayers, frameworks: []string{"aspnetcore", "efcore"},
+		dottedSegments: true, signatureLayers: []string{"domain", "infrastructure", "application"},
+		minSignatureLayers: 2},
 	{name: "ember-octane", layers: emberLayers, frameworks: []string{"ember"}},
 
 	// Language-gated patterns.
@@ -392,7 +418,7 @@ func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frame
 		matchCount := 0
 		for _, mod := range modules {
 			for i, layer := range def.layers {
-				if matchesLayer(mod.Name, layer.Patterns) {
+				if matchesLayerIn(mod.Name, layer.Patterns, def.dottedSegments) {
 					pattern.Layers[layer.Name] = &def.layers[i]
 					pattern.Modules[mod.Name] = layer.Name
 					matchCount++
@@ -510,6 +536,7 @@ func presentFrameworks(store *facts.Store) map[string]bool {
 // a classified layer instead of silently missing. Output is sorted for
 // determinism.
 func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPattern) []facts.Insight {
+	projectOf := moduleProjects(store)
 	type violation struct {
 		sourceModule, targetModule string
 		sourceLayer, targetLayer   string
@@ -577,6 +604,16 @@ func (e *LayerExplainer) detectViolations(store *facts.Store, pattern *archPatte
 			sourceDef := pattern.Layers[sourceLayer]
 			targetDef := pattern.Layers[targetLayer]
 			if sourceDef == nil || targetDef == nil || sourceDef.Level >= targetDef.Level {
+				continue
+			}
+			// Same assembly, no violation. .NET's layer boundary is the PROJECT, and
+			// two directories inside one compile into the same DLL — the reason the
+			// cycles explainer already says an intra-assembly cycle is a coupling
+			// signal rather than a build problem. Without this, eShop reported
+			// Basket.API/Repositories -> Basket.API/Model as infrastructure -> api,
+			// because the sub-directory takes its layer from its own name while its
+			// sibling inherits one from the project name they share.
+			if p := projectOf[sourceModule]; p != "" && p == projectOf[target] {
 				continue
 			}
 
@@ -688,13 +725,37 @@ func resolveLayerModuleFor(dep facts.Fact, modules map[string]string) (string, b
 
 // matchesLayer checks if a module path contains any of the given patterns.
 func matchesLayer(modulePath string, patterns []string) bool {
-	parts := strings.Split(strings.ToLower(modulePath), "/")
-	for _, part := range parts {
-		for _, pattern := range patterns {
-			if part == pattern {
-				return true
+	return matchesLayerIn(modulePath, patterns, false)
+}
+
+// matchesLayerIn compares whole path segments, and with dotted=true each
+// dot-separated component of a segment as well.
+func matchesLayerIn(modulePath string, patterns []string, dotted bool) bool {
+	for _, part := range strings.Split(strings.ToLower(modulePath), "/") {
+		candidates := []string{part}
+		if dotted && strings.Contains(part, ".") {
+			candidates = append(candidates, strings.Split(part, ".")...)
+		}
+		for _, c := range candidates {
+			for _, pattern := range patterns {
+				if c == pattern {
+					return true
+				}
 			}
 		}
 	}
 	return false
+}
+
+// moduleProjects maps each module to the assembly it compiles into, from the
+// `project` prop the MSBuild pass sets. Empty for languages that have no such
+// unit, which leaves their violation behaviour unchanged.
+func moduleProjects(store *facts.Store) map[string]string {
+	out := map[string]string{}
+	for _, m := range store.ByKind(facts.KindModule) {
+		if p, ok := m.Props["project"].(string); ok && p != "" {
+			out[m.Name] = p
+		}
+	}
+	return out
 }

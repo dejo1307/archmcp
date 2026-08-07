@@ -60,6 +60,7 @@ Unit coverage in
 | `app.MapGroup("api/x")` + `.MapGet("/y", H)` | a server route at `/api/x/y`, `handled_by` `H` | `route` |
 | `class X : DbContext` with `DbSet<T>` | a context, plus each `T` as an entity carrying its table | `storage` |
 | `httpClient.GetAsync("/api/x")`, `[Get("/api/x")]` | a `role=client` route — the calling side of a cross-repo edge | `route` |
+| `services.AddScoped<IFoo, Foo>()` | an `instantiates` relation to both — the only place `Foo` is named | relation |
 
 ## The project system — where .NET's real dependency edges are
 
@@ -644,6 +645,75 @@ Functions triggers, MassTransit consumers, .NET Aspire's AppHost topology, and
 conventionally-routed MVC actions — OrchardCore registers those through
 `MapAreaControllerRoute` in a `Startup`, and 94% of its controllers carry no
 `[Route]`.
+
+## Dependency injection is a reference
+
+A .NET application calls almost everything through an interface, and the only
+place the implementation is named is its registration:
+
+```csharp
+services.AddScoped<IOrderRepository, OrderRepository>();
+services.AddHostedService<OrderProcessor>();
+```
+
+Without reading those, `OrderRepository` has no inbound edge at all and reads as
+dead. Measured before this existed: **441 of bitwarden-server's 1,661 orphan
+classes (27%) and 59 of eShop's 202 (29%)** were named in a registration and
+nowhere else.
+
+This is a fix to the **graph**, not to a confidence heuristic — the registration is
+a real reference that was simply not being read, rather than a false positive to be
+explained away afterwards.
+
+The registrar list is explicit rather than an `Add*` match. A generic
+`AddRange<T>` or a builder's `AddPolicy<T>` names no service, and treating every
+`Add` method as a registration would draw an edge from a startup file to whatever
+type happened to be passed anywhere in the application.
+
+| Repo | orphans before | after | rescued | regressed |
+|---|---:|---:|---:|---:|
+| OrchardCore | 6,494 | **5,309** | 1,185 | **0** |
+| bitwarden-server | 5,149 | **4,292** | 857 | **0** |
+| jellyfin | 4,245 | **4,041** | 204 | **0** |
+| eShop | 819 | **753** | 66 | **0** |
+
+No symbols added, so the totals fall directly.
+
+## Layers — the `dotnet-clean` pattern
+
+.NET names a project `<Product>.<Layer>` — `Ordering.Domain`, `Catalog.API` — so
+the layer is the last dot-separated component of a path segment, never the whole
+segment. Matching is therefore opt-in per pattern: a dotted directory in another
+ecosystem (`cal.com`, `foo.web`) would otherwise start matching layers it has
+nothing to do with.
+
+Two things keep it from firing on repositories that are not clean architecture:
+
+**Only the four layers whose dependency direction the pattern actually fixes.**
+`.Abstractions`, `.Shared`, `.Common` and `.Core` name a shared kernel that sits at
+no particular level. Giving them one produced **~230 "violations" on OrchardCore**,
+a modular CMS that never claimed to be clean architecture — a worse failure than
+the weak `hexagonal` match it replaced.
+
+**A violation needs to cross an assembly boundary.** Two directories inside one
+project compile into the same DLL, which is why `cycles` already says an
+intra-assembly cycle is a coupling signal rather than a build problem. Without the
+gate, eShop reported `Basket.API/Repositories -> Basket.API/Model` as
+`infrastructure -> api`, because a sub-directory takes its layer from its own name
+while its sibling inherits one from the project name they share.
+
+| Repo | pattern | violations |
+|---|---|---:|
+| eShop | dotnet-clean (0.71) | 0 |
+| bitwarden-server | dotnet-clean (0.47) | 0 |
+| OrchardCore | dotnet-clean (0.42) | 0 |
+| jellyfin | dotnet-clean (0.39) | 0 |
+| roslyn | *(none)* | 0 |
+
+eShop previously matched `hexagonal` at 0.48 by reading directory names *inside*
+projects while the assembly graph went unused. roslyn matching nothing is correct:
+it is a compiler, not a layered application. Other ecosystems are unaffected —
+thingsboard still reports 75 violations and nowinandroid 4, unchanged.
 
 ## Names, namespaces and the two spellings
 
