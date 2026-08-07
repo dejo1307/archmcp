@@ -1,6 +1,7 @@
 package scalaextractor
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -337,5 +338,135 @@ object S {
 	}
 	if hasProp(findFact(t, ff, "src.S.alsoInMemory"), "io_direct") {
 		t.Error("counter.update must not be read as I/O")
+	}
+}
+
+// TestAnonymousClassBodyIsWalked pins the largest find_orphans false-positive cause
+// found on the corpus: the body of an anonymous class was dropped entirely.
+//
+// `handleInstanceExpression` walked only the constructor `arguments`, so everything
+// inside `new: …` (Scala 3, braceless) and `new T { … }` was invisible — corpus-wide
+// 1,817 such bodies carrying 5,673 declarations and 9,637 calls. An anonymous class
+// is where Scala puts implementations, so this is not an edge case: a method whose
+// only call site sits inside one read as dead code.
+func TestAnonymousClassBodyIsWalked(t *testing.T) {
+	src := `package p
+
+object Handler {
+  def make(): Handler = {
+    (a, b).mapN { case (x, y) =>
+      new:
+        val frame = encodeFrame(x)
+        def send(w: W): Unit = stream.onFirstMessage(y)
+    }
+  }
+
+  def other(): Base =
+    new Base {
+      val inner = helperCall()
+    }
+}
+`
+	ff := extractAST(t, "src/H.scala", src)
+
+	// The calls inside both anonymous-class bodies are now edges.
+	var all []string
+	for _, f := range ff {
+		all = append(all, callTargets(f)...)
+	}
+	for _, want := range []string{"encodeFrame", "onFirstMessage", "helperCall"} {
+		if !containsStr(all, want) {
+			t.Errorf("call inside an anonymous-class body was dropped: %q; have %v", want, all)
+		}
+	}
+	// A named anonymous class still records what it constructs.
+	found := false
+	for _, f := range ff {
+		if hasRelation(f, facts.RelInstantiates, "Base") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("`new Base { … }` should still record the instantiation")
+	}
+	// The braceless `new:` form has no type to instantiate, and must not invent one.
+	for _, f := range ff {
+		for _, r := range f.Relations {
+			if r.Kind == facts.RelInstantiates && r.Target == "" {
+				t.Error("anonymous `new:` invented an empty instantiates target")
+			}
+		}
+	}
+}
+
+// TestParenlessMemberReferenceIsAnEdge pins Scala's uniform access principle, which
+// makes this a correctness issue rather than a nicety: a parameterless method is
+// invoked WITHOUT parentheses, so the grammar reports `xa.transaction` and
+// `stream.union2` as field_expression — the same node as a field read. Treating only
+// call_expression as a reference left every such method with no inbound edge, and
+// live code was reported dead at high confidence.
+func TestParenlessMemberReferenceIsAnEdge(t *testing.T) {
+	src := `package p
+
+class Store(xa: Transactor) {
+  def tx(): Resource = xa.transaction.map(wrap)
+  def run(s: Stream): Stream = s.union2
+  def inferred(): Stream = build().union3
+  def flag(): Boolean = WebHook.Create.enabled
+}
+`
+	ff := extractAST(t, "src/S.scala", src)
+
+	// A parameterless call through a DECLARED type binds to it.
+	if got := callTargets(findFact(t, ff, "src.Store.tx")); !containsStr(got, "Transactor.transaction") {
+		t.Errorf("parenless call on a typed receiver not recorded; got %v", got)
+	}
+	if got := callTargets(findFact(t, ff, "src.Store.run")); !containsStr(got, "Stream.union2") {
+		t.Errorf("parenless call on a declared parameter type not bound; got %v", got)
+	}
+	// With no declared type there is nothing to bind to, so it stays a short name —
+	// enough for dead-code matching, without inventing an owner.
+	got := callTargets(findFact(t, ff, "src.Store.inferred"))
+	if !containsStr(got, "union3") {
+		t.Errorf("parenless call on an untyped receiver not recorded; got %v", got)
+	}
+	for _, bad := range got {
+		if strings.HasSuffix(bad, ".union3") {
+			t.Errorf("invented an owner for an untyped receiver: %q in %v", bad, got)
+		}
+	}
+	// A value read through an object records the qualified name AND keeps walking
+	// the chain, so every hop of `WebHook.Create.enabled` is a reference.
+	flag := callTargets(findFact(t, ff, "src.Store.flag"))
+	if !containsStr(flag, "WebHook.Create") {
+		t.Errorf("object member read not recorded; got %v", flag)
+	}
+}
+
+// TestParenlessReadIsNotAnInLoopCallee keeps the N+1 evidence readable. A field read
+// inside a loop is not per-iteration work in the sense the heuristic means, and
+// admitting every one would bury the real callees the analyzer prints.
+func TestParenlessReadIsNotAnInLoopCallee(t *testing.T) {
+	src := `package p
+
+object S {
+  def run(xs: List[Row]): Unit =
+    for (x <- xs) { sink(x.label) }
+  def sink(s: String): Unit = ()
+}
+`
+	ff := extractAST(t, "src/S.scala", src)
+	f := findFact(t, ff, "src.S.run")
+
+	got := propStrings(f, "calls_in_scaling_loop")
+	if containsStr(got, "label") {
+		t.Errorf("a field read was recorded as a per-iteration callee: %v", got)
+	}
+	if !containsStr(got, "src.S.sink") {
+		t.Errorf("the real per-iteration callee is missing: %v", got)
+	}
+	// The reference still exists as a graph edge, just not as a loop metric.
+	if !containsStr(callTargets(f), "label") {
+		t.Errorf("the field read should still be an edge; got %v", callTargets(f))
 	}
 }

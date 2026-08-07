@@ -1380,7 +1380,27 @@ import (
 // through, and production code declares `equals`, so the harness would vouch for a
 // symbol no test exercises and suppress a real finding. 50-85% of a spec's references
 // match a production symbol; the rest are library calls that match nothing.
-const cacheVersion = "v184"
+//
+// v185: walk anonymous-class bodies. handleInstanceExpression walked only the
+// constructor arguments, so the body of `new: …` (Scala 3, braceless) and
+// `new T { … }` was dropped whole — 1,817 such bodies across the corpus, carrying
+// 5,673 declarations and 9,637 calls. An anonymous class is where Scala puts
+// implementations, so this was the largest single cause of dead-code false
+// positives: an extension method whose only call site sat inside such a body had no
+// inbound edge at all and was reported at HIGH confidence.
+//
+// v186: a parenless member reference is an edge. Scala's uniform access principle
+// means a parameterless method is invoked WITHOUT parentheses, so `xa.transaction`
+// and `stream.union2` reach the grammar as field_expression — the same node as a
+// field read — and treating only call_expression as a reference left every such
+// method with no inbound edge. The same node also covers a value passed by name
+// (`WebHook.Create`) and a method used as a value (`Form.apply`), which are
+// references by any reading. The edge is emitted but NOT recorded as an in-loop
+// call: a field read inside a loop is not per-iteration work in the sense the N+1
+// heuristic means, and admitting every one would bury the real callees in the
+// analyzer's evidence. Costs 24-34% more edges, which is what a whole category of
+// reference is worth.
+const cacheVersion = "v186"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

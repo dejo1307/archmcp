@@ -321,6 +321,9 @@ func (w *astWalker) walk(n *sitter.Node) {
 	case "call_expression":
 		w.handleCall(n)
 		return
+	case "field_expression":
+		w.handleFieldExpression(n)
+		return
 	}
 	w.walkChildren(n)
 }
@@ -500,35 +503,10 @@ func (w *astWalker) calleeName(n *sitter.Node) string {
 
 // emitCallEdge records the call relation and the in-loop metric for one call site.
 func (w *astWalker) emitCallEdge(recvNode *sitter.Node, receiver, method string) {
-	target := method
-	switch {
-	case recvNode == nil, receiver == "this", receiver == "self":
-		// A bare call qualifies to the enclosing type ONLY when that type actually
-		// declares the name. Qualifying unconditionally was wrong in the common
-		// case: most bare calls in a Scala body are to imported functions,
-		// inherited members, or implicit extensions, and turning `load(u)` into
-		// `dir.Service.load` invents a member the type never declared — which, in a
-		// name-keyed graph, becomes a phantom node that dead-code and impact
-		// analysis then reason about. Unqualified is honest and still matches by
-		// short name.
-		if w.declaresMember(method) {
-			target = w.qualify(method)
-		}
+	target := w.memberTarget(recvNode, receiver, method)
+	if recvNode == nil || receiver == "this" || receiver == "self" {
 		if method == w.m.selfName {
 			w.m.recursiveSelf = true
-		}
-	case isTypeName(receiver):
-		// An object or companion: `Registry.next()`. Offered qualified for the
-		// merge pass to bind against the declaring type.
-		target = w.resolveTypeName(receiver) + "." + method
-	default:
-		// A binding whose type the source declares — a constructor parameter, a
-		// method parameter, an ascribed val. `repo.find(id)` with `repo: UserRepo`
-		// binds to UserRepo.find. The declared type may be a trait the runtime
-		// value overrides, which is the honest answer rather than a guess: the
-		// implements edges say who else could serve it.
-		if typeName := w.lookupLocalType(receiver); typeName != "" {
-			target = w.resolveTypeName(typeName) + "." + method
 		}
 	}
 	w.addEdge(facts.RelCalls, target)
@@ -538,6 +516,72 @@ func (w *astWalker) emitCallEdge(recvNode *sitter.Node, receiver, method string)
 	if !isStructuralBlockCall(method) {
 		w.m.recordCall(target)
 	}
+}
+
+// handleFieldExpression records a member ACCESS that is not a call.
+//
+// Scala's uniform access principle makes this necessary rather than optional: a
+// parameterless method is invoked without parentheses, so `xa.transaction` and
+// `stream.union2` are calls that the grammar reports as field_expression, exactly
+// like a field read. Treating only call_expression as a reference left every such
+// method with no inbound edge, which reported live code as dead — two of the
+// surviving high-confidence findings on the corpus were this and nothing else.
+//
+// The same node covers a value passed by name (`WebHook.Create`, `Role.ADMIN`) and a
+// method used as a value (`Form.apply`), which are references by any reading. The
+// walker cannot distinguish these cases without types, and does not need to: they
+// are all "this name is used here".
+//
+// The edge is emitted but NOT recorded as an in-loop call. A field read inside a loop
+// is not per-iteration work in the sense the N+1 heuristic means, and admitting every
+// one of them would bury the real callees in the analyzer's evidence.
+func (w *astWalker) handleFieldExpression(n *sitter.Node) {
+	recvNode, member := w.splitFieldExpression(n)
+	if member == "" {
+		w.walkChildren(n)
+		return
+	}
+	receiver := w.simpleName(recvNode)
+	w.addEdge(facts.RelCalls, w.memberTarget(recvNode, receiver, member))
+
+	// Walk the receiver so a chain (`Role.ADMIN.name`, `a.b.c`) records every hop.
+	if recvNode != nil {
+		w.walk(recvNode)
+	}
+}
+
+// memberTarget resolves a member reference — a call or a bare access — to the name
+// the edge should carry. The three cases are the three scopes Scala lets a reference
+// resolve through without a compiler.
+func (w *astWalker) memberTarget(recvNode *sitter.Node, receiver, member string) string {
+	switch {
+	case recvNode == nil, receiver == "this", receiver == "self":
+		// A bare reference qualifies to the enclosing type ONLY when that type
+		// actually declares the name. Qualifying unconditionally was wrong in the
+		// common case: most bare names in a Scala body are imported functions,
+		// inherited members, or implicit extensions, and turning `load(u)` into
+		// `dir.Service.load` invents a member the type never declared — which, in a
+		// name-keyed graph, becomes a phantom node that dead-code and impact
+		// analysis then reason about. Unqualified is honest and still matches by
+		// short name.
+		if w.declaresMember(member) {
+			return w.qualify(member)
+		}
+	case isTypeName(receiver):
+		// An object or companion: `Registry.next()`, `WebHook.Create`. Offered
+		// qualified for the merge pass to bind against the declaring type.
+		return w.resolveTypeName(receiver) + "." + member
+	default:
+		// A binding whose type the source declares — a constructor parameter, a
+		// method parameter, an ascribed val. `repo.find(id)` with `repo: UserRepo`
+		// binds to UserRepo.find. The declared type may be a trait the runtime
+		// value overrides, which is the honest answer rather than a guess: the
+		// implements edges say who else could serve it.
+		if typeName := w.lookupLocalType(receiver); typeName != "" {
+			return w.resolveTypeName(typeName) + "." + member
+		}
+	}
+	return member
 }
 
 // lookupLocalType returns the declared type of a binding visible at the current
@@ -1207,16 +1251,37 @@ func (w *astWalker) handleGiven(n *sitter.Node) {
 func (w *astWalker) handleInstanceExpression(n *sitter.Node) {
 	for i := uint(0); i < n.ChildCount(); i++ {
 		c := n.Child(i)
-		if !c.IsNamed() || c.Kind() == "arguments" {
+		if !c.IsNamed() {
 			continue
+		}
+		switch c.Kind() {
+		case "arguments", "template_body", "with_template_body", "indented_block", "block":
+			continue // handled below
 		}
 		if t := w.baseTypeName(c); t != "" {
 			w.addEdge(facts.RelInstantiates, w.resolveTypeName(t))
 			break
 		}
 	}
-	if args := n.ChildByFieldName("arguments"); args != nil {
-		w.walk(args)
+
+	// Walk the constructor arguments AND the anonymous class body.
+	//
+	// The body is the part that was missed, and missing it was not a small gap: an
+	// anonymous class is where Scala puts implementations, so `new: …` (Scala 3,
+	// braceless) and `new T { … }` routinely hold a whole object's worth of vals and
+	// defs. Walking only `arguments` dropped every declaration and every call inside
+	// them — corpus-wide, 1,817 bodies carrying 5,673 declarations and 9,637 calls —
+	// which is what made an extension method called only from inside such a body read
+	// as dead code.
+	for i := uint(0); i < n.ChildCount(); i++ {
+		c := n.Child(i)
+		if !c.IsNamed() {
+			continue
+		}
+		switch c.Kind() {
+		case "arguments", "template_body", "with_template_body", "indented_block", "block":
+			w.walk(c)
+		}
 	}
 }
 
