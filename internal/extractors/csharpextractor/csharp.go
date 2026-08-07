@@ -179,86 +179,41 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 		log.Printf("[csharp-extractor] skipped %d generated file(s) of %d", skipped, len(csFiles))
 	}
 
-	// Razor files are walked before the partial merge, because a `.razor`
-	// component and its `.razor.cs` code-behind are two halves of one generated
-	// class and must converge into a single fact.
-	razorResults := parallel.MapFiles(ctx, razorFiles, func(relFile string) []facts.Fact {
-		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
-		if err != nil {
-			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
-			return nil
-		}
-		return razorFacts(string(src), relFile)
-	})
-	for i, ff := range razorResults {
+	// Every non-C# source language runs the same pass: read, scan, fold in, note
+	// the module. They are listed rather than written out four times — the blocks
+	// were identical apart from the scanner, and repeating them is what took this
+	// function to cyclomatic 40 over the phases that added them.
+	//
+	// Razor and XAML run BEFORE the partial merge on purpose: a `.razor` component
+	// and its `.razor.cs`, or an `x:Class` document and its `.xaml.cs`, are two
+	// halves of one generated class and must converge into a single fact.
+	//
+	// VB.NET and F# are emitted into this same fact set rather than a separate one,
+	// which is the point: a solution mixes languages inside one assembly, so a VB
+	// class referencing a C# type has to resolve through the one shared type index
+	// resolveCSharpTargets builds below.
+	for _, pass := range []langPass{
+		{lang: "razor", files: razorFiles, scan: func(rel string, src []byte) ([]facts.Fact, bool) {
+			return razorFacts(string(src), rel), true
+		}},
+		{lang: "xaml", files: xamlFiles, scan: func(rel string, src []byte) ([]facts.Fact, bool) {
+			return xamlFacts(string(src), rel), true
+		}},
+		{lang: "vbnet", files: vbFiles, scan: func(rel string, src []byte) ([]facts.Fact, bool) {
+			if isGeneratedVB(rel, string(src)) {
+				return nil, false
+			}
+			return scanVB(string(src), rel), true
+		}},
+		{lang: "fsharp", files: fsFiles, scan: func(rel string, src []byte) ([]facts.Fact, bool) {
+			return scanFSharp(string(src), rel), true
+		}},
+	} {
+		ff, read := runLangPass(ctx, repoPath, pass, noteModule)
 		allFacts = append(allFacts, ff...)
-		noteModule(razorFiles[i], "razor")
-	}
-	if len(razorFiles) > 0 {
-		log.Printf("[csharp-extractor] parsed %d Razor file(s)", len(razorFiles))
-	}
-
-	// XAML, for the same reason and before the same merge: an x:Class document is
-	// one half of a partial class whose other half is its .xaml.cs code-behind.
-	xamlResults := parallel.MapFiles(ctx, xamlFiles, func(relFile string) []facts.Fact {
-		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
-		if err != nil {
-			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
-			return nil
+		if len(pass.files) > 0 {
+			log.Printf("[csharp-extractor] parsed %d %s file(s) of %d", read, pass.lang, len(pass.files))
 		}
-		return xamlFacts(string(src), relFile)
-	})
-	for i, ff := range xamlResults {
-		allFacts = append(allFacts, ff...)
-		noteModule(xamlFiles[i], "xaml")
-	}
-	if len(xamlFiles) > 0 {
-		log.Printf("[csharp-extractor] parsed %d XAML file(s)", len(xamlFiles))
-	}
-
-	// VB.NET. Emitted into the SAME fact set as C#, which is the point: a solution
-	// mixes the two languages inside one assembly, so a VB class referencing a C#
-	// type must resolve through the one shared type index resolveCSharpTargets
-	// builds below.
-	vbResults := parallel.MapFiles(ctx, vbFiles, func(relFile string) []facts.Fact {
-		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
-		if err != nil {
-			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
-			return nil
-		}
-		if isGeneratedVB(relFile, string(src)) {
-			return nil
-		}
-		return scanVB(string(src), relFile)
-	})
-	vbParsed := 0
-	for i, ff := range vbResults {
-		if ff == nil {
-			continue
-		}
-		vbParsed++
-		allFacts = append(allFacts, ff...)
-		noteModule(vbFiles[i], "vbnet")
-	}
-	if len(vbFiles) > 0 {
-		log.Printf("[csharp-extractor] parsed %d VB.NET file(s) of %d", vbParsed, len(vbFiles))
-	}
-
-	// F#, into the same fact set for the same reason as VB.
-	fsResults := parallel.MapFiles(ctx, fsFiles, func(relFile string) []facts.Fact {
-		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
-		if err != nil {
-			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
-			return nil
-		}
-		return scanFSharp(string(src), relFile)
-	})
-	for i, ff := range fsResults {
-		allFacts = append(allFacts, ff...)
-		noteModule(fsFiles[i], "fsharp")
-	}
-	if len(fsFiles) > 0 {
-		log.Printf("[csharp-extractor] parsed %d F# file(s)", len(fsFiles))
 	}
 
 	allFacts = mergePartialTypes(allFacts)
@@ -346,6 +301,49 @@ func dominantModuleLanguage(byLang map[string]int) string {
 		}
 	}
 	return best
+}
+
+// langPass is one non-C# source language's per-file pass.
+//
+// scan reports whether the file was READ, distinct from whether it produced
+// facts: a generated VB file is skipped and must not mark its directory as a
+// module, while a `_Imports.razor` is read, produces nothing, and still belongs
+// to one.
+type langPass struct {
+	lang  string
+	files []string
+	scan  func(relFile string, src []byte) ([]facts.Fact, bool)
+}
+
+// runLangPass parses one language's files in parallel and returns their facts
+// plus the number actually read. MapFiles preserves input order, so the fact set
+// stays a function of the file list rather than of scheduling.
+func runLangPass(ctx context.Context, repoPath string, p langPass, note func(rel, lang string)) ([]facts.Fact, int) {
+	type result struct {
+		facts []facts.Fact
+		read  bool
+	}
+	results := parallel.MapFiles(ctx, p.files, func(relFile string) result {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
+			return result{}
+		}
+		ff, read := p.scan(relFile, src)
+		return result{facts: ff, read: read}
+	})
+
+	var out []facts.Fact
+	n := 0
+	for i, r := range results {
+		if !r.read {
+			continue
+		}
+		n++
+		out = append(out, r.facts...)
+		note(p.files[i], p.lang)
+	}
+	return out, n
 }
 
 // fileResult holds one file's extracted facts plus its ASP.NET routing evidence,
