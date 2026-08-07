@@ -8,7 +8,7 @@
 // failure is silent by nature — every file parses to nothing, which looks exactly
 // like a repository containing no C# — so extractFileAST logs once when the
 // grammar is refused rather than returning an empty result unremarked.
-package csharpextractor
+package dotnetextractor
 
 import (
 	"context"
@@ -31,7 +31,12 @@ func New() *CSharpExtractor {
 	return &CSharpExtractor{}
 }
 
-func (e *CSharpExtractor) Name() string { return "csharp" }
+// Name is "dotnet", not "csharp". It read only C# when it was named, and now reads
+// C#, VB.NET, F#, Razor, XAML and the MSBuild project system. The old name is
+// still accepted in a config's `extractors:` list — see config.IsExtractorEnabled,
+// and note that such a list REPLACES the default rather than merging, so a stale
+// name silently disables the extractor instead of erroring.
+func (e *CSharpExtractor) Name() string { return "dotnet" }
 
 // detectMaxDepth bounds Detect's walk. A .NET solution puts its project files
 // under src/<Project>/<Project>.csproj at most a few levels down; walking the
@@ -140,7 +145,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	perFileFacts := parallel.MapFiles(ctx, csFiles, func(relFile string) fileResult {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
-			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
+			log.Printf("[dotnet-extractor] error reading %s: %v", relFile, err)
 			return fileResult{}
 		}
 		if isGeneratedSource(relFile, src) {
@@ -176,7 +181,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 		noteModule(csFiles[i], "csharp")
 	}
 	if skipped := len(csFiles) - parsed; skipped > 0 {
-		log.Printf("[csharp-extractor] skipped %d generated file(s) of %d", skipped, len(csFiles))
+		log.Printf("[dotnet-extractor] skipped %d generated file(s) of %d", skipped, len(csFiles))
 	}
 
 	// Every non-C# source language runs the same pass: read, scan, fold in, note
@@ -212,7 +217,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 		ff, read := runLangPass(ctx, repoPath, pass, noteModule)
 		allFacts = append(allFacts, ff...)
 		if len(pass.files) > 0 {
-			log.Printf("[csharp-extractor] parsed %d %s file(s) of %d", read, pass.lang, len(pass.files))
+			log.Printf("[dotnet-extractor] parsed %d %s file(s) of %d", read, pass.lang, len(pass.files))
 		}
 	}
 
@@ -234,7 +239,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 			}
 		}
 		allFacts = append(allFacts, conventionalRouteFacts(scaffold.conventional, symbolNames)...)
-		log.Printf("[csharp-extractor] conventional routing: %d registration(s) resolved, "+
+		log.Printf("[dotnet-extractor] conventional routing: %d registration(s) resolved, "+
 			"%d left generic (a {controller}/{action} template needs each controller's area)",
 			len(scaffold.conventional), scaffold.conventionalSkipped)
 	}
@@ -282,7 +287,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 		for _, p := range msbuildProjects {
 			langs[p.language]++
 		}
-		log.Printf("[csharp-extractor] no C# sources: emitting the project graph only "+
+		log.Printf("[dotnet-extractor] no C# sources: emitting the project graph only "+
 			"(%d project(s) by language %v); sources in other .NET languages are not read yet",
 			len(msbuildProjects), langs)
 	}
@@ -326,7 +331,7 @@ func runLangPass(ctx context.Context, repoPath string, p langPass, note func(rel
 	results := parallel.MapFiles(ctx, p.files, func(relFile string) result {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
-			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
+			log.Printf("[dotnet-extractor] error reading %s: %v", relFile, err)
 			return result{}
 		}
 		ff, read := p.scan(relFile, src)

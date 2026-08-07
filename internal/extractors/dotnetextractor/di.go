@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 // Dependency-injection registration — the reference a DI-wired class actually has.
 //

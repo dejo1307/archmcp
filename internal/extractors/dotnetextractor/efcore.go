@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 // Persistence — EF Core, Dapper and MongoDB.
 //

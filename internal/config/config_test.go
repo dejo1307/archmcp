@@ -196,3 +196,23 @@ func TestDefaultIgnores_NestedHeavyDirsExcluded(t *testing.T) {
 		t.Error("a production file merely containing a heavy-dir token must not be ignored")
 	}
 }
+
+// TestExtractorAlias pins the compatibility promise made when `csharp` became
+// `dotnet`. An `extractors:` list REPLACES the default rather than merging, so a
+// config written under the old name would otherwise silently disable .NET
+// extraction and report zero facts with no error.
+func TestExtractorAlias(t *testing.T) {
+	old := &Config{Extractors: []string{"go", "csharp"}}
+	if !old.IsExtractorEnabled("dotnet") {
+		t.Error(`a config listing "csharp" must still enable the dotnet extractor`)
+	}
+	current := &Config{Extractors: []string{"go", "dotnet"}}
+	if !current.IsExtractorEnabled("dotnet") {
+		t.Error(`a config listing "dotnet" must enable it`)
+	}
+	// The alias is one-way: it does not enable extractors the user excluded.
+	narrowed := &Config{Extractors: []string{"go"}}
+	if narrowed.IsExtractorEnabled("dotnet") {
+		t.Error("an extractors list that omits .NET must keep it disabled")
+	}
+}

@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 // F# — the third language on the platform.
 //

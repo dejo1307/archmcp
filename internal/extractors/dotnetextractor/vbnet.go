@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 // VB.NET — the other language that compiles to the same assemblies.
 //

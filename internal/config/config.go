@@ -423,7 +423,7 @@ func Default() *Config {
 			"**/tests/**/*.xaml", "**/test/**/*.xaml", "**/Tests/**/*.xaml", "**/Test/**/*.xaml", "**/*.Tests/**/*.xaml",
 			"**/tests/**/*.axaml", "**/test/**/*.axaml", "**/Tests/**/*.axaml", "**/Test/**/*.axaml", "**/*.Tests/**/*.axaml",
 		},
-		Extractors: []string{"cpp", "csharp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible", "mdintent"},
+		Extractors: []string{"cpp", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible", "mdintent"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
@@ -602,8 +602,27 @@ func (c *Config) RepoPaths() ([]string, error) {
 }
 
 // IsExtractorEnabled returns true if the named extractor is enabled.
+// extractorAliases maps an extractor's current name to names it also answers to.
+//
+// `csharp` became `dotnet` when the extractor grew past C# into VB.NET, F#, Razor
+// and XAML. The alias is not politeness: an `extractors:` list REPLACES the
+// built-in default rather than merging with it, so a config written under the old
+// name would silently disable .NET extraction entirely and report zero facts with
+// no error — the exact failure this file's own comments warn about.
+var extractorAliases = map[string][]string{
+	"dotnet": {"csharp"},
+}
+
 func (c *Config) IsExtractorEnabled(name string) bool {
-	return contains(c.Extractors, name)
+	if contains(c.Extractors, name) {
+		return true
+	}
+	for _, alias := range extractorAliases[name] {
+		if contains(c.Extractors, alias) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsExplainerEnabled returns true if the named explainer is enabled.

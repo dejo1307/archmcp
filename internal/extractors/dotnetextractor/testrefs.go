@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 import (
 	"context"
@@ -47,7 +47,7 @@ func (e *CSharpExtractor) ExtractTestRefs(ctx context.Context, repoPath string, 
 	perFile := parallel.MapFiles(ctx, csFiles, func(relFile string) []facts.Fact {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
-			log.Printf("[csharp-extractor] error reading test file %s: %v", relFile, err)
+			log.Printf("[dotnet-extractor] error reading test file %s: %v", relFile, err)
 			return nil
 		}
 		if isGeneratedSource(relFile, src) {

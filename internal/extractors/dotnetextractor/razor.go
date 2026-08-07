@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 // Razor — Blazor components (`.razor`) and MVC / Razor Pages views (`.cshtml`).
 //

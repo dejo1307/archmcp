@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 import (
 	"log"
@@ -43,7 +43,7 @@ func extractFileASTFull(src []byte, relFile string) ([]facts.Fact, aspnetScaffol
 		// accept, and the symptom — every C# file parsing to nothing — is
 		// otherwise indistinguishable from a repository with no C# in it.
 		grammarErrOnce.Do(func() {
-			log.Printf("[csharp-extractor] tree-sitter grammar unusable, no C# will be extracted: %v", err)
+			log.Printf("[dotnet-extractor] tree-sitter grammar unusable, no C# will be extracted: %v", err)
 		})
 		return nil, aspnetScaffold{}
 	}

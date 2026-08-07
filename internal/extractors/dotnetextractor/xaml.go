@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 // XAML — WPF, WinUI/UWP, MAUI and Avalonia views.
 //

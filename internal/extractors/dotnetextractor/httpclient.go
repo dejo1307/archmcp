@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 // Outbound HTTP — what a .NET service CALLS.
 //

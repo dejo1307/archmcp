@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 import (
 	"testing"

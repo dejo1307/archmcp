@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 // Conventional MVC routing — the URLs that come from a registration rather than
 // from an attribute.

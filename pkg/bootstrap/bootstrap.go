@@ -29,7 +29,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/unusedroutes"
 	"github.com/enola-labs/enola/internal/extractors/ansibleextractor"
 	"github.com/enola-labs/enola/internal/extractors/cppextractor"
-	"github.com/enola-labs/enola/internal/extractors/csharpextractor"
+	"github.com/enola-labs/enola/internal/extractors/dotnetextractor"
 	"github.com/enola-labs/enola/internal/extractors/goextractor"
 	"github.com/enola-labs/enola/internal/extractors/grpcextractor"
 	"github.com/enola-labs/enola/internal/extractors/hclextractor"
@@ -375,7 +375,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 
 	// Register all OSS extractors
 	eng.RegisterExtractor(cppextractor.New())
-	eng.RegisterExtractor(csharpextractor.New())
+	eng.RegisterExtractor(dotnetextractor.New())
 	eng.RegisterExtractor(goextractor.New())
 	eng.RegisterExtractor(mdintent.New())
 	eng.RegisterExtractor(grpcextractor.New())

@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 import (
 	"log"
@@ -366,7 +366,7 @@ func composeControllerRoutes(allFacts []facts.Fact, sc aspnetScaffold) []facts.F
 		}
 	}
 	if unrouted > 0 {
-		log.Printf("[csharp-extractor] %d controller action(s) use conventional routing; "+
+		log.Printf("[dotnet-extractor] %d controller action(s) use conventional routing; "+
 			"their paths come from Program.cs and were not extracted", unrouted)
 	}
 	return out

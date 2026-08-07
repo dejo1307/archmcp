@@ -1,4 +1,4 @@
-package csharpextractor
+package dotnetextractor
 
 // MSBuild project system — the .NET assembly graph.
 //
