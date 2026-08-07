@@ -1195,7 +1195,21 @@ import (
 // and production code really does declare Equal, so the harness would have vouched
 // for a symbol no test exercises. Measured on jellyfin: 210 test-ref facts, 2,826
 // distinct targets, 70% matching a production symbol.
-const cacheVersion = "v167"
+// v168: a C# call on an untracked receiver emits a bare method-name edge. The
+// call graph was same-type-and-static only, and a DI-wired .NET application calls
+// almost everything through an interface — so a method reached that way had no
+// inbound edge at all and read as dead. On jellyfin that was 2,478 of 6,975
+// methods; it is now 988, and both halves of every implicit interface
+// implementation (the interface member AND the class method serving it) are
+// rescued. The name is kept BARE rather than bound even when exactly one type
+// declares it: jellyfin has one `Match` method, FileStackRule.Match, while four of
+// its five variable-receiver `.Match(` call sites are Regex — binding on
+// uniqueness would have pointed them into the video-stack parser, and a wrong edge
+// feeds impact_analysis and find_path. Nothing is lost, because the dead-code
+// detector matches by short name: measured identical rescue with and without
+// binding. A name no type in the repo declares is dropped, which is the majority
+// (.ToString(), .Add(), .GetAwaiter()).
+const cacheVersion = "v168"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

@@ -1070,6 +1070,17 @@ func (w *astWalker) handleInvocation(node *sitter.Node) {
 			w.addEdge(facts.RelCalls, aliasOr(w.aliases, recv)+"."+name)
 			w.recordCallMetrics(recv+"."+name, name, args)
 		default:
+			// A call on some other receiver — a field, a local, a parameter, an
+			// interface-typed dependency. The receiver's static type is not
+			// tracked, so the method name is emitted BARE and bound in
+			// resolveCSharpTargets against the project's own method index.
+			//
+			// Without it the C# call graph is same-type-only, and a method reached
+			// through an interface — how a DI-wired .NET application calls almost
+			// everything — has no inbound edge at all. On jellyfin that read as
+			// 1,667 dead methods, including BOTH halves of every implicit interface
+			// implementation: the interface member and the class method serving it.
+			w.addEdge(facts.RelCalls, name)
 			w.recordInLoop(recv, name)
 		}
 	}

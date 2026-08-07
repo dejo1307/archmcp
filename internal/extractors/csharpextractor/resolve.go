@@ -284,10 +284,24 @@ func resolveCSharpTargets(allFacts []facts.Fact) {
 	partialTypes := make(map[string]bool)
 	symbolNames := make(map[string]bool, len(allFacts))
 
+	// methodByShortName is the set of method names this repository declares. Only
+	// membership matters — see bindMemberCall, which keeps the name bare rather
+	// than binding it — so the value is unused and only the key is read.
+	methodByShortName := make(map[string]string)
 	for i := range allFacts {
-		if allFacts[i].Kind == facts.KindSymbol {
-			symbolNames[allFacts[i].Name] = true
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
 		}
+		symbolNames[f.Name] = true
+		if f.Props["symbol_kind"] != facts.SymbolMethod {
+			continue
+		}
+		short := f.Name
+		if dot := strings.LastIndex(short, "."); dot >= 0 {
+			short = short[dot+1:]
+		}
+		methodByShortName[short] = f.Name
 	}
 
 	for i := range allFacts {
@@ -382,12 +396,46 @@ func resolveCSharpTargets(allFacts []facts.Fact) {
 					if partialTypes[recv] && !symbolNames[r.Target] {
 						continue
 					}
+					break
 				}
+				// A dotless target is a member call on an untracked receiver.
+				bound, keep := bindMemberCall(r.Target, methodByShortName)
+				if !keep {
+					continue
+				}
+				r.Target = bound
 			}
 			kept = append(kept, r)
 		}
 		f.Relations = kept
 	}
+}
+
+// bindMemberCall decides what to do with a bare method name from a call on an
+// untracked receiver: keep it if the repository declares a method of that name,
+// drop it otherwise.
+//
+// The name is deliberately kept BARE even when exactly one type declares it,
+// which is where this departs from the Swift extractor's post-pass. Binding a
+// unique name looks free and is not: jellyfin declares exactly one `Match`
+// method, `Emby.Naming/Video.FileStackRule.Match`, while four of its five
+// variable-receiver `.Match(` call sites are `Regex` — so four call sites would
+// have acquired an edge into the video-stack parser. A wrong edge feeds
+// impact_analysis and find_path, and is worse than the missing one it replaces.
+//
+// Nothing is lost by refusing to guess. The consumer this exists for — the
+// dead-code detector — matches a reference by SHORT NAME, so a bare `Match`
+// rescues FileStackRule.Match exactly as well as a bound target would, and the
+// call graph stays honest about a receiver type it never resolved.
+//
+// Dropping an undeclared name is the other half, and it is the majority: every
+// `.ToString()`, `.Add()` and `.GetAwaiter()` in the repository would otherwise
+// become an edge to a symbol that does not exist.
+func bindMemberCall(name string, methodByShortName map[string]string) (string, bool) {
+	if _, declared := methodByShortName[name]; !declared {
+		return "", false
+	}
+	return name, true
 }
 
 // isTypeKind reports whether a symbol_kind names a TYPE declaration — the only

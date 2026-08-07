@@ -263,6 +263,32 @@ recognisable suffix; a bare path here is frequently the root itself.
 Measured on [eShop](https://github.com/dotnet/eShop): 30 routes, all with composed
 prefixes; the MCP SDK's caller-mounted file contributes 0.
 
+## Dead code, and why the bare edge matters
+
+A DI-wired .NET application calls almost everything through an interface. With a
+same-type-only call graph, every method reached that way has no inbound edge at
+all — so it reads as dead, and so does the interface member it implements.
+
+Measured on jellyfin, before and after the bare member-call edge:
+
+| | methods unreferenced | all symbols unreferenced |
+|---|---:|---:|
+| same-type edges only | 2,478 / 6,975 (36%) | 7,485 / 15,665 |
+| with bare member-call edges | **988 / 6,975 (14%)** | 5,982 / 15,665 |
+
+1,490 methods rescued, at the cost of 61% more `calls` edges.
+
+What remains flagged is largely **not** a false positive. jellyfin discovers its
+providers by reflection (`GetExports<IImageProvider>()`), so a class like
+`ComicImageProvider` genuinely has no static reference anywhere in the tree — the
+same limitation every language has with registry and plugin wiring, and one the
+orphan detector's own caveat already describes.
+
+Note also that `find_orphans` reports **no** high-confidence findings for C#. Its
+confidence model rates plain `function` calls as reliably tracked, and C# has
+almost no free functions — everything is a method, which it rates `low`. Treat C#
+orphan output as leads to verify, not a cleanup list.
+
 ## Complexity and I/O
 
 Like the other AST extractors, each member body is walked once for `cyclomatic`,
@@ -390,11 +416,16 @@ reason.
   and on a BCL-scale repository emitting them would multiply the symbol count without
   adding a node anyone traverses. Their initializers and accessor bodies are still walked,
   so the call edges inside them survive, attributed to the enclosing type.
-- **A call on an arbitrary receiver draws no edge.** `foo.Handle()` records its name for
-  the in-loop metrics only. The receiver's static type is not tracked, and `Execute`,
-  `Handle` and `Dispose` each name hundreds of unrelated methods in a large solution.
-  Same-type calls (`Foo()`, `this.Foo()`) and static calls (`Type.Method()`, when `Type`
-  is a declared type) do draw edges.
+- **A call on an arbitrary receiver draws a BARE edge, never a bound one.** `foo.Handle()`
+  emits `calls -> Handle` — the method name alone — because the receiver's static type is
+  not tracked. It is kept bare even when exactly one type declares that name: jellyfin has
+  a single `Match` method (`FileStackRule.Match`) while four of its five variable-receiver
+  `.Match(` call sites are `Regex`, so binding on uniqueness would point them into the
+  video-stack parser, and a wrong edge feeds `impact_analysis` and `find_path`. Nothing is
+  lost — the dead-code detector matches by short name, and the rescue measures identical
+  either way. A name no type in the repository declares is dropped, so `.ToString()` and
+  `.Add()` do not become edges to symbols that do not exist. Same-type calls (`Foo()`,
+  `this.Foo()`) and static calls (`Type.Method()`) still resolve to canonical targets.
 - **Extension methods record their receiver but bind no call site.** A
   `static bool IsOpen(this Order o)` carries `extension_method` and `extends_type=Order`;
   an `order.IsOpen()` call site needs the receiver's static type to bind, so it does not.

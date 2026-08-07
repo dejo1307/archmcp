@@ -1,6 +1,7 @@
 package csharpextractor
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
@@ -645,5 +646,135 @@ public class Fixed
 	// The call is still recorded as in-loop; only the N+1 subset excludes it.
 	if inLoop, _ := run.Props["calls_in_loop"].([]string); len(inLoop) == 0 {
 		t.Error("calls_in_loop should still record the call")
+	}
+}
+
+// memberCallTargets runs the full pipeline and returns one symbol's calls targets.
+func memberCallTargets(t *testing.T, src, relFile, symbol string) []string {
+	t.Helper()
+	ff := extractFileAST([]byte(src), relFile)
+	ff = mergePartialTypes(ff)
+	resolveCSharpTargets(ff)
+	f := factByName(ff, symbol)
+	if f == nil {
+		t.Fatalf("symbol %q missing", symbol)
+	}
+	var out []string
+	for _, r := range f.Relations {
+		if r.Kind == facts.RelCalls {
+			out = append(out, r.Target)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+const memberCallSrc = `
+namespace Acme;
+
+public interface IOrderRepository
+{
+    Order Find(int id);
+}
+
+public class OrderService
+{
+    private readonly IOrderRepository _repo;
+
+    public Order Handle(int id)
+    {
+        // A call through an interface-typed field: the receiver's static type is
+        // not tracked, so this is the case the bare edge exists for.
+        var order = _repo.Find(id);
+        // Declared by nothing in this repository — must be dropped rather than
+        // dangling.
+        var s = order.ToString();
+        return order;
+    }
+}
+`
+
+// TestMemberCall_OnUntrackedReceiverEmitsBareEdge covers the dominant dead-code
+// false positive. A DI-wired .NET application calls almost everything through an
+// interface, and with a same-type-only call graph those methods had no inbound
+// edge at all — 2,478 of jellyfin's 6,975 methods read as unreferenced.
+func TestMemberCall_OnUntrackedReceiverEmitsBareEdge(t *testing.T) {
+	got := memberCallTargets(t, memberCallSrc, "src/OrderService.cs", "src.OrderService.Handle")
+	if !has(got, "Find") {
+		t.Errorf("interface-dispatched call should leave a bare reference; got %v", got)
+	}
+	// The interface member is what the bare name rescues.
+	if factByName(extractFileAST([]byte(memberCallSrc), "src/OrderService.cs"), "src.IOrderRepository.Find") == nil {
+		t.Fatal("interface member missing")
+	}
+}
+
+// TestMemberCall_UndeclaredNameIsDropped is the other half. Every `.ToString()`,
+// `.Add()` and `.GetAwaiter()` in a repository would otherwise become an edge to a
+// symbol that does not exist.
+func TestMemberCall_UndeclaredNameIsDropped(t *testing.T) {
+	got := memberCallTargets(t, memberCallSrc, "src/OrderService.cs", "src.OrderService.Handle")
+	if has(got, "ToString") {
+		t.Errorf("a name no type declares must not become an edge; got %v", got)
+	}
+}
+
+// TestMemberCall_UniqueNameIsNotBound pins the decision that a uniquely-named
+// method is still left BARE. jellyfin declares exactly one `Match` method
+// (FileStackRule.Match) while four of its five variable-receiver `.Match(` call
+// sites are Regex — so binding on uniqueness would have pointed four call sites
+// into the video-stack parser. The dead-code detector matches by short name, so
+// binding buys nothing and only risks a wrong edge into impact_analysis.
+func TestMemberCall_UniqueNameIsNotBound(t *testing.T) {
+	got := memberCallTargets(t, `
+namespace Acme;
+
+public class FileStackRule
+{
+    public bool Match(string s) => true;
+}
+
+public class Parser
+{
+    public void Run(System.Text.RegularExpressions.Regex regex, string input)
+    {
+        // The ONLY Match method this repo declares is FileStackRule.Match, but
+        // this receiver is a Regex.
+        var m = regex.Match(input);
+    }
+}
+`, "src/Parser.cs", "src.Parser.Run")
+
+	if has(got, "src.FileStackRule.Match") {
+		t.Errorf("a unique name must not be bound to a canonical target; got %v", got)
+	}
+	if !has(got, "Match") {
+		t.Errorf("the bare name should survive so short-name consumers still see it; got %v", got)
+	}
+}
+
+// TestMemberCall_SameTypeAndStaticStillResolve is the control: the precise edges
+// this change must not weaken.
+func TestMemberCall_SameTypeAndStaticStillResolve(t *testing.T) {
+	got := memberCallTargets(t, `
+namespace Acme;
+
+public static class Guard
+{
+    public static void NotNull(object o) { }
+}
+
+public class Svc
+{
+    public void A() { B(); Guard.NotNull(this); }
+    public void B() { }
+}
+`, "src/Svc.cs", "src.Svc.A")
+
+	if !has(got, "src.Svc.B") {
+		t.Errorf("same-type call should still resolve to the canonical target; got %v", got)
+	}
+	if !has(got, "src.Guard.NotNull") {
+		t.Errorf("static call should still resolve to the canonical target; got %v", got)
 	}
 }
