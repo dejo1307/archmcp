@@ -1,33 +1,22 @@
 # .NET — what enola extracts
 
-Covers **C#, VB.NET, Razor and XAML**, plus the MSBuild project system that binds
-them into assemblies. One extractor reads all of them into one fact set, which is
+Covers **C#, VB.NET, F#, Razor and XAML**, plus the MSBuild project system that
+binds them into assemblies. One extractor reads all of them into one fact set, which is
 what lets a VB class reference a C# type, and a `.razor` or `.xaml` view merge with
 its code-behind.
 
-C# and VB.NET sources are parsed with tree-sitter and a line scanner respectively;
-Razor is scanned for its C# regions; XAML and the MSBuild project and solution
-files are parsed as XML.
+C# is parsed with tree-sitter; VB.NET and F# with line scanners; Razor is scanned
+for its C# regions; XAML and the MSBuild project and solution files are parsed as
+XML.
 
 Detected by a solution or project file of any .NET language (`.sln`, `.slnx`,
 `.csproj`, `.fsproj`, `.vbproj`), or by any `.cs`, `.vb`, `.razor`, `.cshtml`,
 `.xaml` or `.axaml` file, within four directory levels.
 
-> **What is still missing.** F# is not read. The MSBuild layer beneath it is, for
-> every language: each project file is parsed whatever it compiles, so the assembly
-> graph — which project references which — is complete even where the sources are
-> not.
->
-> | Sources not extracted | Present in the benchmark corpus |
-> |---|---|
-> | F# (`.fs`) | 5,539 files |
->
-> Razor (`.razor`, `.cshtml`), XAML (`.xaml`, `.axaml`) and VB.NET (`.vb`) **are**
-> read — see [Razor](#razor--blazor-components-and-mvc-views),
-> [XAML](#xaml--wpf-winui-maui-and-avalonia) and [VB.NET](#vbnet).
->
-> A mixed solution therefore has all of its projects and all of its
-> `ProjectReference` edges, and symbols for every half except F#.
+> Every .NET source language is read: C#, VB.NET, F#, Razor and XAML. A mixed
+> solution has all of its projects, all of its `ProjectReference` edges, and
+> symbols for every half — see [Razor](#razor--blazor-components-and-mvc-views),
+> [XAML](#xaml--wpf-winui-maui-and-avalonia), [VB.NET](#vbnet) and [F#](#f).
 >
 > Reading `.fsproj` and `.vbproj` is also what keeps a claimed repository from
 > being an empty one. `giraffe-fsharp/Giraffe` ships `Giraffe.slnx`, seven
@@ -432,6 +421,85 @@ well as VB, since the C# extractor shipped.
 Both casings are now listed for every .NET source extension. On roslyn alone this
 moves 4,734 files out of the graph and drops the orphan count from 129,003 to
 60,726 — a larger effect than any extractor in this series.
+
+## F#
+
+Read into the same fact set as the rest, and **indentation-scoped** rather than
+delimiter-scoped — F# closes a module or type by dedenting, so the walker carries a
+scope stack keyed on column instead of matching an `End` keyword.
+
+```fsharp
+namespace Giraffe
+
+[<RequireQualifiedAccess>]
+module SubRouting =
+    open Microsoft.AspNetCore.Http
+
+    let private RouteKey = "giraffe_route"
+
+    let routeWithPartialPath (path: string) (handler: HttpHandler) : HttpHandler =
+        let saved = getSavedPartialPath ctx
+        handler next ctx
+```
+
+```
+symbol  src/Giraffe.SubRouting          props: symbol_kind=class, fsharp_module=true,
+                                               namespace=Giraffe
+symbol  src/Giraffe.SubRouting.RouteKey props: symbol_kind=variable, exported=false
+symbol  src/Giraffe.SubRouting.routeWithPartialPath
+                                        props: symbol_kind=function
+                                        --calls--> getSavedPartialPath, handler, ctx
+```
+
+- **A module is a static class**, which is what it compiles to, so `symbol_kind` is
+  `class` and the module-ness travels as `fsharp_module`.
+- **Function or value** is decided by what stands between the name and the `=` —
+  parameters make it a function, nothing (or a lone type annotation) makes it a
+  value. Testing for a `(` instead calls `let private RouteKey = "…"` a function,
+  because the modifiers sit before the name and look like parameters.
+- **A `let` inside a type is private state**, not a member, matching the C# and VB
+  rules for private fields. A `let` indented past its enclosing member is a local
+  binding and declares nothing.
+- `.fs`, `.fsi` and `.fsx` are all read. `//` inside a string is not a comment, and
+  `(* … *)` blocks nest.
+
+### Free functions, and why they needed a fix elsewhere
+
+F# is the only .NET language with genuine free functions — a module-level `let` is
+not a method on anything. Two things followed from that:
+
+The bare-call index used to hold **methods only**, so every F#-to-F# call was
+dropped on the floor. It now holds functions too.
+
+And references are harvested by NAME from the whole body, as the Razor scanner
+does, rather than only in a few anchored positions. F# applies functions without
+parentheses and in almost any position, and anchoring narrowly left **2,579 of
+dotnet/fsharp's 12,430 functions with no inbound edge**. Widening it brought that
+to 977.
+
+> **Treat F# orphan findings as leads, not a cleanup list** — the same warning
+> this page gives for C#, and for a sharper reason. `find_orphans` rates a
+> `function` finding **high confidence** because plain calls are reliably tracked
+> in the languages that model was built for. They are not reliably tracked here:
+> this is a name-based scan of a language with no parenthesised call syntax. The
+> confidence rating is inherited, not earned.
+
+### What this changes, measured
+
+| Repo | facts before | after | symbols before | after | regressed |
+|---|---:|---:|---:|---:|---:|
+| dotnet/fsharp | 8,009 | **68,379** | 5,578 | **45,571** | **0** |
+| Giraffe | 25 | **641** | 0 | **439** | **0** |
+
+dotnet/fsharp parsed 111 files of 10,519 before this — the 5,473 `.fs` sources
+contributed nothing. Giraffe had only the project graph Phase 1 gave it.
+
+*Not extracted:* Giraffe's routing DSL (`route`, `routef`, `subRoute`, `choose`).
+It is the obvious next thing to read and the corpus cannot validate it —
+`giraffe-fsharp/Giraffe` *defines* the DSL and every use of it lives in `tests/`,
+which the ignore globs exclude for the same reason csharp-sdk's 31 test-only
+endpoints were. Shipping an unexercised route parser would add a claim no
+benchmark run can check.
 
 ## Names, namespaces and the two spellings
 

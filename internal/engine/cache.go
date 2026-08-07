@@ -1270,7 +1270,16 @@ import (
 // only there. Also fixes a CASE-SENSITIVITY hole in the .NET test globs: .NET
 // names those directories Test/ and Tests/, which the lowercase-only patterns
 // never matched, so roslyn's 4,734 test files were indexed as production code.
-const cacheVersion = "v175"
+// v176: F# is read — modules, types, members and module-level FREE FUNCTIONS,
+// which no other .NET language has. dotnet/fsharp parsed 111 files of 10,519
+// before this. Indentation-scoped: F# closes a scope by dedenting.
+//
+// Two fixes it forced. Free functions now enter the bare-call index alongside
+// methods, without which every F#-to-F# call was dropped. And a module's
+// `language` prop is now the dominant language of the files in it rather than a
+// hardcoded "csharp" — the layers explainer gates on that prop, and a directory
+// of .vb or .fs sources was claiming to be C#.
+const cacheVersion = "v176"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

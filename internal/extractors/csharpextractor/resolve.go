@@ -294,7 +294,10 @@ func resolveCSharpTargets(allFacts []facts.Fact) {
 			continue
 		}
 		symbolNames[f.Name] = true
-		if f.Props["symbol_kind"] != facts.SymbolMethod {
+		// Functions as well as methods. A bare call target naming a declared FREE
+		// FUNCTION is as real as one naming a method, and F# is the first .NET
+		// language here to have any — every F#-to-F# call was being dropped.
+		if k := f.Props["symbol_kind"]; k != facts.SymbolMethod && k != facts.SymbolFunc {
 			continue
 		}
 		short := f.Name

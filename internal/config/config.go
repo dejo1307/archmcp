@@ -292,6 +292,11 @@ func Default() *Config {
 			// analyzer tests are themselves .vb files that embed VB source as XML
 			// literals, so indexing them contributes thousands of fixture types
 			// (`Class C`, `Interface I`, `Enum E`) that no production code declares.
+			"**/tests/**/*.fs",
+			"**/test/**/*.fs",
+			"**/Tests/**/*.fs",
+			"**/Test/**/*.fs",
+			"**/*.Tests/**/*.fs",
 			"**/tests/**/*.vb",
 			"**/test/**/*.vb",
 			"**/Tests/**/*.vb",
@@ -411,6 +416,7 @@ func Default() *Config {
 			// way round: a missing edge is visible in a dead-code review, while the
 			// 31 phantom endpoints csharp-sdk reported before this change were not.
 			"**/tests/**/*.cs", "**/test/**/*.cs", "**/Tests/**/*.cs", "**/Test/**/*.cs", "**/*.Tests/**/*.cs",
+			"**/tests/**/*.fs", "**/test/**/*.fs", "**/Tests/**/*.fs", "**/Test/**/*.fs", "**/*.Tests/**/*.fs",
 			"**/tests/**/*.vb", "**/test/**/*.vb", "**/Tests/**/*.vb", "**/Test/**/*.vb", "**/*.Tests/**/*.vb",
 			"**/tests/**/*.razor", "**/test/**/*.razor", "**/Tests/**/*.razor", "**/Test/**/*.razor", "**/*.Tests/**/*.razor",
 			"**/tests/**/*.cshtml", "**/test/**/*.cshtml", "**/Tests/**/*.cshtml", "**/Test/**/*.cshtml", "**/*.Tests/**/*.cshtml",

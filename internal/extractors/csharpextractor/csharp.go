@@ -77,7 +77,7 @@ func (e *CSharpExtractor) Detect(repoPath string) (bool, error) {
 			return nil
 		}
 		if isCSharpFile(path) || isProjectFile(path) || isSolutionFile(path) ||
-			isRazorFile(path) || isXamlFile(path) || isVBFile(path) {
+			isRazorFile(path) || isXamlFile(path) || isVBFile(path) || isFSharpFile(path) {
 			found = true
 		}
 		return nil
@@ -99,7 +99,8 @@ func isCSharpFile(path string) bool {
 // without touching a single .cs file.
 func (e *CSharpExtractor) OwnsFile(relFile string) bool {
 	return isCSharpFile(relFile) || isProjectFile(relFile) || isSolutionFile(relFile) ||
-		isRazorFile(relFile) || isXamlFile(relFile) || isVBFile(relFile)
+		isRazorFile(relFile) || isXamlFile(relFile) || isVBFile(relFile) ||
+		isFSharpFile(relFile)
 }
 
 // Extract parses C# files and emits architectural facts.
@@ -113,7 +114,7 @@ func (e *CSharpExtractor) OwnsFile(relFile string) bool {
 // so a bare type reference cannot be resolved from one file's imports the way
 // Java's can. Both are settled in resolveCSharp once every file is in.
 func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
-	var csFiles, projFiles, slnFiles, razorFiles, xamlFiles, vbFiles []string
+	var csFiles, projFiles, slnFiles, razorFiles, xamlFiles, vbFiles, fsFiles []string
 	for _, relFile := range files {
 		switch {
 		case isCSharpFile(relFile):
@@ -128,6 +129,8 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 			xamlFiles = append(xamlFiles, relFile)
 		case isVBFile(relFile):
 			vbFiles = append(vbFiles, relFile)
+		case isFSharpFile(relFile):
+			fsFiles = append(fsFiles, relFile)
 		}
 	}
 
@@ -149,7 +152,19 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 
 	var allFacts []facts.Fact
 	var scaffold aspnetScaffold
-	modules := make(map[string]bool)
+	// dir -> language -> file count. A module's language is the DOMINANT one among
+	// the files that contributed to it, not a constant: this extractor now reads
+	// five languages, and hardcoding "csharp" labelled a directory of .vb or .fs
+	// sources as C# — which is what the layers explainer reads to gate its
+	// pattern detection.
+	modules := make(map[string]map[string]int)
+	noteModule := func(rel, lang string) {
+		dir := filepath.ToSlash(filepath.Dir(rel))
+		if modules[dir] == nil {
+			modules[dir] = map[string]int{}
+		}
+		modules[dir][lang]++
+	}
 	parsed := 0
 	for i, r := range perFileFacts {
 		if r.generated {
@@ -158,7 +173,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 		parsed++
 		allFacts = append(allFacts, r.facts...)
 		scaffold.merge(r.scaffold)
-		modules[filepath.ToSlash(filepath.Dir(csFiles[i]))] = true
+		noteModule(csFiles[i], "csharp")
 	}
 	if skipped := len(csFiles) - parsed; skipped > 0 {
 		log.Printf("[csharp-extractor] skipped %d generated file(s) of %d", skipped, len(csFiles))
@@ -177,7 +192,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	})
 	for i, ff := range razorResults {
 		allFacts = append(allFacts, ff...)
-		modules[filepath.ToSlash(filepath.Dir(razorFiles[i]))] = true
+		noteModule(razorFiles[i], "razor")
 	}
 	if len(razorFiles) > 0 {
 		log.Printf("[csharp-extractor] parsed %d Razor file(s)", len(razorFiles))
@@ -195,7 +210,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	})
 	for i, ff := range xamlResults {
 		allFacts = append(allFacts, ff...)
-		modules[filepath.ToSlash(filepath.Dir(xamlFiles[i]))] = true
+		noteModule(xamlFiles[i], "xaml")
 	}
 	if len(xamlFiles) > 0 {
 		log.Printf("[csharp-extractor] parsed %d XAML file(s)", len(xamlFiles))
@@ -223,10 +238,27 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 		}
 		vbParsed++
 		allFacts = append(allFacts, ff...)
-		modules[filepath.ToSlash(filepath.Dir(vbFiles[i]))] = true
+		noteModule(vbFiles[i], "vbnet")
 	}
 	if len(vbFiles) > 0 {
 		log.Printf("[csharp-extractor] parsed %d VB.NET file(s) of %d", vbParsed, len(vbFiles))
+	}
+
+	// F#, into the same fact set for the same reason as VB.
+	fsResults := parallel.MapFiles(ctx, fsFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
+			return nil
+		}
+		return scanFSharp(string(src), relFile)
+	})
+	for i, ff := range fsResults {
+		allFacts = append(allFacts, ff...)
+		noteModule(fsFiles[i], "fsharp")
+	}
+	if len(fsFiles) > 0 {
+		log.Printf("[csharp-extractor] parsed %d F# file(s)", len(fsFiles))
 	}
 
 	allFacts = mergePartialTypes(allFacts)
@@ -241,9 +273,9 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	// MSBuild assembly graph, so a project root that also holds sources yields one
 	// fact rather than two facts the graph would have to merge.
 	mods := make(map[string]*facts.Fact, len(modules)+len(msbuildProjects))
-	for dir := range modules {
+	for dir, byLang := range modules {
 		props := map[string]any{
-			"language":           "csharp",
+			"language":           dominantModuleLanguage(byLang),
 			facts.PropModuleRole: facts.ModuleRoleForPath(dir),
 		}
 		if name, ok := projectForDir(dir, projects); ok {
@@ -285,6 +317,19 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	}
 
 	return allFacts, nil
+}
+
+// dominantModuleLanguage picks the language that contributed the most files to a
+// directory, breaking ties alphabetically so the choice is a function of the file
+// set rather than of walk order.
+func dominantModuleLanguage(byLang map[string]int) string {
+	best, bestN := "csharp", -1
+	for lang, n := range byLang {
+		if n > bestN || (n == bestN && lang < best) {
+			best, bestN = lang, n
+		}
+	}
+	return best
 }
 
 // fileResult holds one file's extracted facts plus its ASP.NET routing evidence,
