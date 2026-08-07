@@ -63,6 +63,9 @@ func extractFileASTFull(src []byte, relFile string) ([]facts.Fact, aspnetScaffol
 	root := tree.RootNode()
 	w.walkTopLevelChildren(root)
 	w.scaffold.minimal = collectMinimalAPIRoutes(root, src, relFile, w.dir)
+	// APPEND: noteRefit already added this file's Refit declarations during the
+	// walk above, and assigning here would discard them.
+	w.scaffold.clients = append(w.scaffold.clients, collectHTTPClientCalls(root, src, relFile, w.dir)...)
 	return w.out, w.scaffold
 }
 
@@ -624,6 +627,9 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 
 	if node.Kind() == "method_declaration" && len(w.typeStack) > 0 {
 		w.noteAction(node, w.canonicalName(w.enclosingType()), w.out[idx].Name, name)
+		// A Refit attribute on an interface method declares an OUTBOUND request the
+		// same way [HttpGet] declares an inbound one.
+		w.noteRefit(node, int(node.StartPosition().Row)+1)
 	}
 
 	// A constructor is where dependency injection lands in C#. Injecting from

@@ -270,6 +270,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	// After resolution too: an entity fact is named for the SYMBOL that declares
 	// the type, which is only canonical once resolveCSharpTargets has run.
 	allFacts = append(allFacts, composeStorageFacts(allFacts, scaffold.storage)...)
+	allFacts = append(allFacts, clientRouteFacts(scaffold.clients)...)
 	computeCSharpPerformsIO(allFacts)
 
 	// Module facts are built into a map keyed by directory, then overlaid with the

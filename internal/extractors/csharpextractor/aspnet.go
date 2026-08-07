@@ -35,6 +35,10 @@ type aspnetScaffold struct {
 	// reason routing is: whether a class is a DbContext depends on a base list
 	// naming a type declared in another file.
 	storage storageScaffold
+	// clients holds resolved OUTBOUND requests: HttpClient verb calls and Refit
+	// attributes. They need no cross-file composition, only the file-local literal
+	// environment the scan already built.
+	clients []clientCall
 }
 
 func (s *aspnetScaffold) empty() bool {
@@ -46,6 +50,7 @@ func (s *aspnetScaffold) merge(o aspnetScaffold) {
 	s.actions = append(s.actions, o.actions...)
 	s.minimal = append(s.minimal, o.minimal...)
 	s.storage.merge(o.storage)
+	s.clients = append(s.clients, o.clients...)
 }
 
 // controllerDecl is a type that may serve routes: it carries a [Route] template, an

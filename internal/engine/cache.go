@@ -1289,7 +1289,18 @@ import (
 // EF Core entities carry NO ANNOTATION — Java can look for @Entity, a C# entity
 // is a plain class — so an entity is named for the SYMBOL that declares it, after
 // resolution, rather than for the directory that mentioned it.
-const cacheVersion = "v177"
+// v178: outbound HTTP. role=client routes are emitted for HttpClient verb calls
+// and Refit attributes, so a C# service is finally BOTH sides of a cross-repo
+// edge rather than a route provider only.
+//
+// The path is rarely a literal at the call site — eShop holds a base URL in a
+// field, builds the path by interpolation into a local, and passes the local — so
+// a literal environment is resolved per member body, with type-level fields as
+// the fallback. An interpolation hole becomes a path parameter rather than being
+// dropped, which is what makes a client's items/{id} match a server template of
+// the same shape. An absolute URL keeps only its path: under Aspire the host is a
+// service NAME, not a hostname.
+const cacheVersion = "v178"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

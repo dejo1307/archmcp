@@ -59,6 +59,7 @@ Unit coverage in
 | `[Route("x")]` + `[HttpGet("y")]` | a server route at `/x/y`, `handled_by` its action | `route` |
 | `app.MapGroup("api/x")` + `.MapGet("/y", H)` | a server route at `/api/x/y`, `handled_by` `H` | `route` |
 | `class X : DbContext` with `DbSet<T>` | a context, plus each `T` as an entity carrying its table | `storage` |
+| `httpClient.GetAsync("/api/x")`, `[Get("/api/x")]` | a `role=client` route — the calling side of a cross-repo edge | `route` |
 
 ## The project system — where .NET's real dependency edges are
 
@@ -576,6 +577,73 @@ correctly absent rather than mislabelled `framework=efcore`.
 *Not extracted:* a repository class is not itself a storage fact. C# has no
 `@Repository` annotation and the `*Repository` name is a convention, not a
 declaration — the entity and the context are what the code actually states.
+
+## Outbound HTTP — what a service calls
+
+Until this existed a C# service linked to its neighbours only as a route
+**provider**: no `role=client` routes were emitted, so the cross-repo linker had
+one side of every edge and the benchmark's cross-repo axis had no .NET answer.
+
+The path is rarely a literal at the call site. eShop's CatalogService is
+representative — the verb is on the call, the path is in a local, and the local is
+an interpolation over a field:
+
+```csharp
+private readonly string remoteServiceBaseUrl = "api/catalog/";
+
+var uri = $"{remoteServiceBaseUrl}items/{id}?api-version=2.0";
+return httpClient.GetFromJsonAsync(uri, CatalogJsonContext.Default.CatalogItem);
+```
+
+```
+route  /api/catalog/items/{id}   props: method=GET, role=client, framework=httpclient
+```
+
+So a literal environment is resolved **per member body**, with the type's fields
+as the fallback. File-wide would be wrong for a reason the corpus shows plainly: a
+class reuses the name `uri` in every method, and one map made every CatalogService
+call resolve to whichever `uri` happened to be written last.
+
+Three rules decide what a resolved argument is worth:
+
+- **An interpolation hole becomes a path parameter**, keeping its name. That is
+  what lets a client's `items/{id}` match a server template of the same shape;
+  dropping the hole would produce `items/` and match nothing.
+- **An absolute URL keeps only its path.** The host is deployment configuration,
+  and under .NET Aspire it is a service *name* (`https+http://catalog-api`) rather
+  than a hostname at all. Query strings go too — they are not part of a template.
+- **At least one literal segment is required.** A path of only parameters (`/{x}`)
+  would match every server template at that depth, so it names no endpoint. A bare
+  host, and a path computed at run time, are dropped for the same reason.
+
+`SendAsync` is deliberately absent from the verb table: it takes an
+`HttpRequestMessage` whose verb is set elsewhere, so the call site cannot classify
+it and guessing GET would invent an edge.
+
+Refit interfaces are read too — `[Get("/api/orders/{id}")]` on an interface method
+declares an outbound request the same way `[HttpGet]` declares an inbound one.
+
+### What this changes, measured
+
+Client routes emitted: eShop 8, bitwarden-server 13, jellyfin 0 (a media server
+that serves rather than calls).
+
+On the `bitwarden-server` + `bitwarden-clients` cluster:
+
+| | detected | resolved | classification |
+|---|---:|---:|---|
+| before | 5 | 5 | `isolated` |
+| after | 13 | 7 | `coverage_gap` |
+
+The classification change is the more important half. `isolated` asserted that the
+server calls nothing; `coverage_gap` says enola found calls it cannot place, which
+is true and actionable.
+
+*Not extracted yet:* SignalR hubs, gRPC clients and service implementations, Azure
+Functions triggers, MassTransit consumers, .NET Aspire's AppHost topology, and
+conventionally-routed MVC actions — OrchardCore registers those through
+`MapAreaControllerRoute` in a `Startup`, and 94% of its controllers carry no
+`[Route]`.
 
 ## Names, namespaces and the two spellings
 
