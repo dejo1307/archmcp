@@ -1409,7 +1409,19 @@ import (
 // input. This was the only confirmed analyze_performance false positive on the
 // corpus; a servlet's `find{…}.foreach{…}` was reported O(n²) at high severity
 // though neither combinator can run twice.
-const cacheVersion = "v187"
+//
+// v188: a trait is an abstraction only when it declares something abstract, and a
+// case class is a data holder. Scala traits carry implementations and the idiom
+// leans on it — a mixin with a self-type and a concrete body is the ordinary way to
+// compose a service — so counting every trait as abstract read one corpus package of
+// sixteen controller traits, whose bodies ARE the REST API and which declare nothing
+// abstract between them, as A=1.00 and reported it "useless". The `abstract` prop is
+// authoritative for package metrics and can demote as well as promote (the hook Ruby
+// uses for namespace modules), so it is now declared explicitly either way. Separately
+// a case class carries the data_holder marker, the same signal a Kotlin data class or
+// a record gives, which stops "extract interfaces" being advised on a package that is
+// mostly value carriers — one corpus package of 92 header types got exactly that.
+const cacheVersion = "v188"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

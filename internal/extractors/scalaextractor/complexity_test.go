@@ -336,3 +336,84 @@ object S {
 		t.Error("the call should still be recorded in the raw in-loop list")
 	}
 }
+
+// TestTraitAbstractnessIsMeasured pins the package-metrics correction. A Scala trait
+// carries implementations, and the idiom leans on it: a mixin with a self-type and a
+// concrete body is the ordinary way to compose a service. Counting every trait as an
+// abstraction read one corpus package — sixteen controller traits whose bodies ARE
+// the REST API — as A=1.00 and reported it "useless".
+func TestTraitAbstractnessIsMeasured(t *testing.T) {
+	src := `package p
+
+/** A real abstraction: members declared, none implemented. */
+trait Repo {
+  def find(id: Long): Option[Row]
+  val name: String
+}
+
+/** A mixin: every member has a body. This is an implementation, not an abstraction. */
+trait Routes extends Base {
+  get("/api/users") { listUsers() }
+  def listUsers(): List[Row] = Nil
+}
+
+/** Partly abstract still counts as an abstraction — one unimplemented member is
+  * enough to make it something another type must satisfy. */
+trait Partial {
+  def mustImplement(): Int
+  def provided(): Int = 1
+}
+
+/** An abstract TYPE member with no right-hand side is abstract; an alias is not. */
+trait WithAbstractType { type Out }
+trait WithAlias { type Out = String }
+`
+	ff := extractAST(t, "src/S.scala", src)
+
+	for name, want := range map[string]bool{
+		"src.Repo":             true,
+		"src.Routes":           false,
+		"src.Partial":          true,
+		"src.WithAbstractType": true,
+		"src.WithAlias":        false,
+	} {
+		f := findFact(t, ff, name)
+		if f.Props["symbol_kind"] != facts.SymbolInterface {
+			t.Errorf("%s: symbol_kind = %v, want interface", name, f.Props["symbol_kind"])
+		}
+		// Declared explicitly either way — package metrics treats the prop as
+		// authoritative, so its ABSENCE would silently fall back to "interfaces are
+		// abstract" and the demotion would not happen.
+		got, ok := f.Props["abstract"]
+		if !ok {
+			t.Errorf("%s: abstract prop absent; the metric would assume true", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: abstract = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TestCaseClassIsADataHolder pins the second half: package metrics reads the marker
+// to stop advising "extract interfaces" on a package that is mostly value carriers.
+func TestCaseClassIsADataHolder(t *testing.T) {
+	src := `package p
+
+final case class Age(age: Long)
+class Service(dep: Dep)
+case object Marker
+`
+	ff := extractAST(t, "src/S.scala", src)
+
+	if got := findFact(t, ff, "src.Age").Props["data_holder"]; got != true {
+		t.Errorf("case class: data_holder = %v, want true", got)
+	}
+	if hasProp(findFact(t, ff, "src.Service"), "data_holder") {
+		t.Error("a plain class must not be marked a data holder")
+	}
+	// A `case object` is a singleton, not a carrier of fields.
+	if hasProp(findFact(t, ff, "src.Marker"), "data_holder") {
+		t.Error("a case object must not be marked a data holder")
+	}
+}

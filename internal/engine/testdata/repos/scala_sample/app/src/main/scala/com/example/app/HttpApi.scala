@@ -33,6 +33,21 @@ class Downstream {
   def charge() = basicRequest.post(uri"https://api.stripe.com/v1/charges")
 }
 
+/** A MIXIN, not an abstraction: a self-type and a body of concrete definitions, with
+  * no abstract member anywhere. This is the ordinary way to compose a Scala service,
+  * and counting it as an abstraction reported a package of these as "useless". Its
+  * `abstract=false` in the golden is the assertion. */
+trait AdminRoutes extends Runner {
+  self: Handlers.type =>
+  val mounted = true
+  def register(): Unit = dispatch(0)
+}
+
+/** A real abstraction, for contrast: one member declared and not implemented. */
+trait Store {
+  def get(id: Long): Option[String]
+}
+
 /** A topic constant beside a real broker import: the asynchronous coupling a call
   * graph structurally cannot see. */
 object Topics {

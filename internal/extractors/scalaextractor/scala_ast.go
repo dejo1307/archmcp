@@ -690,6 +690,51 @@ func (w *astWalker) declaresMember(name string) bool {
 	return w.memberStack[len(w.memberStack)-1][name]
 }
 
+// declaresAbstractMember reports whether a type body declares at least one member
+// with no implementation — a `def`/`val`/`var` DECLARATION rather than a definition,
+// or an abstract type member. That is what separates a trait used as an interface
+// from one used as a mixin, and the grammar states it outright: a member with a body
+// parses as `*_definition`, one without as `*_declaration`.
+//
+// Scans one level, since a nested type's abstract members belong to that type.
+func (w *astWalker) declaresAbstractMember(body *sitter.Node) bool {
+	if body == nil {
+		return false
+	}
+	found := false
+	var scan func(n *sitter.Node)
+	scan = func(n *sitter.Node) {
+		if found {
+			return
+		}
+		for i := uint(0); i < n.ChildCount(); i++ {
+			c := n.Child(i)
+			if !c.IsNamed() {
+				continue
+			}
+			switch c.Kind() {
+			case "function_declaration", "val_declaration", "var_declaration":
+				found = true
+				return
+			case "type_definition":
+				// `type T` with no right-hand side is an abstract type member;
+				// `type T = X` is an alias and therefore concrete.
+				if c.ChildByFieldName("type") == nil {
+					found = true
+					return
+				}
+			case "class_definition", "object_definition", "trait_definition",
+				"enum_definition", "function_definition", "given_definition":
+				continue // a nested type's members are its own
+			case "template_body", "with_template_body", "indented_block", "block":
+				scan(c)
+			}
+		}
+	}
+	scan(body)
+	return found
+}
+
 // collectMembers returns the names a type body declares directly — one level only,
 // since a nested type's members belong to it rather than to its enclosing type.
 func (w *astWalker) collectMembers(body *sitter.Node) map[string]bool {
@@ -961,6 +1006,14 @@ func (w *astWalker) handleTypeLike(n *sitter.Node, symbolKind string) {
 	}
 	if hasTokenChild(n, "case") {
 		props["case_class"] = true
+		// A case class is a value carrier, the same signal a Kotlin data class or a
+		// Java/C# record gives. Package metrics reads it to stop advising "extract
+		// interfaces" on a package that is mostly data: one corpus package of 92
+		// header value types was reported rigid with exactly that suggestion, which
+		// is not actionable for types whose whole content is their fields.
+		if n.Kind() != "object_definition" {
+			props["data_holder"] = true
+		}
 	}
 	if mods := w.modifierText(n); mods != "" {
 		if strings.Contains(mods, "sealed") {
@@ -969,6 +1022,22 @@ func (w *astWalker) handleTypeLike(n *sitter.Node, symbolKind string) {
 		if strings.Contains(mods, "abstract") {
 			props["abstract"] = true
 		}
+	}
+	// A Scala trait is only an ABSTRACTION when it declares something abstract.
+	//
+	// Scala traits carry implementations, and the idiom leans on it hard: a mixin
+	// with a self-type and a body full of concrete definitions is the ordinary way
+	// to compose a service. Counting every trait as abstract read one corpus
+	// package — sixteen controller traits whose bodies ARE the REST API, with not a
+	// single abstract member between them — as A=1.00 and reported it "useless
+	// (unstable + abstract — abstractions almost nothing depends on)".
+	//
+	// The `abstract` prop is authoritative for package metrics and can demote as
+	// well as promote, which is the same hook Ruby uses to keep namespace modules
+	// from inflating abstractness. Declared explicitly here (true AND false), so a
+	// trait's classification is measured rather than assumed from its keyword.
+	if symbolKind == facts.SymbolInterface {
+		props["abstract"] = w.declaresAbstractMember(n.ChildByFieldName("body"))
 	}
 
 	idx := len(w.out)
