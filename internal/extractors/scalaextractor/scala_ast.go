@@ -462,6 +462,13 @@ func (w *astWalker) handleCall(n *sitter.Node) {
 	kind := blockCallNone
 	if callHasBlockArg(n) {
 		kind = classifyBlockCall(method)
+		// A combinator applied to an Option repeats at most once, however
+		// iteration-shaped its name is. Demote it to the discounted tier rather
+		// than dropping it: the construct is still repetition-shaped, it just
+		// cannot scale with the input.
+		if kind == blockCallScaling && w.receiverIsAtMostOnce(recvNode) {
+			kind = blockCallAmbiguous
+		}
 	}
 	if kind != blockCallNone {
 		// A combinator loop carries the same back edge a `for` does, so it counts
@@ -476,6 +483,33 @@ func (w *astWalker) handleCall(n *sitter.Node) {
 		}
 		w.walk(c)
 	}
+}
+
+// receiverIsAtMostOnce reports whether a combinator's receiver holds at most one
+// element, by reading the trailing method of the receiver expression. `xs.find(p)`
+// yields an Option, so `.foreach` on it runs zero or one times.
+//
+// Only a literal, visible producer counts. A receiver whose type comes from
+// inference or from a declaration elsewhere is left alone, so the demotion applies
+// exactly where the evidence is in front of the walker.
+func (w *astWalker) receiverIsAtMostOnce(recvNode *sitter.Node) bool {
+	if recvNode == nil {
+		return false
+	}
+	switch recvNode.Kind() {
+	case "identifier", "type_identifier":
+		return atMostOnceReceivers[w.text(recvNode)]
+	case "field_expression":
+		_, member := w.splitFieldExpression(recvNode)
+		return atMostOnceReceivers[member]
+	case "call_expression":
+		return atMostOnceReceivers[w.calleeName(recvNode)]
+	case "generic_function":
+		if inner := firstNamedChild(recvNode); inner != nil {
+			return w.receiverIsAtMostOnce(inner)
+		}
+	}
+	return false
 }
 
 // calleeName returns the method name a (possibly curried, possibly generic) call

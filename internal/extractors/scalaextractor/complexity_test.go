@@ -275,3 +275,64 @@ func TestLoopFreeBodyOmitsScalingProps(t *testing.T) {
 		}
 	}
 }
+
+// TestOptionReceiverDoesNotScale pins the one confirmed analyze_performance false
+// positive on the corpus. A combinator's NAME cannot distinguish iteration from an
+// Option chain — `xs.foreach` and `xs.find(p).foreach` differ only in what they are
+// applied to — so the receiver is the evidence. A corpus servlet's
+// `assetsMappings.find{…}.foreach{…}` was reported O(n²) at high severity, though
+// neither combinator can run twice.
+func TestOptionReceiverDoesNotScale(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantScaling int
+		wantLoop    int
+	}{
+		// The false positive: both combinators apply to an Option.
+		{"find_then_foreach", `xs.find(p).foreach { m => handle(m) }`, 0, 1},
+		{"headOption_then_map", `xs.headOption.map { m => handle(m) }`, 0, 1},
+		{"map_get_then_foreach", `cache.get(k).foreach { v => handle(v) }`, 0, 1},
+		// The control: the same combinator on a real collection still scales.
+		{"plain_foreach", `xs.foreach { m => handle(m) }`, 1, 1},
+		// A collection-returning receiver does NOT demote the combinator. Depth is 1
+		// rather than 2 because `filter(p)` passes a function value instead of a
+		// block, and a combinator without a block is a method reference — the same
+		// conservative rule `map_no_block` pins above.
+		{"filter_then_foreach", `xs.filter(p).foreach { m => handle(m) }`, 1, 1},
+		{"nested_collection", `xs.foreach { a => ys.foreach { b => handle(a, b) } }`, 2, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package p\n\nobject S {\n  def run(): Unit = " + tc.body + "\n}\n"
+			ff := extractAST(t, "src/S.scala", src)
+			f := findFact(t, ff, "src.S.run")
+			if got := propInt(t, f, "scaling_loop_depth"); got != tc.wantScaling {
+				t.Errorf("scaling_loop_depth = %d, want %d", got, tc.wantScaling)
+			}
+			if got := propInt(t, f, "loop_depth"); got != tc.wantLoop {
+				t.Errorf("loop_depth = %d, want %d", got, tc.wantLoop)
+			}
+		})
+	}
+}
+
+// TestOptionChainCallIsNotAnN1Candidate is the consequence that matters: with the
+// receiver demoted, a call inside the chain stops being offered as per-iteration I/O.
+func TestOptionChainCallIsNotAnN1Candidate(t *testing.T) {
+	src := `package p
+
+object S {
+  def lookup(k: String): Unit =
+    cache.get(k).foreach { v => db.run(store(v)) }
+}
+`
+	f := findFact(t, extractAST(t, "src/S.scala", src), "src.S.lookup")
+	if got := propStrings(f, "calls_in_scaling_loop"); len(got) != 0 {
+		t.Errorf("an Option chain offered an N+1 candidate: %v", got)
+	}
+	// The raw list still records it, so nesting stays visible in the evidence.
+	if got := propStrings(f, "calls_in_loop"); len(got) == 0 {
+		t.Error("the call should still be recorded in the raw in-loop list")
+	}
+}

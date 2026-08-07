@@ -65,6 +65,25 @@ var ambiguousCombinators = map[string]bool{
 	"mapN": true, "semiflatMap": true, "subflatMap": true, "biflatMap": true,
 }
 
+// atMostOnceReceivers produce an Option (or another container holding at most one
+// element), so a combinator applied to one runs zero or one times rather than per
+// element. The combinator NAME is identical either way — `xs.foreach` and
+// `xs.find(p).foreach` differ only in what they are applied to — so the receiver is
+// the only available evidence.
+//
+// Without this, a plain Option chain reads as nested iteration: one corpus servlet's
+// `assetsMappings.find{…}.foreach{…}.map{…}` was reported O(n²) at high severity,
+// though neither combinator can run twice.
+var atMostOnceReceivers = map[string]bool{
+	"find": true, "headOption": true, "lastOption": true, "collectFirst": true,
+	"get": true, "toOption": true, "some": true, "lift": true,
+	"maxByOption": true, "minByOption": true, "reduceOption": true,
+	"toIntOption": true, "toLongOption": true, "toDoubleOption": true,
+	"Option": true, "Some": true, "fromNullable": true, "orElse": true,
+	// Effect types that hold a single value; a combinator on one applies once.
+	"pure": true, "delay": true, "liftIO": true, "deferred": true,
+}
+
 // nonLoopBlockCalls take a by-name block or lambda that runs AT MOST ONCE. They are
 // not repetition in any reading, so they neither raise loop_depth nor reset it —
 // they are simply transparent. Without this, `synchronized { }` (445 sites),

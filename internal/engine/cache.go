@@ -1400,7 +1400,16 @@ import (
 // heuristic means, and admitting every one would bury the real callees in the
 // analyzer's evidence. Costs 24-34% more edges, which is what a whole category of
 // reference is worth.
-const cacheVersion = "v186"
+//
+// v187: a combinator applied to an Option repeats at most once. The combinator NAME
+// cannot distinguish iteration from an Option chain — `xs.foreach` and
+// `xs.find(p).foreach` differ only in what they are applied to — so the receiver's
+// trailing method is the evidence. Demoted to the discounted tier rather than
+// dropped: the construct is still repetition-shaped, it just cannot scale with the
+// input. This was the only confirmed analyze_performance false positive on the
+// corpus; a servlet's `find{…}.foreach{…}` was reported O(n²) at high severity
+// though neither combinator can run twice.
+const cacheVersion = "v187"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
