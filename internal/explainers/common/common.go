@@ -371,14 +371,47 @@ func IsRubyFrameworkBaseSymbol(name, file string) bool {
 	return false
 }
 
-// SymbolModule returns the module a symbol belongs to. Symbol names encode the
-// module as the prefix before the first ".", e.g. "internal/auth.Login.Verify"
-// -> "internal/auth". Names without a "." are returned unchanged.
+// SymbolModule returns the module a symbol belongs to, guessed from the name
+// alone: the prefix before the first ".", e.g. "internal/auth.Login.Verify" ->
+// "internal/auth". Names without a "." are returned unchanged.
+//
+// This is a GUESS, and it is only correct when a directory cannot contain a "."
+// — true of Go, Ruby and TypeScript, false of .NET. Prefer SymbolModuleIn, which
+// resolves against the modules that actually exist; this remains as its fallback
+// for a symbol no module declares.
 func SymbolModule(name string) string {
 	if i := strings.Index(name, "."); i >= 0 {
 		return name[:i]
 	}
 	return name
+}
+
+// SymbolModuleIn resolves a symbol to the module fact that declares it, by longest
+// matching name prefix, falling back to SymbolModule when none matches.
+//
+// The name alone cannot settle this for every language. A fact is named
+// "<module>.<declaration>", and .NET puts dots in both halves:
+// "Jellyfin.Api.BaseJellyfinApiController" is module "Jellyfin.Api" + type
+// "BaseJellyfinApiController", but reads identically to module "Jellyfin" + type
+// "Api.BaseJellyfinApiController". Guessing split every jellyfin project at its
+// first dot and attributed 9,106 symbols to a module called "MediaBrowser" that no
+// module fact declares — eleven independent projects collapsed into one phantom,
+// which exported-surface then reported on.
+//
+// Matching against the real module set removes the guess. It is also the only
+// approach that stays correct for Swift, whose facts are named by their SPM/Xcode
+// TARGET rather than by their file's directory — so deriving the module from the
+// file path would be wrong there in a different way.
+//
+// Scans from the end, so the first hit is the longest prefix: a symbol in a nested
+// module resolves to that module rather than to its parent.
+func SymbolModuleIn(name string, modules map[string]bool) string {
+	for i := len(name) - 1; i > 0; i-- {
+		if name[i] == '.' && modules[name[:i]] {
+			return name[:i]
+		}
+	}
+	return SymbolModule(name)
 }
 
 // MeanStdDev returns the arithmetic mean and population standard deviation of

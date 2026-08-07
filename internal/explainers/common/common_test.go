@@ -199,6 +199,9 @@ func TestSymbolModule(t *testing.T) {
 		{"pkg/foo.Bar", "pkg/foo"},
 		{"standalone", "standalone"},
 		{"", ""},
+		// The name-only guess is WRONG for .NET, whose directories contain dots.
+		// It is kept only as SymbolModuleIn's fallback; see the test below.
+		{"MediaBrowser.Controller/Library.ILibraryManager", "MediaBrowser"},
 	}
 	for _, tt := range tests {
 		if got := SymbolModule(tt.name); got != tt.want {
@@ -459,6 +462,45 @@ func TestModuleDir(t *testing.T) {
 		got := ModuleDir(facts.Fact{File: tt.file, Repo: tt.repo})
 		if got != tt.want {
 			t.Errorf("ModuleDir(%q, repo=%q) = %q, want %q", tt.file, tt.repo, got, tt.want)
+		}
+	}
+}
+
+// TestSymbolModuleIn pins the resolution the name alone cannot do. A fact is named
+// "<module>.<declaration>" and .NET puts dots in both halves, so
+// "Jellyfin.Api.BaseJellyfinApiController" reads identically to module "Jellyfin"
+// plus type "Api.BaseJellyfinApiController". Guessing attributed 9,106 jellyfin
+// symbols to a module called "MediaBrowser" that no module fact declares.
+func TestSymbolModuleIn(t *testing.T) {
+	declared := map[string]bool{
+		"internal/auth":                   true,
+		"MediaBrowser.Controller/Library": true,
+		"Jellyfin.Api":                    true,
+		"Jellyfin.Api/Controllers":        true,
+		"Sources/Foo":                     true,
+	}
+	tests := []struct {
+		name string
+		want string
+	}{
+		// Unchanged for every language that already worked.
+		{"internal/auth.Login.Verify", "internal/auth"},
+		// A dotted directory before the last slash.
+		{"MediaBrowser.Controller/Library.ILibraryManager", "MediaBrowser.Controller/Library"},
+		// A dotted LEAF directory — the case no name-based split can settle.
+		{"Jellyfin.Api.BaseJellyfinApiController", "Jellyfin.Api"},
+		// Longest prefix wins: the nested module, not its parent.
+		{"Jellyfin.Api/Controllers.AudioController.GetAudioStream", "Jellyfin.Api/Controllers"},
+		// Swift names by TARGET rather than file directory; matching the declared
+		// set is what keeps that correct too.
+		{"Sources/Foo.Thing.run", "Sources/Foo"},
+		// No module matches: fall back to the guess rather than returning nothing.
+		{"unknown/place.Thing", "unknown/place"},
+		{"standalone", "standalone"},
+	}
+	for _, tt := range tests {
+		if got := SymbolModuleIn(tt.name, declared); got != tt.want {
+			t.Errorf("SymbolModuleIn(%q) = %q, want %q", tt.name, got, tt.want)
 		}
 	}
 }

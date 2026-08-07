@@ -44,6 +44,16 @@ func (e *CycleExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 	// spurious two-module cycles between associated models.
 	graph := common.BuildModuleGraphExcluding(store, facts.CouplingAssociation)
 
+	// Which build unit each module compiles into, where the language models one.
+	// See facts.CompilationUnitProps: a cycle confined to a single unit is not a
+	// build-order defect, and saying it "can cause initialization issues" is untrue.
+	unitOf := make(map[string]string)
+	for _, m := range store.ByKind(facts.KindModule) {
+		if u := facts.CompilationUnit(m); u != "" {
+			unitOf[m.Name] = u
+		}
+	}
+
 	// Run Tarjan's SCC
 	sccs := tarjanSCC(graph)
 
@@ -68,21 +78,66 @@ func (e *CycleExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 			})
 		}
 
+		description := fmt.Sprintf("The following modules form a dependency cycle: %s. This can cause initialization issues, make refactoring harder, and indicates tight coupling.", cyclePath)
+		actions := []string{
+			"Introduce an interface to break the cycle",
+			"Extract shared types to a separate package",
+			"Consider merging tightly coupled modules",
+		}
+		if unit, ok := sharedUnit(scc, unitOf); ok {
+			description = fmt.Sprintf(
+				"The following modules form a dependency cycle: %s. All of them compile into %q, "+
+					"so this is NOT a build-order problem — mutual references between namespaces or "+
+					"submodules inside one assembly/crate are legal and ordinary, and the build system "+
+					"forbids cycles between units anyway. Read it as a coupling signal: the cycle means "+
+					"these directories cannot be understood, moved or split apart independently.",
+				cyclePath, unit,
+			)
+			actions = []string{
+				"Treat as a coupling signal rather than a build defect",
+				"Extract the shared types the cycle turns on into their own module",
+				"Consider merging directories that cannot be separated anyway",
+			}
+		}
+
 		insights = append(insights, facts.Insight{
 			// Title prefix is parsed by pkg/explain (Code health section); keep stable.
-			Title:       fmt.Sprintf("Cyclic dependency detected (%d modules)", len(scc)),
-			Description: fmt.Sprintf("The following modules form a dependency cycle: %s. This can cause initialization issues, make refactoring harder, and indicates tight coupling.", cyclePath),
+			Title: fmt.Sprintf("Cyclic dependency detected (%d modules)", len(scc)),
+			// Confidence stays 1.0 either way: the cycle is a structural fact, and
+			// what an intra-unit cycle changes is what it MEANS, not whether it is
+			// there. Lowering it would also move the finding under any
+			// min_confidence filter and the check gate, hiding a real edge.
+			Description: description,
 			Confidence:  1.0, // Deterministic
 			Evidence:    evidence,
-			Actions: []string{
-				"Introduce an interface to break the cycle",
-				"Extract shared types to a separate package",
-				"Consider merging tightly coupled modules",
-			},
+			Actions:     actions,
 		})
 	}
 
 	return insights, nil
+}
+
+// sharedUnit reports the build unit every module in the cycle compiles into, when
+// they all share one.
+//
+// Every module must be accounted for. A cycle that reaches even one module with no
+// known unit — a language that models none, or a directory the extractor could not
+// attribute — may well span separately built things, and that is exactly the case
+// the softened wording would be wrong about.
+func sharedUnit(scc []string, unitOf map[string]string) (string, bool) {
+	unit := ""
+	for _, mod := range scc {
+		u, ok := unitOf[mod]
+		if !ok || u == "" {
+			return "", false
+		}
+		if unit == "" {
+			unit = u
+		} else if u != unit {
+			return "", false
+		}
+	}
+	return unit, unit != ""
 }
 
 // coupledClusterInsight reports an oversized SCC as a soft coupling signal rather

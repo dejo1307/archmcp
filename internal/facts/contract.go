@@ -229,3 +229,39 @@ const (
 	DepSourceExternal = "external" // resolves to a third-party package
 	DepSourceStdlib   = "stdlib"   // resolves to the language's standard library
 )
+
+// CompilationUnitProps name the module props that identify the unit a module is
+// COMPILED INTO — the assembly, crate or binary the build system produces.
+//
+// It is a contract for the same reason the rest of this file is: an extractor
+// writes the prop and the cycles explainer reads it back, and the two packages
+// never reference each other. It is a TABLE rather than a branch so that teaching
+// another language is a row.
+//
+// Why an explainer wants to know. A dependency cycle between modules is a
+// build-order defect only when those modules are separately compiled. Every build
+// system that admits sub-units forbids cycles between the units themselves —
+// MSBuild rejects a circular ProjectReference, Cargo a circular crate dependency
+// — so a cycle enola finds in such a language is necessarily WITHIN one unit,
+// where mutual references are legal and ordinary. Reporting it as something that
+// "can cause initialization issues" is then simply untrue.
+//
+// Membership rule: a prop belongs here only when SEVERAL module facts can share
+// one value. Swift's `spm_target` / `xcode_target` are deliberately absent —
+// swiftextractor names each module fact BY its target, so two modules never share
+// one, and a cycle between them really is a cycle between separately built units.
+var CompilationUnitProps = []string{
+	"crate",   // Rust: the Cargo crate a module directory belongs to
+	"project", // C#: the MSBuild project (assembly) a module directory belongs to
+}
+
+// CompilationUnit returns the build unit a module fact belongs to, or "" when the
+// language does not model one. Only module facts carry these props.
+func CompilationUnit(f Fact) string {
+	for _, key := range CompilationUnitProps {
+		if v, ok := f.Props[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}

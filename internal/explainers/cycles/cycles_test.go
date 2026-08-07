@@ -416,3 +416,101 @@ func TestExplain_MultipleCycles(t *testing.T) {
 		t.Errorf("expected 2 cycle insights for 2 disjoint cycles, got %d", len(insights))
 	}
 }
+
+// TestIntraCompilationUnitCycle_IsNotABuildDefect pins the distinction that C# and
+// Rust need. MSBuild rejects a circular ProjectReference and Cargo a circular crate
+// dependency, so any cycle enola finds in those languages is necessarily WITHIN one
+// unit — where mutual references between namespaces or submodules are legal and
+// ordinary. Reporting it as something that "can cause initialization issues" is
+// simply untrue, and jellyfin had six such findings at confidence 1.0.
+func TestIntraCompilationUnitCycle_IsNotABuildDefect(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"Emby.Naming/Audio", "Emby.Naming/Video"} {
+		s.Add(facts.Fact{
+			Kind:  facts.KindModule,
+			Name:  m,
+			Props: map[string]any{"language": "csharp", "project": "Emby.Naming"},
+		})
+	}
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency, File: "Emby.Naming/Audio/A.cs",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "Emby.Naming/Video"}},
+	})
+	s.Add(facts.Fact{
+		Kind: facts.KindDependency, File: "Emby.Naming/Video/V.cs",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "Emby.Naming/Audio"}},
+	})
+
+	ins, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 1 {
+		t.Fatalf("expected one cycle insight, got %d", len(ins))
+	}
+	got := ins[0]
+	// The cycle is still reported, and still at confidence 1.0: it is a structural
+	// fact, and lowering it would move the finding under min_confidence filters and
+	// the check gate.
+	if !strings.HasPrefix(got.Title, "Cyclic dependency detected") {
+		t.Errorf("title = %q, want the stable cycle prefix", got.Title)
+	}
+	if got.Confidence != 1.0 {
+		t.Errorf("confidence = %v, want 1.0", got.Confidence)
+	}
+	// What changes is the interpretation.
+	if strings.Contains(got.Description, "can cause initialization issues") {
+		t.Errorf("intra-unit cycle still claims an initialization hazard: %q", got.Description)
+	}
+	if !strings.Contains(got.Description, "Emby.Naming") ||
+		!strings.Contains(got.Description, "NOT a build-order problem") {
+		t.Errorf("description should name the shared unit and correct the claim: %q", got.Description)
+	}
+}
+
+// TestCrossCompilationUnitCycle_KeepsBuildDefectWording is the control: two modules
+// in DIFFERENT crates really are separately built, so the original wording stands.
+func TestCrossCompilationUnitCycle_KeepsBuildDefectWording(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "crates/a/src",
+		Props: map[string]any{"language": "rust", "crate": "a"}})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "crates/b/src",
+		Props: map[string]any{"language": "rust", "crate": "b"}})
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "crates/a/src/l.rs",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "crates/b/src"}}})
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "crates/b/src/l.rs",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "crates/a/src"}}})
+
+	ins, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 1 {
+		t.Fatalf("expected one cycle insight, got %d", len(ins))
+	}
+	if !strings.Contains(ins[0].Description, "can cause initialization issues") {
+		t.Errorf("a cross-unit cycle must keep the build-defect wording: %q", ins[0].Description)
+	}
+}
+
+// TestUnknownCompilationUnit_KeepsBuildDefectWording covers the language that
+// models no unit at all (Go): the softened wording must not fire, because a cycle
+// there really does span separately compiled packages.
+func TestUnknownCompilationUnit_KeepsBuildDefectWording(t *testing.T) {
+	s := facts.NewStore()
+	for _, m := range []string{"internal/a", "internal/b"} {
+		s.Add(facts.Fact{Kind: facts.KindModule, Name: m, Props: map[string]any{"language": "go"}})
+	}
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "internal/a/x.go",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "internal/b"}}})
+	s.Add(facts.Fact{Kind: facts.KindDependency, File: "internal/b/y.go",
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "internal/a"}}})
+
+	ins, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 1 || !strings.Contains(ins[0].Description, "can cause initialization issues") {
+		t.Errorf("a language with no compilation-unit prop must keep the original wording: %+v", ins)
+	}
+}

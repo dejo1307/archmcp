@@ -69,6 +69,14 @@ func (e *SurfaceExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		return nil, nil
 	}
 
+	// Resolve each symbol against the modules that actually exist rather than
+	// guessing from its name. See common.SymbolModuleIn: a .NET directory contains
+	// dots, so the guess split every jellyfin project at its first one.
+	declared := make(map[string]bool)
+	for _, m := range store.ByKind(facts.KindModule) {
+		declared[m.Name] = true
+	}
+
 	mods := make(map[string]*moduleSurface)
 	for _, s := range symbols {
 		// Ruby is public-by-default: every class/method is "exported", so the
@@ -85,7 +93,7 @@ func (e *SurfaceExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 			// Extractor didn't record visibility; ignore so it doesn't distort the ratio.
 			continue
 		}
-		mod := common.SymbolModule(s.Name)
+		mod := common.SymbolModuleIn(s.Name, declared)
 		ms := mods[mod]
 		if ms == nil {
 			ms = &moduleSurface{}
