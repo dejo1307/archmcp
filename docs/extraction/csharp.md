@@ -271,18 +271,35 @@ all — so it reads as dead, and so does the interface member it implements.
 
 Measured on jellyfin, before and after the bare member-call edge:
 
-| | methods unreferenced | all symbols unreferenced |
-|---|---:|---:|
-| same-type edges only | 2,478 / 6,975 (36%) | 7,485 / 15,665 |
-| with bare member-call edges | **988 / 6,975 (14%)** | 5,982 / 15,665 |
+| | methods | enums | constants | all symbols |
+|---|---:|---:|---:|---:|
+| same-type edges only | 2,478 | 105 | 802 | 7,485 / 15,665 |
+| + bare member-call edges | 988 | 105 | 802 | 5,982 |
+| + qualified references | **905** | **8** | **179** | **4,576** |
 
-1,490 methods rescued, at the cost of 61% more `calls` edges.
+A second gap sat beside the first: only *invocations* emitted edges, so a plain
+`VideoRange.HDR` produced nothing at all and 84 of 137 enums read as isolated
+while that exact expression appeared at 25 call sites. A qualified `Type.Member`
+reference now emits an edge to the member **and** to the type — the member edge
+alone vouches for `HDR` and says nothing about `VideoRange`, which left every
+class reached only through static calls unreferenced too.
 
-What remains flagged is largely **not** a false positive. jellyfin discovers its
-providers by reflection (`GetExports<IImageProvider>()`), so a class like
-`ComicImageProvider` genuinely has no static reference anywhere in the tree — the
-same limitation every language has with registry and plugin wiring, and one the
-orphan detector's own caveat already describes.
+The type edge is added once the receiver has *provably* resolved to a declared
+type, not at the call site: a bare type name emitted there would be
+indistinguishable from the bare method name a member call produces, and
+`foo.Order()` would bind to a class named `Order`. Receivers are gated on
+PascalCase, C#'s type-naming convention, so `order.Id` and `list.Count` emit
+nothing.
+
+2,909 symbols rescued in total, at +49% `calls` edges.
+
+What remains flagged is largely **not** a false positive, and splits in two.
+jellyfin discovers its providers by reflection (`GetExports<IImageProvider>()`),
+so a class like `ComicImageProvider` genuinely has no static reference anywhere in
+the tree. And a type used only in *type position* — `ViewType Kind { get; set; }`,
+`List<ViewType>` — is not edge-tracked in any language enola supports, which is
+what the last 8 enum findings are. Both are limitations the orphan detector's own
+caveat already describes.
 
 Note also that `find_orphans` reports **no** high-confidence findings for C#. Its
 confidence model rates plain `function` calls as reliably tracked, and C# has

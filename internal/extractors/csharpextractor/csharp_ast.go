@@ -941,6 +941,21 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		if w.metrics != nil && ioConstructedTypes[simpleTypeName(typeFullName(typeNode, w.src))] {
 			w.metrics.ioDirect = true
 		}
+	case "member_access_expression":
+		// A qualified reference that is NOT a call: an enum member
+		// (`VideoRange.HDR`), a static field, a constant. Only a PascalCase
+		// receiver is considered, which is C#'s type-naming convention — a
+		// camelCase receiver is a value whose type is not tracked. The invocation
+		// case below reaches the same helper for `Type.Method()`, and addEdge
+		// dedupes, so a call site is not counted twice.
+		if recv := node.ChildByFieldName("expression"); recv != nil {
+			text := nodeText(recv, w.src)
+			if isTypeNameShaped(recv, text) {
+				if nameNode := node.ChildByFieldName("name"); nameNode != nil {
+					w.addQualifiedRef(text, simpleTypeName(nodeText(nameNode, w.src)))
+				}
+			}
+		}
 	case "invocation_expression":
 		w.handleInvocation(node)
 		if w.metrics != nil {
@@ -1067,7 +1082,7 @@ func (w *astWalker) handleInvocation(node *sitter.Node) {
 			// `Type.Method(...)` — a static call. Emitted as "<Type>.<Method>" and
 			// bound only if Type resolves to a declared type; an unresolved one is
 			// left as written and matches nothing.
-			w.addEdge(facts.RelCalls, aliasOr(w.aliases, recv)+"."+name)
+			w.addQualifiedRef(recv, name)
 			w.recordCallMetrics(recv+"."+name, name, args)
 		default:
 			// A call on some other receiver — a field, a local, a parameter, an
@@ -1112,6 +1127,18 @@ func (w *astWalker) resolveOwnMember(name string) (string, bool) {
 		return w.canonicalName(w.qualify(name)), true
 	}
 	return "", false
+}
+
+// addQualifiedRef records a `Type.Member` reference — an enum member, a static
+// field, a constant, or a static call.
+//
+// Only the qualified form is emitted here. The edge to the TYPE itself is added by
+// resolveCSharpTargets, and only once the receiver has provably resolved to a
+// declared type: emitting a bare `VideoRange` here would be indistinguishable from
+// the bare method name a member call produces, and the resolver would have to
+// guess which it was — binding `foo.Order()` to a class named Order.
+func (w *astWalker) addQualifiedRef(recv, member string) {
+	w.addEdge(facts.RelCalls, aliasOr(w.aliases, recv)+"."+member)
 }
 
 func (w *astWalker) markIO() {

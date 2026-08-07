@@ -778,3 +778,94 @@ public class Svc
 		t.Errorf("static call should still resolve to the canonical target; got %v", got)
 	}
 }
+
+const qualifiedRefSrc = `
+namespace Acme;
+
+public enum VideoRange { Unknown, SDR, HDR }
+
+public static class Guard
+{
+    public static void NotNull(object o) { }
+}
+
+public class Player
+{
+    public bool IsHdr(VideoRangeHolder h)
+    {
+        Guard.NotNull(h);
+        // A qualified reference that is NOT a call: an enum member read.
+        return h.Range == VideoRange.HDR;
+    }
+}
+`
+
+// TestQualifiedRef_EnumMemberReadReferencesBothMemberAndType covers the second
+// dead-code gap. An enum exists to be read as a value, and a plain
+// `VideoRange.HDR` is not an invocation, so the walker emitted nothing at all —
+// 84 of jellyfin's 137 enums read as isolated while VideoRange.HDR appeared at 25
+// call sites. The MEMBER edge alone is not enough either: the dead-code detector
+// matches by last segment, so it vouches for HDR and says nothing about VideoRange.
+func TestQualifiedRef_EnumMemberReadReferencesBothMemberAndType(t *testing.T) {
+	got := memberCallTargets(t, qualifiedRefSrc, "src/Player.cs", "src.Player.IsHdr")
+
+	if !has(got, "src.VideoRange.HDR") {
+		t.Errorf("enum member read should reference the member; got %v", got)
+	}
+	if !has(got, "src.VideoRange") {
+		t.Errorf("enum member read should also reference the type; got %v", got)
+	}
+}
+
+// TestQualifiedRef_StaticCallReferencesItsType is the same gap for a class reached
+// only through static calls: Guard.NotNull(x) referenced NotNull and never Guard.
+func TestQualifiedRef_StaticCallReferencesItsType(t *testing.T) {
+	got := memberCallTargets(t, qualifiedRefSrc, "src/Player.cs", "src.Player.IsHdr")
+
+	if !has(got, "src.Guard.NotNull") {
+		t.Errorf("static call should reference the method; got %v", got)
+	}
+	if !has(got, "src.Guard") {
+		t.Errorf("static call should also reference the declaring type; got %v", got)
+	}
+}
+
+// TestQualifiedRef_UnresolvedReceiverAddsNoTypeEdge is the guard. The type edge is
+// added only once the receiver has PROVABLY resolved to a declared type — adding
+// it at the call site instead would be indistinguishable from the bare method name
+// a member call produces, and `foo.Order()` would bind to a class named Order.
+func TestQualifiedRef_UnresolvedReceiverAddsNoTypeEdge(t *testing.T) {
+	got := memberCallTargets(t, `
+namespace Acme;
+public class Calc
+{
+    public double Area(double r) => Math.PI * r * r;
+}
+`, "src/Calc.cs", "src.Calc.Area")
+
+	for _, tgt := range got {
+		if tgt == "Math" || tgt == "src.Math" {
+			t.Errorf("a receiver naming no declared type must add no type edge; got %v", got)
+		}
+	}
+}
+
+// TestQualifiedRef_LowercaseReceiverEmitsNothing keeps value receivers out. C#
+// names types in PascalCase and locals in camelCase, which is the only signal
+// available without type resolution. Without the gate every `order.Id`,
+// `builder.Services` and `list.Count` in the repository becomes an edge to a
+// target nothing declares.
+func TestQualifiedRef_LowercaseReceiverEmitsNothing(t *testing.T) {
+	got := memberCallTargets(t, `
+namespace Acme;
+public class Order { public int Id; }
+public class Svc
+{
+    public int Read(Order order) => order.Id;
+}
+`, "src/Svc.cs", "src.Svc.Read")
+
+	if has(got, "order.Id") {
+		t.Errorf("a camelCase receiver must emit no qualified reference; got %v", got)
+	}
+}

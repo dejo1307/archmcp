@@ -1209,7 +1209,20 @@ import (
 // detector matches by short name: measured identical rescue with and without
 // binding. A name no type in the repo declares is dropped, which is the majority
 // (.ToString(), .Add(), .GetAwaiter()).
-const cacheVersion = "v168"
+// v169: a qualified `Type.Member` reference emits edges to both the member and
+// the declaring type, and a member access that is not a call (an enum member read,
+// a static field, a constant) emits one at all. Previously only invocations did,
+// so `VideoRange.HDR` produced nothing and 84 of jellyfin's 137 enums read as
+// isolated while it appeared at 25 call sites. The member edge alone is not
+// enough either — the dead-code detector matches by last segment, so it vouches
+// for HDR and says nothing about VideoRange, which also left every class reached
+// only through static calls unreferenced. The TYPE edge is added in
+// resolveCSharpTargets once the receiver has provably resolved, not at the call
+// site: a bare type name emitted there is indistinguishable from the bare method
+// name a member call produces, and `foo.Order()` would bind to a class named
+// Order. Receivers are gated on PascalCase, C#'s type-naming convention. On
+// jellyfin: enums 105 -> 8 unreferenced, constants 802 -> 179, classes 848 -> 729.
+const cacheVersion = "v169"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

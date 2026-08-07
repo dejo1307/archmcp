@@ -376,6 +376,10 @@ func resolveCSharpTargets(allFacts []facts.Fact) {
 		}
 		fromNS, _ := f.Props["namespace"].(string)
 		kept := f.Relations[:0]
+		// typeRefs collects the extra edge each resolved qualified reference owes
+		// to its TYPE. Appended after the loop, since kept aliases f.Relations'
+		// backing array and appending mid-iteration would overwrite unread entries.
+		var typeRefs []string
 		for j := range f.Relations {
 			r := f.Relations[j]
 			switch r.Kind {
@@ -390,6 +394,17 @@ func resolveCSharpTargets(allFacts []facts.Fact) {
 					recv, method := r.Target[:dot], r.Target[dot+1:]
 					if canon, ok := resolve(recv, fromNS); ok {
 						r.Target = canon + "." + method
+						// The qualified edge vouches for the MEMBER only: the
+						// dead-code detector matches a reference by its target's
+						// last segment, so `VideoRange.HDR` says nothing about
+						// `VideoRange`. That left 84 of jellyfin's 137 enums
+						// reading as isolated while `VideoRange.HDR` appeared at
+						// 25 call sites, and did the same to any class used only
+						// through static calls. Adding the type edge HERE rather
+						// than at the call site is what keeps it unambiguous —
+						// the receiver has just been proven to name a declared
+						// type, so this can never be a bare method name.
+						typeRefs = append(typeRefs, canon)
 					}
 					// A speculative sibling call inside a partial type: keep it
 					// only if the member really was declared in one of the halves.
@@ -408,6 +423,11 @@ func resolveCSharpTargets(allFacts []facts.Fact) {
 			kept = append(kept, r)
 		}
 		f.Relations = kept
+		for _, t := range typeRefs {
+			if t != f.Name && !f.HasRelation(facts.RelCalls, t) {
+				f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
+			}
+		}
 	}
 }
 
