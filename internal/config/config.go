@@ -278,6 +278,16 @@ func Default() *Config {
 			"**/tests/**/*.cs",
 			"**/test/**/*.cs",
 			"**/*.Tests/**/*.cs",
+			// Razor markup in the same test trees. A test project's .razor/.cshtml
+			// reference production members exactly as a test .cs does, so indexing
+			// them would vouch for symbols no production code uses — the same
+			// suppression of genuine dead-code findings the .cs rules avoid.
+			"**/tests/**/*.razor",
+			"**/test/**/*.razor",
+			"**/*.Tests/**/*.razor",
+			"**/tests/**/*.cshtml",
+			"**/test/**/*.cshtml",
+			"**/*.Tests/**/*.cshtml",
 			// enola's own output. This is the DEFAULT location only; the glob for the
 			// configured one is derived in Normalize, which is what makes a custom
 			// output.dir safe. The literal stays because a repository that used the
@@ -372,6 +382,8 @@ func Default() *Config {
 			// way round: a missing edge is visible in a dead-code review, while the
 			// 31 phantom endpoints csharp-sdk reported before this change were not.
 			"**/tests/**/*.cs", "**/test/**/*.cs", "**/*.Tests/**/*.cs",
+			"**/tests/**/*.razor", "**/test/**/*.razor", "**/*.Tests/**/*.razor",
+			"**/tests/**/*.cshtml", "**/test/**/*.cshtml", "**/*.Tests/**/*.cshtml",
 		},
 		Extractors: []string{"cpp", "csharp", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "hcl", "ansible", "mdintent"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},

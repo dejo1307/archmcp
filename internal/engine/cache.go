@@ -1247,7 +1247,15 @@ import (
 // props. Project files of EVERY .NET language are read (.fsproj, .vbproj), which
 // is what stops a claimed repository from being an empty one: Giraffe ships a
 // .slnx and no .cs, so the extractor matched, claimed it and emitted zero facts.
-const cacheVersion = "v172"
+// v173: Razor is read. A .razor component becomes a partial symbol that merges
+// with its .razor.cs code-behind, carrying the markup's references — @onclick
+// handlers, @bind targets, @if conditions, component tags, @inject types — so a
+// member whose only caller is markup stops reading as dead. MudBlazor reported
+// 5,749 orphans of 9,287 symbols before this. A .cshtml view emits a KindFileRef
+// instead of a symbol, and ASP.NET tag helpers (asp-for="Prop") are read as
+// references, which is how MVC views bind view-model members with no @ transition
+// at all. @page becomes a UI route (type=page), never a server route.
+const cacheVersion = "v173"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

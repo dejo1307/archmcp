@@ -85,6 +85,15 @@ ignore:
   - "**/tests/**/*.cs"
   - "**/test/**/*.cs"
   - "**/*.Tests/**/*.cs"
+  # Razor markup in the same test trees: a test project's .razor/.cshtml reference
+  # production members exactly as a test .cs does, so indexing them would vouch for
+  # symbols no production code uses.
+  - "**/tests/**/*.razor"
+  - "**/test/**/*.razor"
+  - "**/*.Tests/**/*.razor"
+  - "**/tests/**/*.cshtml"
+  - "**/test/**/*.cshtml"
+  - "**/*.Tests/**/*.cshtml"
   # Minified / bundled JS (also detected heuristically by the extractor; kept in
   # sync with config.Default() in internal/config/config.go)
   - "**/*.min.js"

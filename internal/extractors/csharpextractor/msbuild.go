@@ -264,15 +264,23 @@ func parseSolution(repoPath, relFile string) []string {
 // parseProjects reads every project file and attributes each to the solution
 // that lists it, if any. A project listed by several solutions keeps the first by
 // path order, so the prop is a function of the fact set rather than of walk order.
+// Read SERIALLY, deliberately. Parsing these through parallel.MapFiles was tried
+// and is measurably slower — on roslyn's 351 project files the extract phase went
+// from 8.05s to 9.21s across repeated cold runs. Concurrent reads of many small
+// files defeat sequential readahead, and encoding/xml's allocation rate turns the
+// fan-out into GC pressure. The source walk parallelises because a tree-sitter
+// parse is CPU-bound; this is neither.
 func parseProjects(repoPath string, projFiles, slnFiles []string) []*msbuildProject {
 	out := make([]*msbuildProject, 0, len(projFiles))
 	byDir := make(map[string]*msbuildProject, len(projFiles))
 	for _, rel := range projFiles {
-		if p := parseProjectFile(repoPath, rel); p != nil {
-			out = append(out, p)
-			if _, dup := byDir[p.dir]; !dup {
-				byDir[p.dir] = p
-			}
+		p := parseProjectFile(repoPath, rel)
+		if p == nil {
+			continue
+		}
+		out = append(out, p)
+		if _, dup := byDir[p.dir]; !dup {
+			byDir[p.dir] = p
 		}
 	}
 

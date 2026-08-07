@@ -76,7 +76,7 @@ func (e *CSharpExtractor) Detect(repoPath string) (bool, error) {
 			}
 			return nil
 		}
-		if isCSharpFile(path) || isProjectFile(path) || isSolutionFile(path) {
+		if isCSharpFile(path) || isProjectFile(path) || isSolutionFile(path) || isRazorFile(path) {
 			found = true
 		}
 		return nil
@@ -97,7 +97,8 @@ func isCSharpFile(path string) bool {
 // one must invalidate the cache — editing a ProjectReference changes the graph
 // without touching a single .cs file.
 func (e *CSharpExtractor) OwnsFile(relFile string) bool {
-	return isCSharpFile(relFile) || isProjectFile(relFile) || isSolutionFile(relFile)
+	return isCSharpFile(relFile) || isProjectFile(relFile) || isSolutionFile(relFile) ||
+		isRazorFile(relFile)
 }
 
 // Extract parses C# files and emits architectural facts.
@@ -111,7 +112,7 @@ func (e *CSharpExtractor) OwnsFile(relFile string) bool {
 // so a bare type reference cannot be resolved from one file's imports the way
 // Java's can. Both are settled in resolveCSharp once every file is in.
 func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
-	var csFiles, projFiles, slnFiles []string
+	var csFiles, projFiles, slnFiles, razorFiles []string
 	for _, relFile := range files {
 		switch {
 		case isCSharpFile(relFile):
@@ -120,6 +121,8 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 			projFiles = append(projFiles, relFile)
 		case isSolutionFile(relFile):
 			slnFiles = append(slnFiles, relFile)
+		case isRazorFile(relFile):
+			razorFiles = append(razorFiles, relFile)
 		}
 	}
 
@@ -154,6 +157,25 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	}
 	if skipped := len(csFiles) - parsed; skipped > 0 {
 		log.Printf("[csharp-extractor] skipped %d generated file(s) of %d", skipped, len(csFiles))
+	}
+
+	// Razor files are walked before the partial merge, because a `.razor`
+	// component and its `.razor.cs` code-behind are two halves of one generated
+	// class and must converge into a single fact.
+	razorResults := parallel.MapFiles(ctx, razorFiles, func(relFile string) []facts.Fact {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			log.Printf("[csharp-extractor] error reading %s: %v", relFile, err)
+			return nil
+		}
+		return razorFacts(string(src), relFile)
+	})
+	for i, ff := range razorResults {
+		allFacts = append(allFacts, ff...)
+		modules[filepath.ToSlash(filepath.Dir(razorFiles[i]))] = true
+	}
+	if len(razorFiles) > 0 {
+		log.Printf("[csharp-extractor] parsed %d Razor file(s)", len(razorFiles))
 	}
 
 	allFacts = mergePartialTypes(allFacts)

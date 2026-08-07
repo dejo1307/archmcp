@@ -14,12 +14,12 @@ levels.
 > |---|---|
 > | F# (`.fs`) | 5,539 files |
 > | VB.NET (`.vb`) | 3,784 files |
-> | Razor / Blazor (`.razor`, `.cshtml`) | 4,083 files |
 > | XAML (`.xaml`, `.axaml`) | 727 files |
 >
+> Razor (`.razor`, `.cshtml`) **is** read — see [Razor](#razor--blazor-components-and-mvc-views).
+>
 > A mixed solution therefore has all of its projects and all of its
-> `ProjectReference` edges, and symbols for its C# half only. A Blazor front end
-> contributes its `.cs` symbols but none of its component or page routes.
+> `ProjectReference` edges, and symbols for its C# and Razor halves.
 >
 > Reading `.fsproj` and `.vbproj` is also what keeps a claimed repository from
 > being an empty one. `giraffe-fsharp/Giraffe` ships `Giraffe.slnx`, seven
@@ -121,6 +121,136 @@ a 148-project monorepo to every other. Both formats are read: `.slnx` as XML,
 
 A reference escaping the repository root is dropped: it names a project that
 cannot be in this graph.
+
+## Razor — Blazor components and MVC views
+
+**This is not a parse.** A Razor file interleaves HTML, C# and a transition syntax
+that has no standalone grammar; the real one lives in the Razor compiler, which
+generates a C# class. What runs here instead finds the regions where C# appears
+and harvests the **names referenced** there. That is deliberately less than a
+parse, and it is enough for the job it exists to do.
+
+The job, measured before it existed: MudBlazor reported **5,749 orphans out of
+9,287 symbols — 62% of a maintained component library** — because
+`MudAlert.razor.cs` declares `OnClickHandler` and only `MudAlert.razor` calls it.
+
+### A component and its code-behind are one type
+
+```razor
+@* src/MudBlazor/Components/Alert/MudAlert.razor *@
+@namespace MudBlazor
+@inherits MudComponentBase
+@inject InternalMudLocalizer Localizer
+
+<div class="@Classname" @onclick="OnClickHandler">
+    @if (ShowCloseIcon) { <MudIconButton @onclick="OnCloseIconClickAsync" /> }
+</div>
+```
+
+```
+symbol  src/MudBlazor/Components/Alert.MudAlert
+          props: symbol_kind=class, razor_component=true, framework=blazor,
+                 partial=true, namespace=MudBlazor
+          --implements--> MudComponentBase      (@inherits)
+          --injects-----> InternalMudLocalizer  (@inject)
+          --instantiates-> MudIconButton        (a PascalCase tag)
+          --calls-------> Classname, OnClickHandler, ShowCloseIcon,
+                          OnCloseIconClickAsync
+```
+
+No special handling makes this converge with `MudAlert.razor.cs`: both name the
+same directory-anchored symbol and both carry `partial`, so the ordinary
+[partial-type merge](#partial-types-are-one-type) unifies them. The component is
+marked partial **even when no code-behind exists**, so the merge never depends on
+whether one happens to be present.
+
+`symbol_kind` is `class`, not `component`, and that is load-bearing rather than
+pedantic. `symbol_kind` is what puts a name into the type index that resolves bare
+type references, and `component` is not a type kind. Emitting it cost a real edge:
+the `.razor` half merged over the `.razor.cs` half, carried the unrecognised kind
+with it, and `DialogService.ShowCoreAsync --calls--> MudDialogContainer`
+disappeared — turning live code into apparent dead code. The component-ness
+travels as `razor_component` instead.
+
+### Tag helpers, which carry no `@` at all
+
+```html
+<input asp-for="DisplayMenuFilter" class="form-check-input" type="checkbox" />
+```
+
+Every one of OrchardCore's view-model false positives was reached this way. An
+MVC or Razor Pages view binds to its model through the `asp-for` family —
+`asp-for`, `asp-validation-for`, `asp-validation-class-for`, `asp-items` — which
+is plain HTML attribute syntax with **no Razor transition**. A scanner that
+follows only `@` finds none of them.
+
+A `.cshtml` view emits a `file_ref`, not a symbol: MVC and Razor Pages generate a
+class nothing references by name, so a view can never itself become a dead-code
+candidate, while still vouching for the members it binds.
+
+```
+file_ref  …/Views/AdminSettings.Edit.cshtml
+            --calls--> AdminSettingsViewModel   (@model, reduced to its last segment)
+            --calls--> DisplayMenuFilter, DisplayNewMenu, DisplayThemeToggler
+```
+
+### `@code` blocks are real C#
+
+An `@code` / `@functions` body is handed to the ordinary C# walker inside a
+synthetic compilation unit. The wrapper occupies exactly **one line** and is
+followed by enough blank lines to put the body back on the line it occupies in
+the `.razor` file, so every symbol's reported line is the real one rather than an
+offset into a synthetic buffer.
+
+### String literals, and the holes in them
+
+Literal contents are blanked before names are harvested — `@T["Enable Admin Menu
+filter"]` otherwise contributed `Enable`, `Admin`, `Menu` and `filter`. A
+fabricated reference is worse than a missing one: it vouches for a symbol nothing
+uses and *suppresses* a genuine dead-code finding.
+
+**Interpolation holes survive.** `$"{Section.ToStringFast(true)}/{Previous.Link}"`
+is a string whose braces hold real code, and it is how Blazor builds most of its
+hrefs; blanking it wholesale would lose exactly the references worth having.
+
+### `@page` is a UI route, never a server route
+
+```
+route  /counter/{id:int}   props: method=GET, type=page, framework=blazor
+                           --handled_by--> src/App/Pages.Counter
+```
+
+A Blazor or Razor Pages URL is one the **browser** navigates to, not an HTTP
+contract served to other services. Typed as a server route it would become a
+cross-repo match candidate and an "unused route no client calls" finding; `type=page`
+is the existing marker the linker already excludes for that reason.
+
+### What this changes, measured
+
+| Repo | orphans before | after | rescued | regressed |
+|---|---:|---:|---:|---:|
+| OrchardCore | 8,382 | **6,497** | 1,885 | **0** |
+| MudBlazor | 19,442 | 21,437 | 721 | 2 |
+
+Counted over the symbols present in *both* snapshots, because the change also
+**adds** symbols (`@code` members, component types) and every added symbol is a
+new orphan candidate — which is why MudBlazor's total rises while the fix works.
+Its rescue rate is the lower one because its orphan set is dominated by 10,629
+constants and 4,010 variables that no markup references.
+
+MudBlazor's two "regressions" are not regressions: both were a *test* file's
+namespace import (`using MudBlazor.UnitTests.TestComponents.DropZone`) vouching
+for an unrelated production nested class by short-name collision. Losing that
+un-suppresses a genuine finding.
+
+*Cost:* +100ms on MudBlazor's 1,987 `.razor`, +21ms on OrchardCore's 1,610
+`.cshtml`.
+
+*Limits:* `_Imports.razor`, `_ViewImports.cshtml` and `_ViewStart.cshtml` declare
+no component and emit nothing. A Razor Pages route that comes from the `Pages/`
+directory convention rather than an explicit `@page` template is not derived. A
+reference is harvested by NAME, so an unrelated symbol sharing it is credited —
+the same bias, in the same safe direction, as `test_ref`.
 
 ## Names, namespaces and the two spellings
 
