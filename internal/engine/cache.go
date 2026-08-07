@@ -1349,7 +1349,27 @@ import (
 // bare short name rather than a guessed one. Also classifies sbt's `project/` and
 // Gradle's `buildSrc/` as tooling: both are build DEFINITIONS compiled as ordinary
 // source, so every JVM extractor read them as production packages.
-const cacheVersion = "v182"
+//
+// v183: Scala routes, storage and outbound clients. Play's conf/routes (and its
+// included *.routes) is read directly from disk like the OpenAPI and Symfony route
+// configs — it has no extension, so no glob would admit it — and a sub-router's
+// mount prefix is composed onto its paths UNLESS they already carry it segment-wise,
+// which every included routes file in the corpus does and which composing blindly
+// turned into /team/team. Pekko/Akka HTTP and http4s route trees are read from the
+// AST, one route per verb a path block names.
+//
+// The recurring lesson is that Scala's DSL names are ordinary method names, so three
+// passes are gated on the file importing the framework: `path(...)` produced routes
+// from a metrics timer whose API is literally path(result).record(nanos); `get`/`post`
+// would make every map lookup an HTTP call; and `topic` is a domain noun — a forum's
+// closeTopic/hideTopic became seven phantom Kafka topics, which is not inert, because
+// the linker turns a topic into cross-repo coupling by name ownership. SQL string
+// literals are deliberately NOT read: the corpus contains a SQL engine whose 198
+// literal-bearing files are grammar and planner fixtures, not storage it owns.
+//
+// Also fixes a non-determinism: Pekko verb selection scanned enclosing source text
+// and iterated a Go map, so a route's method varied between runs on identical input.
+const cacheVersion = "v183"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

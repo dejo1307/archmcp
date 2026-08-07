@@ -1,0 +1,6 @@
+# ABSOLUTE paths: the mount prefix is already written on every line, which is what
+# every included routes file in the benchmark corpus does. Composing blindly would
+# produce /team/team, an endpoint this application does not serve.
+GET   /team         controllers.team.Team.home
+GET   /team/:id     controllers.team.Team.show(id: Long)
+GET   /teams        controllers.team.Team.all

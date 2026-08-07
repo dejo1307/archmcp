@@ -1,0 +1,3 @@
+# Relative paths: Play prepends the /admin mount prefix.
+GET   /users        controllers.admin.Users.list
+POST  /users/:id    controllers.admin.Users.update(id: Long)

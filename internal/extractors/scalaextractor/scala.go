@@ -175,6 +175,7 @@ func (e *ScalaExtractor) Extract(ctx context.Context, repoPath string, files []s
 			return fileResult{}
 		}
 		ff, pkg := extractFileASTFull(src, relFile, packageIndex)
+		ff = append(ff, extractDSLRoutes(src, relFile)...)
 		return fileResult{facts: ff, pkg: pkg}
 	})
 
@@ -188,6 +189,11 @@ func (e *ScalaExtractor) Extract(ctx context.Context, repoPath string, files []s
 			filePkg[scalaFiles[i]] = r.pkg
 		}
 	}
+
+	// Play declares its whole HTTP surface in conf/routes, a DSL of its own that no
+	// glob admits and the walker cannot reach — read from disk like the OpenAPI and
+	// Symfony route configs.
+	allFacts = append(allFacts, extractPlayRoutes(repoPath)...)
 
 	canonicalizeTargets(allFacts, packageIndex, filePkg)
 	// After canonicalization, so the closure walks edges that point at real facts:

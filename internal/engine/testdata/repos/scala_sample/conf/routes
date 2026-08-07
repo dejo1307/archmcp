@@ -1,0 +1,9 @@
+# The application's HTTP surface. Read directly from disk: `routes` has no
+# extension, so no ignore glob would ever admit it.
+GET     /                       controllers.Home.index
+GET     /users/:id              controllers.Users.show(id: Long)
+POST    /users                  controllers.Users.create
+GET     /assets/*file           controllers.Assets.at(path="/public", file)
+GET     /$lang<\w\w>/tv         controllers.Tv.indexLang(lang: Language)
+->      /admin                  admin.Routes
+->      /team                   team.Routes

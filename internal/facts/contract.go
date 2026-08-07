@@ -155,6 +155,14 @@ const (
 	RouteSourceGraphQLOperation  = "graphql-operation-file"
 	RouteSourceGraphQLRubyString = "graphql-ruby-string"
 	RouteSourceSymfonyConfig     = "symfony-config" // Symfony YAML/XML route config
+
+	// Scala. The Play routes file is a DSL of its own rather than Scala source, and
+	// declares a whole application's HTTP surface in one place; the other two are
+	// route trees written in Scala. sttp is the hand-written client call site.
+	RouteSourcePlayRoutes      = "play-routes"       // Play conf/routes and its included *.routes
+	RouteSourcePekkoHTTP       = "pekko-http"        // Pekko/Akka HTTP routing directives
+	RouteSourceHTTP4s          = "http4s"            // http4s HttpRoutes.of pattern match
+	RouteSourceScalaHTTPClient = "scala-http-client" // sttp / Play WS / http4s client
 )
 
 // HandWrittenClientSources is the set of RouteSource values that mean "a human wrote
@@ -186,6 +194,7 @@ var HandWrittenClientSources = map[string]bool{
 	RouteSourceGoGRPCClient:      true,
 	RouteSourceTSGRPCClient:      true,
 	RouteSourcePythonGRPCClient:  true,
+	RouteSourceScalaHTTPClient:   true,
 }
 
 // AllRouteSources is every registered RouteSource value. It exists for the conformance
@@ -213,6 +222,10 @@ var AllRouteSources = map[string]bool{
 	RouteSourceOpenAPI:           true,
 	RouteSourceOpenAPITypeScript: true,
 	RouteSourceSymfonyConfig:     true,
+	RouteSourcePlayRoutes:        true,
+	RouteSourcePekkoHTTP:         true,
+	RouteSourceHTTP4s:            true,
+	RouteSourceScalaHTTPClient:   true,
 }
 
 // DepSource values — the PropSource prop on a KindDependency fact. A SECOND, unrelated
