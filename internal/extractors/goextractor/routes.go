@@ -76,6 +76,8 @@ func detectRouterFramework(f *ast.File) string {
 			return "gorilla/mux"
 		case strings.Contains(path, "go-chi/chi"):
 			return "chi"
+		case strings.Contains(path, "gin-gonic/gin"):
+			return "gin"
 		case path == "net/http":
 			hasNetHTTP = true
 		}
@@ -143,6 +145,8 @@ func extractRoutesFromCall(fset *token.FileSet, call *ast.CallExpr, prefixes map
 		return extractGorillaMuxRoutes(fset, call, prefixes)
 	case "chi":
 		return extractChiRoutes(fset, call, prefixes)
+	case "gin":
+		return extractGinRoutes(fset, call, prefixes)
 	case "net/http":
 		return extractNetHTTPRoutes(fset, call)
 	}
@@ -277,6 +281,115 @@ func extractChiRoutes(fset *token.FileSet, call *ast.CallExpr, prefixes map[stri
 	}}
 }
 
+// ginVerbs maps gin's registration methods to their HTTP method.
+//
+// gin spells its verbs in UPPERCASE (`r.GET`), where chi uses Go-cased names
+// (`r.Get`). That difference is load-bearing rather than cosmetic: the two vocabularies
+// do not overlap, so a file cannot be ambiguous between the two routers even before the
+// per-file import gate decides which extractor runs.
+var ginVerbs = map[string]string{
+	"GET": "GET", "POST": "POST", "PUT": "PUT", "DELETE": "DELETE",
+	"PATCH": "PATCH", "HEAD": "HEAD", "OPTIONS": "OPTIONS",
+	"Any": "ALL",
+}
+
+// extractGinRoutes handles gin patterns: r.GET("/path", handler), a group's
+// g.POST("/path", handler), and the generic r.Handle("GET", "/path", handler).
+//
+// The path is joined against the group prefix rather than concatenated, because
+// `server.Group("/")` is gin's idiomatic way to spell a group that adds no prefix and
+// is pervasive in real code — ente's server opens seven of them. Concatenating would
+// turn every route under one into `//ping`, a path the server does not serve and which
+// no client route would ever match.
+func extractGinRoutes(fset *token.FileSet, call *ast.CallExpr, prefixes map[string]string) []routeInfo {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+
+	methodName := sel.Sel.Name
+	httpMethod, isVerb := ginVerbs[methodName]
+	pathArg, handlerArg := 0, 1
+
+	switch {
+	case isVerb:
+	case methodName == "Handle":
+		// r.Handle("GET", "/path", handler) — the method is the first argument, so
+		// everything shifts by one. A non-literal method is left as ALL rather than
+		// guessed.
+		httpMethod = strings.ToUpper(extractStringArg(call, 0))
+		if httpMethod == "" {
+			httpMethod = "ALL"
+		}
+		pathArg, handlerArg = 1, 2
+	case methodName == "Use":
+		if len(call.Args) == 0 {
+			return nil
+		}
+		handler := exprToString(call.Args[0])
+		if handler == "" {
+			return nil
+		}
+		return []routeInfo{{
+			method:    "USE",
+			path:      prefixes[identName(sel.X)],
+			handler:   handler,
+			framework: "gin",
+			line:      fset.Position(call.Pos()).Line,
+		}}
+	default:
+		return nil
+	}
+
+	if len(call.Args) <= pathArg {
+		return nil
+	}
+	path := extractStringArg(call, pathArg)
+	if path == "" && !isStaticStringArg(call.Args[pathArg]) {
+		// A computed path is skipped rather than published bare: gin groups mount at
+		// "/" so often that a bare path is frequently the root itself, the same reason
+		// the C# minimal-API pass is stricter here than the Go mux one.
+		return nil
+	}
+
+	path = joinRoutePath(prefixes[identName(sel.X)], path)
+
+	handler := ""
+	if len(call.Args) > handlerArg {
+		// gin takes variadic middleware before the final handler; the LAST argument is
+		// the one that serves the request.
+		handler = exprToString(call.Args[len(call.Args)-1])
+	}
+
+	return []routeInfo{{
+		method:    httpMethod,
+		path:      path,
+		handler:   handler,
+		framework: "gin",
+		line:      fset.Position(call.Pos()).Line,
+	}}
+}
+
+// joinRoutePath joins a group prefix and a route path into one clean path.
+//
+// Deliberately not plain concatenation, which is what the mux and chi paths do: those
+// routers spell an empty mount as "" while gin spells it "/", so gin is the one router
+// here where the naive join produces a doubled separator on the common case.
+func joinRoutePath(prefix, path string) string {
+	prefix = strings.TrimSuffix(prefix, "/")
+	switch {
+	case path == "":
+		if prefix == "" {
+			return "/"
+		}
+		return prefix
+	case !strings.HasPrefix(path, "/"):
+		return prefix + "/" + path
+	default:
+		return prefix + path
+	}
+}
+
 // extractNetHTTPRoutes handles net/http patterns like http.HandleFunc("/path", handler).
 func extractNetHTTPRoutes(fset *token.FileSet, call *ast.CallExpr) []routeInfo {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
@@ -395,7 +508,10 @@ func applySubrouterAssign(s *ast.AssignStmt, prefixes map[string]string) {
 		return
 	}
 	if parentPrefix, ok := prefixes[extractReceiverVar(s.Rhs[0])]; ok {
-		prefix = parentPrefix + prefix
+		// Joined rather than concatenated so a nested gin group under a "/" parent
+		// (`storageAPI := privateAPI.Group("/")`) does not become "//". The two forms
+		// agree on every other input, including every mux PathPrefix chain.
+		prefix = joinRoutePath(parentPrefix, prefix)
 	}
 	prefixes[ident.Name] = prefix
 }
@@ -423,6 +539,17 @@ func extractSubrouterPrefix(expr ast.Expr) string {
 				}
 			}
 		}
+	}
+
+	// gin: `admin := server.Group("/admin")` binds a prefix to a variable.
+	//
+	// Gated on the argument being a STRING LITERAL, not on the framework, because chi
+	// declares a `Group` too — with a completely different meaning: `r.Group(func(r
+	// chi.Router){...})` takes a function and mounts nothing. The argument's shape
+	// discriminates the two structurally, so neither router needs to be named here and
+	// a chi Group cannot be mistaken for a mount.
+	if sel.Sel.Name == "Group" && len(call.Args) >= 1 && isStaticStringArg(call.Args[0]) {
+		return extractStringArg(call, 0)
 	}
 
 	return ""

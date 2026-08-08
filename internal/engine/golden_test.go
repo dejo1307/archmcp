@@ -103,6 +103,12 @@ var fixtures = []fixture{
 	// test library. Plus Scala 3 braceless bodies, enum/given/extension, and a file
 	// whose chained package deliberately disagrees with its directory.
 	{name: "scala_sample", subRepos: []string{"."}},
+	// gin. Pins v191: Group("/") joins rather than concatenates (so /ping, never
+	// //ping — the failure that would silently break every cross-repo match under a
+	// no-prefix group), a real prefix composes and nests, the handler is the LAST
+	// argument because gin takes variadic middleware first, and func(*gin.Context) is
+	// tagged http_handler so each route binds to the function serving it.
+	{name: "go_gin_sample", subRepos: []string{"."}},
 	// Dart/Flutter. Pins v190's decisions, several by ABSENCE:
 	// lib/models/user.freezed.dart yields nothing at all (generated code is the
 	// majority of files in a build_runner project), and lib/models/user_helpers.dart

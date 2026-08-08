@@ -131,6 +131,49 @@ Why it matters: a client calling `/v1/things/{id}` matches the composed path and
 else. Store the bare path and the edge silently does not exist — and a missing cross-repo
 edge looks exactly like a service with no dependents.
 
+### gin
+
+Fixture: [`go_gin_sample`](../../internal/engine/testdata/repos/go_gin_sample/).
+
+gin binds its mounts to **variables** rather than passing routers into functions:
+
+```go
+server := gin.Default()
+
+publicAPI := server.Group("/")          // gin's idiomatic no-prefix group
+publicAPI.GET("/ping", ping)
+
+adminAPI := server.Group("/admin")
+adminAPI.POST("/user/disable", rateLimit, disableUser)
+```
+```
+route  /ping                 props: framework=gin, method=GET,  handler=ping
+route  /admin/user/disable   props: framework=gin, method=POST, handler=disableUser
+```
+
+Three decisions are worth stating.
+
+**Prefixes are joined, not concatenated.** `Group("/")` is how gin spells a group that
+adds no path but attaches its own middleware, and real code leans on it — ente's server
+opens seven. Concatenating produces `//ping`: a path the server does not serve, that no
+client route can match, and that therefore destroys the cross-repo edge the route exists
+to create. Everywhere else the two forms agree, including every mux `PathPrefix` chain.
+
+**`Group` is recognised by its argument, not by the framework.** chi declares a `Group`
+too, and it means the opposite: `r.Group(func(r chi.Router){…})` takes a function and
+mounts nothing. A string-literal argument discriminates the two structurally, so neither
+router has to be named at the point the mount is read.
+
+**The handler is the last argument.** gin's registration is variadic — middleware first,
+handler last — so `adminAPI.POST("/user/disable", rateLimit, disableUser)` is served by
+`disableUser`. Taking the second argument would name the middleware and bind
+`handled_by` to it.
+
+Handlers are `func(*gin.Context)`, which is tagged `http_handler` by **signature** at
+parse time exactly as the `net/http` shape is. The binder keys only on that prop and
+never on a framework name, so a router gains handler binding by having its signature
+described where signatures are already parsed.
+
 ## Outbound HTTP calls
 
 ```go

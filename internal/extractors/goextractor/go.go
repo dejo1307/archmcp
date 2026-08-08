@@ -1167,6 +1167,15 @@ func isHTTPHandlerSignature(ft *ast.FuncType) bool {
 			params = append(params, field.Type)
 		}
 	}
+	// gin: `func(c *gin.Context)` is the second handler shape in Go, and it is just as
+	// structural as the net/http one — a single pointer-to-gin.Context parameter is a
+	// request handler and nothing else. Recognising it here rather than in the binder
+	// is what keeps the binder language-agnostic: it keys on the prop, never on the
+	// framework, so a router gains handler binding by having its signature described
+	// at the point the signature is parsed.
+	if len(params) == 1 {
+		return isPointerToQualifiedType(params[0], "gin", "Context")
+	}
 	if len(params) != 2 {
 		return false
 	}

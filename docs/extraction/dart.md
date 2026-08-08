@@ -185,9 +185,14 @@ data, not an abstraction — and one with public fields and no behaviour additio
 
 - **Server-side Dart.** shelf, dart_frog and serverpod have no route awareness, so a
   Dart backend is a route *consumer* but never a *provider*.
-- **Generated OpenAPI Dart clients.** Their call shape is a local `path` variable
-  passed to `invokeAPI(...)`, not a literal at the call site. immich's mobile client is
-  this shape, which is why it contributes navigation routes but no client routes.
+- **Generated OpenAPI Dart clients**, for a reason worth stating precisely because it
+  is not an extraction limit: the generated package is frequently **not committed**.
+  immich's mobile app depends on `package:openapi` via a path dependency into
+  `mobile/generated/`, which its `.gitignore` excludes — the client is produced from the
+  spec at build time and never exists in a clone. No extractor can read code that is not
+  there, so immich contributes navigation routes and storage but no client routes. Where
+  such a client *is* committed, its call shape (a local `path` variable passed to
+  `invokeAPI(...)`, rather than a literal at the call site) is still not recognised.
 - **A call on an arbitrary receiver** draws a bare short-name `calls` edge rather than a
   guessed canonical target, since the receiver's static type is not tracked. Dead-code
   matching still sees the symbol used.

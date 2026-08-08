@@ -17,7 +17,7 @@ pages changing, the golden tests fail first.
 
 | Language | Routes and clients it understands | |
 |---|---|---|
-| [Go](go.md) | gorilla/mux, chi, Gin, Echo, `net/http` clients, gRPC, Kafka | prefix composition across function boundaries |
+| [Go](go.md) | gorilla/mux, chi, gin, `net/http` clients, gRPC, Kafka | prefix composition across function boundaries; gin `Group` mounts joined, not concatenated |
 | [TypeScript / JavaScript](typescript.md) | Express, NestJS, Next.js, `fetch`, axios, Prisma, TypeORM, Drizzle | Vue, Svelte, and file-based routing |
 | [Python](python.md) | FastAPI, Flask, Django, SQLAlchemy, gRPC | `include_router` prefixes folded repo-wide |
 | [Ruby](ruby.md) | Rails `routes.rb`, ActiveRecord, Sequel, graphql-ruby, Packwerk | nested `resource`/`resources` path shapes, GraphQL operation strings |

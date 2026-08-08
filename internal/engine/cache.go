@@ -1450,7 +1450,20 @@ import (
 // common — so a Dart cycle is a coupling signal and never a build-order defect.
 // Generated Dart (.g.dart, .freezed.dart, .mocks.dart, .pb*.dart) produces nothing:
 // it is the majority of files in a build_runner project and none of it is navigated.
-const cacheVersion = "v190"
+// v191: gin routes in the Go extractor. Registrations (`r.GET`, the generic
+// `r.Handle("GET", …)`, `Any`), `Group("/prefix")` mounts composed onto them, and
+// `func(*gin.Context)` tagged http_handler so a route binds to the method serving it.
+// Two decisions are measured rather than assumed. The group prefix is JOINED, not
+// concatenated: gin spells a no-prefix group `Group("/")` and real code leans on it —
+// ente's server opens seven — so concatenating turns every route beneath one into
+// "//ping", a path nothing serves and no client route matches. And `Group` is
+// recognised by its argument being a STRING LITERAL rather than by naming the
+// framework, because chi declares a `Group` too with an entirely different meaning
+// (`r.Group(func(r chi.Router){…})` takes a function and mounts nothing) — the shape
+// discriminates them structurally. Verified on ente's server: 359 registrations
+// outside test files, 359 routes extracted, no doubled separators, and its Flutter
+// client goes from 167 unresolved call sites to 167 resolved.
+const cacheVersion = "v191"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
