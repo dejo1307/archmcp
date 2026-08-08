@@ -340,8 +340,8 @@ existed. Nothing failed, because nothing tied the reading side to the writing si
 
 ### Props an explainer reads
 
-Routes are not the only contract. Two module/symbol props are read outside the
-package that writes them, and both are **tables rather than branches**, so teaching
+Routes are not the only contract. Three module/symbol props are read outside the
+package that writes them, and they are **tables rather than branches**, so teaching
 another language is a row:
 
 - **`CompilationUnitProps`** (`crate`, `project`) names the build unit a module
@@ -355,7 +355,18 @@ another language is a row:
   enterprise package-metrics explainer spares such packages its "extract
   interfaces" advice, and recognises a dedicated construct (`data_class`, `record`)
   where one exists. Emit `data_holder` when your language has none in common use —
-  C# writes its DTOs as plain classes with auto-properties.
+  C# writes its DTOs as plain classes with auto-properties. Scala emits it for a
+  `case class` even though that *is* a dedicated construct: the reading side knows
+  only the three key strings, so a fourth would need a change on both sides to say
+  something the generic marker already says.
+- **`abstract`** decides whether a type counts toward package-metrics abstractness,
+  and it is **authoritative** — it can demote as well as promote. Set it when your
+  language's interface-kind construct is not reliably an abstraction: a Ruby module
+  is a mixin *or* a namespace, and a Scala trait routinely carries its whole
+  implementation, so both languages compute it (from the members present) rather
+  than letting the keyword decide. Leave it unset where an interface always is one,
+  as in Go — absence means "abstract", so emitting it only when true is the same as
+  not emitting it at all.
 
 An enterprise explainer cannot import `internal/facts`, so it mirrors these key
 strings locally. That is the same arrangement the route `source` values have, and it

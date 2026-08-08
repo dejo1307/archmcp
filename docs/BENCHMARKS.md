@@ -1,6 +1,6 @@
 # Benchmarks
 
-Everything here was measured on 2026-08-07, on 53 public open-source repositories,
+Everything here was measured on 2026-08-08, on 62 public open-source repositories,
 with one binary, by scripts you can re-run. Where a number is unflattering it is
 still here.
 
@@ -28,12 +28,12 @@ would have been.
 
 ## The corpus
 
-53 repositories, 309,322 source files parsed, 5,461,021 facts carrying 18
-distinct language tags (C, C++, C#, F#, Go, Java, Kotlin, PHP, Python, Razor, Ruby,
-Rust, Swift, TypeScript, VB.NET, XAML, gRPC, OpenAPI). Public open-source only:
-every row is a repository you can clone and re-run.
+62 repositories, 321,523 source files parsed, 5,908,745 facts carrying 20
+distinct language tags (Ansible, C, C++, C#, F#, Go, Java, Kotlin, PHP, Python,
+Razor, Ruby, Rust, Scala, Swift, TypeScript, VB.NET, XAML, gRPC, OpenAPI). Public
+open-source only: every row is a repository you can clone and re-run.
 
-**53 of 53 reproduce** — identical `snapshot_id` and identical
+**62 of 62 reproduce** — identical `snapshot_id` and identical
 `facts.jsonl` hash across a cold run and two warm ones, i.e. across cache states.
 
 **.NET is now the largest single language in the corpus by facts**, ahead of
@@ -42,54 +42,63 @@ XAML. See [the .NET rows](#net) below.
 
 | Repository | Language | Files parsed | Facts | Cold | Warm |
 |---|---|---|---|---|---|
-| linux | c | 55,399 | 1,892,342 | 166.3s | 48.6s |
-| gitlab | ruby | 49,484 | 437,219 | 35.4s | 27.3s |
-| runtime | csharp | 17,766 | 397,608 | 65.9s | 37.2s |
-| rust | rust | 36,082 | 394,930 | 24.1s | 13.0s |
-| roslyn | csharp | 17,117 | 360,842 | 23.6s | 16.3s |
-| shopware | php | 13,727 | 218,750 | 13.1s | 7.0s |
-| grafana | go | 10,313 | 167,987 | 8.9s | 6.7s |
-| thingsboard | java | 6,371 | 158,992 | 5.8s | 4.3s |
-| discourse | ruby | 12,102 | 126,003 | 8.8s | 6.2s |
-| nextcloud-server | php | 6,037 | 101,464 | 6.6s | 2.9s |
-| dubbo | java | 4,351 | 82,550 | 2.9s | 2.5s |
-| bitwarden-clients | typescript | 4,895 | 73,445 | 4.2s | 2.8s |
-| supabase | typescript | 6,919 | 70,211 | 6.6s | 3.3s |
+| linux | c | 55,399 | 1,892,342 | 155.2s | 49.6s |
+| gitlab | ruby | 49,484 | 437,219 | 31.8s | 25.9s |
+| runtime | csharp | 17,766 | 397,608 | 60.5s | 34.3s |
+| rust | rust | 36,082 | 394,930 | 20.9s | 13.2s |
+| roslyn | csharp | 17,117 | 360,842 | 20.4s | 15.3s |
+| shopware | php | 13,727 | 218,750 | 11.4s | 7.2s |
+| spark | scala | 5,437 | 216,767 | 39.7s | 23.7s |
+| grafana | go | 10,313 | 167,987 | 9.0s | 6.8s |
+| thingsboard | java | 6,371 | 158,992 | 5.5s | 4.2s |
+| discourse | ruby | 12,102 | 126,003 | 8.1s | 5.8s |
+| nextcloud-server | php | 6,037 | 101,464 | 5.9s | 2.9s |
+| pekko | scala | 1,844 | 94,270 | 7.1s | 4.1s |
+| dubbo | java | 4,351 | 82,550 | 2.7s | 2.5s |
+| bitwarden-clients | typescript | 4,895 | 73,445 | 4.1s | 2.8s |
+| supabase | typescript | 6,919 | 70,211 | 6.8s | 3.5s |
 | fsharp | fsharp | 1,769 | 68,379 | 2.7s | 2.3s |
-| airflow | python | 4,066 | 68,163 | 9.7s | 6.4s |
-| avalonia | xaml | 3,774 | 62,728 | 3.6s | 2.3s |
-| deno | rust | 4,307 | 62,005 | 6.7s | 2.9s |
-| orchardcore | razor | 6,979 | 53,369 | 4.6s | 2.6s |
-| superset | python | 3,829 | 51,609 | 5.4s | 3.7s |
-| cal.com | typescript | 4,596 | 48,643 | 3.5s | 2.0s |
-| dbt-core | rust | 1,371 | 46,935 | 3.3s | 1.6s |
-| wordpress | php | 2,748 | 45,424 | 5.8s | 1.6s |
-| gmsh | cpp | 1,679 | 41,348 | 3.1s | 1.1s |
-| powershell | csharp | 1,202 | 40,341 | 3.4s | 1.6s |
-| bitwarden-server | csharp | 3,626 | 39,957 | 3.4s | 2.4s |
-| chatwoot | ruby | 3,643 | 36,234 | 2.2s | 1.7s |
-| mudblazor | razor | 3,170 | 35,987 | 2.6s | 1.2s |
-| gitea | go | 2,220 | 35,492 | 1.9s | 1.6s |
-| saleor | python | 2,474 | 30,193 | 3.4s | 2.5s |
-| flarum | php | 2,687 | 28,273 | 1.5s | 0.9s |
-| jellyfin | csharp | 1,883 | 27,481 | 1.8s | 1.0s |
-| mcp | csharp | 2,033 | 22,666 | 2.2s | 1.5s |
-| cognee | python | 1,489 | 16,911 | 2.0s | 1.1s |
-| files | xaml | 1,275 | 16,272 | 1.3s | 0.7s |
-| cognee-rs | rust | 846 | 15,827 | 1.2s | 0.6s |
-| tokio | rust | 780 | 14,450 | 0.9s | 0.4s |
+| airflow | python | 4,066 | 68,163 | 7.8s | 5.2s |
+| avalonia | xaml | 3,774 | 62,728 | 3.2s | 2.2s |
+| deno | rust | 4,307 | 62,005 | 6.1s | 2.9s |
+| lila | scala | 2,305 | 54,588 | 4.7s | 2.3s |
+| orchardcore | razor | 6,979 | 53,369 | 4.3s | 2.6s |
+| superset | python | 3,829 | 51,609 | 4.8s | 3.1s |
+| cal.com | typescript | 4,596 | 48,643 | 3.5s | 2.2s |
+| dbt-core | rust | 1,371 | 46,935 | 2.7s | 1.5s |
+| wordpress | php | 2,748 | 45,424 | 4.6s | 1.7s |
+| gmsh | cpp | 1,679 | 41,348 | 2.5s | 1.1s |
+| powershell | csharp | 1,202 | 40,341 | 2.9s | 1.6s |
+| bitwarden-server | csharp | 3,626 | 39,957 | 3.0s | 2.2s |
+| chatwoot | ruby | 3,643 | 36,234 | 2.3s | 1.6s |
+| mudblazor | razor | 3,170 | 35,987 | 2.2s | 1.2s |
+| gitea | go | 2,220 | 35,492 | 2.0s | 1.7s |
+| saleor | python | 2,474 | 30,193 | 2.8s | 2.0s |
+| flarum | php | 2,687 | 28,273 | 1.4s | 0.9s |
+| jellyfin | csharp | 1,883 | 27,481 | 1.6s | 1.0s |
+| zio | scala | 701 | 25,224 | 8.1s | 2.5s |
+| mcp | csharp | 2,033 | 22,666 | 2.0s | 1.4s |
+| pekko-http | scala | 752 | 22,275 | 1.9s | 1.4s |
+| cognee | python | 1,489 | 16,911 | 1.8s | 1.0s |
+| files | xaml | 1,275 | 16,272 | 1.2s | 0.7s |
+| cognee-rs | rust | 846 | 15,827 | 1.1s | 0.6s |
+| tokio | rust | 780 | 14,450 | 0.8s | 0.4s |
+| openwhisk | scala | 375 | 13,448 | 2.3s | 1.6s |
+| http4s | scala | 438 | 13,068 | 4.0s | 0.7s |
 | crates-io | rust | 878 | 12,451 | 1.0s | 0.6s |
-| solidus | ruby | 1,766 | 10,009 | 1.1s | 0.9s |
+| solidus | ruby | 1,766 | 10,009 | 1.0s | 0.8s |
 | excalidraw | typescript | 526 | 8,738 | 1.1s | 0.5s |
+| gitbucket | scala | 219 | 5,688 | 0.9s | 0.4s |
 | isowords | swift | 382 | 5,615 | 0.5s | 0.3s |
+| enola | go | 237 | 5,238 | 0.4s | 0.4s |
 | nowinandroid | kotlin | 312 | 5,110 | 0.5s | 0.4s |
-| enola | go | 229 | 5,049 | 0.7s | 0.4s |
-| nextcloud-collectives | php | 383 | 4,968 | 0.6s | 0.3s |
-| getdp | cpp | 169 | 4,562 | 0.9s | 0.2s |
-| csharp-sdk | csharp | 427 | 4,488 | 0.7s | 0.5s |
+| nextcloud-collectives | php | 383 | 4,968 | 0.7s | 0.3s |
+| getdp | cpp | 169 | 4,562 | 0.8s | 0.2s |
+| csharp-sdk | csharp | 427 | 4,488 | 0.6s | 0.4s |
 | eshop | csharp | 580 | 3,488 | 0.5s | 0.3s |
 | elk | vue | 380 | 2,556 | 0.3s | 0.2s |
-| nextcloud-contacts | php | 170 | 1,706 | 0.4s | 0.2s |
+| trading | scala | 122 | 2,207 | 0.3s | 0.2s |
+| nextcloud-contacts | php | 170 | 1,706 | 0.5s | 0.2s |
 | giraffe | fsharp | 33 | 641 | 0.1s | 0.1s |
 | grpc-web-example | grpc | 12 | 297 | 0.1s | 0.1s |
 | sveltekit-realworld | svelte | 42 | 195 | 0.1s | 0.1s |
@@ -106,15 +115,15 @@ largest language block in the corpus. All fourteen reproduce.
 | runtime | 17,766 | 397,608 | 65.9s | 37.2s |
 | roslyn | 17,117 | 360,842 | 23.6s | 16.3s |
 | fsharp | 1,769 | 68,379 | 2.7s | 2.3s |
-| avalonia | 3,774 | 62,728 | 3.6s | 2.3s |
-| orchardcore | 6,979 | 53,369 | 4.6s | 2.6s |
-| powershell | 1,202 | 40,341 | 3.4s | 1.6s |
-| bitwarden-server | 3,626 | 39,957 | 3.4s | 2.4s |
-| mudblazor | 3,170 | 35,987 | 2.6s | 1.2s |
-| jellyfin | 1,883 | 27,481 | 1.8s | 1.0s |
-| mcp | 2,033 | 22,666 | 2.2s | 1.5s |
-| files | 1,275 | 16,272 | 1.3s | 0.7s |
-| csharp-sdk | 427 | 4,488 | 0.7s | 0.5s |
+| avalonia | 3,774 | 62,728 | 3.2s | 2.2s |
+| orchardcore | 6,979 | 53,369 | 4.3s | 2.6s |
+| powershell | 1,202 | 40,341 | 2.9s | 1.6s |
+| bitwarden-server | 3,626 | 39,957 | 3.0s | 2.2s |
+| mudblazor | 3,170 | 35,987 | 2.2s | 1.2s |
+| jellyfin | 1,883 | 27,481 | 1.6s | 1.0s |
+| mcp | 2,033 | 22,666 | 2.0s | 1.4s |
+| files | 1,275 | 16,272 | 1.2s | 0.7s |
+| csharp-sdk | 427 | 4,488 | 0.6s | 0.4s |
 | eshop | 580 | 3,488 | 0.5s | 0.3s |
 | giraffe | 33 | 641 | 0.1s | 0.1s |
 
@@ -131,6 +140,10 @@ The corpus is deliberately split so each mechanism has a control:
 | Avalonia, Files | **XAML** — Avalonia at scale, Files as a real WinUI 3 MVVM app |
 | bitwarden-server | EF Core + Dapper; the backend half of the cross-repo cluster |
 | runtime, PowerShell, mcp, csharp-sdk | scale, `partial`-heavy code, a 148-project monorepo, a library serving no HTTP |
+| lila | Play `conf/routes` — one file declaring 923 endpoints, with four included sub-routers |
+| openwhisk, pekko-http | a Pekko HTTP **application** against the library that defines the DSL |
+| trading, http4s | the same pairing for http4s, and an effect-heavy Scala 3 codebase |
+| spark, pekko | Scala **beside Java** in one tree — 1,355 and 582 `.java` in the same packages |
 
 **giraffe is the row that matters most.** It produced **0 facts** before this work —
 detection matched its `.slnx`, the extractor claimed the repository, and reported a
@@ -144,9 +157,9 @@ receipt's `snapshot_id` and the SHA-256 of `facts.jsonl` were compared across al
 three. Running cold then warm is the point: it tests that a cached run and a
 from-scratch run agree, not merely that the same code path repeats itself.
 
-> **53 of 53 repositories produced a byte-identical `snapshot_id` and a
+> **62 of 62 repositories produced a byte-identical `snapshot_id` and a
 > byte-identical `facts.jsonl` across all three runs — 159 runs, 5,461,021 facts,
-> zero drift.** `insights.json` is byte-stable on all 53 as well.
+> zero drift.** `insights.json` is byte-stable on all 62 as well.
 
 This is the property everything else rests on. `snapshot_id` is
 `sha256(facts ‖ enola version ‖ config hash)`, not a UUID, so two runs on the same
@@ -168,24 +181,25 @@ delete. The cycle case adds two new modules that import each other.
 
 | Repository | Language | Pre-existing findings | No change | Benign addition | Injected cycle | Reverted |
 |---|---|---|---|---|---|---|
-| gitea | Go | 171 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| enola | Go | 138 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| superset | Python | 133 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| cognee | Python | 121 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| excalidraw | TypeScript | 111 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| chatwoot | Ruby | 104 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| jellyfin | C# | 103 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| eshop | C# | 89 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| solidus | Ruby | 72 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| crates-io | Rust | 65 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| nowinandroid | Kotlin | 37 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| elk | TypeScript | 26 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| sveltekit-realworld | TypeScript | 1 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
-| cachet | PHP | 0 | PASS · +0 facts | PASS · +2–3 facts | **FAIL · 1 regression** | PASS · +0 |
+| gitea | Go | 171 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| enola | Go | 145 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| superset | Python | 133 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| cognee | Python | 121 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| excalidraw | TypeScript | 111 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| chatwoot | Ruby | 104 | PASS · +0 facts | PASS · +3 facts | **FAIL · 1 regression** | PASS · +0 |
+| jellyfin | C# | 103 | PASS · +0 facts | PASS · +3 facts | **FAIL · 1 regression** | PASS · +0 |
+| eshop | C# | 89 | PASS · +0 facts | PASS · +3 facts | **FAIL · 1 regression** | PASS · +0 |
+| solidus | Ruby | 72 | PASS · +0 facts | PASS · +3 facts | **FAIL · 1 regression** | PASS · +0 |
+| crates-io | Rust | 65 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| gitbucket | Scala | 50 | PASS · +0 facts | PASS · +3 facts | **FAIL · 1 regression** | PASS · +0 |
+| nowinandroid | Kotlin | 37 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| elk | TypeScript | 26 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| sveltekit-realworld | TypeScript | 1 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
+| cachet | PHP | 0 | PASS · +0 facts | PASS · +3 facts | **FAIL · 1 regression** | PASS · +0 |
 
-Read the columns as four separate claims, all of which hold on all twelve:
+Read the columns as four separate claims, all of which hold on all fifteen:
 
-- **No change → +0 facts, +0 edges, PASS.** Exactly zero on all twelve repositories.
+- **No change → +0 facts, +0 edges, PASS.** Exactly zero on all fifteen repositories.
   That's what makes a PASS or FAIL on a real change something you can rely on.
 - **Benign addition → PASS**, with the delta naming exactly the 2–3 facts added.
   A new leaf module isn't a structural regression, so there's nothing to report.
@@ -326,16 +340,17 @@ so the demonstration proves its own limit in the same run.
 
 | | |
 |---|---|
-| Largest repository indexed | **Linux kernel** — 55,399 files, **1,892,342 facts**, 166.3s cold / 48.6s warm |
-| Largest .NET | dotnet/runtime — 17,766 files, 397,608 facts, 65.9s / 37.2s |
-| Largest Ruby | GitLab — 49,484 files, 437,219 facts, 35.4s / 27.3s |
-| Largest Rust | rust-lang/rust — 36,082 files, 394,930 facts, 24.1s / 13.0s |
-| Largest Go | Grafana — 10,313 files, 167,987 facts, 8.9s / 6.7s |
-| Throughput | 7,500–35,000 facts/sec depending on language |
-| Parse errors, all 53 repositories | **0** |
-| Memory, Linux kernel | heap peaked well inside a laptop's budget; no repository required tuning |
+| Largest repository indexed | **Linux kernel** — 55,399 files, **1,892,342 facts**, 155.2s cold / 49.6s warm |
+| Largest .NET | dotnet/runtime — 17,766 files, 397,608 facts, 60.5s / 34.3s |
+| Largest Ruby | GitLab — 49,484 files, 437,219 facts, 31.8s / 25.9s |
+| Largest Rust | rust-lang/rust — 36,082 files, 394,930 facts, 20.9s / 13.2s |
+| Largest Scala | Spark — 5,437 files, 216,767 facts, 39.7s / 23.7s |
+| Largest Go | Grafana — 10,313 files, 167,987 facts, 9.0s / 6.8s |
+| Throughput | 3,100–30,300 facts/sec depending on language |
+| Parse errors, all 62 repositories | **0** |
+| Memory | no repository required tuning on this machine; Spark is the high-water mark and is measured separately in the harness README, because the sweep records time and hashes but not RSS |
 
-Warm runs are 1.14×–3.77× faster than cold (over the 44 repositories whose cold run
+Warm runs are 1.10×–6.04× faster than cold (over the 52 repositories whose cold run
 exceeds 0.5s; below that the timing is noise), from the per-file content-hash cache
 in `snapshot.meta.json`. These numbers establish that the graph the other four
 sections rely on can actually be built on real code. enola isn't benchmarked on
@@ -343,33 +358,45 @@ speed as a competitive claim.
 
 ## 5. What the extractors see
 
-Across the corpus enola extracted **18,552 routes** (16,909 server, 1,643 client) and
-recognised **36 distinct frameworks** without configuration:
+Across the corpus enola extracted **21,911 routes** (16,938 server, 4,973 client) and
+recognised **41 distinct frameworks** without configuration:
 
 ```
-wordpress 6668 · rails 2880 · aspnetcore 1838 · fastapi 1214 · openapi 1039
-flask 895 · chi 751 · axios 707 · spring 578 · symfony 552 · resttemplate 418
-fetch 178 · request-options 170 · axum 132 · vue 106 · nextjs 78 · nuxt 55
-blazor 48 · grpc 39 · http-client 36 · openapi-fetch 35 · httpclient 34
-file-get-contents 21 · faraday 16 · sveltekit 13 · net/http 10 · graphql 10
-net-http 8 · django 8 · retrofit 4 · gorilla/mux 2 · express 2 · guzzle 2
-urlsession 2 · razorpages 2 · symfony-httpclient 1
+wordpress 6668 · rails 3612 · graphql 2121 · aspnetcore 1192 · axios 1151
+openapi 1124 · play 923 · request-options 771 · chi 751 · spring 578
+symfony 574 · resttemplate 423 · fastapi 354 · flask 297 · fetch 250
+nestjs 175 · grpc 132 · axum 132 · vue 103 · graphql-ruby 81 · net/http 63
+nuxt 55 · blazor 48 · openapi-fetch 46 · guzzle 44 · nextjs 39 · http-client 36
+httpclient 36 · pekko-http 29 · http4s 21 · faraday 16 · sveltekit 13
+net-http 12 · file-get-contents 9 · hono 7 · gorilla/mux 5 · retrofit 4
+django 4 · express 2 · urlsession 2 · razorpages 2
 ```
 
-Fact kinds: 3,769,650 symbols · 1,158,084 dependencies · 67,490 test refs ·
-58,090 file refs · 52,658 modules · 18,552 routes · 4,331 storage · 20 services.
+Fact kinds: 4,320,435 symbols · 1,362,954 dependencies · 70,839 test refs ·
+70,533 file refs · 58,579 modules · 21,911 routes · 3,494 storage. Service nodes
+are absent here by construction: the sweep indexes one repository at a time, and a
+service node only exists in a multi-repo graph — those are section 3's subject.
 
-`aspnetcore` at 1,838 is the third-largest framework, and `storage` is non-zero for
+**Scala's three route surfaces appear at `play 923`, `pekko-http 29` and
+`http4s 21`**, and the shape of that split is the point rather than the totals. Play
+declares a whole application's endpoints in one file, so one application supplies
+923 of them; the other two are DSLs written per route tree, and the corpus holds one
+real application for each beside the library that defines it. A library defines a
+DSL and does not use one — which is why counting `pathPrefix` in a routing library
+finds the directive's own definition and almost no endpoints.
+
+`aspnetcore` at 1,192 is the fourth-largest framework, and `storage` is non-zero for
 .NET at all — both were **zero** before this corpus was indexed for it. `blazor 48`
 and `razorpages 2` count `@page` routes only; the bulk of Razor's contribution is
 reference edges rather than routes, which is what the format is mostly used for.
 
-Two rows are worth reading carefully rather than as a score. **django 8** counts
+Two rows are worth reading carefully rather than as a score. **django 4** counts
 routes, not coverage: Saleor is GraphQL-first, so its REST surface really is that
-small, while its facts still carry the Django framework tag. And **axum 132** is
-depressed by the same repository that supplied it: crates.io declares most of its
-API through `utoipa`'s `routes!()` macro, which enola deliberately does not expand —
-a documented limit in [rust.md](extraction/rust.md).
+small — 140 of its 144 routes carry the `graphql` tag — while its facts still carry
+the Django tag too. And **axum 132** comes almost entirely from two other Rust
+services (77 and 47); crates.io supplies only 8, because it declares most of its API
+through `utoipa`'s `routes!()` macro, which enola deliberately does not expand — a
+documented limit in [rust.md](extraction/rust.md).
 
 A third belongs to .NET. OrchardCore contributes 82 routes where it declares 288
 verb attributes, because 94% of its controllers are conventionally routed and 20 of
@@ -378,6 +405,10 @@ resolved without each controller's area. That gap is counted and logged rather t
 closed by guessing — see [dotnet.md](extraction/dotnet.md).
 
 ## 6. Agent A/B — does the agent ship the regression?
+
+> Unlike sections 1–5, this one was **not** re-run for the current corpus: it needs
+> real agent sessions rather than a script, so its numbers are carried forward from
+> the earlier run. The fixture and the finding are unchanged; only the date differs.
 
 The one A/B worth running is against **no tool**, on a task where the obvious
 implementation is structurally wrong.
@@ -456,6 +487,11 @@ Stated so the numbers above are not read as more than they are.
 - **Swift in the ratchet.** Measured in every other section; excluded from section 2
   only, because a Swift module is a declared SPM target and no additive cycle
   injection exists. Stated above rather than silently omitted.
+- **Scala has no cross-repo cluster.** It is measured in sections 1 and 2 across
+  nine repositories, but section 3 pairs a backend with its own clients and no
+  Scala pair exists in the corpus, so Scala contributes nothing to the coverage
+  numbers. Its client-side extraction (sttp, Play WS) is exercised by unit tests
+  and the golden fixture only.
 - **Kotlin and Swift at *large* scale.** Both now have a real public repository
   (Google's reference Android app; a SwiftUI application), but at 312 and 382 parsed
   files they are the small end of the corpus. The framework constructs are exercised
