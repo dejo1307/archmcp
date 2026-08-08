@@ -131,6 +131,75 @@ func TestDownload(t *testing.T) {
 }
 
 // buildTarGz returns a gzipped tar archive containing a single file.
+// TestExtractBinaryIgnoresAccompanyingFiles pins that `enola upgrade` survives a
+// release tarball carrying more than the binary.
+//
+// The tarball ships LICENSE and NOTICE beside the executable, because the vendored
+// tree-sitter grammars are MIT and the notice has to travel with the copy people
+// actually download. An upgrade path that assumed a single-member archive — or that
+// took the first entry — would break on the first release that did so, and it would
+// break in the field rather than in CI.
+//
+// LICENSE is deliberately placed FIRST, which is the case a "read the first member"
+// implementation would pass by accident if the binary came first.
+func TestExtractBinaryIgnoresAccompanyingFiles(t *testing.T) {
+	want := []byte("#!/bin/sh\necho hi\n")
+	tarball := buildTarGzWith(t, []tarMember{
+		{name: "LICENSE", data: []byte("Apache License 2.0 ...")},
+		{name: "NOTICE", data: []byte("tree-sitter-swift ... tree-sitter-dart ...")},
+		{name: "enola-1.2.3-linux-amd64", data: want},
+	})
+
+	got, err := extractBinary(tarball, "enola-1.2.3-linux-amd64")
+	if err != nil {
+		t.Fatalf("extractBinary: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("extracted %q, want the binary %q", got, want)
+	}
+
+	// And the accompanying files are reachable by name, so a future `--licenses`
+	// could read them from the same archive rather than needing a second download.
+	notice, err := extractBinary(tarball, "NOTICE")
+	if err != nil {
+		t.Fatalf("NOTICE should be present in the archive: %v", err)
+	}
+	if !bytes.Contains(notice, []byte("tree-sitter-dart")) {
+		t.Error("NOTICE should attribute the vendored Dart grammar")
+	}
+}
+
+// buildTarGzWith builds an archive with several members, in the order given. It
+// mirrors the real release tarball, which carries LICENSE and NOTICE beside the
+// binary so the vendored grammars' MIT notice travels with the copy people install.
+func buildTarGzWith(t *testing.T, members []tarMember) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, m := range members {
+		hdr := &tar.Header{Name: m.name, Mode: 0o644, Size: int64(len(m.data))}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(m.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+type tarMember struct {
+	name string
+	data []byte
+}
+
 func buildTarGz(t *testing.T, name string, data []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer

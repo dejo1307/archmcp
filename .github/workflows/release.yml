@@ -84,7 +84,19 @@ jobs:
           if [ "${{ matrix.goos }}" = "windows" ]; then
             EXT=".exe"
           fi
-          tar czf "${BINARY}.tar.gz" "${BINARY}${EXT}"
+          # LICENSE and NOTICE ride along with the binary. The vendored
+          # tree-sitter grammars (Swift, Dart) are MIT, and MIT requires the notice
+          # to travel with copies of the software — the compiled binary embeds
+          # scanner.c verbatim and a parser generated from the upstream grammar, so
+          # the tarball is the copy that needs to carry it. Shipping the binary
+          # alone left the notice in the source tree only, which is not where
+          # anyone installing via install.sh ever looks.
+          #
+          # Neither install path is affected: install.sh extracts into a temp
+          # directory and installs the binary BY NAME, and `enola upgrade` searches
+          # the archive for that name (see extractBinary), so the extra members are
+          # ignored by both and nothing lands in ~/.local/bin.
+          tar czf "${BINARY}.tar.gz" "${BINARY}${EXT}" LICENSE NOTICE
           sha256sum "${BINARY}.tar.gz" > "${BINARY}.sha256"
 
       - name: Upload to release
