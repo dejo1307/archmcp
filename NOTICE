@@ -19,3 +19,23 @@ tree-sitter-swift — Swift grammar for tree-sitter
   the upstream grammar.json (see that directory's ATTRIBUTION.md for details and
   the regeneration command). The surrounding cgo glue (binding.go, cgo_parser.c,
   cgo_scanner.c) is enola's own code and is not part of the upstream grammar.
+
+--------------------------------------------------------------------------------
+
+tree-sitter-dart — Dart grammar for tree-sitter
+  Location: internal/extractors/dartextractor/grammar/
+  Author:   UserNobody14 and others
+  Source:   https://github.com/UserNobody14/tree-sitter-dart
+  Version:  go module github.com/UserNobody14/tree-sitter-dart
+            v0.0.0-20260707040301-be07cf7118d3 (commit be07cf7118d3)
+  License:  MIT — Copyright (c) 2020-2023 UserNobody14 and others
+            see internal/extractors/dartextractor/grammar/LICENSE
+
+  grammar.json and src/scanner.c are vendored verbatim from the upstream
+  project's src/ directory. src/parser.c, src/node-types.json and
+  src/tree_sitter/*.h are generated locally from that grammar.json at
+  tree-sitter ABI 14 — the upstream project ships an ABI 15 parser, which the
+  vendored go-tree-sitter runtime rejects (see that directory's ATTRIBUTION.md
+  for details and the regeneration command). The surrounding cgo glue
+  (binding.go, cgo_parser.c, cgo_scanner.c) is enola's own code and is not part
+  of the upstream grammar.

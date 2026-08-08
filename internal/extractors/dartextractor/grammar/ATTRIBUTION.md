@@ -7,7 +7,7 @@ Dart source into an AST. It is third-party code, distributed under a different l
 ## Source
 
 - **Project:** [tree-sitter-dart](https://github.com/UserNobody14/tree-sitter-dart)
-- **License:** MIT — see [LICENSE](./LICENSE)
+- **License:** MIT — see [LICENSE](./LICENSE) (Copyright (c) 2020-2023 UserNobody14 and others)
 - **Version vendored:** Go module `github.com/UserNobody14/tree-sitter-dart`
   pseudo-version `v0.0.0-20260707040301-be07cf7118d3` (commit `be07cf7118d3`)
 
@@ -34,7 +34,7 @@ either of which alone is fatal:
 | File(s) | Origin |
 |---|---|
 | `src/scanner.c` | Copied verbatim from the upstream repository (the project's hand-written external scanner: block/doc comments and string-template chars). |
-| `grammar.json` | Copied verbatim from the upstream repository. |
+| `grammar.json` | Copied verbatim from the upstream repository's `src/grammar.json`. |
 | `src/parser.c`, `src/node-types.json`, `src/tree_sitter/*.h` | **Generated** locally from `grammar.json` using the tree-sitter CLI at ABI 14. The upstream committed parser is ABI 15 and therefore unusable here. |
 
 The generated parser is a deterministic product of the upstream `grammar.json`; it was
