@@ -14,6 +14,7 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/filelock"
 	"github.com/enola-labs/enola/internal/hookstate"
+	"github.com/enola-labs/enola/internal/updatecheck"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/check"
 )
@@ -183,6 +184,16 @@ func (r *Runner) runSessionStartHook(ctx context.Context, args []string) {
 // Everything here is silent. It has no terminal, nobody is reading its output, and a hook
 // that cannot fail loudly must not try.
 func (r *Runner) pinBaselineSingleFlight(ctx context.Context, repoDir string) {
+	// Refreshed here because this is already the one place enola does slow, unattended
+	// work that nobody is waiting on — so the update check costs no extra process spawn
+	// and cannot delay anything. It runs BEFORE the pin lock and every early return
+	// below: skipping the pin is the common case (an unchanged tree, a deliberate
+	// baseline, a sibling terminal holding the lock), and a check that only happened on
+	// the rare path would go months without running. It is itself TTL-gated and
+	// separately locked, so running it on every session start costs at most one request
+	// per twelve hours per machine.
+	updatecheck.Refresh(ctx)
+
 	eng, cfg, err := r.newEngine(bootstrap.Options{ConfigPath: configForRepo(repoDir)})
 	if err != nil {
 		return

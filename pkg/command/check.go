@@ -12,6 +12,7 @@ import (
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/updatecheck"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/check"
 )
@@ -238,6 +239,10 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 			fmt.Printf("\n%s\n", verdict.Detail())
 		}
 	}
+	// After the verdict and on STDERR, in both output modes. Stderr because `--json`
+	// promises stdout is a verdict document and nothing else, and after because a
+	// housekeeping note must never be the first thing read when the gate just failed.
+	updatecheck.Fprint(os.Stderr, engine.ExtractorVersion())
 	os.Exit(verdict.ExitCode())
 }
 

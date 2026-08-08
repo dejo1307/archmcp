@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -11,7 +12,9 @@ import (
 	"time"
 
 	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/updatecheck"
 	"github.com/enola-labs/enola/internal/upgrade"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
@@ -57,11 +60,41 @@ func main() {
 	cfgPath := "mcp-arch.yaml"
 	repoArg := "" // optional positional repo path, for --explain and --generate
 
+	// --json qualifies --version rather than standing alone, so it has to be known
+	// BEFORE the loop below reaches --version and exits. The loop is an exact-match
+	// switch that acts on the first flag it recognises, which makes it order-sensitive
+	// for every flag pairing; scanning once up front is what keeps `--version --json`
+	// and `--json --version` the same command.
+	jsonMode := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--json" {
+			jsonMode = true
+		}
+	}
+
 	for _, arg := range os.Args[1:] {
 		switch arg {
 		case "--version":
+			// The JSON form is the release manifest, byte for byte: the release
+			// workflow runs this on the artifact it just built and publishes the
+			// output. Generating it FROM the binary being shipped is what stops the
+			// manifest from ever disagreeing with what is in the tarball. On stdout,
+			// unlike the human line, because something is parsing it.
+			if jsonMode {
+				out, err := json.Marshal(updatecheck.Manifest{
+					Version:          version.Version,
+					ExtractorVersion: engine.ExtractorVersion(),
+				})
+				if err != nil {
+					log.Fatalf("failed to encode version: %v", err)
+				}
+				fmt.Println(string(out))
+				os.Exit(0)
+			}
 			fmt.Fprintf(os.Stderr, "enola version %s\n", version.Version)
 			os.Exit(0)
+		case "--json":
+			// Consumed above. Listed so the catch-all does not treat it as a path.
 		case "--help", "-h":
 			cli.RenderHelp(os.Stderr, helpSpec())
 			os.Exit(0)
@@ -181,6 +214,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  Artifacts:   %d\n", len(snapshot.Artifacts))
 		fmt.Fprintf(os.Stderr, "  Duration:    %s\n", snapshot.Meta.Duration)
 		fmt.Fprintf(os.Stderr, "  Output:      %s\n", filepath.Join(repoPaths[len(repoPaths)-1], cfg.Output.Dir))
+		updatecheck.Fprint(os.Stderr, engine.ExtractorVersion())
 		os.Exit(0)
 	}
 

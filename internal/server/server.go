@@ -19,6 +19,7 @@ import (
 	"github.com/enola-labs/enola/internal/drift"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/updatecheck"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/coverage"
 	"github.com/enola-labs/enola/pkg/mcputil"
@@ -102,6 +103,17 @@ type Server struct {
 	freshMu     sync.Mutex
 	freshBanner string
 	freshAt     time.Time
+
+	// updateSaid is set once the "a newer enola exists" notice has been attached to a
+	// tool result, so it is said once per SERVER PROCESS and never again.
+	//
+	// Once-per-process is the whole cadence policy, and it needs no file and no
+	// cross-process coordination to implement: a server process is a session, so the
+	// agent hears it on its first tool call and is left alone for the rest of the work.
+	// Repeating it on every result — which is what the freshness banner does, because
+	// staleness is actionable RIGHT NOW and this is not — would make it wallpaper by
+	// the third call and dilute the banner that does need attention.
+	updateSaid atomic.Bool
 }
 
 // New creates a new MCP server wired to the given engine.
@@ -135,6 +147,7 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 	// server after New returns.
 	s.mcp.AddReceivingMiddleware(s.valueMiddleware)
 	s.mcp.AddReceivingMiddleware(s.freshnessMiddleware)
+	s.mcp.AddReceivingMiddleware(s.updateMiddleware)
 
 	return s, nil
 }
@@ -143,6 +156,16 @@ func New(eng *engine.Engine, cfg *config.Config) (*Server, error) {
 func (s *Server) Run(ctx context.Context) error {
 	s.startTime = time.Now()
 	log.Println("[server] starting MCP server on stdio transport")
+
+	// In a goroutine, and its result is never awaited: a server that took even a
+	// moment to start because of an update check would be paying a latency cost on
+	// every session for information that is only ever advisory. Whatever it finds
+	// lands in the cache and is read by the NEXT tool call, or the next session — the
+	// banner reads the file, never this. The hook covers the case where hooks are
+	// installed; this covers everyone else, since an MCP-only user has no other
+	// long-lived process that could refresh it.
+	go updatecheck.Refresh(ctx)
+
 	return s.mcp.Run(ctx, &mcp.StdioTransport{})
 }
 
@@ -421,6 +444,48 @@ func (s *Server) freshnessBanner() string {
 	s.freshBanner = banner
 	s.freshAt = time.Now()
 	return banner
+}
+
+// updateMiddleware attaches a one-time notice that a newer enola exists.
+//
+// Kept separate from freshnessMiddleware rather than folded into it, because the two
+// answer different questions on different clocks: freshness is about THIS graph being
+// behind THIS tree and is worth repeating until fixed; this is about the binary being
+// behind the release stream, is not actionable inside the session, and is said once.
+// Sharing a code path would force one cadence onto both.
+//
+// It appends rather than prepends: the freshness warning is the one the agent may need
+// to act on before trusting the result, so it stays at the top.
+//
+// Everything it reads is local — updatecheck.AgentLine reads a cached file — so this
+// adds no latency and no network call to a tool call. See internal/updatecheck.
+func (s *Server) updateMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		result, err := next(ctx, method, req)
+		if err != nil || method != "tools/call" {
+			return result, err
+		}
+		params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
+		if !ok || bannerSuppressed(params.Name) {
+			return result, err
+		}
+		ctr, ok := result.(*mcp.CallToolResult)
+		if !ok || ctr == nil || ctr.IsError {
+			return result, err
+		}
+		notice := updatecheck.AgentLine(engine.ExtractorVersion())
+		if notice == "" {
+			return result, err
+		}
+		// Claimed with CompareAndSwap, not a check-then-set: tool calls are dispatched
+		// concurrently by the MCP SDK, and two arriving together would otherwise both
+		// see false and both append.
+		if !s.updateSaid.CompareAndSwap(false, true) {
+			return result, err
+		}
+		ctr.Content = append(ctr.Content, &mcp.TextContent{Text: "\n\n" + notice})
+		return result, err
+	}
 }
 
 // humanizeDuration renders a coarse, human-friendly age (minutes/hours/days).

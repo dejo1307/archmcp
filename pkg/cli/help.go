@@ -108,6 +108,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Flag: "--status --all", Desc: "Show the per-repo breakdown instead (from ~/.enola/usage/)"},
 			{Flag: "--no-dashboard", Desc: "Do not start the localhost dashboard alongside the MCP server"},
 			{Flag: "--version", Desc: "Print version information"},
+			{Flag: "--version --json", Desc: "Print the version and the extractor version as JSON, on stdout.\nThis is the release manifest: what a build is called, and what it\nEXTRACTS LIKE. See UPDATES."},
 			{Flag: "--help, -h", Desc: "Show this help message"},
 		},
 		ConfigDoc: "Path to the config file (default: mcp-arch.yaml). Set `repos:` in it to\n  name a multi-repo cluster; entries resolve relative to the config file, so\n  a checked-in cluster config means the same thing wherever it is run from.",
@@ -141,6 +142,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 		Sections: []Section{
 			gateSection(bin),
 			dashboardSection(),
+			updatesSection(bin),
 			mcpConfigSection(bin),
 			buildSection(bin),
 		},
@@ -190,6 +192,31 @@ func dashboardSection() Section {
   graph receipts, and refreshes every 30 seconds. Run "--status" while the server
   is up to get its URL, or pass "--no-dashboard" to skip it entirely.
 `,
+	}
+}
+
+// updatesSection documents the passive update notice, and — the part that has to be
+// discoverable — how to switch it off. A tool that reaches the network on someone's
+// machine owes them a documented way to stop it, in the help they already read.
+func updatesSection(bin Binary) Section {
+	return Section{
+		Title: "UPDATES",
+		Body: fmt.Sprintf(`  enola checks at most once every 12 hours, in the background, whether a newer
+  release exists, and caches the answer in ~/.enola/update.json. No command ever
+  waits on the network for it: the notice you see is a read of that file. When
+  a newer release is found, "%s doctor" reports it and "%s upgrade"
+  installs it.
+
+  The notice says whether the EXTRACTORS changed, not what else did. That single
+  bit is the one that matters for your data: it means snapshots from your build
+  are missing facts a current enola would extract.
+
+  It is silent for a dev build, and disabled entirely by:
+
+    export ENOLA_NO_UPDATE_CHECK=1
+
+  It also never runs when CI is set.
+`, bin.Name, bin.Name),
 	}
 }
 

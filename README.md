@@ -99,6 +99,16 @@ enola check             # grade it — exit 1 on a structural regression
 
 Full setup, every flag and all the exit codes: **[docs/CLI.md](docs/CLI.md)**.
 
+### Staying current
+
+enola releases often. It checks for a new one at most once every 12 hours, in the background, and caches the answer in `~/.enola/update.json` — no command ever waits on the network, and a machine that is offline behaves exactly like one that is up to date. When there is a newer release, `enola check`, `enola --generate` and `enola doctor` say so in one line, and `enola upgrade` installs it.
+
+The notice reports one thing beyond the version: whether the **extractors** changed. That is the bit worth acting on — it means snapshots taken with your build are missing facts a current enola would extract, which is a data problem rather than a housekeeping one.
+
+Your agent gets the same notice once per session over MCP, worded so it tells you rather than upgrading your machine mid-task.
+
+It is silent for builds from source, never runs when `CI` is set, and turns off entirely with `export ENOLA_NO_UPDATE_CHECK=1`.
+
 ## What this catches that your existing tools don't
 
 You already own four things that look like they should catch a structural regression. None of them do:

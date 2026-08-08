@@ -1507,6 +1507,17 @@ import (
 //     packages on drift against 199 real modules, the .NET failure in Dart's clothing.
 const cacheVersion = "v193"
 
+// ExtractorVersion is cacheVersion, named for callers outside this package.
+//
+// It is the same value facts.SnapshotMeta.ExtractorVersion records: what this build
+// EXTRACTS LIKE, as opposed to what it is called. Two places need it from outside —
+// the release manifest (`enola --version --json`, so a later build can tell whether
+// the extractors moved) and the update notice that reads that manifest back.
+//
+// A function rather than an exported constant, so the changelog above stays the single
+// place the value is written and nothing can come to reference a second copy of it.
+func ExtractorVersion() string { return cacheVersion }
+
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and
 // written back at the end, carrying forward only the keys used this run so stale

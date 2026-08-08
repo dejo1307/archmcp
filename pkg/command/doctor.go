@@ -11,6 +11,8 @@ import (
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/hookstate"
+	"github.com/enola-labs/enola/internal/updatecheck"
+	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/check"
 )
@@ -68,6 +70,7 @@ func (r *Runner) Doctor(args []string) {
 	baselineIssue := r.baselineUsability(repoDir, outDir)
 
 	memLimit, memSource := bootstrap.MemoryLimit()
+	update := updatecheck.For(engine.ExtractorVersion())
 
 	if *asJSON {
 		out := map[string]any{
@@ -77,6 +80,7 @@ func (r *Runner) Doctor(args []string) {
 			"baseline_unusable": baselineIssue,
 			"memory_limit":      memLimit,
 			"memory_limit_from": memSource,
+			"update":            update,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -91,6 +95,27 @@ func (r *Runner) Doctor(args []string) {
 	// at the top of every command's output, which is where it used to be.
 	fmt.Println("Runtime")
 	fmt.Printf("  %s\n", bootstrap.MemoryLimitLine())
+	fmt.Printf("  enola %s (extractors %s)\n", version.Version, engine.ExtractorVersion())
+	fmt.Println()
+
+	// Reported unconditionally, unlike the one-line notice the other commands print:
+	// this is the command someone runs when they want to know whether their setup is
+	// healthy, so "you are on the current release" is an answer worth stating rather
+	// than leaving to be inferred from silence.
+	fmt.Println("Updates")
+	switch {
+	case updatecheck.Suppressed():
+		fmt.Println("  not checked (disabled, or this is a dev build)")
+	case update.Available:
+		fmt.Printf("  v%s is available — you have v%s\n", update.Latest, update.Current)
+		if update.ExtractorMoved {
+			fmt.Println("  Extractors changed since your build, so snapshots taken with it are")
+			fmt.Println("  missing facts a current enola would extract.")
+		}
+		fmt.Printf("      %s upgrade\n", r.name())
+	default:
+		fmt.Println("  up to date, as far as the last check knows")
+	}
 	fmt.Println()
 
 	// Asked and answered BEFORE a session ends, which is the difference between this
