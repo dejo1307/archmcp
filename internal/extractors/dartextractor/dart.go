@@ -258,6 +258,7 @@ func (e *DartExtractor) Extract(ctx context.Context, repoPath string, files []st
 	}
 
 	// Post-passes, in order: each consumes the previous one's output.
+	allFacts = attributeSymbolsToModules(allFacts)
 	allFacts = resolveRoutePathRefs(allFacts, stringConsts)
 	allFacts = resolveCallTargets(allFacts)
 	computeDartPerformsIO(allFacts)

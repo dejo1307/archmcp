@@ -146,9 +146,15 @@ class UserRepo extends Repository with Timestamped {
 	}
 
 	// Import classification: the three Dart URI schemes map onto the three classes.
+	// Dependency facts are named "<importer> -> <imported>"; key the assertions on the
+	// imported side, which is what the relation targets and what classification is about.
 	deps := map[string]string{}
 	for _, f := range factsOfKind(all, facts.KindDependency) {
-		deps[f.Name] = f.PropString(facts.PropSource)
+		name := f.Name
+		if _, imported, ok := strings.Cut(name, " -> "); ok {
+			name = imported
+		}
+		deps[name] = f.PropString(facts.PropSource)
 	}
 	if deps["dart:async"] != facts.DepSourceStdlib {
 		t.Errorf("dart:async should be stdlib, got %q", deps["dart:async"])

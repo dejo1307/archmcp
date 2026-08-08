@@ -1,6 +1,7 @@
 package dartextractor
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -146,5 +147,141 @@ void doWork(Logger log) {
 	}
 	if !found {
 		t.Error("a call to a real method should still resolve to it")
+	}
+}
+
+// TestClosureBodiesContributeCalls pins a missed-edge class that inflated the
+// dead-code report.
+//
+// A closure body's invocation is a direct child SEQUENCE of the closure node
+// (`() => getTiles(ctx)` is [identifier getTiles][selector (ctx)]), so a walk that
+// descends into the closure's children without also scanning the closure node itself
+// loses the call entirely. Arrow closures are pervasive in Flutter — `onPressed: () =>
+// save()`, `builder: (c) => Widget()`, `.map((e) => f(e))` — and every call inside one
+// was invisible, so functions that are plainly used were reported as dead.
+func TestClosureBodiesContributeCalls(t *testing.T) {
+	src := `
+List<int> getTiles(x) => [1];
+void other() {}
+
+void build() {
+  final a = useMemoized(() => getTiles(ctx));
+  final b = [1, 2].map((e) => other());
+}
+`
+	var build *facts.Fact
+	all := walkSource(t, "lib/a.dart", src)
+	for i := range all {
+		if all[i].Name == "lib.build" {
+			build = &all[i]
+		}
+	}
+	if build == nil {
+		t.Fatal("missing build")
+	}
+	targets := map[string]bool{}
+	for _, r := range build.Relations {
+		if r.Kind == facts.RelCalls {
+			targets[r.Target] = true
+		}
+	}
+	for _, want := range []string{"getTiles", "other"} {
+		if !targets[want] {
+			t.Errorf("a call inside a closure body should be recorded: missing %q (got %v)",
+				want, keysOf(targets))
+		}
+	}
+}
+
+// TestRecursionRequiresSelfReceiver pins that recursion means reaching THIS symbol.
+//
+// Matching on the short name alone dominated the performance report: `dispose()`
+// calling `controller.dispose()`, `fromJson` calling a nested `fromJson`, `stop()`
+// calling `player.stop()` are all ordinary delegation to a different object. On one
+// mid-size Flutter app that produced 64 false recursion findings — 63 of the 75
+// performance findings the analyzer emitted.
+func TestRecursionRequiresSelfReceiver(t *testing.T) {
+	for _, tc := range []struct {
+		name, src string
+		want      bool
+	}{
+		{
+			name: "bare self call is recursion",
+			src:  "int walk(n) { if (n > 0) { return walk(n - 1); } return 0; }",
+			want: true,
+		},
+		{
+			name: "this-qualified self call is recursion",
+			src:  "int walk(n) { if (n > 0) { return this.walk(n - 1); } return 0; }",
+			want: true,
+		},
+		{
+			name: "delegating to another object's same-named method is not",
+			src:  "void dispose() { controller.dispose(); }",
+			want: false,
+		},
+		{
+			name: "super is the ancestor's implementation, not self",
+			src:  "void dispose() { super.dispose(); }",
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := funcProps(t, tc.src)["recursive_self"].(bool)
+			if got != tc.want {
+				t.Errorf("recursive_self = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDependencyFactsCarryImporter pins the shared `<importer> -> <imported>` naming.
+//
+// It is a contract, not a style: the enterprise package-metrics explainer recovers the
+// importing side by splitting on " -> ". Naming a dependency by its target alone made
+// every Dart edge unrecoverable there, so Ce came out 0 for every package and average
+// instability 0.00 — the metrics were computed over an empty edge set and nothing
+// failed.
+func TestDependencyFactsCarryImporter(t *testing.T) {
+	all := walkSource(t, "lib/data/api.dart", "import '../models/user.dart';\nclass A {}\n")
+	deps := factsOfKind(all, facts.KindDependency)
+	if len(deps) == 0 {
+		t.Fatal("no dependency facts")
+	}
+	for _, d := range deps {
+		importer, imported, ok := strings.Cut(d.Name, " -> ")
+		if !ok {
+			t.Errorf("dependency %q is not named \"<importer> -> <imported>\"", d.Name)
+			continue
+		}
+		if importer != "lib/data" {
+			t.Errorf("importer = %q, want lib/data", importer)
+		}
+		if imported != "lib/models" {
+			t.Errorf("imported = %q, want lib/models", imported)
+		}
+	}
+}
+
+// TestSymbolsDeclareTheirModule pins the attribution package-metrics reads.
+//
+// The explainer takes a symbol's FIRST `declares` target as its package. A Dart class
+// also declares its own members, so without a leading module edge the explainer read a
+// MEMBER name as a package and minted one phantom package per class — 1,746 of them on
+// drift against 199 real modules.
+func TestSymbolsDeclareTheirModule(t *testing.T) {
+	all := attributeSymbolsToModules(walkSource(t, "lib/data/api.dart",
+		"class Repo {\n  void save() {}\n}\n"))
+	repo := findFact(all, facts.KindSymbol, "lib/data.Repo")
+	if repo == nil {
+		t.Fatal("missing Repo")
+	}
+	if len(repo.Relations) == 0 || repo.Relations[0].Kind != facts.RelDeclares ||
+		repo.Relations[0].Target != "lib/data" {
+		t.Errorf("first relation should be declares->lib/data, got %+v", repo.Relations)
+	}
+	// The member edge survives; it is what makes the type's surface walkable.
+	if !hasRelation(repo, facts.RelDeclares, "lib/data.Repo.save") {
+		t.Error("the class should still declare its member")
 	}
 }

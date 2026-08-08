@@ -1488,7 +1488,24 @@ import (
 //     declares the enum constant LogLevel.severe and separately calls log.severe(...),
 //     so 117 call sites bound to the constant and god-class reported it as a
 //     high-fan-in symbol with 117 dependents. Calls now resolve only to callables.
-const cacheVersion = "v192"
+//
+// v193: four corrections the enterprise tools exposed on the Dart corpus, none of
+// which the OSS explainers could see.
+//   - recursion required only a matching short NAME, so `dispose()` calling
+//     `controller.dispose()` counted as recursing. 64 false findings on one app, 63 of
+//     the analyzer's 75. Now the receiver must be absent, `this`, or the bare name.
+//   - calls inside a closure BODY were dropped entirely: the invocation is a direct
+//     child sequence of the closure node, which the walk descended past without
+//     scanning. Arrow closures are pervasive in Flutter, so functions plainly in use
+//     were reported dead.
+//   - dependency facts are named `<importer> -> <imported>`, the shared convention the
+//     package-metrics explainer splits on. Naming only the target made every Dart edge
+//     unrecoverable there: Ce was 0 for every package and average instability 0.00.
+//   - symbols now carry a leading `declares` edge to their module, which is how that
+//     explainer attributes a symbol to a package. A Dart class also declares its
+//     members, so the first member name was being read as a package — 1,746 phantom
+//     packages on drift against 199 real modules, the .NET failure in Dart's clothing.
+const cacheVersion = "v193"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

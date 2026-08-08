@@ -151,9 +151,16 @@ func (w *walker) importDirective(n *sitter.Node, isExport bool) {
 	if isExport {
 		props["reexport"] = true
 	}
+	// `<importer> -> <imported>` is the shared dependency-fact naming convention, and
+	// it is a contract rather than a style: the enterprise package-metrics explainer
+	// recovers the IMPORTING side by splitting the name on " -> ". Naming a dependency
+	// by its target alone (as this did) makes every Dart edge unrecoverable there, so
+	// Ce came out 0 for every package, average instability 0.00, and the
+	// most-depended-upon package of a real app was a generated platform directory with
+	// Ca=3. Nothing failed; the metrics were simply computed over an empty edge set.
 	w.out = append(w.out, facts.Fact{
 		Kind:      facts.KindDependency,
-		Name:      target,
+		Name:      w.dir + " -> " + target,
 		File:      w.relFile,
 		Line:      lineOf(n),
 		Props:     props,

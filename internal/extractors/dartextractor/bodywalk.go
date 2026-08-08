@@ -96,6 +96,14 @@ func (w *walker) walkNode(n *sitter.Node, b *bodyWalk, selfShort string, loopDep
 	// executed per iteration of the enclosing loop. An iterator callback is handled at
 	// the call site below, where it is entered WITH the incremented depth.
 	if kind == "function_expression" || kind == "function_expression_body" {
+		// The call scan has to run on this node too, not only on its descendants: a
+		// closure body's invocation is a direct child SEQUENCE of it
+		// (`() => getTiles(ctx)` is [identifier getTiles][selector (ctx)]), so
+		// returning after walkChildren alone loses it entirely. Arrow closures are
+		// pervasive in Flutter — `onPressed: () => save()`, `builder: (c) => Widget()`,
+		// `.map((e) => f(e))` — and every call inside one was missing, which inflates
+		// the dead-code report with functions that are plainly used.
+		w.scanCallChain(n, b, selfShort, 0, 0)
 		w.walkChildren(n, b, selfShort, 0, 0)
 		return
 	}
@@ -194,7 +202,20 @@ func (w *walker) scanCallChain(n *sitter.Node, b *bodyWalk, selfShort string, lo
 			b.addRelation(facts.RelCalls, name)
 		}
 
-		if name == selfShort {
+		// Recursion requires the call to reach THIS symbol, not merely a method that
+		// shares its name.
+		//
+		// Matching on the short name alone is wrong in Dart to the point of dominating
+		// the report: `dispose()` calling `controller.dispose()`, `fromJson` calling a
+		// nested `fromJson`, `stop()` calling `player.stop()` are all ordinary
+		// delegation to a DIFFERENT object. On one mid-size app that produced 64 false
+		// recursion findings — 63 of the 75 performance findings the analyzer emitted.
+		//
+		// So an explicit receiver disqualifies it, with the two spellings that do mean
+		// self kept: a bare call (`foo()`, where calleeOf reports the base as its own
+		// name) and `this.foo()`. `super.foo()` is deliberately excluded — it dispatches
+		// to the ancestor's implementation, which is the opposite of recursing.
+		if name == selfShort && (receiver == "" || receiver == name || receiver == "this") {
 			b.recursiveSelf = true
 		}
 		if w.isIOCall(name, receiver) {

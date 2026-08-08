@@ -83,8 +83,10 @@ func TestPubspecScanBypassesIgnoreGlobs(t *testing.T) {
 		switch f.PropString(facts.PropSource) {
 		case facts.DepSourceInternal:
 			internal++
-			if f.Name != "packages/ui/lib" {
-				t.Errorf("internal dependency resolved to %q, want packages/ui/lib", f.Name)
+			// Named "<importer> -> <imported>", the shared convention the enterprise
+			// package-metrics explainer splits on to recover the importing side.
+			if f.Name != "lib -> packages/ui/lib" {
+				t.Errorf("internal dependency named %q, want %q", f.Name, "lib -> packages/ui/lib")
 			}
 		case facts.DepSourceExternal:
 			external++
