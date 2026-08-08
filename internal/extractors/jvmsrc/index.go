@@ -61,6 +61,42 @@ func isMetaBuildDir(dir string) bool {
 	return first == "project" || first == "buildSrc"
 }
 
+// BuildModule returns the build module a source directory compiles into — the sbt
+// project, Maven module or Gradle subproject — or "" when the directory sits outside
+// any source set.
+//
+// It is derived from the layout rather than from the build file, which is what makes
+// it cheap and build-tool agnostic: sbt, Mill, Maven and Gradle all put a module's
+// sources under `<module>/src/<sourceSet>/`, so the path prefix before the first
+// `src/` segment names the module. A repository whose sources start at `src/`
+// directly is a single-module build, and returns "." — a NAME rather than the empty
+// string, because callers read "" as "not attributed", and a single-module
+// repository is the case where attribution matters most.
+//
+// The cycles explainer is the consumer (see facts.CompilationUnitProps). A cycle
+// between packages inside ONE module is legal and ordinary in Scala — the compiler
+// takes the module as a unit and imposes no package-level acyclicity, unlike Go —
+// while sbt and Maven both reject a circular dependency BETWEEN modules. So the
+// distinction this draws is exactly the one that decides whether a cycle is a
+// build-order defect or a coupling signal.
+func BuildModule(dir string) string {
+	d := strings.Trim(filepath.ToSlash(dir), "/")
+	if d == "" {
+		return ""
+	}
+	segs := strings.Split(d, "/")
+	for i, seg := range segs {
+		if seg != "src" {
+			continue
+		}
+		if i == 0 {
+			return "." // sources begin at the repository root: one module
+		}
+		return strings.Join(segs[:i], "/")
+	}
+	return "" // outside any source set — build definitions, scripts, stray files
+}
+
 // moduleRoleScope returns the part of dir that carries role information: everything
 // before a `src/main` source set, or the whole path when there is none (so a
 // `src/test` or `src/androidTest` set is still classified by the segment scan).

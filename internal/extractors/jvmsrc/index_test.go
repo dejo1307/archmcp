@@ -225,3 +225,38 @@ func TestBuildPackageIndex_ChainStopsAtFirstDeclaration(t *testing.T) {
 		t.Errorf("com.example -> %q, want %q", got, want)
 	}
 }
+
+// TestBuildModule pins the boundary the cycles explainer reads. A cycle between
+// packages inside ONE module is legal in Scala — the compiler takes the module as a
+// unit and imposes no package-level acyclicity, unlike Go — while sbt and Maven both
+// reject a circular dependency between modules. Getting the boundary wrong reports a
+// legal cycle as a build-order defect, or hides a real one.
+func TestBuildModule(t *testing.T) {
+	cases := map[string]string{
+		// Multi-module: the prefix before the first `src/` segment names the module.
+		"core/src/main/scala/com/example/core":         "core",
+		"modules/mon/src/main":                         "modules/mon",
+		"sql/core/src/main/scala/org/apache/spark/sql": "sql/core",
+		"app/src/test/scala/com/example/app":           "app",
+		"cluster/src/multi-jvm/scala/pkg":              "cluster",
+		// Single-module: sources start at the repository root. A NAME, not "" —
+		// callers read "" as "not attributed", and this is the case where
+		// attribution matters most, since every package shares one unit.
+		"src/main/scala/gitbucket/core/util": ".",
+		"src/main/java/com/example":          ".",
+		"src":                                ".",
+		// Outside any source set: build definitions and stray files stay
+		// unattributed, so a cycle reaching one keeps the build-defect wording.
+		"project":         "",
+		"project/plugins": "",
+		"":                "",
+		// The FIRST `src` wins: a package named `src` deeper in the tree is not a
+		// source set.
+		"core/src/main/scala/com/src/deep": "core",
+	}
+	for dir, want := range cases {
+		if got := BuildModule(dir); got != want {
+			t.Errorf("BuildModule(%q) = %q, want %q", dir, got, want)
+		}
+	}
+}

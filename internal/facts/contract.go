@@ -264,8 +264,9 @@ const (
 // swiftextractor names each module fact BY its target, so two modules never share
 // one, and a cycle between them really is a cycle between separately built units.
 var CompilationUnitProps = []string{
-	"crate",   // Rust: the Cargo crate a module directory belongs to
-	"project", // C#: the MSBuild project (assembly) a module directory belongs to
+	"crate",      // Rust: the Cargo crate a module directory belongs to
+	"project",    // C#: the MSBuild project (assembly) a module directory belongs to
+	"jvm_module", // Scala: the sbt/Maven/Gradle module a source directory compiles into
 }
 
 // CompilationUnit returns the build unit a module fact belongs to, or "" when the

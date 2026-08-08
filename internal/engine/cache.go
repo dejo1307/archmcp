@@ -1421,7 +1421,18 @@ import (
 // a case class carries the data_holder marker, the same signal a Kotlin data class or
 // a record gives, which stops "extract interfaces" being advised on a package that is
 // mostly value carriers — one corpus package of 92 header types got exactly that.
-const cacheVersion = "v188"
+//
+// v189: Scala module facts carry the build module they compile into (jvm_module),
+// derived from the path prefix before the first `src/` segment — the layout sbt,
+// Mill, Maven and Gradle share, so no build file is parsed. The cycles explainer
+// reads it: Scala imposes no package-level acyclicity WITHIN a module, so a cycle
+// there is legal and compiles, while sbt and Maven both reject a circular
+// dependency BETWEEN modules. Without the prop every Scala cycle was reported as
+// something that "can cause initialization issues", which for the common case is
+// untrue — the same over-claim the prop already prevents for C# and Rust. A
+// single-module repository returns "." rather than "", because callers read "" as
+// unattributed and that is the case where attribution matters most.
+const cacheVersion = "v189"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

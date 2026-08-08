@@ -202,14 +202,24 @@ func (e *ScalaExtractor) Extract(ctx context.Context, repoPath string, files []s
 	computeScalaPerformsIO(allFacts)
 
 	for dir := range modules {
+		props := map[string]any{
+			"language":           "scala",
+			facts.PropModuleRole: jvmsrc.ModuleRole(dir),
+		}
+		// The build module this directory compiles into. The cycles explainer reads
+		// it to tell a build-order defect from a cycle that is merely internal to one
+		// module: sbt and Maven both reject a circular dependency between modules,
+		// while Scala imposes no package-level acyclicity WITHIN one, so a cycle
+		// found inside a module is legal and ordinary — and reporting it as
+		// something that "can cause initialization issues" is simply untrue.
+		if unit := jvmsrc.BuildModule(dir); unit != "" {
+			props["jvm_module"] = unit
+		}
 		allFacts = append(allFacts, facts.Fact{
-			Kind: facts.KindModule,
-			Name: dir,
-			File: dir,
-			Props: map[string]any{
-				"language":           "scala",
-				facts.PropModuleRole: jvmsrc.ModuleRole(dir),
-			},
+			Kind:  facts.KindModule,
+			Name:  dir,
+			File:  dir,
+			Props: props,
 		})
 	}
 
