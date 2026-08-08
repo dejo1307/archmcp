@@ -107,9 +107,13 @@ func resolveCallTargets(all []facts.Fact) []facts.Fact {
 // documents for .NET (`MediaBrowser.Controller/*` collapsing into a phantom
 // `MediaBrowser`).
 //
-// Prepended rather than appended, because the explainer takes the first match and
-// stops. The member edges are kept: they are what makes a type's own surface walkable
-// without relying on the graph's synthesized has_method.
+// Prepended rather than appended so the module edge reads first, matching the shape
+// the Go extractor emits. It is no longer load-bearing: the explainer now resolves a
+// symbol's declaring module against the known module set rather than taking the first
+// `declares` target, so a member edge arriving first can no longer be mistaken for a
+// package. Verified by emitting this edge LAST and confirming the metrics are
+// unchanged. The member edges are kept either way: they are what makes a type's own
+// surface walkable without relying on the graph's synthesized has_method.
 func attributeSymbolsToModules(all []facts.Fact) []facts.Fact {
 	for i := range all {
 		f := &all[i]

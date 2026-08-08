@@ -407,25 +407,35 @@ is invisible there — efferent coupling comes out 0 for every package, average
 instability 0.00, and the most depended-upon package of a real application is whatever
 generated directory happened to have three importers.
 
-**A symbol's FIRST `declares` relation names its module.**
+**A symbol carries a `declares` relation to its module.**
 
 ```go
 Relations: []facts.Relation{
-    {Kind: facts.RelDeclares, Target: pkgDir},   // must come first
-    // …then anything else this symbol declares
+    {Kind: facts.RelDeclares, Target: pkgDir},
+    // …anything else this symbol declares, in any order
 }
 ```
 
-That same explainer attributes a symbol to a package by reading its first `declares`
-target and stopping. A language whose *types* declare their own members — which is
-natural, and which Dart does — will otherwise have a method name read as a package
-name, minting one phantom package per class: 1,746 of them on one repository against
-199 real modules. It is the same failure the exported-surface explainer documents for
-.NET, arrived at from a different direction.
+That same explainer attributes a symbol to a package through this edge. Emit it and
+your language gets package metrics; omit it and every symbol falls out of the
+population.
 
-Neither is checked by the golden tests, because both produce perfectly well-formed
-facts. The way to catch them is to run the enterprise tools over a real repository in
-your language and ask whether the numbers are *plausible*, not merely present.
+**Order does not matter, and that is a repair rather than a courtesy.** The explainer
+used to take the first `declares` target and stop, which quietly assumed a symbol
+declares nothing but its own module — true of Go, false of any language whose *types*
+declare their own members, which is natural and which Dart does. A method name was then
+read as a package name, minting one phantom package per class: 1,746 of them on one
+repository against 199 real modules, the same failure the exported-surface explainer
+documents for .NET arrived at from a different direction. It now resolves the target
+against the known module set, so a member edge arriving first cannot be mistaken for a
+package. Prefer emitting the module edge first anyway — it reads better and matches Go —
+but nothing breaks if you do not.
+
+Neither convention is checked by the golden tests, because both produce perfectly
+well-formed facts. The way to catch this class of mistake is to run the enterprise tools
+over a real repository in your language and ask whether the numbers are *plausible*, not
+merely present: a metric that is uniformly `0.00`, or a "most depended-upon package"
+naming a generated directory, is the shape of a contract that was never met.
 
 ---
 
