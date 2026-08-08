@@ -6,7 +6,8 @@ tree the compiler uses. Detected by a `go.mod` at the repository root.
 Fixtures: [`go_sample`](../../internal/engine/testdata/repos/go_sample/) ·
 [`go_httpclient_multirepo`](../../internal/engine/testdata/repos/go_httpclient_multirepo/) ·
 [`go_grpc_multirepo`](../../internal/engine/testdata/repos/go_grpc_multirepo/) ·
-[`go_kafka_multirepo`](../../internal/engine/testdata/repos/go_kafka_multirepo/)
+[`go_kafka_multirepo`](../../internal/engine/testdata/repos/go_kafka_multirepo/) ·
+[`go_gin_sample`](../../internal/engine/testdata/repos/go_gin_sample/)
 
 ## At a glance
 

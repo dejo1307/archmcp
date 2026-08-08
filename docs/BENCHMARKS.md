@@ -28,13 +28,17 @@ would have been.
 
 ## The corpus
 
-62 repositories, 321,523 source files parsed, 5,908,745 facts carrying 20
-distinct language tags (Ansible, C, C++, C#, F#, Go, Java, Kotlin, PHP, Python,
+72 repositories, 352,789 source files parsed, 6,822,003 facts carrying 21
+distinct language tags (Ansible, C, C++, C#, Dart, F#, Go, Java, Kotlin, PHP, Python,
 Razor, Ruby, Rust, Scala, Swift, TypeScript, VB.NET, XAML, gRPC, OpenAPI). Public
 open-source only: every row is a repository you can clone and re-run.
 
-**62 of 62 reproduce** — identical `snapshot_id` and identical
+**72 of 72 reproduce** — identical `snapshot_id` and identical
 `facts.jsonl` hash across a cold run and two warm ones, i.e. across cache states.
+
+The ten Dart/Flutter rows were measured on their own run rather than folded into an
+older sweep, so the totals above are the sum of two measurements and not a re-estimate
+of either. Their per-repository numbers are in [Dart / Flutter](#dart--flutter).
 
 **.NET is now the largest single language in the corpus by facts**, ahead of
 TypeScript, across fourteen repositories covering C#, VB.NET, F#, Razor/Blazor and
@@ -104,6 +108,39 @@ XAML. See [the .NET rows](#net) below.
 | sveltekit-realworld | svelte | 42 | 195 | 0.1s | 0.1s |
 | cachet | php | 21 | 101 | 0.1s | 0.1s |
 | orocrm | php | 3 | 17 | 0.1s | 0.1s |
+
+### Dart / Flutter
+
+Ten repositories, 31,266 files, 913,258 facts of which **792,159 are Dart**. All ten
+reproduce, and **all ten parse with zero errors** — see the corpus notes in
+[`enola-benchmarks`](https://github.com/enola-labs/enola-benchmarks) for the
+up-front parse-coverage measurement that preceded the extractor.
+
+| Repository | Files parsed | Facts | Dart facts | Cold | Warm |
+|---|---|---|---|---|---|
+| dart-sdk | 16,339 | 445,127 | 394,478 | 64.0s | 13.3s |
+| flutter | 3,780 | 154,586 | 143,735 | 9.0s | 7.3s |
+| flutter-packages | 1,980 | 96,081 | 96,074 | 6.4s | 5.1s |
+| ente | 2,717 | 63,110 | 41,595 | 3.6s | 2.4s |
+| appflowy | 2,342 | 54,889 | 40,484 | 2.4s | 1.9s |
+| immich | 1,965 | 35,571 | 14,597 | 1.9s | 1.3s |
+| spotube | 434 | 21,514 | 21,272 | 0.8s | 0.7s |
+| drift | 726 | 18,703 | 18,703 | 1.2s | 0.9s |
+| flutterfire | 590 | 13,677 | 13,645 | 1.5s | 1.2s |
+| localsend | 393 | 10,000 | 7,576 | 0.7s | 0.4s |
+
+dart-sdk is the outlier on cold time and not because of its Dart: it carries 1,138
+C/C++ sources and a large `runtime/` tree, so the C/C++ extractor does substantial work
+on it too. Its warm run is 4.8x faster than cold.
+
+Two rows are cross-repo clusters rather than single applications. **immich** pairs a
+Flutter client with a TypeScript server and **ente** pairs one with a Go server; split
+into their halves, ente's client resolves 167 of 168 outbound call sites against its
+own backend (see [Cross-repo resolution](#3-cross-repo-resolution-misses-included)).
+
+**flutter-packages, flutterfire, drift and spotube are almost pure Dart** (96,074 of
+96,081 facts; 13,645 of 13,677; 18,703 of 18,703; 21,272 of 21,514), which makes them
+the rows where a Dart extraction regression shows up undiluted.
 
 ### .NET
 
@@ -245,7 +282,7 @@ dependents a service actually has.
 
 ### On the committed multi-repo fixtures
 
-Ten cross-language fixtures, each with a golden fact file the test suite asserts on:
+Eleven cross-language fixtures, each with a golden fact file the test suite asserts on:
 
 | Fixture | Languages | Detected | Resolved | Unresolved | External | Edge confidence |
 |---|---|---|---|---|---|---|
@@ -259,7 +296,8 @@ Ten cross-language fixtures, each with a golden fact file the test suite asserts
 | go_httpclient_multirepo | Go ↔ Go | 4 | 1 | **1** | 2 | probable |
 | go_kafka_multirepo | Go ↔ Go (Kafka) | — | — | — | — | topic-matched |
 | kotlin_swift_multirepo | Kotlin ↔ Swift | — | — | — | — | — |
-| **Total** | | **21** | **16** | **3** | **2** | |
+| dart_multirepo | Dart ↔ Go | 3 | 3 | 0 | 0 | verified |
+| **Total** | | **24** | **19** | **3** | **2** | |
 
 The three unresolved edges are all deliberate, and each is a documented limit rather
 than a bug: a path too generic to attribute (`/healthcheck`), a path no loaded server
@@ -314,6 +352,30 @@ unresolved is the honest replacement: enola found calls it cannot place.
 
 Seven of thirteen resolve. The twenty unresolved on the client side are mostly
 endpoints served by repositories not in this cluster.
+
+### On a Dart/Flutter cluster
+
+`ente-io/ente`'s Flutter client plus its Go server — a mobile app and the backend it
+talks to, indexed as two repositories. A mobile client is the extreme case for
+cross-repo linking: it serves nothing, imports nothing from the backend, and shares no
+code with it, so an outbound call site is the *only* structural evidence the two belong
+to one system.
+
+```
+  service   classification  detected  resolved  unresolved
+  mobile    connected           168       167           0
+  server    isolated              0         0           0
+```
+
+Before, this read `coverage_gap: 168 detected / 0 resolved / 167 unresolved` — and the
+missing side was **not** the Dart one. ente's server is written with **gin**, which the
+Go extractor did not read, so the client's 168 call sites had nothing to match against.
+Adding gin recovers 359 server routes (one per registration outside test files, exactly)
+and 112 of the client's 117 distinct paths match one exactly.
+
+`server` reads `isolated` rather than `coverage_gap` because it makes no outbound calls
+of its own — a backend at the edge of the graph, which is the correct classification and
+not a gap.
 
 ### On the example a reader can run
 

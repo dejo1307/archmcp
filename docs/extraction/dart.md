@@ -1,8 +1,10 @@
 # Dart and Flutter
 
-Every example on this page is a file that ships in
-[`internal/engine/testdata/repos/dart_sample/`](../../internal/engine/testdata/repos/dart_sample/),
-and every fact shown is copied from the golden the test suite asserts against.
+Fixtures: [`dart_sample`](../../internal/engine/testdata/repos/dart_sample/) ·
+[`dart_multirepo`](../../internal/engine/testdata/repos/dart_multirepo/)
+
+Every example on this page is a file that ships in those fixtures, and every fact shown
+is copied from the golden the test suite asserts against.
 
 ## At a glance
 
@@ -135,7 +137,7 @@ Three shapes are read:
 - the core-Flutter **`routes:` map** on `MaterialApp`.
 
 **A path declared as a constant** — `path: SettingsScreen.routeName`, how appflowy
-declares 35 of its 36 routes — is carried as a reference and dereferenced repo-wide
+declares 34 of its 35 routes — is carried as a reference and dereferenced repo-wide
 once every file has been walked. One that never resolves **takes its route with it**: a
 fact named `SettingsScreen.routeName` would be a path no app navigates to, and the
 linker would then match it against real routes.
@@ -189,6 +191,66 @@ So a type is abstract when it is declared `abstract` or `sealed`, **or** when it
 declares methods and every one of them is abstract. A type with no methods at all is
 data, not an abstraction — and one with public fields and no behaviour additionally gets
 `data_holder`, which spares its package the "extract interfaces" advice.
+
+## The call graph, and what it refuses to guess
+
+A call is emitted as it is *written*, then bound against the assembled fact set. The
+binding rule is narrow on purpose: a bare name is rewritten only when the project
+declares **exactly one callable** with it.
+
+- **Callable-only is load-bearing.** Dart's short names collide across kinds. One app
+  declares the enum constant `LogLevel.severe` *and* calls `log.severe(...)` on a
+  logger; with every kind in the index the constant was the unique `severe`, so 117 call
+  sites bound to it and the god-class explainer reported a data constant as a
+  high-fan-in symbol. A call resolves to something callable or it stays bare — and a
+  bare target still lets dead-code matching see the symbol used.
+- **An ambiguous name stays bare.** `build`, `dispose`, `toJson` and `copyWith` are
+  declared by hundreds of types in any Flutter app, so this is the common case, not the
+  corner one. Picking one candidate would fabricate an edge into whichever module sorted
+  first.
+- **`_FooState()` is a construction, not a call.** Privacy is spelled with a leading
+  underscore, so a type test on the raw first character classifies every private class
+  as lowercase — and `_FooState` is the State class behind every StatefulWidget.
+- **Closure bodies count.** `onPressed: () => save()` puts the invocation in a direct
+  child sequence of the closure node; a walk that descends past it without scanning
+  loses the call entirely. Arrow closures are pervasive in Flutter, and while this was
+  missing, functions plainly in use were reported as dead.
+
+## Complexity metrics
+
+The standard props — `cyclomatic`, `loop_count`, `loop_depth`, `scaling_loop_depth`,
+`calls_in_loop`, `recursive_self` — plus `io_direct` and its transitive closure
+`performs_io`. Three of them needed Dart-specific care, and each was wrong in a way that
+looked fine until it was measured against real code:
+
+- **Logical operators are counted on the operator node.** Dart does not model `&&` as a
+  generic binary expression; it has `logical_and_expression` with a `logical_and_operator`
+  child. Matching a generic binary node counted *nothing*, so every logical operator in
+  the corpus was invisible. Counting occurrences in the enclosing expression's text
+  would be wrong the other way, since `a && b && c` nests and the outer node's operators
+  would be recounted at each level. `??` counts too: it short-circuits, exactly as `||`
+  does.
+- **A literal-bounded loop adds no scaling depth.** `for (var i = 0; i < 10; i++)` and
+  `for (final x in items)` are the *same node kind*, told apart by whether
+  `for_loop_parts` holds a `relational_expression`. Without that, every fixed loop
+  inflated the depth and turned an honest O(n) into a fabricated O(n²).
+- **Recursion means reaching *this* symbol.** Matching the short name alone made
+  `dispose()` calling `controller.dispose()` recursive — ordinary delegation to another
+  object, and pervasive in Flutter. On one mid-size app that produced 64 false findings,
+  **63 of the 75** the performance analyzer emitted. The receiver must be absent, `this`,
+  or the bare name; `super.dispose()` is excluded, since it dispatches to the ancestor.
+
+`io_direct` is set only when the file imports something that *can* do I/O, then
+propagated up the call graph by a cycle-safe fixpoint. That matters more in Flutter than
+elsewhere: the network is almost always two wrapper layers below the widget that
+triggers it, so without the closure an in-loop call to `loadPage` carries no evidence
+that it reaches the network at all.
+
+The enterprise `analyze_performance` tool reads these through a
+[Dart-specific gate](../../../enola-enterprise/internal/perf/perf.go). Dart is the fourth
+ecosystem to need one: the shared keyword list carries `where` for Ruby, where
+`Model.where(...)` is a lazy query — but Dart's `.where()` is `Iterable.where`, the
+in-memory filter and the direct equivalent of JavaScript's `.filter()`.
 
 ## What is deliberately not extracted
 

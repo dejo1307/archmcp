@@ -344,13 +344,20 @@ Routes are not the only contract. Three module/symbol props are read outside the
 package that writes them, and they are **tables rather than branches**, so teaching
 another language is a row:
 
-- **`CompilationUnitProps`** (`crate`, `project`) names the build unit a module
-  compiles into. The cycles explainer uses it to tell a build-order defect from a
-  cycle that is merely internal to one assembly or crate — MSBuild and Cargo both
-  forbid cycles *between* units, so a cycle found in C# or Rust is necessarily
-  within one. A prop belongs here only when several module facts can share a value:
-  Swift's `spm_target` is deliberately absent, because swiftextractor names each
-  module fact *by* its target and two never share one.
+- **`CompilationUnitProps`** (`crate`, `project`, `jvm_module`, `pub_package`) names
+  the build unit a module compiles into. The cycles explainer uses it to tell a
+  build-order defect from a cycle that is merely internal to one unit — MSBuild and
+  Cargo both forbid cycles *between* units, so a cycle found in C# or Rust is
+  necessarily within one. A prop belongs here only when several module facts can
+  share a value: Swift's `spm_target` is deliberately absent, because swiftextractor
+  names each module fact *by* its target and two never share one.
+
+  The languages differ in how much the prop buys, and Dart is the extreme. Scala
+  imposes no package-level acyclicity within an sbt module, so a cycle there is legal;
+  **Dart does not even forbid circular imports between libraries** — they are legal,
+  they compile, and they are ordinary — so a Dart cycle is never a build-order defect
+  at all. Registering the prop is what stops the explainer telling a Flutter author
+  their mutual import "can cause initialization issues".
 - **`data_holder`** marks a type that declares state and no behaviour. The
   enterprise package-metrics explainer spares such packages its "extract
   interfaces" advice, and recognises a dedicated construct (`data_class`, `record`)
@@ -372,6 +379,53 @@ An enterprise explainer cannot import `internal/facts`, so it mirrors these key
 strings locally. That is the same arrangement the route `source` values have, and it
 carries the same hazard: a prop renamed on one side goes silently unread on the
 other.
+
+---
+
+## The shape of a fact is a contract too
+
+The prop *values* above are not the only thing a reader in another package depends on.
+Two structural conventions are load-bearing, undocumented until an extractor broke both,
+and they fail in the worst possible way: **silently, by producing degenerate output
+rather than wrong output**, so every test stays green and the tool merely reports
+nothing interesting.
+
+**A dependency fact is named `"<importer> -> <imported>"`.**
+
+```go
+facts.Fact{
+    Kind:      facts.KindDependency,
+    Name:      pkgDir + " -> " + target,   // NOT just target
+    Relations: []facts.Relation{{Kind: facts.RelImports, Target: target}},
+}
+```
+
+The relation carries the imported side; the *name* is the only place the **importing**
+side survives, and the enterprise package-metrics explainer recovers it by splitting on
+`" -> "`. Name a dependency by its target alone and every one of your language's edges
+is invisible there — efferent coupling comes out 0 for every package, average
+instability 0.00, and the most depended-upon package of a real application is whatever
+generated directory happened to have three importers.
+
+**A symbol's FIRST `declares` relation names its module.**
+
+```go
+Relations: []facts.Relation{
+    {Kind: facts.RelDeclares, Target: pkgDir},   // must come first
+    // …then anything else this symbol declares
+}
+```
+
+That same explainer attributes a symbol to a package by reading its first `declares`
+target and stopping. A language whose *types* declare their own members — which is
+natural, and which Dart does — will otherwise have a method name read as a package
+name, minting one phantom package per class: 1,746 of them on one repository against
+199 real modules. It is the same failure the exported-surface explainer documents for
+.NET, arrived at from a different direction.
+
+Neither is checked by the golden tests, because both produce perfectly well-formed
+facts. The way to catch them is to run the enterprise tools over a real repository in
+your language and ask whether the numbers are *plausible*, not merely present.
 
 ---
 
