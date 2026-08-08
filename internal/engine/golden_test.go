@@ -103,6 +103,23 @@ var fixtures = []fixture{
 	// test library. Plus Scala 3 braceless bodies, enum/given/extension, and a file
 	// whose chained package deliberately disagrees with its directory.
 	{name: "scala_sample", subRepos: []string{"."}},
+	// Dart/Flutter. Pins v190's decisions, several by ABSENCE:
+	// lib/models/user.freezed.dart yields nothing at all (generated code is the
+	// majority of files in a build_runner project), and lib/models/user_helpers.dart
+	// declares no imports of its own yet is still walked with user.dart's — a `part`
+	// shares its host library's import scope, which every framework gate depends on.
+	// The three GoRoute shapes are all present: a literal path, one declared as
+	// `SettingsScreen.routeName` and resolved repo-wide, and a nested relative path
+	// composed onto its parent. Every navigation route carries type "page", so
+	// routeindex.IsUIRoute keeps a screen out of the cross-repo server index.
+	// `class TodoItems extends Table` is a drift table ONLY because the file imports
+	// drift — Table is also a Flutter layout widget.
+	{name: "dart_sample", subRepos: []string{"."}},
+	// The cross-repo half: a Flutter client's http call sites resolving against a Go
+	// net/http server. Pins that a Dart client participates in the graph of graphs at
+	// all, and that /api/internal/reindex — served but called by no loaded client —
+	// stays an unused-route candidate rather than being matched by a page route.
+	{name: "dart_multirepo", subRepos: []string{"mobile", "api"}},
 	{name: "java_sample", subRepos: []string{"."}},
 	{name: "cpp_sample", subRepos: []string{"."}},
 	// C#: both namespace spellings, a positional record, an interface whose

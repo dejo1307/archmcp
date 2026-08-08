@@ -24,6 +24,7 @@ pages changing, the golden tests fail first.
 | [Java](java.md) | Spring MVC, RestTemplate, Feign, JPA, Dubbo SPI | |
 | [Kotlin](kotlin.md) | Retrofit, Room, Compose, Hilt | |
 | [Swift](swift.md) | URLSession, SwiftUI, UIKit | endpoint enums, protocol-extension prefixes |
+| [Dart / Flutter](dart.md) | go_router, auto_route, `http`, dio, retrofit, drift, isar, Firestore | every framework pass gated on the file's own imports; navigation routes kept out of the HTTP graph |
 | [PHP](php.md) | Laravel, Symfony, WordPress, Guzzle | `apiResource` expansion, YAML route config |
 | [Rust](rust.md) | Axum route DSL | `.nest()` mounts composed crate-wide |
 | [Scala](scala.md) | Play `conf/routes`, Pekko/Akka HTTP, http4s, Slick, sttp | `for … yield` discounted as a monadic bind, not a loop |

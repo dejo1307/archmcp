@@ -126,6 +126,37 @@ ignore:
   - "**/src/test/**/*.scala"
   - "**/src/it/**/*.scala"
   - "**/src/multi-jvm/**/*.scala"
+  # Dart tests. Directory-scoped, like Ruby's and C#'s: pub puts them under a
+  # package's test/ directory, and a bare "**/*_test.dart" would also swallow
+  # production files that merely end in the token.
+  - "**/test/**/*.dart"
+  - "**/integration_test/**/*.dart"
+  - "**/test_driver/**/*.dart"
+  # Dart code generation output. build_runner output is the MAJORITY of files in a
+  # real Flutter project and none of it is code a human navigates: one @freezed
+  # model yields hundreds of generated lines of copyWith/== plus a .g.dart of
+  # serialization. Indexing it inflates symbol counts and manufactures god-class
+  # and complexity findings about machine output.
+  - "**/*.g.dart"
+  - "**/*.freezed.dart"
+  - "**/*.mocks.dart"
+  - "**/*.gr.dart"
+  - "**/*.config.dart"
+  - "**/*.pb.dart"
+  - "**/*.pbenum.dart"
+  - "**/*.pbjson.dart"
+  - "**/*.pbserver.dart"
+  - "**/*.pbgrpc.dart"
+  # Dart/Flutter build and package caches.
+  - "**/.dart_tool/**"
+  - "**/.pub-cache/**"
+  - "**/.flutter-plugins"
+  - "**/.flutter-plugins-dependencies"
+  # The Dart SDK's own parser fixtures and language suite are programs DESIGNED to
+  # be rejected (trailing_comma_error_test.dart and thousands of neighbours), so
+  # they would otherwise be counted as parse failures against the grammar.
+  - "**/pkg/front_end/testcases/**"
+  - "**/pkg/_fe_analyzer_shared/test/**"
   # Minified / bundled JS (also detected heuristically by the extractor; kept in
   # sync with config.Default() in internal/config/config.go)
   - "**/*.min.js"

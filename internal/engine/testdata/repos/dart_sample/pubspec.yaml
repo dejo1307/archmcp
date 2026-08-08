@@ -1,0 +1,13 @@
+name: sample_app
+description: Golden fixture for the Dart extractor.
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  go_router: ^14.0.0
+  drift: ^2.14.0
+  http: ^1.2.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

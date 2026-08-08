@@ -1432,7 +1432,25 @@ import (
 // untrue — the same over-claim the prop already prevents for C# and Rust. A
 // single-module repository returns "." rather than "", because callers read "" as
 // unattributed and that is the case where attribution matters most.
-const cacheVersion = "v189"
+//
+// v190: Dart and Flutter. Symbols, imports, call edges, complexity metrics and the
+// io_direct/performs_io closure, plus four framework surfaces — Flutter widget roles,
+// navigation routes, outbound HTTP call sites, and local/remote stores. Two decisions
+// carry most of the weight. Every framework pass is gated on the FILE'S OWN IMPORTS,
+// which Dart makes a language guarantee rather than a heuristic: imports are mandatory
+// and there is no ambient namespace, so a file that has not imported go_router cannot
+// be calling it — this is what makes it safe to match on names as short as `go`, `get`
+// and `collection`, the trap that produced phantom Scala routes and topics. And
+// navigation routes carry type "page", so routeindex.IsUIRoute keeps a Flutter screen
+// out of the cross-repo server-route index and out of unused-routes: an app's
+// `/users/:id` screen is not an endpoint anything can call, and indexing it beside its
+// own backend's real `/users/:id` would manufacture an edge in the wrong direction.
+// Module facts carry pub_package (registered in facts.CompilationUnitProps) because
+// Dart permits circular imports between libraries outright — legal, compiling, and
+// common — so a Dart cycle is a coupling signal and never a build-order defect.
+// Generated Dart (.g.dart, .freezed.dart, .mocks.dart, .pb*.dart) produces nothing:
+// it is the majority of files in a build_runner project and none of it is navigated.
+const cacheVersion = "v190"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

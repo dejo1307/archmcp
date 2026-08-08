@@ -29,6 +29,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/unusedroutes"
 	"github.com/enola-labs/enola/internal/extractors/ansibleextractor"
 	"github.com/enola-labs/enola/internal/extractors/cppextractor"
+	"github.com/enola-labs/enola/internal/extractors/dartextractor"
 	"github.com/enola-labs/enola/internal/extractors/dotnetextractor"
 	"github.com/enola-labs/enola/internal/extractors/goextractor"
 	"github.com/enola-labs/enola/internal/extractors/grpcextractor"
@@ -392,6 +393,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExtractor(rubyextractor.New())
 	eng.RegisterExtractor(rustextractor.New())
 	eng.RegisterExtractor(scalaextractor.New())
+	eng.RegisterExtractor(dartextractor.New())
 
 	// Resolve the linking vocabulary once and hand it to everything that matches under
 	// it, so the signals and the unmatched-route binder cannot disagree about what

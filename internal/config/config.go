@@ -341,6 +341,44 @@ func Default() *Config {
 			"**/src/test/**/*.scala",
 			"**/src/it/**/*.scala",
 			"**/src/multi-jvm/**/*.scala",
+			// Dart tests. Directory-scoped, following the Ruby and C# precedent: pub's
+			// convention puts them under a package's `test/` (and `integration_test/`)
+			// directory, and a bare `**/*_test.dart` would additionally swallow
+			// production files that merely end in the token. Keep in sync with
+			// TestGlobs below.
+			"**/test/**/*.dart",
+			"**/integration_test/**/*.dart",
+			"**/test_driver/**/*.dart",
+			// Dart code generation output. This is not tidiness: build_runner output is
+			// the MAJORITY of files in a real Flutter project, and none of it is code a
+			// human navigates. One @freezed model yields a .freezed.dart of hundreds of
+			// generated lines plus a .g.dart of serialization; indexing them inflates
+			// symbol counts and manufactures god-class and complexity findings about
+			// machine output. Kept in sync with generatedSuffixes in the dart extractor,
+			// which applies the same list when the walker hands it a file directly.
+			"**/*.g.dart",
+			"**/*.freezed.dart",
+			"**/*.mocks.dart",
+			"**/*.gr.dart",
+			"**/*.config.dart",
+			"**/*.pb.dart",
+			"**/*.pbenum.dart",
+			"**/*.pbjson.dart",
+			"**/*.pbserver.dart",
+			"**/*.pbgrpc.dart",
+			// Dart/Flutter build and package caches.
+			"**/.dart_tool/**",
+			"**/.pub-cache/**",
+			"**/.flutter-plugins",
+			"**/.flutter-plugins-dependencies",
+			// The Dart SDK's own parser fixtures and language suite are programs
+			// DESIGNED to be rejected — `trailing_comma_error_test.dart` and its
+			// neighbours are deliberately invalid Dart, and front_end/testcases holds
+			// thousands of them. They are ordinary source to the walker and would be
+			// counted as parse failures against the grammar. Only the dart-lang/sdk
+			// repository has these, but the cost of the two globs is nil elsewhere.
+			"**/pkg/front_end/testcases/**",
+			"**/pkg/_fe_analyzer_shared/test/**",
 			// enola's own output. This is the DEFAULT location only; the glob for the
 			// configured one is derived in Normalize, which is what makes a custom
 			// output.dir safe. The literal stays because a repository that used the
@@ -450,8 +488,14 @@ func Default() *Config {
 			"**/src/test/**/*.scala",
 			"**/src/it/**/*.scala",
 			"**/src/multi-jvm/**/*.scala",
+			// Dart. Unlike Scala's above, these are live: DartExtractor implements
+			// TestRefExtractor, so a production symbol whose only caller is its test
+			// keeps a reference and does not read as dead.
+			"**/test/**/*.dart",
+			"**/integration_test/**/*.dart",
+			"**/test_driver/**/*.dart",
 		},
-		Extractors: []string{"cpp", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent"},
+		Extractors: []string{"cpp", "dart", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent"},
 		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
