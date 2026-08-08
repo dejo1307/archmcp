@@ -101,9 +101,18 @@ func (w *walker) walkNode(n *sitter.Node, b *bodyWalk, selfShort string, loopDep
 	}
 
 	switch kind {
-	case "if_statement", "conditional_expression", "switch_expression_case", "catch_clause":
+	case "if_statement", "conditional_expression", "catch_clause",
+		"switch_statement_case", "switch_expression_case":
 		b.cyclomatic++
-	case "switch_statement_case", "switch_block":
+	// Dart spells its logical operators as their own node kinds rather than as a
+	// generic binary expression, and the OPERATOR is a node too. Counting the operator
+	// nodes is exact: `a && b && c` holds two logical_and_operator nodes and adds two,
+	// where counting occurrences in the enclosing expression's TEXT would count the
+	// outer node's operators again at every nested level.
+	case "logical_and_operator", "logical_or_operator":
+		b.cyclomatic++
+	// `??` short-circuits, so it is a branch for the same reason `||` is.
+	case "if_null_expression":
 		b.cyclomatic++
 	case "for_statement", "while_statement", "do_statement":
 		b.cyclomatic++
@@ -116,11 +125,6 @@ func (w *walker) walkNode(n *sitter.Node, b *bodyWalk, selfShort string, loopDep
 		b.observeDepth(nextLoop, nextScaling)
 		w.walkChildren(n, b, selfShort, nextLoop, nextScaling)
 		return
-	case "binary_expression":
-		// && and || each add a branch, as in every other extractor. ?? is Dart's
-		// null-coalescing operator and is a branch for the same reason.
-		txt := n.Utf8Text(w.src)
-		b.cyclomatic += strings.Count(txt, "&&") + strings.Count(txt, "||")
 	}
 
 	// Calls are found by scanning a node's children as a SEQUENCE, because the grammar
@@ -259,7 +263,7 @@ func (w *walker) calleeOf(kids []*sitter.Node, i int) (name, receiver string, ba
 		// Only a base that is a plain identifier is meaningful as a receiver; an
 		// expression base ("(a + b).foo()") is not something to key on.
 		if base != "" && isPlainIdentifier(base) {
-			return name, base, isUpper(base[0])
+			return name, base, namesAType(base)
 		}
 		return name, "", false
 	}
@@ -269,7 +273,7 @@ func (w *walker) calleeOf(kids []*sitter.Node, i int) (name, receiver string, ba
 	if base == "" || !isPlainIdentifier(base) {
 		return "", "", false
 	}
-	return base, base, isUpper(base[0])
+	return base, base, namesAType(base)
 }
 
 // isPlainIdentifier reports whether text is a bare Dart identifier.
@@ -321,28 +325,33 @@ var dartLoopMethods = map[string]bool{
 	"followedBy": true, "asMap": true, "generate": true,
 }
 
-// isConstantTripLoop reports a `for`/`while` whose trip count is fixed.
+// isConstantTripLoop reports a `for` whose trip count is fixed.
+//
+// `for (final x in items)` scales with items and must keep its factor of n; `for (var i
+// = 0; i < 10; i++)` runs a fixed number of times and must not, or an honest O(n)
+// becomes a fabricated O(n²). The two are the same node kind and are told apart by
+// their `for_loop_parts`: the C-style form holds a `relational_expression` condition,
+// the for-in form holds none.
+//
+// The bound must be a LITERAL. A named constant could be anything, and `i < xs.length`
+// is the scaling case wearing the C-style form's clothes.
 func (w *walker) isConstantTripLoop(n *sitter.Node) bool {
 	if n.Kind() != "for_statement" {
 		return false
 	}
-	// `for (final x in items)` scales with items; `for (var i = 0; i < 10; i++)` does
-	// not. The literal bound is the discriminator, and it must be a literal — a named
-	// constant could be anything.
-	if firstOfKind(n, "for_element", "for_each_statement") != nil {
+	parts := childOfKind(n, "for_loop_parts")
+	if parts == nil {
 		return false
 	}
-	cond := ""
-	for _, c := range namedChildren(n) {
-		if c.Kind() == "binary_expression" {
-			cond = c.Utf8Text(w.src)
-			break
-		}
-	}
-	if cond == "" {
+	cond := childOfKind(parts, "relational_expression")
+	if cond == nil {
+		// No condition clause: this is `for (x in xs)`, which scales.
 		return false
 	}
-	return firstOfKindText(n, "decimal_integer_literal") && !strings.Contains(cond, ".length")
+	// The literal has to be in the CONDITION, not merely somewhere in the loop — a
+	// body full of integer literals says nothing about the trip count.
+	return childOfKind(cond, "decimal_integer_literal") != nil ||
+		childOfKind(cond, "hex_integer_literal") != nil
 }
 
 // isConstantTripIterator reports an iterator applied to a collection literal.
@@ -354,10 +363,6 @@ func (w *walker) isConstantTripIterator(kids []*sitter.Node, i int) bool {
 		return kids[j].Kind() == "list_literal" || kids[j].Kind() == "set_or_map_literal"
 	}
 	return false
-}
-
-func firstOfKindText(n *sitter.Node, kind string) bool {
-	return firstOfKind(n, kind) != nil
 }
 
 // ---------------------------------------------------------------------------

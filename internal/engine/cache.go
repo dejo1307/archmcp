@@ -1463,7 +1463,32 @@ import (
 // discriminates them structurally. Verified on ente's server: 359 registrations
 // outside test files, 359 routes extracted, no doubled separators, and its Flutter
 // client goes from 167 unresolved call sites to 167 resolved.
-const cacheVersion = "v191"
+// v192: the Dart package index is read from disk instead of from the engine's file
+// list. `**/*.yaml` is in the default ignore globs, so a pubspec.yaml never reaches an
+// extractor — 0 of appflowy's 4,114 walked files — and the index was therefore always
+// EMPTY, silently and in three places at once: modules carried no pub_package (so every
+// legal Dart cycle was reported as something that "can cause initialization issues"),
+// the repo's own `package:` imports classified as external rather than internal (10,125
+// internal edges missing on appflowy alone), and Flutter was never detected from the
+// manifest. Same deliberate bypass the OpenAPI extractor and PHP's Symfony route config
+// already make, for the reason the glob rule states: the globs suppress config and data
+// noise, and a pubspec is the definition of the compilation unit.
+//
+// v192 also carries three corrections the corpus exposed and the fixtures could not,
+// all of them guessed node kinds that silently matched nothing:
+//   - cyclomatic complexity counted NO logical operators, because Dart models `&&` as
+//     its own node kind rather than as a generic binary expression. Counted on the
+//     OPERATOR node, which is exact — counting occurrences in the enclosing
+//     expression's text would recount them at every nested level.
+//   - the constant-trip loop discount never applied, so a literal-bounded
+//     `for (var i = 0; i < 10; i++)` inflated scaling depth and turned an honest O(n)
+//     into a fabricated O(n2). A C-style for and a for-in are the same node kind here
+//     and are told apart by whether for_loop_parts holds a relational_expression.
+//   - a bare call resolved to ANY unique short name, including a constant. immich
+//     declares the enum constant LogLevel.severe and separately calls log.severe(...),
+//     so 117 call sites bound to the constant and god-class reported it as a
+//     high-fan-in symbol with 117 dependents. Calls now resolve only to callables.
+const cacheVersion = "v192"
 
 // extractorCache holds per-extractor facts keyed by a content hash of the files
 // the extractor depends on. It is loaded from disk at the start of a snapshot and

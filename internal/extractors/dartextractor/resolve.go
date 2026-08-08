@@ -23,7 +23,15 @@ import (
 // are declared by hundreds of types in any Flutter app, so this is the common case and
 // not the corner one.
 func resolveCallTargets(all []facts.Fact) []facts.Fact {
-	// short name -> canonical names declaring it
+	// short name -> canonical names of CALLABLE symbols declaring it.
+	//
+	// Callable-only is load-bearing. A bare call target is resolved by unique short
+	// name, and Dart's short names collide across kinds: immich declares an enum
+	// constant `LogLevel.severe` and also calls `log.severe(...)` on a logger. With
+	// every symbol kind in the index the constant was the unique `severe`, so 117 call
+	// sites bound to it — and god-class then reported a data constant as a high-fan-in
+	// symbol with 117 dependents. A call resolves to something callable or it stays
+	// bare, which dead-code matching still handles.
 	byShort := map[string][]string{}
 	// bare type name -> canonical names, for implements/injects targets
 	byType := map[string][]string{}
@@ -36,9 +44,10 @@ func resolveCallTargets(all []facts.Fact) []facts.Fact {
 		if i := strings.LastIndexByte(short, '.'); i >= 0 {
 			short = short[i+1:]
 		}
-		byShort[short] = append(byShort[short], f.Name)
 
 		switch f.PropString("symbol_kind") {
+		case facts.SymbolMethod, facts.SymbolFunc:
+			byShort[short] = append(byShort[short], f.Name)
 		case facts.SymbolClass, facts.SymbolInterface, facts.SymbolEnum, facts.SymbolType:
 			byType[short] = append(byType[short], f.Name)
 		}

@@ -214,22 +214,20 @@ func reextractParts(results []fileResult, dartFiles []string, pkgs *packageIndex
 //     bare call targets against the project-wide type index, and the transitive
 //     performs_io closure.
 func (e *DartExtractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
-	var dartFiles, pubspecs []string
+	var dartFiles []string
 	for _, relFile := range files {
-		switch {
-		case isDartFile(relFile):
-			if !isGeneratedDart(relFile) {
-				dartFiles = append(dartFiles, relFile)
-			}
-		case filepath.Base(relFile) == "pubspec.yaml":
-			pubspecs = append(pubspecs, relFile)
+		if isDartFile(relFile) && !isGeneratedDart(relFile) {
+			dartFiles = append(dartFiles, relFile)
 		}
 	}
 	if len(dartFiles) == 0 {
 		return nil, nil
 	}
 
-	pkgs := buildPackageIndex(repoPath, pubspecs)
+	// Read straight from disk: `**/*.yaml` is ignore-globbed, so no pubspec.yaml is
+	// ever in `files`. See scanPubspecs for why this bypass is correct rather than a
+	// workaround.
+	pkgs := buildPackageIndex(repoPath, scanPubspecs(repoPath))
 
 	read := func(relFile string) []byte {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))

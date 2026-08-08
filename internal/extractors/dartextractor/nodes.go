@@ -302,6 +302,22 @@ func isAsync(body *sitter.Node) bool {
 
 func isUpper(b byte) bool { return b >= 'A' && b <= 'Z' }
 
+// namesAType reports whether an identifier looks like a type name.
+//
+// Leading underscores are skipped first, because Dart spells privacy with one and
+// Flutter leans on it constantly: the State class behind every StatefulWidget is
+// conventionally `_FooState`. Testing the raw first byte classifies all of them as
+// lowercase, so `_FooState()` reads as a function call rather than a construction —
+// which loses the instantiates edge on the single most common private type in the
+// language.
+func namesAType(s string) bool {
+	i := 0
+	for i < len(s) && s[i] == '_' {
+		i++
+	}
+	return i < len(s) && isUpper(s[i])
+}
+
 // builtinTypes are the types that are never a collaborator, so an `injects` edge to one
 // would be noise rather than a dependency.
 var builtinTypes = map[string]bool{

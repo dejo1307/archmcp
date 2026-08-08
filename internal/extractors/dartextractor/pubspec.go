@@ -2,6 +2,7 @@ package dartextractor
 
 import (
 	"bufio"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +38,45 @@ type packageIndex struct {
 	// to the NEAREST enclosing package rather than to whichever matched first. A
 	// workspace root frequently has its own pubspec beside the packages it contains.
 	dirs []*pubPackage
+}
+
+// scanPubspecs finds every pubspec.yaml in the repository, reading the tree directly
+// rather than taking the walker's file list.
+//
+// It has to bypass the walker because `**/*.yaml` is in the default ignore globs, so a
+// pubspec.yaml NEVER reaches an extractor — measured on appflowy: 0 of 4,114 walked
+// files. The globs exist to suppress config and data noise, and a pubspec is neither:
+// it is the definition of the compilation unit. Without it the package index is empty,
+// which silently breaks three things at once — modules carry no `pub_package` (so the
+// cycles explainer calls a legal Dart cycle a build defect), the repo's own
+// `package:` imports classify as external instead of internal, and Flutter is never
+// detected from the manifest.
+//
+// This is the same deliberate bypass the OpenAPI extractor and PHP's Symfony route
+// config already make, for the same stated reason.
+func scanPubspecs(repoPath string) []string {
+	var out []string
+	_ = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipDetectDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == "pubspec.yaml" {
+			if rel, rerr := filepath.Rel(repoPath, path); rerr == nil {
+				out = append(out, filepath.ToSlash(rel))
+			}
+		}
+		return nil
+	})
+	// Sorted so the index — and therefore which package wins a duplicate name — does
+	// not depend on directory iteration order.
+	sort.Strings(out)
+	return out
 }
 
 // buildPackageIndex reads every pubspec.yaml in the file list.

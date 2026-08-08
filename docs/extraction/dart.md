@@ -30,6 +30,15 @@ holds over a hundred — so the package is never assumed to be the repo. Every
 index, which is what lets a `package:` import resolve during the importing file's own
 walk rather than needing a second pass.
 
+Those pubspecs are read **directly from disk**, not from the file list the engine hands
+the extractor. `**/*.yaml` is in the default ignore globs, so a `pubspec.yaml` never
+reaches an extractor at all — measured on appflowy, 0 of 4,114 walked files. Reading the
+walker's list instead yields an empty index, and nothing fails: modules simply carry no
+`pub_package`, the repo's own `package:` imports classify as external, and Flutter is
+never detected from the manifest. The globs exist to suppress config and data noise, and
+a pubspec is the definition of the compilation unit, so this is the same deliberate
+bypass the OpenAPI extractor and PHP's Symfony route config already make.
+
 Module facts carry `pub_package`, registered in
 [`facts.CompilationUnitProps`](../../internal/facts/contract.go). That registration is
 what makes the cycles explainer word a Dart cycle correctly, and Dart is the most
