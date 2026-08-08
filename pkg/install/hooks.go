@@ -59,14 +59,43 @@ func HookSummary() []string {
 	return out
 }
 
-// writeHooks merges enola's hooks into the agent's settings.json, or removes them.
-//
-// Merging rather than replacing is the whole job: settings.json belongs to the user and
-// very likely already contains hooks, permissions and other configuration that must
-// survive untouched. Only the entries carrying enolaHookMarker are ever added or removed.
+// writeHooks merges enola's hooks into Claude Code's settings.json, or removes them.
 func writeHooks(o Options, remove bool) ([]Result, error) {
-	path := filepath.Join(claudeDir(o), "settings.json")
+	return writeHooksAt(filepath.Join(claudeDir(o), "settings.json"), o, remove, claudeHookEntry)
+}
 
+// writeCodexHooks merges hooks into Codex's hooks.json. Codex uses the same matcher-group
+// envelope as Claude, but its command handler contract differs: async is required and the
+// timeout field is named timeoutSec.
+func writeCodexHooks(path string, o Options, remove bool) ([]Result, error) {
+	return writeHooksAt(path, o, remove, codexHookEntry)
+}
+
+type hookEntry func(command string) map[string]any
+
+func claudeHookEntry(command string) map[string]any {
+	return map[string]any{
+		"type":    "command",
+		"command": command,
+		"timeout": hookTimeoutSeconds,
+		"source":  enolaHookMarker,
+	}
+}
+
+func codexHookEntry(command string) map[string]any {
+	return map[string]any{
+		"type":       "command",
+		"command":    command,
+		"async":      false,
+		"timeoutSec": hookTimeoutSeconds,
+		"source":     enolaHookMarker,
+	}
+}
+
+// writeHooksAt shares the matcher-group merge mechanics while allowing each agent to
+// encode command handlers according to its own schema. Only entries carrying
+// enolaHookMarker are ever replaced or removed.
+func writeHooksAt(path string, o Options, remove bool, makeEntry hookEntry) ([]Result, error) {
 	r, err := mutateJSON(path, func(doc map[string]any) {
 		hooks, _ := doc["hooks"].(map[string]any)
 		if hooks == nil {
@@ -87,12 +116,7 @@ func writeHooks(o Options, remove bool) ([]Result, error) {
 		// states: everything looks configured and the half that produces the value is
 		// absent. Verified against a real session, both shapes, one variable.
 		for _, h := range installedHooks {
-			entry := map[string]any{
-				"type":    "command",
-				"command": o.hookCommand() + " " + h.Subcommand,
-				"timeout": hookTimeoutSeconds,
-				"source":  enolaHookMarker,
-			}
+			entry := makeEntry(o.hookCommand() + " " + h.Subcommand)
 			hooks[h.Event] = mergeMatcher(hooks[h.Event], h.Matcher, entry, remove)
 		}
 

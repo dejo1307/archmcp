@@ -124,7 +124,7 @@ func runTarget(name string, o Options, remove bool) ([]Result, error) {
 	case "agents":
 		return agentsTarget(o, remove)
 	case "codex":
-		return globalAgentsTarget(o, remove, "codex", filepath.Join(".codex", "AGENTS.md"))
+		return codexTarget(o, remove)
 	case "pi":
 		return globalAgentsTarget(o, remove, "pi", filepath.Join(".pi", "agent", "AGENTS.md"))
 	case "copilot":
@@ -132,6 +132,42 @@ func runTarget(name string, o Options, remove bool) ([]Result, error) {
 	default:
 		return nil, fmt.Errorf("unknown target %q", name)
 	}
+}
+
+// codexDir is .codex/ under the repo (local) or the home directory (global).
+func codexDir(o Options) string {
+	if o.Scope == ScopeGlobal {
+		return filepath.Join(o.HomeDir, ".codex")
+	}
+	return filepath.Join(o.RepoDir, ".codex")
+}
+
+// codexTarget combines Codex's AGENTS.md block with its own hooks.json. Global scope
+// only writes hooks.json when ~/.codex already exists, same rule as globalAgentsTarget.
+func codexTarget(o Options, remove bool) ([]Result, error) {
+	out, err := globalAgentsTarget(o, remove, "codex", filepath.Join(".codex", "AGENTS.md"))
+	if err != nil {
+		return nil, err
+	}
+
+	path := filepath.Join(codexDir(o), "hooks.json")
+	if o.Scope == ScopeGlobal {
+		if _, err := os.Stat(codexDir(o)); os.IsNotExist(err) {
+			return append(out, Result{
+				Path:   path,
+				Action: ActionSkipped,
+				Reason: ".codex not found in your home directory, so codex does not appear to be installed",
+			}), nil
+		}
+	}
+	if !remove && !o.Hooks {
+		return out, nil
+	}
+	hr, err := writeCodexHooks(path, o, remove)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, hr...), nil
 }
 
 // globalAgentsTarget maintains enola's block in a tool's USER-level AGENTS.md — Codex

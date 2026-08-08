@@ -409,7 +409,7 @@ enola uninstall               # remove it all again
 | Cursor | `.cursor/rules/enola.mdc` *(owned)* | — no user-level rules directory |
 | GitHub Copilot | `.github/instructions/enola.instructions.md` *(owned)* | — lives in IDE/account settings |
 | Codex · Copilot · Pi | `AGENTS.md` *(marked block, only if it already exists)* | — |
-| Codex | *covered by `AGENTS.md`* | `~/.codex/AGENTS.md` *(marked block)* |
+| Codex | `.codex/hooks.json` *(managed entries, `--hooks` only)*, covered by `AGENTS.md` otherwise | `~/.codex/AGENTS.md` *(marked block)*, `~/.codex/hooks.json` *(managed entries, `--hooks` only)* |
 | Pi | *covered by `AGENTS.md`* | `~/.pi/agent/AGENTS.md` *(marked block)* |
 
 **Codex, Copilot and Pi all read the repository's `AGENTS.md`**, so locally one block serves all three - enola won't write a second repo-local file for them, which would only put the same instruction into the same context window twice. Their `--global` entries add what `AGENTS.md` can't: guidance in projects where nobody has run `enola install`. Those are written only when the tool's config directory already exists, so enola never creates `~/.codex` for someone who doesn't use Codex.
@@ -441,7 +441,9 @@ It is deliberately opt-in and deliberately quiet:
 - **It never breaks your session.** Every failure path - no snapshot, unreadable input, a directory that isn't a repository - exits cleanly and says nothing. A broken enola must never look like a broken session.
 - **It merges into your config.** Your existing hooks, permissions and settings are preserved; `uninstall` removes exactly enola's entries and nothing else.
 
-The hooks shell out to `enola hook session-start` and `enola hook stop`, which is what you'll see in `.claude/settings.json`, pinned to the absolute path of the binary you installed with. You never run them yourself.
+The hooks shell out to `enola hook session-start` and `enola hook stop`, which is what you'll see in `.claude/settings.json` (or Codex's `hooks.json`), pinned to the absolute path of the binary you installed with. You never run them yourself.
+
+Codex additionally requires you to approve a new hook once before it will run it - inside Codex, run `/hooks`. That's a Codex requirement, not something `enola install` can do for you.
 
 ### The gate - `enola check`
 
@@ -651,4 +653,3 @@ enola --generate ci/cluster.yaml
 Entries resolve **relative to the config file**, not to your working directory, so a cluster config can be checked in and means the same thing on a laptop and in CI. (`repo:` is unchanged: a single repository, relative to the working directory.) Order matters - the first entry resets the graph and the rest are added to it.
 
 ---
-

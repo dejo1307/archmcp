@@ -170,7 +170,23 @@ func (r *Runner) Install(args []string, remove bool) {
 	if !remove && opts.Hooks {
 		fmt.Println("\nRestart your agent session for the hooks to take effect.")
 		fmt.Printf("Then `%s doctor` will tell you whether they are actually firing.\n", r.name())
+		if touchedCodexHooks(applied) {
+			fmt.Println("Codex also requires you to approve a new hook once before it runs — inside Codex, run `/hooks`.")
+		}
 	}
+}
+
+// touchedCodexHooks reports whether this run wrote or updated Codex's hooks.json.
+func touchedCodexHooks(rs []install.Result) bool {
+	for _, r := range rs {
+		if !strings.HasSuffix(filepath.ToSlash(r.Path), "/.codex/hooks.json") {
+			continue
+		}
+		if r.Action == install.ActionCreated || r.Action == install.ActionUpdated {
+			return true
+		}
+	}
+	return false
 }
 
 // hookOutputDir resolves a repository's enola output directory without building an
