@@ -2,8 +2,11 @@ package install
 
 import (
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -399,22 +402,154 @@ func TestInstall_DryRunWritesNothing(t *testing.T) {
 	}
 }
 
-// TestUninstall_LeavesNoResidue — an installer that leaves empty directories behind
-// advertises a tool that is no longer there.
+// TestUninstall_LeavesNoResidue — an installer that leaves empty files and directories
+// behind advertises a tool that is no longer there.
+//
+// The hooks axis is the point. This test used to run without --hooks, so it never reached
+// the two JSON configs, and uninstall shipped leaving `.claude/settings.json` and
+// `.codex/hooks.json` behind as `{}` scaffolds — with their directories — while the test
+// named exactly the property they broke.
 func TestUninstall_LeavesNoResidue(t *testing.T) {
-	o := opts(t, false)
+	for _, hooks := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hooks=%v", hooks), func(t *testing.T) {
+			o := opts(t, hooks)
+			if _, err := Install(o); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Uninstall(o); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range residue(t, o.RepoDir) {
+				t.Errorf("uninstall left %q behind", path)
+			}
+		})
+	}
+}
+
+// TestUninstall_GlobalLeavesNoResidueBeyondTheToolsOwnRoots — the same property in the
+// home directory, where the bound on reversal is different: `~/.codex` and `~/.pi` are
+// evidence those tools are installed, enola never creates them, and it gates its own
+// global install on finding them. It may empty them; it may not remove them.
+func TestUninstall_GlobalLeavesNoResidueBeyondTheToolsOwnRoots(t *testing.T) {
+	o := opts(t, true)
+	o.Scope = ScopeGlobal
+	for _, d := range []string{".codex", filepath.Join(".pi", "agent")} {
+		if err := os.MkdirAll(filepath.Join(o.HomeDir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	if _, err := Install(o); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Uninstall(o); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(o.RepoDir)
+
+	for _, path := range residue(t, o.HomeDir) {
+		if path == ".codex" || path == ".pi" {
+			continue
+		}
+		t.Errorf("uninstall left %q behind in the home directory", path)
+	}
+	for _, root := range []string{".codex", ".pi"} {
+		if _, err := os.Stat(filepath.Join(o.HomeDir, root)); err != nil {
+			t.Errorf("uninstall removed %s, a directory enola never created: %v", root, err)
+		}
+	}
+}
+
+// residue lists every path left under root, relative and slash-separated.
+func residue(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	if err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+		if err != nil || path == root {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out = append(out, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestUninstall_LeavesAnUntouchedEmptyConfigAlone — the removal of an emptied config is
+// bounded by having emptied it. A settings.json a user happens to have left at `{}` is
+// not enola's residue, and deleting it would be reversing something it never did.
+func TestUninstall_LeavesAnUntouchedEmptyConfigAlone(t *testing.T) {
+	o := opts(t, false)
+	settings := filepath.Join(o.RepoDir, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rs, err := Uninstall(o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range entries {
-		t.Errorf("uninstall left %q behind", e.Name())
+	if a, _ := actionFor(rs, "settings.json"); a != ActionUnchanged {
+		t.Errorf("action = %q, want %q for a config enola never wrote to", a, ActionUnchanged)
+	}
+	if got := read(t, settings); got != "{}\n" {
+		t.Errorf("a hand-written empty settings.json was rewritten: %q", got)
+	}
+}
+
+// TestUninstall_KeepsAConfigStillHoldingTheUsersOwnSettings — the file is removed because
+// it is empty, never because enola is leaving.
+func TestUninstall_KeepsAConfigStillHoldingTheUsersOwnSettings(t *testing.T) {
+	o := opts(t, true)
+	settings := filepath.Join(o.RepoDir, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{"permissions": {"allow": ["Bash(npm test)"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Install(o); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Uninstall(o); err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, settings)
+	if !strings.Contains(got, "Bash(npm test)") {
+		t.Errorf("uninstall removed a settings.json holding the user's own config:\n%s", got)
+	}
+}
+
+// TestUninstall_DryRunRemovesNothing — the preview must be a preview on the way out too,
+// and it must still report the removals it would make, or the confirmation prompt would
+// describe an uninstall that does less than it does.
+func TestUninstall_DryRunRemovesNothing(t *testing.T) {
+	o := opts(t, true)
+	if _, err := Install(o); err != nil {
+		t.Fatal(err)
+	}
+	before := residue(t, o.RepoDir)
+
+	o.DryRun = true
+	rs, err := Uninstall(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"settings.json", filepath.Join(".codex", "hooks.json")} {
+		if a, ok := actionFor(rs, name); !ok || a != ActionRemoved {
+			t.Errorf("%s action = %q, want %q", name, a, ActionRemoved)
+		}
+	}
+	if after := residue(t, o.RepoDir); !slices.Equal(before, after) {
+		t.Errorf("dry-run uninstall changed the tree:\nbefore %v\nafter  %v", before, after)
 	}
 }
 

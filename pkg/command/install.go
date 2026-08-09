@@ -158,9 +158,7 @@ func (r *Runner) Install(args []string, remove bool) {
 		if outDir := hookOutputDir(repoDir); outDir != "" {
 			switch {
 			case remove:
-				// A stale "never fired since <date>" after the hooks were deliberately
-				// removed would be a false alarm, so the record goes with them.
-				hookstate.Clear(outDir)
+				clearHookHeartbeat(repoDir, outDir)
 			case opts.Hooks:
 				hookstate.RecordInstalled(outDir, opts.HookCommand)
 			}
@@ -187,6 +185,26 @@ func touchedCodexHooks(rs []install.Result) bool {
 		}
 	}
 	return false
+}
+
+// clearHookHeartbeat drops the record `install --hooks` stamped, and the output directory
+// with it when that record was the only thing in it.
+//
+// A stale "installed on X, never fired since" after the hooks were deliberately removed
+// would be a false alarm, so the record goes with them. The directory has to go too: in a
+// repository that has never been snapshotted, `install --hooks` is what created it, and
+// uninstall that leaves an empty `.enola/` behind is not the byte-for-byte reversal the
+// README promises.
+//
+// os.Remove is the guard as well as the mechanism — an output directory still holding a
+// baseline or a snapshot refuses to go, and those are the user's work, not the installer's
+// leftovers. The repoDir comparison covers an output directory configured as the
+// repository itself, which is not ours to remove under any circumstances.
+func clearHookHeartbeat(repoDir, outDir string) {
+	hookstate.Clear(outDir)
+	if filepath.Clean(outDir) != filepath.Clean(repoDir) {
+		_ = os.Remove(outDir)
+	}
 }
 
 // hookOutputDir resolves a repository's enola output directory without building an

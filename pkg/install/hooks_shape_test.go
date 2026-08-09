@@ -19,7 +19,9 @@ import (
 // against the same belief that produced it. That job belongs to the end-to-end test
 // in hooks_e2e_test.go, which ends a real session and looks for the verdict.
 
-// settingsAfter runs an install (or uninstall) and returns the parsed hooks map.
+// settingsAfter runs an install (or uninstall) and returns the parsed hooks map. A
+// settings.json that is gone means no hooks, which is a legitimate outcome of an
+// uninstall: a file left holding nothing is removed rather than emptied.
 func settingsAfter(t *testing.T, o Options, remove bool) map[string]any {
 	t.Helper()
 	var err error
@@ -32,6 +34,9 @@ func settingsAfter(t *testing.T, o Options, remove bool) map[string]any {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(o.RepoDir, ".claude", "settings.json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		t.Fatalf("reading settings.json: %v", err)
 	}
@@ -199,14 +204,10 @@ func TestUninstall_RemovesTheLegacyFlatStopEntry(t *testing.T) {
 	if len(hooks) != 0 {
 		t.Errorf("uninstall left hooks behind:\n%#v", hooks)
 	}
-	if raw, err := os.ReadFile(path); err == nil && len(raw) > 0 {
-		var doc map[string]any
-		if err := json.Unmarshal(raw, &doc); err != nil {
-			t.Fatal(err)
-		}
-		if _, present := doc["hooks"]; present {
-			t.Errorf("an empty hooks object was left behind:\n%s", raw)
-		}
+	// These settings held nothing but enola's hooks, so the file goes with them rather
+	// than surviving as an empty `{}` scaffold.
+	if raw, err := os.ReadFile(path); err == nil {
+		t.Errorf("uninstall left a settings.json holding only enola's hooks behind:\n%s", raw)
 	}
 }
 

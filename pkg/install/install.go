@@ -142,6 +142,16 @@ func codexDir(o Options) string {
 	return filepath.Join(o.RepoDir, ".codex")
 }
 
+// codexPruneStop keeps uninstall from removing `~/.codex` itself. Globally that directory
+// is Codex's, and enola only writes into it because it was already there; locally enola
+// creates `.codex/` in the repository, so an empty one goes with the files it held.
+func codexPruneStop(o Options) string {
+	if o.Scope == ScopeGlobal {
+		return codexDir(o)
+	}
+	return o.RepoDir
+}
+
 // codexTarget combines Codex's AGENTS.md block with its own hooks.json. Global scope
 // only writes hooks.json when ~/.codex already exists, same rule as globalAgentsTarget.
 func codexTarget(o Options, remove bool) ([]Result, error) {
@@ -163,7 +173,7 @@ func codexTarget(o Options, remove bool) ([]Result, error) {
 	if !remove && !o.Hooks {
 		return out, nil
 	}
-	hr, err := writeCodexHooks(path, o, remove)
+	hr, err := writeCodexHooks(path, codexPruneStop(o), o, remove)
 	if err != nil {
 		return nil, err
 	}
@@ -188,13 +198,14 @@ func globalAgentsTarget(o Options, remove bool, tool, rel string) ([]Result, err
 		}}, nil
 	}
 	path := filepath.Join(o.HomeDir, rel)
+	// filepath.Dir of ".pi/agent/AGENTS.md" is ".pi/agent"; require the tool's ROOT dir,
+	// which is the part that says the tool exists. It doubles as the pruning bound on the
+	// way out: `~/.pi/agent/` is enola's to remove, `~/.pi/` is not.
+	root := filepath.Join(o.HomeDir, strings.SplitN(rel, string(filepath.Separator), 2)[0])
 	if remove {
-		r, err := removeSection(path, o.DryRun)
+		r, err := removeSection(path, root, o.DryRun)
 		return []Result{r}, err
 	}
-	// filepath.Dir of ".pi/agent/AGENTS.md" is ".pi/agent"; require the tool's ROOT dir,
-	// which is the part that says the tool exists.
-	root := filepath.Join(o.HomeDir, strings.SplitN(rel, string(filepath.Separator), 2)[0])
 	if _, err := os.Stat(root); os.IsNotExist(err) {
 		return []Result{{
 			Path:   path,
@@ -224,7 +235,7 @@ func copilotTarget(o Options, remove bool) ([]Result, error) {
 	}
 	path := filepath.Join(o.RepoDir, ".github", "instructions", "enola.instructions.md")
 	if remove {
-		r, err := removeOwnedFile(path, o.DryRun)
+		r, err := removeOwnedFile(path, o.RepoDir, o.DryRun)
 		return []Result{r}, err
 	}
 	r, err := writeOwnedFile(path, copilotInstructions(o), o.DryRun)
@@ -249,7 +260,7 @@ func claudeTarget(o Options, remove bool) ([]Result, error) {
 	rule := filepath.Join(claudeDir(o), "rules", "enola.md")
 
 	if remove {
-		r, err := removeOwnedFile(rule, o.DryRun)
+		r, err := removeOwnedFile(rule, pruneStop(o), o.DryRun)
 		if err != nil {
 			return nil, err
 		}
@@ -291,7 +302,7 @@ func cursorTarget(o Options, remove bool) ([]Result, error) {
 	}
 	path := filepath.Join(o.RepoDir, ".cursor", "rules", "enola.mdc")
 	if remove {
-		r, err := removeOwnedFile(path, o.DryRun)
+		r, err := removeOwnedFile(path, o.RepoDir, o.DryRun)
 		return []Result{r}, err
 	}
 	r, err := writeOwnedFile(path, cursorRule(o), o.DryRun)
@@ -314,7 +325,7 @@ func agentsTarget(o Options, remove bool) ([]Result, error) {
 	}
 	path := filepath.Join(o.RepoDir, "AGENTS.md")
 	if remove {
-		r, err := removeSection(path, o.DryRun)
+		r, err := removeSection(path, o.RepoDir, o.DryRun)
 		return []Result{r}, err
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -329,31 +340,12 @@ func agentsTarget(o Options, remove bool) ([]Result, error) {
 	return []Result{r}, err
 }
 
-func removeOwnedFile(path string, dryRun bool) (Result, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return Result{Path: path, Action: ActionUnchanged}, nil
+// pruneStop is the directory an uninstall's pruning must not climb past: the repository
+// for a local install, the home directory for a global one. Targets whose install is
+// gated on a directory it did not create pass that directory instead — see codexRoot.
+func pruneStop(o Options) string {
+	if o.Scope == ScopeGlobal {
+		return o.HomeDir
 	}
-	if dryRun {
-		return Result{Path: path, Action: ActionRemoved}, nil
-	}
-	if err := os.Remove(path); err != nil {
-		return Result{}, fmt.Errorf("removing %s: %w", path, err)
-	}
-	pruneEmptyDirs(filepath.Dir(path), 2)
-	return Result{Path: path, Action: ActionRemoved}, nil
-}
-
-// pruneEmptyDirs removes up to `levels` now-empty parent directories, so uninstalling
-// does not leave `.cursor/rules/` sitting there as the only trace of a tool that is gone.
-//
-// os.Remove is the guard as well as the mechanism: it refuses to delete a non-empty
-// directory, so a `.claude/` that still holds the user's settings.json survives without
-// needing an explicit check for it.
-func pruneEmptyDirs(dir string, levels int) {
-	for i := 0; i < levels; i++ {
-		if err := os.Remove(dir); err != nil {
-			return
-		}
-		dir = filepath.Dir(dir)
-	}
+	return o.RepoDir
 }

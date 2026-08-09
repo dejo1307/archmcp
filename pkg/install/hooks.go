@@ -61,14 +61,14 @@ func HookSummary() []string {
 
 // writeHooks merges enola's hooks into Claude Code's settings.json, or removes them.
 func writeHooks(o Options, remove bool) ([]Result, error) {
-	return writeHooksAt(filepath.Join(claudeDir(o), "settings.json"), o, remove, claudeHookEntry)
+	return writeHooksAt(filepath.Join(claudeDir(o), "settings.json"), pruneStop(o), o, remove, claudeHookEntry)
 }
 
 // writeCodexHooks merges hooks into Codex's hooks.json. Codex uses the same matcher-group
 // envelope as Claude, but its command handler contract differs: async is required and the
 // timeout field is named timeoutSec.
-func writeCodexHooks(path string, o Options, remove bool) ([]Result, error) {
-	return writeHooksAt(path, o, remove, codexHookEntry)
+func writeCodexHooks(path, stop string, o Options, remove bool) ([]Result, error) {
+	return writeHooksAt(path, stop, o, remove, codexHookEntry)
 }
 
 type hookEntry func(command string) map[string]any
@@ -95,8 +95,8 @@ func codexHookEntry(command string) map[string]any {
 // writeHooksAt shares the matcher-group merge mechanics while allowing each agent to
 // encode command handlers according to its own schema. Only entries carrying
 // enolaHookMarker are ever replaced or removed.
-func writeHooksAt(path string, o Options, remove bool, makeEntry hookEntry) ([]Result, error) {
-	r, err := mutateJSON(path, func(doc map[string]any) {
+func writeHooksAt(path, stop string, o Options, remove bool, makeEntry hookEntry) ([]Result, error) {
+	r, err := mutateJSON(path, stop, func(doc map[string]any) {
 		hooks, _ := doc["hooks"].(map[string]any)
 		if hooks == nil {
 			if remove {

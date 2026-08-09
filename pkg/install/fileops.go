@@ -105,6 +105,49 @@ func writeOwnedFile(path, content string, dryRun bool) (Result, error) {
 	}
 }
 
+// removeOwnedFile deletes a file enola owns outright, and any directory left holding
+// nothing once it is gone.
+func removeOwnedFile(path, stop string, dryRun bool) (Result, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return Result{Path: path, Action: ActionUnchanged}, nil
+	}
+	if dryRun {
+		return Result{Path: path, Action: ActionRemoved}, nil
+	}
+	if err := os.Remove(path); err != nil {
+		return Result{}, fmt.Errorf("removing %s: %w", path, err)
+	}
+	pruneEmptyDirs(filepath.Dir(path), stop)
+	return Result{Path: path, Action: ActionRemoved}, nil
+}
+
+// pruneEmptyDirs removes now-empty parent directories up to but excluding stop, so
+// uninstalling does not leave `.cursor/rules/` sitting there as the only trace of a tool
+// that is gone.
+//
+// os.Remove is the guard as well as the mechanism: it refuses to delete a non-empty
+// directory, so a `.claude/` that still holds the user's settings.json survives without
+// needing an explicit check for it.
+//
+// stop is a bound on what the tool is entitled to reverse, not an optimisation. Climbing
+// past the repository or the home directory would be one thing; more subtly, `~/.codex`
+// and `~/.pi` are directories enola never creates and whose existence is the evidence it
+// gates a global install on. Removing an empty one would delete something it did not
+// write, and change what the NEXT install decides. Those targets stop at their own root.
+func pruneEmptyDirs(dir, stop string) {
+	dir, stop = filepath.Clean(dir), filepath.Clean(stop)
+	for dir != stop {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return // reached the filesystem root without meeting stop
+		}
+		if err := os.Remove(dir); err != nil {
+			return
+		}
+		dir = parent
+	}
+}
+
 // upsertSection replaces, appends, or leaves alone an enola-owned block inside a file the
 // user also maintains.
 //
@@ -153,8 +196,10 @@ func upsertSection(path, block string, dryRun bool) (Result, error) {
 	}
 }
 
-// removeSection strips enola's block, leaving everything else byte-identical.
-func removeSection(path string, dryRun bool) (Result, error) {
+// removeSection strips enola's block, leaving everything else byte-identical. stop bounds
+// the directory pruning that follows if the file turns out to have held nothing else; see
+// pruneEmptyDirs.
+func removeSection(path, stop string, dryRun bool) (Result, error) {
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return Result{Path: path, Action: ActionUnchanged}, nil
@@ -178,7 +223,8 @@ func removeSection(path string, dryRun bool) (Result, error) {
 	}
 
 	// A file that exists only because enola created it is removed outright rather than
-	// left behind as an empty artifact of a tool that is no longer installed.
+	// left behind as an empty artifact of a tool that is no longer installed — and with it
+	// any directory that existed only to hold it.
 	if strings.TrimSpace(updated) == "" {
 		if dryRun {
 			return Result{Path: path, Action: ActionRemoved}, nil
@@ -186,6 +232,7 @@ func removeSection(path string, dryRun bool) (Result, error) {
 		if err := os.Remove(path); err != nil {
 			return Result{}, fmt.Errorf("removing %s: %w", path, err)
 		}
+		pruneEmptyDirs(filepath.Dir(path), stop)
 		return Result{Path: path, Action: ActionRemoved}, nil
 	}
 	return applySection(path, content, updated, ActionUpdated, dryRun)
@@ -215,7 +262,10 @@ func applySection(path, before, after string, action Action, dryRun bool) (Resul
 //     of churning the file and its mtime.
 //   - mutate receives the whole document and edits in place, so every key enola does not
 //     know about survives untouched.
-func mutateJSON(path string, mutate func(doc map[string]any), dryRun bool) (Result, error) {
+//
+// stop bounds the directory pruning that follows if the mutation empties the file; see
+// pruneEmptyDirs.
+func mutateJSON(path, stop string, mutate func(doc map[string]any), dryRun bool) (Result, error) {
 	doc := map[string]any{}
 	existed := false
 
@@ -256,11 +306,27 @@ func mutateJSON(path string, mutate func(doc map[string]any), dryRun bool) (Resu
 	if string(before) == string(afterCompact) && existed {
 		return Result{Path: path, Action: ActionUnchanged}, nil
 	}
-	// Nothing to say and no file to say it in. Without this, uninstalling from a project
-	// that never had hooks CREATED an empty settings.json — and with it the .claude
-	// directory — so removing enola left more behind than installing it without hooks did.
+	// An empty document has two forms and both once left residue behind.
+	//
+	// Nothing to say and no file to say it in: uninstalling from a project that never had
+	// hooks CREATED an empty settings.json, and with it the .claude directory, so removing
+	// enola left more behind than installing it without hooks did.
 	if !existed && len(doc) == 0 {
 		return Result{Path: path, Action: ActionUnchanged}, nil
+	}
+	// Or the mutation emptied a file enola had created: writing `{}` back left a scaffold
+	// configuring nothing, plus the directory around it, advertising a tool that is gone.
+	// Reaching here means the mutation actually removed something — a `{}` enola never
+	// touched compares equal above and is reported unchanged, never deleted.
+	if len(doc) == 0 {
+		if dryRun {
+			return Result{Path: path, Action: ActionRemoved}, nil
+		}
+		if err := os.Remove(path); err != nil {
+			return Result{}, fmt.Errorf("removing %s: %w", path, err)
+		}
+		pruneEmptyDirs(filepath.Dir(path), stop)
+		return Result{Path: path, Action: ActionRemoved}, nil
 	}
 
 	action := ActionUpdated
