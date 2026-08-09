@@ -77,7 +77,11 @@ Copilot's `.vscode/mcp.json` uses `servers` as the top-level key instead of `mcp
 enola doctor
 ```
 
-Worth running once. A hook configuration is a contract with your agent, and one it quietly ignores looks exactly like one it honours - `doctor` reports whether the hooks *fired*, not whether they're configured.
+A report, not a gate - it always exits `0`. It is the fastest way to find out that something has gone quietly wrong:
+
+- **whether the hooks fired.** A hook configuration is a contract with your agent, and one it silently ignores looks exactly like one it honours, so `doctor` reports when each hook last ran rather than whether it is configured.
+- **whether your baseline still counts.** One pinned by a different enola version, or under different ignore rules, is not comparable - and nothing is graded against it until you re-pin.
+- **whether there is a newer release** - and specifically whether the **extractors** changed, which means your snapshots are missing facts a current build would find. `enola upgrade` installs it.
 
 ### Not using an agent?
 

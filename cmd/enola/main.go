@@ -179,6 +179,12 @@ func main() {
 			log.Fatalf("failed to resolve repo path: %v", err)
 		}
 
+		// `--generate` is not a subcommand, so it never passes through Dispatch and would
+		// otherwise be the one CLI path that reads the update cache (below) without ever
+		// writing it. Started before the snapshot rather than after, so the check has the
+		// whole run to complete and the notice can be current on this run, not the next.
+		command.SpawnUpdateRefresh()
+
 		var snapshot *facts.Snapshot
 		for i, repoPath := range repoPaths {
 			// The first repository resets the store; the rest append to it, which is

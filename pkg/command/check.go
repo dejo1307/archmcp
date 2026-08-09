@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,8 +291,25 @@ func (r *Runner) checkFatal(format string, args ...any) { r.cmdFatal("check", fo
 // because the command did not run at all. The command name is a parameter so a shared
 // helper cannot misattribute an error to the wrong subcommand.
 func (r *Runner) cmdFatal(cmd, format string, args ...any) {
-	fmt.Fprintf(os.Stderr, r.name()+" "+cmd+": "+format+"\n", args...)
+	r.writeFatal(os.Stderr, cmd, format, args...)
 	os.Exit(check.StatusUsageError.ExitCode())
+}
+
+// writeFatal renders the failure. Split from cmdFatal only because cmdFatal ends in
+// os.Exit, which no test can call and return from.
+//
+// THE UPDATE NOTICE BELONGS ON THIS PATH, not only on the successful one. An operational
+// failure is the case where being behind the release stream is most likely to be the
+// CAUSE rather than a footnote: when the extractors have moved, an old build detects no
+// language where a current one detects several, and the run dies here with "snapshot
+// produced no facts" and a wall of "extractor X: not detected". Withholding the one line
+// that explains that — because the command failed — leaves someone debugging a
+// repository that is fine.
+//
+// After the error, never before it: what failed is what they need first.
+func (r *Runner) writeFatal(w io.Writer, cmd, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, r.name()+" "+cmd+": "+format+"\n", args...)
+	updatecheck.Fprint(w, engine.ExtractorVersion())
 }
 
 // runBaseline is `enola baseline pin|show|clear` — the CLI half of the loop, so the

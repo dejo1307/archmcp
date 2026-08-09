@@ -54,6 +54,11 @@ func (r *Runner) Hook(ctx context.Context, args []string) {
 		r.runStopHook(ctx)
 	case "session-start":
 		r.runSessionStartHook(ctx, args[1:])
+	case updateRefreshEvent:
+		// The detached child SpawnUpdateRefresh starts. Nothing else: no engine, no
+		// repository, no output. It is a hook event only to inherit this dispatcher's
+		// silence and its unconditional exit 0.
+		updatecheck.Refresh(ctx)
 	default:
 		// An event this build does not know about is not an error: a newer install may
 		// have written config a older binary does not understand.

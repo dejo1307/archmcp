@@ -328,8 +328,8 @@ func TestNewer(t *testing.T) {
 		current, latest string
 		want            bool
 	}{
-		{"0.3.2", "0.3.12", true},   // not a string comparison: "0.3.12" < "0.3.2" lexically
-		{"0.3.12", "0.3.2", false},  // and the reverse must not fire either
+		{"0.3.2", "0.3.12", true},  // not a string comparison: "0.3.12" < "0.3.2" lexically
+		{"0.3.12", "0.3.2", false}, // and the reverse must not fire either
 		{"0.3.12", "0.3.12", false},
 		{"0.9.9", "1.0.0", true},
 		{"1.0.0", "0.9.9", false},
@@ -424,4 +424,45 @@ func TestFprintWritesNothingWhenSilent(t *testing.T) {
 	if sb.String() != "" {
 		t.Errorf("Fprint wrote %q with nothing to report; callers rely on it being a no-op", sb.String())
 	}
+}
+
+// Due decides whether a command on the critical path spawns a process at all, so its
+// false answers matter as much as its true ones: too eager and every enola command pays
+// a fork, too shy and the cache is never written and every reading surface stays blank.
+func TestDue(t *testing.T) {
+	t.Run("no cache", func(t *testing.T) {
+		isolate(t, "0.3.2")
+		// The state a fresh install is in — and the one that made the notice unreachable
+		// for anyone without agent hooks or an MCP server.
+		if !Due() {
+			t.Error("Due() = false with no cache, so nothing would ever write the first one")
+		}
+	})
+
+	t.Run("fresh cache", func(t *testing.T) {
+		path := isolate(t, "0.3.2")
+		seed(t, path, state{CheckedAt: time.Now().UTC(), Manifest: Manifest{Version: "0.3.12"}})
+		if Due() {
+			t.Error("Due() = true inside the TTL; every command would spawn a refresh child")
+		}
+	})
+
+	t.Run("stale cache", func(t *testing.T) {
+		path := isolate(t, "0.3.2")
+		seed(t, path, state{CheckedAt: time.Now().UTC().Add(-ttl - time.Minute), Manifest: Manifest{Version: "0.3.12"}})
+		if !Due() {
+			t.Error("Due() = false past the TTL, so the notice would freeze at the first answer found")
+		}
+	})
+
+	// Suppression has to be answered HERE rather than only inside Refresh: the point of
+	// asking is to avoid the spawn, and a CI run that forks a process per enola command
+	// to reach a check it then declines to make has paid the cost for nothing.
+	t.Run("suppressed", func(t *testing.T) {
+		isolate(t, "0.3.2")
+		t.Setenv("CI", "true")
+		if Due() {
+			t.Error("Due() = true under CI, so the spawn happens for a check that cannot report")
+		}
+	})
 }

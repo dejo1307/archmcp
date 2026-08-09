@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/config"
@@ -119,6 +120,20 @@ func (r *Runner) Dispatch(ctx context.Context, args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
+
+	// Refresh the update cache from here, because this is the one place every shared
+	// subcommand passes through: putting it in each command instead would make the notice
+	// depend on which command someone happens to run, which is how it came to depend on
+	// having agent hooks installed in the first place.
+	//
+	// Excluding `hook`: it refreshes inside the detached child it already starts, and its
+	// contract is to add nothing to session-start latency — not even one spawn. Excluding
+	// unrecognised arguments too, so a typo does not start a process before being told it
+	// was a typo.
+	if args[0] != "hook" && slices.Contains(Subcommands(), args[0]) {
+		SpawnUpdateRefresh()
+	}
+
 	switch args[0] {
 	case "check":
 		r.Check(ctx, args[1:]) // exits with the verdict's code

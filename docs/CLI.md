@@ -395,9 +395,9 @@ Every path argument follows the same rule: **a directory is a repository, a file
 
 enola releases often, so it tells you when you are behind — without ever making you wait on the network.
 
-A background check runs at most once every 12 hours and caches its answer in `~/.enola/update.json`. Every notice you see is a read of that file, so no command ever blocks on a request, and a machine with no network behaves exactly like one that is up to date. The check itself runs only where nothing is waiting on it: the detached session-start hook, and the MCP server's startup.
+A background check runs at most once every 12 hours and caches its answer in `~/.enola/update.json`. Every notice you see is a read of that file, so no command ever blocks on a request, and a machine with no network behaves exactly like one that is up to date. The check itself runs only where nothing is waiting on it: a detached child process any enola command starts when the cache is due, the session-start hook, and the MCP server's startup. The child is what makes the notice reach a shell-only install - one that has no agent hooks and never starts a server still gets told.
 
-When a newer release exists, `check`, `--generate` and `doctor` print one line on **stderr** (never stdout, so `--json` output stays a clean document), and `enola upgrade` installs it:
+When a newer release exists, `check`, `--generate` and `doctor` print one line on **stderr** (never stdout, so `--json` output stays a clean document), and `enola upgrade` installs it. A command that fails outright prints it too, after the error: when the extractors have moved, an old build detecting no language is not a fact about your repository, and `snapshot produced no facts` deserves the line that explains it.
 
 ```
 enola v0.3.12 is available (you have v0.3.2) — extractors changed since your build,

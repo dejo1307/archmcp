@@ -177,6 +177,27 @@ func Refresh(ctx context.Context) {
 	write(path, state{CheckedAt: time.Now().UTC().Truncate(time.Second), Manifest: m})
 }
 
+// Due reports whether a Refresh would do any work: notices are allowed here, and the
+// cache is missing or older than ttl.
+//
+// It exists so a command on the critical path can decide whether a background refresh is
+// worth spawning a process for, WITHOUT doing the refresh itself. It reads one small file
+// and never touches the network, so asking is free; the answer is true at most once per
+// ttl on a machine that keeps refreshing.
+//
+// Racing is harmless and deliberate: two commands started inside the same second both see
+// true and both spawn, and the loser of Refresh's non-blocking lock exits immediately.
+func Due() bool {
+	if Suppressed() {
+		return false
+	}
+	path, err := cachePath()
+	if err != nil {
+		return false
+	}
+	return !fresh(path)
+}
+
 // For reports what to tell a build running extractorVersion. It reads only the cache
 // and never blocks.
 //
