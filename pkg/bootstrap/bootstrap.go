@@ -32,6 +32,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/surface"
 	"github.com/enola-labs/enola/internal/explainers/unusedroutes"
 	"github.com/enola-labs/enola/internal/extractors/ansibleextractor"
+	"github.com/enola-labs/enola/internal/extractors/asyncapiextractor"
 	"github.com/enola-labs/enola/internal/extractors/cppextractor"
 	"github.com/enola-labs/enola/internal/extractors/dartextractor"
 	"github.com/enola-labs/enola/internal/extractors/dotnetextractor"
@@ -410,6 +411,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	// Register all OSS extractors
 	eng.RegisterExtractor(cppextractor.New())
+	eng.RegisterExtractor(asyncapiextractor.New())
 	eng.RegisterExtractor(dotnetextractor.New())
 	eng.RegisterExtractor(goextractor.New())
 	eng.RegisterExtractor(mdintent.New())

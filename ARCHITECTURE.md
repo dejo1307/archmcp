@@ -926,6 +926,7 @@ ignore:
   - "**/*.md"
   - "**/*.yaml"
 extractors:
+  - asyncapi
   - cpp
   - dart
   - dotnet
@@ -981,7 +982,7 @@ That derivation is load-bearing rather than tidy. A literal `.enola/**` agrees w
 | `repo` | Repository root path, relative to the **working directory** | `"."` |
 | `repos` | Ordered list of repository roots forming a multi-repo cluster; supersedes `repo`. One `--generate` run indexes them all (the first fresh, the rest appended), producing the service nodes and cross-repo edges a single-repo snapshot cannot have. Entries resolve relative to the **config file's own directory**, so a checked-in cluster config means the same thing wherever it is run from. Order is semantic; duplicates are dropped | *(unset)* |
 | `ignore` | Glob patterns for files/dirs to skip | vendor, node_modules, .git, tests, build dirs, minified JS (`*.min.js`/`*.bundle.js`), docs, config data, … |
-| `extractors` | Enabled extractors | `["cpp", "dart", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent"]` |
+| `extractors` | Enabled extractors | `["asyncapi", "cpp", "dart", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent"]` |
 | `explainers` | Enabled explainers | `["cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers"]` |
 | `renderers` | Enabled renderers | `["llm_context"]` |
 | `output.dir` | Output directory for artifacts. Must name a **subdirectory of the repository** — it is joined to the repository path, so an absolute value would nest that whole path inside the repo rather than write where it says. An ignore glob is derived from it automatically (see below) | `".enola"` |

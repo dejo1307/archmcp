@@ -1,0 +1,16 @@
+asyncapi: 2.6.0
+info:
+  title: Billing event inputs
+  version: 1.0.0
+servers:
+  broker:
+    url: kafka:9092
+    protocol: kafka
+channels:
+  svc-orders.order_created:
+    servers: [broker]
+    subscribe:
+      operationId: chargeOrder
+      message:
+        name: OrderCreated
+        contentType: application/json

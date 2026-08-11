@@ -1,0 +1,146 @@
+package asyncapiextractor
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/enola-labs/enola/internal/facts"
+)
+
+func writeSpec(t *testing.T, repo, rel, content string) {
+	t.Helper()
+	path := filepath.Join(repo, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+func extract(t *testing.T, repo string) []facts.Fact {
+	t.Helper()
+	got, err := New().Extract(context.Background(), repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+func find(got []facts.Fact, name, role string) *facts.Fact {
+	for i := range got {
+		if got[i].Name == name && got[i].PropString("messaging_role") == role {
+			return &got[i]
+		}
+	}
+	return nil
+}
+
+func TestNameAndDetect(t *testing.T) {
+	if New().Name() != "asyncapi" {
+		t.Fatalf("Name = %q", New().Name())
+	}
+	repo := t.TempDir()
+	writeSpec(t, repo, "events.yaml", "name: ordinary config\n")
+	ok, err := New().Detect(repo)
+	if err != nil || ok {
+		t.Fatalf("ordinary YAML detected: ok=%v err=%v", ok, err)
+	}
+	writeSpec(t, repo, "contracts/events.yaml", asyncAPI2)
+	ok, err = New().Detect(repo)
+	if err != nil || !ok {
+		t.Fatalf("AsyncAPI not detected: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestDetectRequiresRootKey(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "nested.yaml", "metadata:\n  asyncapi: 3.0.0\n")
+	ok, err := New().Detect(repo)
+	if err != nil || ok {
+		t.Fatalf("nested key detected: ok=%v err=%v", ok, err)
+	}
+}
+
+const asyncAPI2 = `asyncapi: 2.6.0
+info: {title: Orders, version: 1.0.0}
+defaultContentType: application/json
+servers:
+  production: {url: kafka:9092, protocol: kafka}
+channels:
+  svc-orders.order_created:
+    servers: [production]
+    publish:
+      operationId: emitOrderCreated
+      summary: Emit an order
+      tags: [{name: orders}]
+      message: {$ref: '#/components/messages/OrderCreated'}
+    subscribe:
+      operationId: receiveOrderCreated
+      message:
+        name: OrderCreated
+        contentType: application/avro
+`
+
+func TestExtractV2(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "contracts/events.yaml", asyncAPI2)
+	got := extract(t, repo)
+	if len(got) != 2 {
+		t.Fatalf("got %d facts: %+v", len(got), got)
+	}
+	producer := find(got, "svc-orders.order_created", facts.MessagingRoleProducer)
+	if producer == nil {
+		t.Fatal("missing producer")
+	}
+	if producer.Props["messaging"] != "kafka" || producer.Props["operationId"] != "emitOrderCreated" || producer.Props["message"] != "OrderCreated" {
+		t.Errorf("producer props = %+v", producer.Props)
+	}
+	if producer.Props["content_type"] != "application/json" {
+		t.Errorf("default content type = %v", producer.Props["content_type"])
+	}
+	consumer := find(got, "svc-orders.order_created", facts.MessagingRoleConsumer)
+	if consumer == nil || consumer.Props["content_type"] != "application/avro" {
+		t.Errorf("consumer = %+v", consumer)
+	}
+}
+
+func TestExtractV3JSONAndChannelRef(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "asyncapi.json", `{
+  "asyncapi":"3.0.0",
+  "servers":{"broker":{"host":"localhost","protocol":"mqtt"}},
+  "channels":{"orderEvents":{"address":"orders/{orderId}","servers":[{"$ref":"#/servers/broker"}]}},
+  "operations":{"consumeOrders":{"action":"receive","channel":{"$ref":"#/channels/orderEvents"},"messages":[{"$ref":"#/components/messages/Order"}]}}
+}`)
+	got := extract(t, repo)
+	if len(got) != 1 {
+		t.Fatalf("got %d facts: %+v", len(got), got)
+	}
+	f := got[0]
+	if f.Name != "orders/{orderId}" || f.Props["messaging_role"] != facts.MessagingRoleConsumer || f.Props["operationId"] != "consumeOrders" || f.Props["messaging"] != "mqtt" || f.Props["message"] != "Order" {
+		t.Errorf("fact = %+v", f)
+	}
+}
+
+func TestMalformedSkippedAndContextCancellation(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "bad.yaml", "asyncapi: 2.6.0\nchannels: [broken")
+	if got := extract(t, repo); len(got) != 0 {
+		t.Fatalf("malformed spec emitted %+v", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := New().Extract(ctx, repo, nil); err != context.Canceled {
+		t.Fatalf("cancel error = %v", err)
+	}
+}
+
+func TestSkipsTestdata(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "testdata/fixture/asyncapi.yaml", asyncAPI2)
+	ok, err := New().Detect(repo)
+	if err != nil || ok {
+		t.Fatalf("testdata detected: ok=%v err=%v", ok, err)
+	}
+}
