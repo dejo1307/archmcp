@@ -205,6 +205,28 @@ var HandWrittenClientSources = map[string]bool{
 	RouteSourceDartHTTPClient:    true,
 }
 
+// NativeAppClientSources is the set of RouteSource values only a native application
+// emits — a mobile or desktop client that issues HTTP requests and cannot serve them.
+// The vendored-spec binder reads it as a POSITIVE marker: a repo containing one of
+// these ships an HTTP client, so an OpenAPI spec sitting in it describes an API the
+// repo CALLS, not one it serves.
+//
+// It lives here for the same reason HandWrittenClientSources does: membership is a
+// property of the source, so it is declared beside the constants extractors emit
+// rather than copied into the reader.
+//
+// The Java sources are deliberately absent. RouteSourceFeign and
+// RouteSourceJavaHTTPClient are emitted by Spring services that legitimately serve
+// endpoints while calling others, so their presence proves nothing about whether the
+// repo is a server — which is the entire question this set answers. Every member below
+// belongs to a platform that has no server story at all.
+var NativeAppClientSources = map[string]bool{
+	RouteSourceRetrofit:       true, // Kotlin/Java Retrofit service interface (Android)
+	RouteSourceURLSession:     true, // Swift URLSession (iOS/macOS)
+	RouteSourceSwiftEndpoint:  true, // Swift endpoint enum / protocol extension
+	RouteSourceDartHTTPClient: true, // Flutter package:http / dio / chopper / retrofit
+}
+
 // AllRouteSources is every registered RouteSource value. It exists for the conformance
 // test, which checks that no route fact in the golden corpus carries a source this file
 // does not know about — the check that catches a new extractor pass inventing a value

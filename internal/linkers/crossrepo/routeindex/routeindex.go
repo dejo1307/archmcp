@@ -155,9 +155,18 @@ func RoleOf(f facts.Fact) string { return f.PropString(facts.PropRole) }
 // — indexing one as a server route makes every page a candidate cross-repo
 // match and, worse, an "unused route no client calls" finding. Next.js App
 // Router API handlers carry type "route" and are deliberately NOT here.
+//
+// "loading" is a Suspense fallback component, as purely presentational as the
+// "error" boundary beside it, and its omission was not harmless: a loading.tsx
+// under a single dynamic segment (app/[slug]/loading.tsx) extracts as the server
+// route "/{}", which matches ANY one-segment client call with a path parameter —
+// enough for a frontend to collect inbound dependencies off that one route. The
+// set must therefore track every convention basename the Next.js branch of the TS
+// extractor emits (see tsextractor/ts.go, the App Router basename check) except
+// "route".
 var uiRouteTypes = map[string]bool{
-	"page": true, "layout": true, "error": true, "router_config": true,
-	"engine_mount": true,
+	"page": true, "layout": true, "error": true, "loading": true,
+	"router_config": true, "engine_mount": true,
 }
 
 // IsUIRoute reports whether a route fact is a client-side navigation route

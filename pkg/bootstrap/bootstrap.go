@@ -51,6 +51,7 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcimpl"
 	"github.com/enola-labs/enola/internal/linkers/binders/httphandler"
 	"github.com/enola-labs/enola/internal/linkers/binders/unmatchedroutes"
+	"github.com/enola-labs/enola/internal/linkers/binders/vendoredspecs"
 	graphqlsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/graphqlsig"
 	httpsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/http"
 	importsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/imports"
@@ -411,6 +412,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterBinder(emberresolver.New())
 	eng.RegisterBinder(grpcimpl.New())
 	eng.RegisterBinder(httphandler.New())
+	eng.RegisterBinder(vendoredspecs.New())
 	eng.RegisterBinder(unmatchedroutes.New(linkVocab))
 
 	// Register all OSS cross-repo signals. Phase() decides when each runs, so the

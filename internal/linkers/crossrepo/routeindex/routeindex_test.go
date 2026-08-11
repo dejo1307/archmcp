@@ -95,6 +95,18 @@ func TestIsUIRoute_PageRoutesExcludedFromServerIndex(t *testing.T) {
 	if IsUIRoute(api) || IsUIRoute(rails) {
 		t.Error("API and backend routes must stay server-indexable")
 	}
+	// Every Next.js App Router convention basename the TS extractor emits, except
+	// "route". "loading" was the one omission, and it was not cosmetic: a
+	// loading.tsx under a single dynamic segment extracts as "/{}", which matches
+	// any one-segment client call carrying a path parameter, handing a frontend
+	// inbound dependencies it has no endpoint for.
+	for _, typ := range []string{"page", "layout", "loading", "error"} {
+		f := facts.Fact{Kind: facts.KindRoute, Name: "/{}", Props: map[string]any{
+			"type": typ, "method": "GET", "framework": "nextjs"}}
+		if !IsUIRoute(f) {
+			t.Errorf("type %q must be a UI route — it renders, it does not serve", typ)
+		}
+	}
 	page.Repo = "web"
 	m := New(vocab.Default())
 	if got := m.IndexServerRoutes([]facts.Fact{page}); len(got) != 0 {
