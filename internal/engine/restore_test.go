@@ -120,6 +120,7 @@ func TestStaleness_CommitMoved(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	isolateGit(t)
 	t.Setenv("HOME", t.TempDir())
 
 	repo := t.TempDir()
@@ -131,8 +132,6 @@ func TestStaleness_CommitMoved(t *testing.T) {
 		}
 	}
 	git("init")
-	git("config", "user.email", "t@example.com")
-	git("config", "user.name", "t")
 	writeFile(t, filepath.Join(repo, "f.txt"), "hello\n")
 	git("add", ".")
 	git("commit", "-m", "init")
@@ -216,6 +215,7 @@ func TestSnapshotGit_OwnOutputDirIsNotTreeDirt(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	isolateGit(t)
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "go.mod"), "module dirtmod\n\ngo 1.21\n")
 	writeFile(t, filepath.Join(repo, "pkg", "a", "a.go"), "package a\n\nfunc A() {}\n")
@@ -252,6 +252,7 @@ func TestSnapshotGit_RealChangeStillDirty(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	isolateGit(t)
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "go.mod"), "module dirtmod2\n\ngo 1.21\n")
 	writeFile(t, filepath.Join(repo, "pkg", "a", "a.go"), "package a\n\nfunc A() {}\n")
@@ -288,6 +289,7 @@ func TestStaleness_DetectsEditAfterCleanSnapshotWithoutGitignore(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	isolateGit(t)
 	t.Setenv("HOME", t.TempDir())
 
 	repo := t.TempDir()
@@ -318,6 +320,19 @@ func TestStaleness_DetectsEditAfterCleanSnapshotWithoutGitignore(t *testing.T) {
 	}
 }
 
+// isolateGit makes every git invocation in this test hermetic: instead of the
+// developer's ~/.gitconfig and the machine's /etc/gitconfig, git reads exactly
+// the fixture in testdata/gitconfig.
+func isolateGit(t *testing.T) {
+	t.Helper()
+	cfg, err := filepath.Abs(filepath.Join("testdata", "gitconfig"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
+}
+
 // initGitRepo creates a git repo with one commit and returns its HEAD.
 func initGitRepo(t *testing.T, repo string) string {
 	t.Helper()
@@ -329,8 +344,7 @@ func initGitRepo(t *testing.T, repo string) string {
 		}
 	}
 	git("init")
-	git("config", "user.email", "t@example.com")
-	git("config", "user.name", "t")
+
 	writeFile(t, filepath.Join(repo, "f.txt"), "hello\n")
 	git("add", ".")
 	git("commit", "-m", "init")
@@ -352,6 +366,7 @@ func TestStaleness_IgnoresForeignGlobalReceipt(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	isolateGit(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -398,6 +413,7 @@ func TestStaleness_ReportsLoadedRepoDespiteForeignReceipt(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	isolateGit(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -440,6 +456,7 @@ func TestStaleness_AgeFromLoadedSnapshotNotForeignReceipt(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	isolateGit(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
