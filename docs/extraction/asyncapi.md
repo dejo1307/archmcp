@@ -12,8 +12,15 @@ configuration normally excludes YAML and JSON from the source walker.
 
 Each operation carries its operation ID, action, message name, content type,
 summary, description, tags, specification path, and AsyncAPI version when those
-values are present. AsyncAPI 3.x local channel and server `$ref` values are
-resolved. Parameterized addresses such as `orders/{orderId}` remain intact.
+values are present. Local channel, server, message, payload, property, and array
+item `$ref` values are resolved across YAML/JSON files. Parameterized addresses
+such as `orders/{orderId}` remain intact.
+
+Referenced message payloads remain lightweight: the operation records their
+resolved identity in `message_schema`, plus `schema_format` and `content_type`
+when present. Enola deliberately does not emit schema fields as symbols or facts
+until a compatibility or impact feature can consume them; this keeps schema-only
+data out of symbol-based explainers and avoids snapshot noise.
 
 These are messaging topics rather than HTTP routes, so they do not enter HTTP
 matching or unused-route findings. Kafka consumer topics participate in Enola's
@@ -25,6 +32,8 @@ facts until a protocol-specific cross-repository signal is available.
 for linking; its suffix describes authentication or transport security rather
 than a different messaging technology.
 
-External `$ref` documents and broker-specific binding interpretation are not
-expanded. Message payload schemas are recorded by message identity and content
-type; schema-field impact analysis is a separate capability.
+Remote URL `$ref` documents and broker-specific binding interpretation are not
+expanded. Local references are confined to the repository root, and cycles or
+missing targets are skipped without dropping the surrounding channel operation.
+Schema-field extraction, compatibility, and impact verdicts remain a separate
+capability and should ship together.

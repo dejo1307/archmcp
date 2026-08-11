@@ -66,7 +66,7 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, _ []string) ([
 		if relErr != nil {
 			return nil
 		}
-		ff, parseErr := parseFile(path, filepath.ToSlash(rel))
+		ff, parseErr := parseFile(path, filepath.ToSlash(rel), repoPath)
 		if parseErr != nil {
 			log.Printf("[asyncapi-extractor] skipping %s: %v", rel, parseErr)
 			return nil
@@ -77,7 +77,7 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, _ []string) ([
 	return result, err
 }
 
-func parseFile(absPath, relFile string) ([]facts.Fact, error) {
+func parseFile(absPath, relFile, repoPath string) ([]facts.Fact, error) {
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return nil, err
@@ -91,14 +91,15 @@ func parseFile(absPath, relFile string) ([]facts.Fact, error) {
 		return nil, fmt.Errorf("not an AsyncAPI spec (missing asyncapi field)")
 	}
 
+	resolver := newRefResolver(repoPath, absPath, doc)
 	channels := mapValue(doc["channels"])
-	servers := serverProtocols(mapValue(doc["servers"]))
+	servers := serverProtocols(mapValue(doc["servers"]), absPath, resolver)
 	defaultContentType := stringValue(doc["defaultContentType"])
 	var operations []operation
 	if strings.HasPrefix(version, "3.") {
-		operations = operationsV3(doc, channels)
+		operations = operationsV3(doc, absPath, resolver)
 	} else {
-		operations = operationsV2(channels)
+		operations = operationsV2(channels, absPath, resolver)
 	}
 
 	specDir := filepath.ToSlash(filepath.Dir(relFile))
@@ -128,6 +129,8 @@ func parseFile(absPath, relFile string) ([]facts.Fact, error) {
 			props["tags"] = op.tags
 		}
 		optional(props, "message", op.message)
+		optional(props, "message_schema", op.messageInfo.schemaName)
+		optional(props, "schema_format", op.messageInfo.schemaFormat)
 		contentType := op.contentType
 		if contentType == "" {
 			contentType = defaultContentType
@@ -144,15 +147,20 @@ func parseFile(absPath, relFile string) ([]facts.Fact, error) {
 type operation struct {
 	channel, role, action, id, summary, description, message, contentType string
 	tags, serverNames                                                     []string
+	messageInfo                                                           messageInfo
 }
 
-func operationsV2(channels map[string]any) []operation {
+func operationsV2(channels map[string]any, baseFile string, resolver *refResolver) []operation {
 	var out []operation
 	for channelName, raw := range channels {
-		channel := mapValue(raw)
-		serverNames := stringList(channel["servers"])
+		channel := resolver.resolve(raw, baseFile)
+		if len(channel.value) == 0 {
+			continue
+		}
+		serverNames := stringList(channel.value["servers"])
 		for _, action := range []string{"publish", "subscribe"} {
-			opMap := mapValue(channel[action])
+			opResolved := resolver.resolve(channel.value[action], channel.absFile)
+			opMap := opResolved.value
 			if len(opMap) == 0 {
 				continue
 			}
@@ -160,16 +168,17 @@ func operationsV2(channels map[string]any) []operation {
 			if action == "subscribe" {
 				role = facts.MessagingRoleConsumer
 			}
-			out = append(out, makeOperation(channelName, role, action, opMap, serverNames))
+			out = append(out, makeOperation(channelName, role, action, opMap, serverNames, opResolved.absFile, resolver))
 		}
 	}
 	return out
 }
 
-func operationsV3(doc, channels map[string]any) []operation {
+func operationsV3(doc map[string]any, baseFile string, resolver *refResolver) []operation {
 	var out []operation
 	for operationID, raw := range mapValue(doc["operations"]) {
-		opMap := mapValue(raw)
+		opResolved := resolver.resolve(raw, baseFile)
+		opMap := opResolved.value
 		action := strings.ToLower(stringValue(opMap["action"]))
 		role := ""
 		switch action {
@@ -178,17 +187,15 @@ func operationsV3(doc, channels map[string]any) []operation {
 		case "receive":
 			role = facts.MessagingRoleConsumer
 		}
-		channelRef := mapValue(opMap["channel"])
+		channelRaw := opMap["channel"]
+		channelRef := mapValue(channelRaw)
 		channelKey := localRefName(stringValue(channelRef["$ref"]), "channels")
-		channel := channelRef
-		if channelKey != "" {
-			channel = mapValue(channels[channelKey])
-		}
-		channelName := stringValue(channel["address"])
+		channel := resolver.resolve(channelRaw, opResolved.absFile)
+		channelName := stringValue(channel.value["address"])
 		if channelName == "" {
 			channelName = channelKey
 		}
-		op := makeOperation(channelName, role, action, opMap, refNames(channel["servers"], "servers"))
+		op := makeOperation(channelName, role, action, opMap, refNames(channel.value["servers"], "servers"), opResolved.absFile, resolver)
 		if op.id == "" {
 			op.id = operationID
 		}
@@ -197,36 +204,26 @@ func operationsV3(doc, channels map[string]any) []operation {
 	return out
 }
 
-func makeOperation(channel, role, action string, raw map[string]any, servers []string) operation {
+func makeOperation(channel, role, action string, raw map[string]any, servers []string, baseFile string, resolver *refResolver) operation {
 	op := operation{channel: channel, role: role, action: action, id: stringValue(raw["operationId"]),
 		summary: stringValue(raw["summary"]), description: stringValue(raw["description"]),
 		tags: tagNames(raw["tags"]), serverNames: servers}
-	op.message, op.contentType = messageMetadata(raw)
+	var messageRaw any = raw["message"]
+	if messageRaw == nil {
+		if messages := sliceValue(raw["messages"]); len(messages) > 0 {
+			messageRaw = messages[0]
+		}
+	}
+	op.messageInfo = messageInfoFor(messageRaw, baseFile, resolver)
+	op.message, op.contentType = op.messageInfo.name, op.messageInfo.contentType
 	return op
 }
 
-func messageMetadata(op map[string]any) (string, string) {
-	var raw any = op["message"]
-	if raw == nil {
-		if messages := sliceValue(op["messages"]); len(messages) > 0 {
-			raw = messages[0]
-		}
-	}
-	message := mapValue(raw)
-	if oneOf := sliceValue(message["oneOf"]); len(oneOf) > 0 {
-		message = mapValue(oneOf[0])
-	}
-	name := stringValue(message["name"])
-	if name == "" {
-		name = localRefTail(stringValue(message["$ref"]))
-	}
-	return name, stringValue(message["contentType"])
-}
-
-func serverProtocols(raw map[string]any) map[string]string {
+func serverProtocols(raw map[string]any, baseFile string, resolver *refResolver) map[string]string {
 	out := make(map[string]string, len(raw))
 	for name, value := range raw {
-		out[name] = strings.ToLower(stringValue(mapValue(value)["protocol"]))
+		server := resolver.resolve(value, baseFile)
+		out[name] = strings.ToLower(stringValue(server.value["protocol"]))
 	}
 	return out
 }

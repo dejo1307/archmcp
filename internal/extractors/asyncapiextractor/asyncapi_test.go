@@ -144,3 +144,119 @@ func TestSkipsTestdata(t *testing.T) {
 		t.Fatalf("testdata detected: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestExternalRefsAndMessageSchemaIdentity(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "asyncapi.yaml", `asyncapi: 3.1.0
+info: {title: Orders, version: 1.0.0}
+servers:
+  broker: {$ref: './parts/server.yaml#/broker'}
+channels:
+  orderCreated: {$ref: './parts/channel.yaml#/orderCreated'}
+operations:
+  publishOrder:
+    action: send
+    channel: {$ref: '#/channels/orderCreated'}
+    messages: [{$ref: './parts/messages.yaml#/OrderCreated'}]
+`)
+	writeSpec(t, repo, "parts/server.yaml", `broker:
+  host: kafka.example:9092
+  protocol: kafka-secure
+`)
+	writeSpec(t, repo, "parts/channel.yaml", `orderCreated:
+  address: svc-orders.order_created
+  servers: [{$ref: '#/servers/broker'}]
+`)
+	writeSpec(t, repo, "parts/messages.yaml", `OrderCreated:
+  name: OrderCreated
+  contentType: application/json
+  schemaFormat: application/schema+json;version=draft-07
+  payload: {$ref: './schemas.yaml#/OrderPayload'}
+`)
+	writeSpec(t, repo, "parts/schemas.yaml", `OrderPayload:
+  type: object
+  required: [id]
+  properties:
+    id: {type: string, format: uuid}
+    note: {type: string, description: Optional note}
+    lines:
+      type: array
+      items: {$ref: '#/Line'}
+Line:
+  type: object
+`)
+
+	got := extract(t, repo)
+	topic := find(got, "svc-orders.order_created", facts.MessagingRoleProducer)
+	if topic == nil {
+		t.Fatal("missing externally referenced channel operation")
+	}
+	if topic.Props["messaging"] != "kafka-secure" {
+		t.Errorf("messaging = %v", topic.Props["messaging"])
+	}
+	schemaName := "parts/schemas.yaml#/messages/OrderCreated"
+	if topic.Props["message_schema"] != schemaName {
+		t.Errorf("message_schema = %v, want %s", topic.Props["message_schema"], schemaName)
+	}
+	if topic.Props["schema_format"] != "application/schema+json;version=draft-07" {
+		t.Errorf("schema_format = %v", topic.Props["schema_format"])
+	}
+	for _, f := range got {
+		if f.Kind == facts.KindSymbol {
+			t.Fatalf("schema details must not create symbol noise: %+v", f)
+		}
+	}
+}
+
+func TestExternalRefCycleAndMissingFileAreSafe(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "asyncapi.yaml", `asyncapi: 2.6.0
+info: {title: Cycles, version: 1.0.0}
+channels:
+  events:
+    publish:
+      message: {$ref: './messages.yaml#/A'}
+  missing:
+    subscribe:
+      message: {$ref: './does-not-exist.yaml#/Missing'}
+`)
+	writeSpec(t, repo, "messages.yaml", `A: {$ref: '#/B'}
+B: {$ref: '#/A'}
+`)
+	got := extract(t, repo)
+	if find(got, "events", facts.MessagingRoleProducer) == nil || find(got, "missing", facts.MessagingRoleConsumer) == nil {
+		t.Fatalf("unresolved message refs must not delete channel operations: %+v", got)
+	}
+	for _, f := range got {
+		if f.Kind == facts.KindSymbol {
+			t.Fatalf("cycle or missing ref emitted a schema symbol: %+v", f)
+		}
+	}
+}
+
+func TestExternalRefCannotEscapeRepository(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	writeSpec(t, parent, "outside.yaml", `Secret:
+  type: object
+  properties: {token: {type: string}}
+`)
+	writeSpec(t, repo, "asyncapi.yaml", `asyncapi: 2.6.0
+info: {title: Safe, version: 1.0.0}
+channels:
+  events:
+    publish:
+      message:
+        name: MustStayInside
+        payload: {$ref: '../outside.yaml#/Secret'}
+`)
+	got := extract(t, repo)
+	if find(got, "events", facts.MessagingRoleProducer) == nil {
+		t.Fatal("unsafe payload ref must not delete the channel operation")
+	}
+	for _, f := range got {
+		if f.Kind == facts.KindSymbol {
+			t.Fatalf("out-of-repository ref emitted schema data: %+v", f)
+		}
+	}
+}
