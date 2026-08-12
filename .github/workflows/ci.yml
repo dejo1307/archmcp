@@ -22,10 +22,14 @@ jobs:
 
       - name: Coverage summary
         run: |
-          echo '### Coverage' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # One redirect for the whole block rather than four (shellcheck SC2129),
+          # which the actions job below enforces.
+          {
+            echo '### Coverage'
+            echo '```'
+            go tool cover -func=coverage.out | tail -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage profile
         uses: actions/upload-artifact@v7
@@ -90,7 +94,7 @@ jobs:
           config: mcp-arch.yaml
           base-sha: ${{ steps.base.outputs.sha }}
 
-  # golangci-lint v2 (action @v8). The repo baseline is clean, so this gates the
+  # golangci-lint v2 (action @v9). The repo baseline is clean, so this gates the
   # whole tree — any new finding fails the build. Linter set in .golangci.yml.
   lint:
     runs-on: ubuntu-latest
@@ -106,7 +110,11 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned, not `latest`. With `latest` the linter is whatever shipped that
+          # morning, so an unrelated PR can go red on a new check the author never
+          # touched — the same class of surprise this repo refuses everywhere else.
+          # Dependabot does not track this field, so bump it deliberately.
+          version: v2.12.2
 
   vuln:
     runs-on: ubuntu-latest
@@ -119,8 +127,38 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Pinning the BINARY does not pin the vulnerability data: govulncheck fetches
+      # the database from vuln.go.dev at run time, so a CVE disclosed today still
+      # fails this job tomorrow. What the pin removes is the other axis — a new
+      # analyser release changing its verdict on unchanged code.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
       - name: Run govulncheck
         run: govulncheck ./...
+
+  # Nothing else validates the workflows themselves. ci.yml at least runs on every
+  # PR, so a mistake in it surfaces immediately; release.yml runs ONLY on a `v*`
+  # tag, which means a typo, a bad action reference or a broken expression there is
+  # invisible until the moment it breaks a release. actionlint parses both, checks
+  # every action reference and expression, and shellchecks the `run:` blocks.
+  actions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Pinned for the same reason as golangci-lint above, and installed from source
+      # rather than via a marketplace action so the version is the only moving part.
+      # shellcheck is preinstalled on ubuntu-latest; actionlint picks it up and lints
+      # the shell inside every `run:` block.
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: actionlint
+        run: actionlint
