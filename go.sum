@@ -38,8 +38,6 @@ github.com/tree-sitter/tree-sitter-go v0.21.3-0.20240818010209-8c0f0e7a6012 h1:X
 github.com/tree-sitter/tree-sitter-go v0.21.3-0.20240818010209-8c0f0e7a6012/go.mod h1:T40D0O1cPvUU/+AmiXVXy1cncYQT6wem4Z0g4SfAYvY=
 github.com/tree-sitter/tree-sitter-html v0.20.5-0.20240818004741-d11201a263d0 h1:c46K6uh5Dz00zJeU9BfjXdb8I+E4RkUdfnWJpQADXFo=
 github.com/tree-sitter/tree-sitter-html v0.20.5-0.20240818004741-d11201a263d0/go.mod h1:hcNt/kOJHcIcuMvouE7LJcYdeFUFbVpBJ6d4wmOA+tU=
-github.com/tree-sitter/tree-sitter-java v0.21.1-0.20240824015150-576d8097e495 h1:jrt4qbJVEFs4H93/ITxygHc6u0TGqAkkate7TQ4wFSA=
-github.com/tree-sitter/tree-sitter-java v0.21.1-0.20240824015150-576d8097e495/go.mod h1:oyaR7fLnRV0hT9z6qwE9GkaeTom/hTDwK3H2idcOJFc=
 github.com/tree-sitter/tree-sitter-java v0.23.5 h1:J9YeMGMwXYlKSP3K4Us8CitC6hjtMjqpeOf2GGo6tig=
 github.com/tree-sitter/tree-sitter-java v0.23.5/go.mod h1:NRKlI8+EznxA7t1Yt3xtraPk1Wzqh3GAIC46wxvc320=
 github.com/tree-sitter/tree-sitter-javascript v0.21.5-0.20240818005344-15887341e5b5 h1:om4X9AVg3asL8gxNJDcz4e/Wp+VpQj1PY3uJXKr6EOg=
@@ -48,10 +46,8 @@ github.com/tree-sitter/tree-sitter-json v0.21.1-0.20240818005659-bdd69eb8c8a5 h1
 github.com/tree-sitter/tree-sitter-json v0.21.1-0.20240818005659-bdd69eb8c8a5/go.mod h1:GbMKRjLfk0H+PI7nLi1Sx5lHf5wCpLz9al8tQYSxpEk=
 github.com/tree-sitter/tree-sitter-php v0.22.9-0.20240819002312-a552625b56c1 h1:ZXZMDwE+IhUtGug4Brv6NjJWUU3rfkZBKpemf6RY8/g=
 github.com/tree-sitter/tree-sitter-php v0.22.9-0.20240819002312-a552625b56c1/go.mod h1:UKCLuYnJ312Mei+3cyTmGOHzn0YAnaPRECgJmHtzrqs=
-github.com/tree-sitter/tree-sitter-python v0.23.6 h1:qHnWFR5WhtMQpxBZRwiaU5Hk/29vGju6CVtmvu5Haas=
-github.com/tree-sitter/tree-sitter-python v0.23.6/go.mod h1:cpdthSy/Yoa28aJFBscFHlGiU+cnSiSh1kuDVtI8YeM=
-github.com/tree-sitter/tree-sitter-ruby v0.21.1-0.20240818211811-7dbc1e2d0e2d h1:fcYCvoXdcP1uRQYXqJHRy6Hec+uKScQdKVtMwK9JeCI=
-github.com/tree-sitter/tree-sitter-ruby v0.21.1-0.20240818211811-7dbc1e2d0e2d/go.mod h1:T1nShQ4v5AJtozZ8YyAS4uzUtDAJj/iv4YfwXSbUHzg=
+github.com/tree-sitter/tree-sitter-python v0.25.0 h1:O6XD9v8U1LOcRc3cNj9nM7XufrtEBezE6VrpRrHZDf0=
+github.com/tree-sitter/tree-sitter-python v0.25.0/go.mod h1:cpdthSy/Yoa28aJFBscFHlGiU+cnSiSh1kuDVtI8YeM=
 github.com/tree-sitter/tree-sitter-ruby v0.23.1 h1:T/NKHUA+iVbHM440hFx+lzVOzS4dV6z8Qw8ai+72bYo=
 github.com/tree-sitter/tree-sitter-ruby v0.23.1/go.mod h1:kUS4kCCQloFcdX6sdpr8p6r2rogbM6ZjTox5ZOQy8cA=
 github.com/tree-sitter/tree-sitter-rust v0.23.3 h1:v41N2Dx5ZEzouqeQJ0IIH2cUwVw/iepwrUoE9D56IL4=
