@@ -1505,6 +1505,7 @@ import (
 //     explainer attributes a symbol to a package. A Dart class also declares its
 //     members, so the first member name was being read as a package — 1,746 phantom
 //     packages on drift against 199 real modules, the .NET failure in Dart's clothing.
+//
 // v194: TypeScript tsconfig `paths` entries with no `*` are honoured. The parser
 // required a wildcard on BOTH sides and silently dropped the exact form — which is how
 // a monorepo names a sibling package:
@@ -1522,7 +1523,25 @@ import (
 // Measured before/after on excalidraw, supabase and bitwarden-clients; the exact match
 // mode is carried on the alias rather than inferred, because a bare `@acme/common` used
 // as a prefix would also swallow `@acme/common-utils`.
-const cacheVersion = "v194"
+// v195: the Java and Ruby grammars move to their newest releases — tree-sitter-java
+// v0.21.1-20240824 -> v0.23.5 and tree-sitter-ruby v0.21.1-20240818 -> v0.23.1. Both are
+// still tree-sitter ABI 14, which is the ceiling the vendored go-tree-sitter runtime
+// accepts; the C#, Python, Scala and Dart grammars are all held back or regenerated for
+// exactly that reason, and probe_test.go in each of these two packages now guards the
+// same trap here.
+//
+// One version covers both grammars deliberately. Each bump alone would invalidate every
+// cached fact in the tree, so landing them separately would make users pay for a full
+// re-extraction twice to arrive at the same graph.
+//
+// The bump is NOT visible in the goldens — all 37 fixture graphs are byte-identical
+// before and after, and TestDeterminism passes on both. It is versioned anyway because
+// the goldens only speak for the fixture corpus, while the grammar is what turns bytes
+// into facts for every repo: two minor releases of grammar fixes can parse constructs the
+// old parser shredded, and the extractor cache is keyed on cacheVersion plus the file
+// hash alone. Without the bump an upgraded binary would keep serving facts its own parser
+// never produced, and nothing downstream could tell.
+const cacheVersion = "v195"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
