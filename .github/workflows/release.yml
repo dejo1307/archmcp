@@ -100,7 +100,7 @@ jobs:
           sha256sum "${BINARY}.tar.gz" > "${BINARY}.sha256"
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # Stays a draft until the publish job confirms every platform made it.
           draft: true
