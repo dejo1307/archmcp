@@ -1541,7 +1541,30 @@ import (
 // old parser shredded, and the extractor cache is keyed on cacheVersion plus the file
 // hash alone. Without the bump an upgraded binary would keep serving facts its own parser
 // never produced, and nothing downstream could tell.
-const cacheVersion = "v195"
+// v196: the C, C++ and PHP grammars leave the 2024 pre-release pseudo-versions they were
+// stuck on — tree-sitter-c v0.21.5-20240818 -> v0.23.6, tree-sitter-cpp v0.22.4-20240818
+// -> v0.23.4, tree-sitter-php v0.22.9-20240819 -> v0.23.12. Roughly two years of upstream
+// grammar fixes each.
+//
+// They were not stuck for a good reason. Every one of these grammars has since been
+// regenerated at tree-sitter ABI 15, which the vendored runtime refuses, so the only
+// version ever offered was the unusable one and the pins simply never moved. The bounds
+// in .github/dependabot.yml now cap each grammar at its last ABI-14 release, which is what
+// made these three upgrades visible at all.
+//
+// Grouped into one version for the same reason as v195: any grammar change invalidates
+// every cached fact, so landing three separately would charge users three full
+// re-extractions to reach one graph.
+//
+// As with v195 the goldens do not move — all 37 fixture graphs are byte-identical and
+// TestDeterminism passes. The bump is not a formality: the cache is keyed on cacheVersion
+// plus the file hash alone, so without it an upgraded binary would keep serving facts its
+// own parser never produced. What the goldens cannot check is the rest of the world, so
+// probe_test.go in cppextractor and phpextractor now pins every node kind the walkers
+// dispatch on (35 shared C/C++, 17 C++-only, 1 C-only, 38 PHP) — a renamed kind is the
+// failure a two-year grammar jump actually causes, and it degrades extraction without
+// erroring.
+const cacheVersion = "v196"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
