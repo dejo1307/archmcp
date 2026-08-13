@@ -420,6 +420,11 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	cachePath := extractorCachePath(filepath.Join(absRepo, e.cfg.Output.Dir))
 	if e.cfg.IncrementalEnabled() {
 		cache = loadExtractorCache(cachePath, e.persistCache)
+		// The cache now holds an open temp file from the moment it is created, so
+		// every path out of this function has to close it. discard is a no-op after
+		// a successful save; without it, a snapshot that fails during extraction
+		// leaves the spool behind.
+		defer cache.discard()
 	}
 	preCount := e.store.Count()
 	usedExtractors, shadowedExtractors, parseErrs, err := e.runExtractors(ctx, absRepo, files, currentHashes, cache)
@@ -429,12 +434,10 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	e.reportShadowed(absRepo, shadowedExtractors)
 	if cache != nil {
 		log.Printf("[engine] extractor cache: %d reused", cache.hits)
-		if e.persistCache {
-			if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
-				log.Printf("[engine] could not create cache dir: %v", err)
-			} else if err := cache.save(cachePath); err != nil {
-				log.Printf("[engine] could not write extractor cache: %v", err)
-			}
+		// save is a no-op when this cache was opened non-persisting, and it creates
+		// its own directory, so neither condition is repeated here.
+		if err := cache.save(); err != nil {
+			log.Printf("[engine] could not write extractor cache: %v", err)
 		}
 	}
 	// Reference-only extraction over test/spec files. Runs every snapshot (not
