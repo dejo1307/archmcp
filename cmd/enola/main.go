@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -35,6 +36,12 @@ func main() {
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 
+	// Memory instrumentation, removed from the argument list before anything else
+	// parses it. It has to come off the front because --memprofile takes a VALUE,
+	// and both the subcommand dispatcher and the flag loop below are exact-match
+	// switches that would read the path as a repository or reject it as a typo.
+	args, memWatch := startMemWatch(os.Args[1:])
+
 	// Subcommands are dispatched before the flag loop below, which is an exact-match
 	// switch over os.Args and cannot parse `--flag=value`. Each subcommand owns its own
 	// FlagSet instead.
@@ -43,14 +50,14 @@ func main() {
 	// wrapper binary ships through its own release path and must not offer to replace
 	// itself with an enola build. It is still declared to the Runner (below) so a typo
 	// like `enola upgrad` is recognised as a near-miss rather than as an unknown word.
-	if len(os.Args) > 1 && os.Args[1] == "upgrade" {
+	if len(args) > 0 && args[0] == "upgrade" {
 		if err := upgrade.Run(ctx, version.Version); err != nil {
 			log.Fatalf("upgrade failed: %v", err)
 		}
 		os.Exit(0)
 	}
 	cmds := command.New(binary(), "upgrade")
-	cmds.Dispatch(ctx, os.Args[1:]) // returns only when this was not a subcommand
+	cmds.Dispatch(ctx, args) // returns only when this was not a subcommand
 
 	generateMode := false
 	explainMode := false
@@ -66,13 +73,13 @@ func main() {
 	// for every flag pairing; scanning once up front is what keeps `--version --json`
 	// and `--json --version` the same command.
 	jsonMode := false
-	for _, arg := range os.Args[1:] {
+	for _, arg := range args {
 		if arg == "--json" {
 			jsonMode = true
 		}
 	}
 
-	for _, arg := range os.Args[1:] {
+	for _, arg := range args {
 		switch arg {
 		case "--version":
 			// The JSON form is the release manifest, byte for byte: the release
@@ -160,6 +167,9 @@ func main() {
 
 	if explainMode {
 		runExplain(ctx, eng, cfg, repoArg)
+		// Explicit rather than deferred: this path exits, and a deferred Report
+		// would never run. Same at every os.Exit below.
+		memWatch.Report(os.Stderr, factCount(eng))
 		os.Exit(0)
 	}
 
@@ -221,6 +231,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  Duration:    %s\n", snapshot.Meta.Duration)
 		fmt.Fprintf(os.Stderr, "  Output:      %s\n", filepath.Join(repoPaths[len(repoPaths)-1], cfg.Output.Dir))
 		updatecheck.Fprint(os.Stderr, engine.ExtractorVersion())
+		memWatch.Report(os.Stderr, snapshot.Meta.FactCount)
 		os.Exit(0)
 	}
 
@@ -288,6 +299,69 @@ func main() {
 		tracker.Close()
 		log.Fatalf("server error: %v", err)
 	}
+
+	// A server run peaks while snapshotting on behalf of a tool call, so its watch
+	// spans the whole session and reports once on clean shutdown.
+	memWatch.Report(os.Stderr, factCount(eng))
+}
+
+// startMemWatch pulls the memory-instrumentation flags off the argument list and,
+// when one is present, starts sampling. It returns the REMAINING arguments, which
+// is the point: --memprofile takes a value, and every other parser in this binary
+// is an exact-match switch that would read that value as a repository path.
+//
+//	--memstats             sample the heap, print one summary line at exit
+//	--memprofile <path>    the same, plus a heap profile at the peak (<path>) and
+//	                       one of the steady state (<path>.final)
+//
+// Both are deliberately absent from --help. They are development instruments for
+// the memory work tracked in enola-benchmarks/MEMORY_IMPROVEMENTS.md, they cost a
+// stop-the-world read every 150ms, and --help is already long enough that adding
+// non-user-facing flags to it makes the user-facing ones harder to find.
+//
+// A --memprofile with no path following it is a hard error rather than a silent
+// downgrade to --memstats: the caller asked for a file, and the failure mode of
+// guessing is a benchmark run that looks instrumented and produced nothing.
+func startMemWatch(argv []string) ([]string, *bootstrap.MemWatch) {
+	rest, profilePath, enabled, err := splitMemFlags(argv)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if !enabled {
+		return rest, nil
+	}
+	return rest, bootstrap.StartMemWatch(profilePath)
+}
+
+// splitMemFlags is the parsing half of startMemWatch, kept pure so it can be
+// tested: it is the one piece of argument handling that can break flags it has
+// nothing to do with, by dropping or keeping the wrong element.
+func splitMemFlags(argv []string) (rest []string, profilePath string, enabled bool, err error) {
+	for i := 0; i < len(argv); i++ {
+		switch argv[i] {
+		case "--memstats":
+			enabled = true
+		case "--memprofile":
+			if i+1 >= len(argv) {
+				return nil, "", false, errors.New("--memprofile needs a path, e.g. --memprofile heap.pb.gz")
+			}
+			profilePath = argv[i+1]
+			enabled = true
+			i++ // consume the value too
+		default:
+			rest = append(rest, argv[i])
+		}
+	}
+	return rest, profilePath, enabled, nil
+}
+
+// factCount reports how many facts the engine currently holds, or 0 when it holds
+// no snapshot. Only the memory summary uses it, to derive the per-fact figures.
+func factCount(eng *bootstrap.Engine) int {
+	if st := eng.Store(); st != nil {
+		return st.Count()
+	}
+	return 0
 }
 
 // helpSpec is the `--help` text for this binary: the shared engine help with
