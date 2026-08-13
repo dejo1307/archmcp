@@ -1,6 +1,7 @@
 package cppextractor
 
 import (
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -39,6 +40,7 @@ func extractFileAST(src []byte, relFile, lang string, macros macroTable) []facts
 	if err := parser.SetLanguage(sitter.NewLanguage(grammar)); err != nil {
 		return nil
 	}
+	kinds := kindsFor(lang)
 	tree := parser.Parse(src, nil)
 	if tree == nil {
 		return nil
@@ -47,10 +49,11 @@ func extractFileAST(src []byte, relFile, lang string, macros macroTable) []facts
 
 	w := &astWalker{
 		src:            src,
+		kinds:          kinds,
 		relFile:        relFile,
 		dir:            filepath.Dir(relFile),
 		lang:           lang,
-		fileMethods:    buildFileMethodIndex(tree.RootNode(), src),
+		fileMethods:    buildFileMethodIndex(kinds, tree.RootNode(), src),
 		moduleOwnerIdx: -1,
 		macros:         macros,
 	}
@@ -65,7 +68,7 @@ func extractFileAST(src []byte, relFile, lang string, macros macroTable) []facts
 // declared or defined anywhere in this file (inline prototypes/definitions and
 // out-of-line "Class::method" definitions). It lets an out-of-line method body
 // resolve calls to sibling methods of the same class to their canonical names.
-func buildFileMethodIndex(root *sitter.Node, src []byte) map[string]map[string]bool {
+func buildFileMethodIndex(kinds *tsutil.KindTable, root *sitter.Node, src []byte) map[string]map[string]bool {
 	idx := make(map[string]map[string]bool)
 	add := func(owner, method string) {
 		if owner == "" || method == "" {
@@ -81,18 +84,18 @@ func buildFileMethodIndex(root *sitter.Node, src []byte) map[string]map[string]b
 		if n == nil {
 			return
 		}
-		switch n.Kind() {
+		switch kindOf(kinds, n) {
 		case "class_specifier", "struct_specifier", "union_specifier":
 			if nn := n.ChildByFieldName("name"); nn != nil {
 				owner := simpleTypeName(nn, src)
-				for m := range collectMethodNames(n.ChildByFieldName("body"), src) {
+				for m := range collectMethodNames(kinds, n.ChildByFieldName("body"), src) {
 					add(owner, m)
 				}
 			}
 		case "function_definition":
-			if fd := findFunctionDeclarator(n.ChildByFieldName("declarator")); fd != nil {
-				if nameNode := fd.ChildByFieldName("declarator"); nameNode != nil && nameNode.Kind() == "qualified_identifier" {
-					scopes, leaf := splitQualified(nameNode, src)
+			if fd := findFunctionDeclarator(kinds, n.ChildByFieldName("declarator")); fd != nil {
+				if nameNode := fd.ChildByFieldName("declarator"); nameNode != nil && kindOf(kinds, nameNode) == "qualified_identifier" {
+					scopes, leaf := splitQualified(kinds, nameNode, src)
 					if len(scopes) > 0 {
 						add(scopes[len(scopes)-1], leaf)
 					}
@@ -114,6 +117,9 @@ type astWalker struct {
 	// lang is "c" or "cpp" — emitted as the per-fact "language" prop and used to
 	// apply C-only semantics (e.g. static => file-private).
 	lang string
+	// kinds names node types for the grammar `lang` selected. It travels with the
+	// walker because the two grammars do not share symbol ids; see kinds.go.
+	kinds *tsutil.KindTable
 
 	out []facts.Fact
 
@@ -247,20 +253,20 @@ func (c cppLoopClass) scales() bool  { return c == cppLoopScaling }
 func (c cppLoopClass) repeats() bool { return c != cppLoopConstant }
 
 // cppSyntacticLoopClass classifies a for / range-for / while / do-while statement.
-func cppSyntacticLoopClass(node *sitter.Node, src []byte) cppLoopClass {
-	switch node.Kind() {
+func cppSyntacticLoopClass(kinds *tsutil.KindTable, node *sitter.Node, src []byte) cppLoopClass {
+	switch kindOf(kinds, node) {
 	case "for_statement":
 		cond := node.ChildByFieldName("condition")
 		if cond == nil {
 			return cppLoopInfinite // for (;;)
 		}
-		if cppConstantForCondition(cond) {
+		if cppConstantForCondition(kinds, cond) {
 			return cppLoopConstant
 		}
 	case "for_range_loop":
 		// for (T x : {a, b, c}) — a braced init-list iterates a fixed count. A variable
 		// range (for (x : xs)) scales.
-		if r := node.ChildByFieldName("right"); r != nil && r.Kind() == "initializer_list" {
+		if r := node.ChildByFieldName("right"); r != nil && kindOf(kinds, r) == "initializer_list" {
 			return cppLoopConstant
 		}
 	case "while_statement", "do_statement":
@@ -275,13 +281,13 @@ func cppSyntacticLoopClass(node *sitter.Node, src []byte) cppLoopClass {
 // loop variable against a numeric literal (`i < 3`), so the loop runs a statically fixed
 // number of times. A data-derived bound (`i < n`, `i < v.size()`) or a compound
 // condition is conservatively treated as scaling — no genuine O(n) finding is deleted.
-func cppConstantForCondition(cond *sitter.Node) bool {
-	if cond == nil || cond.Kind() != "binary_expression" {
+func cppConstantForCondition(kinds *tsutil.KindTable, cond *sitter.Node) bool {
+	if cond == nil || kindOf(kinds, cond) != "binary_expression" {
 		return false
 	}
 	hasCmp, hasLiteral := false, false
 	for i := uint(0); i < cond.ChildCount(); i++ {
-		switch cond.Child(i).Kind() {
+		switch kindOf(kinds, cond.Child(i)) {
 		case "<", "<=", ">", ">=", "!=":
 			hasCmp = true
 		case "number_literal":
@@ -338,9 +344,9 @@ var cppIODirect = map[string]bool{
 
 // cppBooleanOp reports whether a binary_expression's operator is a short-circuit
 // boolean operator (&& / ||), which adds a cyclomatic decision point.
-func cppBooleanOp(node *sitter.Node) bool {
+func cppBooleanOp(kinds *tsutil.KindTable, node *sitter.Node) bool {
 	for i := uint(0); i < node.ChildCount(); i++ {
-		switch node.Child(i).Kind() {
+		switch kindOf(kinds, node.Child(i)) {
 		case "&&", "||":
 			return true
 		}
@@ -438,7 +444,7 @@ func (w *astWalker) walkDecl(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(w.kinds, node) {
 	case "preproc_include":
 		w.handleInclude(node)
 	case "namespace_definition":
@@ -463,7 +469,7 @@ func (w *astWalker) walkDecl(node *sitter.Node) {
 		w.handleUsing(node)
 	case "linkage_specification":
 		// extern "C" { ... } — recurse into the wrapped body.
-		w.walkDeclList(findChildByKind(node, "declaration_list"))
+		w.walkDeclList(findChildByKind(w.kinds, node, "declaration_list"))
 	case "expression_statement":
 		// A bare `call_expression;` at file/namespace scope is illegal C/C++ — it is
 		// always a registration macro the preprocessor would expand (module_init(foo),
@@ -555,10 +561,10 @@ func (w *astWalker) handleClassLike(node *sitter.Node, kind string) {
 		},
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	}
-	if node.Kind() == "union_specifier" {
+	if kindOf(w.kinds, node) == "union_specifier" {
 		f.Props["union"] = true
 	}
-	for _, base := range baseClassNames(node, w.src) {
+	for _, base := range baseClassNames(w.kinds, node, w.src) {
 		f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelImplements, Target: base})
 	}
 
@@ -566,7 +572,7 @@ func (w *astWalker) handleClassLike(node *sitter.Node, kind string) {
 	ownerIdx := len(w.out) - 1
 
 	w.pushOwner(ownerIdx)
-	w.pushType(name, collectMethodNames(body, w.src))
+	w.pushType(name, collectMethodNames(w.kinds, body, w.src))
 	w.walkClassBody(body)
 	w.popType()
 	w.popOwner()
@@ -576,7 +582,7 @@ func (w *astWalker) handleClassLike(node *sitter.Node, kind string) {
 func (w *astWalker) walkClassBody(body *sitter.Node) {
 	for i := uint(0); i < body.ChildCount(); i++ {
 		c := body.Child(i)
-		switch c.Kind() {
+		switch kindOf(w.kinds, c) {
 		case "field_declaration":
 			w.handleFieldDeclaration(c)
 		case "function_definition":
@@ -636,7 +642,7 @@ func (w *astWalker) handleEnum(node *sitter.Node) {
 // function, an inline method (inside a class body), or an OUT-OF-LINE method /
 // namespaced-function definition (declarator is a qualified_identifier).
 func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
-	fdecl := findFunctionDeclarator(node.ChildByFieldName("declarator"))
+	fdecl := findFunctionDeclarator(w.kinds, node.ChildByFieldName("declarator"))
 	if fdecl == nil {
 		// A function_definition with no function_declarator is a name-carrying macro
 		// that tree-sitter parsed cleanly (rather than as an errored expression): a
@@ -658,11 +664,11 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 
 	var symbolName, receiver, shortName string
 	var outOfLineScopes []string // scope chain to push for an out-of-line def
-	switch nameNode.Kind() {
+	switch kindOf(w.kinds, nameNode) {
 	case "qualified_identifier":
 		// Out-of-line definition: "A::B::method". Combine any enclosing namespace
 		// with the qualified scope so the name matches the in-class declaration.
-		scopes, leaf := splitQualified(nameNode, w.src)
+		scopes, leaf := splitQualified(w.kinds, nameNode, w.src)
 		if leaf == "" {
 			return
 		}
@@ -677,7 +683,7 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 			outOfLineScopes = scopes
 		}
 	default:
-		leaf := declaratorLeafName(nameNode, w.src)
+		leaf := declaratorLeafName(w.kinds, nameNode, w.src)
 		if leaf == "" {
 			return
 		}
@@ -776,10 +782,10 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 // handleFieldDeclaration handles a member of a class body: either a member
 // function declaration (prototype) or one-or-more data members.
 func (w *astWalker) handleFieldDeclaration(node *sitter.Node) {
-	if fdecl := findFunctionDeclarator(node.ChildByFieldName("declarator")); fdecl != nil {
+	if fdecl := findFunctionDeclarator(w.kinds, node.ChildByFieldName("declarator")); fdecl != nil {
 		// Member function prototype (no body) — e.g. "virtual void clear();".
 		nameNode := fdecl.ChildByFieldName("declarator")
-		leaf := declaratorLeafName(nameNode, w.src)
+		leaf := declaratorLeafName(w.kinds, nameNode, w.src)
 		if leaf == "" {
 			return
 		}
@@ -807,7 +813,7 @@ func (w *astWalker) handleFieldDeclaration(node *sitter.Node) {
 		if node.FieldNameForChild(uint32(i)) != "declarator" {
 			continue
 		}
-		leaf := declaratorLeafName(node.Child(i), w.src)
+		leaf := declaratorLeafName(w.kinds, node.Child(i), w.src)
 		if leaf == "" {
 			continue
 		}
@@ -837,7 +843,7 @@ func (w *astWalker) handleTemplate(node *sitter.Node) {
 	var inner *sitter.Node
 	for i := uint(0); i < node.ChildCount(); i++ {
 		c := node.Child(i)
-		if c.Kind() == "template_parameter_list" || !c.IsNamed() {
+		if kindOf(w.kinds, c) == "template_parameter_list" || !c.IsNamed() {
 			continue
 		}
 		inner = c
@@ -860,7 +866,7 @@ func (w *astWalker) handleTemplate(node *sitter.Node) {
 func (w *astWalker) handleDeclaration(node *sitter.Node) {
 	// `class Foo {...} bar;` / `struct X {...};` — the specifier is the type field.
 	if t := node.ChildByFieldName("type"); t != nil {
-		switch t.Kind() {
+		switch kindOf(w.kinds, t) {
 		case "class_specifier":
 			w.handleClassLike(t, facts.SymbolClass)
 		case "struct_specifier":
@@ -898,7 +904,7 @@ func (w *astWalker) handleDeclaration(node *sitter.Node) {
 	}
 	// Free-function prototype: declarator is (or wraps) a function_declarator whose
 	// own declarator is a plain identifier or a qualified_identifier.
-	fdecl := findFunctionDeclarator(node.ChildByFieldName("declarator"))
+	fdecl := findFunctionDeclarator(w.kinds, node.ChildByFieldName("declarator"))
 	if fdecl == nil {
 		return
 	}
@@ -907,9 +913,9 @@ func (w *astWalker) handleDeclaration(node *sitter.Node) {
 		return
 	}
 	var symbolName, receiver string
-	switch nameNode.Kind() {
+	switch kindOf(w.kinds, nameNode) {
 	case "qualified_identifier":
-		scopes, leaf := splitQualified(nameNode, w.src)
+		scopes, leaf := splitQualified(w.kinds, nameNode, w.src)
 		if leaf == "" {
 			return
 		}
@@ -920,7 +926,7 @@ func (w *astWalker) handleDeclaration(node *sitter.Node) {
 			receiver = comps[n-1]
 		}
 	default:
-		leaf := declaratorLeafName(nameNode, w.src)
+		leaf := declaratorLeafName(w.kinds, nameNode, w.src)
 		if leaf == "" {
 			return
 		}
@@ -965,7 +971,7 @@ func (w *astWalker) handleVarInitializers(node *sitter.Node) bool {
 			continue
 		}
 		decl := node.Child(i)
-		if decl.Kind() != "init_declarator" {
+		if kindOf(w.kinds, decl) != "init_declarator" {
 			continue
 		}
 		value := decl.ChildByFieldName("value")
@@ -973,7 +979,7 @@ func (w *astWalker) handleVarInitializers(node *sitter.Node) bool {
 			continue
 		}
 		handled = true
-		leaf := declaratorLeafName(decl.ChildByFieldName("declarator"), w.src)
+		leaf := declaratorLeafName(w.kinds, decl.ChildByFieldName("declarator"), w.src)
 		if leaf == "" {
 			continue
 		}
@@ -1009,7 +1015,7 @@ func (w *astWalker) walkInitializerRefs(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(w.kinds, node) {
 	case "identifier":
 		w.emitFuncPtrRef(nodeText(node, w.src))
 		return
@@ -1070,7 +1076,7 @@ func (w *astWalker) handleMacroTypeSpecifier(node *sitter.Node) {
 		}
 		// Args land as type_identifier or (across a line break, under an ERROR node)
 		// plain identifier. Non-function args are dropped by funcNames.
-		if k := n.Kind(); k == "type_identifier" || k == "identifier" {
+		if k := kindOf(w.kinds, n); k == "type_identifier" || k == "identifier" {
 			txt := nodeText(n, w.src)
 			w.emitFuncPtrRef(txt)
 			args = append(args, txt)
@@ -1103,7 +1109,7 @@ func (w *astWalker) expandMacroDeclaration(typ, declarator *sitter.Node) bool {
 	if !ok || def.params == nil { // must be a known function-like macro
 		return false
 	}
-	if k := declarator.Kind(); k != "parenthesized_declarator" && k != "function_declarator" {
+	if k := kindOf(w.kinds, declarator); k != "parenthesized_declarator" && k != "function_declarator" {
 		return false // a plain `static MacroTyped var;` is not a macro invocation
 	}
 	var args []string
@@ -1112,7 +1118,7 @@ func (w *astWalker) expandMacroDeclaration(typ, declarator *sitter.Node) bool {
 		if n == nil {
 			return
 		}
-		if k := n.Kind(); k == "identifier" || k == "type_identifier" {
+		if k := kindOf(w.kinds, n); k == "identifier" || k == "type_identifier" {
 			args = append(args, nodeText(n, w.src))
 			return
 		}
@@ -1141,11 +1147,11 @@ func (w *astWalker) salvageMacroStructAssigns(root *sitter.Node) {
 	var assigns []*sitter.Node
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
-		if n == nil || n.Kind() == "function_definition" {
+		if n == nil || kindOf(w.kinds, n) == "function_definition" {
 			return
 		}
-		if n.Kind() == "assignment_expression" {
-			if l := n.ChildByFieldName("left"); l != nil && l.Kind() == "field_expression" {
+		if kindOf(w.kinds, n) == "assignment_expression" {
+			if l := n.ChildByFieldName("left"); l != nil && kindOf(w.kinds, l) == "field_expression" {
 				assigns = append(assigns, n)
 			}
 		}
@@ -1176,7 +1182,7 @@ func (w *astWalker) salvageMacroStructAssigns(root *sitter.Node) {
 // names, and other macros add no edge.
 func (w *astWalker) handleMacroBodyCalls(node *sitter.Node) {
 	val := node.ChildByFieldName("value")
-	if val == nil || val.Kind() != "preproc_arg" {
+	if val == nil || kindOf(w.kinds, val) != "preproc_arg" {
 		return
 	}
 	body := w.src[val.StartByte():val.EndByte()]
@@ -1287,7 +1293,7 @@ func isIdentPart(b byte) bool {
 // short name is a real function, so non-function arguments (a DEVICE_ATTR name, a
 // mode literal) add no edge.
 func (w *astWalker) handleFileScopeMacroCall(node *sitter.Node) {
-	call := findChildByKind(node, "call_expression")
+	call := findChildByKind(w.kinds, node, "call_expression")
 	if call == nil {
 		return
 	}
@@ -1297,7 +1303,7 @@ func (w *astWalker) handleFileScopeMacroCall(node *sitter.Node) {
 	}
 	w.pushOwner(w.moduleOwner())
 	w.emitArgRefs(args)
-	if fn := call.ChildByFieldName("function"); fn != nil && fn.Kind() == "identifier" {
+	if fn := call.ChildByFieldName("function"); fn != nil && kindOf(w.kinds, fn) == "identifier" {
 		w.emitExpandedMacroRefs(nodeText(fn, w.src), argTexts(args, w.src))
 	}
 	w.popOwner()
@@ -1352,11 +1358,11 @@ func (w *astWalker) emitArgRefs(args *sitter.Node) {
 		if !a.IsNamed() {
 			continue
 		}
-		switch a.Kind() {
+		switch kindOf(w.kinds, a) {
 		case "identifier":
 			w.emitFuncPtrRef(nodeText(a, w.src))
 		case "pointer_expression": // &func
-			if inner := a.ChildByFieldName("argument"); inner != nil && inner.Kind() == "identifier" {
+			if inner := a.ChildByFieldName("argument"); inner != nil && kindOf(w.kinds, inner) == "identifier" {
 				w.emitFuncPtrRef(nodeText(inner, w.src))
 			}
 		}
@@ -1395,7 +1401,7 @@ func isAllCapsConst(s string) bool {
 }
 
 func (w *astWalker) handleTypedef(node *sitter.Node) {
-	leaf := declaratorLeafName(node.ChildByFieldName("declarator"), w.src)
+	leaf := declaratorLeafName(w.kinds, node.ChildByFieldName("declarator"), w.src)
 	if leaf == "" {
 		return
 	}
@@ -1434,7 +1440,7 @@ func (w *astWalker) handleInclude(node *sitter.Node) {
 	if pathNode == nil {
 		return
 	}
-	if pathNode.Kind() != "string_literal" {
+	if kindOf(w.kinds, pathNode) != "string_literal" {
 		// system_lib_string (<vector>) and other forms are external — skip.
 		return
 	}
@@ -1477,7 +1483,7 @@ func (w *astWalker) applyFuncQualifiers(f *facts.Fact, node, fdecl *sitter.Node)
 		params := fdecl.ChildByFieldName("parameters")
 		for i := uint(0); i < fdecl.ChildCount(); i++ {
 			c := fdecl.Child(i)
-			if c.Kind() == "type_qualifier" && params != nil && c.StartByte() >= params.EndByte() {
+			if kindOf(w.kinds, c) == "type_qualifier" && params != nil && c.StartByte() >= params.EndByte() {
 				if nodeText(c, w.src) == "const" {
 					f.Props["const"] = true
 				}
@@ -1508,7 +1514,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	kind := node.Kind()
+	kind := kindOf(w.kinds, node)
 
 	// A lambda is a deferred scope: its body runs when invoked, NOT per-iteration of
 	// the enclosing loops — so reset the loop depth for its subtree (e.g. a callback
@@ -1530,7 +1536,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		case "if_statement", "conditional_expression", "case_statement", "catch_clause":
 			w.metrics.decisions++
 		case "binary_expression":
-			if cppBooleanOp(node) {
+			if cppBooleanOp(w.kinds, node) {
 				w.metrics.decisions++
 			}
 		}
@@ -1541,7 +1547,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		// Syntactic loops: everything in the body runs per iteration. A constant-count
 		// loop raises loop_depth but not scaling_loop_depth (the Big-O exponent); an
 		// infinite loop is discounted from the exponent but still repeats.
-		class := cppSyntacticLoopClass(node, w.src)
+		class := cppSyntacticLoopClass(w.kinds, node, w.src)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
@@ -1628,11 +1634,11 @@ func (w *astWalker) emitAssignFuncPtrRef(node *sitter.Node) {
 	if rhs == nil {
 		return
 	}
-	switch rhs.Kind() {
+	switch kindOf(w.kinds, rhs) {
 	case "identifier":
 		w.emitFuncPtrRef(nodeText(rhs, w.src))
 	case "pointer_expression": // &func
-		if inner := rhs.ChildByFieldName("argument"); inner != nil && inner.Kind() == "identifier" {
+		if inner := rhs.ChildByFieldName("argument"); inner != nil && kindOf(w.kinds, inner) == "identifier" {
 			w.emitFuncPtrRef(nodeText(inner, w.src))
 		}
 	}
@@ -1647,7 +1653,7 @@ func (w *astWalker) handleCall(node *sitter.Node) {
 	w.emitArgRefs(node.ChildByFieldName("arguments"))
 
 	callee := node.ChildByFieldName("function")
-	name, kind, root := calleeInfo(callee, w.src)
+	name, kind, root := calleeInfo(w.kinds, callee, w.src)
 	// io_direct: a direct file/socket data-transfer primitive called as a free or
 	// namespaced function (fopen/fread/… , not an obj->method()). Kept deliberately
 	// narrow — console/logging primitives (fprintf/fputs) and the ambiguous socket
@@ -1706,7 +1712,7 @@ func (w *astWalker) handleCall(node *sitter.Node) {
 // cppStlLambda returns the lambda argument of an STL-iterator call
 // (std::for_each(b, e, [&]{…})), or nil if the call is not an iterator with a lambda.
 func (w *astWalker) cppStlLambda(call *sitter.Node) *sitter.Node {
-	name, _, _ := calleeInfo(call.ChildByFieldName("function"), w.src)
+	name, _, _ := calleeInfo(w.kinds, call.ChildByFieldName("function"), w.src)
 	if name == "" || !cppStlIterators[name] {
 		return nil
 	}
@@ -1715,7 +1721,7 @@ func (w *astWalker) cppStlLambda(call *sitter.Node) *sitter.Node {
 		return nil
 	}
 	for i := uint(0); i < args.ChildCount(); i++ {
-		if c := args.Child(i); c.Kind() == "lambda_expression" {
+		if c := args.Child(i); kindOf(w.kinds, c) == "lambda_expression" {
 			return c
 		}
 	}
@@ -1730,7 +1736,7 @@ func (w *astWalker) walkCppLambdaSubtree(node, lambda *sitter.Node) {
 	if node == nil {
 		return
 	}
-	if node.Kind() == "lambda_expression" && node.StartByte() == lambda.StartByte() && node.EndByte() == lambda.EndByte() {
+	if kindOf(w.kinds, node) == "lambda_expression" && node.StartByte() == lambda.StartByte() && node.EndByte() == lambda.EndByte() {
 		// The STL algorithm invokes this lambda per element and scales with the
 		// container, so bump the scaling and repeat depths alongside loop_depth.
 		w.loopDepth++
@@ -1777,15 +1783,15 @@ const (
 // calleeInfo inspects a call_expression's callee node and returns the called leaf
 // name, its kind, and (for qualified/field calls) the relevant root: the immediate
 // scope for "A::B::f" or the receiver identifier ("this" for this->m()).
-func calleeInfo(callee *sitter.Node, src []byte) (name string, kind calleeKind, root string) {
+func calleeInfo(kinds *tsutil.KindTable, callee *sitter.Node, src []byte) (name string, kind calleeKind, root string) {
 	if callee == nil {
 		return "", calleeNone, ""
 	}
-	switch callee.Kind() {
+	switch kindOf(kinds, callee) {
 	case "identifier":
 		return nodeText(callee, src), calleePlain, ""
 	case "qualified_identifier":
-		scopes, leaf := splitQualified(callee, src)
+		scopes, leaf := splitQualified(kinds, callee, src)
 		if leaf == "" || len(scopes) == 0 {
 			return "", calleeNone, ""
 		}
@@ -1797,16 +1803,16 @@ func calleeInfo(callee *sitter.Node, src []byte) (name string, kind calleeKind, 
 			return "", calleeNone, ""
 		}
 		r := ""
-		if arg != nil && arg.Kind() == "this" {
+		if arg != nil && kindOf(kinds, arg) == "this" {
 			r = "this"
 		} else if arg != nil {
 			r = nodeText(arg, src)
 		}
-		return identifierLeaf(field, src), calleeField, r
+		return identifierLeaf(kinds, field, src), calleeField, r
 	case "template_function":
 		// foo<T>(...) — the name is under the "name" field.
 		if n := callee.ChildByFieldName("name"); n != nil {
-			return identifierLeaf(n, src), calleePlain, ""
+			return identifierLeaf(kinds, n, src), calleePlain, ""
 		}
 	}
 	return "", calleeNone, ""
@@ -1816,9 +1822,9 @@ func calleeInfo(callee *sitter.Node, src []byte) (name string, kind calleeKind, 
 
 // findFunctionDeclarator descends through pointer/reference/array/parenthesized
 // declarator wrappers to the function_declarator, or returns nil.
-func findFunctionDeclarator(node *sitter.Node) *sitter.Node {
+func findFunctionDeclarator(kinds *tsutil.KindTable, node *sitter.Node) *sitter.Node {
 	for node != nil {
-		switch node.Kind() {
+		switch kindOf(kinds, node) {
 		case "function_declarator":
 			return node
 		case "pointer_declarator", "reference_declarator", "array_declarator",
@@ -1836,15 +1842,15 @@ func findFunctionDeclarator(node *sitter.Node) *sitter.Node {
 
 // declaratorLeafName descends a declarator subtree to its leaf name (identifier,
 // field_identifier, qualified_identifier text, operator_name or destructor_name).
-func declaratorLeafName(node *sitter.Node, src []byte) string {
+func declaratorLeafName(kinds *tsutil.KindTable, node *sitter.Node, src []byte) string {
 	for node != nil {
-		switch node.Kind() {
+		switch kindOf(kinds, node) {
 		case "identifier", "field_identifier", "type_identifier":
 			return nodeText(node, src)
 		case "operator_name", "destructor_name":
 			return strings.Join(strings.Fields(nodeText(node, src)), " ")
 		case "qualified_identifier":
-			scopes, leaf := splitQualified(node, src)
+			scopes, leaf := splitQualified(kinds, node, src)
 			if leaf == "" {
 				return ""
 			}
@@ -1870,22 +1876,22 @@ func declaratorLeafName(node *sitter.Node, src []byte) string {
 
 // identifierLeaf returns the simple identifier text of a (possibly qualified or
 // templated) name node.
-func identifierLeaf(node *sitter.Node, src []byte) string {
+func identifierLeaf(kinds *tsutil.KindTable, node *sitter.Node, src []byte) string {
 	if node == nil {
 		return ""
 	}
-	switch node.Kind() {
+	switch kindOf(kinds, node) {
 	case "identifier", "field_identifier", "type_identifier":
 		return nodeText(node, src)
 	case "qualified_identifier":
-		_, leaf := splitQualified(node, src)
+		_, leaf := splitQualified(kinds, node, src)
 		return leaf
 	case "template_method", "template_function", "template_type":
 		if n := node.ChildByFieldName("name"); n != nil {
-			return identifierLeaf(n, src)
+			return identifierLeaf(kinds, n, src)
 		}
 	}
-	if id := findFirstIdentifier(node, src); id != nil {
+	if id := findFirstIdentifier(kinds, node, src); id != nil {
 		return nodeText(id, src)
 	}
 	return ""
@@ -1894,9 +1900,9 @@ func identifierLeaf(node *sitter.Node, src []byte) string {
 // splitQualified descends the "name" chain of a qualified_identifier, returning
 // the ordered scope components and the final leaf name. For "A::B::method" it
 // returns (["A","B"], "method").
-func splitQualified(node *sitter.Node, src []byte) (scopes []string, leaf string) {
+func splitQualified(kinds *tsutil.KindTable, node *sitter.Node, src []byte) (scopes []string, leaf string) {
 	cur := node
-	for cur != nil && cur.Kind() == "qualified_identifier" {
+	for cur != nil && kindOf(kinds, cur) == "qualified_identifier" {
 		if s := cur.ChildByFieldName("scope"); s != nil {
 			scopes = append(scopes, nodeText(s, src))
 		}
@@ -1905,7 +1911,7 @@ func splitQualified(node *sitter.Node, src []byte) (scopes []string, leaf string
 	if cur == nil {
 		return scopes, ""
 	}
-	switch cur.Kind() {
+	switch kindOf(kinds, cur) {
 	case "operator_name", "destructor_name":
 		return scopes, strings.Join(strings.Fields(nodeText(cur, src)), " ")
 	case "template_type", "template_function", "template_method":
@@ -1919,15 +1925,15 @@ func splitQualified(node *sitter.Node, src []byte) (scopes []string, leaf string
 // baseClassNames returns the simple base-class names from a class/struct's
 // base_class_clause (access specifiers and virtual keywords are anonymous tokens
 // and are skipped; template arguments and namespaces are stripped).
-func baseClassNames(node *sitter.Node, src []byte) []string {
-	bc := findChildByKind(node, "base_class_clause")
+func baseClassNames(kinds *tsutil.KindTable, node *sitter.Node, src []byte) []string {
+	bc := findChildByKind(kinds, node, "base_class_clause")
 	if bc == nil {
 		return nil
 	}
 	var names []string
 	for i := uint(0); i < bc.ChildCount(); i++ {
 		c := bc.Child(i)
-		switch c.Kind() {
+		switch kindOf(kinds, c) {
 		case "type_identifier", "qualified_identifier", "template_type", "qualified_type":
 			if name := simpleTypeName(c, src); name != "" {
 				names = append(names, name)
@@ -1940,7 +1946,7 @@ func baseClassNames(node *sitter.Node, src []byte) []string {
 // collectMethodNames returns the set of method names declared directly in a class
 // body (from both inline definitions and prototypes), used to resolve same-type
 // bare/this calls.
-func collectMethodNames(body *sitter.Node, src []byte) map[string]bool {
+func collectMethodNames(kinds *tsutil.KindTable, body *sitter.Node, src []byte) map[string]bool {
 	methods := make(map[string]bool)
 	if body == nil {
 		return methods
@@ -1948,14 +1954,14 @@ func collectMethodNames(body *sitter.Node, src []byte) map[string]bool {
 	for i := uint(0); i < body.ChildCount(); i++ {
 		c := body.Child(i)
 		var fdecl *sitter.Node
-		switch c.Kind() {
+		switch kindOf(kinds, c) {
 		case "function_definition", "field_declaration":
-			fdecl = findFunctionDeclarator(c.ChildByFieldName("declarator"))
+			fdecl = findFunctionDeclarator(kinds, c.ChildByFieldName("declarator"))
 		}
 		if fdecl == nil {
 			continue
 		}
-		if leaf := declaratorLeafName(fdecl.ChildByFieldName("declarator"), src); leaf != "" {
+		if leaf := declaratorLeafName(kinds, fdecl.ChildByFieldName("declarator"), src); leaf != "" {
 			methods[leaf] = true
 		}
 	}
@@ -2006,12 +2012,12 @@ func simpleTypeName(node *sitter.Node, src []byte) string {
 	return strings.TrimSpace(s)
 }
 
-func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
+func findChildByKind(kinds *tsutil.KindTable, node *sitter.Node, kind string) *sitter.Node {
 	if node == nil {
 		return nil
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
-		if c := node.Child(i); c.Kind() == kind {
+		if c := node.Child(i); kindOf(kinds, c) == kind {
 			return c
 		}
 	}
@@ -2030,11 +2036,11 @@ func firstNamedChild(node *sitter.Node) *sitter.Node {
 	return nil
 }
 
-func findFirstIdentifier(node *sitter.Node, src []byte) *sitter.Node {
+func findFirstIdentifier(kinds *tsutil.KindTable, node *sitter.Node, src []byte) *sitter.Node {
 	if node == nil {
 		return nil
 	}
-	switch node.Kind() {
+	switch kindOf(kinds, node) {
 	case "identifier", "field_identifier", "type_identifier":
 		return node
 	}
@@ -2043,7 +2049,7 @@ func findFirstIdentifier(node *sitter.Node, src []byte) *sitter.Node {
 		if !c.IsNamed() {
 			continue
 		}
-		if found := findFirstIdentifier(c, src); found != nil {
+		if found := findFirstIdentifier(kinds, c, src); found != nil {
 			return found
 		}
 	}

@@ -17,7 +17,7 @@ func argumentsOf(n *sitter.Node) *sitter.Node {
 	if n == nil {
 		return nil
 	}
-	if n.Kind() == "arguments" {
+	if kindOf(n) == "arguments" {
 		return n
 	}
 	return firstOfKind(n, "arguments")
@@ -29,7 +29,7 @@ func namedArgOf(args *sitter.Node, src []byte, label string) *sitter.Node {
 		return nil
 	}
 	for _, a := range namedChildren(args) {
-		if a.Kind() != "named_argument" {
+		if kindOf(a) != "named_argument" {
 			continue
 		}
 		lbl := childOfKind(a, "label")
@@ -64,7 +64,7 @@ func namedArgText(args *sitter.Node, src []byte, label string) string {
 		return ""
 	}
 	for _, a := range namedChildren(args) {
-		if a.Kind() != "named_argument" {
+		if kindOf(a) != "named_argument" {
 			continue
 		}
 		lbl := childOfKind(a, "label")
@@ -98,7 +98,7 @@ func positionalArg(args *sitter.Node, i int) *sitter.Node {
 	}
 	n := 0
 	for _, a := range namedChildren(args) {
-		if a.Kind() != "argument" {
+		if kindOf(a) != "argument" {
 			continue
 		}
 		if n == i {
@@ -121,7 +121,7 @@ func stringLiteralValue(n *sitter.Node, src []byte) string {
 	if n == nil {
 		return ""
 	}
-	if n.Kind() != "string_literal" {
+	if kindOf(n) != "string_literal" {
 		lit := firstOfKind(n, "string_literal")
 		if lit == nil {
 			return ""

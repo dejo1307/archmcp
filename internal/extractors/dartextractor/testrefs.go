@@ -76,7 +76,7 @@ func extractTestRefs(src []byte, relFile string) facts.Fact {
 	visit = func(n *sitter.Node) {
 		kids := namedChildren(n)
 		for i, c := range kids {
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "const_object_expression", "new_expression":
 				if t := childOfKind(c, "type_identifier"); t != nil {
 					addTestTarget(targets, t.Utf8Text(src))
@@ -165,7 +165,7 @@ func calleeNameAt(kids []*sitter.Node, i int, src []byte) (name, receiver string
 		return "", ""
 	}
 	prev := kids[i-1]
-	if prev.Kind() == "selector" {
+	if kindOf(prev) == "selector" {
 		sel := childOfKind(prev, "unconditional_assignable_selector", "conditional_assignable_selector")
 		if sel == nil {
 			return "", ""
@@ -173,7 +173,7 @@ func calleeNameAt(kids []*sitter.Node, i int, src []byte) (name, receiver string
 		name = identifierChild(sel, src)
 		base := ""
 		for j := i - 2; j >= 0; j-- {
-			if kids[j].Kind() == "selector" {
+			if kindOf(kids[j]) == "selector" {
 				continue
 			}
 			base = strings.TrimSpace(kids[j].Utf8Text(src))

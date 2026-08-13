@@ -96,7 +96,7 @@ func (w *phpWalker) walkNode(node *sitter.Node) {
 	if node == nil || !node.IsNamed() {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "namespace_definition":
 		w.handleNamespace(node)
 	case "namespace_use_declaration":
@@ -153,14 +153,14 @@ func (w *phpWalker) handleNamespace(node *sitter.Node) {
 func (w *phpWalker) handleUse(node *sitter.Node) {
 	for i := uint(0); i < node.ChildCount(); i++ {
 		clause := node.Child(i)
-		if clause.Kind() != "namespace_use_clause" && clause.Kind() != "namespace_use_group_clause" {
+		if kindOf(clause) != "namespace_use_clause" && kindOf(clause) != "namespace_use_group_clause" {
 			continue
 		}
 		fqn := ""
 		alias := ""
 		for j := uint(0); j < clause.ChildCount(); j++ {
 			c := clause.Child(j)
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "qualified_name", "name", "namespace_name":
 				if fqn == "" {
 					fqn = strings.TrimPrefix(phpText(c, w.src), "\\")
@@ -204,7 +204,7 @@ func (w *phpWalker) handleClassLike(node *sitter.Node, kind string) {
 		"exported":    true,
 		"language":    "php",
 	}
-	if node.Kind() == "trait_declaration" {
+	if kindOf(node) == "trait_declaration" {
 		props["trait"] = true
 	}
 	if hasModifier(node, "abstract_modifier") {
@@ -241,12 +241,12 @@ func (w *phpWalker) parentRefs(node *sitter.Node) []string {
 	var out []string
 	for i := uint(0); i < node.ChildCount(); i++ {
 		c := node.Child(i)
-		if c.Kind() != "base_clause" && c.Kind() != "class_interface_clause" {
+		if kindOf(c) != "base_clause" && kindOf(c) != "class_interface_clause" {
 			continue
 		}
 		for j := uint(0); j < c.ChildCount(); j++ {
 			gc := c.Child(j)
-			switch gc.Kind() {
+			switch kindOf(gc) {
 			case "name", "qualified_name":
 				if ref := w.resolveRef(phpText(gc, w.src)); ref != "" {
 					out = append(out, ref)
@@ -269,7 +269,7 @@ func (w *phpWalker) handleTraitUse(node *sitter.Node) {
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "name", "qualified_name":
 			if ref := w.resolveRef(phpText(c, w.src)); ref != "" {
 				w.out[ownerIdx].Relations = append(w.out[ownerIdx].Relations,
@@ -378,7 +378,7 @@ func (w *phpWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[strin
 	}
 
 	if w.metrics != nil {
-		switch node.Kind() {
+		switch kindOf(node) {
 		case "if_statement", "else_if_clause", "case_statement", "catch_clause",
 			"conditional_expression", "match_conditional_expression":
 			w.metrics.decisions++
@@ -389,7 +389,7 @@ func (w *phpWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[strin
 		}
 	}
 
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "function_definition", "method_declaration", "class_declaration",
 		"interface_declaration", "trait_declaration", "enum_declaration":
 		return
@@ -427,7 +427,7 @@ func (w *phpWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[strin
 		return
 	case "function_call_expression":
 		fn := node.ChildByFieldName("function")
-		if fn != nil && (fn.Kind() == "name" || fn.Kind() == "qualified_name") {
+		if fn != nil && (kindOf(fn) == "name" || kindOf(fn) == "qualified_name") {
 			target := w.resolveRef(phpText(fn, w.src))
 			w.addCall(ownerIdx, seen, target)
 			w.recordCallMetrics(target)
@@ -451,7 +451,7 @@ func (w *phpWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen map[strin
 		// method name is recorded — useful for $this->method() self-references and
 		// dead-code analysis (mirrors the Ruby extractor's bare-call handling).
 		method := node.ChildByFieldName("name")
-		if method != nil && method.Kind() == "name" {
+		if method != nil && kindOf(method) == "name" {
 			target := phpText(method, w.src)
 			w.addCall(ownerIdx, seen, target)
 			w.recordCallMetrics(target)
@@ -494,7 +494,7 @@ func (w *phpWalker) walkChildrenExcept(node *sitter.Node, ownerIdx int, seen map
 func (w *phpWalker) creationClass(node *sitter.Node) string {
 	for i := uint(0); i < node.ChildCount(); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "name", "qualified_name":
 			return phpText(c, w.src)
 		}
@@ -605,7 +605,7 @@ func (c phpLoopClass) repeats() bool { return c != phpLoopConstant }
 
 // phpSyntacticLoopClass classifies a for / foreach / while / do-while statement.
 func phpSyntacticLoopClass(node *sitter.Node, src []byte) phpLoopClass {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "for_statement":
 		cond := node.ChildByFieldName("condition")
 		if cond == nil {
@@ -641,7 +641,7 @@ func phpForeachIterable(node *sitter.Node) *sitter.Node {
 // times. A data-derived bound (`$i < $n`, `$i < count($xs)`) is conservatively treated
 // as scaling — no genuine O(n) finding is deleted.
 func phpConstantForCondition(cond *sitter.Node, src []byte) bool {
-	if cond == nil || cond.Kind() != "binary_expression" {
+	if cond == nil || kindOf(cond) != "binary_expression" {
 		return false
 	}
 	switch phpText(cond.ChildByFieldName("operator"), src) {
@@ -651,7 +651,7 @@ func phpConstantForCondition(cond *sitter.Node, src []byte) bool {
 	}
 	l := cond.ChildByFieldName("left")
 	r := cond.ChildByFieldName("right")
-	return (l != nil && l.Kind() == "integer") || (r != nil && r.Kind() == "integer")
+	return (l != nil && kindOf(l) == "integer") || (r != nil && kindOf(r) == "integer")
 }
 
 // phpConstantIterable reports whether a foreach iterates a compile-time-fixed number of
@@ -661,7 +661,7 @@ func phpConstantIterable(it *sitter.Node, src []byte) bool {
 	if it == nil {
 		return false
 	}
-	switch it.Kind() {
+	switch kindOf(it) {
 	case "array_creation_expression":
 		return true
 	case "name":
@@ -716,12 +716,12 @@ func (w *phpWalker) handleConst(node *sitter.Node) {
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
 		el := node.Child(i)
-		if el.Kind() != "const_element" {
+		if kindOf(el) != "const_element" {
 			continue
 		}
 		name := ""
 		for j := uint(0); j < el.ChildCount(); j++ {
-			if c := el.Child(j); c.Kind() == "name" {
+			if c := el.Child(j); kindOf(c) == "name" {
 				name = phpText(c, w.src)
 				break
 			}
@@ -780,7 +780,7 @@ func (w *phpWalker) handleProperty(node *sitter.Node) {
 	exported := modifierVisibility(node, w.src) == "public"
 	for i := uint(0); i < node.ChildCount(); i++ {
 		el := node.Child(i)
-		if el.Kind() != "property_element" {
+		if kindOf(el) != "property_element" {
 			continue
 		}
 		vn := el.ChildByFieldName("name")
@@ -869,7 +869,7 @@ func (w *phpWalker) typeFactIndex() int {
 // given kind (e.g. "abstract_modifier", "final_modifier", "static_modifier").
 func hasModifier(node *sitter.Node, kind string) bool {
 	for i := uint(0); i < node.ChildCount(); i++ {
-		if node.Child(i).Kind() == kind {
+		if kindOf(node.Child(i)) == kind {
 			return true
 		}
 	}
@@ -889,7 +889,7 @@ func methodVisibility(node *sitter.Node, src []byte) string {
 func modifierVisibility(node *sitter.Node, src []byte) string {
 	for i := uint(0); i < node.ChildCount(); i++ {
 		c := node.Child(i)
-		if c.Kind() == "visibility_modifier" {
+		if kindOf(c) == "visibility_modifier" {
 			return strings.ToLower(strings.TrimSpace(phpText(c, src)))
 		}
 	}

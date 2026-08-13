@@ -24,7 +24,7 @@ func parseAnnotations(modifiers *sitter.Node, src []byte) []javaAnnotation {
 	var out []javaAnnotation
 	for i := uint(0); i < uint(modifiers.ChildCount()); i++ {
 		c := modifiers.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "marker_annotation":
 			if n := annotationSimpleName(c, src); n != "" {
 				out = append(out, javaAnnotation{name: n})
@@ -53,7 +53,7 @@ func annotationSimpleName(node *sitter.Node, src []byte) string {
 func parseAnnotationArgs(args *sitter.Node, src []byte, ann *javaAnnotation) {
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
 		c := args.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "element_value_pair":
 			key := c.ChildByFieldName("key")
 			val := c.ChildByFieldName("value")
@@ -70,7 +70,7 @@ func parseAnnotationArgs(args *sitter.Node, src []byte, ann *javaAnnotation) {
 // are unquoted; everything else keeps its trailing identifier (so RequestMethod.GET
 // becomes "GET").
 func annotationValue(node *sitter.Node, src []byte) string {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "string_literal":
 		return strings.Trim(nodeText(node, src), `"`)
 	case "field_access", "scoped_identifier":

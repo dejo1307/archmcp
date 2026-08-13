@@ -229,7 +229,7 @@ func swiftConstantBoundReceiver(recv *sitter.Node, src []byte) bool {
 	if recv == nil {
 		return false
 	}
-	switch recv.Kind() {
+	switch kindOf(recv) {
 	case "array_literal", "dictionary_literal":
 		return true
 	case "simple_identifier", "identifier":
@@ -238,7 +238,7 @@ func swiftConstantBoundReceiver(recv *sitter.Node, src []byte) bool {
 		// A trailing size-preserving chain (`[a,b].sorted().forEach`): the chain
 		// method is the navigation suffix of this call's callee — unwrap to the
 		// chain's base receiver and re-check.
-		if callee := firstNamedChild(recv); callee != nil && callee.Kind() == "navigation_expression" {
+		if callee := firstNamedChild(recv); callee != nil && kindOf(callee) == "navigation_expression" {
 			if name, isNav, _, _ := calleeInfo(callee, src); isNav && swiftChainPreservesBound[name] {
 				return swiftConstantBoundReceiver(callee.ChildByFieldName("target"), src)
 			}
@@ -256,7 +256,7 @@ func swiftBoundedForCollection(coll *sitter.Node, src []byte) bool {
 	if coll == nil {
 		return false
 	}
-	switch coll.Kind() {
+	switch kindOf(coll) {
 	case "range_expression":
 		return isIntegerLiteralNode(coll.ChildByFieldName("start")) &&
 			isIntegerLiteralNode(coll.ChildByFieldName("end"))
@@ -271,7 +271,7 @@ func swiftBoundedForCollection(coll *sitter.Node, src []byte) bool {
 }
 
 func isIntegerLiteralNode(n *sitter.Node) bool {
-	return n != nil && n.Kind() == "integer_literal"
+	return n != nil && kindOf(n) == "integer_literal"
 }
 
 // isSubscriptCall reports whether a call_expression is actually a subscript access
@@ -305,7 +305,7 @@ func strideBoundsAreLiteral(call *sitter.Node) bool {
 	sawArg := false
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
 		a := args.Child(i)
-		if a.Kind() != "value_argument" {
+		if kindOf(a) != "value_argument" {
 			continue
 		}
 		sawArg = true
@@ -363,7 +363,7 @@ func parameterLabels(fn *sitter.Node, src []byte) []string {
 	var labels []string
 	for i := uint(0); i < uint(fn.ChildCount()); i++ {
 		p := fn.Child(i)
-		if p.Kind() != "parameter" {
+		if kindOf(p) != "parameter" {
 			continue
 		}
 		if ext := p.ChildByFieldName("external_name"); ext != nil {
@@ -396,7 +396,7 @@ func callArgumentLabels(call *sitter.Node, src []byte) []string {
 	var labels []string
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
 		a := args.Child(i)
-		if a.Kind() != "value_argument" {
+		if kindOf(a) != "value_argument" {
 			continue
 		}
 		if lbl := a.ChildByFieldName("name"); lbl != nil {
@@ -503,7 +503,7 @@ func (w *astWalker) addTentativeMethodCall(name string) {
 // open (no depth change); the token is matched exactly so #else never prefix-matches
 // #elseif.
 func (w *astWalker) applyDirective(node *sitter.Node) bool {
-	if node.Kind() != "directive" {
+	if kindOf(node) != "directive" {
 		return false
 	}
 	if fields := strings.Fields(nodeText(node, w.src)); len(fields) > 0 {
@@ -549,7 +549,7 @@ func (w *astWalker) walkSourceFile(root *sitter.Node) {
 			continue
 		}
 		before := len(w.out)
-		switch child.Kind() {
+		switch kindOf(child) {
 		case "import_declaration":
 			w.handleImport(child)
 		case "class_declaration":
@@ -589,7 +589,7 @@ func (w *astWalker) walkFileScopeCalls(root *sitter.Node) {
 	// machinery entirely unless there is a genuine top-level statement.
 	hasStmt := false
 	for i := uint(0); i < uint(root.ChildCount()); i++ {
-		if !fileScopeDecls[root.Child(i).Kind()] {
+		if !fileScopeDecls[kindOf(root.Child(i))] {
 			hasStmt = true
 			break
 		}
@@ -601,7 +601,7 @@ func (w *astWalker) walkFileScopeCalls(root *sitter.Node) {
 	w.pushOwner(w.ensureFileRefFact())
 	for i := uint(0); i < uint(root.ChildCount()); i++ {
 		child := root.Child(i)
-		if fileScopeDecls[child.Kind()] {
+		if fileScopeDecls[kindOf(child)] {
 			continue
 		}
 		w.walkForCalls(child)
@@ -828,7 +828,7 @@ func (w *astWalker) walkTypeBody(body *sitter.Node, iosComponent string) {
 			continue
 		}
 		before := len(w.out)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "function_declaration":
 			w.handleFunction(c)
 		case "property_declaration":
@@ -1063,7 +1063,7 @@ func (w *astWalker) handlePropertyInjection(node *sitter.Node, iosComponent stri
 func (w *astWalker) handleInit(node *sitter.Node) {
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() != "parameter" {
+		if kindOf(c) != "parameter" {
 			continue
 		}
 		typeName := simpleTypeName(parameterTypeNode(c), w.src)
@@ -1124,7 +1124,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	kind := node.Kind()
+	kind := kindOf(node)
 
 	// A closure is a deferred scope: its body runs when the closure is called, NOT
 	// per-iteration of the enclosing loops — so reset the loop depth for its
@@ -1328,7 +1328,7 @@ var swiftStandardOperators = map[string]bool{
 // because their overloads are indistinguishable from builtin uses and would flood.
 func customOperatorToken(node *sitter.Node, src []byte) string {
 	var opField string
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "infix_expression":
 		opField = "op"
 	case "prefix_expression":
@@ -1337,7 +1337,7 @@ func customOperatorToken(node *sitter.Node, src []byte) string {
 		return ""
 	}
 	op := node.ChildByFieldName(opField)
-	if op == nil || op.Kind() != "custom_operator" {
+	if op == nil || kindOf(op) != "custom_operator" {
 		return ""
 	}
 	text := nodeText(op, src)
@@ -1359,7 +1359,7 @@ func trailingClosure(call *sitter.Node) *sitter.Node {
 	}
 	if va := findChildByKind(suffix, "value_arguments"); va != nil {
 		for i := uint(0); i < uint(va.ChildCount()); i++ {
-			if arg := va.Child(i); arg.Kind() == "value_argument" {
+			if arg := va.Child(i); kindOf(arg) == "value_argument" {
 				if l := findChildByKind(arg, "lambda_literal"); l != nil {
 					return l
 				}
@@ -1384,7 +1384,7 @@ func (w *astWalker) walkClosureSubtree(node, closure *sitter.Node, delta int) {
 	}
 	// Match the closure itself (kind-checked so an ancestor with the same byte span,
 	// e.g. a call_suffix that wraps only the trailing closure, isn't mistaken for it).
-	if node.Kind() == "lambda_literal" && node.StartByte() == closure.StartByte() && node.EndByte() == closure.EndByte() {
+	if kindOf(node) == "lambda_literal" && node.StartByte() == closure.StartByte() && node.EndByte() == closure.EndByte() {
 		// The iterator invokes this closure per element: walk its BODY at +delta.
 		// Descend into the closure's children directly rather than walkForCalls(node),
 		// which would treat the closure as a deferred scope and reset the depth.
@@ -1465,7 +1465,7 @@ func inheritanceNames(node *sitter.Node, src []byte) []string {
 	var names []string
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() != "inheritance_specifier" {
+		if kindOf(c) != "inheritance_specifier" {
 			continue
 		}
 		tn := c.ChildByFieldName("inherits_from")
@@ -1488,7 +1488,7 @@ func attributeNames(modifiers *sitter.Node, src []byte) []string {
 	var out []string
 	for i := uint(0); i < uint(modifiers.ChildCount()); i++ {
 		c := modifiers.Child(i)
-		if c.Kind() != "attribute" {
+		if kindOf(c) != "attribute" {
 			continue
 		}
 		if name := simpleTypeName(firstNamedChild(c), src); name != "" {
@@ -1515,7 +1515,7 @@ func firstTypeNode(node *sitter.Node) *sitter.Node {
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "user_type", "type_identifier", "optional_type", "array_type",
 			"dictionary_type", "opaque_type":
 			return c
@@ -1534,7 +1534,7 @@ func parameterTypeNode(param *sitter.Node) *sitter.Node {
 	var last *sitter.Node
 	for i := uint(0); i < uint(param.ChildCount()); i++ {
 		c := param.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "user_type", "optional_type", "array_type", "dictionary_type", "type_identifier":
 			last = c
 		}
@@ -1565,7 +1565,7 @@ func collectMethodNames(body *sitter.Node, src []byte) map[string]bool {
 	}
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		if c.Kind() != "function_declaration" {
+		if kindOf(c) != "function_declaration" {
 			continue
 		}
 		if n := c.ChildByFieldName("name"); n != nil {
@@ -1587,7 +1587,7 @@ func computeSignature(body *sitter.Node, src []byte) (string, []string) {
 	var published []string
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		kind := c.Kind()
+		kind := kindOf(c)
 		if kind != "property_declaration" && kind != "function_declaration" {
 			continue
 		}
@@ -1635,7 +1635,7 @@ func headerText(node, body *sitter.Node, src []byte) string {
 // The optional-chaining "?." is folded into the navigation token by the grammar's
 // external scanner, so "self?.foo()" parses identically to "self.foo()".
 func calleeInfo(callee *sitter.Node, src []byte) (name string, isNav bool, root string, directSelf bool) {
-	switch callee.Kind() {
+	switch kindOf(callee) {
 	case "simple_identifier", "identifier":
 		return nodeText(callee, src), false, "", false
 	case "navigation_expression":
@@ -1650,7 +1650,7 @@ func calleeInfo(callee *sitter.Node, src []byte) (name string, isNav bool, root 
 		}
 		root = navigationRoot(callee, src)
 		if tgt := callee.ChildByFieldName("target"); tgt != nil {
-			if tgt.Kind() == "self_expression" || nodeText(tgt, src) == "Self" {
+			if kindOf(tgt) == "self_expression" || nodeText(tgt, src) == "Self" {
 				directSelf = true
 			}
 		}
@@ -1663,7 +1663,7 @@ func calleeInfo(callee *sitter.Node, src []byte) (name string, isNav bool, root 
 // navigation_expression and returns its identifier text ("self" for self).
 func navigationRoot(nav *sitter.Node, src []byte) string {
 	cur := nav
-	for cur != nil && cur.Kind() == "navigation_expression" {
+	for cur != nil && kindOf(cur) == "navigation_expression" {
 		target := cur.ChildByFieldName("target")
 		if target == nil {
 			target = firstNamedChild(cur)
@@ -1673,7 +1673,7 @@ func navigationRoot(nav *sitter.Node, src []byte) string {
 	if cur == nil {
 		return ""
 	}
-	if cur.Kind() == "self_expression" {
+	if kindOf(cur) == "self_expression" {
 		return "self"
 	}
 	return nodeText(cur, src)
@@ -1718,7 +1718,7 @@ func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
 		return nil
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		if c := node.Child(i); c.Kind() == kind {
+		if c := node.Child(i); kindOf(c) == kind {
 			return c
 		}
 	}
@@ -1741,7 +1741,7 @@ func findFirstIdentifier(node *sitter.Node, src []byte) *sitter.Node {
 	if node == nil {
 		return nil
 	}
-	if node.Kind() == "identifier" || node.Kind() == "simple_identifier" || node.Kind() == "type_identifier" {
+	if kindOf(node) == "identifier" || kindOf(node) == "simple_identifier" || kindOf(node) == "type_identifier" {
 		return node
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {

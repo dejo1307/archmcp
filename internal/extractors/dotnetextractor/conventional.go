@@ -63,10 +63,10 @@ func collectConventionalRoutes(root *sitter.Node, src []byte, relFile, dir strin
 	skipped := 0
 	var walk func(n *sitter.Node, locals map[string]string)
 	walk = func(n *sitter.Node, locals map[string]string) {
-		if memberBodies[n.Kind()] {
+		if memberBodies[kindOf(n)] {
 			locals = s.localsOf(n)
 		}
-		if n.Kind() == "invocation_expression" {
+		if kindOf(n) == "invocation_expression" {
 			if r, ok, skip := conventionalRegistration(s, n, locals); ok {
 				out = append(out, r)
 			} else if skip {
@@ -105,7 +105,7 @@ func conventionalRegistration(s *httpClientScan, node *sitter.Node, locals map[s
 	var positional []*sitter.Node
 	for i := uint(0); i < args.NamedChildCount(); i++ {
 		a := args.NamedChild(i)
-		if a.Kind() != "argument" {
+		if kindOf(a) != "argument" {
 			continue
 		}
 		// A named argument carries its label in the `name` FIELD; there is no
@@ -181,7 +181,7 @@ func anonymousObjectRoute(node *sitter.Node, src []byte) (controller, action str
 	if node == nil {
 		return "", ""
 	}
-	if node.Kind() != "anonymous_object_creation_expression" {
+	if kindOf(node) != "anonymous_object_creation_expression" {
 		if inner := findChildByKind(node, "anonymous_object_creation_expression"); inner != nil {
 			node = inner
 		} else {
@@ -191,7 +191,7 @@ func anonymousObjectRoute(node *sitter.Node, src []byte) (controller, action str
 	key := ""
 	for i := uint(0); i < node.NamedChildCount(); i++ {
 		c := node.NamedChild(i)
-		if c.Kind() == "identifier" {
+		if kindOf(c) == "identifier" {
 			key = strings.ToLower(nodeText(c, src))
 			continue
 		}

@@ -243,7 +243,7 @@ func (g *grapeWalker) walkTop(node *sitter.Node, nesting []string) {
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "module":
 			name := rubyText(c.ChildByFieldName("name"), g.src)
 			g.walkTop(c.ChildByFieldName("body"), append(append([]string{}, nesting...), name))
@@ -276,7 +276,7 @@ func (g *grapeWalker) walkBody(node *sitter.Node, at string, cls *grapeClass) {
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
 		c := node.Child(i)
-		if c.Kind() == "call" {
+		if kindOf(c) == "call" {
 			g.handleGrapeCall(c, at, cls)
 		}
 	}

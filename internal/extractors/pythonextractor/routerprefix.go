@@ -122,7 +122,7 @@ type routerCollector struct {
 }
 
 func (c *routerCollector) walk(node *sitter.Node) {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "class_definition":
 		name := pyFuncName(node, c.src)
 		c.classStack = append(c.classStack, name)
@@ -177,7 +177,7 @@ func (c *routerCollector) scopeKey(varName string) string {
 func (c *routerCollector) handleAssign(node *sitter.Node) {
 	left := node.ChildByFieldName("left")
 	right := node.ChildByFieldName("right")
-	if left == nil || right == nil || left.Kind() != "identifier" || right.Kind() != "call" {
+	if left == nil || right == nil || kindOf(left) != "identifier" || kindOf(right) != "call" {
 		return
 	}
 	fn := right.ChildByFieldName("function")
@@ -201,7 +201,7 @@ func (c *routerCollector) handleAssign(node *sitter.Node) {
 // handleCall records `parent.include_router(child, prefix="/p")`.
 func (c *routerCollector) handleCall(node *sitter.Node) {
 	fn := node.ChildByFieldName("function")
-	if fn == nil || fn.Kind() != "attribute" {
+	if fn == nil || kindOf(fn) != "attribute" {
 		return
 	}
 	attr := fn.ChildByFieldName("attribute")
@@ -216,7 +216,7 @@ func (c *routerCollector) handleCall(node *sitter.Node) {
 	var first *sitter.Node
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
 		a := args.Child(i)
-		if a.IsNamed() && a.Kind() != "keyword_argument" && a.Kind() != "comment" {
+		if a.IsNamed() && kindOf(a) != "keyword_argument" && kindOf(a) != "comment" {
 			first = a
 			break
 		}
@@ -242,7 +242,7 @@ func (c *routerCollector) handleCall(node *sitter.Node) {
 // an unknown parent as an unmounted root, so `app = create_app()` still composes
 // its children from "".
 func (c *routerCollector) parentRouterKey(obj *sitter.Node) string {
-	if obj.Kind() != "identifier" {
+	if kindOf(obj) != "identifier" {
 		return ""
 	}
 	name := pyText(obj, c.src)
@@ -259,14 +259,14 @@ func (c *routerCollector) parentRouterKey(obj *sitter.Node) string {
 // handles the three FastAPI idioms: a factory call `get_x_router()`, a bare
 // imported router `router`, and a module-qualified one `users.router`.
 func (c *routerCollector) childRouterKey(arg *sitter.Node) (key, name string) {
-	if arg.Kind() == "call" {
+	if kindOf(arg) == "call" {
 		fn := arg.ChildByFieldName("function")
 		if fn == nil {
 			return "", ""
 		}
 		arg = fn
 	}
-	switch arg.Kind() {
+	switch kindOf(arg) {
 	case "identifier":
 		name = pyText(arg, c.src)
 		if t, ok := c.importMap[name]; ok && t != "" {
@@ -299,7 +299,7 @@ func kwargString(call *sitter.Node, src []byte, want string) string {
 	}
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
 		a := args.Child(i)
-		if a.Kind() != "keyword_argument" {
+		if kindOf(a) != "keyword_argument" {
 			continue
 		}
 		n := a.ChildByFieldName("name")
@@ -310,7 +310,7 @@ func kwargString(call *sitter.Node, src []byte, want string) string {
 		// An f-string carries string_content children too, around its
 		// interpolations — `f"{API_PREFIX}/items"` would read as "/items". Only a
 		// plain literal is a usable prefix.
-		if v.Kind() != "string" || firstChildOfKind(v, "interpolation") != nil {
+		if kindOf(v) != "string" || firstChildOfKind(v, "interpolation") != nil {
 			return ""
 		}
 		if content := firstChildOfKind(v, "string_content"); content != nil {

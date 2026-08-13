@@ -80,7 +80,7 @@ func collectMinimalAPIRoutes(root *sitter.Node, src []byte, relFile, dir string)
 // nil outside a body; a body starts with an empty map, so a variable in one method
 // cannot leak into another.
 func (s *minimalAPIScan) walk(node *sitter.Node, groups map[string]groupPrefix) {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "class_declaration", "struct_declaration", "record_declaration", "interface_declaration":
 		name := nodeText(node.ChildByFieldName("name"), s.src)
 		s.typeStack = append(s.typeStack, name)
@@ -132,7 +132,7 @@ func (s *minimalAPIScan) bindGroupVariable(node *sitter.Node, groups map[string]
 	}
 	for i := uint(0); i < uint(decl.NamedChildCount()); i++ {
 		d := decl.NamedChild(i)
-		if d.Kind() != "variable_declarator" {
+		if kindOf(d) != "variable_declarator" {
 			continue
 		}
 		name := nodeText(d.ChildByFieldName("name"), s.src)
@@ -156,9 +156,9 @@ func (s *minimalAPIScan) groupPrefixOf(node *sitter.Node, groups map[string]grou
 	if node == nil {
 		return groupPrefix{}, false
 	}
-	if node.Kind() == "invocation_expression" {
+	if kindOf(node) == "invocation_expression" {
 		fn := node.ChildByFieldName("function")
-		if fn != nil && fn.Kind() == "member_access_expression" {
+		if fn != nil && kindOf(fn) == "member_access_expression" {
 			if nodeText(fn.ChildByFieldName("name"), s.src) == "MapGroup" {
 				recv, _ := s.receiverPrefix(fn.ChildByFieldName("expression"), groups)
 				arg, literal := s.firstStringArg(node)
@@ -196,7 +196,7 @@ func (s *minimalAPIScan) receiverPrefix(node *sitter.Node, groups map[string]gro
 	if node == nil {
 		return groupPrefix{known: true}, true
 	}
-	if node.Kind() == "identifier" {
+	if kindOf(node) == "identifier" {
 		name := nodeText(node, s.src)
 		if p, ok := groups[name]; ok {
 			return p, true
@@ -214,7 +214,7 @@ func (s *minimalAPIScan) receiverPrefix(node *sitter.Node, groups map[string]gro
 // registration records a `<recv>.MapGet("path", handler)` call.
 func (s *minimalAPIScan) registration(node *sitter.Node, groups map[string]groupPrefix) {
 	fn := node.ChildByFieldName("function")
-	if fn == nil || fn.Kind() != "member_access_expression" {
+	if fn == nil || kindOf(fn) != "member_access_expression" {
 		return
 	}
 	verb, ok := mapVerbs[nodeText(fn.ChildByFieldName("name"), s.src)]
@@ -260,7 +260,7 @@ func (s *minimalAPIScan) handlerTarget(node *sitter.Node) string {
 	idx := 0
 	for i := uint(0); i < uint(args.NamedChildCount()); i++ {
 		a := args.NamedChild(i)
-		if a.Kind() != "argument" {
+		if kindOf(a) != "argument" {
 			continue
 		}
 		idx++
@@ -268,7 +268,7 @@ func (s *minimalAPIScan) handlerTarget(node *sitter.Node) string {
 			continue
 		}
 		inner := firstNamedChild(a)
-		if inner == nil || inner.Kind() != "identifier" {
+		if inner == nil || kindOf(inner) != "identifier" {
 			return ""
 		}
 		name := nodeText(inner, s.src)
@@ -289,7 +289,7 @@ func (s *minimalAPIScan) firstStringArg(node *sitter.Node) (string, bool) {
 	}
 	for i := uint(0); i < uint(args.NamedChildCount()); i++ {
 		a := args.NamedChild(i)
-		if a.Kind() != "argument" {
+		if kindOf(a) != "argument" {
 			continue
 		}
 		inner := firstNamedChild(a)

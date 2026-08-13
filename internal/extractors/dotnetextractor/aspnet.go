@@ -118,12 +118,12 @@ func parseAttributes(node *sitter.Node, src []byte) []csAttribute {
 	var out []csAttribute
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		list := node.Child(i)
-		if list.Kind() != "attribute_list" {
+		if kindOf(list) != "attribute_list" {
 			continue
 		}
 		for j := uint(0); j < uint(list.NamedChildCount()); j++ {
 			a := list.NamedChild(j)
-			if a.Kind() != "attribute" {
+			if kindOf(a) != "attribute" {
 				continue
 			}
 			name := simpleTypeName(typeFullName(a.ChildByFieldName("name"), src))
@@ -160,7 +160,7 @@ func firstStringArgument(attr *sitter.Node, src []byte) (string, bool) {
 	}
 	for i := uint(0); i < uint(list.NamedChildCount()); i++ {
 		arg := list.NamedChild(i)
-		if arg.Kind() != "attribute_argument" {
+		if kindOf(arg) != "attribute_argument" {
 			continue
 		}
 		for j := uint(0); j < uint(arg.NamedChildCount()); j++ {
@@ -176,7 +176,7 @@ func firstStringArgument(attr *sitter.Node, src []byte) (string, bool) {
 // stringLiteralText unquotes a C# string literal. Interpolated and raw strings are
 // not templates in practice and are left alone.
 func stringLiteralText(node *sitter.Node, src []byte) (string, bool) {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "string_literal":
 		t := nodeText(node, src)
 		if len(t) >= 2 && strings.HasPrefix(t, `"`) && strings.HasSuffix(t, `"`) {

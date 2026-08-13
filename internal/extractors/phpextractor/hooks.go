@@ -58,7 +58,7 @@ func (h *hookWalker) walk(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	if node.Kind() == "function_call_expression" {
+	if kindOf(node) == "function_call_expression" {
 		h.handleCall(node)
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
@@ -68,7 +68,7 @@ func (h *hookWalker) walk(node *sitter.Node) {
 
 func (h *hookWalker) handleCall(node *sitter.Node) {
 	fn := node.ChildByFieldName("function")
-	if fn == nil || fn.Kind() != "name" {
+	if fn == nil || kindOf(fn) != "name" {
 		return
 	}
 	method, ok := hookMethods[phpText(fn, h.src)]
@@ -113,7 +113,7 @@ func firstStringArg(args *sitter.Node, src []byte) string {
 	}
 	for i := uint(0); i < args.ChildCount(); i++ {
 		a := args.Child(i)
-		if a.Kind() != "argument" {
+		if kindOf(a) != "argument" {
 			continue
 		}
 		return stringLiteral(a.Child(0), src)
@@ -130,7 +130,7 @@ func callbackName(args *sitter.Node, src []byte) string {
 	}
 	var argNodes []*sitter.Node
 	for i := uint(0); i < args.ChildCount(); i++ {
-		if a := args.Child(i); a.Kind() == "argument" {
+		if a := args.Child(i); kindOf(a) == "argument" {
 			argNodes = append(argNodes, a)
 		}
 	}
@@ -148,7 +148,7 @@ func stringLiteral(node *sitter.Node, src []byte) string {
 	if node == nil {
 		return ""
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "string", "encapsed_string":
 		content := ""
 		for i := uint(0); i < node.ChildCount(); i++ {
@@ -156,7 +156,7 @@ func stringLiteral(node *sitter.Node, src []byte) string {
 			if !c.IsNamed() {
 				continue // quote tokens
 			}
-			if c.Kind() != "string_content" {
+			if kindOf(c) != "string_content" {
 				return "" // interpolation (variable_name, ${...}, etc.) -> dynamic
 			}
 			content += phpText(c, src)

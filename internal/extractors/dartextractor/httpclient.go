@@ -46,7 +46,7 @@ func (w *walker) callSiteRoutes(root *sitter.Node) {
 	visit = func(n *sitter.Node) {
 		kids := namedChildren(n)
 		for i, c := range kids {
-			if c.Kind() != "selector" || childOfKind(c, "argument_part") == nil {
+			if kindOf(c) != "selector" || childOfKind(c, "argument_part") == nil {
 				continue
 			}
 			name, receiver, _ := w.calleeOf(kids, i)
@@ -142,7 +142,7 @@ func (w *walker) retrofitRoutes(root *sitter.Node) {
 	visit = func(n *sitter.Node) {
 		kids := namedChildren(n)
 		for i, c := range kids {
-			if c.Kind() != "annotation" {
+			if kindOf(c) != "annotation" {
 				continue
 			}
 			verb, ok := retrofitVerbs[annotationName(c, w.src)]
@@ -157,7 +157,7 @@ func (w *walker) retrofitRoutes(root *sitter.Node) {
 			// available description of the call.
 			handler := ""
 			for j := i + 1; j < len(kids); j++ {
-				if kids[j].Kind() == "annotation" {
+				if kindOf(kids[j]) == "annotation" {
 					continue
 				}
 				if sig := firstOfKind(kids[j], "function_signature"); sig != nil {

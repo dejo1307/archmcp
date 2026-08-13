@@ -11,6 +11,7 @@
 package tsextractor
 
 import (
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"strings"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -56,8 +57,8 @@ var verbDecorators = map[string]map[string]string{
 //     read from the environment and so is not knowable statically. The cross-repo
 //     linker matches on >=2-segment path SUFFIXES, so "/v2/slots/available" still
 //     resolves a client's "/api/v2/slots/available" without it.
-func decoratorRouteFacts(classNode, classBody *sitter.Node, src []byte, relFile, dir string) []facts.Fact {
-	base, framework, ok := controllerBase(classNode, src)
+func decoratorRouteFacts(kinds *tsutil.KindTable, classNode, classBody *sitter.Node, src []byte, relFile, dir string) []facts.Fact {
+	base, framework, ok := controllerBase(kinds, classNode, src)
 	if !ok || classBody == nil {
 		return nil
 	}
@@ -72,17 +73,17 @@ func decoratorRouteFacts(classNode, classBody *sitter.Node, src []byte, relFile,
 	for i := range classBody.ChildCount() {
 		member := classBody.Child(i)
 		switch {
-		case member.Kind() == "decorator":
+		case kindOf(kinds, member) == "decorator":
 			pending = append(pending, member)
-		case member.Kind() == "comment" || !member.IsNamed():
+		case kindOf(kinds, member) == "comment" || !member.IsNamed():
 			// Transparent. A JSDoc block routinely sits BETWEEN a method's decorators
 			// and the method itself, and the class braces and stray semicolons are
 			// unnamed children of class_body — none of them ends a decorator run.
 			// Treating a comment as a member silently dropped real routes: two on the
 			// one real NestJS API measured against, both a decorated handler
 			// documented just above its signature.
-		case member.Kind() == "method_definition":
-			out = append(out, methodRouteFacts(pending, member, src, base, framework, verbs, relFile, dir)...)
+		case kindOf(kinds, member) == "method_definition":
+			out = append(out, methodRouteFacts(kinds, pending, member, src, base, framework, verbs, relFile, dir)...)
 			pending = pending[:0]
 		default:
 			// A real member (a field, an index signature) ends the run: its decorators
@@ -94,21 +95,21 @@ func decoratorRouteFacts(classNode, classBody *sitter.Node, src []byte, relFile,
 }
 
 // methodRouteFacts emits the routes declared by one method's decorators.
-func methodRouteFacts(decorators []*sitter.Node, method *sitter.Node, src []byte,
+func methodRouteFacts(kinds *tsutil.KindTable, decorators []*sitter.Node, method *sitter.Node, src []byte,
 	base, framework string, verbs map[string]string, relFile, dir string) []facts.Fact {
 
-	handler := methodDecoratorName(method, src)
+	handler := methodDecoratorName(kinds, method, src)
 	if handler == "" {
 		return nil
 	}
 	var out []facts.Fact
 	for _, dec := range decorators {
-		name, args := decoratorNameArgs(dec, src)
+		name, args := decoratorNameArgs(kinds, dec, src)
 		verb, isVerb := verbs[name]
 		if !isVerb {
 			continue
 		}
-		full := facts.JoinRoutePath(base, decoratorPathArg(args, src))
+		full := facts.JoinRoutePath(base, decoratorPathArg(kinds, args, src))
 		out = append(out, facts.Fact{
 			Kind: facts.KindRoute,
 			Name: full,
@@ -133,13 +134,13 @@ func methodRouteFacts(decorators []*sitter.Node, method *sitter.Node, src []byte
 // with. It accepts both argument forms — @Controller("/users") and the object form
 // @Controller({path: "/users"}), which is overwhelmingly the more common one in real
 // NestJS code.
-func controllerBase(classNode *sitter.Node, src []byte) (base, framework string, ok bool) {
+func controllerBase(kinds *tsutil.KindTable, classNode *sitter.Node, src []byte) (base, framework string, ok bool) {
 	for name, fw := range controllerDecorators {
-		args, found := classDecoratorArgs(classNode, src, name)
+		args, found := classDecoratorArgs(kinds, classNode, src, name)
 		if !found {
 			continue
 		}
-		return decoratorPathArg(args, src), fw, true
+		return decoratorPathArg(kinds, args, src), fw, true
 	}
 	return "", "", false
 }
@@ -148,22 +149,22 @@ func controllerBase(classNode *sitter.Node, src []byte) (base, framework string,
 // and — because `@Controller(…) export class Foo` attaches them there — its enclosing
 // export_statement. Mirrors classDecorator (storage.go), which does the same for
 // TypeORM's @Entity, but yields the arguments node.
-func classDecoratorArgs(node *sitter.Node, src []byte, want string) (*sitter.Node, bool) {
-	if args, ok := decoratorArgsIn(node, src, want); ok {
+func classDecoratorArgs(kinds *tsutil.KindTable, node *sitter.Node, src []byte, want string) (*sitter.Node, bool) {
+	if args, ok := decoratorArgsIn(kinds, node, src, want); ok {
 		return args, true
 	}
-	if parent := node.Parent(); parent != nil && parent.Kind() == "export_statement" {
-		return decoratorArgsIn(parent, src, want)
+	if parent := node.Parent(); parent != nil && kindOf(kinds, parent) == "export_statement" {
+		return decoratorArgsIn(kinds, parent, src, want)
 	}
 	return nil, false
 }
 
 // decoratorNameArgs returns a decorator's callee name and call arguments. A bare
 // decorator (@Get) yields a nil args node.
-func decoratorNameArgs(dec *sitter.Node, src []byte) (name string, args *sitter.Node) {
+func decoratorNameArgs(kinds *tsutil.KindTable, dec *sitter.Node, src []byte) (name string, args *sitter.Node) {
 	for i := range dec.ChildCount() {
 		inner := dec.Child(i)
-		switch inner.Kind() {
+		switch kindOf(kinds, inner) {
 		case "identifier":
 			return nodeText(inner, src), nil
 		case "call_expression":
@@ -182,19 +183,19 @@ func decoratorNameArgs(dec *sitter.Node, src []byte) (name string, args *sitter.
 // of an options object (@Controller({path: "/users", version: …})). Returns "" when
 // the decorator has no arguments (@Get()) or names no path, which composes to the
 // class base alone.
-func decoratorPathArg(args *sitter.Node, src []byte) string {
+func decoratorPathArg(kinds *tsutil.KindTable, args *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	if s := firstStringArg(args, src); s != "" {
+	if s := firstStringArg(kinds, args, src); s != "" {
 		return s
 	}
 	for i := range args.ChildCount() {
 		arg := args.Child(i)
-		if arg.Kind() != "object" {
+		if kindOf(kinds, arg) != "object" {
 			continue
 		}
-		if p := objectStringProp(arg, src, "path"); p != "" {
+		if p := objectStringProp(kinds, arg, src, "path"); p != "" {
 			return p
 		}
 	}
@@ -202,10 +203,10 @@ func decoratorPathArg(args *sitter.Node, src []byte) string {
 }
 
 // objectStringProp returns the string value of a named property of an object literal.
-func objectStringProp(obj *sitter.Node, src []byte, key string) string {
+func objectStringProp(kinds *tsutil.KindTable, obj *sitter.Node, src []byte, key string) string {
 	for i := range obj.ChildCount() {
 		pair := obj.Child(i)
-		if pair.Kind() != "pair" {
+		if kindOf(kinds, pair) != "pair" {
 			continue
 		}
 		k := pair.ChildByFieldName("key")
@@ -213,7 +214,7 @@ func objectStringProp(obj *sitter.Node, src []byte, key string) string {
 			continue
 		}
 		v := pair.ChildByFieldName("value")
-		if v == nil || (v.Kind() != "string" && v.Kind() != "template_string") {
+		if v == nil || (kindOf(kinds, v) != "string" && kindOf(kinds, v) != "template_string") {
 			continue
 		}
 		return strings.Trim(nodeText(v, src), "\"'`")
@@ -223,9 +224,9 @@ func objectStringProp(obj *sitter.Node, src []byte, key string) string {
 
 // methodDecoratorName returns a class method's name, or "" for one with no plain
 // identifier name (a computed or private member).
-func methodDecoratorName(method *sitter.Node, src []byte) string {
+func methodDecoratorName(kinds *tsutil.KindTable, method *sitter.Node, src []byte) string {
 	n := method.ChildByFieldName("name")
-	if n == nil || n.Kind() != "property_identifier" {
+	if n == nil || kindOf(kinds, n) != "property_identifier" {
 		return ""
 	}
 	return nodeText(n, src)

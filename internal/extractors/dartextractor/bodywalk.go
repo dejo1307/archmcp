@@ -90,7 +90,7 @@ func (w *walker) walkNode(n *sitter.Node, b *bodyWalk, selfShort string, loopDep
 	if n == nil {
 		return
 	}
-	kind := n.Kind()
+	kind := kindOf(n)
 
 	// A nested function/closure DEFINITION resets loop depth: its body is deferred, not
 	// executed per iteration of the enclosing loop. An iterator callback is handled at
@@ -168,13 +168,13 @@ func (w *walker) scanCallChain(n *sitter.Node, b *bodyWalk, selfShort string, lo
 	for i, c := range kids {
 		// `const Foo(...)` / `new Foo(...)` are their own nodes rather than selector
 		// chains, so they are matched directly.
-		if c.Kind() == "const_object_expression" || c.Kind() == "new_expression" {
+		if kindOf(c) == "const_object_expression" || kindOf(c) == "new_expression" {
 			if t := childOfKind(c, "type_identifier"); t != nil {
 				b.addRelation(facts.RelInstantiates, t.Utf8Text(w.src))
 			}
 			continue
 		}
-		if c.Kind() != "selector" || childOfKind(c, "argument_part") == nil {
+		if kindOf(c) != "selector" || childOfKind(c, "argument_part") == nil {
 			continue
 		}
 
@@ -263,7 +263,7 @@ func (w *walker) calleeOf(kids []*sitter.Node, i int) (name, receiver string, ba
 	prev := kids[i-1]
 
 	// Case 1: the arguments follow a `.name` selector — a method or named constructor.
-	if prev.Kind() == "selector" {
+	if kindOf(prev) == "selector" {
 		sel := childOfKind(prev, "unconditional_assignable_selector", "conditional_assignable_selector")
 		if sel == nil {
 			return "", "", false
@@ -275,7 +275,7 @@ func (w *walker) calleeOf(kids []*sitter.Node, i int) (name, receiver string, ba
 		// Walk back past the selector run to the chain base.
 		base := ""
 		for j := i - 2; j >= 0; j-- {
-			if kids[j].Kind() == "selector" {
+			if kindOf(kids[j]) == "selector" {
 				continue
 			}
 			base = strings.TrimSpace(kids[j].Utf8Text(w.src))
@@ -357,7 +357,7 @@ var dartLoopMethods = map[string]bool{
 // The bound must be a LITERAL. A named constant could be anything, and `i < xs.length`
 // is the scaling case wearing the C-style form's clothes.
 func (w *walker) isConstantTripLoop(n *sitter.Node) bool {
-	if n.Kind() != "for_statement" {
+	if kindOf(n) != "for_statement" {
 		return false
 	}
 	parts := childOfKind(n, "for_loop_parts")
@@ -378,10 +378,10 @@ func (w *walker) isConstantTripLoop(n *sitter.Node) bool {
 // isConstantTripIterator reports an iterator applied to a collection literal.
 func (w *walker) isConstantTripIterator(kids []*sitter.Node, i int) bool {
 	for j := i - 1; j >= 0; j-- {
-		if kids[j].Kind() == "selector" {
+		if kindOf(kids[j]) == "selector" {
 			continue
 		}
-		return kids[j].Kind() == "list_literal" || kids[j].Kind() == "set_or_map_literal"
+		return kindOf(kids[j]) == "list_literal" || kindOf(kids[j]) == "set_or_map_literal"
 	}
 	return false
 }

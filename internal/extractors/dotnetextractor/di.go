@@ -55,10 +55,10 @@ func (w *astWalker) noteDIRegistration(node *sitter.Node) {
 	// The generic name is either the callee itself (`AddScoped<T>(…)`) or the
 	// member being accessed (`services.AddScoped<T>(…)`).
 	gen := fn
-	if fn.Kind() == "member_access_expression" {
+	if kindOf(fn) == "member_access_expression" {
 		gen = fn.ChildByFieldName("name")
 	}
-	if gen == nil || gen.Kind() != "generic_name" {
+	if gen == nil || kindOf(gen) != "generic_name" {
 		return
 	}
 	nameNode := firstNamedChild(gen)

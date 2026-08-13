@@ -265,7 +265,7 @@ func (w *pyWalker) walkTopLevelCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "class_definition", "function_definition", "decorated_definition",
 		"import_statement", "import_from_statement":
 		return
@@ -284,7 +284,7 @@ func (w *pyWalker) walkTopLevelCalls(node *sitter.Node) {
 		// gates on moduleDefs, so only real defs fold — a plain identifier that
 		// names a variable resolves to nothing. Nested calls in the RHS are still
 		// caught by the generic recursion below.
-		if rhs := node.ChildByFieldName("right"); rhs != nil && rhs.Kind() == "identifier" {
+		if rhs := node.ChildByFieldName("right"); rhs != nil && kindOf(rhs) == "identifier" {
 			w.emitFileRefCall(rhs)
 		}
 	case "string":
@@ -305,7 +305,7 @@ func (w *pyWalker) walkTopLevelCalls(node *sitter.Node) {
 // RelCalls, so capitalized constructors are folded in as calls too — short-name
 // matching downstream still marks the class used.
 func (w *pyWalker) emitFileRefCall(fn *sitter.Node) {
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "identifier":
 		name := pyText(fn, w.src)
 		if pyBuiltins[name] {
@@ -360,7 +360,7 @@ func (w *pyWalker) walkStatement(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "import_statement":
 		w.handleImport(node)
 	case "import_from_statement":
@@ -403,9 +403,9 @@ func (w *pyWalker) walkStatement(node *sitter.Node) {
 func (w *pyWalker) handleImport(node *sitter.Node) {
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() == "dotted_name" || c.Kind() == "aliased_import" {
+		if kindOf(c) == "dotted_name" || kindOf(c) == "aliased_import" {
 			var name, alias string
-			if c.Kind() == "aliased_import" {
+			if kindOf(c) == "aliased_import" {
 				nameNode := c.ChildByFieldName("name")
 				aliasNode := c.ChildByFieldName("alias")
 				if nameNode == nil {
@@ -482,11 +482,11 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 	// Map each imported name to a resolvable target or "" (external).
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() != "dotted_name" && c.Kind() != "identifier" && c.Kind() != "aliased_import" {
+		if kindOf(c) != "dotted_name" && kindOf(c) != "identifier" && kindOf(c) != "aliased_import" {
 			continue
 		}
 		var localName, importedName string
-		if c.Kind() == "aliased_import" {
+		if kindOf(c) == "aliased_import" {
 			n := c.ChildByFieldName("name")
 			a := c.ChildByFieldName("alias")
 			if n == nil {
@@ -572,7 +572,7 @@ func (w *pyWalker) handleDecoratedDefinition(node *sitter.Node) {
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "decorator":
 			text := pyText(c, w.src)
 			// Walk decorator-call arguments for nested calls / value refs, e.g.
@@ -799,7 +799,7 @@ func (w *pyWalker) handleClass(node *sitter.Node, decorators []string) {
 	if args := node.ChildByFieldName("superclasses"); args != nil {
 		for i := uint(0); i < uint(args.ChildCount()); i++ {
 			c := args.Child(i)
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "identifier":
 				base := pyText(c, w.src)
 				bases = append(bases, base)
@@ -1066,7 +1066,7 @@ func (w *pyWalker) registerBodyImports(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "function_definition", "class_definition", "decorated_definition":
 		return
 	case "import_statement":
@@ -1101,7 +1101,7 @@ func (w *pyWalker) argRefRelations(args *sitter.Node) []facts.Relation {
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
 		c := args.Child(i)
 		var val *sitter.Node
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "identifier", "attribute":
 			val = c
 		case "keyword_argument":
@@ -1123,7 +1123,7 @@ func (w *pyWalker) argRefRelations(args *sitter.Node) []facts.Relation {
 // a capitalized identifier is an instantiation (bare short name); a simple obj.attr
 // resolves via resolveVarType. Returns ok=false when nothing internal resolves.
 func (w *pyWalker) valueRefRelation(node *sitter.Node) (facts.Relation, bool) {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "identifier":
 		name := pyText(node, w.src)
 		if pyBuiltins[name] {
@@ -1138,7 +1138,7 @@ func (w *pyWalker) valueRefRelation(node *sitter.Node) (facts.Relation, bool) {
 	case "attribute":
 		obj := node.ChildByFieldName("object")
 		attr := node.ChildByFieldName("attribute")
-		if obj == nil || attr == nil || obj.Kind() != "identifier" {
+		if obj == nil || attr == nil || kindOf(obj) != "identifier" {
 			return facts.Relation{}, false
 		}
 		if qt := w.resolveVarType(pyText(obj, w.src)); qt != "" {
@@ -1166,10 +1166,10 @@ func (w *pyWalker) emitValueRef(node *sitter.Node) {
 // literal or the elements of a list/set/tuple — dispatch tables / registries such
 // as {"ds": ds_filter} or [handler_a, handler_b].
 func (w *pyWalker) emitCollectionValueRefs(node *sitter.Node) {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "dictionary":
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
-			if p := node.Child(i); p.Kind() == "pair" {
+			if p := node.Child(i); kindOf(p) == "pair" {
 				if v := p.ChildByFieldName("value"); v != nil {
 					w.emitValueRef(v)
 				}
@@ -1230,7 +1230,7 @@ func (w *pyWalker) stringRefRelation(node *sitter.Node) (facts.Relation, bool) {
 // firstChildOfKind returns the first direct child of node with the given kind.
 func firstChildOfKind(node *sitter.Node, kind string) *sitter.Node {
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		if c := node.Child(i); c.Kind() == kind {
+		if c := node.Child(i); kindOf(c) == kind {
 			return c
 		}
 	}
@@ -1319,7 +1319,7 @@ func (w *pyWalker) walkForCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	kind := node.Kind()
+	kind := kindOf(node)
 	if kind == "call" {
 		if fn := node.ChildByFieldName("function"); fn != nil {
 			w.emitCallEdge(fn)
@@ -1459,13 +1459,13 @@ func (w *pyWalker) walkNestedScope(node *sitter.Node) {
 	// a decorator applied inside a function body is a real reference (a bare
 	// @retry_on_exception as much as a @log_usage(...) call).
 	def := node
-	if node.Kind() == "decorated_definition" {
+	if kindOf(node) == "decorated_definition" {
 		if d := node.ChildByFieldName("definition"); d != nil {
 			def = d
 		}
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
 			c := node.Child(i)
-			if c.Kind() != "decorator" {
+			if kindOf(c) != "decorator" {
 				continue
 			}
 			if call := firstChildOfKind(c, "call"); call != nil {
@@ -1502,7 +1502,7 @@ func (w *pyWalker) walkNestedScope(node *sitter.Node) {
 	}
 	pyBindTargets(def.ChildByFieldName("name"), w.src, bound)
 	body := def.ChildByFieldName("body")
-	if def.Kind() == "function_definition" {
+	if kindOf(def) == "function_definition" {
 		params := def.ChildByFieldName("parameters")
 		pyParamBoundNames(params, w.src, bound)
 		if body != nil {
@@ -1553,7 +1553,7 @@ func (w *pyWalker) walkComprehension(node *sitter.Node) {
 	// Identify the first for-clause's iterable (its "right" field).
 	var firstIter *sitter.Node
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		if c := node.Child(i); c.Kind() == "for_in_clause" {
+		if c := node.Child(i); kindOf(c) == "for_in_clause" {
 			firstIter = c.ChildByFieldName("right")
 			break
 		}
@@ -1586,7 +1586,7 @@ func (w *pyWalker) walkComprehension(node *sitter.Node) {
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		child := node.Child(i)
-		if child.Kind() == "for_in_clause" {
+		if kindOf(child) == "for_in_clause" {
 			// Walk the clause's children at inner depth, skipping the already
 			// handled first iterable (matched by byte range).
 			for j := uint(0); j < uint(child.ChildCount()); j++ {
@@ -1631,7 +1631,7 @@ func pyLoopRepeats(node *sitter.Node, src []byte) bool {
 // pyLoopConstant reports whether a for-loop iterates a compile-time-fixed number of
 // times. A while-loop never qualifies: `while True` repeats indefinitely.
 func pyLoopConstant(node *sitter.Node, src []byte) bool {
-	if node.Kind() != "for_statement" {
+	if kindOf(node) != "for_statement" {
 		return false
 	}
 	it := node.ChildByFieldName("right")
@@ -1641,14 +1641,14 @@ func pyLoopConstant(node *sitter.Node, src []byte) bool {
 // pyLoopInfinite reports whether a while-loop is the `while True:` / `while 1:` form,
 // exited by break/return rather than by exhausting the input.
 func pyLoopInfinite(node *sitter.Node, src []byte) bool {
-	if node.Kind() != "while_statement" {
+	if kindOf(node) != "while_statement" {
 		return false
 	}
 	cond := node.ChildByFieldName("condition")
 	if cond == nil {
 		return false
 	}
-	switch cond.Kind() {
+	switch kindOf(cond) {
 	case "true":
 		return true
 	case "integer":
@@ -1661,7 +1661,7 @@ func pyLoopInfinite(node *sitter.Node, src []byte) bool {
 // length: a list/tuple/set/dict literal, or range(...) whose arguments are all integer
 // literals. Anything data-derived (a variable, range(len(x)), a call result) is unbounded.
 func pyIterableBounded(it *sitter.Node, src []byte) bool {
-	switch it.Kind() {
+	switch kindOf(it) {
 	case "list", "tuple", "set", "dictionary":
 		return true
 	case "call":
@@ -1676,12 +1676,12 @@ func pyIterableBounded(it *sitter.Node, src []byte) bool {
 		sawArg := false
 		for i := uint(0); i < uint(args.ChildCount()); i++ {
 			c := args.Child(i)
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "(", ")", ",":
 				continue
 			}
 			sawArg = true
-			if c.Kind() != "integer" {
+			if kindOf(c) != "integer" {
 				return false
 			}
 		}
@@ -1712,7 +1712,7 @@ var pyIOReceivers = map[string]bool{
 // I/O primitive — a builtin open()/urlopen(), an unambiguous DB method (session.execute,
 // cursor.fetchall), or a call on a known HTTP-client module (requests.get, httpx.post).
 func pyIsIODirectCall(fn *sitter.Node, src []byte) bool {
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "identifier":
 		name := pyText(fn, src)
 		return name == "open" || name == "urlopen"
@@ -1740,7 +1740,7 @@ func (w *pyWalker) emitCallEdge(fn *sitter.Node) {
 		return
 	}
 
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "identifier":
 		name := pyText(fn, w.src)
 		if pyBuiltins[name] {
@@ -1877,7 +1877,7 @@ func pyBindTargets(node *sitter.Node, src []byte, out map[string]bool) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "identifier":
 		out[pyText(node, src)] = true
 	case "pattern_list", "tuple_pattern", "list_pattern", "list_splat_pattern", "dictionary_splat_pattern":
@@ -1895,7 +1895,7 @@ func pyParamBoundNames(params *sitter.Node, src []byte, out map[string]bool) {
 	}
 	for i := uint(0); i < uint(params.ChildCount()); i++ {
 		c := params.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "identifier", "list_splat_pattern", "dictionary_splat_pattern":
 			pyBindTargets(c, src, out)
 		case "default_parameter", "typed_default_parameter":
@@ -1925,7 +1925,7 @@ func walkLocalBoundNames(node *sitter.Node, src []byte, bound map[string]bool) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "function_definition", "class_definition":
 		// The nested def's NAME is bound in this scope (its params/locals are
 		// not — they belong to the nested scope, which walkNestedScope rebinds).
@@ -1948,7 +1948,7 @@ func walkLocalBoundNames(node *sitter.Node, src []byte, bound map[string]bool) {
 	case "named_expression":
 		pyBindTargets(node.ChildByFieldName("name"), src, bound)
 	case "with_item":
-		if v := node.ChildByFieldName("value"); v != nil && v.Kind() == "as_pattern" {
+		if v := node.ChildByFieldName("value"); v != nil && kindOf(v) == "as_pattern" {
 			pyBindTargets(v.ChildByFieldName("alias"), src, bound)
 		}
 	}
@@ -1964,13 +1964,13 @@ func collectRefValueIdents(node *sitter.Node) []*sitter.Node {
 	if node == nil {
 		return nil
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "identifier":
 		return []*sitter.Node{node}
 	case "expression_list":
 		var out []*sitter.Node
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
-			if c := node.Child(i); c.Kind() == "identifier" {
+			if c := node.Child(i); kindOf(c) == "identifier" {
 				out = append(out, c)
 			}
 		}
@@ -1989,12 +1989,12 @@ func collectPyMethodNames(body *sitter.Node, src []byte) map[string]bool {
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
 		var fn *sitter.Node
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "function_definition":
 			fn = c
 		case "decorated_definition":
 			for j := uint(0); j < uint(c.ChildCount()); j++ {
-				if c.Child(j).Kind() == "function_definition" {
+				if kindOf(c.Child(j)) == "function_definition" {
 					fn = c.Child(j)
 					break
 				}
@@ -2018,12 +2018,12 @@ func bodyHasAbstractMethod(body *sitter.Node, src []byte) bool {
 	}
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		if c.Kind() != "decorated_definition" {
+		if kindOf(c) != "decorated_definition" {
 			continue
 		}
 		for j := uint(0); j < uint(c.ChildCount()); j++ {
 			d := c.Child(j)
-			if d.Kind() != "decorator" {
+			if kindOf(d) != "decorator" {
 				continue
 			}
 			if m := decoratorRe.FindStringSubmatch(pyText(d, src)); m != nil {
@@ -2062,11 +2062,11 @@ func bodyHasNotImplementedMethod(body *sitter.Node, src []byte) bool {
 // funcDefOf returns the function_definition node for a class-body child, unwrapping
 // a decorated_definition; returns nil for non-function children.
 func funcDefOf(n *sitter.Node) *sitter.Node {
-	switch n.Kind() {
+	switch kindOf(n) {
 	case "function_definition":
 		return n
 	case "decorated_definition":
-		if d := n.ChildByFieldName("definition"); d != nil && d.Kind() == "function_definition" {
+		if d := n.ChildByFieldName("definition"); d != nil && kindOf(d) == "function_definition" {
 			return d
 		}
 	}
@@ -2083,7 +2083,7 @@ func funcBodyOnlyRaisesNotImplemented(fnBody *sitter.Node, src []byte) bool {
 	sawRaise := false
 	for i := uint(0); i < uint(fnBody.ChildCount()); i++ {
 		c := fnBody.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "comment":
 			continue
 		case "expression_statement":
@@ -2110,7 +2110,7 @@ func stmtIsDocstring(stmt *sitter.Node) bool {
 	if stmt.ChildCount() == 0 {
 		return false
 	}
-	return stmt.Child(0).Kind() == "string"
+	return kindOf(stmt.Child(0)) == "string"
 }
 
 // hasDecorator reports whether any name in decorators has last as its
@@ -2233,10 +2233,10 @@ func collectParamTypes(params *sitter.Node, src []byte, importMap map[string]str
 		c := params.Child(i)
 		var paramName string
 		var typeNode *sitter.Node
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "typed_parameter":
 			// The identifier is the first child; type is a named field.
-			if first := c.Child(0); first != nil && first.Kind() == "identifier" {
+			if first := c.Child(0); first != nil && kindOf(first) == "identifier" {
 				paramName = pyText(first, src)
 			}
 			typeNode = c.ChildByFieldName("type")
@@ -2268,14 +2268,14 @@ func collectLocalTypesNode(node *sitter.Node, src []byte, importMap map[string]s
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "function_definition", "class_definition", "decorated_definition":
 		return // do not cross scope boundaries
 	case "annotated_assignment":
 		// x: Type  or  x: Type = value
 		leftNode := node.ChildByFieldName("left")
 		annotNode := node.ChildByFieldName("annotation")
-		if leftNode != nil && leftNode.Kind() == "identifier" && annotNode != nil {
+		if leftNode != nil && kindOf(leftNode) == "identifier" && annotNode != nil {
 			name := pyText(leftNode, src)
 			if resolved := resolveTypeNamePy(pyText(annotNode, src), module, importMap); resolved != "" {
 				result[name] = resolved
@@ -2286,9 +2286,9 @@ func collectLocalTypesNode(node *sitter.Node, src []byte, importMap map[string]s
 		// x = MyClass()
 		leftNode := node.ChildByFieldName("left")
 		rightNode := node.ChildByFieldName("right")
-		if leftNode != nil && leftNode.Kind() == "identifier" && rightNode != nil {
-			if rightNode.Kind() == "call" {
-				if fnNode := rightNode.ChildByFieldName("function"); fnNode != nil && fnNode.Kind() == "identifier" {
+		if leftNode != nil && kindOf(leftNode) == "identifier" && rightNode != nil {
+			if kindOf(rightNode) == "call" {
+				if fnNode := rightNode.ChildByFieldName("function"); fnNode != nil && kindOf(fnNode) == "identifier" {
 					ctorName := pyText(fnNode, src)
 					if pyCapitalized(ctorName) && !pyBuiltins[ctorName] {
 						if resolved := resolveTypeNamePy(ctorName, module, importMap); resolved != "" {
@@ -2341,7 +2341,7 @@ func buildFileIndex(src []byte, relFile string, idx *pySymbolIndex) {
 	root := tree.RootNode()
 	for i := uint(0); i < uint(root.ChildCount()); i++ {
 		node := root.Child(i)
-		switch node.Kind() {
+		switch kindOf(node) {
 		case "class_definition":
 			indexClass(node, src, module, idx)
 			indexModuleDef(node, src, module, idx)
@@ -2350,12 +2350,12 @@ func buildFileIndex(src []byte, relFile string, idx *pySymbolIndex) {
 		case "decorated_definition":
 			for j := uint(0); j < uint(node.ChildCount()); j++ {
 				inner := node.Child(j)
-				if inner.Kind() == "class_definition" {
+				if kindOf(inner) == "class_definition" {
 					indexClass(inner, src, module, idx)
 					indexModuleDef(inner, src, module, idx)
 					break
 				}
-				if inner.Kind() == "function_definition" {
+				if kindOf(inner) == "function_definition" {
 					indexModuleDef(inner, src, module, idx)
 					break
 				}
@@ -2399,7 +2399,7 @@ func indexClass(node *sitter.Node, src []byte, module string, idx *pySymbolIndex
 		for i := uint(0); i < uint(args.ChildCount()); i++ {
 			c := args.Child(i)
 			var base string
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "identifier":
 				base = pyText(c, src)
 			case "attribute":
@@ -2438,12 +2438,12 @@ func indexClass(node *sitter.Node, src []byte, module string, idx *pySymbolIndex
 func hasAbstractMethod(body *sitter.Node, src []byte) bool {
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		if c.Kind() != "decorated_definition" {
+		if kindOf(c) != "decorated_definition" {
 			continue
 		}
 		for j := uint(0); j < uint(c.ChildCount()); j++ {
 			d := c.Child(j)
-			if d.Kind() == "decorator" {
+			if kindOf(d) == "decorator" {
 				text := pyText(d, src)
 				if m := decoratorRe.FindStringSubmatch(text); m != nil {
 					if lastComponent(m[1]) == "abstractmethod" {

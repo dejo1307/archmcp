@@ -158,7 +158,7 @@ func (c kotlinLoopClass) repeats() bool { return c != kotlinLoopConstant }
 
 // kotlinSyntacticLoopClass classifies a for/while/do-while statement.
 func kotlinSyntacticLoopClass(node *sitter.Node, src []byte) kotlinLoopClass {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "for_statement":
 		if kotlinConstantIterable(kotlinForCollection(node), src) {
 			return kotlinLoopConstant
@@ -181,7 +181,7 @@ func kotlinSyntacticLoopClass(node *sitter.Node, src []byte) kotlinLoopClass {
 // the first named child that is neither the loop variable nor the body.
 func kotlinForCollection(node *sitter.Node) *sitter.Node {
 	for i := uint(0); i < node.NamedChildCount(); i++ {
-		switch c := node.NamedChild(i); c.Kind() {
+		switch c := node.NamedChild(i); kindOf(c) {
 		case "variable_declaration", "multi_variable_declaration":
 			continue
 		case "block", "control_structure_body":
@@ -201,7 +201,7 @@ func kotlinIsTrueCondition(cond *sitter.Node, src []byte) bool {
 	if cond == nil {
 		return false
 	}
-	if cond.Kind() == "parenthesized_expression" && cond.NamedChildCount() > 0 {
+	if kindOf(cond) == "parenthesized_expression" && cond.NamedChildCount() > 0 {
 		cond = cond.NamedChild(0)
 	}
 	return nodeText(cond, src) == "true"
@@ -217,7 +217,7 @@ func kotlinConstantIterable(it *sitter.Node, src []byte) bool {
 	if it == nil {
 		return false
 	}
-	switch it.Kind() {
+	switch kindOf(it) {
 	case "range_expression": // 0..2
 		return kotlinAllIntLiterals(it)
 	case "infix_expression": // 0 until 3 · 2 downTo 0 · 0..10 step 2
@@ -249,7 +249,7 @@ func kotlinConstantBoundReceiver(recv *sitter.Node, src []byte) bool {
 	if recv == nil {
 		return false
 	}
-	switch recv.Kind() {
+	switch kindOf(recv) {
 	case "simple_identifier", "identifier":
 		return isScreamingSnake(nodeText(recv, src))
 	case "navigation_expression":
@@ -270,7 +270,7 @@ func kotlinConstantBoundReceiver(recv *sitter.Node, src []byte) bool {
 		if callee == nil {
 			return false
 		}
-		if callee.Kind() == "navigation_expression" {
+		if kindOf(callee) == "navigation_expression" {
 			// A trailing size-preserving chain method: unwrap and re-check its base.
 			return kotlinConstantBoundReceiver(callee, src)
 		}
@@ -320,7 +320,7 @@ func kotlinCollectionLiteralCall(call, callee *sitter.Node, src []byte) bool {
 }
 
 func kotlinIsIntLiteral(n *sitter.Node) bool {
-	return n != nil && (n.Kind() == "integer_literal" || n.Kind() == "number_literal")
+	return n != nil && (kindOf(n) == "integer_literal" || kindOf(n) == "number_literal")
 }
 
 // kotlinAllIntLiterals reports whether every named child of a range is an int literal.
@@ -440,7 +440,7 @@ func kotlinCallArgCount(callExpr *sitter.Node) int {
 	}
 	n := 0
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
-		if args.Child(i).Kind() == "value_argument" {
+		if kindOf(args.Child(i)) == "value_argument" {
 			n++
 		}
 	}
@@ -560,7 +560,7 @@ func (w *astWalker) currentOwner() *facts.Fact {
 func (w *astWalker) walkSourceFile(root *sitter.Node) {
 	for i := uint(0); i < uint(root.ChildCount()); i++ {
 		child := root.Child(i)
-		switch child.Kind() {
+		switch kindOf(child) {
 		case "package_header":
 			// no fact emitted; package is implied by `dir`
 		case "import":
@@ -654,7 +654,7 @@ func (w *astWalker) handleClassDeclaration(node *sitter.Node) {
 	keyword := "class"
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() == "interface" || (!c.IsNamed() && nodeText(c, w.src) == "interface") {
+		if kindOf(c) == "interface" || (!c.IsNamed() && nodeText(c, w.src) == "interface") {
 			keyword = "interface"
 			break
 		}
@@ -977,7 +977,7 @@ func kotlinParamCount(node *sitter.Node) int {
 	}
 	n := 0
 	for i := uint(0); i < uint(params.ChildCount()); i++ {
-		if params.Child(i).Kind() == "parameter" {
+		if kindOf(params.Child(i)) == "parameter" {
 			n++
 		}
 	}
@@ -991,7 +991,7 @@ func kotlinReturnType(node *sitter.Node, src []byte) string {
 	seenParams := false
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "function_value_parameters":
 			seenParams = true
 		case "function_body", "modifiers", "type_parameters", "type_constraints":
@@ -1107,7 +1107,7 @@ func (w *astWalker) handleClassParameters(pc *sitter.Node, classInjected bool) {
 	}
 	for i := uint(0); i < uint(cps.ChildCount()); i++ {
 		cp := cps.Child(i)
-		if cp.Kind() != "class_parameter" {
+		if kindOf(cp) != "class_parameter" {
 			continue
 		}
 		paramInjected := classInjected
@@ -1137,7 +1137,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	kind := node.Kind()
+	kind := kindOf(node)
 
 	// A lambda is a deferred scope: its body runs when the lambda is invoked, NOT
 	// per-iteration of the enclosing loops — so reset the loop depth for its
@@ -1337,7 +1337,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 // handlers (so their calls are attributed to their own owner, not the enclosing
 // function).
 func (w *astWalker) walkChild(c *sitter.Node) {
-	switch c.Kind() {
+	switch kindOf(c) {
 	case "class_declaration":
 		w.handleClassDeclaration(c)
 	case "object_declaration":
@@ -1353,7 +1353,7 @@ func (w *astWalker) walkChild(c *sitter.Node) {
 // connective or the Elvis operator — each adds a path for cyclomatic complexity.
 func kotlinBooleanOp(node *sitter.Node) bool {
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		switch node.Child(i).Kind() {
+		switch kindOf(node.Child(i)) {
 		case "&&", "||", "?:":
 			return true
 		}
@@ -1404,7 +1404,7 @@ func (w *astWalker) walkLambdaSubtree(node, lambda *sitter.Node, class kotlinLoo
 // a function/method call (RelCalls), and isNav to decide whether the call target
 // is resolvable.
 func calleeName(callee *sitter.Node, src []byte) (string, bool) {
-	switch callee.Kind() {
+	switch kindOf(callee) {
 	case "simple_identifier", "identifier":
 		return nodeText(callee, src), false
 	case "navigation_expression":
@@ -1433,7 +1433,7 @@ func collectMethodNames(body *sitter.Node, src []byte) map[string]bool {
 	}
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		if c.Kind() != "function_declaration" {
+		if kindOf(c) != "function_declaration" {
 			continue
 		}
 		if nameNode := c.ChildByFieldName("name"); nameNode != nil {
@@ -1495,7 +1495,7 @@ func (w *astWalker) resolveCall(name string) string {
 // the bare `this` keyword (e.g. `this.foo()`), so the call can be resolved against
 // the enclosing class's methods.
 func navReceiverIsThis(callee *sitter.Node, src []byte) bool {
-	if callee.Kind() != "navigation_expression" {
+	if kindOf(callee) != "navigation_expression" {
 		return false
 	}
 	first := firstNamedChild(callee)
@@ -1505,7 +1505,7 @@ func navReceiverIsThis(callee *sitter.Node, src []byte) bool {
 // navReceiverIsSuper reports whether a navigation-expression callee's receiver is
 // `super` (a `super.method()` call).
 func navReceiverIsSuper(callee *sitter.Node, src []byte) bool {
-	if callee.Kind() != "navigation_expression" {
+	if kindOf(callee) != "navigation_expression" {
 		return false
 	}
 	first := firstNamedChild(callee)
@@ -1540,13 +1540,13 @@ func supertypeNamesFromDelegationSpecifiers(decl *sitter.Node, src []byte) []str
 	var names []string
 	for i := uint(0); i < uint(ds.ChildCount()); i++ {
 		spec := ds.Child(i)
-		if spec.Kind() != "delegation_specifier" {
+		if kindOf(spec) != "delegation_specifier" {
 			continue
 		}
 		var typeNode *sitter.Node
 		for j := uint(0); j < uint(spec.ChildCount()); j++ {
 			c := spec.Child(j)
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "constructor_invocation", "explicit_delegation":
 				// Both contain a `type` (inlined as user_type/nullable_type/etc.)
 				typeNode = firstTypeChild(c)
@@ -1572,7 +1572,7 @@ func firstTypeChild(parent *sitter.Node) *sitter.Node {
 	}
 	for i := uint(0); i < uint(parent.ChildCount()); i++ {
 		c := parent.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "user_type", "nullable_type", "non_nullable_type", "function_type", "parenthesized_type":
 			return c
 		}
@@ -1590,12 +1590,12 @@ func lastTypeIdentifier(typeNode *sitter.Node, src []byte) string {
 	}
 	ut := typeNode
 	// Unwrap nullable_type to its inner user_type.
-	if ut.Kind() == "nullable_type" {
+	if kindOf(ut) == "nullable_type" {
 		if inner := firstTypeChild(ut); inner != nil {
 			ut = inner
 		}
 	}
-	if ut.Kind() != "user_type" {
+	if kindOf(ut) != "user_type" {
 		// Fall back to text parsing for function/parenthesized/non_nullable types.
 		t := nodeText(ut, src)
 		if i := strings.IndexAny(t, "<?"); i >= 0 {
@@ -1655,13 +1655,13 @@ func annotationNames(modifiers *sitter.Node, src []byte) []string {
 	var out []string
 	for i := uint(0); i < uint(modifiers.ChildCount()); i++ {
 		c := modifiers.Child(i)
-		if c.Kind() != "annotation" {
+		if kindOf(c) != "annotation" {
 			continue
 		}
 		var nameNode *sitter.Node
 		for j := uint(0); j < uint(c.ChildCount()); j++ {
 			cc := c.Child(j)
-			switch cc.Kind() {
+			switch kindOf(cc) {
 			case "constructor_invocation":
 				nameNode = firstTypeChild(cc)
 			case "user_type", "nullable_type", "non_nullable_type":
@@ -1688,7 +1688,7 @@ func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() == kind {
+		if kindOf(c) == kind {
 			return c
 		}
 	}
@@ -1730,7 +1730,7 @@ func findFirstIdentifier(node *sitter.Node, src []byte) *sitter.Node {
 	if node == nil {
 		return nil
 	}
-	if node.Kind() == "identifier" || node.Kind() == "simple_identifier" {
+	if kindOf(node) == "identifier" || kindOf(node) == "simple_identifier" {
 		return node
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
@@ -1738,7 +1738,7 @@ func findFirstIdentifier(node *sitter.Node, src []byte) *sitter.Node {
 		if !c.IsNamed() {
 			continue
 		}
-		if c.Kind() == "identifier" || c.Kind() == "simple_identifier" {
+		if kindOf(c) == "identifier" || kindOf(c) == "simple_identifier" {
 			return c
 		}
 	}

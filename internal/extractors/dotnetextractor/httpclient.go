@@ -89,10 +89,10 @@ var memberBodies = map[string]bool{
 // collectLiterals records `x = "literal"` for TYPE-level fields and properties.
 // Locals are collected per member body instead; see walk.
 func (s *httpClientScan) collectLiterals(node *sitter.Node) {
-	if memberBodies[node.Kind()] {
+	if memberBodies[kindOf(node)] {
 		return // locals belong to the member, not the file
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "variable_declarator":
 		// No "value" field in this grammar: the initializer is simply the last named
 		// child after the name.
@@ -105,7 +105,7 @@ func (s *httpClientScan) collectLiterals(node *sitter.Node) {
 		if name := node.ChildByFieldName("name"); name != nil {
 			for i := uint(0); i < node.NamedChildCount(); i++ {
 				c := node.NamedChild(i)
-				if c.Kind() == "arrow_expression_clause" {
+				if kindOf(c) == "arrow_expression_clause" {
 					if lit, ok := s.literalOf(firstNamedChild(c)); ok {
 						s.literals[nodeText(name, s.src)] = lit
 					}
@@ -131,7 +131,7 @@ func (s *httpClientScan) resolve(node *sitter.Node, locals map[string]string) (s
 	if node == nil {
 		return "", false
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "string_literal", "verbatim_string_literal", "raw_string_literal":
 		return stringLiteralText(node, s.src)
 	case "identifier":
@@ -194,10 +194,10 @@ func (s *httpClientScan) interpolated(node *sitter.Node, locals map[string]strin
 }
 
 func (s *httpClientScan) walk(node *sitter.Node, locals map[string]string) {
-	if memberBodies[node.Kind()] {
+	if memberBodies[kindOf(node)] {
 		locals = s.localsOf(node)
 	}
-	if node.Kind() == "invocation_expression" {
+	if kindOf(node) == "invocation_expression" {
 		s.registration(node, locals)
 	}
 	for i := uint(0); i < node.NamedChildCount(); i++ {
@@ -210,7 +210,7 @@ func (s *httpClientScan) localsOf(body *sitter.Node) map[string]string {
 	out := map[string]string{}
 	var visit func(n *sitter.Node)
 	visit = func(n *sitter.Node) {
-		if n.Kind() == "variable_declarator" && n.NamedChildCount() > 1 {
+		if kindOf(n) == "variable_declarator" && n.NamedChildCount() > 1 {
 			if name := n.ChildByFieldName("name"); name != nil {
 				if lit, ok := s.resolve(n.NamedChild(n.NamedChildCount()-1), out); ok {
 					out[nodeText(name, s.src)] = lit
@@ -227,7 +227,7 @@ func (s *httpClientScan) localsOf(body *sitter.Node) map[string]string {
 
 func (s *httpClientScan) registration(node *sitter.Node, locals map[string]string) {
 	fn := node.ChildByFieldName("function")
-	if fn == nil || fn.Kind() != "member_access_expression" {
+	if fn == nil || kindOf(fn) != "member_access_expression" {
 		return
 	}
 	nameNode := fn.ChildByFieldName("name")
@@ -243,7 +243,7 @@ func (s *httpClientScan) registration(node *sitter.Node, locals map[string]strin
 		return
 	}
 	first := args.NamedChild(0)
-	if first.Kind() == "argument" {
+	if kindOf(first) == "argument" {
 		first = firstNamedChild(first)
 	}
 	raw, ok := s.resolve(first, locals)
@@ -345,7 +345,7 @@ func (w *astWalker) noteRefit(node *sitter.Node, line int) {
 	}
 	for i := uint(0); i < attrs.NamedChildCount(); i++ {
 		a := attrs.NamedChild(i)
-		if a.Kind() != "attribute" {
+		if kindOf(a) != "attribute" {
 			continue
 		}
 		name := nodeText(a.ChildByFieldName("name"), w.src)

@@ -83,7 +83,7 @@ func extractTopics(root *sitter.Node, src []byte, relFile, dir string) []facts.F
 	var out []facts.Fact
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
-		switch n.Kind() {
+		switch kindOf(n) {
 		case "val_definition", "var_definition":
 			name, value := w.valNameAndLiteral(n)
 			if name != "" && value != "" && topicSuffixRe.MatchString(name) && plausibleTopicName(value) {
@@ -145,11 +145,11 @@ func (w *dslWalker) valNameAndLiteral(n *sitter.Node) (name, value string) {
 	if p == nil {
 		p = n.ChildByFieldName("name")
 	}
-	if p == nil || p.Kind() != "identifier" {
+	if p == nil || kindOf(p) != "identifier" {
 		return "", ""
 	}
 	v := n.ChildByFieldName("value")
-	if v == nil || v.Kind() != "string" {
+	if v == nil || kindOf(v) != "string" {
 		return "", ""
 	}
 	lit := w.text(v)
@@ -210,7 +210,7 @@ func extractHTTPClients(root *sitter.Node, src []byte, relFile, dir string) []fa
 	var out []facts.Fact
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
-		if n.Kind() == "call_expression" {
+		if kindOf(n) == "call_expression" {
 			if method, path, ok := w.clientCall(n); ok {
 				props := map[string]any{
 					"language":       "scala",
@@ -258,10 +258,10 @@ func (w *dslWalker) clientCall(n *sitter.Node) (method, path string, ok bool) {
 	if fn == nil {
 		return "", "", false
 	}
-	if fn.Kind() == "generic_function" {
+	if kindOf(fn) == "generic_function" {
 		fn = firstNamedChild(fn)
 	}
-	if fn == nil || fn.Kind() != "field_expression" {
+	if fn == nil || kindOf(fn) != "field_expression" {
 		return "", "", false
 	}
 	_, name := w.splitFieldExpressionDSL(fn)
@@ -306,12 +306,12 @@ func (w *dslWalker) firstStringArgument(n *sitter.Node) string {
 	var found string
 	for i := uint(0); i < n.ChildCount(); i++ {
 		c := n.Child(i)
-		if c.Kind() != "arguments" {
+		if kindOf(c) != "arguments" {
 			continue
 		}
 		for j := uint(0); j < c.ChildCount(); j++ {
 			a := c.Child(j)
-			switch a.Kind() {
+			switch kindOf(a) {
 			case "string":
 				found = strings.Trim(w.text(a), `"`)
 			case "interpolated_string_expression":

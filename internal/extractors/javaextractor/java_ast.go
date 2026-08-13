@@ -173,7 +173,7 @@ func javaParamCount(node *sitter.Node) int {
 	}
 	n := 0
 	for i := uint(0); i < uint(params.ChildCount()); i++ {
-		switch params.Child(i).Kind() {
+		switch kindOf(params.Child(i)) {
 		case "formal_parameter", "spread_parameter":
 			n++
 		}
@@ -233,7 +233,7 @@ func (c javaLoopClass) repeats() bool { return c != javaLoopConstant }
 
 // javaSyntacticLoopClass classifies a for / enhanced-for / while / do-while statement.
 func javaSyntacticLoopClass(node *sitter.Node, src []byte) javaLoopClass {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "for_statement":
 		// Three-clause C-style for. No condition (`for (;;)`) is infinite; a condition
 		// comparing against an integer literal (`i < 3`, `i <= 10`) runs a fixed number
@@ -265,12 +265,12 @@ func javaSyntacticLoopClass(node *sitter.Node, src []byte) javaLoopClass {
 // condition (`i < 3 && ok`) is conservatively treated as scaling — so no genuine O(n)
 // finding is ever deleted, only a clearly-constant one discounted.
 func javaConstantForCondition(cond *sitter.Node) bool {
-	if cond == nil || cond.Kind() != "binary_expression" {
+	if cond == nil || kindOf(cond) != "binary_expression" {
 		return false
 	}
 	hasCmp, hasLiteral := false, false
 	for i := uint(0); i < uint(cond.ChildCount()); i++ {
-		switch cond.Child(i).Kind() {
+		switch kindOf(cond.Child(i)) {
 		case "<", "<=", ">", ">=", "!=":
 			hasCmp = true
 		case "decimal_integer_literal", "hex_integer_literal", "octal_integer_literal", "binary_integer_literal":
@@ -289,7 +289,7 @@ func javaConstantIterable(value *sitter.Node, src []byte) bool {
 	if value == nil {
 		return false
 	}
-	switch value.Kind() {
+	switch kindOf(value) {
 	case "array_creation_expression":
 		return value.ChildByFieldName("value") != nil // has an array_initializer
 	case "array_initializer":
@@ -359,7 +359,7 @@ func javaStreamReceiverBounded(call *sitter.Node, src []byte) bool {
 
 func javaBooleanOp(node *sitter.Node) bool {
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		switch node.Child(i).Kind() {
+		switch kindOf(node.Child(i)) {
 		case "&&", "||":
 			return true
 		}
@@ -383,7 +383,7 @@ func javaStreamLambda(call *sitter.Node, src []byte) *sitter.Node {
 		return nil
 	}
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
-		if c := args.Child(i); c.Kind() == "lambda_expression" {
+		if c := args.Child(i); kindOf(c) == "lambda_expression" {
 			return c
 		}
 	}
@@ -400,7 +400,7 @@ func (w *astWalker) walkJavaLambdaSubtree(node, lambda *sitter.Node, bounded boo
 	if node == nil {
 		return
 	}
-	if node.Kind() == "lambda_expression" && node.StartByte() == lambda.StartByte() && node.EndByte() == lambda.EndByte() {
+	if kindOf(node) == "lambda_expression" && node.StartByte() == lambda.StartByte() && node.EndByte() == lambda.EndByte() {
 		w.loopDepth++
 		if !bounded {
 			// An iterator receiver is either a literal (constant) or data-derived
@@ -487,7 +487,7 @@ func (w *astWalker) findPackage(root *sitter.Node) string {
 		// The package name is the scoped_identifier / identifier child.
 		for i := uint(0); i < uint(pd.ChildCount()); i++ {
 			c := pd.Child(i)
-			if c.Kind() == "scoped_identifier" || c.Kind() == "identifier" {
+			if kindOf(c) == "scoped_identifier" || kindOf(c) == "identifier" {
 				return nodeText(c, w.src)
 			}
 		}
@@ -502,7 +502,7 @@ func (w *astWalker) walkProgram(root *sitter.Node) {
 }
 
 func (w *astWalker) walkTopLevel(node *sitter.Node) {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "import_declaration":
 		w.handleImport(node)
 	case "class_declaration":
@@ -524,7 +524,7 @@ func (w *astWalker) handleImport(node *sitter.Node) {
 	var pathNode *sitter.Node
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "static":
 			isStatic = true
 		case "asterisk":
@@ -616,10 +616,10 @@ func (w *astWalker) handleClassLike(node *sitter.Node, kind string) {
 	if strings.Contains(modifierText, "abstract") {
 		f.Props["abstract"] = true
 	}
-	if node.Kind() == "record_declaration" {
+	if kindOf(node) == "record_declaration" {
 		f.Props["record"] = true
 	}
-	if node.Kind() == "annotation_type_declaration" {
+	if kindOf(node) == "annotation_type_declaration" {
 		f.Props["annotation_class"] = true
 	}
 
@@ -676,7 +676,7 @@ func (w *astWalker) handleClassLike(node *sitter.Node, kind string) {
 func (w *astWalker) walkBody(body *sitter.Node, owner *facts.Fact) {
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "class_declaration":
 			w.handleClassLike(c, facts.SymbolClass)
 		case "interface_declaration":
@@ -843,7 +843,7 @@ func (w *astWalker) handleField(node *sitter.Node, owner *facts.Fact) {
 
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() != "variable_declarator" {
+		if kindOf(c) != "variable_declarator" {
 			continue
 		}
 		nameNode := c.ChildByFieldName("name")
@@ -888,7 +888,7 @@ func (w *astWalker) handleConstructorInjection(decl, body *sitter.Node, owner *f
 	lombokInject := hasAnnotation(classAnns, "RequiredArgsConstructor", "AllArgsConstructor")
 
 	// record_declaration parameters are constructor parameters too.
-	if decl.Kind() == "record_declaration" {
+	if kindOf(decl) == "record_declaration" {
 		if params := decl.ChildByFieldName("parameters"); params != nil && lombokInject {
 			w.injectParams(params, owner)
 		}
@@ -899,7 +899,7 @@ func (w *astWalker) handleConstructorInjection(decl, body *sitter.Node, owner *f
 		if body != nil {
 			for i := uint(0); i < uint(body.ChildCount()); i++ {
 				c := body.Child(i)
-				if c.Kind() != "field_declaration" {
+				if kindOf(c) != "field_declaration" {
 					continue
 				}
 				mods := findChildByKind(c, "modifiers")
@@ -918,7 +918,7 @@ func (w *astWalker) handleConstructorInjection(decl, body *sitter.Node, owner *f
 	}
 	var ctors []*sitter.Node
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
-		if c := body.Child(i); c.Kind() == "constructor_declaration" {
+		if c := body.Child(i); kindOf(c) == "constructor_declaration" {
 			ctors = append(ctors, c)
 		}
 	}
@@ -942,7 +942,7 @@ func (w *astWalker) injectParams(params *sitter.Node, owner *facts.Fact) {
 	}
 	for i := uint(0); i < uint(params.ChildCount()); i++ {
 		p := params.Child(i)
-		if p.Kind() != "formal_parameter" {
+		if kindOf(p) != "formal_parameter" {
 			continue
 		}
 		if t := w.targetForType(p.ChildByFieldName("type")); t != "" {
@@ -959,7 +959,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	kind := node.Kind()
+	kind := kindOf(node)
 
 	// A lambda is a deferred scope: its body runs when invoked, NOT per-iteration of
 	// the enclosing loops — so reset the loop depth for its subtree (e.g. a Runnable
@@ -1220,7 +1220,7 @@ func typeListChildren(node *sitter.Node) []*sitter.Node {
 	var out []*sitter.Node
 	for i := uint(0); i < uint(tl.ChildCount()); i++ {
 		c := tl.Child(i)
-		if c.IsNamed() && c.Kind() != "annotation" && c.Kind() != "marker_annotation" {
+		if c.IsNamed() && kindOf(c) != "annotation" && kindOf(c) != "marker_annotation" {
 			out = append(out, c)
 		}
 	}
@@ -1235,7 +1235,7 @@ func firstTypeChild(node *sitter.Node) *sitter.Node {
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.IsNamed() && c.Kind() != "annotation" && c.Kind() != "marker_annotation" {
+		if c.IsNamed() && kindOf(c) != "annotation" && kindOf(c) != "marker_annotation" {
 			return c
 		}
 	}
@@ -1249,7 +1249,7 @@ func typeFullName(node *sitter.Node, src []byte) string {
 	if node == nil {
 		return ""
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "type_identifier", "scoped_type_identifier":
 		return nodeText(node, src)
 	case "generic_type":
@@ -1261,7 +1261,7 @@ func typeFullName(node *sitter.Node, src []byte) string {
 		// The type follows the annotations.
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
 			c := node.Child(i)
-			if c.IsNamed() && c.Kind() != "annotation" && c.Kind() != "marker_annotation" {
+			if c.IsNamed() && kindOf(c) != "annotation" && kindOf(c) != "marker_annotation" {
 				return typeFullName(c, src)
 			}
 		}
@@ -1292,7 +1292,7 @@ func collectMethodNames(body *sitter.Node, src []byte) map[string]bool {
 	}
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		if c.Kind() != "method_declaration" {
+		if kindOf(c) != "method_declaration" {
 			continue
 		}
 		if nameNode := c.ChildByFieldName("name"); nameNode != nil {
@@ -1323,7 +1323,7 @@ func isScreamingSnake(s string) bool {
 
 // stringLiteralValue returns the unquoted contents of a string_literal node.
 func stringLiteralValue(node *sitter.Node, src []byte) (string, bool) {
-	if node == nil || node.Kind() != "string_literal" {
+	if node == nil || kindOf(node) != "string_literal" {
 		return "", false
 	}
 	return strings.Trim(nodeText(node, src), `"`), true
@@ -1358,7 +1358,7 @@ func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() == kind {
+		if kindOf(c) == kind {
 			return c
 		}
 	}
