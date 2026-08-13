@@ -17,15 +17,33 @@ func parseRouteFileAST(src []byte, relFile string) []facts.Fact {
 	return ff
 }
 
+// routeMount records a `mount SomeEngine, at: '/x'` site: the constant that was
+// mounted and the full URL prefix it was mounted under (including any enclosing
+// scope/namespace). extractAllRoutes resolves the constant to the engine directory
+// whose config/routes.rb should be parsed below that prefix.
+type routeMount struct {
+	constant string
+	prefix   string
+}
+
+// routeFileResult is what parsing one route file taught us about the OTHER files that
+// make up the same route table.
+type routeFileResult struct {
+	// draws maps each draw(:pkg) delegation found in this file to the URL prefix it is
+	// scoped under, so the caller can parse config/routes/<pkg>.rb with it.
+	draws map[string]string
+	// mounts lists the engine mount sites found in this file.
+	mounts []routeMount
+}
+
 // parseRouteFile parses a Rails route file, seeding the scope stack with
-// initialPrefix (the URL prefix a parent routes.rb delegated this file under via
-// draw(:pkg)), and additionally returns the draw(:pkg) -> prefix map discovered in
-// this file, so the caller can inline each delegated file under its real scope.
-func parseRouteFile(src []byte, relFile, initialPrefix string) ([]facts.Fact, map[string]string) {
+// initialPrefix (the URL prefix under which a parent routes.rb delegated or mounted
+// this file), and returns what it learned about further route files.
+func parseRouteFile(src []byte, relFile, initialPrefix string) ([]facts.Fact, routeFileResult) {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(ruby.Language())); err != nil {
-		return nil, nil
+		return nil, routeFileResult{}
 	}
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
@@ -34,9 +52,15 @@ func parseRouteFile(src []byte, relFile, initialPrefix string) ([]facts.Fact, ma
 	if initialPrefix != "" {
 		stack = []routeScope{{pathPrefix: initialPrefix}}
 	}
-	rw := &routeWalker{src: src, relFile: relFile, dir: filepath.Dir(relFile), draws: map[string]string{}}
+	rw := &routeWalker{
+		src:      src,
+		relFile:  relFile,
+		dir:      filepath.Dir(relFile),
+		draws:    map[string]string{},
+		concerns: map[string]*sitter.Node{},
+	}
 	rw.walk(tree.RootNode(), stack)
-	return rw.out, rw.draws
+	return rw.out, routeFileResult{draws: rw.draws, mounts: rw.mounts}
 }
 
 type routeWalker struct {
@@ -47,10 +71,33 @@ type routeWalker struct {
 	// draws maps each draw(:pkg) delegation found in this file to the URL prefix it
 	// is scoped under, so the caller can parse config/routes/<pkg>.rb with it.
 	draws map[string]string
+	// mounts collects the engine mount sites found in this file.
+	mounts []routeMount
+	// concerns maps a `concern :name do ... end` definition to its block body, so a
+	// later `concerns: :name` can replay it under the scope that referenced it. Rails
+	// requires the definition to precede the reference, so a single forward pass is
+	// enough.
+	concerns map[string]*sitter.Node
+	// concernDepth bounds concern replay. A concern that references itself would
+	// otherwise recurse forever.
+	concernDepth int
 }
 
 // walk iterates the statements of a program / body_statement, dispatching each
 // route-DSL call with the current scope stack.
+//
+// It also descends through plain Ruby control flow, because a route file is Ruby and
+// real ones are full of it: GitLab guards whole files with `unless
+// @organization_scoped_routes` and `if Rails.env.development?`, solidus wraps its admin
+// routes in `if SolidusSupport.admin_available?`, and Rails' own activestorage route
+// file is one `draw do … end` closed by an `if` MODIFIER. Iterating only direct `call`
+// children silently dropped every one of them — five whole route files across the
+// corpus, and the failure is invisible because a file that parses fine and yields
+// nothing looks exactly like a file with no routes.
+//
+// Both branches of a conditional are walked. Which one Rails takes depends on runtime
+// configuration the extractor cannot see, and a route that exists under some
+// configuration is a route.
 func (rw *routeWalker) walk(node *sitter.Node, stack []routeScope) {
 	if node == nil {
 		return
@@ -59,8 +106,44 @@ func (rw *routeWalker) walk(node *sitter.Node, stack []routeScope) {
 		c := node.Child(i)
 		if c.Kind() == "call" {
 			rw.handleCall(c, stack)
+			continue
+		}
+		if isControlFlowNode(c.Kind()) {
+			rw.walkControlFlow(c, stack)
 		}
 	}
+}
+
+// walkControlFlow descends into a conditional or block-structured statement, skipping
+// its CONDITION — `if Rails.env.development?` would otherwise be dispatched as a route
+// DSL call named `development?`.
+func (rw *routeWalker) walkControlFlow(node *sitter.Node, stack []routeScope) {
+	cond := node.ChildByFieldName("condition")
+	for i := uint(0); i < node.ChildCount(); i++ {
+		c := node.Child(i)
+		if cond != nil && c.Id() == cond.Id() {
+			continue
+		}
+		if c.Kind() == "call" {
+			rw.handleCall(c, stack)
+			continue
+		}
+		if isControlFlowNode(c.Kind()) {
+			rw.walkControlFlow(c, stack)
+		}
+	}
+}
+
+// isControlFlowNode reports whether a node kind is Ruby control flow whose body may
+// contain route declarations.
+func isControlFlowNode(kind string) bool {
+	switch kind {
+	case "if", "unless", "elsif", "else", "then", "if_modifier", "unless_modifier",
+		"case", "when", "begin", "ensure", "rescue", "body_statement",
+		"parenthesized_statements", "while", "until", "each":
+		return true
+	}
+	return false
 }
 
 // blockBody returns the body_statement of a call's do/brace block, or nil.
@@ -106,7 +189,26 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 			"framework": "rails",
 			"language":  "ruby",
 		}
-		if handler := pairString(args, "to", rw.src); handler != "" {
+		handler := pairString(args, "to", rw.src)
+		if handler == "" {
+			// The hash-rocket form `get 'path' => 'ctrl#action'`, where the handler is
+			// the VALUE of the pair whose key is the path. Discourse and lobsters write
+			// nearly every route this way, and reading only `to:` left thousands of
+			// routes with no handler at all.
+			handler = hashRocketHandler(args, rw.src)
+		}
+		if handler == "" {
+			// Still nothing. Inside a resources/controller block the verb names an action
+			// on the enclosing controller (`resources :posts do get :publish, on: :member
+			// end` -> posts#publish), which is how the majority of non-REST Rails routes
+			// are written. Outside one there is nothing to derive from.
+			if ctrl := currentController(stack); ctrl != "" {
+				if action := firstPositionalName(args, rw.src); action != "" {
+					handler = ctrl + "#" + action
+				}
+			}
+		}
+		if handler != "" {
 			props["handler"] = handler
 		}
 		// A Rails optional segment `foo(/:bar)` serves two paths; emit both.
@@ -130,7 +232,11 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		rw.emit(prefix+"/", line(call), props)
 
 	case "resources", "resource":
+		// Symbol or string, as for `namespace` above.
 		name := firstSymbolArg(args, rw.src)
+		if name == "" {
+			name = strings.Trim(firstStringArg(args, rw.src), "/")
+		}
 		if name == "" {
 			return
 		}
@@ -167,6 +273,20 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		shallow := !singular && parentMember != "" && pairBool(args, "shallow", rw.src)
 		shallowBase := strings.TrimSuffix(prefix, parentScopePrefix) + "/" + segmentName
 
+		// The controller a resource is served by: the enclosing module namespace plus the
+		// resource's own name, pluralized (Rails maps both `resources :posts` and the
+		// singular `resource :profile` onto a PLURAL controller), unless `controller:`
+		// names one explicitly.
+		controller := pluralize(name)
+		if c := pairString(args, "controller", rw.src); c != "" {
+			controller = strings.Trim(c, "/")
+		} else if c := pairSymbol(args, "controller", rw.src); c != "" {
+			controller = c
+		}
+		if mod := buildModule(stack); mod != "" && !strings.Contains(controller, "/") {
+			controller = mod + "/" + controller
+		}
+
 		actions := restfulActions(only, except)
 		if singular {
 			actions = restfulActionsSingular(only, except)
@@ -182,16 +302,21 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 				"language":  "ruby",
 				"resource":  name,
 				"action":    a.name,
+				"handler":   controller + "#" + a.name,
 			})
 		}
-		if body != nil {
-			// A plural resource exposes a member id to its children; a singular one does not.
-			childMember := ""
-			if !singular {
-				childMember = singularize(name) + "_id"
-			}
-			rw.walk(body, append(stack, routeScope{pathPrefix: segment, memberParam: childMember}))
+		// A plural resource exposes a member id to its children; a singular one does not.
+		childMember := ""
+		if !singular {
+			childMember = singularize(name) + "_id"
 		}
+		childScope := routeScope{pathPrefix: segment, memberParam: childMember, controller: controller}
+		if body != nil {
+			rw.walk(body, append(stack, childScope))
+		}
+		// `resources :posts, concerns: :commentable` replays the named concern's block
+		// inside the resource's own scope, exactly as if it had been written inline.
+		rw.replayConcerns(concernNames(args, rw.src), append(stack, childScope))
 
 	case "match":
 		// `match 'x', via: [:get, :post]` maps one path to several verbs; emit one
@@ -224,7 +349,13 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		}
 
 	case "namespace":
+		// Rails accepts a symbol or a string: `namespace :admin` and
+		// `namespace "recaptcha"` are the same declaration. Reading only the symbol form
+		// made the whole block invisible, taking every route inside it with it.
 		name := firstSymbolArg(args, rw.src)
+		if name == "" {
+			name = firstStringArg(args, rw.src)
+		}
 		if name == "" || body == nil {
 			return
 		}
@@ -275,6 +406,67 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 			rw.walk(body, append(stack, routeScope{pathPrefix: memberPrefix}))
 		}
 
+	case "controller":
+		// `controller :photos do get 'search' end` fixes the controller for its block
+		// without changing the URL.
+		name := firstSymbolArg(args, rw.src)
+		if name == "" {
+			name = firstStringArg(args, rw.src)
+		}
+		if name == "" || body == nil {
+			return
+		}
+		if mod := buildModule(stack); mod != "" && !strings.Contains(name, "/") {
+			name = mod + "/" + name
+		}
+		rw.walk(body, append(stack, routeScope{controller: name}))
+
+	case "concern":
+		// `concern :commentable do ... end` DEFINES a reusable block; it serves nothing
+		// on its own. Record the body so each `concerns: :commentable` reference can
+		// replay it under the scope that referenced it, and do NOT descend here — the
+		// routes inside belong to the referencing scopes, not to this definition site.
+		if name := firstSymbolArg(args, rw.src); name != "" && body != nil {
+			rw.concerns[name] = body
+		}
+
+	case "concerns":
+		// The bare block form: `resources :posts do concerns :commentable end`.
+		rw.replayConcerns(symbolArgs(args, rw.src), stack)
+
+	case "mount":
+		// `mount SomeEngine, at: '/x'` or `mount SomeEngine => '/x'`. The engine's whole
+		// route table is served below the mount path, so record the site for
+		// extractAllRoutes to resolve; the placeholder route below keeps the mount
+		// itself visible in the graph.
+		constant, at := parseMount(args, rw.src)
+		if constant == "" {
+			return
+		}
+		if !strings.HasPrefix(at, "/") {
+			at = "/" + at
+		}
+		mountPrefix := strings.TrimSuffix(prefix+at, "/")
+		rw.mounts = append(rw.mounts, routeMount{constant: constant, prefix: mountPrefix})
+		// Method "MOUNT" is inert to the cross-repo linker for the same reason "DRAW"
+		// is: it is a mount point, not an endpoint a client can call.
+		rw.out = append(rw.out, facts.Fact{
+			Kind: facts.KindRoute,
+			Name: mountPrefix + "/",
+			File: rw.relFile,
+			Line: line(call),
+			Props: map[string]any{
+				"method":    "MOUNT",
+				"framework": "rails",
+				"language":  "ruby",
+				"mounts":    constant,
+			},
+			Relations: []facts.Relation{
+				{Kind: facts.RelDeclares, Target: rw.dir},
+				{Kind: facts.RelHandledBy, Target: normalizeConstant(constant)},
+			},
+		})
+
 	case "draw":
 		// `draw do ... end` is the routes wrapper (Rails.application.routes.draw,
 		// engine routers, etc.) — recurse into the block. `draw(:pkg)` with no
@@ -314,16 +506,140 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 	}
 }
 
-// emit appends a route fact with a declares relation to the file's directory.
+// emit appends a route fact with a declares relation to the file's directory, plus a
+// handled_by relation to the controller action serving it when the handler resolves to
+// one. That second edge is what makes a Rails route reachable from its controller:
+// without it a route is an isolated node, impact analysis from a controller cannot see
+// the endpoints it serves, and a controller referenced only by the route table looks
+// like dead code.
 func (rw *routeWalker) emit(name string, lineNum int, props map[string]any) {
+	rels := []facts.Relation{{Kind: facts.RelDeclares, Target: rw.dir}}
+	if h, _ := props["handler"].(string); h != "" {
+		if sym := controllerSymbol(h); sym != "" {
+			rels = append(rels, facts.Relation{Kind: facts.RelHandledBy, Target: sym})
+		}
+	}
 	rw.out = append(rw.out, facts.Fact{
 		Kind:      facts.KindRoute,
 		Name:      name,
 		File:      rw.relFile,
 		Line:      lineNum,
 		Props:     props,
-		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: rw.dir}},
+		Relations: rels,
 	})
+}
+
+// --- mounts and concerns ---
+
+// parseMount reads the two shapes Rails accepts for a mount:
+//
+//	mount Spree::Core::Engine, at: '/'
+//	mount Sidekiq::Web => '/sidekiq'
+//
+// and returns the mounted constant with the path it is mounted at. A Rack app built
+// inline (`mount Coverband::Reporters::Web.new, at: '/coverage'`) yields its receiver
+// constant, which is the thing worth recording. The path defaults to "/" — Rails'
+// own default when `at:` is omitted.
+func parseMount(args *sitter.Node, src []byte) (constant, at string) {
+	if args == nil {
+		return "", ""
+	}
+	at = pairString(args, "at", src)
+	for i := uint(0); i < args.ChildCount(); i++ {
+		c := args.Child(i)
+		switch c.Kind() {
+		case "constant", "scope_resolution":
+			if constant == "" {
+				constant = rubyText(c, src)
+			}
+		case "call":
+			// `Foo::Bar.new` — the receiver is the constant.
+			if r := c.ChildByFieldName("receiver"); r != nil && constant == "" {
+				switch r.Kind() {
+				case "constant", "scope_resolution":
+					constant = rubyText(r, src)
+				}
+			}
+		case "pair":
+			// Hash-rocket form: the KEY is the constant, the value the path.
+			k := c.ChildByFieldName("key")
+			if k == nil {
+				continue
+			}
+			switch k.Kind() {
+			case "constant", "scope_resolution":
+				if constant == "" {
+					constant = rubyText(k, src)
+				}
+				if v := c.ChildByFieldName("value"); v != nil && at == "" {
+					at = firstStringArg(v, src)
+				}
+			}
+		}
+	}
+	if constant == "" {
+		return "", ""
+	}
+	if at == "" {
+		at = "/"
+	}
+	return constant, at
+}
+
+// hashRocketHandler reads the handler out of the hash-rocket route form
+// `get 'path' => 'controller#action'`, where the path is the pair's KEY and the handler
+// its VALUE.
+//
+// Only a plain string value is accepted. `get 'x' => redirect('/y')` and
+// `get 'x' => SomeRackApp` are also legal and name no controller action, so returning
+// their text would produce a handled_by edge to a node that never exists.
+func hashRocketHandler(args *sitter.Node, src []byte) string {
+	if args == nil {
+		return ""
+	}
+	for i := uint(0); i < args.ChildCount(); i++ {
+		c := args.Child(i)
+		if c.Kind() != "pair" {
+			continue
+		}
+		k := c.ChildByFieldName("key")
+		if k == nil || k.Kind() != "string" {
+			continue
+		}
+		v := c.ChildByFieldName("value")
+		if v == nil || v.Kind() != "string" {
+			continue
+		}
+		return firstStringArg(v, src)
+	}
+	return ""
+}
+
+// concernNames returns the names referenced by a `concerns:` option, which takes either
+// a single symbol or an array of them.
+func concernNames(args *sitter.Node, src []byte) []string {
+	return symbolValues(findPairValue(args, "concerns", src), src)
+}
+
+// replayConcerns re-walks each named concern's recorded block under stack, so its routes
+// are emitted once per referencing scope with that scope's prefix and controller.
+//
+// maxConcernDepth bounds the recursion: a concern that references itself, directly or
+// through another, would otherwise never terminate. Two levels covers concerns composed
+// of concerns, which is as deep as the idiom goes in practice.
+const maxConcernDepth = 2
+
+func (rw *routeWalker) replayConcerns(names []string, stack []routeScope) {
+	if len(names) == 0 || rw.concernDepth >= maxConcernDepth {
+		return
+	}
+	rw.concernDepth++
+	defer func() { rw.concernDepth-- }()
+	for _, n := range names {
+		if body := rw.concerns[n]; body != nil {
+			rw.walk(body, stack)
+		}
+	}
 }
 
 // --- keyword-argument helpers ---

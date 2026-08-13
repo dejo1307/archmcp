@@ -1564,7 +1564,89 @@ import (
 // dispatch on (35 shared C/C++, 17 C++-only, 1 C-only, 38 PHP) — a renamed kind is the
 // failure a two-year grammar jump actually causes, and it degrades extraction without
 // erroring.
-const cacheVersion = "v196"
+// v197: Rails route extraction stops being a single-file affair.
+//
+// Three defects, one root cause — the extractor read `config/routes.rb` and treated it
+// as the route table, when in Rails it is only the entry point to one:
+//
+//   - Route-file discovery matched the repository root plus a packwerk `packages/*`
+//     pattern and nothing else. solidus is six mountable engines with NO root config/
+//     at all, so it reported ZERO Rails routes while declaring 195; discourse's 25
+//     plugin route files (386 declarations) and GitLab's 38 ee/config/routes files
+//     (451) were never opened either. The rule is now shape-based — any
+//     `<dir>/config/routes.rb` or `.rb` below a `config/routes/` directory, at any
+//     depth — minus generator templates and dummy apps, which look identical and are
+//     served by nobody.
+//   - `mount` was not implemented at all, in a corpus containing 23 mount sites. An
+//     engine's whole route table is served below its mount path, so the mounted
+//     constant is now resolved to the directory that owns it (by reading the
+//     `lib/**/engine.rb` beside each engine route file) and that file is parsed under
+//     the mount prefix. Same interprocedural prefix-composition shape as Go v125,
+//     Axum v130 and FastAPI v133.
+//   - Routes carried a handler only when written with an explicit `to:`, so every
+//     `resources` declaration — the majority of Rails routes — produced an isolated
+//     graph node. The controller is now derived from the enclosing module namespace
+//     and the resource name, and each route carries a `handled_by` edge to the real
+//     controller-action symbol. Without that edge, impact analysis from a controller
+//     could not reach the endpoints it serves, and a controller reached only through
+//     the route table read as dead code.
+//
+// Also: `concern`/`concerns` (a concern serves nothing where it is DEFINED and
+// everything where it is referenced — the previous default-case descent got this
+// exactly backwards), the `controller do` block form, and Rails detection for
+// engine-only repositories, which have neither of the two root markers.
+//
+// A fourth defect found while measuring the first three: the route walker iterated only
+// direct `call` children, so any route inside plain Ruby control flow was skipped. A
+// route file is Ruby and real ones are full of conditionals — GitLab guards whole files
+// with `unless @organization_scoped_routes`, solidus wraps its admin routes in `if
+// SolidusSupport.admin_available?`, and Rails' own activestorage route file is a `draw`
+// block closed by an `if` MODIFIER. Five route files across the corpus parsed cleanly
+// and produced nothing, which is indistinguishable from a file with no routes. Both
+// branches of a conditional are now walked; which one Rails takes depends on runtime
+// configuration the extractor cannot see.
+//
+// A fifth: the hash-rocket route form `get 'path' => 'ctrl#action'` puts the handler in
+// the pair's VALUE rather than in a `to:` keyword. Discourse and lobsters write nearly
+// every route that way, so reading only `to:` left thousands of routes handler-less even
+// after the derivation above.
+//
+// A sixth, found the same way: `namespace`, `resources` and `resource` accept a symbol
+// OR a string, and only the symbol form was read. `namespace "recaptcha"` made its whole
+// block invisible, taking every route inside it along — four openproject module route
+// files declared 15 routes and produced none.
+//
+// Unrelated to the extractor but found by the same measurement: the ember-octane LAYER
+// pattern claimed the bare path segment `lib` for its level-0 util layer. discourse is a
+// Rails backend beside an Ember frontend, the Ember pattern wins the repo on confidence,
+// and layer matching is by path segment with no notion of language — so every Ruby
+// `lib/` and `plugins/*/lib/*` directory became the innermost layer and each model or
+// service it legitimately called became a violation. 397 of discourse's 426 reported
+// violations were that; removing `lib` takes it to 27. It is wrong on Ember's own terms
+// too: Octane puts utilities in `app/utils/`, while `lib/` holds in-repo addons.
+//
+// Classes also now carry a `rails_component` prop — job, mailer, channel, policy,
+// controller, model, component, concern — derived from the superclass or an included
+// module first and the directory only as a fallback, because `< ApplicationJob` is what
+// Rails dispatches on while `app/services` is a convention with no framework meaning.
+// And `db/migrate` and `lib/tasks` are classified as TOOLING rather than production: a
+// migration is a one-shot script nothing references by design, so calling it production
+// code made every migration in a large Rails app a dead-code candidate.
+//
+// And a second framework: GRAPE, which had no extractor at all. GitLab's entire v4 REST
+// API — 1,033 files, ~1,530 verb sites under 382 `resource` and 318 `namespace` blocks —
+// was invisible, reached from Rails through one `mount ::API::API => '/'`. Grape is
+// identified by transitive inheritance rather than by a route file (GitLab has exactly
+// ONE class inheriting Grape directly and a thousand inheriting that), so the class set
+// is computed as a closure over the `superclass` props the AST pass already emits — no
+// extra I/O on a repository containing no Grape — and only the surviving files are
+// re-parsed for their route bodies. Composition is class-to-class via `mount`, so a
+// route's URL is assembled from a prefix chain that lives in other files.
+//
+// The goldens move: ruby_sample's 13 route facts each gain a handler prop and a
+// handled_by relation. No route is added or lost in the fixture, which is the point —
+// the fixture is a single-file application, the shape that already worked.
+const cacheVersion = "v197"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

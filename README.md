@@ -183,7 +183,7 @@ It runs in three places, each usable on its own:
 |---|---|
 | **In your agent** | a hook grades each session and hands the verdict back, so the agent fixes its own regression before telling you it's done |
 | **In your shell** | `enola check` - exits `1` on a structural regression |
-| **In CI** | the same command, same exit code, on every pull request |
+| **In CI** | the same command, same exit code, on every pull request - or [`enola-action`](https://github.com/enola-labs/enola-action), which wires it to the pull-request base for you |
 
 The whole loop on this repository, unedited - a helper is added, the check fails on the cycle it closed, the diff shows what has to change, and the same command lets it through once it's fixed:
 
@@ -316,7 +316,7 @@ That reports, per service, how many outbound calls it found, how many it matched
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
 | Dart / Flutter | `pubspec.yaml` (root or up to 4 levels deep), or any non-generated `.dart` source (pub packages as modules; go_router / auto_route / core `routes:` navigation; `http`, `dio`, retrofit & chopper clients; drift / isar / hive / objectbox / floor / Firestore storage; generated `.g.dart`, `.freezed.dart`, `.mocks.dart` skipped) |
-| Ruby       | `Gemfile` (Rails / ActiveRecord / Sequel / Packwerk aware) |
+| Ruby       | `Gemfile`, any loose `.rb`/`.rake`, or a Rails **engine** (`config/routes.rb` beside `lib/**/engine.rb`) — Rails routes across every engine and plugin route file, `mount` composed into the mounted engine's own routes, controller actions resolved from `resources`; **Grape** APIs found by transitive inheritance with mount prefixes composed across files; ActiveRecord / Sequel / Packwerk aware |
 | Rust       | `Cargo.toml` (workspace or single crate; crate/module/`impl`/trait aware; Axum route DSL aware) |
 | Scala      | an sbt/Mill/Maven/Gradle build naming Scala, or any `.scala` source (Play `conf/routes`, Pekko/Akka HTTP and http4s routes; Slick storage; sttp clients; `for … yield` read as a bind, not a loop) |
 | C / C++    | `.c`/`.h` (tree-sitter-c) or `.cpp`/`.hpp`/… (tree-sitter-cpp), or `CMakeLists.txt`/`Makefile` + header (per-fact `language`, header/source method merging, namespaces, templates) |
@@ -352,6 +352,7 @@ It is silent for builds from source, never runs when `CI` is set, and turns off 
 - **[docs/INTENT.md](docs/INTENT.md)** - declared intent: the `enola-intent.yaml` / cluster / `enola_intent:` frontmatter carriers, the full vocabulary (via, relations, origin channels), what compiles, how verdicts behave, and the working rules for keeping declarations truthful.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - the concept, the fact model, the pipeline, the MCP tool reference, and the value model.
 - **[examples/](examples/)** - ready-made per-language and multi-repo configs, plus a pre-commit hook and a CI workflow.
+- **[enola-action](https://github.com/enola-labs/enola-action)** - the GitHub Action: the same check on every pull request, as source annotations and an architecture delta in the job summary, with no baseline artifact to manage.
 
 ## Found it useful?
 

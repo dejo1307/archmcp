@@ -4,6 +4,18 @@
 # in a way nobody asked for? A newly introduced dependency cycle fails the job; findings
 # below that threshold are reported in the log and allowed through.
 #
+# IF YOU JUST WANT THE GATE: enola-labs/enola-action does all of this in one step. It
+# pins the exact pull-request base itself, so there is no baseline artifact to publish
+# or restore, and it adds source annotations and a job summary:
+#
+#   - uses: actions/checkout@v4
+#     with: { fetch-depth: 0 }
+#   - uses: enola-labs/enola-action@v1
+#
+# Keep the workflow below if you want the baseline published as an artifact — it grades
+# against the default branch's snapshot rather than the PR base, indexes the tree once
+# instead of twice, and needs no full-history clone.
+#
 # HOW THE BASELINE GETS HERE
 # --------------------------
 # The gate needs a "before" to compare against. The default branch publishes its snapshot
