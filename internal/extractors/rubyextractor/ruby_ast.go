@@ -438,6 +438,15 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 	if superclassBase != "" {
 		props["superclass"] = superclassBase
 	}
+	// What KIND of Rails thing this is — job, mailer, channel, policy, controller,
+	// component. Derived from the superclass first and the path only as a fallback,
+	// because `< ApplicationJob` is what Rails dispatches on while `app/services` is a
+	// convention with no framework meaning.
+	if w.isRails {
+		if c := railsComponent(qual, superclassBase, nil, w.relFile); c != "" {
+			props["rails_component"] = c
+		}
+	}
 	rels := []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}}
 	if superclassBase != "" {
 		rels = append(rels, facts.Relation{Kind: facts.RelImplements, Target: superclassBase})
@@ -1459,6 +1468,20 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 		mixin := firstConstArg(args, w.src)
 		if mixin == "" || mixin == "ActiveSupport::Concern" {
 			return
+		}
+		// A Sidekiq worker is a plain class that INCLUDES a module rather than
+		// inheriting one, so the component cannot be read off the superclass. Fill it in
+		// here, without overwriting a classification the superclass already produced.
+		if w.isRails {
+			if c := railsComponent("", "", []string{mixin}, w.relFile); c != "" {
+				if s := w.cur(); s != nil && s.symFactIdx >= 0 {
+					if p := w.out[s.symFactIdx].Props; p != nil {
+						if _, set := p["rails_component"]; !set {
+							p["rails_component"] = c
+						}
+					}
+				}
+			}
 		}
 		scope := w.scopeQual()
 		if scope == "" {

@@ -74,7 +74,16 @@ var (
 		{Name: "adapter", Patterns: []string{"adapters"}, Level: 1},
 		{Name: "serializer", Patterns: []string{"serializers"}, Level: 1},
 		{Name: "transform", Patterns: []string{"transforms"}, Level: 1},
-		{Name: "util", Patterns: []string{"utils", "lib", "constants"}, Level: 0},
+		// `lib` is deliberately NOT a util pattern. In Ember Octane utilities live in
+		// `app/utils/`; `lib/` holds in-repo ADDONS, which are whole packages with their
+		// own app trees and no business at the bottom of a dependency order. Claiming
+		// the bare segment was also the single largest source of false layer violations
+		// in the corpus: discourse is a Rails backend beside an Ember frontend, the
+		// Ember pattern wins the repo, and Ruby's `lib/` — where a large Rails app keeps
+		// most of its domain code — became level 0. 397 of discourse's 426 reported
+		// violations were `util -> …` edges out of a Ruby lib directory calling the
+		// models and services it is supposed to call.
+		{Name: "util", Patterns: []string{"utils", "constants"}, Level: 0},
 	}
 
 	// Go standard project layout.

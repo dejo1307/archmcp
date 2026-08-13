@@ -872,3 +872,43 @@ func TestGoStdLayers_VisibilityIsNotLayering(t *testing.T) {
 		}
 	}
 }
+
+// TestEmberUtilLayerDoesNotClaimLib guards the single largest source of false layer
+// violations the corpus has produced.
+//
+// discourse is a Rails backend beside an Ember frontend in one tree. Both patterns are
+// framework-gated, so they tie on specificity and ember-octane wins on confidence — and
+// the Ember pattern then classifies the RUBY directories, because layer matching is by
+// path segment and knows nothing about language. With `lib` in the util layer at level
+// 0, every Ruby `lib/` and `plugins/*/lib/*` directory — where a large Rails app keeps
+// most of its domain code — became the innermost layer, and each of the models and
+// services it legitimately calls became a violation: 397 of 426 reported violations,
+// all of them false. Removing `lib` took discourse to 27.
+//
+// It is also wrong on Ember's own terms: Octane puts utilities in `app/utils/`, while
+// `lib/` holds in-repo addons, which are whole packages rather than a bottom layer.
+func TestEmberUtilLayerDoesNotClaimLib(t *testing.T) {
+	var util *layerDef
+	for i := range emberLayers {
+		if emberLayers[i].Name == "util" {
+			util = &emberLayers[i]
+		}
+	}
+	if util == nil {
+		t.Fatal("ember util layer is gone; this guard needs updating")
+	}
+	for _, p := range util.Patterns {
+		if p == "lib" {
+			t.Error("ember util layer claims the bare segment `lib` again — this classified " +
+				"Ruby lib/ directories as level 0 and manufactured 397 false violations on discourse")
+		}
+	}
+	// A Ruby lib directory must not land in the util layer under the Ember pattern.
+	if matchesLayer("plugins/chat/lib/chat", util.Patterns) {
+		t.Error("a Ruby plugin lib directory still matches the ember util layer")
+	}
+	// The real Ember utility directory still does.
+	if !matchesLayer("frontend/discourse/app/utils", util.Patterns) {
+		t.Error("app/utils should still match the ember util layer")
+	}
+}

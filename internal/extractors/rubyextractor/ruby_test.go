@@ -1010,7 +1010,8 @@ func TestRoutes_DrawPrefixSeeding(t *testing.T) {
   draw(:admin_routes)
 end
 `
-	_, draws := parseRouteFile([]byte(main), "config/routes.rb", "")
+	_, res := parseRouteFile([]byte(main), "config/routes.rb", "")
+	draws := res.draws
 	if draws["api_core_v3_routes"] != "/api/core/v3" {
 		t.Errorf("api_core_v3_routes prefix = %q, want /api/core/v3", draws["api_core_v3_routes"])
 	}
