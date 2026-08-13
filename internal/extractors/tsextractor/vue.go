@@ -294,6 +294,7 @@ func (e *TSExtractor) extractVueScriptBlock(block *vueScriptBlock, relFile strin
 		isVue:     true,
 		isNuxt:    isNuxt,
 		importMap: buildImportSymbols(root, block.Content, relFile, aliases),
+		imports:   buildEmberImportBindings(root, block.Content, relFile, aliases),
 	}
 	decls := e.extractDeclarations(root, ctx)
 

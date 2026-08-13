@@ -185,7 +185,20 @@ func (d *SnapshotDiff) writeIncidentalShifts(sb *strings.Builder) {
 		return
 	}
 	fmt.Fprintf(sb, "## Incidental finding shifts (%d)\n\n", total)
-	sb.WriteString("_Appeared or cleared with no structural cause in this change — a moving statistical threshold or a re-ranked top-N list. Likely NOT caused by this change; verify only if relevant._\n\n")
+	heuristic, decided := false, false
+	for _, in := range append(append([]facts.Insight{}, d.FindingsNewIncidental...), d.FindingsResolvedIncidental...) {
+		if decidedRuleFinding(in) {
+			decided = true
+		} else {
+			heuristic = true
+		}
+	}
+	if heuristic {
+		sb.WriteString("_Heuristic findings appeared or cleared with no structural cause in this change — a moving statistical threshold or a re-ranked top-N list. Likely NOT caused by this change; verify only if relevant._\n\n")
+	}
+	if decided {
+		sb.WriteString("_Constraint verdicts at confidence 1.0 are decided rules, not statistical thresholds: a breach that appeared or cleared here changed state without a structural cause attributable to this change — check the rule's membership or its declaration rather than dismissing it as drift._\n\n")
+	}
 	for _, in := range d.FindingsNewIncidental {
 		fmt.Fprintf(sb, "- appeared · [%s] %s\n", insightSource(in), oneLine(in.Title))
 	}
@@ -296,6 +309,10 @@ func writeEvidenceSample(sb *strings.Builder, evidence []facts.Evidence, limit i
 }
 
 // --- small formatting helpers (kept local to avoid coupling to the server package) ---
+
+func decidedRuleFinding(in facts.Insight) bool {
+	return in.Source == "constraints" && in.Confidence == 1.0
+}
 
 func insightSource(in facts.Insight) string {
 	if in.Source == "" {

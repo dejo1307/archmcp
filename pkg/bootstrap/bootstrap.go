@@ -17,14 +17,18 @@ import (
 	"github.com/enola-labs/enola/internal/drift"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/explainers/complexity"
+	"github.com/enola-labs/enola/internal/explainers/constraints"
 	"github.com/enola-labs/enola/internal/explainers/coverage"
 	crossrepoexp "github.com/enola-labs/enola/internal/explainers/crossrepo"
 	"github.com/enola-labs/enola/internal/explainers/cycles"
 	"github.com/enola-labs/enola/internal/explainers/depth"
+	"github.com/enola-labs/enola/internal/explainers/domain"
+	"github.com/enola-labs/enola/internal/explainers/entrypoints"
 	"github.com/enola-labs/enola/internal/explainers/godclass"
 	"github.com/enola-labs/enola/internal/explainers/hotspots"
 	"github.com/enola-labs/enola/internal/explainers/intentcheck"
 	"github.com/enola-labs/enola/internal/explainers/layers"
+	"github.com/enola-labs/enola/internal/explainers/queryloops"
 	"github.com/enola-labs/enola/internal/explainers/surface"
 	"github.com/enola-labs/enola/internal/explainers/unusedroutes"
 	"github.com/enola-labs/enola/internal/extractors/ansibleextractor"
@@ -46,10 +50,12 @@ import (
 	"github.com/enola-labs/enola/internal/extractors/swiftextractor"
 	"github.com/enola-labs/enola/internal/extractors/tsextractor"
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/binders/clientseam"
 	"github.com/enola-labs/enola/internal/linkers/binders/emberresolver"
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcclientfqn"
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcimpl"
 	"github.com/enola-labs/enola/internal/linkers/binders/httphandler"
+	"github.com/enola-labs/enola/internal/linkers/binders/stimulusresolver"
 	"github.com/enola-labs/enola/internal/linkers/binders/unmatchedroutes"
 	"github.com/enola-labs/enola/internal/linkers/binders/vendoredspecs"
 	graphqlsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/graphqlsig"
@@ -60,6 +66,7 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/internal/renderers/llmcontext"
 	"github.com/enola-labs/enola/internal/server"
+	"github.com/enola-labs/enola/pkg/plan"
 	"github.com/enola-labs/enola/pkg/plugin"
 	"github.com/enola-labs/enola/pkg/status"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -211,6 +218,10 @@ func (e *Engine) RegisterExtractor(ext plugin.Extractor) {
 	e.eng.RegisterExtractor(ext)
 }
 
+func (e *Engine) Extractors() []plugin.Extractor {
+	return e.eng.Extractors()
+}
+
 // RegisterExplainer adds an explainer to the engine.
 func (e *Engine) RegisterExplainer(exp plugin.Explainer) {
 	e.eng.RegisterExplainer(exp)
@@ -258,6 +269,23 @@ func (s *Server) StartTime() time.Time {
 // additional (license-gated) tools before calling Run.
 func (s *Server) MCP() *mcp.Server {
 	return s.srv.MCPServer()
+}
+
+func (s *Server) SetPlanEngineFactory(factory plan.EngineFactory) {
+	s.srv.SetPlanEngineFactory(factory)
+}
+
+func PlanEngineFactory(cfg *config.Config) plan.EngineFactory {
+	return func() (plan.Generator, error) {
+		eng, err := engine.New(cfg)
+		if err != nil {
+			return nil, err
+		}
+		registerOSSPlugins(eng, cfg)
+		wrapped := &Engine{eng: eng}
+		wrapped.SetPersistCache(false)
+		return wrapped, nil
+	}
 }
 
 // Options controls bootstrap behavior.
@@ -375,7 +403,11 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create engine: %w", err)
 	}
+	registerOSSPlugins(eng, cfg)
+	return &Engine{eng: eng}, cfg, nil
+}
 
+func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	// Register all OSS extractors
 	eng.RegisterExtractor(cppextractor.New())
 	eng.RegisterExtractor(dotnetextractor.New())
@@ -408,10 +440,12 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 
 	// Register all OSS binders. Stage() decides when each runs relative to cross-repo
 	// linking, so the order here is presentation only — see plugin.Binder.
+	eng.RegisterBinder(clientseam.New())
 	eng.RegisterBinder(grpcclientfqn.New())
 	eng.RegisterBinder(emberresolver.New())
 	eng.RegisterBinder(grpcimpl.New())
 	eng.RegisterBinder(httphandler.New())
+	eng.RegisterBinder(stimulusresolver.New())
 	eng.RegisterBinder(vendoredspecs.New())
 	eng.RegisterBinder(unmatchedroutes.New(linkVocab))
 
@@ -429,17 +463,19 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	eng.RegisterExplainer(crossrepoexp.New())
 	eng.RegisterExplainer(coverage.New())
 	eng.RegisterExplainer(unusedroutes.New())
+	eng.RegisterExplainer(domain.New())
+	eng.RegisterExplainer(queryloops.New())
+	eng.RegisterExplainer(entrypoints.New())
 	eng.RegisterExplainer(godclass.New())
 	eng.RegisterExplainer(hotspots.New())
 	eng.RegisterExplainer(depth.New())
 	eng.RegisterExplainer(surface.New())
 	eng.RegisterExplainer(complexity.New())
 	eng.RegisterExplainer(intentcheck.New())
+	eng.RegisterExplainer(constraints.New())
 
 	// Register all OSS renderers
 	eng.RegisterRenderer(llmcontext.New(cfg.Output.MaxContextTokens))
-
-	return &Engine{eng: eng}, cfg, nil
 }
 
 // NewServer creates an MCP server wired to the given Engine.
@@ -448,6 +484,7 @@ func NewServer(eng *Engine, cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	srv.SetPlanEngineFactory(PlanEngineFactory(cfg))
 	// The one place the soft memory limit is worth announcing. ConfigureRuntime is
 	// silent (see its doc) because a working default is not news on every CLI
 	// invocation — but a server is long-lived, holds whole graphs in memory, and its

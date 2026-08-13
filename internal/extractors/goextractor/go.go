@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -53,6 +54,16 @@ func (e *GoExtractor) Detect(repoPath string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// OwnsFile declares the paths this extractor reads: Go source, plus the module
+// manifests whose contents steer resolution (readModulePath reads go.mod). It
+// makes the extractor cacheable like the other language extractors and lets
+// the file census attribute unparsed .go files to it rather than reporting Go
+// as an extension nothing claims.
+func (e *GoExtractor) OwnsFile(relFile string) bool {
+	base := filepath.Base(relFile)
+	return strings.HasSuffix(relFile, ".go") || base == "go.mod" || base == "go.sum"
 }
 
 // parsedPkg holds parsing results for a single Go package directory.
@@ -104,11 +115,17 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		pp.fileMap[f] = parsed
 	}
 
+	pkgDirs := make([]string, 0, len(parsedPkgs))
+	for pkgDir := range parsedPkgs {
+		pkgDirs = append(pkgDirs, pkgDir)
+	}
+	sort.Strings(pkgDirs)
+
 	// Build declared package-name map so buildFileImports can resolve implicit
 	// aliases correctly (e.g. "go-auth" path base → "auth" package name).
 	pkgNames := make(map[string]string)
-	for pkgDir, pp := range parsedPkgs {
-		if pp.pkgName != "" {
+	for _, pkgDir := range pkgDirs {
+		if pp := parsedPkgs[pkgDir]; pp.pkgName != "" {
 			pkgNames[pkgDir] = pp.pkgName
 		}
 	}
@@ -117,13 +134,13 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// This allows cross-package field-chain resolution (e.g., a subpackage can
 	// look up fields of a root-package struct).
 	globalFieldTypes := make(map[string]string)
-	for pkgDir, pp := range parsedPkgs {
+	for _, pkgDir := range pkgDirs {
 		select {
 		case <-ctx.Done():
 			return allFacts, ctx.Err()
 		default:
 		}
-		for k, v := range collectFieldTypes(pp.parsedFiles, pkgDir, modulePath, pkgNames) {
+		for k, v := range collectFieldTypes(parsedPkgs[pkgDir].parsedFiles, pkgDir, modulePath, pkgNames) {
 			globalFieldTypes[k] = v
 		}
 	}
@@ -132,8 +149,8 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// method wire paths) so consumer call sites in any package resolve to the
 	// "/pkg.Service/Method" they invoke.
 	var allParsed []*ast.File
-	for _, pp := range parsedPkgs {
-		allParsed = append(allParsed, pp.parsedFiles...)
+	for _, pkgDir := range pkgDirs {
+		allParsed = append(allParsed, parsedPkgs[pkgDir].parsedFiles...)
 	}
 	grpcStubs := buildGoGRPCStubIndex(allParsed)
 
@@ -144,7 +161,8 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	routePrefixes := buildRoutePrefixIndex(parsedPkgs, modulePath, pkgNames, globalFieldTypes)
 
 	// Pass 3: extract facts per package using the global field types.
-	for pkgDir, pp := range parsedPkgs {
+	for _, pkgDir := range pkgDirs {
+		pp := parsedPkgs[pkgDir]
 		select {
 		case <-ctx.Done():
 			return allFacts, ctx.Err()
@@ -173,12 +191,22 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *par
 	// even when the base URL is declared in a sibling file of the same package.
 	baseURLLits := collectBaseURLLiterals(pp.parsedFiles)
 
+	// The package's own top-level function names. It exists to tell a
+	// same-package generic call from an index into a map of funcs: `doRequest[T]
+	// (...)` and `handlers[name]()` are the same syntax, and only the first is a
+	// call to a function. Without it the conservative rule in flattenSelector
+	// drops both, which cost a Go CLI in this estate the FetchPagedList half of
+	// its API seam — api.Request never recorded calling api.doRequest, so the
+	// reachability walk had to find the seam by another route and found only
+	// part of it.
+	pkgFuncs := collectPackageFuncs(pp.parsedFiles)
+
 	for _, relFile := range pp.relFiles {
 		f, ok := pp.fileMap[relFile]
 		if !ok {
 			continue
 		}
-		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames, grpcStubs, pkgVarClients, baseURLLits, routePrefixes)...)
+		result = append(result, e.extractFile(fset, f, relFile, pkgDir, modulePath, fieldTypes, pkgNames, grpcStubs, pkgVarClients, baseURLLits, routePrefixes, pkgFuncs)...)
 	}
 
 	moduleFact := facts.Fact{
@@ -200,7 +228,7 @@ func (e *GoExtractor) extractPackage(fset *token.FileSet, pkgDir string, pp *par
 	return result
 }
 
-func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex, pkgVarClients map[string]string, baseURLLits map[string][]string, routePrefixes routePrefixIndex) []facts.Fact {
+func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkgDir, modulePath string, fieldTypes map[string]string, pkgNames map[string]string, grpcStubs *goGRPCStubIndex, pkgVarClients map[string]string, baseURLLits map[string][]string, routePrefixes routePrefixIndex, pkgFuncs map[string]bool) []facts.Fact {
 	var result []facts.Fact
 
 	// Build per-file import alias map for call resolution.
@@ -241,7 +269,7 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 	for _, decl := range f.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
-			result = append(result, e.extractFunc(fset, d, relFile, pkgDir, modulePath, fileImports, fieldTypes)...)
+			result = append(result, e.extractFunc(fset, d, relFile, pkgDir, modulePath, fileImports, fieldTypes, pkgFuncs)...)
 		case *ast.GenDecl:
 			result = append(result, e.extractGenDecl(fset, d, relFile, pkgDir, modulePath, fileImports)...)
 		}
@@ -265,7 +293,7 @@ func (e *GoExtractor) extractFile(fset *token.FileSet, f *ast.File, relFile, pkg
 	return result
 }
 
-func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile, pkgDir, modulePath string, fileImports map[string]string, fieldTypes map[string]string) []facts.Fact {
+func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile, pkgDir, modulePath string, fileImports map[string]string, fieldTypes map[string]string, pkgFuncs map[string]bool) []facts.Fact {
 	var result []facts.Fact
 
 	name := fn.Name.Name
@@ -335,6 +363,7 @@ func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile
 			recvVar:    recvVar,
 			recvType:   receiver,
 			fieldTypes: fieldTypes,
+			pkgFuncs:   pkgFuncs,
 		}
 		ctx.localTypes = collectLocalTypes(fn.Body, ctx)
 		m := analyzeBody(fn.Body, ctx, qualifiedName)
@@ -361,6 +390,9 @@ func (e *GoExtractor) extractFunc(fset *token.FileSet, fn *ast.FuncDecl, relFile
 		}
 		if m.loopCount > 0 {
 			symbolFact.Props["loop_count"] = m.loopCount
+		}
+		if len(m.clientPathCalls) > 0 {
+			symbolFact.Props["client_path_calls"] = m.clientPathCalls
 		}
 		if len(m.callsInLoop) > 0 {
 			symbolFact.Props["calls_in_loop"] = m.callsInLoop
@@ -465,6 +497,7 @@ func (e *GoExtractor) extractTypeSpec(fset *token.FileSet, gd *ast.GenDecl, ts *
 		}
 	case *ast.InterfaceType:
 		kind = facts.SymbolInterface
+		result = append(result, interfaceMethodSymbols(fset, t, relFile, pkgDir, name)...)
 	default:
 		kind = facts.SymbolType
 	}
@@ -501,6 +534,40 @@ func (e *GoExtractor) extractTypeSpec(fset *token.FileSet, gd *ast.GenDecl, ts *
 	return result
 }
 
+// interfaceMethodSymbols emits one symbol fact per named method an interface
+// declaration carries. The declaration is as measurable as the interface type
+// fact beside it, and it is the member the constraints evaluator needs: a call
+// edge through an interface value targets pkgDir.Iface.Method, and exact-name,
+// fail-closed resolution grounds only on a fact by that name (finding 0009).
+// Embedded interfaces have no method name of their own here and emit nothing —
+// expanding them would guess at another declaration's contents.
+func interfaceMethodSymbols(fset *token.FileSet, iface *ast.InterfaceType, relFile, pkgDir, ifaceName string) []facts.Fact {
+	var result []facts.Fact
+	if iface.Methods == nil {
+		return result
+	}
+	for _, field := range iface.Methods.List {
+		for _, methodIdent := range field.Names {
+			result = append(result, facts.Fact{
+				Kind: facts.KindSymbol,
+				Name: pkgDir + "." + ifaceName + "." + methodIdent.Name,
+				File: relFile,
+				Line: fset.Position(methodIdent.Pos()).Line,
+				Props: map[string]any{
+					"symbol_kind": facts.SymbolMethod,
+					"exported":    methodIdent.IsExported(),
+					"language":    "go",
+					"receiver":    ifaceName,
+				},
+				Relations: []facts.Relation{
+					{Kind: facts.RelDeclares, Target: pkgDir},
+				},
+			})
+		}
+	}
+	return result
+}
+
 // resolveCtx holds the context needed to resolve call targets within a function body.
 type resolveCtx struct {
 	pkgDir     string
@@ -510,14 +577,20 @@ type resolveCtx struct {
 	recvType   string            // receiver type (star stripped), e.g. "AuthHandler"
 	fieldTypes map[string]string // "pkgDir.TypeName.fieldName" → pre-qualified typeString
 	localTypes map[string]string // local variable name → qualified type, e.g. "svc" → "internal/auth.Service"
+	pkgFuncs   map[string]bool   // this package's top-level function names
 }
 
 // bodyMetrics holds the call list and the per-function complexity signals
 // derived from a single walk of a function body.
 type bodyMetrics struct {
-	calls              []string // resolved call targets, deduped, in source order
-	instantiates       []string // resolved internal struct types constructed as composite literals, deduped
-	callsInLoop        []string // subset of calls invoked at loop nesting depth >= 1
+	calls        []string // resolved call targets, deduped, in source order
+	instantiates []string // resolved internal struct types constructed as composite literals, deduped
+	callsInLoop  []string // subset of calls invoked at loop nesting depth >= 1
+	// clientPathCalls records "callee\x00path\x00METHOD" for every call passing a
+	// path-shaped string literal. It is a CANDIDATE list and nothing more: whether
+	// the callee is an HTTP seam cannot be known here, because the seam usually
+	// lives in another package and this pass sees one. The seam binder decides.
+	clientPathCalls    []string
 	callsInScalingLoop []string // subset of calls invoked at scaling (unbounded) nesting depth >= 1
 	loopDepth          int      // max nesting depth of for/range loops
 	scalingLoopDepth   int      // max nesting counting only unbounded (input-scaling) loops
@@ -632,7 +705,18 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 				decisions++
 			}
 		case *ast.CallExpr:
-			chain := flattenSelector(x.Fun)
+			callee := x.Fun
+			// `doRequest[T](…)` — a same-package generic call. flattenSelector
+			// refuses a bare identifier under an index because `handlers[name]()`
+			// is written identically and would resolve to the map. Knowing the
+			// package's function names settles which one this is, so the safe
+			// default can be narrowed exactly where it costs something.
+			if idx, isIndex := callee.(*ast.IndexExpr); isIndex {
+				if id, isIdent := idx.X.(*ast.Ident); isIdent && ctx.pkgFuncs[id.Name] {
+					callee = idx.X
+				}
+			}
+			chain := flattenSelector(callee)
 			if chain == nil {
 				return true
 			}
@@ -658,6 +742,17 @@ func analyzeBody(body ast.Node, ctx resolveCtx, selfName string) bodyMetrics {
 			}
 			if resolved == selfName {
 				m.recursiveSelf = true
+			}
+			// Third-party callees are dropped here rather than in the binder,
+			// because a router registration is the commonest call in Go that
+			// passes a path literal — `mux.Router.HandleFunc("/api/orders", h)`
+			// and gin's `api.GET("/ping", h)` are SERVER routes, and recording
+			// them as candidates put a noisy provisional list on every symbol
+			// that wires a router.
+			if isModuleLocalCallee(resolved) {
+				if path, verb, ok := pathLiteralArg(x); ok {
+					m.clientPathCalls = append(m.clientPathCalls, resolved+"\x00"+path+"\x00"+verb)
+				}
 			}
 		case *ast.CompositeLit:
 			// A composite literal `T{...}` / `&T{...}` uses (instantiates) type T.
@@ -789,6 +884,41 @@ func flattenSelector(expr ast.Expr) []string {
 			return nil
 		}
 		return append(prefix, e.Sel.Name)
+	case *ast.IndexListExpr:
+		// A generic instantiation with several type arguments, `pkg.Map[K, V](…)`.
+		// Unambiguous: Go has no multi-index expression other than instantiation.
+		return flattenSelector(e.X)
+	case *ast.IndexExpr:
+		// An index in the callee chain, which is two different things wearing one
+		// syntax. `api.Request[Task](…)` is a generic instantiation — 30 of
+		// that same Go CLI's 35 such sites, the whole of its API seam, invisible
+		// while `fmt.Sprintf` two lines below in the same closure came through
+		// fine.
+		// `g.facts[i].PropString(…)` is a method on a slice element, and on the
+		// tree of this very repository that is the commoner shape: two symbols
+		// gained loop-call props from it on the first run after this change.
+		//
+		// Both were being dropped, which is what returning nil here means.
+		//
+		// Only a qualified callee is unwrapped, and that is the fail-closed
+		// choice rather than an oversight. `a[i](…)` is equally valid Go for
+		// calling out of a map or slice of funcs, syntax cannot tell the two
+		// apart without type information, and resolveChain turns a bare
+		// identifier into `<pkg>.<name>` — so unwrapping `handlers[key]()` would
+		// not dangle, it would draw a confident edge to a real package-level
+		// variable. A same-package generic call stays missing instead. A missing
+		// edge beats a wrong one.
+		//
+		// An element call resolves to its field chain — `g.facts[i]` becomes
+		// `g.facts` — so `g.facts.PropString` reads as a method on the slice
+		// rather than on its element. That is the convention this extractor
+		// already applies to every other field chain, and it is an imprecision in
+		// the name rather than a wrong target: the call is real and it is made at
+		// that path.
+		if _, qualified := e.X.(*ast.SelectorExpr); !qualified {
+			return nil
+		}
+		return flattenSelector(e.X)
 	}
 	return nil
 }
@@ -899,9 +1029,10 @@ func collectFieldTypes(files []*ast.File, pkgDir, modulePath string, pkgNames ma
 // Falls back to the raw joined string when resolution is not possible, so no call is dropped.
 //
 // Known limitation: calls through an interface value (e.g. iface.Method()) cannot be
-// statically bound to a concrete implementation without type-flow analysis, so the
-// resolved target may name an interface method that has no backing symbol fact. Such
-// edges surface as "unresolved" nodes during traversal rather than concrete callees.
+// statically bound to a concrete implementation without type-flow analysis. The
+// resolved target names the interface method, which interfaceMethodSymbols backs with
+// a declared symbol fact — the edge grounds on the declaration, never on a guessed
+// implementation.
 func resolveChain(chain []string, ctx resolveCtx) string {
 	switch len(chain) {
 	case 0:
@@ -1215,4 +1346,21 @@ func typeExprToString(expr ast.Expr) string {
 		return typeExprToString(t.X)
 	}
 	return ""
+}
+
+// collectPackageFuncs returns the names of every top-level function declared in
+// a package, methods excluded — a method is never called as a bare identifier,
+// so including one could only add a false positive.
+func collectPackageFuncs(files []*ast.File) map[string]bool {
+	out := map[string]bool{}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || fn.Name == nil {
+				continue
+			}
+			out[fn.Name.Name] = true
+		}
+	}
+	return out
 }

@@ -27,6 +27,10 @@ func New() *Extractor { return &Extractor{} }
 // Name returns the extractor name.
 func (e *Extractor) Name() string { return "mdintent" }
 
+func (e *Extractor) OwnsFactFile(relFile string) bool {
+	return strings.HasSuffix(relFile, ".md")
+}
+
 // Detect probes for a markdown file carrying the enola_intent key, up to five
 // directory levels — wiki trees nest (wiki/<scope>/permanent/<area>/page.md).
 func (e *Extractor) Detect(repoPath string) (bool, error) {

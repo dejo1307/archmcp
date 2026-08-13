@@ -19,6 +19,46 @@ import (
 // as "nothing recorded yet" rather than as a failure.
 var ErrNoHistory = errors.New("no architecture history recorded")
 
+// FormatFileName marks a history root's store format, beside the log. Histories written
+// before the marker existed carry none and are read as FormatVersion 1 — the only format
+// that ever existed then — so the marker's absence is compatibility, never an error.
+const FormatFileName = "format"
+
+// FormatVersion is the store format this build reads and writes: 1, the JSONL log plus
+// numbered blob segments. Any future change to that layout bumps this, and the marker is
+// what lets an old build REFUSE a new store instead of misreading it.
+const FormatVersion = 1
+
+// UnknownFormatError names a history store whose format marker this build does not know.
+// A typed error rather than a string, so a caller can tell "refuse to read" from
+// "corrupt" — the store is presumed healthy, just newer than the reader.
+type UnknownFormatError struct {
+	Root    string
+	Version string
+}
+
+func (e *UnknownFormatError) Error() string {
+	return fmt.Sprintf(
+		"the history at %s declares store format %q and this build reads format %d — refusing to read rather than misread. "+
+			"A newer enola wrote this store; upgrade enola to read it, or delete the history directory (it is derived data, losing only convenience)",
+		e.Root, e.Version, FormatVersion)
+}
+
+// checkFormat verdicts a root's marker before anything reads its log.
+func checkFormat(root string) error {
+	raw, err := os.ReadFile(filepath.Join(root, FormatFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading the history format marker in %s: %w", root, err)
+	}
+	if v := strings.TrimSpace(string(raw)); v != strconv.Itoa(FormatVersion) {
+		return &UnknownFormatError{Root: root, Version: v}
+	}
+	return nil
+}
+
 // Read returns every entry in a history root, oldest first.
 //
 // A TRAILING malformed line is tolerated and dropped: the log is appended to on every
@@ -28,6 +68,9 @@ var ErrNoHistory = errors.New("no architecture history recorded")
 // corruption rather than an interrupted write, and silently skipping it would hide data
 // loss behind a log that still renders.
 func Read(root string) ([]Entry, error) {
+	if err := checkFormat(root); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(root, LogFileName)
 	data, err := os.ReadFile(path)
 	if err != nil {

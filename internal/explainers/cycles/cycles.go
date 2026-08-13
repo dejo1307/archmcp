@@ -10,14 +10,19 @@ import (
 )
 
 // maxCycleModules is the largest SCC still reported as a discrete, actionable
-// "Cyclic dependency". Larger components are not a fixable cycle — in an
-// autoloaded language (Ruby/Rails) mutual constant references across many
-// directories are the expected topology, so a 99-module SCC is a coupling-density
-// signal, not a defect. Such components are reported once as a softer,
-// lower-confidence "Highly coupled module cluster" note instead of an alarming
-// confidence-1.0 cycle with advice ("introduce an interface") that cannot
-// meaningfully be applied to a 99-node cluster. Shared with the depth explainer
-// via common.OversizedClusterModules.
+// "Cyclic dependency". Larger components are reported as a coupling cluster
+// instead, because advice like "introduce an interface" cannot meaningfully be
+// applied to a 99-node component. Shared with the depth explainer via
+// common.OversizedClusterModules.
+//
+// The distinction is about ACTIONABILITY and must never touch confidence. A
+// cluster is every bit as certain as a cycle — it *is* a cycle, a larger one —
+// and confidence in this codebase means "is this real", which is what
+// min_confidence filters and the check gate threshold read. Encoding "is this
+// easy to fix" in the same number made severity fall as the problem grew:
+// adding an edge that pushed an 8-module cycle to 10 resolved a 1.0 finding and
+// replaced it with a 0.4 advisory, so a strictly worse graph reported as an
+// improvement and passed a gate it had previously failed.
 const maxCycleModules = common.OversizedClusterModules
 
 // maxClusterMembers caps how many representative members are listed as evidence
@@ -42,7 +47,24 @@ func (e *CycleExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 	// excluded: has_many/belongs_to pairs are inherently bidirectional domain
 	// relationships, not load-order dependencies, and would otherwise manufacture
 	// spurious two-module cycles between associated models.
-	graph := common.BuildModuleGraphExcluding(store, facts.CouplingAssociation)
+	//
+	// Constant references are excluded for the same reason one step further out.
+	// An autoloaded constant reference is a COUPLING claim, not a LOAD-ORDER
+	// claim: under Zeitwerk `Billing::Invoice.call` inside app/models resolves
+	// when the line runs, so the two directories can reference each other freely
+	// and nothing about the boot sequence is at stake. Grading them here made the
+	// finding say a thing that is not true of the codebase — and made it useless
+	// besides, since every app/* directory calls every other by design, so a flat
+	// Rails app reports one blob spanning nearly its whole tree and no cycle a
+	// team could act on. What survives the exclusion is the load-order claim
+	// proper: inheritance and mixins, which the class body evaluates at
+	// definition time, `require`, which is a load instruction, and a packwerk
+	// dependency, which the app declared itself. Nothing is deleted by this: the
+	// reference edges stay in the fact store, the depth explainer still builds
+	// the whole graph from them, and anything asking what couples to what still
+	// gets the same answer. What narrows is only the graph the gated finding is
+	// derived from.
+	graph := common.BuildModuleGraphExcluding(store, facts.CouplingAssociation, facts.CouplingReference)
 
 	// Which build unit each module compiles into, where the language models one.
 	// See facts.CompilationUnitProps: a cycle confined to a single unit is not a
@@ -164,7 +186,9 @@ func coupledClusterInsight(scc []string) facts.Insight {
 				"coupling-density signal, not a defect to break.",
 			len(scc),
 		),
-		Confidence: 0.4,
+		// Deterministic and certain, exactly like the cycle it grew out of.
+		// Lowering it here is what let a growing cycle drop under the gate.
+		Confidence: 1.0,
 		Evidence:   evidence,
 		Actions: []string{
 			"Look for a few high-traffic modules whose extraction would thin the cluster",

@@ -18,11 +18,13 @@ import (
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/drift"
 	"github.com/enola-labs/enola/internal/engine"
+	"github.com/enola-labs/enola/internal/explainers/constraints"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/updatecheck"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/coverage"
 	"github.com/enola-labs/enola/pkg/mcputil"
+	"github.com/enola-labs/enola/pkg/plan"
 	"github.com/enola-labs/enola/pkg/status"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -104,6 +106,8 @@ type Server struct {
 	freshBanner string
 	freshAt     time.Time
 
+	planFactory plan.EngineFactory
+
 	// updateSaid is set once the "a newer enola exists" notice has been attached to a
 	// tool result, so it is said once per SERVER PROCESS and never again.
 	//
@@ -177,6 +181,10 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) SetToolCallback(cb func(status.ToolCall)) {
 	fn := toolCallbackFunc(cb)
 	s.toolCallback.Store(&fn)
+}
+
+func (s *Server) SetPlanEngineFactory(factory plan.EngineFactory) {
+	s.planFactory = factory
 }
 
 // fireToolCallback invokes the tool callback if set. Safe to call concurrently
@@ -1532,6 +1540,24 @@ func (s *Server) registerTools() {
 		return jsonResult(resp)
 	})
 
+	// Tool: endpoint_impact
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "endpoint_impact",
+		Description: "Answer what changing an HTTP endpoint reaches: the route, the controller serving it, the models that controller touches, the models associated with those, and the physical tables behind them. " +
+			"Use impact_analysis when you have a symbol; use this when what you have is a URL. " +
+			"Client call sites and mock-server routes are excluded — this answers about what the application serves. " +
+			"Each hop can run out, and the result names the one that did: a route whose controller does not resolve is reported as reaching an UNKNOWN set, not an empty one.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args endpointImpactArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		if args.Endpoint == "" {
+			return errorResult("endpoint is required"), nil, nil
+		}
+		return jsonResult(store.AnalyzeEndpoint(args.Endpoint, args.MaxRoutes))
+	})
+
 	// Tool: impact_analysis
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "impact_analysis",
@@ -1673,6 +1699,85 @@ func (s *Server) registerTools() {
 			writeGoverningIntent(&sb, pages)
 		}
 		return textResult(capTokens(sb.String(), args.MaxTokens, false)), nil, nil
+	})
+
+	// Tool: constraints_for
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "constraints_for",
+		Description: "The pre-edit contract for a file or fact: which declared constraint components contain it, what every rule binding those components says (in words, with the rationale it was declared with and its enforcement mode), and the current constraint violations whose evidence names the target. " +
+			"Guidance rules ride each component's own guidance list — steering, not law — carrying the advice message, its mode, and each exemplar of prior art annotated present, absent, or unmeasured against this snapshot. " +
+			"Ask BEFORE editing — the target may be a file path that does not exist yet, matched against component patterns, so the answer covers code about to be written. " +
+			"target= is a file path (repo-relative) or an exact fact name; matching is exact and fail-closed, like the constraints explainer's own. " +
+			"Returns JSON. An empty result distinguishes 'no constraint components compiled in this snapshot' (the contract was not asked) from 'nothing binds this target'.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args constraintsForArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		if args.Target == "" {
+			return errorResult("target is required"), nil, nil
+		}
+		target := s.normalizeToRelative(args.Target)
+		bindings, declared := constraints.ContractFor(store, target)
+		if !declared {
+			return textResult("No constraint components are compiled into this snapshot — the contract was not asked. " +
+				"Components and rules ride enola_intent page declarations and compile at snapshot time; see docs/INTENT.md."), nil, nil
+		}
+		resp := constraintsForResponse{Target: target, Components: bindings}
+		if snap := s.eng.Snapshot(); snap != nil {
+			resp.Violations = constraints.ViolationsReferencing(snap.Insights, target)
+		}
+		return jsonResultCapped(resp, args.MaxTokens)
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "plan_check",
+		Description: "Plan an intended change BEFORE editing: for each target — paths (which may not exist yet) or exact fact names — the declared constraint components and rules governing it, with mode and the because: each was declared with, plus its blast radius (fan-in/fan-out over the current snapshot, capped samples with exact counts). " +
+			"Pass patch= (a unified diff) for the counterfactual: the patch is applied to a scratch copy of the repo — the working tree and its .enola are never touched — facts are regenerated there, and the constraint verdicts that WOULD appear are reported in new/resolved/unchanged buckets, each naming the rule, the would-be witness, and its because:. " +
+			"Governance answers from the working tree's declarations (enola-intent.yaml plus enola/constraints/), so an edit to the law is visible without regenerating. " +
+			"A patch that does not apply, or that touches files outside the snapshot's scope, is a named error, never a guess. When no rule governs a target the report says so explicitly, and the snapshot's staleness relative to the tree is stated rather than silently answered around. " +
+			"A report, never a gate: like enola check, the verdict is for the caller to weigh. Returns JSON.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args planCheckArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		repoPath := s.currentRepoPath()
+		if repoPath == "" {
+			return errorResult("No snapshot available. Run generate_snapshot first."), nil, nil
+		}
+		if len(args.Paths) == 0 && len(args.Symbols) == 0 && args.Patch == "" {
+			return errorResult("nothing to plan: give paths, symbols, or patch"), nil, nil
+		}
+		label := filepath.Base(repoPath)
+		contractStore, err := plan.ContractStore(repoPath, store.All(), s.eng.Config().Intent[label])
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		info := plan.SnapshotInfo{}
+		if snap := s.eng.Snapshot(); snap != nil {
+			info.GeneratedAt = snap.Meta.GeneratedAt
+		}
+		if d, driftErr := s.eng.Drift(repoPath); driftErr == nil && (d.Unknown || d.Any()) {
+			info.Staleness = d.Summary(5)
+		}
+		paths := make([]string, 0, len(args.Paths))
+		for _, p := range args.Paths {
+			paths = append(paths, s.normalizeToRelative(p))
+		}
+		deps := plan.Deps{
+			RepoPath:      repoPath,
+			RepoLabel:     label,
+			Store:         contractStore,
+			Snapshot:      info,
+			OutputDirName: s.eng.Config().Output.Dir,
+			NewEngine:     s.planFactory,
+		}
+		report, err := plan.Compute(ctx, plan.Request{Paths: paths, Symbols: args.Symbols, Patch: []byte(args.Patch)}, deps)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		return jsonResultCapped(report, args.MaxTokens)
 	})
 
 	// Tool: coverage_report
@@ -2629,6 +2734,11 @@ type findPathArgs struct {
 }
 
 // impactAnalysisArgs are the arguments for the impact_analysis tool.
+type endpointImpactArgs struct {
+	Endpoint  string `json:"endpoint" jsonschema:"required,The HTTP endpoint being changed. Substring match on the path, optionally prefixed with a verb: 'GET /v1/candidates' or just '/v1/candidates'."`
+	MaxRoutes int    `json:"max_routes,omitempty" jsonschema:"How many matched endpoints to follow (1-200). A bare prefix can match hundreds. Default: 25."`
+}
+
 type impactAnalysisArgs struct {
 	Target         string `json:"target" jsonschema:"required,The node being changed (fact name, substring match). Supports scoped prefixes repo:/kind:/file: to disambiguate."`
 	MaxDepth       int    `json:"max_depth,omitempty" jsonschema:"How many hops of impact to compute (1-10). Default: 3."`
@@ -3262,6 +3372,28 @@ type governingIntentArgs struct {
 	Target    string `json:"target" jsonschema:"required,A fact name (exact match)\\, a file path (label-prefixed or repo-relative)\\, or a compiled page path"`
 	Repo      string `json:"repo,omitempty" jsonschema:"Repo label to disambiguate a file path measured in more than one repo"`
 	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens)"`
+}
+
+// constraintsForArgs are the arguments for the constraints_for tool.
+type constraintsForArgs struct {
+	Target    string `json:"target" jsonschema:"required,A file path (repo-relative\\, may not exist yet) or an exact fact name"`
+	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens)"`
+}
+
+type planCheckArgs struct {
+	Paths     []string `json:"paths,omitempty" jsonschema:"Repo-relative file paths the intended change touches (they may not exist yet)"`
+	Symbols   []string `json:"symbols,omitempty" jsonschema:"Exact fact names the intended change touches"`
+	Patch     string   `json:"patch,omitempty" jsonschema:"A unified diff to evaluate counterfactually over a scratch copy — the working tree is never touched"`
+	MaxTokens int      `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens)"`
+}
+
+// constraintsForResponse is the constraints_for tool's JSON shape: the
+// components containing the target, each with the rules binding it, plus the
+// current constraint violations whose evidence names the target.
+type constraintsForResponse struct {
+	Target     string                         `json:"target"`
+	Components []constraints.ComponentBinding `json:"components"`
+	Violations []facts.Insight                `json:"violations,omitempty"`
 }
 
 // readSourceWindow reads lines from a file around the given line number.

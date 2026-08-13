@@ -192,6 +192,30 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 	if isRails {
 		routeFacts := extractAllRoutes(repoPath, files)
 		allFacts = append(allFacts, routeFacts...)
+
+		assocFacts, assocUnresolved := extractAssociations(repoPath, files)
+		allFacts = append(allFacts, assocFacts...)
+		if fact, ok := associationCoverageFact(repoPath, len(assocFacts), assocUnresolved); ok {
+			allFacts = append(allFacts, fact)
+		}
+
+		allFacts = append(allFacts, extractBroadcasts(repoPath, files)...)
+	}
+
+	// A namespace's declared table_name_prefix corrects the models nested under
+	// it, before the dump is folded in: the fold matches a model to a table by
+	// the name the model claims, so a claim corrected afterwards would take the
+	// wrong table's column census with it and leave its own table looking
+	// unclaimed.
+	applyTableNamePrefixes(allFacts)
+
+	// Schema facts from the database's own dump, folded after the model pass so
+	// a table a model already claims lands its census on that model's fact.
+	allFacts = append(allFacts, applySchemaDump(repoPath, allFacts)...)
+
+	resolvedCalls, unresolvedCalls := countResolvedCalls(allFacts)
+	if fact, ok := callCoverageFact(repoPath, resolvedCalls, unresolvedCalls); ok {
+		allFacts = append(allFacts, fact)
 	}
 
 	// Grape APIs. Not gated on isRails — Grape is a Rack framework and a Grape-only
@@ -206,17 +230,21 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 	// reference-only KindFileRef facts (no symbols); parsed in parallel.
 	var tmplFiles []string
 	for _, relFile := range files {
-		if isTemplateFile(relFile) {
+		if isTemplateFile(relFile) || isJbuilderFile(relFile) {
 			tmplFiles = append(tmplFiles, relFile)
 		}
 	}
+	controllers := newStimulusControllerIndex(files)
 	tmplFacts := parallel.MapFiles(ctx, tmplFiles, func(relFile string) []facts.Fact {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[ruby-extractor] error reading template %s: %v", relFile, err)
 			return nil
 		}
-		return extractTemplateRefs(src, relFile)
+		ff := extractTemplateRefs(src, relFile)
+		ff = append(ff, extractStimulusBindings(repoPath, relFile, src, controllers)...)
+		ff = append(ff, extractRenderTargets(repoPath, relFile, src)...)
+		return append(ff, extractTurboFrames(relFile, src)...)
 	})
 	for _, ff := range tmplFacts {
 		allFacts = append(allFacts, ff...)
@@ -345,13 +373,19 @@ func isRubyFile(path string) bool {
 	return filepath.Base(path) == "Rakefile"
 }
 
-// OwnsFile implements plugin.FileOwner for incremental caching. It is
-// extension-only (no repoPath is available to sniff shebangs), so extensionless
-// Ruby executables are not tracked for incremental cache invalidation; edits to
-// them won't invalidate the cache key on their own. This is acceptable — such
-// files are rare and the cacheVersion bump forces a full re-extract when the
-// extractor's behavior changes.
-func (e *RubyExtractor) OwnsFile(relFile string) bool { return isRubyFile(relFile) }
+// OwnsFile implements plugin.FileOwner for incremental caching and the file
+// census. It claims everything Extract actually reads: Ruby source, the view
+// templates the reference pass parses (ERB/Slim/HAML), and Jbuilder views —
+// an unclaimed-but-parsed template lied twice, reading as a vocabulary gap on
+// the census while its edits failed to invalidate this extractor's cache key.
+// It is extension-only (no repoPath is available to sniff shebangs), so
+// extensionless Ruby executables are not tracked for incremental cache
+// invalidation; edits to them won't invalidate the cache key on their own.
+// This is acceptable — such files are rare and the cacheVersion bump forces a
+// full re-extract when the extractor's behavior changes.
+func (e *RubyExtractor) OwnsFile(relFile string) bool {
+	return isRubyFile(relFile) || isTemplateFile(relFile) || isJbuilderFile(relFile)
+}
 
 // isPublicAPI checks if a file is within a packwerk package's app/public/ directory.
 func isPublicAPI(relFile string, pkg *packwerkInfo) bool {
@@ -371,4 +405,44 @@ func isPublicAPI(relFile string, pkg *packwerkInfo) bool {
 
 	publicDir := filepath.Join(ownerPkg, "app", "public")
 	return strings.HasPrefix(relFile, publicDir+"/") || strings.HasPrefix(relFile, publicDir+"\\")
+}
+
+// countResolvedCalls splits call edges into those naming a symbol this
+// extraction emitted and those naming something else, so the coverage fact
+// reports a ratio rather than a total.
+func countResolvedCalls(all []facts.Fact) (int, map[string]int) {
+	known := make(map[string]bool, len(all))
+	for _, fact := range all {
+		if fact.Kind == facts.KindSymbol {
+			known[fact.Name] = true
+		}
+	}
+	resolved := 0
+	unresolved := map[string]int{}
+	for _, fact := range all {
+		if fact.Kind != facts.KindSymbol {
+			continue
+		}
+		for _, rel := range fact.Relations {
+			if rel.Kind != facts.RelCalls {
+				continue
+			}
+			if known[rel.Target] {
+				resolved++
+				continue
+			}
+			// Named by cause rather than lumped: a bare method name is an
+			// unresolved receiver, a dotted one is a call on something untyped,
+			// and a constant is a class this extraction never saw.
+			switch {
+			case strings.Contains(rel.Target, "."):
+				unresolved["untyped_receiver"]++
+			case rel.Target != "" && rel.Target[0] >= 'A' && rel.Target[0] <= 'Z':
+				unresolved["unknown_constant"]++
+			default:
+				unresolved["unqualified_method"]++
+			}
+		}
+	}
+	return resolved, unresolved
 }

@@ -158,22 +158,25 @@ func main() {
 		log.Fatalf("failed to create engine: %v", err)
 	}
 
+	// A positional directory names one repository and overrides the config — in
+	// every mode, not just --generate: the MCP tools resolve their repo through
+	// cfg.Repo, so a server launched as `enola /path/to/repo` must serve that
+	// repo no matter which directory it was started from. Repos must be cleared
+	// too, or it would win in RepoPaths.
+	if repoArg != "" {
+		abs, err := filepath.Abs(repoArg)
+		if err != nil {
+			log.Fatalf("failed to resolve repo path: %v", err)
+		}
+		cfg.Repo, cfg.Repos = abs, nil
+	}
+
 	if explainMode {
-		runExplain(ctx, eng, cfg, repoArg)
+		runExplain(ctx, eng, cfg)
 		os.Exit(0)
 	}
 
 	if generateMode {
-		// A positional directory names one repository and overrides the config, so
-		// `enola --generate /path/to/repo` snapshots that repo rather than the working
-		// directory. Repos must be cleared too, or it would win in RepoPaths.
-		if repoArg != "" {
-			abs, err := filepath.Abs(repoArg)
-			if err != nil {
-				log.Fatalf("failed to resolve repo path: %v", err)
-			}
-			cfg.Repo, cfg.Repos = abs, nil
-		}
 		repoPaths, err := cfg.RepoPaths()
 		if err != nil {
 			log.Fatalf("failed to resolve repo path: %v", err)
@@ -313,24 +316,12 @@ func helpSpec() cli.HelpSpec {
 	return spec
 }
 
-// runExplain indexes the given repository (defaulting to the configured repo)
-// and prints a human-readable statistical summary to stdout.
-func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, repoArg string) {
-	// A positional argument names one repository and overrides the config; with no
-	// argument the config decides, which is what lets `repos:` produce a report over
-	// the whole cluster rather than its first member.
-	var repoPaths []string
-	if repoArg != "" {
-		abs, err := filepath.Abs(repoArg)
-		if err != nil {
-			log.Fatalf("failed to resolve repo path: %v", err)
-		}
-		repoPaths = []string{abs}
-	} else {
-		var err error
-		if repoPaths, err = cfg.RepoPaths(); err != nil {
-			log.Fatalf("failed to resolve repo path: %v", err)
-		}
+// runExplain indexes the configured repository (or repositories) and prints a
+// human-readable statistical summary to stdout.
+func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config) {
+	repoPaths, err := cfg.RepoPaths()
+	if err != nil {
+		log.Fatalf("failed to resolve repo path: %v", err)
 	}
 
 	// --explain is a read-only, no-artifacts mode: reuse a cache if one exists,

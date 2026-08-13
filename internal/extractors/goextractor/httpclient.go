@@ -343,3 +343,92 @@ func goAPIHint(relFile string) string {
 	}
 	return strings.TrimSuffix(base, ".go")
 }
+
+// pathLiteralArg reads a call's arguments for a path-shaped string literal and
+// the HTTP verb sitting beside it, which is how a repo talks to its own HTTP
+// helper: `api.Request[Task]("/me/tasks", api.Options{Method: "PUT"})`.
+//
+// It answers about the CALL SITE only. Whether the callee actually reaches
+// net/http is a question about the whole module and is settled by the seam
+// binder — this pass sees one package, and in the case that motivated it the
+// helper is two packages away. Recording a candidate here and deciding there is
+// what keeps the two halves honest.
+//
+// The verb defaults to GET because that is what an HTTP client with no method
+// set does, and the linker discriminates on it. A composite-literal field named
+// Method carries the override in both the forms Go writes: a string literal, and
+// the net/http constants.
+func pathLiteralArg(call *ast.CallExpr) (path, verb string, ok bool) {
+	verb = "GET"
+	for _, arg := range call.Args {
+		if lit, isLit := arg.(*ast.BasicLit); isLit && lit.Kind == token.STRING {
+			if candidate, err := strconv.Unquote(lit.Value); err == nil && isPathShaped(candidate) && path == "" {
+				path = candidate
+			}
+			continue
+		}
+		if composite, isComposite := arg.(*ast.CompositeLit); isComposite {
+			if m := methodFieldOf(composite); m != "" {
+				verb = m
+			}
+		}
+	}
+	return path, verb, path != ""
+}
+
+// isPathShaped keeps the candidate list to strings that could name an endpoint.
+// A leading slash and no whitespace excludes prose and format strings; requiring
+// a segment excludes "/" itself, which names nothing a client could be matched on.
+func isPathShaped(s string) bool {
+	if len(s) < 2 || s[0] != '/' || strings.ContainsAny(s, " \t\n\"") {
+		return false
+	}
+	return strings.Trim(s, "/") != ""
+}
+
+// methodFieldOf reads a `Method:` field out of an options struct literal, in the
+// two forms Go writes it: a string literal, and http.MethodPut.
+func methodFieldOf(lit *ast.CompositeLit) string {
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Method" {
+			continue
+		}
+		switch v := kv.Value.(type) {
+		case *ast.BasicLit:
+			if v.Kind == token.STRING {
+				if s, err := strconv.Unquote(v.Value); err == nil {
+					return strings.ToUpper(s)
+				}
+			}
+		case *ast.SelectorExpr:
+			// http.MethodPut and friends.
+			if strings.HasPrefix(v.Sel.Name, "Method") {
+				return strings.ToUpper(strings.TrimPrefix(v.Sel.Name, "Method"))
+			}
+		}
+	}
+	return ""
+}
+
+// isModuleLocalCallee reports whether a resolved call target names a function in
+// this module rather than a dependency. Module-internal imports resolve to a
+// relative path (`internal/api.Request`); a dependency keeps its domain
+// (`github.com/gorilla/mux.Router.HandleFunc`), and a domain is the one thing a
+// Go import path has that a relative one never does.
+//
+// Imprecise in one direction on purpose: a method on a local variable resolves
+// to `publicAPI.GET` and passes this test. The seam binder rejects it, because a
+// local variable is not a symbol that reaches net/http. Being wrong toward the
+// binder is safe; being wrong toward the published fact set is not.
+func isModuleLocalCallee(resolved string) bool {
+	head := resolved
+	if i := strings.IndexAny(head, "./"); i >= 0 {
+		head = head[:i]
+	}
+	return !strings.Contains(head, ".") && head != ""
+}

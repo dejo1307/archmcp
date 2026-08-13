@@ -2,11 +2,14 @@ package command
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/pkg/history"
 )
 
@@ -31,6 +34,7 @@ func (r *Runner) Blame(args []string) {
 		asJSON   = fs.Bool("json", false, "emit the events as JSON")
 		full     = fs.Bool("full", false, "print the whole matching line rather than its head")
 		all      = fs.Bool("all", false, "include working revisions (uncommitted trees)")
+		store    = fs.String("store", "", "also search a shared history store (default: history.shared_dir)")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr,
@@ -39,6 +43,9 @@ func (r *Runner) Blame(args []string) {
 				"The pattern is matched, case-insensitively, against the recorded facts — a\n"+
 				"module or symbol name, a file path, or both endpoints of an edge. With\n"+
 				"--findings it is matched against recorded findings instead.\n\n"+
+				"With a shared store (--store, or history.shared_dir) the search runs over the\n"+
+				"union of the local history and the store, and every event names where its\n"+
+				"revision came from.\n\n"+
 				"Only revisions whose contents are still stored can be searched; older ones\n"+
 				"keep their summary line and are reported as unread rather than as absent.\n\n"+
 				"Flags:\n")
@@ -53,12 +60,21 @@ func (r *Runner) Blame(args []string) {
 		r.blameFatal("needs something to look for, e.g. `%s blame internal/server`", r.name())
 	}
 
-	entries, root := r.historyFor(repoArg)
+	entries, root, sh := r.historyWithStore(repoArg, *store, r.blameFatal)
 	if !*all {
 		entries = onlyCommitted(entries)
 	}
 
-	b, err := history.BlameLines(root, entries, pattern, history.BlameOptions{
+	repo, err := history.UnionRepo(entries, sh, "")
+	if err != nil {
+		r.blameFatal("%v", err)
+	}
+	revs := history.BuildUnion(entries, sh, repo)
+	if !*all {
+		revs = onlyCommittedUnion(revs)
+	}
+
+	b, err := history.BlameUnion(root, revs, sh, pattern, history.BlameOptions{
 		Findings:  *findings,
 		FirstOnly: *first,
 	})
@@ -74,7 +90,61 @@ func (r *Runner) Blame(args []string) {
 		fmt.Println(string(out))
 		return
 	}
-	fmt.Print(renderBlame(b, *full))
+	fmt.Print(renderBlame(b, *full, sh != nil))
+}
+
+func (r *Runner) historyWithStore(repoArg, storeFlag string, fatal func(string, ...any)) ([]history.Entry, string, *history.Share) {
+	repoPath, cfg := r.logTarget(repoArg)
+	root, err := history.Root(repoPath, cfg.History.Dir)
+	if err != nil {
+		fatal("cannot locate the history: %v", err)
+	}
+	storeDir := resolveStoreDir(storeFlag, repoPath, cfg)
+
+	entries, err := history.Read(root)
+	if err != nil {
+		if !errors.Is(err, history.ErrNoHistory) {
+			fatal("%v", err)
+		}
+		if storeDir == "" {
+			r.reportNoHistory(repoPath, root, cfg)
+			os.Exit(0)
+		}
+	}
+	entries = history.SortedByTime(entries)
+
+	var sh *history.Share
+	if storeDir != "" {
+		sh, err = history.OpenShare(storeDir)
+		if err != nil {
+			fatal("%v", err)
+		}
+	}
+	return entries, root, sh
+}
+
+func resolveStoreDir(storeFlag, repoPath string, cfg *config.Config) string {
+	dir := storeFlag
+	if dir == "" {
+		dir = cfg.History.SharedDir
+	}
+	if dir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(repoPath, dir)
+	}
+	return dir
+}
+
+func onlyCommittedUnion(revs []history.UnionRevision) []history.UnionRevision {
+	out := make([]history.UnionRevision, 0, len(revs))
+	for _, u := range revs {
+		if !u.Entry.Working() {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 // splitPatternAndRepo takes the pattern as the FIRST positional and an optional
@@ -97,7 +167,7 @@ func splitPatternAndRepo(args []string) (pattern, repo string) {
 }
 
 // renderBlame prints the events oldest first, each under the revision that produced it.
-func renderBlame(b *history.Blame, full bool) string {
+func renderBlame(b *history.Blame, full, withOrigins bool) string {
 	var out strings.Builder
 
 	if len(b.Events) == 0 {
@@ -109,7 +179,11 @@ func renderBlame(b *history.Blame, full bool) string {
 
 	for _, ev := range b.Events {
 		e := ev.Entry
-		fmt.Fprintf(&out, "%-7s  %s  %s\n", e.Short(), shortDate(e.At), strings.TrimSpace(decorations(e)))
+		origins := ""
+		if withOrigins {
+			origins = "  [" + strings.Join(ev.Origins, ", ") + "]"
+		}
+		fmt.Fprintf(&out, "%-7s  %s  %s%s\n", e.Short(), shortDate(e.At), strings.TrimSpace(decorations(e)), origins)
 		for _, l := range ev.Added {
 			fmt.Fprintf(&out, "    + %s\n", blameLine(l, full))
 		}
@@ -130,12 +204,17 @@ func renderBlame(b *history.Blame, full bool) string {
 // could read", and those support opposite conclusions — the first says it never existed,
 // the second says look further back.
 func unreadNote(b *history.Blame) string {
-	if b.Skipped == 0 {
-		return ""
+	var out strings.Builder
+	if b.Skipped > 0 {
+		fmt.Fprintf(&out, "%d older revision%s could not be searched: their contents are no longer stored,\n"+
+			"so anything that appeared and vanished within them is invisible here.\n",
+			b.Skipped, pluralS(b.Skipped))
 	}
-	return fmt.Sprintf("%d older revision%s could not be searched: their contents are no longer stored,\n"+
-		"so anything that appeared and vanished within them is invisible here.\n",
-		b.Skipped, pluralS(b.Skipped))
+	if b.Pruned > 0 {
+		fmt.Fprintf(&out, "%d revision%s were pruned from the shared store by retention — removed on record,\n"+
+			"not missing.\n", b.Pruned, pluralS(b.Pruned))
+	}
+	return out.String()
 }
 
 // blameLine renders one canonical fact or finding line.

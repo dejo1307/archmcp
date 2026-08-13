@@ -593,6 +593,19 @@ The reverse query between knowledge and code, answered directly. Where `impact_a
 - **Page target.** Lists the page's declared anchors with the measured coverage under each — files and facts — so an anchor nothing measures is visible rather than silent.
 - **Honest empty states.** A snapshot with no compiled pages answers *not asked* (the counterparty rule); a governed snapshot with no anchor on the target answers *asked, none governs*. The two never look the same.
 
+### `constraints_for` — "what am I about to break by editing this?"
+
+The pre-edit contract, answered before the edit. For a target — a file path or an exact fact name — it returns JSON with the declared constraint components containing it, every rule binding those components (id, the rule in words, its `because:` rationale, its enforcement mode), and the current constraint violations whose evidence names the target. The file path may not exist yet: an unwritten file inside a component's patterns still gets that component's contract, which is the point of asking before writing.
+
+| Parameter | Description |
+|-----------|-------------|
+| `target` *(required)* | A file path (repo-relative, may not exist yet) or an exact fact name. |
+| `max_tokens` | Optional hard cap. |
+
+- **Same matching as enforcement.** Containment resolves with the constraints explainer's own component matching — exact paths and declared subtrees, fail-closed — so the contract reported is exactly the one the `constraints` explainer will verdict.
+- **Both sides of a rule bind.** A component named as a rule's target (`to`, `only`, `protect`) carries that rule in its contract too: the reader touching the protected side learns who owns it.
+- **Honest empty states.** A snapshot with no declared components answers *not asked*; a declared snapshot where nothing contains the target answers with an empty component list. The two never look the same.
+
 ### `coverage_report` — "which cross-repo edges did enola resolve, and which did it miss?"
 
 Per-service edge-coverage report, so you can tell a genuinely isolated service from one whose outbound edges enola simply couldn't resolve. For each `service` node it shows resolved outbound dependencies and, per edge type (currently `http_client`), how many call sites were detected, resolved to a loaded service, and left unresolved — then classifies the service as `connected`, `coverage_gap` (no resolved edges but unresolved call sites detected — likely *not* isolated), or `isolated` (a genuine leaf). Use it before concluding a service stands alone. Multi-repo only; single-repo snapshots have no service nodes. Surfaces the `coverage` explainer's underlying `edge_coverage` counts.
@@ -699,9 +712,9 @@ Both absolute paths stay in the warning text, and it names which signal decided,
 
 `Status.ExitCode()` is the contract with CI: `0` clean · `1` regression · `2` usage error · `3` incomparable. Precedence is **blocking → usage error → regression**; blocking comes first because when the snapshots were built over different inputs, the inverted-pair remedy ("re-generate") would send the caller down the wrong path. Nothing is hidden by the ordering — every warning is reported regardless of which decided the status.
 
-**Why the policy keys on the explainer rather than on confidence.** Confidence alone is not enough to name what should break a build, even though [Insights](#insights-explainers) guarantees that `1.0` is a structural fact: it says how strong a claim is, not what kind of claim it is. A statistical outlier and a proven cycle are different objects, and only the second is a defect by construction. So the **explainer is the primary filter** (`DefaultFailExplainers = ["cycles"]`) and confidence is a floor applied within it (`DefaultMinConfidence = 1.0`). The floor does real work: `cycles` emits both a true cycle at `1.0` and a "highly coupled module cluster" at `0.4` whose own description calls it "a coupling-density signal, not a defect to break".
+**Why the policy keys on the explainer rather than on confidence.** Confidence alone is not enough to name what should break a build, even though [Insights](#insights-explainers) guarantees that `1.0` is a structural fact: it says how strong a claim is, not what kind of claim it is. A statistical outlier and a proven cycle are different objects, and only the second is a defect by construction. So the **explainer is the primary filter** (`DefaultFailExplainers = ["cycles", "constraints"]`) and confidence is a floor applied within it (`DefaultMinConfidence = 1.0`). The floor does real work: `constraints` emits advisory-mode breaches at `0.9` and dead-selector component notes at `0.4` — both from a failing explainer, both deliberately below the floor, because they report rather than enforce.
 
-> **The two-part filter is what keeps `1.0` meaningful in both directions.** Every explainer that computes rather than proves its confidence clamps at `common.MaxHeuristicConfidence`, strictly below `1.0` — `god-class`, whose score is a fan-in ratio against a statistical threshold, and `layers`, whose pattern confidence is a coverage share. Both saturate on real repositories, and letting them reach `1.0` would have published a statistical outlier as a structural fact to everything downstream that reads the number: the receipt's heuristic-insight count, the dashboard's structural/candidate split, and `query_insights(min_confidence=…)`. A cycle is the only claim enola computes with certainty, and it is the only one that reaches `1.0`.
+> **The two-part filter is what keeps `1.0` meaningful in both directions.** Every explainer that computes rather than proves its confidence clamps at `common.MaxHeuristicConfidence`, strictly below `1.0` — `god-class`, whose score is a fan-in ratio against a statistical threshold, and `layers`, whose pattern confidence is a coverage share. Both saturate on real repositories, and letting them reach `1.0` would have published a statistical outlier as a structural fact to everything downstream that reads the number: the receipt's heuristic-insight count, the dashboard's structural/candidate split, and `query_insights(min_confidence=…)`. Only the decided claims reach `1.0`: a cycle, an intent set-difference verdict, a declared-layer violation, a declared-constraint breach — each either holds or it does not.
 
 **New coupling is reported, never failed.** `diff.Edge` is name-level, so `EdgesAdded` is populated by virtually any change — adding a function that calls another adds edges. A gate firing on that would be switched off within a day. Only module-level and cross-repo coupling deltas are worth escalating, and that needs an edge filter that does not exist yet.
 
@@ -828,7 +841,11 @@ Cross-repo linking is the part of enola hardest to verify from the outside, so i
 
 ### Finding unused endpoints
 
-The same client/server route matching that draws cross-repo edges also answers its inverse: **which server routes does no loaded client call?** After linking, every server `route` a client matched is left untouched; every one that *no* client resolved to — by the identical normalized path + method join — is tagged `unmatched_by_clients: true` on the route fact.
+The same client/server route matching that draws cross-repo edges also answers its inverse: **which server routes does no loaded client call?** After linking, every server `route` a client resolved to is tagged `matched_by_clients: true`, and every one that *no* client resolved to — by the identical normalized path + method join — is tagged `unmatched_by_clients: true`.
+
+**A route can also carry neither, and that is a third verdict rather than a gap.** The pass declines to reason about UI page routes, GraphQL operations, routes with no HTTP verb, generic paths like `/health`, and every route in a repo that serves no cross-repo client at all. Those get no marker, because "no client calls this" and "nothing checked" are different claims and only the first is evidence. The positive marker exists for the same reason: with only the negative one, a matched route and an unexamined route were indistinguishable, so `unmatched_by_clients: false` matched nothing and absence of a marker read as measurement of absence. Exactly one of the two markers is present on any route the linker evaluated, and the pair is cleared and rewritten on every re-link so an append that changes the index cannot leave both behind.
+
+The `unused-routes` finding reports the declined count beside the ratio for the same reason: `27 of 39 unused` and `27 of 39, with a further 827 the pass could not assess` describe different repositories.
 
 The direct way to get the candidate list is the `unused-routes` finding:
 
@@ -842,7 +859,7 @@ which returns the per-service rollup with the out-of-snapshot caveat and suggest
 query_facts(kind=route, prop=unmatched_by_clients, prop_value=true, repo="<service>")
 ```
 
-(`query_facts(kind=route, output_mode=summary)` also reports the `unmatched_by_clients` count under a `## Flags` heading, so the signal is visible while sizing a route query.)
+(`query_facts(kind=route, output_mode=summary)` also reports the `unmatched_by_clients` count under a `## Flags` heading, so the signal is visible while sizing a route query.) Swap the prop for `matched_by_clients` to get the confirmed-in-use set; routes in neither answer are the ones nothing assessed.
 
 This is the candidate set for dead-endpoint cleanup, computed deterministically rather than grepped-and-guessed — the matching reuses the linker's exact path normalization (so a backend's `/api/settings/x` correctly counts as called by a client's base-relative `settings/x`), and it discriminates by method, so a read endpoint that clients hit stays clean while the `POST`/`PUT`/`DELETE` on the same path can still be flagged. Two guards keep it honest: only repos that actually serve a cross-repo client are considered (a frontend's own page routes are never flagged), and matching errs toward *use* — any path+method hit, at any confidence, counts — so the set is biased toward false negatives.
 

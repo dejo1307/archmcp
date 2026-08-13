@@ -1398,14 +1398,14 @@ func hasRouteKey(keys map[string]bool, repo, method, path string) bool {
 	return keys[routeindex.RouteIdentityKey(repo, method, path)]
 }
 
-func TestUnmatchedServerRouteKeys_BasicSetDifference(t *testing.T) {
+func TestServerRouteVerdicts_BasicSetDifference(t *testing.T) {
 	in := []facts.Fact{
 		// golf-ui calls one of golf's two routes.
 		clientRoute("golf-ui", "/api/items/{id}", "GET", nil),
 		serverRoute("golf", "/api/items/{id}", "GET"),      // called → matched
 		serverRoute("golf", "/api/secret/cleanup", "POST"), // no caller → unmatched
 	}
-	keys := httpsignal.UnmatchedServerRouteKeys(routeindex.New(vocab.Default()), in)
+	_, keys := httpsignal.ServerRouteVerdicts(routeindex.New(vocab.Default()), in)
 
 	if hasRouteKey(keys, "golf", "GET", "/api/items/{id}") {
 		t.Errorf("route called by a client must not be flagged unused; keys=%v", keys)
@@ -1421,14 +1421,14 @@ func TestUnmatchedServerRouteKeys_BasicSetDifference(t *testing.T) {
 // The false-positive guard: a client calling with a different leading prefix than
 // the server serves (golf-ui "/api/settings/x" vs golf "settings/x", and the
 // reverse) must still count as matched — exactly the normalization linkHTTP does.
-func TestUnmatchedServerRouteKeys_PrefixDifferenceIsMatched(t *testing.T) {
+func TestServerRouteVerdicts_PrefixDifferenceIsMatched(t *testing.T) {
 	in := []facts.Fact{
 		clientRoute("golf-ui", "/api/settings/feedback", "POST", nil),
 		clientRoute("ios", "settings/ai-coach/insight", "POST", nil), // base-relative
 		serverRoute("golf", "/api/settings/feedback", "POST"),
 		serverRoute("golf", "/api/settings/ai-coach/insight", "POST"),
 	}
-	keys := httpsignal.UnmatchedServerRouteKeys(routeindex.New(vocab.Default()), in)
+	_, keys := httpsignal.ServerRouteVerdicts(routeindex.New(vocab.Default()), in)
 	if len(keys) != 0 {
 		t.Errorf("prefix/base-relative client calls should match their server routes; "+
 			"none should be flagged unused, got %v", keys)
@@ -1438,7 +1438,7 @@ func TestUnmatchedServerRouteKeys_PrefixDifferenceIsMatched(t *testing.T) {
 // A pure-consumer repo (a frontend serving its own page routes while only calling
 // another repo's API) is not an HTTP provider, so its own uncalled server routes
 // must NOT be flagged — only the provider's (golf's) uncalled routes are.
-func TestUnmatchedServerRouteKeys_ConsumerOwnRoutesNotFlagged(t *testing.T) {
+func TestServerRouteVerdicts_ConsumerOwnRoutesNotFlagged(t *testing.T) {
 	in := []facts.Fact{
 		// golf-ui calls golf's API (making golf a provider) and serves its own page.
 		clientRoute("golf-ui", "/api/items/{id}", "GET", nil),
@@ -1446,7 +1446,7 @@ func TestUnmatchedServerRouteKeys_ConsumerOwnRoutesNotFlagged(t *testing.T) {
 		serverRoute("golf", "/api/items/{id}", "GET"),        // called by golf-ui
 		serverRoute("golf", "/api/secret/cleanup", "POST"),   // no caller
 	}
-	keys := httpsignal.UnmatchedServerRouteKeys(routeindex.New(vocab.Default()), in)
+	_, keys := httpsignal.ServerRouteVerdicts(routeindex.New(vocab.Default()), in)
 	if hasRouteKey(keys, "golf-ui", "GET", "/dashboard/settings") {
 		t.Errorf("a pure-consumer repo's own routes must not be flagged; keys=%v", keys)
 	}
@@ -1458,12 +1458,55 @@ func TestUnmatchedServerRouteKeys_ConsumerOwnRoutesNotFlagged(t *testing.T) {
 	}
 }
 
-func TestUnmatchedServerRouteKeys_SingleRepoReturnsNil(t *testing.T) {
+// The evaluated set is the half that says what the pass looked at, and it is not
+// the complement of the unmatched set. A UI route, a verbless route and a
+// consumer repo's own routes are all absent from both — the verdict "no client
+// calls this" was never reached for them, and a caller reading only the unmatched
+// set has no way to tell that apart from a route a client happily calls.
+func TestServerRouteVerdicts_DeclinedRoutesAreInNeitherSet(t *testing.T) {
+	uiRoute := serverRoute("golf-ui", "/dashboard", "GET")
+	uiRoute.Props["type"] = "page"
+	verbless := serverRoute("golf", "/api/webhooks/stripe", "")
+	in := []facts.Fact{
+		clientRoute("golf-ui", "/api/items/{id}", "GET", nil),
+		serverRoute("golf", "/api/items/{id}", "GET"),
+		serverRoute("golf", "/api/secret/cleanup", "POST"),
+		serverRoute("golf-ui", "/settings/profile", "GET"),
+		uiRoute,
+		verbless,
+	}
+	evaluated, unmatched := httpsignal.ServerRouteVerdicts(routeindex.New(vocab.Default()), in)
+
+	for _, want := range []struct{ repo, method, path string }{
+		{"golf", "GET", "/api/items/{id}"},
+		{"golf", "POST", "/api/secret/cleanup"},
+	} {
+		if !hasRouteKey(evaluated, want.repo, want.method, want.path) {
+			t.Errorf("%s %s should be evaluated; evaluated=%v", want.method, want.path, evaluated)
+		}
+	}
+	for _, skip := range []struct{ repo, method, path string }{
+		{"golf-ui", "GET", "/dashboard"},        // a page, not an HTTP contract
+		{"golf", "", "/api/webhooks/stripe"},    // no verb to match on
+		{"golf-ui", "GET", "/settings/profile"}, // consumer repo, no clients of its own
+	} {
+		if hasRouteKey(evaluated, skip.repo, skip.method, skip.path) {
+			t.Errorf("%s %s was declined and must not be evaluated; evaluated=%v",
+				skip.method, skip.path, evaluated)
+		}
+		if hasRouteKey(unmatched, skip.repo, skip.method, skip.path) {
+			t.Errorf("%s %s was declined and must not be unmatched either; unmatched=%v",
+				skip.method, skip.path, unmatched)
+		}
+	}
+}
+
+func TestServerRouteVerdicts_SingleRepoReturnsNil(t *testing.T) {
 	in := []facts.Fact{
 		serverRoute("golf", "/api/items/{id}", "GET"),
 		serverRoute("golf", "/api/secret/cleanup", "POST"),
 	}
-	if keys := httpsignal.UnmatchedServerRouteKeys(routeindex.New(vocab.Default()), in); keys != nil {
+	if _, keys := httpsignal.ServerRouteVerdicts(routeindex.New(vocab.Default()), in); keys != nil {
 		t.Errorf("single-repo snapshot has no clients to be unused by; want nil, got %v", keys)
 	}
 }

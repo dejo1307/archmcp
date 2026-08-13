@@ -63,6 +63,57 @@ func TestExtractTemplateRefs_Slim(t *testing.T) {
 	}
 }
 
+// TestExtractTemplateRefs_Jbuilder checks that a Jbuilder view — plain Ruby, no
+// ERB delimiters — parses whole through the reference pass: constants and calls
+// are captured, and no symbol facts are emitted so the view never becomes a
+// dead-code candidate.
+func TestExtractTemplateRefs_Jbuilder(t *testing.T) {
+	src := `json.extract! @post, :id, :title, :created_at
+json.display_title PostDecorator.new(@post).display_title
+json.url post_url(@post, format: :json)
+json.author do
+  json.name @post.author.name
+end
+json.comments @post.comments, partial: "comments/comment", as: :comment
+`
+	result := extractTemplateRefs([]byte(src), "app/views/posts/show.json.jbuilder")
+	fr, ok := templateRefFact(result)
+	if !ok {
+		t.Fatal("missing KindFileRef fact for the Jbuilder view")
+	}
+	for _, want := range []string{"PostDecorator", "display_title", "post_url"} {
+		if !hasCall(fr, want) {
+			t.Errorf("Jbuilder call should be recorded -> %s; relations = %v", want, fr.Relations)
+		}
+	}
+	for _, f := range result {
+		if f.Kind == facts.KindSymbol {
+			t.Fatalf("Jbuilder extraction must not emit symbol facts; got %v", f)
+		}
+	}
+}
+
+// TestRubyOwnsFile checks that ownership matches what Extract reads: Ruby
+// source, embedded-Ruby templates, and Jbuilder views — and nothing else.
+func TestRubyOwnsFile(t *testing.T) {
+	e := &RubyExtractor{}
+	for _, p := range []string{
+		"app/models/post.rb", "lib/tasks/x.rake", "Rakefile",
+		"app/views/p/a.html.erb", "app/views/p/b.text.erb", "app/views/p/c.js.erb",
+		"app/views/p/d.html.slim", "app/views/p/e.haml",
+		"app/views/p/show.json.jbuilder",
+	} {
+		if !e.OwnsFile(p) {
+			t.Errorf("OwnsFile(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"app/assets/x.js", "config/settings.yml", "README.md"} {
+		if e.OwnsFile(p) {
+			t.Errorf("OwnsFile(%q) = true, want false", p)
+		}
+	}
+}
+
 // TestIsTemplateFile checks the template-suffix detection.
 func TestIsTemplateFile(t *testing.T) {
 	for _, p := range []string{"a.html.erb", "b.js.erb", "c.html.slim", "d.haml"} {

@@ -185,9 +185,6 @@ It runs in three places, each usable on its own:
 | **In your shell** | `enola check` - exits `1` on a structural regression |
 | **In CI** | the same command, same exit code, on every pull request - or [`enola-action`](https://github.com/enola-labs/enola-action), which wires it to the pull-request base for you |
 
-Add the CI gate from **[Enola Architecture Check on the GitHub Actions Marketplace](https://github.com/marketplace/actions/enola-architecture-check)**,
-or start from the [complete workflow example](examples/ci/architecture-gate.yml).
-
 The whole loop on this repository, unedited - a helper is added, the check fails on the cycle it closed, the diff shows what has to change, and the same command lets it through once it's fixed:
 
 ![enola check on its own repository: a helper added to pkg/facts closes a dependency cycle, enola fails the change, the diff replaces the import with an injected interface, and the re-run passes](docs/images/story2-gate.gif)

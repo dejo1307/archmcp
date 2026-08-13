@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/extcoverage"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
@@ -46,8 +47,15 @@ func (b *Binder) Stage() plugin.BindStage { return plugin.StagePostLink }
 // the TypeScript extractor's Ember pass emits. Spelled here rather than imported
 // so this package — like every binder — depends only on facts and plugin.
 const (
-	templateProp       = "ember_template"
-	invocationsProp    = "ember_invocations"
+	templateProp    = "ember_template"
+	invocationsProp = "ember_invocations"
+	// invokedAsProp carries the names a template actually writes for a symbol.
+	// A template writes `<Core::Badge />`; the symbol is
+	// `ember_app/app/components/hiring-plan.Badge`. The mapping between the two
+	// is computed here already — it is how the component edges get built — and
+	// was thrown away after use, so the graph knew the answer and could not be
+	// asked for it by the name a person would type.
+	invokedAsProp      = "ember_invoked_as"
 	ownerFileProp      = "ember_owner_file"
 	servicesProp       = "ember_injected_services"
 	relationshipsProp  = "ember_relationships"
@@ -66,6 +74,7 @@ const (
 var sourceExts = []string{".ts", ".js", ".gts", ".gjs", ".hbs"}
 
 func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
+	var resolvedBindings, unresolvedBindings, templatesWithMisses int
 	idx := buildIndex(store)
 	bound := 0
 
@@ -76,6 +85,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		unresolved  []string
 	}
 	work := map[string]*templateWork{}
+	invokedAs := newInvocationNames()
 
 	// The router map gives every route a dot-name; a route's class file follows
 	// it (catalog.book -> app/routes/catalog/book.*), and templates link to it
@@ -162,6 +172,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		for _, name := range propStrings(f.Props[invocationsProp]) {
 			if target := idx.resolveInvocation(f.Repo, name, f.Name); target != "" {
 				w.targets = append(w.targets, target)
+				invokedAs.record(target, name)
 			} else {
 				w.unresolved = append(w.unresolved, name)
 			}
@@ -274,9 +285,12 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 						}
 					}
 				}
+				resolvedBindings += len(w.targets) + len(w.linkTargets)
 				if len(w.unresolved) > 0 {
 					sort.Strings(w.unresolved)
 					f.Props[unresolvedProp] = w.unresolved
+					unresolvedBindings += len(w.unresolved)
+					templatesWithMisses++
 				}
 			}
 			return
@@ -300,6 +314,9 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		}
 		if f.Kind != facts.KindSymbol {
 			return
+		}
+		if names := invokedAs.namesFor(f.Name); len(names) > 0 {
+			f.Props[invokedAsProp] = names
 		}
 		if targets, ok := injections[f.Name]; ok {
 			for _, t := range targets {
@@ -330,6 +347,9 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 			}
 		}
 		for _, name := range propStrings(f.Props[invocationsProp]) {
+			if t := idx.resolveInvocation(f.Repo, name, f.File); t != "" && t != f.Name {
+				invokedAs.record(t, name)
+			}
 			if t := idx.resolveInvocation(f.Repo, name, f.File); t != "" && t != f.Name && !f.HasRelation(facts.RelCalls, t) {
 				f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelCalls, Target: t})
 				bound++
@@ -352,7 +372,30 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	if bound > 0 {
 		log.Printf("[binder:ember-resolver] bound %d Ember reference(s)", bound)
 	}
+
+	// Report the misses in aggregate, not only as a prop on each template.
+	// `ember_unresolved` has existed since this binder was written and read 0
+	// over 1,363 unexamined templates, because nothing aggregated it — the
+	// original evidence for building a coverage mechanism at all. Nineteen
+	// extractors later it had exactly one adopter, and this is the second.
+	if fact, ok := extcoverage.Fact(repoRoot(store), "ember:templates", "ember_binding",
+		resolvedBindings, map[string]int{"unresolved_binding": unresolvedBindings}); ok {
+		if templatesWithMisses > 0 {
+			fact.Props["templates_with_misses"] = templatesWithMisses
+		}
+		store.Add(fact)
+	}
 	return nil
+}
+
+// repoRoot names the repository this binder ran over, for the coverage fact's
+// file field. A multi-repo store reports the first label, which is the same
+// convention the cross-repo coverage already uses.
+func repoRoot(store *facts.Store) string {
+	if labels := store.RepoLabels(); len(labels) > 0 {
+		return labels[0]
+	}
+	return "."
 }
 
 // index holds, per repo, the file paths that can back a resolver name and the
@@ -778,4 +821,41 @@ func dasherize(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// invocationNames collects the template-side names each symbol answers to, so
+// the binder that already resolves them is the one place that writes them down.
+// Resolving the same convention a second time in the query path would give two
+// components an opinion about one name, and when they disagree the graph
+// answers differently depending on which door the question came in.
+type invocationNames struct {
+	byTarget map[string]map[string]bool
+}
+
+func newInvocationNames() *invocationNames {
+	return &invocationNames{byTarget: map[string]map[string]bool{}}
+}
+
+func (n *invocationNames) record(target, name string) {
+	name = strings.TrimPrefix(name, "component:")
+	if target == "" || name == "" {
+		return
+	}
+	if n.byTarget[target] == nil {
+		n.byTarget[target] = map[string]bool{}
+	}
+	n.byTarget[target][name] = true
+}
+
+func (n *invocationNames) namesFor(target string) []string {
+	set := n.byTarget[target]
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for name := range set {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }

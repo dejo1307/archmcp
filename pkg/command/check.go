@@ -24,6 +24,7 @@ type target struct {
 	engine     *bootstrap.Engine
 	repoPaths  []string
 	configNote string
+	cfgPath    string
 }
 
 // resolveTarget turns the single positional argument into an engine pointed at the right
@@ -87,7 +88,7 @@ func (r *Runner) resolveTarget(arg string) target {
 	if err != nil {
 		r.checkFatal("failed to resolve repo path: %v", err)
 	}
-	return target{engine: eng, repoPaths: repoPaths, configNote: note}
+	return target{engine: eng, repoPaths: repoPaths, configNote: note, cfgPath: cfgPath}
 }
 
 // runCheck is the `enola check` gate: snapshot the repo, diff it against a baseline,
@@ -195,6 +196,15 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		r.checkFatal("%s", r.baselineHelp(*baseline, baseDir, anchor, err))
 	}
 
+	// The committed suppression ledger joins the policy before grading. A ledger
+	// that cannot be parsed is an operational failure, never a silent skip: half
+	// a ledger would silence findings nobody signed off, or fail ones somebody did.
+	suppressions, err := check.LoadSuppressions(anchor)
+	if err != nil {
+		r.checkFatal("%v", err)
+	}
+	policy.Suppressions = suppressions
+
 	d := diff.Compute(base, current)
 	if *focus != "" {
 		d = d.Focused(*focus)
@@ -223,7 +233,13 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		})
 	}
 
-	verdict := check.Evaluate(d, policy, measurements...)
+	// EvaluateCurrent, not Evaluate: strict-mode constraint violations grade
+	// against the CURRENT snapshot, baselined or not — the one deliberate
+	// exception to delta scoping.
+	verdict := check.EvaluateCurrent(d, policy, current.Insights, measurements...)
+	verdict = check.RegradeIntersection(verdict, base, current, policy,
+		check.OwnershipFromExtractors(eng.Extractors()), current.Insights, *focus, measurements...)
+	verdict = check.AttachGuidance(verdict, eng.Store())
 
 	if *asJSON {
 		out, err := verdict.JSON()

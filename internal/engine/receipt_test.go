@@ -37,11 +37,31 @@ func TestReceiptDeterminism(t *testing.T) {
 			if first.ConfigHash == "" || !strings.HasPrefix(first.ConfigHash, "sha256:") {
 				t.Errorf("config_hash missing or unprefixed for %s: %q", f.name, first.ConfigHash)
 			}
+			// The artifact hashes are the only part of the receipt that can catch a
+			// nondeterministic renderer, and they are recorded by WriteArtifacts. When
+			// this test did not call it the map was empty, so this loop inspected
+			// nothing and the comparison below could not see a moving artifact at all
+			// — the defect the test exists to catch was invisible to it.
+			if len(first.OutputHashes) == 0 {
+				t.Fatalf("no output hashes recorded for %s: the receipt comparison is blind", f.name)
+			}
+			for _, want := range []string{"facts.jsonl", "insights.json", "llm_context.md"} {
+				if _, ok := first.OutputHashes[want]; !ok {
+					t.Errorf("no output hash for %s in %s: %v", want, f.name, first.OutputHashes)
+				}
+			}
 			for name, h := range first.OutputHashes {
 				if !strings.HasPrefix(h, "sha256:") {
 					t.Errorf("output hash for %s missing sha256: prefix in %s: %q", name, f.name, h)
 				}
 			}
+
+			// llm_context.md's footer carries "Generated at <t> in <d>", so its hash
+			// cannot repeat by construction while that footer stands (finding 0001,
+			// part 2 — deliberately held). Its determinism is asserted directly on the
+			// renderer instead, by TestRender_RepeatedRendersAreIdentical.
+			delete(first.OutputHashes, "llm_context.md")
+			delete(second.OutputHashes, "llm_context.md")
 
 			// Zero out the wall-clock fields, then the receipts must be identical.
 			first.GeneratedAt, second.GeneratedAt = "", ""
@@ -82,6 +102,13 @@ func receiptForFixture(t *testing.T, f fixture) facts.Receipt {
 		if _, err := eng.GenerateSnapshot(context.Background(), repoPath, i > 0); err != nil {
 			t.Fatalf("GenerateSnapshot(%s): %v", sub, err)
 		}
+	}
+
+	// The receipt's output_hashes are recorded by WriteArtifacts, not by
+	// GenerateSnapshot: without this call the map is empty and every loop below
+	// that iterates it inspects nothing.
+	if err := eng.WriteArtifacts(root); err != nil {
+		t.Fatalf("WriteArtifacts: %v", err)
 	}
 
 	r := eng.Snapshot().Meta.Receipt()

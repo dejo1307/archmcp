@@ -200,6 +200,24 @@ func (s *Store) CountFilesWithFacts(files []string, prefix string) int {
 	return n
 }
 
+// FilesWithFacts returns the subset of the given walked files that produced at
+// least one fact, keyed by the walked (un-prefixed) path. Same membership rule
+// as CountFilesWithFacts — prefix is the repo-label prefix append mode stamps
+// on fact files — returned as a set because the census needs to place each
+// walked file in exactly one bucket rather than only count the parsed ones.
+func (s *Store) FilesWithFacts(files []string, prefix string) map[string]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	parsed := make(map[string]bool)
+	for _, f := range files {
+		key := prefix + filepath.ToSlash(f)
+		if idxs, ok := s.byFile[key]; ok && len(idxs) > 0 {
+			parsed[f] = true
+		}
+	}
+	return parsed
+}
+
 // SourceBytesWithFacts returns the total on-disk size of the walked files that
 // produced at least one fact — the same set CountFilesWithFacts counts, measured
 // rather than counted. root is the repo root that files are relative to.
@@ -771,6 +789,14 @@ func (s *Store) RemoveWhere(pred func(Fact) bool) int {
 // kind/file/name/repo indexes or the graph, so it is intended only for property
 // tweaks that change none of those indexed fields; callers that change indexed
 // fields must rebuild via RemoveWhere/Add instead.
+func (s *Store) UpdateRange(startIdx int, mutate func(*Fact)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := startIdx; i < len(s.facts); i++ {
+		mutate(&s.facts[i])
+	}
+}
+
 func (s *Store) UpdateWhere(mutate func(*Fact)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

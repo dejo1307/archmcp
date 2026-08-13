@@ -10,6 +10,7 @@ import (
 
 	"github.com/enola-labs/enola/internal/intent"
 	"github.com/enola-labs/enola/internal/linkers/vocab"
+	"github.com/enola-labs/enola/internal/providers"
 )
 
 // Config represents the mcp-arch.yaml configuration.
@@ -62,6 +63,14 @@ type Config struct {
 	Explainers []string     `yaml:"explainers"`
 	Renderers  []string     `yaml:"renderers"`
 	Output     OutputConfig `yaml:"output"`
+
+	// Providers names the external fact providers the engine runs at snapshot
+	// time, before linking: for each, a census name, the command (argv) to
+	// execute, and the version the installed build is expected to report. See
+	// internal/providers for the exchange contract; changing this list changes
+	// emitted facts, so it is folded into the snapshot's config hash and the
+	// ran-provider set is compared between snapshots like the extractor set.
+	Providers []providers.Provider `yaml:"providers"`
 
 	// Linking overlays the cross-repo linker's tuning vocabulary — the word lists that
 	// decide which names are too generic to link on, and the numeric thresholds. It is
@@ -150,9 +159,16 @@ type HistoryConfig struct {
 	// travel with the checkout (to commit it, or to publish it from CI).
 	Dir string `yaml:"dir,omitempty"`
 
+	SharedDir string `yaml:"shared_dir,omitempty"`
+
 	// WorkingKeep caps how many unanchored revisions (dirty tree, or no git at all) are
 	// kept per base commit. Zero means the built-in default; negative keeps every one.
 	WorkingKeep int `yaml:"working_keep,omitempty"`
+
+	// RevisionKeep caps how many revisions the log keeps in total, committed ones
+	// included — appending past it drops the oldest. Zero means the built-in default
+	// (200); negative keeps every one.
+	RevisionKeep int `yaml:"revision_keep,omitempty"`
 
 	// Blobs stores each revision's facts and findings, not just the line describing what
 	// changed — the difference between a timeline you can read and one you can replay
@@ -496,7 +512,7 @@ func Default() *Config {
 			"**/test_driver/**/*.dart",
 		},
 		Extractors: []string{"cpp", "dart", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent"},
-		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},
+		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent", "constraints", "domain", "query-loops", "entry-points"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
 			Dir:              defaultOutputDir,
@@ -585,6 +601,10 @@ func (c *Config) Normalize() error {
 		return err
 	}
 	c.Output.Dir = dir
+
+	if err := providers.Validate(c.Providers); err != nil {
+		return err
+	}
 
 	glob := dir + "/**"
 	if !contains(c.Ignore, glob) {

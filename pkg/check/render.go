@@ -14,8 +14,9 @@ import (
 // says why a baseline is untrustworthy or merely caveated rather than only that it is.
 var kindMeaning = map[diff.WarningKind]string{
 	diff.WarnDifferentRepo:   "the two snapshots are of different repositories, so the delta is not about your change",
-	diff.WarnVersionMismatch: "different enola versions extract differently, so unchanged code can appear as churn",
+	diff.WarnVersionMismatch: "different enola builds extract or derive differently, so unchanged code can appear as churn",
 	diff.WarnExtractorSet:    "a language present on one side only makes all of its facts appear added or removed",
+	diff.WarnProviderSet:     "a provider that ran on one side only makes all of its facts appear added or removed",
 	diff.WarnExplainerSet:    "an explainer present on one side only makes all of its findings appear new or resolved; the facts and coupling in this delta are unaffected",
 	diff.WarnIgnoreGlobs:     "the set of files parsed changed, so some of this delta is exclusion changes, not code changes",
 	diff.WarnUnclassified:    "an uncategorized caveat was raised; the gate fails closed rather than grade what it cannot judge",
@@ -69,19 +70,29 @@ func (v Verdict) Render() string {
 	var sb strings.Builder
 
 	switch v.Status {
-	case StatusClean:
+	case StatusClean, StatusPartialClean:
+		pass := "PASS"
+		warnOnly := "PASS (--warn-only)"
+		graded := "no structural regression"
+		if v.Status == StatusPartialClean {
+			pass = "PASS (partial verdict)"
+			warnOnly = "PASS (partial verdict, --warn-only)"
+			graded = "no structural regression in the graded intersection"
+		}
 		switch {
 		case len(v.Failures) > 0:
 			// --warn-only. Say what the policy WOULD have done: reporting "no structural
 			// regression" here would be false, and it is the line a reader skims.
-			fmt.Fprintf(&sb, "PASS (--warn-only) — %s reported, not failed.\n",
+			fmt.Fprintf(&sb, "%s — %s reported, not failed.\n", warnOnly,
 				plural(len(v.Failures), "structural regression", "structural regressions"))
-		case len(v.Advisories) > 0 || v.EdgesAdded > 0 || v.FactsAdded > 0 || v.FactsRemoved > 0:
-			sb.WriteString("PASS — no structural regression.\n")
+		case len(v.Advisories) > 0 || len(v.Suppressed) > 0 || len(v.Exempted) > 0 || len(v.Silenced) > 0 || len(v.Undeclared) > 0 || len(v.Unattributed) > 0 || v.EdgesAdded > 0 || v.FactsAdded > 0 || v.FactsRemoved > 0:
+			fmt.Fprintf(&sb, "%s — %s.\n", pass, graded)
+		case v.Status == StatusPartialClean:
+			fmt.Fprintf(&sb, "%s — no architectural change in the graded intersection.\n", pass)
 		default:
 			sb.WriteString("PASS — no architectural change.\n")
 		}
-	case StatusRegression:
+	case StatusRegression, StatusPartialRegression:
 		// Breaches count toward the headline. A change that trips only a measurement
 		// threshold has zero failing FINDINGS, and reporting "0 structural regressions
 		// introduced" above a FAIL is the kind of contradiction that makes a reader stop
@@ -92,7 +103,11 @@ func (v Verdict) Render() string {
 				n++
 			}
 		}
-		fmt.Fprintf(&sb, "FAIL — %s introduced.\n", plural(n, "structural regression", "structural regressions"))
+		fail := "FAIL"
+		if v.Status == StatusPartialRegression {
+			fail = "FAIL (partial verdict)"
+		}
+		fmt.Fprintf(&sb, "%s — %s introduced.\n", fail, plural(n, "structural regression", "structural regressions"))
 	case StatusUsageError:
 		sb.WriteString("ERROR — the gate could not run.\n")
 	case StatusIncomparable:
@@ -100,6 +115,7 @@ func (v Verdict) Render() string {
 		sb.WriteString("This is NOT a statement about your change. The delta below would describe how the two\nsnapshots were produced, not what you edited.\n")
 	}
 
+	v.writeIntersection(&sb)
 	v.writeComparability(&sb)
 	v.writeBreaches(&sb)
 
@@ -131,10 +147,40 @@ func (v Verdict) Render() string {
 		sb.WriteString("\nConfidence < 1.00 is a candidate to verify, not a verdict.\n")
 	}
 
+	if len(v.Suppressed) > 0 {
+		// Its own section, never folded into advisories: these findings are real
+		// and someone signed them away. The header names the ledger so an auditor
+		// knows where the signatures live.
+		fmt.Fprintf(&sb, "\nSuppressed (%d) — excused by %s, never failed:\n", len(v.Suppressed), SuppressionsFileName)
+		writeFindings(&sb, v.Suppressed)
+	}
+
+	if len(v.Exempted) > 0 {
+		fmt.Fprintf(&sb, "\nExempted by declaration (%d) — carve-outs the rules themselves declare, never failed:\n", len(v.Exempted))
+		writeFindings(&sb, v.Exempted)
+	}
+
 	if len(v.Resolved) > 0 {
 		fmt.Fprintf(&sb, "\nResolved by this change (%d):\n", len(v.Resolved))
 		writeFindings(&sb, v.Resolved)
 	}
+
+	if len(v.Silenced) > 0 {
+		fmt.Fprintf(&sb, "\nNo longer verdicted (%d) — the code these breaches named is still measured and\nno longer selected by the component its rule binds. The rule lost its subject;\nnothing was fixed:\n", len(v.Silenced))
+		writeFindings(&sb, v.Silenced)
+	}
+
+	if len(v.Undeclared) > 0 {
+		fmt.Fprintf(&sb, "\nNo longer declared (%d) — the rule that reported these was deleted, re-formed\nunder the same id, or carved out by an exemption. The breaching code is\nunchanged; the law stopped asking:\n", len(v.Undeclared))
+		writeFindings(&sb, v.Undeclared)
+	}
+
+	if len(v.Unattributed) > 0 {
+		fmt.Fprintf(&sb, "\nNot attributable to this change (%d) — the repository these breaches were\nmeasured in is absent from this snapshot, or the baseline carried the finding\nwithout the declaration that produced it. Nothing here was compared; whether\nthe code was fixed is not something these two snapshots can say:\n", len(v.Unattributed))
+		writeFindings(&sb, v.Unattributed)
+	}
+
+	v.writeGuidance(&sb)
 
 	// Findings first (graded, then resolved, then merely moved), structure after: the
 	// reader is asking "is anything wrong?" before "what did I touch?".
@@ -463,6 +509,56 @@ func truncate(s string, max int) string {
 	return "…" + string(runes[len(runes)-(max-1):])
 }
 
+func (v Verdict) writeIntersection(sb *strings.Builder) {
+	g := v.Intersection
+	if g == nil {
+		return
+	}
+	sb.WriteString("\nPartial verdict — the two snapshots were produced by different producer sets, so only\nfacts from producers present in BOTH snapshots were graded. This is NOT a full verdict.\n")
+	fmt.Fprintf(sb, "  Graded over the shared producer set (%s: %s).\n",
+		plural(g.Families(), "family", "families"), strings.Join(sharedFamilyNames(g), ", "))
+	for _, ex := range g.Excluded {
+		fmt.Fprintf(sb, "  Excluded from grading: %s (%s lacks it) — %s.\n",
+			producerLabel(ex), ex.LackedBy, exclusionTally(ex))
+	}
+	sb.WriteString("  A regression among an excluded producer's facts cannot be graded here and is NOT reported.\n")
+}
+
+func sharedFamilyNames(g *IntersectionGrading) []string {
+	names := append([]string(nil), g.SharedExtractors...)
+	for _, p := range g.SharedProviders {
+		names = append(names, p+" provider")
+	}
+	return names
+}
+
+func producerLabel(ex ExcludedProducer) string {
+	if ex.Kind == ProducerProvider {
+		return ex.Name + " provider"
+	}
+	return ex.Name
+}
+
+func exclusionTally(ex ExcludedProducer) string {
+	var parts []string
+	side := func(label string, factN, findingN int) {
+		if factN == 0 && findingN == 0 {
+			return
+		}
+		s := fmt.Sprintf("%s %s", plural(factN, "fact", "facts"), label)
+		if findingN > 0 {
+			s = fmt.Sprintf("%s and %s %s", plural(factN, "fact", "facts"), plural(findingN, "finding", "findings"), label)
+		}
+		parts = append(parts, s)
+	}
+	side("on the baseline side", ex.BaselineFactsExcluded, ex.BaselineFindingsExcluded)
+	side("on the current side", ex.CurrentFactsExcluded, ex.CurrentFindingsExcluded)
+	if len(parts) == 0 {
+		return "no facts on either side matched it"
+	}
+	return strings.Join(parts, ", ") + " not graded"
+}
+
 // writeComparability prints every warning verbatim plus what its category means for
 // the delta, so "stale" or "incomparable" is never asserted without its reason.
 func (v Verdict) writeComparability(sb *strings.Builder) {
@@ -489,6 +585,26 @@ func writeKinds(sb *strings.Builder, kinds []diff.WarningKind) {
 			fmt.Fprintf(sb, "    %s — %s\n", k, m)
 		} else {
 			fmt.Fprintf(sb, "    %s\n", k)
+		}
+	}
+}
+
+func (v Verdict) writeGuidance(sb *strings.Builder) {
+	if len(v.Guidance) == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "\nGuidance for this change (%d) — advice for files this delta touched; steering, never graded:\n", len(v.Guidance))
+	for _, g := range v.Guidance {
+		fmt.Fprintf(sb, "  guidance %s [%s]: %s\n      because: %s\n", g.Rule, g.Mode, g.Message, g.Because)
+		for _, ex := range g.Exemplars {
+			fmt.Fprintf(sb, "      exemplar %s (%s)\n", ex.Exemplar, ex.Label())
+		}
+		for i, f := range g.MatchedFiles {
+			if i == listCap {
+				fmt.Fprintf(sb, "      … %d more changed files in %s\n", len(g.MatchedFiles)-listCap, g.Component)
+				break
+			}
+			fmt.Fprintf(sb, "      changed: %s\n", f)
 		}
 	}
 }

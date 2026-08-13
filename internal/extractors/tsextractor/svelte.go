@@ -398,6 +398,7 @@ func (e *TSExtractor) extractSvelteScriptBlock(block *svelteScriptBlock, relFile
 		dir:       filepath.Dir(relFile),
 		isTSX:     isTSX,
 		importMap: buildImportSymbols(root, block.Content, relFile, aliases),
+		imports:   buildEmberImportBindings(root, block.Content, relFile, aliases),
 	}
 	decls := e.extractDeclarations(root, ctx)
 

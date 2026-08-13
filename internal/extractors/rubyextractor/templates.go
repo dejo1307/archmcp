@@ -55,6 +55,14 @@ func isTemplateFile(path string) bool {
 		strings.HasSuffix(lower, ".haml")
 }
 
+// isJbuilderFile reports whether a path is a Jbuilder view (.jbuilder, usually
+// .json.jbuilder). A Jbuilder template is plain Ruby — the json builder DSL —
+// so it goes through the same reference-only pass as the embedded-Ruby
+// templates, with the whole file as the Ruby region.
+func isJbuilderFile(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".jbuilder")
+}
+
 // extractTemplateRefs pulls the embedded Ruby out of a view template, parses it,
 // and returns a KindFileRef fact carrying the call references it makes — so
 // helpers and class methods invoked only from views are not mis-reported as dead.
@@ -69,10 +77,14 @@ func extractTemplateRefs(src []byte, relFile string) []facts.Fact {
 
 // extractEmbeddedRuby returns the Ruby regions of a template, joined by newlines.
 // ERB delimits Ruby with <% %> / <%= %>; Slim and HAML are indentation languages
-// where Ruby follows a leading =/-/~ marker on a line. Interpolation (#{...}) is
+// where Ruby follows a leading =/-/~ marker on a line; a Jbuilder view is Ruby
+// from the first byte and passes through whole. Interpolation (#{...}) is
 // captured for all kinds. Only Ruby regions are returned — never HTML/text — so
 // the downstream parse sees real code (tree-sitter tolerates imperfect fragments).
 func extractEmbeddedRuby(src []byte, relFile string) []byte {
+	if isJbuilderFile(relFile) {
+		return src
+	}
 	if strings.HasSuffix(strings.ToLower(relFile), ".erb") {
 		return extractERBRuby(string(src))
 	}

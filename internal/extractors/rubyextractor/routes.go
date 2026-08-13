@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/extcoverage"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
@@ -330,4 +331,26 @@ func filterActions(all []restAction, names map[string]bool, isAllow bool) []rest
 		}
 	}
 	return result
+}
+
+// associationCoverageFact accounts for the associations this extractor read and
+// the ones whose target it could not name.
+func associationCoverageFact(repoPath string, resolved int, unresolved map[string]int) (facts.Fact, bool) {
+	return extcoverage.Fact(repoPath, "ruby:associations", "rails_association", resolved, unresolved)
+}
+
+// callCoverageFact accounts for call edges whose target names a symbol this
+// extractor emitted, against those that name something it never did.
+//
+// 71% of a large monolith's 218,263 call edges point at a name that is not a
+// known symbol — 37,913 distinct names, led by `params`, `include` and
+// `company`. Those are not all misses: many are Rails DSL or local variables
+// that were never calls. But without this they vanish, and a vanished edge is
+// indistinguishable from one that was never there.
+//
+// The unresolved set is counted, not materialised. Turning 37,913 names into
+// nodes would put `params` in the graph as a symbol, and a node nobody can
+// follow is the same defect as an edge nobody can follow.
+func callCoverageFact(repoPath string, resolved int, unresolved map[string]int) (facts.Fact, bool) {
+	return extcoverage.Fact(repoPath, "ruby:calls", "ruby_call", resolved, unresolved)
 }

@@ -76,7 +76,7 @@ it.
 
 That distinction is carried in the confidence score, and it is exact rather than
 decorative: `1.0` means proven, and only `cycles`, `intent`'s set-difference verdicts,
-and declared-layer violations ever reach it. Every explainer that
+declared-layer violations and declared-constraint breaches ever reach it. Every explainer that
 computes a saturating score — a fan-in ratio, a coverage share — clamps strictly below
 `1.0`, so a statistical outlier can never present itself as a certainty.
 
@@ -152,10 +152,13 @@ that drifted gets to masquerade as something you caused.
 ## Only one kind fails the build
 
 Of the 29,633 findings across the corpus, 1,057 come from the cycles explainer, and
-**937 of those are load-order cycles at confidence `1.0` — 3.16%.** Only those are
-eligible to fail a build. The other 96.84% are reported and let you through, including
-the 120 cycles-sourced findings the explainer emits at `0.4` for a highly coupled
-module cluster, which is a coupling signal rather than a defect to break.
+**937 of those were load-order cycles at confidence `1.0` — 3.16%.** Only those were
+eligible to fail a build. The other 96.84% were reported and let you through. (In that
+measurement the remaining 120 cycles-sourced findings — oversized "highly coupled
+module cluster" findings — sat at `0.4`. That has since been corrected: a cluster is a
+cycle, a larger one, and exactly as certain, so it now reports at `1.0` and is
+gate-eligible like any other cycle. Encoding "hard to fix" in the confidence let a
+strictly worse graph report as an improvement.)
 
 That ratio is the design, not an accident. A cycle is the one finding computed with
 certainty rather than inferred, and it is consequential enough to be worth stopping for:
@@ -200,9 +203,10 @@ so — but the mechanism is the argument, and the mechanism is the delta.
 - **The heuristics are repo-relative.** A uniformly complex codebase reports nothing
   remarkable, because nothing in it is remarkable *for that codebase*. Findings compare
   you to yourself, never to an industry baseline.
-- **The bulk of the volume is one explainer.** 23,775 of the 29,633 findings are
-  hotspots, and unlike its siblings it has no output cap. "No new findings" is a
-  statement about your change, never a certificate that a repository is clean.
+- **The bulk of the volume is one explainer.** 23,775 of the 29,633 findings were
+  hotspots, measured before that explainer was capped; it now reports at most its 20
+  highest-scoring pinch points, like its siblings. "No new findings" is a statement
+  about your change, never a certificate that a repository is clean.
 
 ---
 

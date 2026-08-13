@@ -93,6 +93,77 @@ func resolveImports(allFacts []facts.Fact, isRails bool) []facts.Fact {
 	return emitEdges(edges, isRails)
 }
 
+// applyTableNamePrefixes corrects every derived model table with the prefix its
+// root namespace declares, mutating the facts in place. Rails puts
+// `table_name_prefix` in front of the name it derives from the class, so a model
+// under such a namespace stores in a relation the derivation alone never names:
+// `Engagement::Survey` is engagement_surveys, while `surveys` is another model's
+// table entirely, and a graph that hands out the unprefixed name answers with a
+// relation the model never reads. The declaration lives in one file and the
+// models it governs in others, which is why the correction is a whole-repo pass
+// rather than a per-file one.
+//
+// A table_source of "declared" is left exactly as the source states it: Rails
+// does not prefix a `self.table_name`, so prefixing one would replace a stated
+// fact with a derived guess.
+//
+// The namespaces enclosing a model are searched innermost first and the first
+// one that declared a prefix decides, which is what Rails' own
+// `module_parents.detect` does and is not the same as taking the outermost:
+// `Packages::Debian::Publication` stores in packages_debian_publications, not in
+// packages_publications. A namespace whose prefix could not be read stops the
+// search rather than handing the model to an outer namespace, and a module
+// declaring two different prefixes across files resolves to none — which one
+// applies cannot be derived from the name.
+func applyTableNamePrefixes(allFacts []facts.Fact) {
+	prefixes := map[string]string{}
+	for _, f := range allFacts {
+		if f.Kind != facts.KindSymbol || f.Props == nil {
+			continue
+		}
+		prefix, _ := f.Props["table_name_prefix"].(string)
+		if prefix == "" {
+			continue
+		}
+		if prior, seen := prefixes[f.Name]; seen && prior != prefix {
+			prefixes[f.Name] = ""
+			continue
+		}
+		prefixes[f.Name] = prefix
+	}
+	if len(prefixes) == 0 {
+		return
+	}
+
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindStorage || f.Props == nil {
+			continue
+		}
+		if kind, _ := f.Props["storage_kind"].(string); kind != "model" {
+			continue
+		}
+		if source, _ := f.Props["table_source"].(string); source != "derived" {
+			continue
+		}
+		table, _ := f.Props["table"].(string)
+		if table == "" {
+			continue
+		}
+		segments := strings.Split(f.Name, "::")
+		for i := len(segments) - 1; i > 0; i-- {
+			prefix, declared := prefixes[strings.Join(segments[:i], "::")]
+			if !declared {
+				continue
+			}
+			if prefix != "" {
+				f.Props["table"] = prefix + table
+			}
+			break
+		}
+	}
+}
+
 // couplingRank orders coupling kinds so the "hardest" (most import-like) wins when
 // one edge arises from multiple references. Association is weakest: any other kind
 // overrides it, so an edge is tagged "association" only when associations are its

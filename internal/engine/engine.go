@@ -31,6 +31,7 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/crossrepo"
 	"github.com/enola-labs/enola/internal/linkers/crossrepo/signals"
 	"github.com/enola-labs/enola/internal/linkers/vocab"
+	"github.com/enola-labs/enola/internal/providers"
 	"github.com/enola-labs/enola/internal/renderers"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/plugin"
@@ -117,6 +118,10 @@ func (e *Engine) SetPersistCache(persist bool) { e.persistCache = persist }
 // RegisterExtractor adds an extractor to the engine.
 func (e *Engine) RegisterExtractor(ext extractors.Extractor) {
 	e.extractors.Register(ext)
+}
+
+func (e *Engine) Extractors() []extractors.Extractor {
+	return e.extractors.All()
 }
 
 // RegisterExplainer adds an explainer to the engine.
@@ -448,6 +453,15 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		e.store.Add(intent.CompileFacts(resolved)...)
 	}
 
+	// Run configured external providers, still inside the extraction window so
+	// their facts are repo-labeled (and prefixed, in append mode) exactly as
+	// measured ones — and before linking, so a provider's edges participate in
+	// the graph every explainer walks. Providers merge additively: an identity
+	// an extractor already owns is never overwritten, so the census can say a
+	// provider contributed less than it emitted but the graph cannot silently
+	// change authorship.
+	provRecords := e.runProviders(ctx, absRepo, preCount)
+
 	tExtract = time.Since(tStage)
 	newCount := e.store.Count()
 	log.Printf("[engine] extracted %d facts using %d extractors", newCount, len(usedExtractors))
@@ -545,6 +559,8 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			Git:              gitInfo(absRepo, e.cfg.Output.Dir),
 			ConfigHash:       configHash,
 
+			Providers: provRecords,
+
 			FilesSeen:          len(files),
 			FilesParsed:        e.store.CountFilesWithFacts(files, parsedPrefix),
 			SourceBytes:        e.store.SourceBytesWithFacts(files, parsedPrefix, absRepo),
@@ -557,6 +573,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			ParseErrorSample:   capParseErrors(parseErrs),
 			HeuristicInsights:  countHeuristicInsights(allInsights),
 			Coverage:           coverageSummary(e.store),
+			Census:             e.fileCensus(files, parsedPrefix, skips, usedExtractors, parseErrs),
 		},
 		// FactsRef aliases the store's slice rather than copying it. This is safe:
 		// `work` is published (below) and then NEVER mutated again — the next
@@ -611,6 +628,34 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		ms.HeapAlloc>>20, ms.Sys>>20, snapshot.Meta.FactCount)
 
 	return snapshot, nil
+}
+
+// runProviders executes the configured external fact providers against this
+// repository and merges their accepted facts into the build-scratch store,
+// returning the census for the snapshot receipt. preCount marks where this
+// repo's extraction window began: everything the extractors (and the intent
+// compiler) added since is the identity set a provider fact may not collide
+// with — the extractor's account of a name+kind wins, always.
+func (e *Engine) runProviders(ctx context.Context, absRepo string, preCount int) []facts.ProviderRecord {
+	if len(e.cfg.Providers) == 0 {
+		return nil
+	}
+	extracted := e.store.FactsRef()[preCount:]
+	owned := make(map[string]bool, len(extracted))
+	for _, f := range extracted {
+		owned[f.Kind+"\x00"+f.Name] = true
+	}
+	provFacts, records := providers.Run(ctx, e.cfg.Providers, absRepo, func(kind, name string) bool {
+		return owned[kind+"\x00"+name]
+	})
+	e.store.Add(provFacts...)
+	if annotated := providers.LinkRuntimeObservations(e.store, preCount); annotated > 0 {
+		log.Printf("[providers] runtime observations annotated %d extracted route fact(s)", annotated)
+	}
+	if typed := providers.LinkDeclaredContracts(e.store, preCount); typed > 0 {
+		log.Printf("[providers] declared contracts typed %d extracted symbol fact(s)", typed)
+	}
+	return records
 }
 
 // runBinders runs every registered binder declaring the given stage, over the

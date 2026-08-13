@@ -281,6 +281,13 @@ func cleanRubyPath(raw string) (string, bool) {
 	if p == "" || p == "/" {
 		return "", false
 	}
+	// An interpolation the pattern could not close — `#{ENV["HOST"]}` has a
+	// bracket inside it — leaves a fragment behind. A path built from a value
+	// this extractor cannot read is not a path, and emitting the fragment
+	// produces a route fact named `#{ENV[`.
+	if strings.Contains(p, "#{") || strings.Contains(p, "${") {
+		return "", false
+	}
 	// Require at least one concrete (non-placeholder) segment so a fully dynamic
 	// path (e.g. just "#{path}") is skipped.
 	for _, seg := range strings.Split(p, "/") {

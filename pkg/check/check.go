@@ -10,6 +10,7 @@ package check
 
 import (
 	"github.com/enola-labs/enola/internal/diff"
+	"github.com/enola-labs/enola/internal/explainers/constraints"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -29,14 +30,17 @@ const (
 	// Distinct from StatusRegression on purpose: "I refuse to grade this" must never
 	// be reported as "your change is bad".
 	StatusIncomparable Status = "incomparable"
+
+	StatusPartialClean      Status = "partial_clean"
+	StatusPartialRegression Status = "partial_regression"
 )
 
 // ExitCode maps a status to the process exit code.
 func (s Status) ExitCode() int {
 	switch s {
-	case StatusClean:
+	case StatusClean, StatusPartialClean:
 		return 0
-	case StatusRegression:
+	case StatusRegression, StatusPartialRegression:
 		return 1
 	case StatusUsageError:
 		return 2
@@ -48,29 +52,39 @@ func (s Status) ExitCode() int {
 }
 
 // DefaultFailExplainers is the set of explainers whose new findings break a build
-// by default: dependency cycles, and nothing else.
+// by default: dependency cycles and declared-constraint violations, nothing else.
 //
 // The obvious design — "fail on confidence 1.0, because ARCHITECTURE.md says 1.0 is a
 // structural fact and anything below is a heuristic" — does not survive contact with the
-// explainers. Two of them reach 1.0 without being structural defects:
+// explainers. Confidence says how certain a claim is, not what kind of claim it is:
 //
-//   - god-class computes confidence from a fan-in ratio and CLAMPS it to 1.0, so a
-//     statistical outlier at twice the threshold presents as a certainty;
-//   - layers emits an informational "Architecture pattern: X" finding whose confidence is
-//     the share of the codebase matching the pattern, which can be 1.0 — and detecting a
-//     different pattern after a reorganization is not a regression.
+//   - layers emits an informational "Architecture pattern: X" finding at 1.0 when the
+//     pattern is DECLARED — stated rather than guessed — and re-detecting a pattern
+//     after a reorganization is not a regression;
+//   - god-class once clamped its fan-in ratio to 1.0, presenting a statistical outlier
+//     at twice the threshold as a certainty. It now caps at
+//     common.MaxHeuristicConfidence (0.95), but the gate must not depend on every
+//     estimating explainer remembering that ceiling forever.
 //
-// Gating on the number alone would therefore fail builds for a new statistical outlier and
-// for a re-detected architecture pattern. So the explainer is the primary filter and
-// confidence is a floor applied within it. See MinConfidence.
-var DefaultFailExplainers = []string{"cycles"}
+// Gating on the number alone would therefore fail builds for findings that are certain
+// without being defects. So the explainer is the primary filter and confidence is a
+// floor applied within it. See MinConfidence.
+//
+// Constraints belongs here for the same reason cycles does: its rules are declared and its
+// matching is exact, so a violation is a decided-rule breach, not a heuristic candidate.
+var DefaultFailExplainers = []string{"cycles", "constraints"}
 
 // DefaultMinConfidence is the floor applied WITHIN the failing explainers.
 //
-// It still does real work: the cycles explainer emits both a true load-order cycle at
-// confidence 1.0 and a "highly coupled module cluster" at 0.4 that its own description
-// calls "an overall coupling-density signal, not a defect to break". The floor keeps the
-// second out of the gate without needing a second allow-list.
+// It still does real work: the constraints explainer emits advisory-mode breaches at
+// 0.9 and dead-selector component notes at 0.4 — both from a failing explainer, both
+// deliberately below this floor, because their own descriptions say they report rather
+// than enforce. The floor keeps them out of the gate without needing a second
+// allow-list. (The cycles explainer's oversized "highly coupled module cluster" used
+// to sit under the floor at 0.4 too. That was a defect, not a design: a cluster is a
+// cycle, exactly as certain, and softening its confidence let a growing cycle drop
+// under the gate — see the doctrine comment on cycles.maxCycleModules. It reports at
+// 1.0 now.)
 const DefaultMinConfidence = 1.0
 
 // Measurement is a count the policy can gate on that the DELTA ALONE DOES NOT CARRY —
@@ -124,6 +138,12 @@ type Policy struct {
 	// what it was before measurements existed, so a build that passes today still
 	// passes. Anything that would newly fail a build has to be asked for.
 	Thresholds []Threshold `json:"thresholds,omitempty"`
+	// Suppressions is the repository's signed excuse ledger (LoadSuppressions).
+	// A finding an entry selects lands in the verdict's Suppressed bucket and
+	// never fails — reported, attributed, and out of the gate. Part of the
+	// policy because it decides verdicts: same delta plus same policy, ledger
+	// included, always yields the same verdict.
+	Suppressions []Suppression `json:"suppressions,omitempty"`
 }
 
 // thresholdFor returns the bound configured for a measurement, if any.
@@ -147,6 +167,7 @@ func (p Policy) resolved() Policy {
 		MinConfidence:  p.minConfidence(),
 		WarnOnly:       p.WarnOnly,
 		Thresholds:     p.Thresholds,
+		Suppressions:   p.Suppressions,
 	}
 }
 
@@ -204,7 +225,10 @@ var blockingKinds = map[diff.WarningKind]bool{
 	diff.WarnDifferentRepo:   true,
 	diff.WarnVersionMismatch: true,
 	diff.WarnExtractorSet:    true,
-	diff.WarnIgnoreGlobs:     true,
+	// A provider is a fact source exactly as an extractor is, so a differing
+	// ran-provider set invalidates the fact delta the same way.
+	diff.WarnProviderSet: true,
+	diff.WarnIgnoreGlobs: true,
 	// Fail closed on a caveat this package cannot categorize — see diff.AddWarning.
 	diff.WarnUnclassified: true,
 }
@@ -236,12 +260,40 @@ type Verdict struct {
 	// Advisories are new findings that did NOT violate it — reported so a clean exit
 	// is still informative, never silent about a real structural change.
 	Advisories []facts.Insight `json:"advisories,omitempty"`
+	// Suppressed are findings a ledger entry excused: reported in their own
+	// bucket — never failed, never folded into Advisories, because "someone
+	// signed this away" and "below the policy" are different statements and a
+	// reader auditing the ledger needs the first one visible.
+	Suppressed []facts.Insight `json:"suppressed,omitempty"`
+	Exempted   []facts.Insight `json:"exempted,omitempty"`
 	// Resolved are findings the change cleared. Worth printing: a gate that only ever
 	// reports bad news trains people to read it as noise.
 	Resolved []facts.Insight `json:"resolved,omitempty"`
 	// Incidental are findings that moved with no structural cause in this change —
 	// a drifting statistical threshold or a re-ranked top-N. Never graded.
 	Incidental []facts.Insight `json:"incidental,omitempty"`
+	// Silenced are constraint breaches that stopped being reported because the
+	// code they named left the component the rule binds, not because it complied.
+	// Held out of Resolved deliberately: a rule losing its subject printed as a
+	// win is CI reporting a regression as an improvement. Not graded — a member
+	// leaving a component is often exactly the refactor intended — but never
+	// silent, and never counted as good news.
+	Silenced []facts.Insight `json:"silenced,omitempty"`
+	// Undeclared are constraint breaches that stopped being reported because the
+	// declaration changed — the rule deleted, its form swapped under a preserved
+	// id, or the witness exempted — with the breaching code untouched. Held out
+	// of Resolved for the same reason Silenced is: a law that stopped asking the
+	// question is not an answer to it. Not graded; editing a declaration is a
+	// legitimate act, and this section is what keeps it from reading as a fix.
+	Undeclared []facts.Insight `json:"undeclared,omitempty"`
+	// Unattributed are constraint breaches this pair of snapshots has no standing
+	// to judge: the witness's repository left a union snapshot, or the baseline
+	// carried the finding without the declaration that produced it. Held out of
+	// Resolved because "the code is no longer measured" is not "the code was
+	// fixed", and a still-breaching witness printed as good news is the failure
+	// this whole section exists to prevent. Not graded — neither is a regression
+	// in the change — but never silent.
+	Unattributed []facts.Insight `json:"unattributed,omitempty"`
 
 	// Measurements are every count the caller supplied, gated or not. Breaches are the
 	// subset that met a threshold; a fatal one makes the status a regression exactly as
@@ -249,6 +301,10 @@ type Verdict struct {
 	// numbers.
 	Measurements []Measurement `json:"measurements,omitempty"`
 	Breaches     []Breach      `json:"breaches,omitempty"`
+
+	Intersection *IntersectionGrading `json:"intersection_grading,omitempty"`
+
+	Guidance []constraints.GuidanceMatch `json:"guidance,omitempty"`
 
 	// ComparabilityWarnings is every warning, verbatim and in full. Not split by
 	// severity: diff.Comparability records kinds as a set rather than per-message, and
@@ -310,7 +366,23 @@ func edgeKindCounts(edges []diff.Edge) map[string]int {
 // built over different inputs, "re-run generate_snapshot" (the remedy for an inverted
 // pair) sends the caller down the wrong path. Nothing is hidden by the ordering — every
 // warning is reported regardless of which one decided the status.
+//
+// Delta-scoped: a finding the baseline already carried is not graded. Callers that
+// must also enforce strict-mode constraints — which fail on baselined violations
+// too — pass the current snapshot's findings through EvaluateCurrent instead.
 func Evaluate(d *diff.SnapshotDiff, p Policy, measurements ...Measurement) Verdict {
+	return EvaluateCurrent(d, p, nil, measurements...)
+}
+
+// EvaluateCurrent grades a delta and, additionally, the current snapshot's
+// strict-mode constraint violations. currentFindings is the current snapshot's
+// FULL findings list: strict constraints are the one policy that opts out of
+// the ratchet's delta scoping — a rule declared strict was decided to hold NOW,
+// not merely to stop getting worse — so its violations fail whether or not the
+// baseline already carried them, unless a ledger entry suppresses them. Every
+// other finding in currentFindings is ignored; the delta remains the frame for
+// everything the ratchet grades.
+func EvaluateCurrent(d *diff.SnapshotDiff, p Policy, currentFindings []facts.Insight, measurements ...Measurement) Verdict {
 	v := Verdict{Policy: p.resolved(), Diff: d}
 	if d == nil {
 		v.Status = StatusUsageError
@@ -327,14 +399,49 @@ func Evaluate(d *diff.SnapshotDiff, p Policy, measurements ...Measurement) Verdi
 		}
 	}
 
+	graded := map[string]bool{}
 	for _, in := range d.FindingsNew {
-		if p.fails(in) {
+		graded[in.Title] = true
+		switch {
+		case exemptedFinding(in):
+			v.Exempted = append(v.Exempted, in)
+		case p.suppressed(in):
+			v.Suppressed = append(v.Suppressed, in)
+		// A strict violation fails without consulting the explainer allow-list:
+		// strict is declared per rule, and a --fail-on override that dropped
+		// constraints must not quietly soften what a declaration said is law.
+		case strictFinding(in) || p.fails(in):
 			v.Failures = append(v.Failures, in)
-		} else {
+		default:
 			v.Advisories = append(v.Advisories, in)
 		}
 	}
+	// Strict pass, after the delta so a strict violation that IS new is graded
+	// once under its delta identity. currentFindings preserves snapshot order,
+	// which the explainer already sorts, so the appended failures are as
+	// deterministic as the delta's.
+	for _, in := range currentFindings {
+		if !strictFinding(in) || graded[in.Title] {
+			continue
+		}
+		graded[in.Title] = true
+		if p.suppressed(in) {
+			v.Suppressed = append(v.Suppressed, in)
+		} else {
+			v.Failures = append(v.Failures, in)
+		}
+	}
+	for _, in := range currentFindings {
+		if !exemptedFinding(in) || graded[in.Title] {
+			continue
+		}
+		graded[in.Title] = true
+		v.Exempted = append(v.Exempted, in)
+	}
 	v.Resolved = d.FindingsResolved
+	v.Silenced = d.FindingsSilenced
+	v.Undeclared = withoutExempted(d.FindingsUndeclared, v.Exempted)
+	v.Unattributed = withoutExempted(d.FindingsUnattributed, v.Exempted)
 	v.Incidental = append(append([]facts.Insight{}, d.FindingsNewIncidental...), d.FindingsResolvedIncidental...)
 	if len(v.Incidental) == 0 {
 		v.Incidental = nil
