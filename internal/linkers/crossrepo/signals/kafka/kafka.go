@@ -58,13 +58,13 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 		// Historically every topic fact came from Kafka-aware code extraction.
 		// AsyncAPI introduces other protocols into the same fact kind; an explicit
 		// non-Kafka protocol must not manufacture a via=kafka dependency.
-		if protocol := f.PropString("messaging"); protocol != "" && !isKafkaProtocol(protocol) {
+		if protocol := f.PropString(facts.PropMessaging); protocol != "" && !isKafkaProtocol(protocol) {
 			continue
 		}
 		// A contract can state direction explicitly. Publishing to a topic is an
 		// outbound interface, not evidence that this repo consumes the topic owner.
 		// Older extractors emit no role and retain name-based inference.
-		if f.PropString("messaging_role") == facts.MessagingRoleProducer {
+		if f.PropString(facts.PropMessagingRole) == facts.MessagingRoleProducer {
 			continue
 		}
 		owner := s.topicOwner(f.Name)

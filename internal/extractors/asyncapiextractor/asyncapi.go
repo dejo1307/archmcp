@@ -115,12 +115,17 @@ func parseFile(absPath, relFile, repoPath string) ([]facts.Fact, error) {
 		}
 		seen[key] = true
 		props := map[string]any{
-			"storage_kind": facts.StorageKindTopic, "messaging_role": op.role,
+			"storage_kind": facts.StorageKindTopic, facts.PropMessagingRole: op.role,
 			"asyncapi_action": op.action, "asyncapi_version": version,
-			"source": "asyncapi", "language": "asyncapi", "spec_file": relFile,
+			facts.PropMessagingOperation: operationForRole(op.role),
+			facts.PropSource:             facts.MessagingSourceAsyncAPI, "language": "asyncapi", "spec_file": relFile,
 		}
-		if protocol := protocolFor(op.serverNames, servers); protocol != "" {
-			props["messaging"] = protocol
+		protocol := op.protocol
+		if protocol == "" {
+			protocol = protocolFor(op.serverNames, servers)
+		}
+		if protocol != "" {
+			props[facts.PropMessaging] = protocol
 		}
 		optional(props, "operationId", op.id)
 		optional(props, "summary", op.summary)
@@ -144,10 +149,20 @@ func parseFile(absPath, relFile, repoPath string) ([]facts.Fact, error) {
 	return result, nil
 }
 
+func operationForRole(role string) string {
+	if role == facts.MessagingRoleProducer {
+		return facts.MessagingOperationPublish
+	}
+	if role == facts.MessagingRoleConsumer {
+		return facts.MessagingOperationSubscribe
+	}
+	return ""
+}
+
 type operation struct {
-	channel, role, action, id, summary, description, message, contentType string
-	tags, serverNames                                                     []string
-	messageInfo                                                           messageInfo
+	channel, role, action, id, summary, description, message, contentType, protocol string
+	tags, serverNames                                                               []string
+	messageInfo                                                                     messageInfo
 }
 
 func operationsV2(channels map[string]any, baseFile string, resolver *refResolver) []operation {
@@ -196,12 +211,35 @@ func operationsV3(doc map[string]any, baseFile string, resolver *refResolver) []
 			channelName = channelKey
 		}
 		op := makeOperation(channelName, role, action, opMap, refNames(channel.value["servers"], "servers"), opResolved.absFile, resolver)
+		op.protocol = referencedServerProtocol(channel.value["servers"], channel.absFile, resolver)
 		if op.id == "" {
 			op.id = operationID
 		}
 		out = append(out, op)
 	}
 	return out
+}
+
+// referencedServerProtocol resolves AsyncAPI 3 Server Reference Objects from
+// the document that contains the channel. This matters for external channel
+// files: a local #/servers/... reference belongs to that file, not the root
+// AsyncAPI document. If several referenced servers use different protocols,
+// leave the protocol unspecified rather than choosing one arbitrarily.
+func referencedServerProtocol(raw any, baseFile string, resolver *refResolver) string {
+	protocols := map[string]bool{}
+	for _, item := range sliceValue(raw) {
+		server := resolver.resolve(item, baseFile)
+		if protocol := strings.ToLower(stringValue(server.value["protocol"])); protocol != "" {
+			protocols[protocol] = true
+		}
+	}
+	if len(protocols) != 1 {
+		return ""
+	}
+	for protocol := range protocols {
+		return protocol
+	}
+	return ""
 }
 
 func makeOperation(channel, role, action string, raw map[string]any, servers []string, baseFile string, resolver *refResolver) operation {

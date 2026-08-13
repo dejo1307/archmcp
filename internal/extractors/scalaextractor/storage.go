@@ -93,11 +93,11 @@ func extractTopics(root *sitter.Node, src []byte, relFile, dir string) []facts.F
 					File: relFile,
 					Line: int(n.StartPosition().Row) + 1,
 					Props: map[string]any{
-						"language":       "scala",
-						"storage_kind":   facts.StorageKindTopic,
-						"messaging":      "kafka",
-						facts.PropSource: "scala-topic-const",
-						"declared_as":    name,
+						"language":          "scala",
+						"storage_kind":      facts.StorageKindTopic,
+						facts.PropMessaging: "kafka",
+						facts.PropSource:    "scala-topic-const",
+						"declared_as":       name,
 					},
 					Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: dir}},
 				})

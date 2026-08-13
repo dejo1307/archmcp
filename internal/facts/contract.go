@@ -36,6 +36,34 @@ const (
 	// PropRouteType sub-classifies a route beyond HTTP (RouteTypeGRPC,
 	// RouteTypeMiddleware). Absent means a plain HTTP route.
 	PropRouteType = "type"
+	// PropMessaging names the messaging protocol carried by a topic operation.
+	PropMessaging = "messaging"
+	// PropMessagingRole identifies which side of a topic operation this fact models.
+	PropMessagingRole = "messaging_role"
+	// PropMessagingOperation normalizes protocol/spec vocabulary to publish/subscribe.
+	PropMessagingOperation = "messaging_operation"
+)
+
+// Messaging operation values shared by contract and code extractors. AsyncAPI
+// v3 send/receive normalize to these values, as do language call sites.
+const (
+	MessagingOperationPublish   = "publish"
+	MessagingOperationSubscribe = "subscribe"
+)
+
+// Messaging fact sources that cross extractor/binder boundaries.
+const (
+	MessagingSourceAsyncAPI    = "asyncapi"
+	MessagingSourceGoKafkaCall = "go-kafka-call"
+)
+
+// Props written by the messaging contract binder.
+const (
+	PropMessagingContractBound       = "messaging_contract_bound"
+	PropMessagingContractOperationID = "messaging_contract_operation_id"
+	PropMessagingContractFile        = "messaging_contract_file"
+	PropMessagingImplementationCount = "messaging_implementation_count"
+	PropMessagingImplementedBy       = "messaging_implemented_by"
 )
 
 // Via kinds — the `via` labels a cross-repo edge carries, naming HOW the edge

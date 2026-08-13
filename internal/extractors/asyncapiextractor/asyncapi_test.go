@@ -123,6 +123,37 @@ func TestExtractV3JSONAndChannelRef(t *testing.T) {
 	}
 }
 
+func TestExtractV3ExternalChannelResolvesServersInItsOwnDocument(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "asyncapi.yaml", `asyncapi: 3.0.0
+info: {title: Orders, version: 1.0.0}
+servers:
+  broker: {host: mqtt.example, protocol: mqtt}
+channels:
+  orders: {$ref: './channels.yaml#/channels/orders'}
+operations:
+  publishOrder:
+    action: send
+    channel: {$ref: '#/channels/orders'}
+`)
+	writeSpec(t, repo, "channels.yaml", `servers:
+  broker: {host: kafka.example:9092, protocol: kafka}
+channels:
+  orders:
+    address: orders.created
+    servers: [{$ref: '#/servers/broker'}]
+`)
+
+	got := extract(t, repo)
+	topic := find(got, "orders.created", facts.MessagingRoleProducer)
+	if topic == nil {
+		t.Fatal("missing externally referenced channel operation")
+	}
+	if topic.Props["messaging"] != "kafka" {
+		t.Fatalf("messaging = %v, want protocol from external channel document", topic.Props["messaging"])
+	}
+}
+
 func TestMalformedSkippedAndContextCancellation(t *testing.T) {
 	repo := t.TempDir()
 	writeSpec(t, repo, "bad.yaml", "asyncapi: 2.6.0\nchannels: [broken")
