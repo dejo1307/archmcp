@@ -1671,6 +1671,25 @@ type extractorCache struct {
 	prev map[string]json.RawMessage // loaded from disk
 	next map[string]json.RawMessage // to persist (this run's keys only)
 	hits int
+
+	// noPersist records that save will never be called. Such a cache still SERVES
+	// entries — a read-only mode should reuse a warm cache, that is most of what
+	// makes it fast — but stops accumulating the bytes to write back, because there
+	// is nowhere for them to go.
+	//
+	// Without this, `enola --explain` (which sets SetPersistCache(false) precisely
+	// because it must not write to .enola) marshalled every extractor's facts to
+	// JSON and held them to the end of the run before dropping them unwritten. On a
+	// kernel-sized repository that is an 800 MB buffer, reached through a
+	// bytes.Buffer doubling that costs 1.5 GB, live across the whole pipeline.
+	//
+	// Negative form so the ZERO VALUE accumulates, which is what every caller
+	// before this field expected. Stated positively, a struct literal that forgot
+	// the field would silently discard every put — and that is not hypothetical:
+	// the first version of this field was positive, and a test building the struct
+	// directly went from passing to "the cache was never written" with no
+	// compile error.
+	noPersist bool
 }
 
 // buildIdentity identifies the binary that produced a cache entry: the release
@@ -1724,10 +1743,11 @@ var errColdCache = errors.New("cold cache")
 // the decoded entry map — each about that size — alive simultaneously, at the exact
 // point in a run where the fact store is also being built. Decoding entry by entry
 // retains only the entries.
-func loadExtractorCache(path string) *extractorCache {
+func loadExtractorCache(path string, persist bool) *extractorCache {
 	c := &extractorCache{
-		prev: map[string]json.RawMessage{},
-		next: map[string]json.RawMessage{},
+		prev:      map[string]json.RawMessage{},
+		next:      map[string]json.RawMessage{},
+		noPersist: !persist,
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -1853,7 +1873,9 @@ func (c *extractorCache) get(key string) ([]facts.Fact, bool) {
 	if err := json.Unmarshal(raw, &ff); err != nil {
 		return nil, false
 	}
-	c.next[key] = raw // keep the clean, pre-mutation bytes
+	if !c.noPersist {
+		c.next[key] = raw // keep the clean, pre-mutation bytes
+	}
 	// Hand the bytes over rather than sharing them. Each key is fetched at most once
 	// per run (one lookup per extractor in runExtractors), so leaving it in prev only
 	// pinned a second reference to every reused entry for the rest of the run — on a
@@ -1865,7 +1887,14 @@ func (c *extractorCache) get(key string) ([]facts.Fact, bool) {
 
 // put stores ff for key. It marshals immediately (before the engine tags or
 // otherwise mutates the facts) so the persisted bytes stay clean.
+//
+// A no-op when this cache will never be saved: marshalling is the single largest
+// allocation in a snapshot, and doing it for bytes nobody will write is the most
+// expensive way to do nothing. See the noPersist field.
 func (c *extractorCache) put(key string, ff []facts.Fact) {
+	if c.noPersist {
+		return
+	}
 	raw, err := json.Marshal(ff)
 	if err != nil {
 		return

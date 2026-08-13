@@ -78,7 +78,7 @@ func TestExtractorCache_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache.json")
 	want := []facts.Fact{{Kind: "symbol", Name: "pkg.Foo", File: "pkg/foo.go"}}
 
-	c := loadExtractorCache(path) // cold: empty
+	c := loadExtractorCache(path, true) // cold: empty
 	if _, hit := c.get("k"); hit {
 		t.Fatal("cold cache should miss")
 	}
@@ -87,7 +87,7 @@ func TestExtractorCache_RoundTrip(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	c2 := loadExtractorCache(path)
+	c2 := loadExtractorCache(path, true)
 	got, hit := c2.get("k")
 	if !hit {
 		t.Fatal("warm cache should hit after save")
@@ -98,7 +98,7 @@ func TestExtractorCache_RoundTrip(t *testing.T) {
 
 	// A key not used this run is dropped on the next save (GC of stale entries).
 	if err := c2.save(filepath.Join(t.TempDir(), "cache2.json")); err == nil {
-		c3 := loadExtractorCache(filepath.Join(t.TempDir(), "cache2.json"))
+		c3 := loadExtractorCache(filepath.Join(t.TempDir(), "cache2.json"), true)
 		if _, hit := c3.get("k"); hit {
 			t.Error("stale key should not survive a save that never referenced it")
 		}

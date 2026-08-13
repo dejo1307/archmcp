@@ -67,7 +67,7 @@ func TestExtractorCache_DecodeReadsMarshalledFile(t *testing.T) {
 		},
 	})
 
-	c := loadExtractorCache(path)
+	c := loadExtractorCache(path, true)
 	if len(c.prev) != 2 {
 		t.Fatalf("loaded %d entries from a json.Marshal-written cache, want 2", len(c.prev))
 	}
@@ -88,7 +88,7 @@ func TestExtractorCache_StaleVersionSkipsEntries(t *testing.T) {
 		Entries: map[string]json.RawMessage{"go": json.RawMessage(`[{"kind":"symbol","name":"Stale"}]`)},
 	})
 
-	if got := loadExtractorCache(path); len(got.prev) != 0 {
+	if got := loadExtractorCache(path, true); len(got.prev) != 0 {
 		t.Errorf("a cache with a foreign version was loaded (%d entries)", len(got.prev))
 	}
 }
@@ -117,7 +117,7 @@ func TestExtractorCache_TruncatedFileIsCold(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := loadExtractorCache(path); len(got.prev) != 0 {
+	if got := loadExtractorCache(path, true); len(got.prev) != 0 {
 		t.Errorf("a truncated cache loaded %d entries; it must be discarded whole", len(got.prev))
 	}
 }

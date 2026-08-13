@@ -292,6 +292,8 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	defer snapshotGCPercent()()
+
 	start := time.Now()
 
 	if repoPath == "" {
@@ -417,7 +419,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	var cache *extractorCache
 	cachePath := extractorCachePath(filepath.Join(absRepo, e.cfg.Output.Dir))
 	if e.cfg.IncrementalEnabled() {
-		cache = loadExtractorCache(cachePath)
+		cache = loadExtractorCache(cachePath, e.persistCache)
 	}
 	preCount := e.store.Count()
 	usedExtractors, shadowedExtractors, parseErrs, err := e.runExtractors(ctx, absRepo, files, currentHashes, cache)
@@ -686,6 +688,23 @@ func (e *Engine) linkCrossRepo(repoPaths map[string]string) {
 		}
 		return f.Props["synthetic"] == crossrepo.SyntheticMarker
 	})
+
+	// A cross-repo edge needs two repos, and ComputeLinks says so itself — but only
+	// after newInput has walked the copy it was handed. Asking the store first makes
+	// the single-repo case, which is most snapshots, free: RepoLabels is O(repos) off
+	// the byRepo index, where e.store.All() below is a deep copy of every fact
+	// (Props map and Relations slice included) built solely to be counted and
+	// dropped.
+	//
+	// The two conditions cannot disagree in the direction that would matter.
+	// ComputeLinks counts labels after NormalizeRepoLabel folds case, '-' and '_';
+	// RepoLabels counts them raw. Folding can only merge labels, never split them,
+	// so distinct-raw < 2 implies distinct-normalized < 2. The reverse case (two raw
+	// labels that normalize to one) skips this early-out and is caught by
+	// ComputeLinks exactly as before — a missed saving, never a missed link.
+	if len(e.store.RepoLabels()) < 2 {
+		return
+	}
 
 	// An invalid `linking:` overlay is reported once and the run continues on the
 	// built-in defaults: config validation belongs at load, and failing the whole

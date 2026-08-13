@@ -40,7 +40,7 @@ func TestExtractorCache_RejectsAnotherBuildsEntries(t *testing.T) {
 		Entries: entries,
 	})
 
-	if got := loadExtractorCache(path); len(got.prev) != 0 {
+	if got := loadExtractorCache(path, true); len(got.prev) != 0 {
 		t.Errorf("a cache written by a different build was loaded (%d entries); it must be discarded", len(got.prev))
 	}
 }
@@ -55,7 +55,7 @@ func TestExtractorCache_RejectsPreBuildStampEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := loadExtractorCache(path); len(got.prev) != 0 {
+	if got := loadExtractorCache(path, true); len(got.prev) != 0 {
 		t.Errorf("a cache predating the build stamp was loaded (%d entries); it must be discarded", len(got.prev))
 	}
 }
@@ -72,7 +72,7 @@ func TestExtractorCache_ReusesOwnEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := loadExtractorCache(path)
+	got := loadExtractorCache(path, true)
 	if len(got.prev) != 1 {
 		t.Fatalf("a cache written by this same binary was not reused: %d entries", len(got.prev))
 	}
