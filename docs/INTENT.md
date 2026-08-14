@@ -31,6 +31,51 @@ citations, ownership fields), your tooling can *derive* the
 `enola_intent:` block from them — but that derivation is your side of
 the boundary; enola's contract is the block itself.
 
+## The repo and cluster schema
+
+`enola-intent.yaml` at a repo's root and one entry of a cluster
+config's `intent:` block are **the same schema**, which is why an
+entry overrides a repo file wholesale rather than merging into it.
+Every section is optional; declaring nothing is not an error:
+
+```yaml
+service:                   # this repo's declared identity
+  name: backend
+  description: order and payment API
+consumes:                  # seams this repo intends to call
+  - {repo: payments, via: http}
+serves:                    # mechanisms this repo offers its callers
+  - {via: http, description: public REST API}
+layers:                    # this repo's layer order, outermost first
+  - {name: handlers, paths: ["app/handlers/**"]}
+  - {name: domain,   paths: ["app/domain/**"]}
+  - {name: storage,  paths: ["app/storage/**"]}
+```
+
+In a cluster config the same document is nested one level under the
+repo's label, because the file describes an estate rather than a repo:
+
+```yaml
+intent:
+  backend:
+    consumes:
+      - {repo: payments, via: http}
+```
+
+**`layers:` here is a flat, ordered list of `{name, paths}`** — the
+file already knows which repo it is about, so no `repo:` key. That is
+the one place this schema and the page schema below genuinely differ,
+and the difference is not cosmetic: a page can declare layers *for*
+several repos, so its entries name their owner and nest the order
+under `order:`. Getting it backwards is a validation error naming the
+missing field, never a silently ignored section.
+
+Declaring a layer order buys more than documentation. The `layers`
+explainer verdicts a declared order at confidence `1.00` — declared,
+not recognised — where a pattern it inferred for itself caps at
+`0.80`. Since `enola check` gates at a `1.00` floor by default, only a
+declared order is enforceable with `--fail-on=cycles,layers` alone.
+
 ## The page schema
 
 A page opts in by carrying `enola_intent:` in its frontmatter. Four
@@ -54,8 +99,8 @@ enola_intent:
   consumes:                  # seams: who intends to call whom, and how
     - {repo: mobile, target: backend, via: graphql}
   layers:                    # a repo's declared layer order, outermost first
-    - repo: backend
-      order:
+    - repo: backend          # named here — one page may declare layers for several repos
+      order:                 # (the repo-file form above is a flat list, with no repo:)
         - {name: handlers, paths: ["app/handlers/**"]}
         - {name: domain,   paths: ["app/domain/**"]}
   claims:                    # measurable statements, re-verdicted every snapshot

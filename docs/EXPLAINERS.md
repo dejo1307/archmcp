@@ -27,8 +27,8 @@ constraint rather than an optimisation.
 All of which buys a finding you can trust. It does not buy a verdict — and the gap
 between those two is what the rest of this document is about.
 
-Across the 62 public repositories swept in [BENCHMARKS.md](BENCHMARKS.md), enola's ten
-explainers produced **29,633 findings**. Every one of them is derived rather than
+Across the 81 public repositories swept in [BENCHMARKS.md](BENCHMARKS.md), enola's
+eleven explainers produced **29,633 findings**. Every one of them is derived rather than
 guessed, and that number is still the problem rather than the achievement. Nobody is
 going to read 29,633 findings. Nobody is going to fix them. A report that hands you all
 of them has told you something true and useless in the same breath, and the honest
@@ -139,7 +139,7 @@ Comparing findings across two snapshots gives three outcomes, not two:
 
 That third bucket is small, unglamorous, and the reason the gate stays switched on.
 
-Nine of the ten explainers are relative to your repository. `mean + 2σ` moves when the
+Most of the eleven explainers are relative to your repository. `mean + 2σ` moves when the
 population moves. A ranked top-N list has fixed membership size, so when a worse
 offender is deleted the next module rises into the window — and a finding "appears" for
 a module nobody edited. Both are real effects of statistics, not of your work.
