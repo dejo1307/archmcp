@@ -65,8 +65,18 @@ func TestAmbiguousAndDirectionMismatchStayUnbound(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range store.FactsRef() {
-		if isCodeOperation(f) && f.Props[facts.PropMessagingContractBound] == true {
+		if !isCodeOperation(f) {
+			continue
+		}
+		if f.Props[facts.PropMessagingContractBound] == true {
 			t.Errorf("ambiguous/unmatched code operation was bound: %+v", f)
+		}
+		want := facts.MessagingContractStatusAmbiguous
+		if f.Name == "orders.other" {
+			want = facts.MessagingContractStatusUndeclared
+		}
+		if f.PropString(facts.PropMessagingContractStatus) != want {
+			t.Errorf("status = %q, want %q: %+v", f.PropString(facts.PropMessagingContractStatus), want, f)
 		}
 	}
 }
@@ -95,13 +105,14 @@ func TestProtocolCompatibility(t *testing.T) {
 		name             string
 		contractProtocol string
 		wantBound        bool
+		wantStatus       string
 	}{
-		{name: "Kafka", contractProtocol: "kafka", wantBound: true},
-		{name: "Kafka secure", contractProtocol: "kafka-secure", wantBound: true},
-		{name: "unspecified", contractProtocol: "", wantBound: true},
-		{name: "MQTT", contractProtocol: "mqtt", wantBound: false},
-		{name: "AMQP", contractProtocol: "amqp", wantBound: false},
-		{name: "WebSocket", contractProtocol: "wss", wantBound: false},
+		{name: "Kafka", contractProtocol: "kafka", wantBound: true, wantStatus: facts.MessagingContractStatusBound},
+		{name: "Kafka secure", contractProtocol: "kafka-secure", wantBound: true, wantStatus: facts.MessagingContractStatusBound},
+		{name: "unspecified", contractProtocol: "", wantBound: true, wantStatus: facts.MessagingContractStatusBound},
+		{name: "MQTT", contractProtocol: "mqtt", wantStatus: facts.MessagingContractStatusProtocolMismatch},
+		{name: "AMQP", contractProtocol: "amqp", wantStatus: facts.MessagingContractStatusProtocolMismatch},
+		{name: "WebSocket", contractProtocol: "wss", wantStatus: facts.MessagingContractStatusProtocolMismatch},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -117,15 +128,42 @@ func TestProtocolCompatibility(t *testing.T) {
 				t.Fatal(err)
 			}
 			bound := false
+			status := ""
 			for _, f := range store.FactsRef() {
 				if isCodeOperation(f) {
 					bound = f.Props[facts.PropMessagingContractBound] == true
+					status = f.PropString(facts.PropMessagingContractStatus)
 				}
 			}
 			if bound != tt.wantBound {
 				t.Fatalf("bound = %v, want %v", bound, tt.wantBound)
 			}
+			if status != tt.wantStatus {
+				t.Fatalf("status = %q, want %q", status, tt.wantStatus)
+			}
 		})
+	}
+}
+
+func TestBoundCallWithoutSymbolStillImplementsContract(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "asyncapi.yaml"),
+		code("orders.created", facts.MessagingOperationPublish, "", 12),
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range store.FactsRef() {
+		if !isContractOperation(f) {
+			continue
+		}
+		if f.PropString(facts.PropMessagingImplementationStatus) != facts.MessagingImplementationImplemented || f.Props[facts.PropMessagingImplementationCount] != 1 {
+			t.Fatalf("contract implementation props = %+v", f.Props)
+		}
+		if len(f.Relations) != 0 {
+			t.Fatalf("anonymous implementation must not fabricate a symbol relation: %+v", f.Relations)
+		}
 	}
 }
 
@@ -147,7 +185,7 @@ func TestProtocolDisambiguatesSameTopicOperations(t *testing.T) {
 				t.Fatalf("Kafka call binding = %+v", f.Props)
 			}
 		}
-		if isContractOperation(f) && f.PropString("operationId") == "publishMQTT" && f.Props[facts.PropMessagingImplementationCount] != nil {
+		if isContractOperation(f) && f.PropString("operationId") == "publishMQTT" && f.Props[facts.PropMessagingImplementationCount] != 0 {
 			t.Fatalf("MQTT contract received Kafka implementation: %+v", f)
 		}
 	}

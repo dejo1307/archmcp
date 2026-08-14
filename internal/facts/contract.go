@@ -58,13 +58,40 @@ const (
 	MessagingSourceTSKafkaCall = "typescript-kafka-call"
 )
 
+// IsMessagingCodeSource is the central registry of extractor sources that may
+// implement a messaging contract. New language integrations extend this one
+// boundary instead of teaching every binder and explainer their source names.
+func IsMessagingCodeSource(source string) bool {
+	switch source {
+	case MessagingSourceGoKafkaCall, MessagingSourceTSKafkaCall:
+		return true
+	default:
+		return false
+	}
+}
+
 // Props written by the messaging contract binder.
 const (
-	PropMessagingContractBound       = "messaging_contract_bound"
-	PropMessagingContractOperationID = "messaging_contract_operation_id"
-	PropMessagingContractFile        = "messaging_contract_file"
-	PropMessagingImplementationCount = "messaging_implementation_count"
-	PropMessagingImplementedBy       = "messaging_implemented_by"
+	PropMessagingContractBound        = "messaging_contract_bound"
+	PropMessagingContractOperationID  = "messaging_contract_operation_id"
+	PropMessagingContractFile         = "messaging_contract_file"
+	PropMessagingImplementationCount  = "messaging_implementation_count"
+	PropMessagingImplementedBy        = "messaging_implemented_by"
+	PropMessagingContractStatus       = "messaging_contract_status"
+	PropMessagingContractCandidates   = "messaging_contract_candidate_count"
+	PropMessagingImplementationStatus = "messaging_implementation_status"
+)
+
+// Messaging contract binding verdicts. These make a missing binding
+// explainable: absence, ambiguity and protocol incompatibility are different
+// architectural conditions and must not collapse into an absent boolean.
+const (
+	MessagingContractStatusBound            = "bound"
+	MessagingContractStatusUndeclared       = "undeclared"
+	MessagingContractStatusAmbiguous        = "ambiguous"
+	MessagingContractStatusProtocolMismatch = "protocol_mismatch"
+	MessagingImplementationImplemented      = "implemented"
+	MessagingImplementationUnimplemented    = "unimplemented"
 )
 
 // Via kinds — the `via` labels a cross-repo edge carries, naming HOW the edge

@@ -1816,7 +1816,7 @@ func (s *Server) registerTools() {
 		Name: "query_insights",
 		Description: "Return the architectural findings (insights) that explainers computed during generate_snapshot — the first-class answer to questions like \"which routes are unused?\", \"where are the dependency cycles?\", or \"which modules are god-classes?\". " +
 			"Each insight carries a title, the explainer that produced it, a description, a confidence (0-1; lower = candidate to verify, not a verdict), evidence (files/symbols/routes), and suggested actions. " +
-			"Filter by explainer= — one of: unused-routes (dead/uncalled HTTP routes), cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers; repo= (in multi-repo snapshots, matches the repo-prefix path segment of each insight's evidence — e.g. \"golf\" matches golf/... but not golf-ui/...; single-repo snapshots fall back to a substring match); and min_confidence=. " +
+			"Filter by explainer= — one of: unused-routes (dead/uncalled HTTP routes), messaging-coverage (undeclared messaging calls and AsyncAPI operations with no detected implementation), cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers; repo= (in multi-repo snapshots, matches the repo-prefix path segment of each insight's evidence — e.g. \"golf\" matches golf/... but not golf-ui/...; single-repo snapshots fall back to a substring match); and min_confidence=. " +
 			"output_mode ladder: 'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, an evidence sample, and suggested actions) → 'full' (complete JSON incl. all evidence and actions). Pass max_tokens to hard-cap output. " +
 			"All explainers populate insights, but route/cross-repo findings (unused-routes, crossrepo, coverage) only appear for multi-repo (append-mode) snapshots of a backend plus its clients. " +
 			"Prefer this over hand-diffing query_facts results: e.g. query_insights(explainer=\"unused-routes\") returns the per-repo dead-route candidates directly.",
@@ -2146,7 +2146,7 @@ func (s *Server) currentRepoPath() string {
 }
 
 type queryInsightsArgs struct {
-	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: unused-routes, cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers. Empty = all."`
+	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: unused-routes, messaging-coverage, cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers. Empty = all."`
 	Repo          string  `json:"repo,omitempty" jsonschema:"Filter to insights about this repo label. In multi-repo snapshots this matches the repo-prefix path segment of each insight's evidence files (so 'golf' matches golf/... but not golf-ui/...); single-repo snapshots fall back to a substring match. Empty = all repos."`
 	MinConfidence float64 `json:"min_confidence,omitempty" jsonschema:"Only return insights with confidence >= this (0.0-1.0). Default 0 (all). Unused-routes is emitted at 0.6 as a review candidate."`
 	OutputMode    string  `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, evidence sample, actions) → 'full' (complete JSON)."`

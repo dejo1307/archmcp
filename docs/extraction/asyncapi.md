@@ -62,6 +62,22 @@ The Kafka-import gate is required: ordinary in-process event buses frequently us
 methods named `Publish` and `Subscribe`, and treating those as broker operations
 would manufacture contract coverage that does not exist.
 
+## Messaging contract coverage
+
+The `messaging-coverage` explainer turns binding verdicts into two actionable
+findings, available through `query_insights(explainer="messaging-coverage")`:
+
+- A static Go or TypeScript Kafka call with no matching AsyncAPI operation is an
+  **undeclared messaging operation** (confidence 0.9).
+- An AsyncAPI operation with no detected supported implementation is an
+  **unimplemented contract candidate** (confidence 0.65).
+
+The second is intentionally a candidate rather than a dead-code verdict: an
+implementation may use a wrapper, dynamic topic, unsupported client library, or
+live outside the loaded snapshot. Code facts also record a stable binding status
+(`bound`, `undeclared`, `ambiguous`, or `protocol_mismatch`) and compatible
+candidate count, so an absent binding remains explainable through `query_facts`.
+
 Remote URL `$ref` documents and broker-specific binding interpretation are not
 expanded. Local references are confined to the repository root, and cycles or
 missing targets are skipped without dropping the surrounding channel operation.

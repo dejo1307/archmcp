@@ -214,8 +214,8 @@ type OutputConfig struct {
 // wanted to gate on looked unsupported. A name added here becomes gateable,
 // documented and validated in the same edit, or it does not exist.
 var KnownExplainers = []string{
-	"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class",
-	"hotspots", "dependency-depth", "exported-surface", "complexity-outliers",
+	"cycles", "layers", "crossrepo", "coverage", "unused-routes", "messaging-coverage",
+	"god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers",
 	"intent", "constraints", "domain", "query-loops", "entry-points",
 }
 

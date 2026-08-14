@@ -42,17 +42,41 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	}
 
 	bindings := map[string]binding{}
+	statuses := map[string]string{}
+	candidateCounts := map[string]int{}
 	implementers := map[string]map[string]bool{}
+	implementations := map[string]map[string]bool{}
 	for _, f := range all {
 		if !isCodeOperation(f) {
 			continue
 		}
-		matches := compatibleContracts(contracts[operationKey(f)], f.PropString(facts.PropMessaging))
-		if len(matches) != 1 {
+		identity := codeIdentity(f)
+		candidates := contracts[operationKey(f)]
+		matches := compatibleContracts(candidates, f.PropString(facts.PropMessaging))
+		candidateCounts[identity] = len(matches)
+		switch {
+		case len(candidates) == 0:
+			statuses[identity] = facts.MessagingContractStatusUndeclared
+		case len(matches) == 0:
+			statuses[identity] = facts.MessagingContractStatusProtocolMismatch
+		case len(matches) > 1:
+			statuses[identity] = facts.MessagingContractStatusAmbiguous
+		default:
+			statuses[identity] = facts.MessagingContractStatusBound
+		}
+		if statuses[identity] != facts.MessagingContractStatusBound {
 			continue
 		}
 		symbol := f.PropString("code_symbol")
-		bindings[codeIdentity(f)] = binding{contract: matches[0], symbol: symbol}
+		bindings[identity] = binding{contract: matches[0], symbol: symbol}
+		if implementations[matches[0].identity] == nil {
+			implementations[matches[0].identity] = map[string]bool{}
+		}
+		implementationKey := "call:" + identity
+		if symbol != "" {
+			implementationKey = "symbol:" + symbol
+		}
+		implementations[matches[0].identity][implementationKey] = true
 		if symbol != "" {
 			if implementers[matches[0].identity] == nil {
 				implementers[matches[0].identity] = map[string]bool{}
@@ -70,7 +94,10 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 			delete(f.Props, facts.PropMessagingContractBound)
 			delete(f.Props, facts.PropMessagingContractOperationID)
 			delete(f.Props, facts.PropMessagingContractFile)
-			if match, ok := bindings[codeIdentity(*f)]; ok {
+			identity := codeIdentity(*f)
+			f.Props[facts.PropMessagingContractStatus] = statuses[identity]
+			f.Props[facts.PropMessagingContractCandidates] = candidateCounts[identity]
+			if match, ok := bindings[identity]; ok {
 				f.Props[facts.PropMessagingContractBound] = true
 				if match.contract.operationID != "" {
 					f.Props[facts.PropMessagingContractOperationID] = match.contract.operationID
@@ -85,6 +112,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		}
 		delete(f.Props, facts.PropMessagingImplementationCount)
 		delete(f.Props, facts.PropMessagingImplementedBy)
+		delete(f.Props, facts.PropMessagingImplementationStatus)
 		kept := f.Relations[:0]
 		for _, relation := range f.Relations {
 			if relation.Kind != facts.RelImplementedBy {
@@ -92,16 +120,20 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 			}
 		}
 		f.Relations = kept
-		set := implementers[contractIdentity(*f)]
-		if len(set) == 0 {
+		identity := contractIdentity(*f)
+		set := implementers[identity]
+		implementationCount := len(implementations[identity])
+		f.Props[facts.PropMessagingImplementationCount] = implementationCount
+		if implementationCount == 0 {
+			f.Props[facts.PropMessagingImplementationStatus] = facts.MessagingImplementationUnimplemented
 			return
 		}
+		f.Props[facts.PropMessagingImplementationStatus] = facts.MessagingImplementationImplemented
 		symbols := make([]string, 0, len(set))
 		for symbol := range set {
 			symbols = append(symbols, symbol)
 		}
 		sort.Strings(symbols)
-		f.Props[facts.PropMessagingImplementationCount] = len(symbols)
 		f.Props[facts.PropMessagingImplementedBy] = symbols
 		for _, symbol := range symbols {
 			f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelImplementedBy, Target: symbol})
@@ -152,9 +184,8 @@ func isContractOperation(f facts.Fact) bool {
 }
 
 func isCodeOperation(f facts.Fact) bool {
-	source := f.PropString(facts.PropSource)
 	return f.Kind == facts.KindStorage && f.PropString("storage_kind") == facts.StorageKindTopic &&
-		(source == facts.MessagingSourceGoKafkaCall || source == facts.MessagingSourceTSKafkaCall) &&
+		facts.IsMessagingCodeSource(f.PropString(facts.PropSource)) &&
 		f.PropString(facts.PropMessagingOperation) != ""
 }
 
