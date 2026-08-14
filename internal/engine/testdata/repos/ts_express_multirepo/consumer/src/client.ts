@@ -21,6 +21,14 @@ export async function banUser(id: string) {
   return axios.post(`/admin/users/${id}/ban`, {});
 }
 
+// The cross-file mount, from the client side. This call is the reason the server's
+// composed path has to be right: '/webhooks/login' matches the route only if the
+// mount prefix in index.js reached the registration in routes/webhooks.js. While
+// those routes went unemitted, this was an unresolved edge.
+export async function login(body: unknown) {
+  return axios.post("/webhooks/login", body);
+}
+
 // No server in this snapshot serves this one, so it stays an unresolved edge — the
 // control showing the linker is matching on real paths rather than accepting
 // anything.

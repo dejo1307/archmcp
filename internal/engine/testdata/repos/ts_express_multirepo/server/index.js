@@ -10,8 +10,8 @@ app.options('/healthcheck', healthCheckController);
 app.get('/go/:name', proxyLink());
 
 // A sub-router declared in another file and mounted HERE. The mount prefix lives in
-// this file, so webhooks.js's own fragments stay unemitted (see that file) — resolving
-// them would need a repo-wide pass.
+// this file and the routes live in that one, so neither file can compose the path
+// alone; the repo-wide pass in tsextractor/routermount.go does it.
 app.use('/webhooks', webhookRoutes);
 
 // Declared and mounted in this same file, so the prefix IS known and composes.

@@ -191,21 +191,32 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// in different files.
 	grpcStubs := buildGRPCStubIndex(repoPath, tsFiles)
 
-	perFileFacts := parallel.MapFiles(ctx, tsFiles, func(relFile string) []facts.Fact {
+	perFile := parallel.MapFiles(ctx, tsFiles, func(relFile string) tsFileResult {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
 			log.Printf("[ts-extractor] error reading %s: %v", relFile, err)
-			return nil
+			return tsFileResult{}
 		}
 		if isMinifiedSource(src) {
 			// Minified/bundled artifact (e.g. a checked-in webpack/vendor bundle
 			// served statically). Emitting facts for its obfuscated symbols
 			// pollutes complexity/hotspot/performance analysis, so skip it.
 			log.Printf("[ts-extractor] skipping minified/bundled file %s", relFile)
-			return nil
+			return tsFileResult{}
 		}
 		aliases := aliasesForDir(aliasRoots, filepath.Dir(relFile))
-		return e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, orms, aliases, knownFiles, grpcStubs)
+		res := tsFileResult{
+			facts: e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, orms, aliases, knownFiles, grpcStubs),
+		}
+		// Routers, mounts and held-back routes for the repo-wide mount pass below.
+		// Collected here because resolving an import needs this file's path aliases,
+		// which are in scope only during the per-file walk. Same test-path gate as
+		// the routes themselves: an e2e suite that mounts its own app contributes
+		// no production surface.
+		if !facts.IsTestPath(relFile) {
+			res.routers = collectRouterFile(src, relFile, aliases, knownFiles)
+		}
+		return res
 	})
 
 	// Group files by directory for module detection. Files that produced no
@@ -213,12 +224,26 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// module, so a directory containing only skipped bundles (e.g. a vendored
 	// scripts dir) stays out of the graph rather than surfacing as an empty module.
 	modules := make(map[string]bool)
-	for i, fileFacts := range perFileFacts {
-		if len(fileFacts) == 0 {
+	routerFiles := make([]*routerFile, 0, len(perFile))
+	for i, res := range perFile {
+		if res.routers != nil {
+			routerFiles = append(routerFiles, res.routers)
+		}
+		if len(res.facts) == 0 {
 			continue
 		}
-		allFacts = append(allFacts, fileFacts...)
+		allFacts = append(allFacts, res.facts...)
 		modules[filepath.Dir(tsFiles[i])] = true
+	}
+
+	// Express sub-routers mounted from another file. The per-file pass holds their
+	// routes back rather than emitting a fragment path; this is where both halves
+	// are visible and the true runtime path can be composed. See routermount.go.
+	if mounted := composeRouterMounts(routerFiles); len(mounted) > 0 {
+		allFacts = append(allFacts, mounted...)
+		for _, f := range mounted {
+			modules[filepath.Dir(f.File)] = true
+		}
 	}
 
 	// Serial post-pass: propagate the per-body io_direct flag transitively across the

@@ -110,6 +110,13 @@ func TestExtractionDocs_ComposedPathsStillHold(t *testing.T) {
 			absent: []string{"/results"},
 		},
 		{
+			fixture: "ts_express_multirepo",
+			page:    "typescript.md",
+			// registered as "/login" in routes/webhooks.js, mounted at "/webhooks" in index.js
+			want:   []string{"/webhooks/login"},
+			absent: []string{"/login"},
+		},
+		{
 			fixture: "ts_nest_multirepo",
 			page:    "typescript.md",
 			// @Get('available') under @Controller('v2/slots')
