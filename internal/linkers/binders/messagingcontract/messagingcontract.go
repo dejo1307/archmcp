@@ -106,7 +106,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		}
 	})
 	if bound > 0 {
-		log.Printf("[binder:messaging-contract] bound %d Kafka call site(s) to AsyncAPI operations", bound)
+		log.Printf("[binder:messaging-contract] bound %d messaging call site(s) to AsyncAPI operations", bound)
 	}
 	return nil
 }
@@ -118,8 +118,9 @@ func isContractOperation(f facts.Fact) bool {
 }
 
 func isCodeOperation(f facts.Fact) bool {
+	source := f.PropString(facts.PropSource)
 	return f.Kind == facts.KindStorage && f.PropString("storage_kind") == facts.StorageKindTopic &&
-		f.PropString(facts.PropSource) == facts.MessagingSourceGoKafkaCall &&
+		(source == facts.MessagingSourceGoKafkaCall || source == facts.MessagingSourceTSKafkaCall) &&
 		f.PropString(facts.PropMessagingOperation) != ""
 }
 

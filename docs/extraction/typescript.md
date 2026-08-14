@@ -293,6 +293,20 @@ storage  src.orders    src/schema.ts:4          props: framework=drizzle, table=
 `Session` class keeps its class name. That distinction matters when the same database is
 reached from another repository in another language.
 
+## Kafka and AsyncAPI contracts
+
+Files importing KafkaJS, node-rdkafka, or kafka-node emit directional topic facts
+for KafkaJS `producer.send({ topic })` and `consumer.subscribe({ topic })`, and for
+node-rdkafka-style `producer.produce(topic, ...)`. Topics may be string literals,
+static template literals, or immutable file-local `const` bindings. Each fact carries
+the enclosing function or class-method symbol and can bind to a unique AsyncAPI
+operation with the same topic and publish/subscribe direction.
+
+The package-import gate keeps unrelated event buses and WebSocket APIs with methods
+named `send` or `subscribe` out. Dynamically assembled topics and mutable `let`/`var`
+bindings are left unresolved rather than guessed, and test files contribute no
+production messaging operations.
+
 ## What is deliberately not extracted
 
 - **Non-literal paths.** `axios.get(url)` where `url` is a variable with no literal

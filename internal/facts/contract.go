@@ -55,6 +55,7 @@ const (
 const (
 	MessagingSourceAsyncAPI    = "asyncapi"
 	MessagingSourceGoKafkaCall = "go-kafka-call"
+	MessagingSourceTSKafkaCall = "typescript-kafka-call"
 )
 
 // Props written by the messaging contract binder.

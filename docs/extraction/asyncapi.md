@@ -32,7 +32,7 @@ facts until a protocol-specific cross-repository signal is available.
 for linking; its suffix describes authentication or transport security rather
 than a different messaging technology.
 
-## Binding contracts to Go Kafka code
+## Binding contracts to Kafka code
 
 AsyncAPI and code extractors share one normalized messaging-operation contract:
 `messaging`, `messaging_role`, and `messaging_operation`. AsyncAPI 3.x `send` and
@@ -42,12 +42,15 @@ from code call sites.
 Go files importing a Kafka client package are scanned for conservative literal or
 locally-resolved topic calls such as `Publish`, `Subscribe`, Sarama-style
 `ConsumePartition`/`SendMessage`, and kafka-go `WriteMessages` with a `Topic`
-field. Each call records its enclosing `code_symbol`. A post-link binder joins an
+field. TypeScript and JavaScript files recognize KafkaJS `send({ topic })` and
+`subscribe({ topic })`, plus node-rdkafka-style `produce(topic, ...)`; static
+`const` topic bindings are followed. Each call records its enclosing `code_symbol`.
+A post-link binder joins an
 exact topic+operation pair to a unique AsyncAPI operation in the same repository:
 
 - The code fact gains `messaging_contract_bound`, the operation ID, and spec file.
 - The contract gains `messaging_implementation_count`, `messaging_implemented_by`,
-  and an `implemented_by` relation to the Go symbol.
+  and an `implemented_by` relation to the code symbol.
 - Multiple matching contract operations are ambiguous and remain unbound.
 
 The Kafka-import gate is required: ordinary in-process event buses frequently use

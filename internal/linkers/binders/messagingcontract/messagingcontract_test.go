@@ -70,3 +70,22 @@ func TestAmbiguousAndDirectionMismatchStayUnbound(t *testing.T) {
 		}
 	}
 }
+
+func TestBindTypeScriptKafkaCall(t *testing.T) {
+	call := code("orders.created", facts.MessagingOperationPublish, "src.publishOrder", 8)
+	call.File = "events.ts"
+	call.Props[facts.PropSource] = facts.MessagingSourceTSKafkaCall
+	store := facts.NewStore()
+	store.Add(
+		contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "asyncapi.yaml"),
+		call,
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range store.FactsRef() {
+		if f.PropString(facts.PropSource) == facts.MessagingSourceTSKafkaCall && f.Props[facts.PropMessagingContractBound] != true {
+			t.Fatalf("TypeScript call not bound: %+v", f)
+		}
+	}
+}
