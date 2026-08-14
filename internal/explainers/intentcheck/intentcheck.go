@@ -48,6 +48,17 @@ type measuredEdge struct {
 	name   string
 }
 
+// Every scan in this file reads the store through FactsRef, never All.
+//
+// All returns an independent DEEP copy — every fact's Props map and Relations
+// slice cloned — for callers that intend to mutate what they get back. Nothing
+// here mutates: the facts that are retained (overridden, anchors, relations) are
+// only ever read from, and the props are read through PropString. Six of these
+// scans run per snapshot, and on a large graph each All was a full copy of the
+// fact set that was read once and dropped. Facts retained from FactsRef share
+// their Props map with the store, so a future edit here that WRITES to a prop
+// has to take a copy first (Fact.CloneProps) or go back to All.
+
 // Explain computes seam verdicts and override notices.
 func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
 	declared := map[string][]declaredSeam{}
@@ -57,7 +68,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	hasIntent := false
 	retired := retiredPages(store)
 
-	for _, f := range store.All() {
+	for _, f := range store.FactsRef() {
 		if f.Repo != "" {
 			present[f.Repo] = true
 		}
@@ -91,7 +102,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	}
 
 	measured := map[string][]measuredEdge{}
-	for _, f := range store.All() {
+	for _, f := range store.FactsRef() {
 		if f.Kind != facts.KindDependency || f.PropString("type") != "cross_repo" {
 			continue
 		}
@@ -275,7 +286,7 @@ func retiredPages(store *facts.Store) map[string]bool {
 		out[f.File] = true
 		out[strings.TrimPrefix(f.File, f.Repo+"/")] = true
 	}
-	for _, f := range store.All() {
+	for _, f := range store.FactsRef() {
 		if f.Kind != facts.KindIntent {
 			continue
 		}
@@ -304,7 +315,7 @@ func retiredPages(store *facts.Store) map[string]bool {
 // pages are history, not current intent: skipped.
 func claimVerdicts(store *facts.Store, present, retired map[string]bool) []facts.Insight {
 	var out []facts.Insight
-	all := store.All()
+	all := store.FactsRef()
 	for _, f := range all {
 		if f.Kind != facts.KindIntent || f.PropString("intent_kind") != "claim" {
 			continue
@@ -394,7 +405,7 @@ const danglingRelationConfidence = 0.8
 func relationVerdicts(store *facts.Store) []facts.Insight {
 	pages := map[string]bool{}
 	var relations []facts.Fact
-	for _, f := range store.All() {
+	for _, f := range store.FactsRef() {
 		if f.Kind != facts.KindIntent {
 			continue
 		}
@@ -444,7 +455,7 @@ func anchorVerdicts(store *facts.Store, present, retired map[string]bool) []fact
 	measured := map[string]map[string]bool{}
 	measuredExts := map[string]map[string]bool{}
 	measuredBases := map[string]map[string]bool{}
-	for _, f := range store.All() {
+	for _, f := range store.FactsRef() {
 		if f.Kind == facts.KindIntent {
 			if f.PropString("intent_kind") == "anchor" && !retired[f.PropString("source")] {
 				anchors = append(anchors, f)

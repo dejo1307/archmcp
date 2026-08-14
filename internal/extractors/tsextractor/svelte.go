@@ -2,6 +2,7 @@ package tsextractor
 
 import (
 	"bytes"
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -316,12 +317,12 @@ func extractSvelteMarkupRefs(rawSrc []byte, relFile string) *facts.Fact {
 }
 
 // extractSvelteSFC extracts architectural facts from a Svelte Single File Component.
-func (e *TSExtractor) extractSvelteSFC(rawSrc []byte, relFile string, isSvelteKit bool, aliases map[string]tsAlias) []facts.Fact {
+func (e *TSExtractor) extractSvelteSFC(kinds *tsutil.KindTable, rawSrc []byte, relFile string, isSvelteKit bool, aliases map[string]tsAlias) []facts.Fact {
 	var result []facts.Fact
 	blocks := extractSvelteScriptBlocks(rawSrc)
 
 	for _, block := range blocks {
-		result = append(result, e.extractSvelteScriptBlock(block, relFile, isSvelteKit, aliases)...)
+		result = append(result, e.extractSvelteScriptBlock(kinds, block, relFile, isSvelteKit, aliases)...)
 	}
 
 	if ref := extractSvelteMarkupRefs(rawSrc, relFile); ref != nil {
@@ -371,7 +372,7 @@ func (e *TSExtractor) extractSvelteSFC(rawSrc []byte, relFile string, isSvelteKi
 	return result
 }
 
-func (e *TSExtractor) extractSvelteScriptBlock(block *svelteScriptBlock, relFile string, isSvelteKit bool, aliases map[string]tsAlias) []facts.Fact {
+func (e *TSExtractor) extractSvelteScriptBlock(kinds *tsutil.KindTable, block *svelteScriptBlock, relFile string, isSvelteKit bool, aliases map[string]tsAlias) []facts.Fact {
 	isTSX := block.Lang == "tsx"
 	lang := typescript.LanguageTypescript()
 	if isTSX {
@@ -390,18 +391,18 @@ func (e *TSExtractor) extractSvelteScriptBlock(block *svelteScriptBlock, relFile
 	root := tree.RootNode()
 
 	var result []facts.Fact
-	result = append(result, e.extractImports(root, block.Content, relFile, aliases)...)
+	result = append(result, e.extractImports(kinds, root, block.Content, relFile, aliases)...)
 
 	ctx := &extractCtx{
 		src:       block.Content,
 		relFile:   relFile,
 		dir:       filepath.Dir(relFile),
 		isTSX:     isTSX,
-		importMap: buildImportSymbols(root, block.Content, relFile, aliases),
+		importMap: buildImportSymbols(kinds, root, block.Content, relFile, aliases),
 	}
-	decls := e.extractDeclarations(root, ctx)
+	decls := e.extractDeclarations(kinds, root, ctx)
 
-	if exported := collectExportedLocalNames(root, block.Content); len(exported) > 0 {
+	if exported := collectExportedLocalNames(kinds, root, block.Content); len(exported) > 0 {
 		for i := range decls {
 			if decls[i].Kind != facts.KindSymbol {
 				continue

@@ -48,8 +48,8 @@ func extractAxumRoutes(root *sitter.Node, src []byte, relFile, dir string) []fac
 		if node == nil {
 			return
 		}
-		if node.Kind() == "call_expression" {
-			if fn := node.ChildByFieldName("function"); fn != nil && fn.Kind() == "field_expression" {
+		if kindOf(node) == "call_expression" {
+			if fn := node.ChildByFieldName("function"); fn != nil && kindOf(fn) == "field_expression" {
 				if field := fn.ChildByFieldName("field"); field != nil && nodeText(field, src) == "route" {
 					out = append(out, axumRouteFacts(node, src, relFile, dir)...)
 				}
@@ -118,14 +118,14 @@ func axumRouteFacts(call *sitter.Node, src []byte, relFile, dir string) []facts.
 // case; a chained `.post(handler2)` is itself a call_expression whose function
 // is a field_expression wrapping the inner chain, recursed into via `value`.
 func collectMethodRouterChain(node *sitter.Node, src []byte) []axumRouteEntry {
-	if node == nil || node.Kind() != "call_expression" {
+	if node == nil || kindOf(node) != "call_expression" {
 		return nil
 	}
 	fn := node.ChildByFieldName("function")
 	if fn == nil {
 		return nil
 	}
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "identifier":
 		name := nodeText(fn, src)
 		if !axumHTTPMethods[name] {
@@ -175,7 +175,7 @@ func axumFirstArgName(call *sitter.Node, src []byte) string {
 		if !c.IsNamed() {
 			continue
 		}
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "identifier", "scoped_identifier":
 			return nodeText(c, src)
 		}
@@ -191,14 +191,14 @@ func stringLiteralValue(node *sitter.Node, src []byte) (string, bool) {
 	if node == nil {
 		return "", false
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "string_literal", "raw_string_literal":
 	default:
 		return "", false
 	}
 	var b strings.Builder
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		if c := node.Child(i); c.Kind() == "string_content" {
+		if c := node.Child(i); kindOf(c) == "string_content" {
 			b.WriteString(nodeText(c, src))
 		}
 	}
@@ -249,7 +249,7 @@ func collectAxumBuilders(root *sitter.Node, src []byte, relFile string) []axumBu
 		if n == nil {
 			return
 		}
-		if n.Kind() == "function_item" {
+		if kindOf(n) == "function_item" {
 			if name := n.ChildByFieldName("name"); name != nil {
 				b := axumBuilder{
 					relFile:  relFile,
@@ -275,11 +275,11 @@ func collectNests(owner, n *sitter.Node, src []byte, out *[]axumNest) {
 	if n == nil {
 		return
 	}
-	if n != owner && n.Kind() == "function_item" {
+	if n != owner && kindOf(n) == "function_item" {
 		return
 	}
-	if n.Kind() == "call_expression" {
-		if fn := n.ChildByFieldName("function"); fn != nil && fn.Kind() == "field_expression" {
+	if kindOf(n) == "call_expression" {
+		if fn := n.ChildByFieldName("function"); fn != nil && kindOf(fn) == "field_expression" {
 			if field := fn.ChildByFieldName("field"); field != nil && nodeText(field, src) == "nest" {
 				if nst, ok := parseNest(n, src); ok {
 					*out = append(*out, nst)
@@ -312,14 +312,14 @@ func parseNest(call *sitter.Node, src []byte) (axumNest, bool) {
 		return axumNest{}, false
 	}
 	prefix, ok := stringLiteralValue(named[0], src)
-	if !ok || named[1].Kind() != "call_expression" {
+	if !ok || kindOf(named[1]) != "call_expression" {
 		return axumNest{}, false
 	}
 	calleeFn := named[1].ChildByFieldName("function")
 	if calleeFn == nil {
 		return axumNest{}, false
 	}
-	switch calleeFn.Kind() {
+	switch kindOf(calleeFn) {
 	case "identifier":
 		return axumNest{prefix: prefix, fnName: nodeText(calleeFn, src), sameFile: true}, true
 	case "scoped_identifier":

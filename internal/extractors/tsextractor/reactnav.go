@@ -1,6 +1,7 @@
 package tsextractor
 
 import (
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -65,13 +66,13 @@ var (
 // bound handled_by to the component the registration names when that component
 // is an import the file states (the Ember handled_by contract, resolved
 // in-extractor because the import binding is file-local and exact).
-func extractReactNavScreens(root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {
+func extractReactNavScreens(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {
 	text := string(src)
 	matches := screenTag.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
 		return nil
 	}
-	bindings := buildEmberImportBindings(root, src, relFile, aliases)
+	bindings := buildEmberImportBindings(kinds, root, src, relFile, aliases)
 	var out []facts.Fact
 	seen := map[string]bool{}
 	for _, m := range matches {
@@ -112,7 +113,7 @@ func extractReactNavScreens(root *sitter.Node, src []byte, relFile string, alias
 // attachReactNavLinks records each literal navigate target on the enclosing
 // top-level declaration's symbol, so "what navigates to this screen" is a
 // symbol-level edge (the binder joins the names to route facts).
-func attachReactNavLinks(result []facts.Fact, root *sitter.Node, src []byte, relFile string) []facts.Fact {
+func attachReactNavLinks(kinds *tsutil.KindTable, result []facts.Fact, root *sitter.Node, src []byte, relFile string) []facts.Fact {
 	text := string(src)
 	navs := navigateLiteral.FindAllStringSubmatchIndex(text, -1)
 	if len(navs) == 0 {
@@ -126,22 +127,22 @@ func attachReactNavLinks(result []facts.Fact, root *sitter.Node, src []byte, rel
 	dir := ""
 	for i := range root.ChildCount() {
 		node := root.Child(i)
-		if node.Kind() == "export_statement" {
-			if d := firstDeclChild(node); d != nil {
+		if kindOf(kinds, node) == "export_statement" {
+			if d := firstDeclChild(kinds, node); d != nil {
 				node = d
 			}
 		}
 		var nameNode *sitter.Node
-		switch node.Kind() {
+		switch kindOf(kinds, node) {
 		case "class_declaration", "abstract_class_declaration", "class":
-			nameNode = findChildByKind(node, "type_identifier")
+			nameNode = findChildByKind(kinds, node, "type_identifier")
 		case "function_declaration", "generator_function_declaration":
-			nameNode = findChildByKind(node, "identifier")
+			nameNode = findChildByKind(kinds, node, "identifier")
 		case "lexical_declaration", "variable_declaration":
 			for j := range node.ChildCount() {
 				d := node.Child(j)
-				if d.Kind() == "variable_declarator" {
-					if id := findChildByKind(d, "identifier"); id != nil {
+				if kindOf(kinds, d) == "variable_declarator" {
+					if id := findChildByKind(kinds, d, "identifier"); id != nil {
 						decls = append(decls, declRange{name: nodeText(id, src),
 							start: int(node.StartByte()), end: int(node.EndByte())})
 					}

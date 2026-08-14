@@ -138,7 +138,7 @@ func (c *testRefCollector) add(target string) {
 }
 
 func (c *testRefCollector) walk(node *sitter.Node) {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "invocation_expression":
 		fn := node.ChildByFieldName("function")
 		c.addCallTarget(fn)
@@ -153,7 +153,7 @@ func (c *testRefCollector) walk(node *sitter.Node) {
 	case "member_access_expression":
 		// A member access NOT under an invocation: a property read, an enum member
 		// (`OrderStatus.Draft`), a static field.
-		if recv := node.ChildByFieldName("expression"); recv != nil && recv.Kind() == "identifier" {
+		if recv := node.ChildByFieldName("expression"); recv != nil && kindOf(recv) == "identifier" {
 			name := nodeText(node.ChildByFieldName("name"), c.src)
 			c.add(nodeText(recv, c.src) + "." + name)
 		}
@@ -171,13 +171,13 @@ func (c *testRefCollector) addCallTarget(fn *sitter.Node) {
 	if fn == nil {
 		return
 	}
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "identifier", "generic_name":
 		c.add(simpleTypeName(nodeText(fn, c.src)))
 	case "member_access_expression":
 		name := simpleTypeName(nodeText(fn.ChildByFieldName("name"), c.src))
 		recvNode := fn.ChildByFieldName("expression")
-		if recvNode != nil && recvNode.Kind() == "identifier" {
+		if recvNode != nil && kindOf(recvNode) == "identifier" {
 			recv := nodeText(recvNode, c.src)
 			// A framework receiver disqualifies the BARE name too. Filtering only
 			// the qualified form let `Assert.Equal` through as `Equal`, and `Equal`

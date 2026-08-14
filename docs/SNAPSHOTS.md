@@ -51,9 +51,8 @@ looking at?"* from a matter of trust into an equality check — which is what le
 treat a matching ID as proof rather than as a coincidence.
 
 Determinism is the precondition for that, not the payoff. Measured:
-[62 of 62 repositories produced a byte-identical `snapshot_id` and a byte-identical `facts.jsonl`
-across three runs each — 186 runs, 5,908,745 facts, zero drift](BENCHMARKS.md#1-reproducibility),
-with the ten Dart/Flutter rows reproducing on a separate run for 72 of 72 overall.
+[81 of 81 repositories produced a byte-identical `snapshot_id` and a byte-identical `facts.jsonl`
+across three runs each — 243 runs, 7,019,859 facts, zero drift](BENCHMARKS.md#1-reproducibility).
 Cold first and then warm, deliberately, because the thing worth testing is that a cached run and a
 from-scratch run agree rather than that one code path repeats itself.
 
@@ -126,11 +125,12 @@ out in the limits section below rather than left here as a footnote.
 None of the above is affordable unless recomputing the graph is cheap at the cadence a verdict is
 needed, which is roughly twice per task: once before the work and once after.
 
-On the sweep corpus, 52 of 62 re-snapshot warm in 5.0 seconds or less. The ten that do not are the
-largest things in it — the Linux kernel at **49.6s** (55,399 files, 1.9M facts), dotnet/runtime at
-34.3s, GitLab at 25.9s, Spark at 23.7s, roslyn at 15.3s, rust-lang/rust at 13.2s, shopware at 7.2s,
-grafana at 6.8s, discourse at 5.8s, Airflow at 5.2s. Warm runs come out 1.10×–6.04× faster than cold
-over the 52 repositories whose cold run exceeds half a second; below that the timing is noise
+On the sweep corpus, 71 of 81 re-snapshot warm in 5.0 seconds or less. The ten that do not are the
+largest things in it — dotnet/runtime at **29.4s** (17,766 files, 397,608 facts), the Linux kernel at
+24.3s (55,408 files, 1.9M facts), GitLab at 20.1s, Spark at 18.1s, roslyn at 10.3s, rust-lang/rust at
+8.1s, dart-sdk at 7.4s, OpenProject at 5.4s, flutter at 5.2s, Airflow at 5.2s. Warm runs come out
+1.33×–9.15× faster than cold over the 62 repositories whose cold run exceeds half a second; below
+that the timing is noise
 ([BENCHMARKS.md § 4](BENCHMARKS.md#4-scale)).
 
 The mechanism is the per-file content-hash cache in

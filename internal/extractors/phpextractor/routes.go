@@ -61,7 +61,7 @@ func (w *laravelRouteWalker) walk(node *sitter.Node, stack []phpRouteScope) {
 	if node == nil {
 		return
 	}
-	if node.Kind() == "scoped_call_expression" || node.Kind() == "member_call_expression" {
+	if kindOf(node) == "scoped_call_expression" || kindOf(node) == "member_call_expression" {
 		if calls, ok := linearizeRouteChain(node, w.src); ok {
 			w.handleChain(node, calls, stack)
 			return
@@ -78,7 +78,7 @@ func linearizeRouteChain(node *sitter.Node, src []byte) ([]chainCall, bool) {
 	var rev []chainCall
 	cur := node
 	for cur != nil {
-		switch cur.Kind() {
+		switch kindOf(cur) {
 		case "member_call_expression", "nullsafe_member_call_expression":
 			name := cur.ChildByFieldName("name")
 			rev = append(rev, chainCall{phpText(name, src), cur.ChildByFieldName("arguments"), cur})
@@ -126,7 +126,7 @@ func (w *laravelRouteWalker) handleChain(node *sitter.Node, calls []chainCall, s
 		prefix, name := fluentPrefix, ""
 		// A leading array argument (Route::group(['prefix'=>…,'as'=>…], …)) also
 		// contributes prefix/name.
-		if opts := positionalArg(calls[groupIdx].args, 0); opts != nil && opts.Kind() == "array_creation_expression" {
+		if opts := positionalArg(calls[groupIdx].args, 0); opts != nil && kindOf(opts) == "array_creation_expression" {
 			kv := arrayKeyValues(opts, w.src)
 			if p := kv["prefix"]; p != "" {
 				prefix = p
@@ -265,7 +265,7 @@ func laravelHandler(arg *sitter.Node, src []byte) string {
 	if arg == nil {
 		return ""
 	}
-	switch arg.Kind() {
+	switch kindOf(arg) {
 	case "string", "encapsed_string":
 		s := stringLiteral(arg, src)
 		if i := strings.IndexByte(s, '@'); i >= 0 {
@@ -276,12 +276,12 @@ func laravelHandler(arg *sitter.Node, src []byte) string {
 		var ctrl, method string
 		for i := uint(0); i < arg.ChildCount(); i++ {
 			el := arg.Child(i)
-			if el.Kind() != "array_element_initializer" {
+			if kindOf(el) != "array_element_initializer" {
 				continue
 			}
 			for j := uint(0); j < el.ChildCount(); j++ {
 				gc := el.Child(j)
-				if gc.Kind() == "class_constant_access_expression" {
+				if kindOf(gc) == "class_constant_access_expression" {
 					ctrl = classConstClass(gc, src)
 				} else if s := stringLiteral(gc, src); s != "" {
 					method = s
@@ -301,7 +301,7 @@ func resourceController(arg *sitter.Node, src []byte) string {
 	if arg == nil {
 		return ""
 	}
-	switch arg.Kind() {
+	switch kindOf(arg) {
 	case "class_constant_access_expression":
 		return classConstClass(arg, src)
 	case "string", "encapsed_string":
@@ -313,7 +313,7 @@ func resourceController(arg *sitter.Node, src []byte) string {
 // classConstClass returns the class name of a `Foo::class` expression.
 func classConstClass(node *sitter.Node, src []byte) string {
 	for i := uint(0); i < node.ChildCount(); i++ {
-		if c := node.Child(i); c.Kind() == "name" || c.Kind() == "qualified_name" {
+		if c := node.Child(i); kindOf(c) == "name" || kindOf(c) == "qualified_name" {
 			return strings.TrimLeft(phpText(c, src), "\\")
 		}
 	}
@@ -328,14 +328,14 @@ func groupClosureBody(args *sitter.Node) *sitter.Node {
 	}
 	for i := uint(0); i < args.ChildCount(); i++ {
 		a := args.Child(i)
-		if a.Kind() != "argument" {
+		if kindOf(a) != "argument" {
 			continue
 		}
 		v := argValue(a)
 		if v == nil {
 			continue
 		}
-		if v.Kind() == "anonymous_function" || v.Kind() == "arrow_function" {
+		if kindOf(v) == "anonymous_function" || kindOf(v) == "arrow_function" {
 			return v.ChildByFieldName("body")
 		}
 	}
@@ -345,13 +345,13 @@ func groupClosureBody(args *sitter.Node) *sitter.Node {
 // arrayStringElements returns the plain string values of an array literal
 // (['get','post'] -> ["get","post"]).
 func arrayStringElements(node *sitter.Node, src []byte) []string {
-	if node == nil || node.Kind() != "array_creation_expression" {
+	if node == nil || kindOf(node) != "array_creation_expression" {
 		return nil
 	}
 	var out []string
 	for i := uint(0); i < node.ChildCount(); i++ {
 		el := node.Child(i)
-		if el.Kind() != "array_element_initializer" {
+		if kindOf(el) != "array_element_initializer" {
 			continue
 		}
 		for j := uint(0); j < el.ChildCount(); j++ {
@@ -367,12 +367,12 @@ func arrayStringElements(node *sitter.Node, src []byte) []string {
 // (['prefix'=>'api','as'=>'admin.'] -> {"prefix":"api","as":"admin."}).
 func arrayKeyValues(node *sitter.Node, src []byte) map[string]string {
 	out := map[string]string{}
-	if node == nil || node.Kind() != "array_creation_expression" {
+	if node == nil || kindOf(node) != "array_creation_expression" {
 		return out
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
 		el := node.Child(i)
-		if el.Kind() != "array_element_initializer" {
+		if kindOf(el) != "array_element_initializer" {
 			continue
 		}
 		var strs []string

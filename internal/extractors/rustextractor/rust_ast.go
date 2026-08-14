@@ -262,7 +262,7 @@ func (w *astWalker) walkItemsTrackingAttrs(parent *sitter.Node) {
 	sawTestAttr := false
 	for i := uint(0); i < uint(parent.ChildCount()); i++ {
 		c := parent.Child(i)
-		if c.Kind() == "attribute_item" {
+		if kindOf(c) == "attribute_item" {
 			text := nodeText(c, w.src)
 			if isCfgTestAttribute(text) {
 				sawCfgTest = true
@@ -273,9 +273,9 @@ func (w *astWalker) walkItemsTrackingAttrs(parent *sitter.Node) {
 			continue
 		}
 		switch {
-		case c.Kind() == "mod_item" && sawCfgTest:
+		case kindOf(c) == "mod_item" && sawCfgTest:
 			w.enterTestMod(c)
-		case c.Kind() == "function_item" && sawTestAttr:
+		case kindOf(c) == "function_item" && sawTestAttr:
 			saved := w.inTestMod
 			w.inTestMod = true
 			w.walkTestItem(c)
@@ -338,7 +338,7 @@ func (w *astWalker) enterTestMod(node *sitter.Node) {
 // are being built), and `use` is still processed normally (e.g. `use super::*;`
 // contributes nothing resolvable to importMap, but is harmless to record).
 func (w *astWalker) walkTestItem(c *sitter.Node) {
-	switch c.Kind() {
+	switch kindOf(c) {
 	case "function_item":
 		if body := c.ChildByFieldName("body"); body != nil {
 			w.walkForCalls(body)
@@ -366,7 +366,7 @@ func (w *astWalker) walkTestItem(c *sitter.Node) {
 // item declarations nested inside a function body (Rust allows local `fn`,
 // `struct`, etc.).
 func (w *astWalker) walkChild(c *sitter.Node) {
-	switch c.Kind() {
+	switch kindOf(c) {
 	case "use_declaration":
 		w.handleUse(c)
 	case "extern_crate_declaration":
@@ -783,7 +783,7 @@ func collectUseItems(node *sitter.Node, src []byte, prefix []string) [][]string 
 	if node == nil {
 		return nil
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "identifier", "self", "super", "crate", "metavariable":
 		return [][]string{appendSegs(prefix, nodeText(node, src))}
 	case "scoped_identifier":
@@ -839,7 +839,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "if_expression", "match_arm", "try_expression":
 		w.decisions++
 	case "while_expression", "for_expression", "loop_expression":
@@ -913,7 +913,7 @@ func (w *astWalker) walkLoop(node *sitter.Node) {
 // are infinite (their exponent doesn't scale with input size — a daemon poll,
 // not an N+1); everything else (`for x in items`, `while cond`) scales.
 func (w *astWalker) rustLoopBounded(node *sitter.Node) bool {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "for_expression":
 		return rustConstIterable(node.ChildByFieldName("value"), w.src)
 	case "while_expression":
@@ -932,7 +932,7 @@ func rustConstIterable(val *sitter.Node, src []byte) bool {
 	if val == nil {
 		return false
 	}
-	switch val.Kind() {
+	switch kindOf(val) {
 	case "range_expression":
 		return rustRangeLiteralBounds(val, src)
 	case "array_expression", "tuple_expression":
@@ -947,7 +947,7 @@ func rustRangeLiteralBounds(node *sitter.Node, src []byte) bool {
 	saw := false
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "..", "..=", "...":
 			continue // the range operator itself
 		case "integer_literal":
@@ -964,7 +964,7 @@ func rustCondIsTrue(cond *sitter.Node, src []byte) bool {
 	if cond == nil {
 		return false
 	}
-	return cond.Kind() == "true" || nodeText(cond, src) == "true"
+	return kindOf(cond) == "true" || nodeText(cond, src) == "true"
 }
 
 // scanTokenTreeCalls finds calls inside a macro's unparsed token_tree body
@@ -974,20 +974,20 @@ func (w *astWalker) scanTokenTreeCalls(node *sitter.Node) {
 	n := node.ChildCount()
 	for i := uint(0); i < n; i++ {
 		c := node.Child(i)
-		if c.Kind() != "identifier" {
+		if kindOf(c) != "identifier" {
 			continue
 		}
 		var next *sitter.Node
 		if i+1 < n {
 			next = node.Child(i + 1)
 		}
-		if next != nil && next.Kind() == "token_tree" && next.ChildCount() > 0 && next.Child(0).Kind() == "(" {
+		if next != nil && kindOf(next) == "token_tree" && next.ChildCount() > 0 && kindOf(next.Child(0)) == "(" {
 			name := nodeText(c, w.src)
 			if isCapitalized(name) {
 				w.emitEdge(facts.RelInstantiates, name)
 				continue
 			}
-			if i > 0 && node.Child(i-1).Kind() == "." {
+			if i > 0 && kindOf(node.Child(i-1)) == "." {
 				w.emitEdge(facts.RelCalls, name)
 				continue
 			}
@@ -1001,12 +1001,12 @@ func (w *astWalker) scanTokenTreeCalls(node *sitter.Node) {
 		// vec![...]. Skip path segments (preceded/followed by "."/"::") and
 		// attribute-style `key = value` pairs, already handled by scanAttribute.
 		if i > 0 {
-			if pk := node.Child(i - 1).Kind(); pk == "." || pk == "::" {
+			if pk := kindOf(node.Child(i - 1)); pk == "." || pk == "::" {
 				continue
 			}
 		}
 		if next != nil {
-			if nk := next.Kind(); nk == "::" || nk == "=" {
+			if nk := kindOf(next); nk == "::" || nk == "=" {
 				continue
 			}
 		}
@@ -1032,7 +1032,7 @@ func (w *astWalker) emitValueReference(v *sitter.Node) {
 	if v == nil {
 		return
 	}
-	switch v.Kind() {
+	switch kindOf(v) {
 	case "identifier":
 		name := nodeText(v, w.src)
 		if isCapitalized(name) {
@@ -1198,7 +1198,7 @@ func (w *astWalker) scanAttributeFnRefs(body *sitter.Node) {
 	}
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
-		if n.Kind() == "attribute" {
+		if kindOf(n) == "attribute" {
 			w.scanAttribute(n)
 			// Beyond the curated key=value macros above, an attribute can embed
 			// an ordinary call — thiserror's #[error("{}", helper(x))] — using
@@ -1228,11 +1228,11 @@ func (w *astWalker) scanAttribute(attr *sitter.Node) {
 	}
 	n := tree.ChildCount()
 	for i := uint(0); i+2 < n; i++ {
-		if !attrFnRefKeys[nodeText(tree.Child(i), w.src)] || tree.Child(i+1).Kind() != "=" {
+		if !attrFnRefKeys[nodeText(tree.Child(i), w.src)] || kindOf(tree.Child(i+1)) != "=" {
 			continue
 		}
 		name := ""
-		switch v := tree.Child(i + 2); v.Kind() {
+		switch v := tree.Child(i + 2); kindOf(v) {
 		case "string_literal":
 			if content := findChildByKind(v, "string_content"); content != nil {
 				name = nodeText(content, w.src)
@@ -1245,7 +1245,7 @@ func (w *astWalker) scanAttribute(attr *sitter.Node) {
 			// identifier/"::" siblings inside a macro-like token_tree, not a
 			// single scoped_identifier node — walk to the last segment.
 			j := i + 2
-			for j+2 < n && tree.Child(j+1).Kind() == "::" && tree.Child(j+2).Kind() == "identifier" {
+			for j+2 < n && kindOf(tree.Child(j+1)) == "::" && kindOf(tree.Child(j+2)) == "identifier" {
 				j += 2
 			}
 			name = nodeText(tree.Child(j), w.src)
@@ -1302,16 +1302,16 @@ func (w *astWalker) calleeTrailing(fn *sitter.Node) (string, calleeForm) {
 	if fn == nil {
 		return "", calleeOther
 	}
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "identifier":
 		return nodeText(fn, w.src), calleeBare
 	case "field_expression":
 		fieldNode := fn.ChildByFieldName("field")
-		if fieldNode == nil || fieldNode.Kind() != "field_identifier" {
+		if fieldNode == nil || kindOf(fieldNode) != "field_identifier" {
 			return "", calleeOther
 		}
 		name := nodeText(fieldNode, w.src)
-		if valueNode := fn.ChildByFieldName("value"); valueNode != nil && valueNode.Kind() == "self" {
+		if valueNode := fn.ChildByFieldName("value"); valueNode != nil && kindOf(valueNode) == "self" {
 			return name, calleeSelfRef
 		}
 		return name, calleeOther
@@ -1346,7 +1346,7 @@ func rustBooleanOp(node *sitter.Node) bool {
 	if op == nil {
 		return false
 	}
-	switch op.Kind() {
+	switch kindOf(op) {
 	case "&&", "||":
 		return true
 	}
@@ -1374,9 +1374,9 @@ func rustIsIODirectCall(fn *sitter.Node, src []byte) bool {
 	if fn == nil {
 		return false
 	}
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "field_expression":
-		if f := fn.ChildByFieldName("field"); f != nil && f.Kind() == "field_identifier" {
+		if f := fn.ChildByFieldName("field"); f != nil && kindOf(f) == "field_identifier" {
 			return rustIOMethods[nodeText(f, src)]
 		}
 	case "scoped_identifier":
@@ -1450,7 +1450,7 @@ func hasSelfParam(params *sitter.Node) bool {
 		return false
 	}
 	for i := uint(0); i < uint(params.ChildCount()); i++ {
-		if params.Child(i).Kind() == "self_parameter" {
+		if kindOf(params.Child(i)) == "self_parameter" {
 			return true
 		}
 	}
@@ -1467,7 +1467,7 @@ func collectFnNames(body *sitter.Node, src []byte) map[string]bool {
 	}
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		if c.Kind() != "function_item" && c.Kind() != "function_signature_item" {
+		if kindOf(c) != "function_item" && kindOf(c) != "function_signature_item" {
 			continue
 		}
 		if n := c.ChildByFieldName("name"); n != nil {
@@ -1489,7 +1489,7 @@ func collectSubmoduleNames(body *sitter.Node, src []byte) map[string]bool {
 	}
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		if c.Kind() != "mod_item" || c.ChildByFieldName("body") != nil {
+		if kindOf(c) != "mod_item" || c.ChildByFieldName("body") != nil {
 			continue
 		}
 		if n := c.ChildByFieldName("name"); n != nil {
@@ -1506,7 +1506,7 @@ func simpleTypeName(node *sitter.Node, src []byte) string {
 	if node == nil {
 		return ""
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "type_identifier":
 		return nodeText(node, src)
 	case "generic_type":
@@ -1537,13 +1537,13 @@ func scopedCalleeTypePrefix(fn *sitter.Node, src []byte) string {
 	if fn == nil {
 		return ""
 	}
-	if fn.Kind() == "generic_function" {
+	if kindOf(fn) == "generic_function" {
 		fn = fn.ChildByFieldName("function")
 		if fn == nil {
 			return ""
 		}
 	}
-	if fn.Kind() != "scoped_identifier" {
+	if kindOf(fn) != "scoped_identifier" {
 		return ""
 	}
 	seg := simpleTypeName(fn.ChildByFieldName("path"), src)
@@ -1585,7 +1585,7 @@ func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
 		return nil
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		if c := node.Child(i); c.Kind() == kind {
+		if c := node.Child(i); kindOf(c) == kind {
 			return c
 		}
 	}

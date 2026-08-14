@@ -172,14 +172,14 @@ func (c *scalaTestRefCollector) add(target string) {
 }
 
 func (c *scalaTestRefCollector) walk(n *sitter.Node) {
-	switch n.Kind() {
+	switch kindOf(n) {
 	case "call_expression":
 		c.addCallTarget(n)
 		// The callee subtree is accounted for; walk only the arguments so a
 		// receiver chain is not re-added as a separate bare reference.
 		for i := uint(0); i < n.ChildCount(); i++ {
 			ch := n.Child(i)
-			switch ch.Kind() {
+			switch kindOf(ch) {
 			case "arguments", "block", "lambda_expression", "case_block":
 				c.walk(ch)
 			}
@@ -188,7 +188,7 @@ func (c *scalaTestRefCollector) walk(n *sitter.Node) {
 	case "instance_expression":
 		for i := uint(0); i < n.ChildCount(); i++ {
 			ch := n.Child(i)
-			if !ch.IsNamed() || ch.Kind() == "arguments" {
+			if !ch.IsNamed() || kindOf(ch) == "arguments" {
 				continue
 			}
 			if t := baseTypeText(c.text(ch)); t != "" {
@@ -198,7 +198,7 @@ func (c *scalaTestRefCollector) walk(n *sitter.Node) {
 		}
 	case "field_expression":
 		// A member access that is not a call: an object's value, an enum case.
-		if recv := firstNamedChild(n); recv != nil && recv.Kind() == "identifier" {
+		if recv := firstNamedChild(n); recv != nil && kindOf(recv) == "identifier" {
 			var last *sitter.Node
 			for i := uint(0); i < n.ChildCount(); i++ {
 				if ch := n.Child(i); ch.IsNamed() {
@@ -223,13 +223,13 @@ func (c *scalaTestRefCollector) addCallTarget(call *sitter.Node) {
 	if fn == nil {
 		return
 	}
-	if fn.Kind() == "generic_function" {
+	if kindOf(fn) == "generic_function" {
 		fn = firstNamedChild(fn)
 	}
 	if fn == nil {
 		return
 	}
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "identifier":
 		// A bare call, or an apply-form construction (`OrderService(deps)`).
 		c.add(c.text(fn))
@@ -249,7 +249,7 @@ func (c *scalaTestRefCollector) addCallTarget(call *sitter.Node) {
 			return
 		}
 		recvNode := named[len(named)-2]
-		if recvNode.Kind() == "identifier" {
+		if kindOf(recvNode) == "identifier" {
 			recv := c.text(recvNode)
 			// A harness receiver disqualifies the bare name too — see the comment
 			// on testHarnessNames for why this one filter is load-bearing.

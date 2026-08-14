@@ -196,7 +196,7 @@ func (w *walker) navigatorRoutesMap(root *sitter.Node) {
 	var visit func(*sitter.Node)
 	visit = func(n *sitter.Node) {
 		for _, c := range namedChildren(n) {
-			if c.Kind() == "named_argument" {
+			if kindOf(c) == "named_argument" {
 				if lbl := childOfKind(c, "label"); lbl != nil {
 					label := strings.TrimSuffix(strings.TrimSpace(lbl.Utf8Text(w.src)), ":")
 					if label == "routes" {
@@ -217,7 +217,7 @@ func (w *walker) routesMapEntries(n *sitter.Node) {
 		return
 	}
 	for _, entry := range namedChildren(lit) {
-		if entry.Kind() != "pair" {
+		if kindOf(entry) != "pair" {
 			continue
 		}
 		kids := namedChildren(entry)
@@ -241,7 +241,7 @@ func (w *walker) routesMapEntries(n *sitter.Node) {
 // wrappers on every call, so locating a node by pointer comparison inside here would
 // never match.
 func (w *walker) constructorCall(kids []*sitter.Node, i int) (string, *sitter.Node) {
-	if i <= 0 || kids[i].Kind() != "selector" {
+	if i <= 0 || kindOf(kids[i]) != "selector" {
 		return "", nil
 	}
 	args := childOfKind(kids[i], "argument_part")
@@ -249,7 +249,7 @@ func (w *walker) constructorCall(kids []*sitter.Node, i int) (string, *sitter.No
 		return "", nil
 	}
 	prev := kids[i-1]
-	if prev.Kind() != "identifier" && prev.Kind() != "type_identifier" {
+	if kindOf(prev) != "identifier" && kindOf(prev) != "type_identifier" {
 		return "", nil
 	}
 	return prev.Utf8Text(w.src), argumentsOf(args)
@@ -289,7 +289,7 @@ func (w *walker) builderTarget(args *sitter.Node) string {
 			continue
 		}
 		for _, c := range namedChildren(body) {
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "identifier", "type_identifier":
 				name := c.Utf8Text(w.src)
 				if name != "" && isUpper(name[0]) {

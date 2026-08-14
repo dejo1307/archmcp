@@ -3,6 +3,7 @@ package tsextractor
 import (
 	"context"
 	"encoding/json"
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"io/fs"
 	"log"
 	"os"
@@ -279,11 +280,17 @@ type extractCtx struct {
 }
 
 func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
+	// The grammar is chosen here, so the kind table is too: TypeScript and TSX assign
+	// different meanings to the same symbol ids, and everything below reads node kinds
+	// through this table. See kinds.go.
+	isTSX := strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx")
+	kinds := tsKindsFor(isTSX)
+
 	if isVueFile(relFile) {
-		return e.extractVueSFC(src, relFile, isNuxt, aliases)
+		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases)
 	}
 	if isSvelteFile(relFile) {
-		return e.extractSvelteSFC(src, relFile, isSvelteKit, aliases)
+		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases)
 	}
 	if isGraphQLDocFile(relFile) {
 		if facts.IsTestPath(relFile) {
@@ -340,7 +347,6 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// gRPC-web client call sites become client-role routes to "/pkg.Service/Method".
 	result = append(result, extractGRPCClientFacts(src, relFile, grpcStubs)...)
 
-	isTSX := strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx")
 	lang := typescript.LanguageTypescript()
 	if isTSX {
 		lang = typescript.LanguageTSX()
@@ -358,7 +364,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	root := tree.RootNode()
 
 	// Extract from the tree
-	result = append(result, e.extractImports(root, src, relFile, aliases)...)
+	result = append(result, e.extractImports(kinds, root, src, relFile, aliases)...)
 
 	ctx := &extractCtx{
 		src:         src,
@@ -370,16 +376,16 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		isNuxt:      isNuxt,
 		isSvelteKit: isSvelteKit,
 		orms:        orms,
-		importMap:   buildImportSymbols(root, src, relFile, aliases),
-		ioBindings:  buildIOImportBindings(root, src),
+		importMap:   buildImportSymbols(kinds, root, src, relFile, aliases),
+		ioBindings:  buildIOImportBindings(kinds, root, src),
 		knownFiles:  knownFiles,
 	}
-	decls := e.extractDeclarations(root, ctx)
+	decls := e.extractDeclarations(kinds, root, ctx)
 
 	// A declaration may be exported via a separate `export { A, B }` clause or
 	// `export default Name` statement rather than an inline `export` keyword.
 	// Mark the corresponding symbols as exported.
-	if exported := collectExportedLocalNames(root, src); len(exported) > 0 {
+	if exported := collectExportedLocalNames(kinds, root, src); len(exported) > 0 {
 		for i := range decls {
 			if decls[i].Kind != facts.KindSymbol {
 				continue
@@ -396,7 +402,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// like route configs, namespace member access, require()-bound names). Emitted as
 	// a KindFileRef so file-scope references the per-function call walk cannot see do
 	// not leave used code mis-reported as dead.
-	result = append(result, e.collectTSFileRefs(root, ctx, aliases, facts.KindFileRef)...)
+	result = append(result, e.collectTSFileRefs(kinds, root, ctx, aliases, facts.KindFileRef)...)
 
 	// Detect Next.js routes
 	if isNextJS {
@@ -409,23 +415,23 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// template references, record @service injections for the ember-resolver
 	// binder, and emit the router map's page routes.
 	if isEmberFile || isEmber {
-		result = emberEnrich(result, root, src, relFile, aliases, emberSegments)
+		result = emberEnrich(kinds, result, root, src, relFile, aliases, emberSegments)
 	}
 	if isReactNav && !facts.IsTestPath(relFile) {
-		result = append(result, extractReactNavScreens(root, src, relFile, aliases)...)
-		result = attachReactNavLinks(result, root, src, relFile)
+		result = append(result, extractReactNavScreens(kinds, root, src, relFile, aliases)...)
+		result = attachReactNavLinks(kinds, result, root, src, relFile)
 	}
 	if isEmber && isEmberRouterFile(relFile) {
-		result = append(result, extractEmberRoutes(root, src, relFile)...)
+		result = append(result, extractEmberRoutes(kinds, root, src, relFile)...)
 	}
 	if isEmber {
 		if engine, ok := isEmberEngineRoutesFile(relFile); ok {
-			result = append(result, extractEmberEngineRoutes(root, src, relFile, engine)...)
+			result = append(result, extractEmberEngineRoutes(kinds, root, src, relFile, engine)...)
 		}
 	}
 
 	// Detect Vue Router configuration files
-	if (isVue || isNuxt) && containsCreateRouterCall(root, src) {
+	if (isVue || isNuxt) && containsCreateRouterCall(kinds, root, src) {
 		result = append(result, facts.Fact{
 			Kind: facts.KindRoute,
 			Name: relFile,
@@ -442,7 +448,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	return result
 }
 
-func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {
+func (e *TSExtractor) extractImports(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {
 	var result []facts.Fact
 	dir := filepath.Dir(relFile)
 
@@ -453,9 +459,9 @@ func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile stri
 		// (export * from / export { X } from), not local declarations.
 		var source *sitter.Node
 		isReexport := false
-		switch child.Kind() {
+		switch kindOf(kinds, child) {
 		case "import_statement":
-			source = findChildByKind(child, "string")
+			source = findChildByKind(kinds, child, "string")
 		case "export_statement":
 			source = child.ChildByFieldName("source")
 			isReexport = true
@@ -509,12 +515,12 @@ func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile stri
 		if n == nil {
 			return
 		}
-		if n.Kind() == "call_expression" {
+		if kindOf(kinds, n) == "call_expression" {
 			if fn := n.ChildByFieldName("function"); fn != nil {
-				isRequire := fn.Kind() == "identifier" && nodeText(fn, src) == "require"
-				isDynImport := fn.Kind() == "import"
+				isRequire := kindOf(kinds, fn) == "identifier" && nodeText(fn, src) == "require"
+				isDynImport := kindOf(kinds, fn) == "import"
 				if isRequire || isDynImport {
-					if strArg := findChildByKind(n.ChildByFieldName("arguments"), "string"); strArg != nil {
+					if strArg := findChildByKind(kinds, n.ChildByFieldName("arguments"), "string"); strArg != nil {
 						importPath := strings.Trim(nodeText(strArg, src), `"'`)
 						resolved, isExternal := resolveImportPath(importPath, dir, aliases)
 						name := dir + " -> " + resolved
@@ -546,10 +552,10 @@ func (e *TSExtractor) extractImports(root *sitter.Node, src []byte, relFile stri
 	return result
 }
 
-func (e *TSExtractor) extractDeclarations(root *sitter.Node, ctx *extractCtx) []facts.Fact {
+func (e *TSExtractor) extractDeclarations(kinds *tsutil.KindTable, root *sitter.Node, ctx *extractCtx) []facts.Fact {
 	var result []facts.Fact
 	for i := range root.ChildCount() {
-		result = append(result, e.extractNode(root.Child(i), ctx, false, "")...)
+		result = append(result, e.extractNode(kinds, root.Child(i), ctx, false, "")...)
 	}
 	return result
 }
@@ -558,32 +564,32 @@ func (e *TSExtractor) extractDeclarations(root *sitter.Node, ctx *extractCtx) []
 // name for anonymous default-exported declarations (e.g. `export default function
 // () {}`), derived from the file name; it is ignored when the declaration has its
 // own name.
-func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported bool, fallbackName string) []facts.Fact {
+func (e *TSExtractor) extractNode(kinds *tsutil.KindTable, node *sitter.Node, ctx *extractCtx, isExported bool, fallbackName string) []facts.Fact {
 	var result []facts.Fact
 	src, dir, relFile := ctx.src, ctx.dir, ctx.relFile
 
-	switch node.Kind() {
+	switch kindOf(kinds, node) {
 	case "export_statement":
-		isDefault := hasChildKind(node, "default")
+		isDefault := hasChildKind(kinds, node, "default")
 		fb := ""
 		if isDefault {
 			fb = fileSymbolName(relFile)
 		}
 		// Named/inline declaration inside the export.
-		if decl := firstDeclChild(node); decl != nil {
-			return e.extractNode(decl, ctx, true, fb)
+		if decl := firstDeclChild(kinds, node); decl != nil {
+			return e.extractNode(kinds, decl, ctx, true, fb)
 		}
 		// Anonymous default export of a value: name it after the file.
 		if isDefault {
 			for _, k := range []string{"function_expression", "generator_function", "class", "arrow_function", "call_expression"} {
-				if c := findChildByKind(node, k); c != nil {
-					return e.extractNode(c, ctx, true, fb)
+				if c := findChildByKind(kinds, node, k); c != nil {
+					return e.extractNode(kinds, c, ctx, true, fb)
 				}
 			}
 		}
 
 	case "function_declaration", "function_expression", "generator_function_declaration", "generator_function":
-		name := findChildByKind(node, "identifier")
+		name := findChildByKind(kinds, node, "identifier")
 		symbolName := fallbackName
 		if name != nil {
 			symbolName = nodeText(name, src)
@@ -591,21 +597,21 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 		if symbolName == "" {
 			break
 		}
-		result = append(result, e.funcSymbol(node, node, ctx, symbolName, isExported))
+		result = append(result, e.funcSymbol(kinds, node, node, ctx, symbolName, isExported))
 
 	case "arrow_function":
 		if fallbackName != "" {
-			result = append(result, e.funcSymbol(node, node, ctx, fallbackName, isExported))
+			result = append(result, e.funcSymbol(kinds, node, node, ctx, fallbackName, isExported))
 		}
 
 	case "call_expression":
 		// Reached for `export default memo(...)` / `forwardRef(...)`.
 		if fallbackName != "" {
-			result = append(result, e.funcSymbol(node, node, ctx, fallbackName, isExported))
+			result = append(result, e.funcSymbol(kinds, node, node, ctx, fallbackName, isExported))
 		}
 
 	case "class_declaration", "abstract_class_declaration", "class":
-		name := findChildByKind(node, "type_identifier")
+		name := findChildByKind(kinds, node, "type_identifier")
 		symbolName := fallbackName
 		if name != nil {
 			symbolName = nodeText(name, src)
@@ -631,20 +637,20 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 		// A TS `abstract class` is an abstraction (has unimplemented members and
 		// cannot be instantiated) — tag it so package-metrics counts it toward
 		// abstractness, matching Java/Kotlin/Python. Plain classes stay concrete.
-		if node.Kind() == "abstract_class_declaration" {
+		if kindOf(kinds, node) == "abstract_class_declaration" {
 			f.Props["abstract"] = true
 		}
 
 		// Check for implements clause (nested under class_heritage)
 		for j := range node.ChildCount() {
 			c := node.Child(j)
-			if c.Kind() == "class_heritage" {
+			if kindOf(kinds, c) == "class_heritage" {
 				for k := range c.ChildCount() {
 					heritage := c.Child(k)
-					if heritage.Kind() == "implements_clause" {
+					if kindOf(kinds, heritage) == "implements_clause" {
 						for l := range heritage.ChildCount() {
 							t := heritage.Child(l)
-							if t.Kind() == "type_identifier" {
+							if kindOf(kinds, t) == "type_identifier" {
 								f.Relations = append(f.Relations, facts.Relation{
 									Kind:   facts.RelImplements,
 									Target: nodeText(t, src),
@@ -656,15 +662,15 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 			}
 		}
 
-		classBody := findChildByKind(node, "class_body")
-		classifySymbol(&f, symbolName, classBody, ctx, facts.SymbolClass)
+		classBody := findChildByKind(kinds, node, "class_body")
+		classifySymbol(kinds, &f, symbolName, classBody, ctx, facts.SymbolClass)
 		result = append(result, f)
 
 		// TypeORM: a class decorated @Entity is a table. The storage fact is a COMPANION
 		// to the symbol above, as in Kotlin/Room and Java/JPA — the class keeps its own
 		// symbol fact.
 		if ctx.orms.typeORM {
-			if sf := typeORMEntityStorage(node, src, symbolName, relFile, dir,
+			if sf := typeORMEntityStorage(kinds, node, src, symbolName, relFile, dir,
 				int(node.StartPosition().Row)+1); sf != nil {
 				result = append(result, *sf)
 			}
@@ -677,19 +683,19 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 		// that no production client calls, i.e. false unused-route findings (the
 		// counterpart to the v141 client-side gate).
 		if !facts.IsTestPath(relFile) {
-			result = append(result, decoratorRouteFacts(node, classBody, src, relFile, dir)...)
+			result = append(result, decoratorRouteFacts(kinds, node, classBody, src, relFile, dir)...)
 		}
 
 		// Extract class methods
 		if classBody != nil {
 			for j := range classBody.ChildCount() {
 				member := classBody.Child(j)
-				if member.Kind() != "method_definition" && member.Kind() != "public_field_definition" {
+				if kindOf(kinds, member) != "method_definition" && kindOf(kinds, member) != "public_field_definition" {
 					continue
 				}
-				methodName := findChildByKind(member, "property_identifier")
+				methodName := findChildByKind(kinds, member, "property_identifier")
 				if methodName == nil {
-					methodName = findChildByKind(member, "identifier")
+					methodName = findChildByKind(kinds, member, "identifier")
 				}
 				if methodName == nil {
 					continue
@@ -701,13 +707,13 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 				isPrivate := false
 				for k := range member.ChildCount() {
 					c := member.Child(k)
-					if c.Kind() == "accessibility_modifier" && nodeText(c, src) == "private" {
+					if kindOf(kinds, c) == "accessibility_modifier" && nodeText(c, src) == "private" {
 						isPrivate = true
 						break
 					}
 				}
 				mRels := []facts.Relation{{Kind: facts.RelDeclares, Target: dir}}
-				callRels, m := collectCallsWithMetrics(member, src, dir, symbolName, ctx.importMap, ctx.ioBindings, dir+"."+symbolName+"."+mName, mName)
+				callRels, m := collectCallsWithMetrics(kinds, member, src, dir, symbolName, ctx.importMap, ctx.ioBindings, dir+"."+symbolName+"."+mName, mName)
 				mRels = append(mRels, callRels...)
 				mProps := map[string]any{
 					"symbol_kind": facts.SymbolMethod,
@@ -728,19 +734,19 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 		}
 
 	case "interface_declaration":
-		if name := findChildByKind(node, "type_identifier"); name != nil {
+		if name := findChildByKind(kinds, node, "type_identifier"); name != nil {
 			result = append(result, e.simpleSymbol(node, ctx, nodeText(name, src), facts.SymbolInterface, isExported))
 		}
 
 	case "type_alias_declaration":
-		if name := findChildByKind(node, "type_identifier"); name != nil {
+		if name := findChildByKind(kinds, node, "type_identifier"); name != nil {
 			result = append(result, e.simpleSymbol(node, ctx, nodeText(name, src), facts.SymbolType, isExported))
 		}
 
 	case "enum_declaration":
-		name := findChildByKind(node, "identifier")
+		name := findChildByKind(kinds, node, "identifier")
 		if name == nil {
-			name = findChildByKind(node, "type_identifier")
+			name = findChildByKind(kinds, node, "type_identifier")
 		}
 		if name != nil {
 			result = append(result, e.simpleSymbol(node, ctx, nodeText(name, src), facts.SymbolEnum, isExported))
@@ -748,9 +754,9 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 
 	case "internal_module", "module":
 		// TypeScript `namespace X {}` / `module X {}`.
-		name := findChildByKind(node, "identifier")
+		name := findChildByKind(kinds, node, "identifier")
 		if name == nil {
-			name = findChildByKind(node, "nested_identifier")
+			name = findChildByKind(kinds, node, "nested_identifier")
 		}
 		if name != nil {
 			result = append(result, e.simpleSymbol(node, ctx, nodeText(name, src), "namespace", isExported))
@@ -759,10 +765,10 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 	case "lexical_declaration", "variable_declaration":
 		for j := range node.ChildCount() {
 			decl := node.Child(j)
-			if decl.Kind() != "variable_declarator" {
+			if kindOf(kinds, decl) != "variable_declarator" {
 				continue
 			}
-			name := findChildByKind(decl, "identifier")
+			name := findChildByKind(kinds, decl, "identifier")
 			if name == nil {
 				continue
 			}
@@ -773,10 +779,10 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 			// else is a plain variable.
 			symbolKind := facts.SymbolVariable
 			var body *sitter.Node
-			if v := findChildByKind(decl, "arrow_function"); v != nil {
+			if v := findChildByKind(kinds, decl, "arrow_function"); v != nil {
 				symbolKind = facts.SymbolFunc
 				body = v
-			} else if call := findChildByKind(decl, "call_expression"); call != nil && isComponentWrapper(call, src) {
+			} else if call := findChildByKind(kinds, decl, "call_expression"); call != nil && isComponentWrapper(kinds, call, src) {
 				symbolKind = facts.SymbolFunc
 				body = call
 			}
@@ -784,7 +790,7 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 			vRels := []facts.Relation{{Kind: facts.RelDeclares, Target: dir}}
 			var vMetrics *tsBodyMetrics
 			if body != nil {
-				callRels, m := collectCallsWithMetrics(body, src, dir, "", ctx.importMap, ctx.ioBindings, dir+"."+symbolName, symbolName)
+				callRels, m := collectCallsWithMetrics(kinds, body, src, dir, "", ctx.importMap, ctx.ioBindings, dir+"."+symbolName, symbolName)
 				vRels = append(vRels, callRels...)
 				vMetrics = m
 			}
@@ -803,14 +809,14 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 			if symbolKind == facts.SymbolFunc {
 				applyTSMetrics(f.Props, vMetrics)
 			}
-			classifySymbol(&f, symbolName, body, ctx, symbolKind)
+			classifySymbol(kinds, &f, symbolName, body, ctx, symbolKind)
 			result = append(result, f)
 
 			// Drizzle: `export const orders = pgTable("orders", {...})` is a table. The
 			// call_expression is already in hand above — it simply fails isComponentWrapper.
 			if ctx.orms.drizzle {
-				if call := findChildByKind(decl, "call_expression"); call != nil {
-					if sf := drizzleTableStorage(call, src, symbolName, relFile, dir,
+				if call := findChildByKind(kinds, decl, "call_expression"); call != nil {
+					if sf := drizzleTableStorage(kinds, call, src, symbolName, relFile, dir,
 						int(decl.StartPosition().Row)+1); sf != nil {
 						result = append(result, *sf)
 					}
@@ -824,9 +830,9 @@ func (e *TSExtractor) extractNode(node *sitter.Node, ctx *extractCtx, isExported
 
 // funcSymbol builds a function/component symbol fact. declNode supplies the source
 // location; body is walked for outgoing calls and JSX-based classification.
-func (e *TSExtractor) funcSymbol(declNode, body *sitter.Node, ctx *extractCtx, name string, exported bool) facts.Fact {
+func (e *TSExtractor) funcSymbol(kinds *tsutil.KindTable, declNode, body *sitter.Node, ctx *extractCtx, name string, exported bool) facts.Fact {
 	rels := []facts.Relation{{Kind: facts.RelDeclares, Target: ctx.dir}}
-	callRels, m := collectCallsWithMetrics(body, ctx.src, ctx.dir, "", ctx.importMap, ctx.ioBindings, ctx.dir+"."+name, name)
+	callRels, m := collectCallsWithMetrics(kinds, body, ctx.src, ctx.dir, "", ctx.importMap, ctx.ioBindings, ctx.dir+"."+name, name)
 	rels = append(rels, callRels...)
 	f := facts.Fact{
 		Kind: facts.KindSymbol,
@@ -841,7 +847,7 @@ func (e *TSExtractor) funcSymbol(declNode, body *sitter.Node, ctx *extractCtx, n
 		Relations: rels,
 	}
 	applyTSMetrics(f.Props, m)
-	classifySymbol(&f, name, body, ctx, facts.SymbolFunc)
+	classifySymbol(kinds, &f, name, body, ctx, facts.SymbolFunc)
 	return f
 }
 
@@ -1120,13 +1126,13 @@ func isMinifiedSource(content []byte) bool {
 func (e *TSExtractor) OwnsFile(relFile string) bool { return isTypeScriptFile(relFile) }
 
 // hasChildKind reports whether node has a direct child of the given kind.
-func hasChildKind(node *sitter.Node, kind string) bool {
-	return findChildByKind(node, kind) != nil
+func hasChildKind(kinds *tsutil.KindTable, node *sitter.Node, kind string) bool {
+	return findChildByKind(kinds, node, kind) != nil
 }
 
 // firstDeclChild returns the first named declaration child of an export_statement,
 // or nil if the export wraps something else (a value, re-export clause, etc.).
-func firstDeclChild(node *sitter.Node) *sitter.Node {
+func firstDeclChild(kinds *tsutil.KindTable, node *sitter.Node) *sitter.Node {
 	for _, k := range []string{
 		"function_declaration", "generator_function_declaration",
 		"class_declaration", "abstract_class_declaration",
@@ -1134,7 +1140,7 @@ func firstDeclChild(node *sitter.Node) *sitter.Node {
 		"lexical_declaration", "variable_declaration",
 		"enum_declaration", "internal_module", "module",
 	} {
-		if c := findChildByKind(node, k); c != nil {
+		if c := findChildByKind(kinds, node, k); c != nil {
 			return c
 		}
 	}
@@ -1181,18 +1187,18 @@ func toPascal(s string) string {
 // collectExportedLocalNames returns the set of locally-declared names that are
 // exported via a separate `export { A, B as C }` clause or `export default Name`
 // statement (where the declaration itself carries no inline export keyword).
-func collectExportedLocalNames(root *sitter.Node, src []byte) map[string]bool {
+func collectExportedLocalNames(kinds *tsutil.KindTable, root *sitter.Node, src []byte) map[string]bool {
 	out := make(map[string]bool)
 	for i := range root.ChildCount() {
 		child := root.Child(i)
-		if child.Kind() != "export_statement" {
+		if kindOf(kinds, child) != "export_statement" {
 			continue
 		}
 		// export { A, B as C }
-		if clause := findChildByKind(child, "export_clause"); clause != nil {
+		if clause := findChildByKind(kinds, child, "export_clause"); clause != nil {
 			for j := range clause.ChildCount() {
 				spec := clause.Child(j)
-				if spec.Kind() != "export_specifier" {
+				if kindOf(kinds, spec) != "export_specifier" {
 					continue
 				}
 				if n := spec.ChildByFieldName("name"); n != nil {
@@ -1202,8 +1208,8 @@ func collectExportedLocalNames(root *sitter.Node, src []byte) map[string]bool {
 			continue
 		}
 		// export default Name
-		if hasChildKind(child, "default") {
-			if id := findChildByKind(child, "identifier"); id != nil {
+		if hasChildKind(kinds, child, "default") {
+			if id := findChildByKind(kinds, child, "identifier"); id != nil {
 				out[nodeText(id, src)] = true
 			}
 		}
@@ -1221,7 +1227,7 @@ var reactHTTPMethods = map[string]bool{
 // (web_component, framework, and for route handlers method), mirroring the
 // ios_component/framework classification used by the Swift extractor. body, when
 // non-nil, is scanned for JSX to confirm component-ness in non-TSX files.
-func classifySymbol(f *facts.Fact, name string, body *sitter.Node, ctx *extractCtx, symbolKind string) {
+func classifySymbol(kinds *tsutil.KindTable, f *facts.Fact, name string, body *sitter.Node, ctx *extractCtx, symbolKind string) {
 	// Next.js App Router route handler: GET/POST/... in a route.{ts,tsx} file.
 	if symbolKind == facts.SymbolFunc && reactHTTPMethods[name] && isAppRouteFile(ctx.relFile) {
 		f.Props["web_component"] = "route_handler"
@@ -1274,7 +1280,7 @@ func classifySymbol(f *facts.Fact, name string, body *sitter.Node, ctx *extractC
 	// files a PascalCase function/class is treated as a component; elsewhere we
 	// require literal JSX in the body to avoid misclassifying plain classes.
 	if isComponentName(name) && (symbolKind == facts.SymbolFunc || symbolKind == facts.SymbolClass) {
-		if ctx.isTSX || (body != nil && containsJSX(body)) {
+		if ctx.isTSX || (body != nil && containsJSX(kinds, body)) {
 			f.Props["web_component"] = "component"
 			if ctx.isNextJS {
 				f.Props["framework"] = "nextjs"
@@ -1349,16 +1355,16 @@ func svelteKitFileBasename(relFile string) string {
 }
 
 // containsJSX reports whether the subtree rooted at node contains a JSX element.
-func containsJSX(node *sitter.Node) bool {
+func containsJSX(kinds *tsutil.KindTable, node *sitter.Node) bool {
 	if node == nil {
 		return false
 	}
-	switch node.Kind() {
+	switch kindOf(kinds, node) {
 	case "jsx_element", "jsx_self_closing_element", "jsx_fragment":
 		return true
 	}
 	for i := range node.ChildCount() {
-		if containsJSX(node.Child(i)) {
+		if containsJSX(kinds, node.Child(i)) {
 			return true
 		}
 	}
@@ -1367,13 +1373,13 @@ func containsJSX(node *sitter.Node) bool {
 
 // isComponentWrapper reports whether a call expression wraps a component, i.e. it
 // calls memo / forwardRef (optionally as React.memo / React.forwardRef).
-func isComponentWrapper(call *sitter.Node, src []byte) bool {
+func isComponentWrapper(kinds *tsutil.KindTable, call *sitter.Node, src []byte) bool {
 	fn := call.ChildByFieldName("function")
 	if fn == nil {
 		return false
 	}
 	name := ""
-	switch fn.Kind() {
+	switch kindOf(kinds, fn) {
 	case "identifier":
 		name = nodeText(fn, src)
 	case "member_expression":
@@ -1384,13 +1390,13 @@ func isComponentWrapper(call *sitter.Node, src []byte) bool {
 	return name == "memo" || name == "forwardRef"
 }
 
-func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
+func findChildByKind(kinds *tsutil.KindTable, node *sitter.Node, kind string) *sitter.Node {
 	if node == nil {
 		return nil
 	}
 	for i := range node.ChildCount() {
 		child := node.Child(i)
-		if child.Kind() == kind {
+		if kindOf(kinds, child) == kind {
 			return child
 		}
 	}
@@ -1654,15 +1660,15 @@ func resolveModuleFile(resolved string, knownFiles map[string]bool) (indexPath, 
 // fact. Symbols declared in an imported module are named "<moduleDir>.<exportName>",
 // where moduleDir is the directory of the resolved module file — this matches the
 // common file-module case (e.g. import "./utils" → utils.ts → "<dir>.foo").
-func buildImportSymbols(root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) map[string]string {
+func buildImportSymbols(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) map[string]string {
 	fileDir := filepath.Dir(relFile)
 	m := make(map[string]string)
 	for i := range root.ChildCount() {
 		child := root.Child(i)
-		if child.Kind() != "import_statement" {
+		if kindOf(kinds, child) != "import_statement" {
 			continue
 		}
-		source := findChildByKind(child, "string")
+		source := findChildByKind(kinds, child, "string")
 		if source == nil {
 			continue
 		}
@@ -1673,17 +1679,17 @@ func buildImportSymbols(root *sitter.Node, src []byte, relFile string, aliases m
 		}
 		moduleDir := filepath.Dir(resolved)
 
-		clause := findChildByKind(child, "import_clause")
+		clause := findChildByKind(kinds, child, "import_clause")
 		if clause == nil {
 			continue
 		}
-		named := findChildByKind(clause, "named_imports")
+		named := findChildByKind(kinds, clause, "named_imports")
 		if named == nil {
 			continue // default/namespace imports are not resolved
 		}
 		for j := range named.ChildCount() {
 			spec := named.Child(j)
-			if spec.Kind() != "import_specifier" {
+			if kindOf(kinds, spec) != "import_specifier" {
 				continue
 			}
 			nameNode := spec.ChildByFieldName("name")
@@ -1722,7 +1728,7 @@ func buildImportSymbols(root *sitter.Node, src []byte, relFile string, aliases m
 // file-scope pass, facts.KindTestRef when the caller is ExtractTestRefs walking a
 // test/spec file. The walk and resolvers are identical either way — a reference
 // from a test is spelled exactly as the same reference from production code.
-func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, aliases map[string]tsAlias, kind string) []facts.Fact {
+func (e *TSExtractor) collectTSFileRefs(kinds *tsutil.KindTable, root *sitter.Node, ctx *extractCtx, aliases map[string]tsAlias, kind string) []facts.Fact {
 	src := ctx.src
 	fileDir := filepath.Dir(ctx.relFile)
 	internal := make(map[string]string)   // local name -> canonical target (internal modules only)
@@ -1760,19 +1766,19 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 	// require()/dynamic-import assignments — into name → target maps.
 	for i := range root.ChildCount() {
 		child := root.Child(i)
-		switch child.Kind() {
+		switch kindOf(kinds, child) {
 		case "import_statement":
-			moduleDir, indexPath, ok := resolveModule(findChildByKind(child, "string"))
+			moduleDir, indexPath, ok := resolveModule(findChildByKind(kinds, child, "string"))
 			if !ok {
 				continue
 			}
-			clause := findChildByKind(child, "import_clause")
+			clause := findChildByKind(kinds, child, "import_clause")
 			if clause == nil {
 				continue
 			}
 			for j := range clause.ChildCount() {
 				c := clause.Child(j)
-				switch c.Kind() {
+				switch kindOf(kinds, c) {
 				case "identifier": // default import: `import Foo from './x'`
 					local := nodeText(c, src)
 					bind(local, moduleDir, local)
@@ -1785,13 +1791,13 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 						defaultRefs = append(defaultRefs, moduleDir+"."+fileSymbolName(indexPath))
 					}
 				case "namespace_import": // `import * as ns from './x'`
-					if id := findChildByKind(c, "identifier"); id != nil {
+					if id := findChildByKind(kinds, c, "identifier"); id != nil {
 						namespaces[nodeText(id, src)] = moduleDir
 					}
 				case "named_imports":
 					for k := range c.ChildCount() {
 						spec := c.Child(k)
-						if spec.Kind() != "import_specifier" {
+						if kindOf(kinds, spec) != "import_specifier" {
 							continue
 						}
 						nameNode := spec.ChildByFieldName("name")
@@ -1815,10 +1821,10 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 			if !ok {
 				continue
 			}
-			if clause := findChildByKind(child, "export_clause"); clause != nil {
+			if clause := findChildByKind(kinds, child, "export_clause"); clause != nil {
 				for k := range clause.ChildCount() {
 					spec := clause.Child(k)
-					if spec.Kind() != "export_specifier" {
+					if kindOf(kinds, spec) != "export_specifier" {
 						continue
 					}
 					nameNode := spec.ChildByFieldName("name")
@@ -1839,18 +1845,18 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 			// CommonJS: `const x = require('./y')` / `const { a } = require('./y')`.
 			for j := range child.ChildCount() {
 				d := child.Child(j)
-				if d.Kind() != "variable_declarator" {
+				if kindOf(kinds, d) != "variable_declarator" {
 					continue
 				}
 				val := d.ChildByFieldName("value")
-				if val == nil || val.Kind() != "call_expression" {
+				if val == nil || kindOf(kinds, val) != "call_expression" {
 					continue
 				}
 				fn := val.ChildByFieldName("function")
 				if fn == nil || nodeText(fn, src) != "require" {
 					continue
 				}
-				moduleDir, _, ok := resolveModule(findChildByKind(val.ChildByFieldName("arguments"), "string"))
+				moduleDir, _, ok := resolveModule(findChildByKind(kinds, val.ChildByFieldName("arguments"), "string"))
 				if !ok {
 					continue
 				}
@@ -1858,13 +1864,13 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 				if nameNode == nil {
 					continue
 				}
-				switch nameNode.Kind() {
+				switch kindOf(kinds, nameNode) {
 				case "identifier":
 					local := nodeText(nameNode, src)
 					bind(local, moduleDir, local)
 				case "object_pattern":
 					for k := range nameNode.ChildCount() {
-						if p := nameNode.Child(k); p.Kind() == "shorthand_property_identifier_pattern" {
+						if p := nameNode.Child(k); kindOf(kinds, p) == "shorthand_property_identifier_pattern" {
 							nm := nodeText(p, src)
 							bind(nm, moduleDir, nm)
 						}
@@ -1889,7 +1895,7 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 		if n == nil {
 			return
 		}
-		switch n.Kind() {
+		switch kindOf(kinds, n) {
 		case "import_statement":
 			return // binding sites, not uses
 		case "identifier", "type_identifier":
@@ -1902,7 +1908,7 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 		case "member_expression":
 			obj := n.ChildByFieldName("object")
 			prop := n.ChildByFieldName("property")
-			if obj != nil && obj.Kind() == "identifier" {
+			if obj != nil && kindOf(kinds, obj) == "identifier" {
 				name := nodeText(obj, src)
 				if dir, ok := namespaces[name]; ok && prop != nil {
 					add(dir + "." + nodeText(prop, src)) // ns.foo -> <dir>.foo
@@ -1918,7 +1924,7 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 			return
 		case "jsx_opening_element", "jsx_self_closing_element":
 			if nameNode := n.ChildByFieldName("name"); nameNode != nil {
-				add(resolveJSXTag(nameNode, src, ctx.dir, internal, namespaces))
+				add(resolveJSXTag(kinds, nameNode, src, ctx.dir, internal, namespaces))
 			}
 			for i := range n.ChildCount() {
 				walk(n.Child(i))
@@ -1931,12 +1937,12 @@ func (e *TSExtractor) collectTSFileRefs(root *sitter.Node, ctx *extractCtx, alia
 			// (`startSession()` at file top level) and functions passed as values
 			// (`connect(mapStateToProps, actions)`, HOC/callback wiring) — otherwise a
 			// symbol used only that way is falsely reported dead.
-			if fn := n.ChildByFieldName("function"); fn != nil && fn.Kind() == "identifier" {
+			if fn := n.ChildByFieldName("function"); fn != nil && kindOf(kinds, fn) == "identifier" {
 				add(resolveLocalOrImport(nodeText(fn, src), ctx.dir, internal))
 			}
 			if args := n.ChildByFieldName("arguments"); args != nil {
 				for i := range args.ChildCount() {
-					if a := args.Child(i); a.Kind() == "identifier" {
+					if a := args.Child(i); kindOf(kinds, a) == "identifier" {
 						add(resolveLocalOrImport(nodeText(a, src), ctx.dir, internal))
 					}
 				}
@@ -2070,6 +2076,8 @@ func (e *TSExtractor) ExtractTestRefs(ctx context.Context, repoPath string, file
 // (see ExtractTestRefs).
 func (e *TSExtractor) testRefsFromFile(src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {
 	isTSX := strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx")
+	kinds := tsKindsFor(isTSX)
+
 	lang := typescript.LanguageTypescript()
 	if isTSX {
 		lang = typescript.LanguageTSX()
@@ -2089,7 +2097,7 @@ func (e *TSExtractor) testRefsFromFile(src []byte, relFile string, aliases map[s
 		dir:     filepath.Dir(relFile),
 		isTSX:   isTSX,
 	}
-	return e.collectTSFileRefs(tree.RootNode(), ctx, aliases, facts.KindTestRef)
+	return e.collectTSFileRefs(kinds, tree.RootNode(), ctx, aliases, facts.KindTestRef)
 }
 
 // resolveLocalOrImport resolves a bare name used in a value/call position to its
@@ -2107,8 +2115,8 @@ func resolveLocalOrImport(name, dir string, internal map[string]string) string {
 // when it is a host element (`<div>`) or an unresolvable/external component. A bare
 // PascalCase tag that is not an import is resolved same-module (`<dir>.<Name>`) so a
 // component rendered only by a sibling in the same file is not flagged dead.
-func resolveJSXTag(nameNode *sitter.Node, src []byte, dir string, internal, namespaces map[string]string) string {
-	switch nameNode.Kind() {
+func resolveJSXTag(kinds *tsutil.KindTable, nameNode *sitter.Node, src []byte, dir string, internal, namespaces map[string]string) string {
+	switch kindOf(kinds, nameNode) {
 	case "identifier":
 		name := nodeText(nameNode, src)
 		if t, ok := internal[name]; ok {
@@ -2285,31 +2293,31 @@ func tsIsNetworkModule(importPath string) bool {
 // classes, and action-status utilities (`resolved`, `NetworkError`, `assignPaginationDefaults`)
 // alongside any request function, and binding those mislabels every caller as doing I/O.
 // Sibling to buildImportSymbols, which drops external and default imports entirely.
-func buildIOImportBindings(root *sitter.Node, src []byte) map[string]bool {
+func buildIOImportBindings(kinds *tsutil.KindTable, root *sitter.Node, src []byte) map[string]bool {
 	bindings := make(map[string]bool)
 	for i := range root.ChildCount() {
 		child := root.Child(i)
-		if child.Kind() != "import_statement" {
+		if kindOf(kinds, child) != "import_statement" {
 			continue
 		}
-		source := findChildByKind(child, "string")
+		source := findChildByKind(kinds, child, "string")
 		if source == nil {
 			continue
 		}
 		if !tsIsNetworkModule(strings.Trim(nodeText(source, src), `"'`)) {
 			continue
 		}
-		clause := findChildByKind(child, "import_clause")
+		clause := findChildByKind(kinds, child, "import_clause")
 		if clause == nil {
 			continue
 		}
 		for j := range clause.ChildCount() {
 			spec := clause.Child(j)
-			switch spec.Kind() {
+			switch kindOf(kinds, spec) {
 			case "identifier": // default import: import request from '...'
 				bindings[nodeText(spec, src)] = true
 			case "namespace_import": // import * as net from '...'
-				if id := findChildByKind(spec, "identifier"); id != nil {
+				if id := findChildByKind(kinds, spec, "identifier"); id != nil {
 					bindings[nodeText(id, src)] = true
 				}
 			}
@@ -2331,16 +2339,16 @@ func tsCalleeRoot(recv string) string {
 // a bare global primitive (fetch) or network-imported binding (request); or a member
 // call on a known I/O receiver (axios.get, fs.readFile), a network-imported binding, or
 // an I/O method name (navigator.sendBeacon).
-func tsIsIOCall(call *sitter.Node, src []byte, ioBindings map[string]bool) bool {
+func tsIsIOCall(kinds *tsutil.KindTable, call *sitter.Node, src []byte, ioBindings map[string]bool) bool {
 	fn := call.ChildByFieldName("function")
 	if fn == nil {
 		return false
 	}
-	if fn.Kind() == "identifier" {
+	if kindOf(kinds, fn) == "identifier" {
 		name := nodeText(fn, src)
 		return tsIOCallNames[name] || ioBindings[name]
 	}
-	if recv, prop := tsMemberCall(call, src); prop != "" {
+	if recv, prop := tsMemberCall(kinds, call, src); prop != "" {
 		root := tsCalleeRoot(recv)
 		return tsIOReceivers[root] || ioBindings[root] || tsIOMemberMethods[prop]
 	}
@@ -2359,9 +2367,9 @@ func tsIsFunctionLike(kind string) bool {
 	return false
 }
 
-func tsBooleanOp(node *sitter.Node) bool {
+func tsBooleanOp(kinds *tsutil.KindTable, node *sitter.Node) bool {
 	for i := range node.ChildCount() {
-		switch node.Child(i).Kind() {
+		switch kindOf(kinds, node.Child(i)) {
 		case "&&", "||", "??":
 			return true
 		}
@@ -2376,9 +2384,9 @@ func tsByteContains(outer, inner *sitter.Node) bool {
 // tsIteratorCallback returns the function/arrow callback of an array-iterator call
 // (items.map(cb), items.forEach(cb)) — or nil if the call is not an iterator with a
 // closure argument.
-func tsIteratorCallback(call *sitter.Node, src []byte) *sitter.Node {
+func tsIteratorCallback(kinds *tsutil.KindTable, call *sitter.Node, src []byte) *sitter.Node {
 	fn := call.ChildByFieldName("function")
-	if fn == nil || fn.Kind() != "member_expression" {
+	if fn == nil || kindOf(kinds, fn) != "member_expression" {
 		return nil
 	}
 	prop := fn.ChildByFieldName("property")
@@ -2390,7 +2398,7 @@ func tsIteratorCallback(call *sitter.Node, src []byte) *sitter.Node {
 		return nil
 	}
 	for i := range args.ChildCount() {
-		switch c := args.Child(i); c.Kind() {
+		switch c := args.Child(i); kindOf(kinds, c) {
 		case "arrow_function", "function_expression", "function":
 			return c
 		}
@@ -2401,9 +2409,9 @@ func tsIteratorCallback(call *sitter.Node, src []byte) *sitter.Node {
 // tsMemberCall returns the receiver text and property name of a method call whose
 // callee is a member_expression (`obj.method()` → "obj", "method"), for recording
 // in-loop calls on unknown receivers. Returns "" property if not a member call.
-func tsMemberCall(call *sitter.Node, src []byte) (recv, prop string) {
+func tsMemberCall(kinds *tsutil.KindTable, call *sitter.Node, src []byte) (recv, prop string) {
 	fn := call.ChildByFieldName("function")
-	if fn == nil || fn.Kind() != "member_expression" {
+	if fn == nil || kindOf(kinds, fn) != "member_expression" {
 		return "", ""
 	}
 	p := fn.ChildByFieldName("property")
@@ -2420,7 +2428,11 @@ func tsMemberCall(call *sitter.Node, src []byte) (recv, prop string) {
 // tsBodyWalker walks a function/method body once, collecting call-edge relations
 // and (when metrics != nil) per-function complexity signals.
 type tsBodyWalker struct {
-	src                 []byte
+	src []byte
+	// kinds names node types for the grammar this file was parsed with. A field is
+	// safe here, unlike on TSExtractor, because a walker belongs to one parse;
+	// TSExtractor is shared across the goroutines parallel.MapFiles runs.
+	kinds               *tsutil.KindTable
 	dir, className      string
 	importMap           map[string]string
 	ioBindings          map[string]bool
@@ -2476,7 +2488,7 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 	if n == nil {
 		return
 	}
-	kind := n.Kind()
+	kind := kindOf(w.kinds, n)
 
 	// A nested function/arrow definition is a deferred scope: its body runs when the
 	// function is called, NOT per-iteration of the enclosing loops — so reset the
@@ -2501,7 +2513,7 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 		case "if_statement", "ternary_expression", "switch_case", "catch_clause":
 			w.metrics.decisions++
 		case "binary_expression":
-			if tsBooleanOp(n) {
+			if tsBooleanOp(w.kinds, n) {
 				w.metrics.decisions++
 			}
 		}
@@ -2512,8 +2524,8 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 	// loop is bounded — it raises loop_depth but not scaling_loop_depth (the Big-O exponent).
 	switch kind {
 	case "for_statement", "for_in_statement", "while_statement", "do_statement":
-		bounded := tsLoopBounded(n, w.src)
-		repeats := tsLoopRepeats(n)
+		bounded := tsLoopBounded(w.kinds, n, w.src)
+		repeats := tsLoopRepeats(w.kinds, n)
 		if w.metrics != nil {
 			w.metrics.loopCount++
 			w.metrics.decisions++
@@ -2548,10 +2560,10 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 		// Seed the performs_io closure: flag the enclosing body when it directly
 		// invokes a network/file I/O primitive. Independent of loop depth — a wrapper
 		// calls its I/O sink once, and the transitive pass carries the signal upward.
-		if w.metrics != nil && !w.metrics.ioDirect && tsIsIOCall(n, w.src, w.ioBindings) {
+		if w.metrics != nil && !w.metrics.ioDirect && tsIsIOCall(w.kinds, n, w.src, w.ioBindings) {
 			w.metrics.ioDirect = true
 		}
-		if target := resolveTSCall(n, w.src, w.dir, w.className, w.importMap); target != "" {
+		if target := resolveTSCall(w.kinds, n, w.src, w.dir, w.className, w.importMap); target != "" {
 			if !w.seen[target] {
 				w.seen[target] = true
 				w.rels = append(w.rels, facts.Relation{Kind: facts.RelCalls, Target: target})
@@ -2561,7 +2573,7 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 			// Method call on an unknown receiver inside a loop (repo.findMany(),
 			// prisma.user.create()). No graph edge today, but its name feeds the perf
 			// metric so the enterprise analyzer can flag per-iteration ORM/fetch I/O.
-			if recv, prop := tsMemberCall(n, w.src); prop != "" && !tsCheapMethods[prop] {
+			if recv, prop := tsMemberCall(w.kinds, n, w.src); prop != "" && !tsCheapMethods[prop] {
 				tgt := prop
 				if recv != "" {
 					tgt = recv + "." + prop
@@ -2572,12 +2584,12 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 		// An array-iterator method with a callback (items.map(cb)) is a loop: its
 		// callback body runs per element, but the receiver/other args run once.
 		if w.metrics != nil {
-			if cb := tsIteratorCallback(n, w.src); cb != nil {
+			if cb := tsIteratorCallback(w.kinds, n, w.src); cb != nil {
 				// A `[a,b,c].map(cb)` over a literal receiver iterates a fixed count — it
 				// raises loop_depth but not the scaling depth. The actual w.loopDepth /
 				// w.scalingDepth bump happens at the callback body inside walkCallbackSubtree;
 				// here we only record the maxes.
-				bounded := tsIteratorReceiverBounded(n, w.src)
+				bounded := tsIteratorReceiverBounded(w.kinds, n, w.src)
 				w.metrics.loopCount++
 				w.metrics.decisions++
 				if w.loopDepth+1 > w.metrics.loopDepth {
@@ -2612,7 +2624,7 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 	// edge and would otherwise be mis-reported dead. className is the exact class
 	// symbol name, so the target matches the method fact "<dir>.<Class>.<member>".
 	if kind == "member_expression" && w.className != "" {
-		if obj := n.ChildByFieldName("object"); obj != nil && obj.Kind() == "this" {
+		if obj := n.ChildByFieldName("object"); obj != nil && kindOf(w.kinds, obj) == "this" {
 			if prop := n.ChildByFieldName("property"); prop != nil {
 				target := w.dir + "." + w.className + "." + nodeText(prop, w.src)
 				if !w.seen[target] {
@@ -2672,9 +2684,9 @@ func (w *tsBodyWalker) walkCallbackSubtree(n, cb *sitter.Node, bounded bool) {
 // deduplicated RelCalls relations plus per-function complexity metrics,
 // used for function/method/arrow facts. selfName/selfShort enable direct-recursion
 // detection.
-func collectCallsWithMetrics(node *sitter.Node, src []byte, dir, className string, importMap map[string]string, ioBindings map[string]bool, selfName, selfShort string) ([]facts.Relation, *tsBodyMetrics) {
+func collectCallsWithMetrics(kinds *tsutil.KindTable, node *sitter.Node, src []byte, dir, className string, importMap map[string]string, ioBindings map[string]bool, selfName, selfShort string) ([]facts.Relation, *tsBodyMetrics) {
 	m := &tsBodyMetrics{}
-	w := &tsBodyWalker{src: src, dir: dir, className: className, importMap: importMap, ioBindings: ioBindings, selfName: selfName, selfShort: selfShort, metrics: m, seen: make(map[string]bool)}
+	w := &tsBodyWalker{src: src, kinds: kinds, dir: dir, className: className, importMap: importMap, ioBindings: ioBindings, selfName: selfName, selfShort: selfShort, metrics: m, seen: make(map[string]bool)}
 	w.walk(node)
 	return w.rels, m
 }
@@ -2719,35 +2731,35 @@ func applyTSMetrics(props map[string]any, m *tsBodyMetrics) {
 // unbounded (its bound is not statically evident).
 //
 // It does NOT mean the loop runs a constant number of times — see tsLoopRepeats.
-func tsLoopBounded(n *sitter.Node, src []byte) bool {
-	return tsLoopConstant(n) || tsLoopInfinite(n, src)
+func tsLoopBounded(kinds *tsutil.KindTable, n *sitter.Node, src []byte) bool {
+	return tsLoopConstant(kinds, n) || tsLoopInfinite(kinds, n, src)
 }
 
 // tsLoopRepeats reports whether the loop body runs a non-constant number of times, so a
 // call inside it is an N+1 candidate. Only a genuinely constant loop is excluded: a
 // `while (true) { row = await fetch(id) }` reconnect/retry loop queries once per
 // iteration even though its depth is discounted. Scaling and repeating differ.
-func tsLoopRepeats(n *sitter.Node) bool {
-	return !tsLoopConstant(n)
+func tsLoopRepeats(kinds *tsutil.KindTable, n *sitter.Node) bool {
+	return !tsLoopConstant(kinds, n)
 }
 
 // tsLoopConstant reports whether a for..of / for..in iterates an array/object literal —
 // a compile-time-fixed element count. A while/do loop never qualifies.
-func tsLoopConstant(n *sitter.Node) bool {
-	if n.Kind() != "for_in_statement" {
+func tsLoopConstant(kinds *tsutil.KindTable, n *sitter.Node) bool {
+	if kindOf(kinds, n) != "for_in_statement" {
 		return false
 	}
 	r := n.ChildByFieldName("right")
-	return r != nil && tsIterableLiteral(r)
+	return r != nil && tsIterableLiteral(kinds, r)
 }
 
 // tsLoopInfinite reports whether a loop is the `while (true)` / `do … while (true)` form,
 // exited by break/return rather than by exhausting the input.
-func tsLoopInfinite(n *sitter.Node, src []byte) bool {
-	switch n.Kind() {
+func tsLoopInfinite(kinds *tsutil.KindTable, n *sitter.Node, src []byte) bool {
+	switch kindOf(kinds, n) {
 	case "while_statement", "do_statement":
 		if c := n.ChildByFieldName("condition"); c != nil {
-			return tsIsTrueCondition(c, src)
+			return tsIsTrueCondition(kinds, c, src)
 		}
 	}
 	return false
@@ -2755,18 +2767,18 @@ func tsLoopInfinite(n *sitter.Node, src []byte) bool {
 
 // tsIteratorReceiverBounded reports whether an array-iterator call (`recv.map(cb)`) has a
 // literal receiver (`[a,b,c].map(...)`), so the callback runs a fixed number of times.
-func tsIteratorReceiverBounded(n *sitter.Node, src []byte) bool {
+func tsIteratorReceiverBounded(kinds *tsutil.KindTable, n *sitter.Node, src []byte) bool {
 	fn := n.ChildByFieldName("function")
-	if fn == nil || fn.Kind() != "member_expression" {
+	if fn == nil || kindOf(kinds, fn) != "member_expression" {
 		return false
 	}
 	obj := fn.ChildByFieldName("object")
-	return obj != nil && tsIterableLiteral(obj)
+	return obj != nil && tsIterableLiteral(kinds, obj)
 }
 
 // tsIterableLiteral reports whether a node is an array/object literal (a fixed-size iterable).
-func tsIterableLiteral(n *sitter.Node) bool {
-	switch n.Kind() {
+func tsIterableLiteral(kinds *tsutil.KindTable, n *sitter.Node) bool {
+	switch kindOf(kinds, n) {
 	case "array", "object":
 		return true
 	}
@@ -2776,12 +2788,12 @@ func tsIterableLiteral(n *sitter.Node) bool {
 // tsIsTrueCondition reports whether a loop condition is the constant `true` / a nonzero
 // literal — the `while (true) { … }` reconnect/event loop whose iteration count is driven
 // by external events, not input size.
-func tsIsTrueCondition(c *sitter.Node, src []byte) bool {
+func tsIsTrueCondition(kinds *tsutil.KindTable, c *sitter.Node, src []byte) bool {
 	inner := c
-	if inner.Kind() == "parenthesized_expression" && inner.NamedChildCount() > 0 {
+	if kindOf(kinds, inner) == "parenthesized_expression" && inner.NamedChildCount() > 0 {
 		inner = inner.NamedChild(0)
 	}
-	switch inner.Kind() {
+	switch kindOf(kinds, inner) {
 	case "true":
 		return true
 	case "number":
@@ -2859,12 +2871,12 @@ func computeTSPerformsIO(allFacts []facts.Fact) {
 // type). It resolves:
 //   - bare calls `foo()` → imported symbol via importMap, else same-module "<dir>.foo"
 //   - `this.method()` inside a class → "<dir>.<className>.method"
-func resolveTSCall(call *sitter.Node, src []byte, dir, className string, importMap map[string]string) string {
+func resolveTSCall(kinds *tsutil.KindTable, call *sitter.Node, src []byte, dir, className string, importMap map[string]string) string {
 	fn := call.ChildByFieldName("function")
 	if fn == nil {
 		return ""
 	}
-	switch fn.Kind() {
+	switch kindOf(kinds, fn) {
 	case "identifier":
 		name := nodeText(fn, src)
 		if target, ok := importMap[name]; ok {
@@ -2879,7 +2891,7 @@ func resolveTSCall(call *sitter.Node, src []byte, dir, className string, importM
 		}
 		// `this.method()` resolves within the enclosing class; other receivers
 		// have an unknown type and are left unresolved to avoid dangling edges.
-		if object.Kind() == "this" && className != "" {
+		if kindOf(kinds, object) == "this" && className != "" {
 			return dir + "." + className + "." + nodeText(property, src)
 		}
 	}

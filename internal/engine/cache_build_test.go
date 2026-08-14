@@ -40,7 +40,7 @@ func TestExtractorCache_RejectsAnotherBuildsEntries(t *testing.T) {
 		Entries: entries,
 	})
 
-	if got := loadExtractorCache(path); len(got.prev) != 0 {
+	if got := loadExtractorCache(path, true); len(got.prev) != 0 {
 		t.Errorf("a cache written by a different build was loaded (%d entries); it must be discarded", len(got.prev))
 	}
 }
@@ -55,7 +55,7 @@ func TestExtractorCache_RejectsPreBuildStampEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := loadExtractorCache(path); len(got.prev) != 0 {
+	if got := loadExtractorCache(path, true); len(got.prev) != 0 {
 		t.Errorf("a cache predating the build stamp was loaded (%d entries); it must be discarded", len(got.prev))
 	}
 }
@@ -66,13 +66,14 @@ func TestExtractorCache_RejectsPreBuildStampEntries(t *testing.T) {
 func TestExtractorCache_ReusesOwnEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "extractor_cache.json")
 
-	c := &extractorCache{prev: map[string]json.RawMessage{}, next: map[string]json.RawMessage{}}
+	c := loadExtractorCache(path, true)
 	c.put("go", []facts.Fact{{Kind: facts.KindSymbol, Name: "Fresh"}})
-	if err := c.save(path); err != nil {
+	if err := c.save(); err != nil {
 		t.Fatal(err)
 	}
 
-	got := loadExtractorCache(path)
+	got := loadExtractorCache(path, true)
+	defer got.discard()
 	if len(got.prev) != 1 {
 		t.Fatalf("a cache written by this same binary was not reused: %d entries", len(got.prev))
 	}

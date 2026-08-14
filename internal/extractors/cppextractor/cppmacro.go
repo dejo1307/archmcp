@@ -25,7 +25,20 @@ type macroDef struct {
 	params       []string
 	variadic     bool
 	variadicName string
-	bodyTokens   []token
+	// body is the macro's replacement text, UNLEXED. It is lexed on demand by
+	// substitute, once per expansion.
+	//
+	// Lexing eagerly at collect time was the single largest live allocation in a
+	// kernel-sized snapshot: 671 MB, 22% of peak live. A token is a kind plus a
+	// string header — 24 bytes for a few characters of text — and 4,000 kernel
+	// sources alone produce 755,029 of them across 92,841 macros, held for the whole
+	// AST pass because any file may invoke a macro defined in any header.
+	//
+	// It also lexed work nobody wanted. The table exists to recover token-pasted
+	// callbacks from a handful of attribute macros; the overwhelming majority of
+	// definitions in a kernel are never expanded at all, and their tokens were built
+	// and retained regardless.
+	body string
 }
 
 type macroTable map[string]macroDef
@@ -219,7 +232,7 @@ func parseDefine(line string) (string, macroDef, bool) {
 		}
 		rest = rest[close+1:]
 	}
-	def.bodyTokens = lex(strings.TrimSpace(rest))
+	def.body = strings.TrimSpace(rest)
 	return name, def, true
 }
 
@@ -368,7 +381,7 @@ func substitute(def macroDef, args [][]token) []token {
 	}
 
 	var out []token
-	bt := def.bodyTokens
+	bt := lex(def.body)
 	for j := 0; j < len(bt); j++ {
 		t := bt[j]
 		if t.kind == tkPunct && t.text == "#" { // stringize next param

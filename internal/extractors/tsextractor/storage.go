@@ -1,6 +1,7 @@
 package tsextractor
 
 import (
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -53,8 +54,8 @@ func detectORMs(repoPath string) (typeorm, drizzle, prisma bool) {
 // tsextractor read NO decorators before this — there was not one occurrence in the whole
 // package — so this is the extractor's first decorator support. Decorator nodes hang off
 // the class_declaration itself, which is why the class branch is the hook.
-func typeORMEntityStorage(node *sitter.Node, src []byte, className, relFile, dir string, line int) *facts.Fact {
-	name, arg, ok := classDecorator(node, src, "Entity")
+func typeORMEntityStorage(kinds *tsutil.KindTable, node *sitter.Node, src []byte, className, relFile, dir string, line int) *facts.Fact {
+	name, arg, ok := classDecorator(kinds, node, src, "Entity")
 	if !ok || name == "" {
 		return nil
 	}
@@ -89,12 +90,12 @@ func typeORMEntityStorage(node *sitter.Node, src []byte, className, relFile, dir
 // so a search of the class node alone finds nothing for `@Entity() export class X` — which
 // is the shape essentially every real entity uses. Look at the class node, then at its
 // parent.
-func classDecorator(node *sitter.Node, src []byte, want string) (name, arg string, ok bool) {
-	if n, a, found := decoratorIn(node, src, want); found {
+func classDecorator(kinds *tsutil.KindTable, node *sitter.Node, src []byte, want string) (name, arg string, ok bool) {
+	if n, a, found := decoratorIn(kinds, node, src, want); found {
 		return n, a, true
 	}
-	if parent := node.Parent(); parent != nil && parent.Kind() == "export_statement" {
-		return decoratorIn(parent, src, want)
+	if parent := node.Parent(); parent != nil && kindOf(kinds, parent) == "export_statement" {
+		return decoratorIn(kinds, parent, src, want)
 	}
 	return "", "", false
 }
@@ -103,30 +104,30 @@ func classDecorator(node *sitter.Node, src []byte, want string) (name, arg strin
 // its first string argument. A thin wrapper over decoratorArgsIn, which owns the
 // scan — @Controller({path: "…"}) needs the arguments NODE rather than its first
 // string, and the two must not drift into separate traversals.
-func decoratorIn(node *sitter.Node, src []byte, want string) (name, arg string, ok bool) {
-	args, found := decoratorArgsIn(node, src, want)
+func decoratorIn(kinds *tsutil.KindTable, node *sitter.Node, src []byte, want string) (name, arg string, ok bool) {
+	args, found := decoratorArgsIn(kinds, node, src, want)
 	if !found {
 		return "", "", false
 	}
-	return want, firstStringArg(args, src), true
+	return want, firstStringArg(kinds, args, src), true
 }
 
 // decoratorArgsIn scans one node's immediate children for a named decorator and
 // returns its call arguments. A bare decorator (@Entity, @Get) yields a nil args
 // node with ok=true — present, but carrying nothing.
-func decoratorArgsIn(node *sitter.Node, src []byte, want string) (args *sitter.Node, ok bool) {
+func decoratorArgsIn(kinds *tsutil.KindTable, node *sitter.Node, src []byte, want string) (args *sitter.Node, ok bool) {
 	if node == nil {
 		return nil, false
 	}
 	for i := range node.ChildCount() {
 		child := node.Child(i)
-		if child.Kind() != "decorator" {
+		if kindOf(kinds, child) != "decorator" {
 			continue
 		}
 		// The decorator wraps either a bare identifier (@Entity) or a call (@Entity(...)).
 		for j := range child.ChildCount() {
 			inner := child.Child(j)
-			switch inner.Kind() {
+			switch kindOf(kinds, inner) {
 			case "identifier":
 				if nodeText(inner, src) == want {
 					return nil, true
@@ -146,12 +147,12 @@ func decoratorArgsIn(node *sitter.Node, src []byte, want string) (args *sitter.N
 // drizzleTableStorage emits a storage fact for `export const orders = pgTable("orders", …)`.
 // The call_expression is already in hand at the lexical_declaration branch — it simply
 // fails the isComponentWrapper check today.
-func drizzleTableStorage(call *sitter.Node, src []byte, constName, relFile, dir string, line int) *facts.Fact {
+func drizzleTableStorage(kinds *tsutil.KindTable, call *sitter.Node, src []byte, constName, relFile, dir string, line int) *facts.Fact {
 	fn := call.ChildByFieldName("function")
 	if fn == nil || !drizzleTableFns[nodeText(fn, src)] {
 		return nil
 	}
-	table := firstStringArg(call.ChildByFieldName("arguments"), src)
+	table := firstStringArg(kinds, call.ChildByFieldName("arguments"), src)
 	if table == "" {
 		table = constName
 	}
@@ -171,13 +172,13 @@ func drizzleTableStorage(call *sitter.Node, src []byte, constName, relFile, dir 
 }
 
 // firstStringArg returns the text of the first string literal in an argument list.
-func firstStringArg(args *sitter.Node, src []byte) string {
+func firstStringArg(kinds *tsutil.KindTable, args *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
 	for i := range args.ChildCount() {
 		a := args.Child(i)
-		if a.Kind() != "string" {
+		if kindOf(kinds, a) != "string" {
 			continue
 		}
 		return strings.Trim(nodeText(a, src), `"'`+"`")

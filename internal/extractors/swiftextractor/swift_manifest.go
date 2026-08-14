@@ -62,7 +62,7 @@ func parsePackageManifest(src []byte, manifestRel string, dirToFile map[string]s
 	internalDirs := make(map[string]string)
 	if targetsArr := argValue(args, "targets", src); targetsArr != nil {
 		for _, elem := range arrayElements(targetsArr) {
-			if elem.Kind() != "call_expression" {
+			if kindOf(elem) != "call_expression" {
 				continue
 			}
 			callName := memberCallName(elem, src)
@@ -180,7 +180,7 @@ func manifestTargetRoots(src []byte, manifestRel string) map[string]string {
 	roots := map[string]string{}
 	if targetsArr := argValue(args, "targets", src); targetsArr != nil {
 		for _, elem := range arrayElements(targetsArr) {
-			if elem.Kind() != "call_expression" {
+			if kindOf(elem) != "call_expression" {
 				continue
 			}
 			switch memberCallName(elem, src) {
@@ -212,7 +212,7 @@ func manifestTargetRoots(src []byte, manifestRel string) map[string]string {
 func parseManifestDeps(arr *sitter.Node, src []byte) []manifestDep {
 	var deps []manifestDep
 	for _, elem := range arrayElements(arr) {
-		switch elem.Kind() {
+		switch kindOf(elem) {
 		case "line_string_literal":
 			if name := stringLiteralText(elem, src); name != "" {
 				deps = append(deps, manifestDep{name: name})
@@ -248,9 +248,9 @@ func findPackageCall(node *sitter.Node, src []byte) *sitter.Node {
 	if node == nil {
 		return nil
 	}
-	if node.Kind() == "call_expression" {
+	if kindOf(node) == "call_expression" {
 		if callee := firstNamedChild(node); callee != nil &&
-			(callee.Kind() == "simple_identifier" || callee.Kind() == "identifier") &&
+			(kindOf(callee) == "simple_identifier" || kindOf(callee) == "identifier") &&
 			nodeText(callee, src) == "Package" {
 			return node
 		}
@@ -282,7 +282,7 @@ func argValue(valueArgs *sitter.Node, label string, src []byte) *sitter.Node {
 	}
 	for i := uint(0); i < uint(valueArgs.ChildCount()); i++ {
 		arg := valueArgs.Child(i)
-		if arg.Kind() != "value_argument" {
+		if kindOf(arg) != "value_argument" {
 			continue
 		}
 		nameNode := arg.ChildByFieldName("name")
@@ -324,7 +324,7 @@ func memberCallName(call *sitter.Node, src []byte) string {
 	if callee == nil {
 		return ""
 	}
-	switch callee.Kind() {
+	switch kindOf(callee) {
 	case "simple_identifier", "identifier":
 		return nodeText(callee, src)
 	case "prefix_expression":
@@ -344,7 +344,7 @@ func stringLiteralText(node *sitter.Node, src []byte) string {
 	if node == nil {
 		return ""
 	}
-	if node.Kind() == "line_string_literal" {
+	if kindOf(node) == "line_string_literal" {
 		if t := node.ChildByFieldName("text"); t != nil {
 			return nodeText(t, src)
 		}
@@ -357,7 +357,7 @@ func stringLiteralText(node *sitter.Node, src []byte) string {
 // arrayElements returns the element expression nodes of an array_literal.
 func arrayElements(arr *sitter.Node) []*sitter.Node {
 	var out []*sitter.Node
-	if arr == nil || arr.Kind() != "array_literal" {
+	if arr == nil || kindOf(arr) != "array_literal" {
 		return out
 	}
 	for i := uint(0); i < uint(arr.ChildCount()); i++ {

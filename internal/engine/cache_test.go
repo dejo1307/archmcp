@@ -78,16 +78,17 @@ func TestExtractorCache_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache.json")
 	want := []facts.Fact{{Kind: "symbol", Name: "pkg.Foo", File: "pkg/foo.go"}}
 
-	c := loadExtractorCache(path) // cold: empty
+	c := loadExtractorCache(path, true) // cold: empty
 	if _, hit := c.get("k"); hit {
 		t.Fatal("cold cache should miss")
 	}
 	c.put("k", want)
-	if err := c.save(path); err != nil {
+	if err := c.save(); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
-	c2 := loadExtractorCache(path)
+	c2 := loadExtractorCache(path, true)
+	defer c2.discard()
 	got, hit := c2.get("k")
 	if !hit {
 		t.Fatal("warm cache should hit after save")
@@ -96,11 +97,11 @@ func TestExtractorCache_RoundTrip(t *testing.T) {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 
-	// A key not used this run is dropped on the next save (GC of stale entries).
-	if err := c2.save(filepath.Join(t.TempDir(), "cache2.json")); err == nil {
-		c3 := loadExtractorCache(filepath.Join(t.TempDir(), "cache2.json"))
-		if _, hit := c3.get("k"); hit {
-			t.Error("stale key should not survive a save that never referenced it")
-		}
-	}
+	// The stale-key half of this test used to live here and asserted nothing: it
+	// saved to filepath.Join(t.TempDir(), "cache2.json") and then read back from
+	// filepath.Join(t.TempDir(), "cache2.json"), and each t.TempDir() call returns a
+	// DIFFERENT directory — so it reloaded an empty one and the miss it checked for
+	// was guaranteed. Its premise was wrong too: c2 had just referenced "k", so "k"
+	// was supposed to survive. The property it meant to cover is now
+	// TestExtractorCache_UnreferencedKeyIsDropped.
 }

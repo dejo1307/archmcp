@@ -192,7 +192,7 @@ func engineClassNames(src []byte) []string {
 		if n == nil {
 			return
 		}
-		switch n.Kind() {
+		switch kindOf(n) {
 		case "module":
 			name := rubyText(n.ChildByFieldName("name"), src)
 			if name != "" {

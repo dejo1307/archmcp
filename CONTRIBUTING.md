@@ -31,6 +31,38 @@ Thank you for your interest in contributing to enola. Every contribution — cod
 
    It also runs one check **CI cannot run at all**. See below.
 
+## Measuring memory
+
+Two hidden flags, kept out of `--help` because they are development instruments
+and cost a stop-the-world heap read every few milliseconds:
+
+```bash
+enola --memstats --generate /path/to/repo             # one summary line on stderr
+enola --memprofile heap.pb.gz --generate /path/to/repo # plus two heap profiles
+```
+
+`--memstats` prints peak and steady heap, `Sys`, total allocation, mallocs and the
+fact count. **Peak is the figure that matters and it is not the one the engine's own
+end-of-run log line reports** — that runs after `FreeOSMemory` and describes the
+survivor. On a large repository the two differ by five to eight times.
+
+`--memprofile` additionally writes a heap profile at the peak (to the given path,
+rewritten at each new high-water mark) and one of the steady state (`.final`):
+
+```bash
+go tool pprof -alloc_space -top  enola heap.pb.gz        # what churned
+go tool pprof -inuse_space -top  enola heap.pb.gz        # what was live at the peak
+go tool pprof -inuse_space -top  enola heap.pb.gz.final  # what a loaded graph costs
+```
+
+Do not compare these against `ps rss` or macOS "footprint": Darwin keeps freed pages
+resident, so both read several times the live heap and do not move when memory is
+genuinely returned.
+
+`enola-benchmarks/bench-sweep.sh` records these per repo and
+`bench-mem-ratchet.sh` grades them against pinned ceilings; the plan they serve is
+`enola-benchmarks/MEMORY_IMPROVEMENTS.md`.
+
 ## What to work on
 
 - **Bug reports and fixes** — if something doesn't work, open an issue or submit a fix.

@@ -1,6 +1,7 @@
 package tsextractor
 
 import (
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -155,7 +156,7 @@ type emberImportBindings struct {
 	external map[string]string
 }
 
-func buildEmberImportBindings(root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) emberImportBindings {
+func buildEmberImportBindings(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) emberImportBindings {
 	b := emberImportBindings{
 		internal: make(map[string]string),
 		external: make(map[string]string),
@@ -163,10 +164,10 @@ func buildEmberImportBindings(root *sitter.Node, src []byte, relFile string, ali
 	fileDir := filepath.Dir(relFile)
 	for i := range root.ChildCount() {
 		child := root.Child(i)
-		if child.Kind() != "import_statement" {
+		if kindOf(kinds, child) != "import_statement" {
 			continue
 		}
-		source := findChildByKind(child, "string")
+		source := findChildByKind(kinds, child, "string")
 		if source == nil {
 			continue
 		}
@@ -174,7 +175,7 @@ func buildEmberImportBindings(root *sitter.Node, src []byte, relFile string, ali
 		resolved, isExternal := resolveImportPath(importPath, fileDir, aliases)
 		moduleDir := filepath.ToSlash(filepath.Dir(resolved))
 
-		clause := findChildByKind(child, "import_clause")
+		clause := findChildByKind(kinds, child, "import_clause")
 		if clause == nil {
 			continue
 		}
@@ -190,13 +191,13 @@ func buildEmberImportBindings(root *sitter.Node, src []byte, relFile string, ali
 		}
 		for j := range clause.ChildCount() {
 			c := clause.Child(j)
-			switch c.Kind() {
+			switch kindOf(kinds, c) {
 			case "identifier":
 				bind(nodeText(c, src))
 			case "named_imports":
 				for k := range c.ChildCount() {
 					spec := c.Child(k)
-					if spec.Kind() != "import_specifier" {
+					if kindOf(kinds, spec) != "import_specifier" {
 						continue
 					}
 					nameNode := spec.ChildByFieldName("name")
@@ -315,7 +316,7 @@ type emberBindingInfo struct {
 // statements) and classifies each class by what its superclass's local name was
 // imported from, plus the service names its @service-decorated fields inject and
 // the ember-data relationships its @belongsTo/@hasMany fields declare.
-func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBindings, folds *litfold.Assignments) []emberClassInfo {
+func collectEmberClasses(kinds *tsutil.KindTable, root *sitter.Node, src []byte, bindings emberImportBindings, folds *litfold.Assignments) []emberClassInfo {
 	serviceDecorators := emberServiceDecoratorNames(bindings)
 	relationshipDecorators := emberRelationshipDecoratorNames(bindings)
 	attrNames := make(map[string]bool)
@@ -325,19 +326,19 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 		}
 	}
 	var classes []emberClassInfo
-	defaultName := emberDefaultExportName(root, src)
+	defaultName := emberDefaultExportName(kinds, root, src)
 	for i := range root.ChildCount() {
 		node := root.Child(i)
 		isDefault := false
-		if node.Kind() == "export_statement" {
-			isDefault = hasChildKind(node, "default")
-			if decl := firstDeclChild(node); decl != nil {
+		if kindOf(kinds, node) == "export_statement" {
+			isDefault = hasChildKind(kinds, node, "default")
+			if decl := firstDeclChild(kinds, node); decl != nil {
 				node = decl
-			} else if c := findChildByKind(node, "class"); c != nil {
+			} else if c := findChildByKind(kinds, node, "class"); c != nil {
 				node = c
 			}
 		}
-		switch node.Kind() {
+		switch kindOf(kinds, node) {
 		case "class_declaration", "abstract_class_declaration", "class":
 		default:
 			continue
@@ -348,23 +349,23 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 			end:       int(node.EndByte()),
 			isDefault: isDefault,
 		}
-		if name := findChildByKind(node, "type_identifier"); name != nil {
+		if name := findChildByKind(kinds, node, "type_identifier"); name != nil {
 			info.name = nodeText(name, src)
 		}
-		if super := emberSuperclassName(node, src); super != "" {
+		if super := emberSuperclassName(kinds, node, src); super != "" {
 			if mod, ok := bindings.external[super]; ok {
 				info.isComponent = emberComponentModules[mod]
 				info.isModel = emberModelModules[mod]
 				info.isService = emberServiceModules[mod]
 			}
 		}
-		if body := findChildByKind(node, "class_body"); body != nil {
-			info.services = emberInjectedServices(body, src, serviceDecorators)
-			info.services = mergeSorted(info.services, emberLookupServices(body, src, folds))
-			info.codeLinks = emberTransitionLinks(body, src, folds)
+		if body := findChildByKind(kinds, node, "class_body"); body != nil {
+			info.services = emberInjectedServices(kinds, body, src, serviceDecorators)
+			info.services = mergeSorted(info.services, emberLookupServices(kinds, body, src, folds))
+			info.codeLinks = emberTransitionLinks(kinds, body, src, folds)
 			if info.isModel {
-				info.relationships = emberModelRelationships(body, src, relationshipDecorators)
-				info.attrTransforms = emberModelAttrTransforms(body, src, attrNames)
+				info.relationships = emberModelRelationships(kinds, body, src, relationshipDecorators)
+				info.attrTransforms = emberModelAttrTransforms(kinds, body, src, attrNames)
 			}
 		}
 		if info.name != "" && info.name == defaultName {
@@ -380,23 +381,23 @@ func collectEmberClasses(root *sitter.Node, src []byte, bindings emberImportBind
 // programmatic counterpart of a template's `<LinkTo @route=…>`. Only a literal
 // first argument that looks like a route name (no leading slash: a URL form is
 // a path, not a name) produces a candidate; a computed name produces nothing.
-func emberTransitionLinks(classBody *sitter.Node, src []byte, folds *litfold.Assignments) []string {
+func emberTransitionLinks(kinds *tsutil.KindTable, classBody *sitter.Node, src []byte, folds *litfold.Assignments) []string {
 	seen := make(map[string]bool)
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
 		if n == nil {
 			return
 		}
-		if n.Kind() == "call_expression" {
-			if fn := n.ChildByFieldName("function"); fn != nil && fn.Kind() == "member_expression" {
+		if kindOf(kinds, n) == "call_expression" {
+			if fn := n.ChildByFieldName("function"); fn != nil && kindOf(kinds, fn) == "member_expression" {
 				if prop := fn.ChildByFieldName("property"); prop != nil {
 					switch nodeText(prop, src) {
 					case "transitionTo", "replaceWith":
 						if args := n.ChildByFieldName("arguments"); args != nil {
 							name := ""
-							if s := findChildByKind(args, "string"); s != nil {
+							if s := findChildByKind(kinds, args, "string"); s != nil {
 								name = strings.Trim(nodeText(s, src), `"'`)
-							} else if id := findChildByKind(args, "identifier"); id != nil {
+							} else if id := findChildByKind(kinds, args, "identifier"); id != nil {
 								name, _ = folds.Resolve(nodeText(id, src))
 							}
 							if name != "" && !strings.HasPrefix(name, "/") &&
@@ -429,21 +430,21 @@ func emberTransitionLinks(classBody *sitter.Node, src []byte, folds *litfold.Ass
 // counterpart of an @service field. Only the `service:` type is read: it is
 // effectively all real-world usage, and each container type would need its own
 // resolution rule.
-func emberLookupServices(classBody *sitter.Node, src []byte, folds *litfold.Assignments) []string {
+func emberLookupServices(kinds *tsutil.KindTable, classBody *sitter.Node, src []byte, folds *litfold.Assignments) []string {
 	seen := make(map[string]bool)
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
 		if n == nil {
 			return
 		}
-		if n.Kind() == "call_expression" {
-			if fn := n.ChildByFieldName("function"); fn != nil && fn.Kind() == "member_expression" {
+		if kindOf(kinds, n) == "call_expression" {
+			if fn := n.ChildByFieldName("function"); fn != nil && kindOf(kinds, fn) == "member_expression" {
 				if prop := fn.ChildByFieldName("property"); prop != nil && nodeText(prop, src) == "lookup" {
 					if args := n.ChildByFieldName("arguments"); args != nil {
 						arg := ""
-						if s := findChildByKind(args, "string"); s != nil {
+						if s := findChildByKind(kinds, args, "string"); s != nil {
 							arg = strings.Trim(nodeText(s, src), `"'`)
-						} else if id := findChildByKind(args, "identifier"); id != nil {
+						} else if id := findChildByKind(kinds, args, "identifier"); id != nil {
 							arg, _ = folds.Resolve(nodeText(id, src))
 						}
 						if name, ok := strings.CutPrefix(arg, "service:"); ok && name != "" {
@@ -544,22 +545,22 @@ func emberDataRoleForFile(relFile string) string {
 
 // emberDefaultExportName returns the identifier of a separate
 // `export default Name;` statement, or "".
-func emberDefaultExportName(root *sitter.Node, src []byte) string {
+func emberDefaultExportName(kinds *tsutil.KindTable, root *sitter.Node, src []byte) string {
 	for i := range root.ChildCount() {
 		node := root.Child(i)
-		if node.Kind() != "export_statement" || !hasChildKind(node, "default") {
+		if kindOf(kinds, node) != "export_statement" || !hasChildKind(kinds, node, "default") {
 			continue
 		}
-		if decl := firstDeclChild(node); decl != nil {
-			switch decl.Kind() {
+		if decl := firstDeclChild(kinds, node); decl != nil {
+			switch kindOf(kinds, decl) {
 			case "function_declaration", "generator_function_declaration":
-				if id := findChildByKind(decl, "identifier"); id != nil {
+				if id := findChildByKind(kinds, decl, "identifier"); id != nil {
 					return nodeText(id, src)
 				}
 			}
 			continue
 		}
-		if id := findChildByKind(node, "identifier"); id != nil {
+		if id := findChildByKind(kinds, node, "identifier"); id != nil {
 			return nodeText(id, src)
 		}
 	}
@@ -570,24 +571,24 @@ func emberDefaultExportName(root *sitter.Node, src []byte) string {
 // export statements) and returns each declarator's name and value span, so a
 // segment blanked into the declarator's backtick literal can classify the
 // binding as a component.
-func collectEmberTemplateBindings(root *sitter.Node, src []byte) []emberBindingInfo {
+func collectEmberTemplateBindings(kinds *tsutil.KindTable, root *sitter.Node, src []byte) []emberBindingInfo {
 	var bindings []emberBindingInfo
 	for i := range root.ChildCount() {
 		node := root.Child(i)
-		if node.Kind() == "export_statement" {
-			if decl := firstDeclChild(node); decl != nil {
+		if kindOf(kinds, node) == "export_statement" {
+			if decl := firstDeclChild(kinds, node); decl != nil {
 				node = decl
 			}
 		}
-		if node.Kind() != "lexical_declaration" && node.Kind() != "variable_declaration" {
+		if kindOf(kinds, node) != "lexical_declaration" && kindOf(kinds, node) != "variable_declaration" {
 			continue
 		}
 		for j := range node.ChildCount() {
 			d := node.Child(j)
-			if d.Kind() != "variable_declarator" {
+			if kindOf(kinds, d) != "variable_declarator" {
 				continue
 			}
-			name := findChildByKind(d, "identifier")
+			name := findChildByKind(kinds, d, "identifier")
 			val := d.ChildByFieldName("value")
 			if name == nil || val == nil {
 				continue
@@ -640,22 +641,22 @@ func emberRelationshipDecoratorNames(bindings emberImportBindings) map[string]st
 // bare @hasMany is skipped — recovering the singular model name from a plural
 // field requires an inflector, and a guessed edge is worse than a missing one.
 // Entries are "belongs_to:<name>" / "has_many:<name>", sorted.
-func emberModelRelationships(classBody *sitter.Node, src []byte, decorators map[string]string) []string {
+func emberModelRelationships(kinds *tsutil.KindTable, classBody *sitter.Node, src []byte, decorators map[string]string) []string {
 	if len(decorators) == 0 {
 		return nil
 	}
 	seen := make(map[string]bool)
 	for i := range classBody.ChildCount() {
 		member := classBody.Child(i)
-		if member.Kind() != "public_field_definition" && member.Kind() != "field_definition" {
+		if kindOf(kinds, member) != "public_field_definition" && kindOf(kinds, member) != "field_definition" {
 			continue
 		}
 		for j := range member.ChildCount() {
 			dec := member.Child(j)
-			if dec.Kind() != "decorator" {
+			if kindOf(kinds, dec) != "decorator" {
 				continue
 			}
-			name, arg := emberDecoratorNameArg(dec, src)
+			name, arg := emberDecoratorNameArg(kinds, dec, src)
 			kind, ok := decorators[name]
 			if !ok {
 				continue
@@ -664,7 +665,7 @@ func emberModelRelationships(classBody *sitter.Node, src []byte, decorators map[
 				if kind != "belongs_to" {
 					continue
 				}
-				field := emberFieldName(member, src)
+				field := emberFieldName(kinds, member, src)
 				if field == "" {
 					continue
 				}
@@ -684,24 +685,24 @@ func emberModelRelationships(classBody *sitter.Node, src []byte, decorators map[
 	return rels
 }
 
-func emberSuperclassName(classNode *sitter.Node, src []byte) string {
+func emberSuperclassName(kinds *tsutil.KindTable, classNode *sitter.Node, src []byte) string {
 	for i := range classNode.ChildCount() {
 		c := classNode.Child(i)
-		if c.Kind() != "class_heritage" {
+		if kindOf(kinds, c) != "class_heritage" {
 			continue
 		}
 		for j := range c.ChildCount() {
 			h := c.Child(j)
-			if h.Kind() == "extends_clause" {
+			if kindOf(kinds, h) == "extends_clause" {
 				for k := range h.ChildCount() {
 					t := h.Child(k)
-					if t.Kind() == "identifier" {
+					if kindOf(kinds, t) == "identifier" {
 						return nodeText(t, src)
 					}
 				}
 			}
 		}
-		if id := findChildByKind(c, "identifier"); id != nil {
+		if id := findChildByKind(kinds, c, "identifier"); id != nil {
 			return nodeText(id, src)
 		}
 	}
@@ -711,27 +712,27 @@ func emberSuperclassName(classNode *sitter.Node, src []byte) string {
 // emberInjectedServices reads @service-decorated class fields. `@service store`
 // injects the service named by the field (camelCase dasherized); `@service('a/b')`
 // injects the named path. Names are sorted for deterministic output.
-func emberInjectedServices(classBody *sitter.Node, src []byte, decorators map[string]bool) []string {
+func emberInjectedServices(kinds *tsutil.KindTable, classBody *sitter.Node, src []byte, decorators map[string]bool) []string {
 	if len(decorators) == 0 {
 		return nil
 	}
 	seen := make(map[string]bool)
 	for i := range classBody.ChildCount() {
 		member := classBody.Child(i)
-		if member.Kind() != "public_field_definition" && member.Kind() != "field_definition" {
+		if kindOf(kinds, member) != "public_field_definition" && kindOf(kinds, member) != "field_definition" {
 			continue
 		}
 		for j := range member.ChildCount() {
 			dec := member.Child(j)
-			if dec.Kind() != "decorator" {
+			if kindOf(kinds, dec) != "decorator" {
 				continue
 			}
-			name, arg := emberDecoratorNameArg(dec, src)
+			name, arg := emberDecoratorNameArg(kinds, dec, src)
 			if !decorators[name] {
 				continue
 			}
 			if arg == "" {
-				if field := emberFieldName(member, src); field != "" {
+				if field := emberFieldName(kinds, member, src); field != "" {
 					arg = dasherize(field)
 				}
 			}
@@ -751,19 +752,19 @@ func emberInjectedServices(classBody *sitter.Node, src []byte, decorators map[st
 	return names
 }
 
-func emberDecoratorNameArg(dec *sitter.Node, src []byte) (name, arg string) {
+func emberDecoratorNameArg(kinds *tsutil.KindTable, dec *sitter.Node, src []byte) (name, arg string) {
 	for i := range dec.ChildCount() {
 		c := dec.Child(i)
-		switch c.Kind() {
+		switch kindOf(kinds, c) {
 		case "identifier":
 			return nodeText(c, src), ""
 		case "call_expression":
 			fn := c.ChildByFieldName("function")
-			if fn == nil || fn.Kind() != "identifier" {
+			if fn == nil || kindOf(kinds, fn) != "identifier" {
 				return "", ""
 			}
 			if args := c.ChildByFieldName("arguments"); args != nil {
-				if s := findChildByKind(args, "string"); s != nil {
+				if s := findChildByKind(kinds, args, "string"); s != nil {
 					return nodeText(fn, src), strings.Trim(nodeText(s, src), `"'`)
 				}
 			}
@@ -773,11 +774,11 @@ func emberDecoratorNameArg(dec *sitter.Node, src []byte) (name, arg string) {
 	return "", ""
 }
 
-func emberFieldName(member *sitter.Node, src []byte) string {
+func emberFieldName(kinds *tsutil.KindTable, member *sitter.Node, src []byte) string {
 	if n := member.ChildByFieldName("name"); n != nil {
 		return nodeText(n, src)
 	}
-	if n := findChildByKind(member, "property_identifier"); n != nil {
+	if n := findChildByKind(kinds, member, "property_identifier"); n != nil {
 		return nodeText(n, src)
 	}
 	return ""
@@ -804,15 +805,15 @@ const EmberDefaultExportProp = "ember_default_export"
 // and a segment owned by neither is the file's standalone default component,
 // synthesized the way a script-less Vue SFC is. Service classes, @service
 // injections and ember-data models gain their props and companion facts.
-func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile string,
+func emberEnrich(kinds *tsutil.KindTable, result []facts.Fact, root *sitter.Node, src []byte, relFile string,
 	aliases map[string]tsAlias, segments []emberTemplateSegment) []facts.Fact {
 
 	dir := filepath.Dir(relFile)
 	base := strings.TrimSuffix(filepath.Base(relFile), filepath.Ext(relFile))
-	bindings := buildEmberImportBindings(root, src, relFile, aliases)
-	folds := emberBuildFoldMap(root, src)
-	classes := collectEmberClasses(root, src, bindings, folds)
-	templateBindings := collectEmberTemplateBindings(root, src)
+	bindings := buildEmberImportBindings(kinds, root, src, relFile, aliases)
+	folds := emberBuildFoldMap(kinds, root, src)
+	classes := collectEmberClasses(kinds, root, src, bindings, folds)
+	templateBindings := collectEmberTemplateBindings(kinds, root, src)
 	frameworkRegistered := emberFrameworkRegisteredFile(relFile)
 
 	// A template may also render a component declared in its own file (a named
@@ -926,7 +927,7 @@ func emberEnrich(result []facts.Fact, root *sitter.Node, src []byte, relFile str
 	}
 	claimed := make(map[int]bool)
 
-	if defaultName := emberDefaultExportName(root, src); defaultName != "" {
+	if defaultName := emberDefaultExportName(kinds, root, src); defaultName != "" {
 		factName := dir + "." + defaultName
 		for i := range result {
 			if result[i].Kind == facts.KindSymbol && result[i].Name == factName {
@@ -1382,17 +1383,17 @@ func isEmberRouterFile(relFile string) bool {
 // emits one client-side page route per declaration, with parent paths composed
 // the way Ember's router composes them. These are UI routes, not HTTP contracts —
 // the same modelling Nuxt pages and SvelteKit routes already get.
-func extractEmberRoutes(root *sitter.Node, src []byte, relFile string) []facts.Fact {
+func extractEmberRoutes(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string) []facts.Fact {
 	var result []facts.Fact
 	var walk func(n *sitter.Node, prefix, namePrefix string)
 	walk = func(n *sitter.Node, prefix, namePrefix string) {
 		if n == nil {
 			return
 		}
-		if n.Kind() == "call_expression" {
+		if kindOf(kinds, n) == "call_expression" {
 			if fn := n.ChildByFieldName("function"); fn != nil &&
-				fn.Kind() == "member_expression" && nodeText(fn, src) == "this.mount" {
-				name, path, _, _ := emberRouteArgs(n, src)
+				kindOf(kinds, fn) == "member_expression" && nodeText(fn, src) == "this.mount" {
+				name, path, _, _ := emberRouteArgs(kinds, n, src)
 				if name != "" {
 					result = append(result, facts.Fact{
 						Kind: facts.KindRoute,
@@ -1412,8 +1413,8 @@ func extractEmberRoutes(root *sitter.Node, src []byte, relFile string) []facts.F
 				}
 			}
 			if fn := n.ChildByFieldName("function"); fn != nil &&
-				fn.Kind() == "member_expression" && nodeText(fn, src) == "this.route" {
-				name, path, resetNamespace, callback := emberRouteArgs(n, src)
+				kindOf(kinds, fn) == "member_expression" && nodeText(fn, src) == "this.route" {
+				name, path, resetNamespace, callback := emberRouteArgs(kinds, n, src)
 				if name != "" {
 					full := joinEmberPath(prefix, path)
 					routeName := name
@@ -1455,14 +1456,14 @@ func extractEmberRoutes(root *sitter.Node, src []byte, relFile string) []facts.F
 // given, matching the router's own default; resetNamespace restarts the route
 // NAME at this segment while the URL path keeps nesting — exactly the router's
 // semantics.
-func emberRouteArgs(call *sitter.Node, src []byte) (name, path string, resetNamespace bool, callback *sitter.Node) {
+func emberRouteArgs(kinds *tsutil.KindTable, call *sitter.Node, src []byte) (name, path string, resetNamespace bool, callback *sitter.Node) {
 	args := call.ChildByFieldName("arguments")
 	if args == nil {
 		return "", "", false, nil
 	}
 	for i := range args.ChildCount() {
 		a := args.Child(i)
-		switch a.Kind() {
+		switch kindOf(kinds, a) {
 		case "string":
 			if name == "" {
 				name = strings.Trim(nodeText(a, src), `"'`)
@@ -1470,7 +1471,7 @@ func emberRouteArgs(call *sitter.Node, src []byte) (name, path string, resetName
 		case "object":
 			for j := range a.ChildCount() {
 				pair := a.Child(j)
-				if pair.Kind() != "pair" {
+				if kindOf(kinds, pair) != "pair" {
 					continue
 				}
 				key := pair.ChildByFieldName("key")
@@ -1480,7 +1481,7 @@ func emberRouteArgs(call *sitter.Node, src []byte) (name, path string, resetName
 				}
 				switch nodeText(key, src) {
 				case "path":
-					if val.Kind() == "string" {
+					if kindOf(kinds, val) == "string" {
 						path = strings.Trim(nodeText(val, src), `"'`)
 					}
 				case "resetNamespace":
@@ -1540,29 +1541,29 @@ func emberFrameworkRegisteredFile(relFile string) bool {
 // file states outright. The single-assignment discipline — a reassigned or
 // non-string binding folds nothing — is litfold's, the shared definition of
 // derivable; this function owns only the AST walk that feeds it.
-func emberBuildFoldMap(root *sitter.Node, src []byte) *litfold.Assignments {
+func emberBuildFoldMap(kinds *tsutil.KindTable, root *sitter.Node, src []byte) *litfold.Assignments {
 	folds := litfold.NewAssignments()
 	for i := range root.ChildCount() {
 		node := root.Child(i)
-		if node.Kind() == "export_statement" {
-			if decl := firstDeclChild(node); decl != nil {
+		if kindOf(kinds, node) == "export_statement" {
+			if decl := firstDeclChild(kinds, node); decl != nil {
 				node = decl
 			}
 		}
-		if node.Kind() != "lexical_declaration" || !strings.HasPrefix(nodeText(node, src), "const") {
+		if kindOf(kinds, node) != "lexical_declaration" || !strings.HasPrefix(nodeText(node, src), "const") {
 			continue
 		}
 		for j := range node.ChildCount() {
 			d := node.Child(j)
-			if d.Kind() != "variable_declarator" {
+			if kindOf(kinds, d) != "variable_declarator" {
 				continue
 			}
-			name := findChildByKind(d, "identifier")
+			name := findChildByKind(kinds, d, "identifier")
 			val := d.ChildByFieldName("value")
 			if name == nil || val == nil {
 				continue
 			}
-			if val.Kind() == "string" {
+			if kindOf(kinds, val) == "string" {
 				folds.Add(nodeText(name, src), strings.Trim(nodeText(val, src), `"'`))
 			} else {
 				folds.Add(nodeText(name, src), "")
@@ -1575,22 +1576,22 @@ func emberBuildFoldMap(root *sitter.Node, src []byte) *litfold.Assignments {
 // emberModelAttrTransforms reads @attr('type') fields off a model class body;
 // the type string names a transform the way relationships name models. A bare
 // @attr has no transform and draws nothing.
-func emberModelAttrTransforms(classBody *sitter.Node, src []byte, attrNames map[string]bool) []string {
+func emberModelAttrTransforms(kinds *tsutil.KindTable, classBody *sitter.Node, src []byte, attrNames map[string]bool) []string {
 	if len(attrNames) == 0 {
 		return nil
 	}
 	seen := make(map[string]bool)
 	for i := range classBody.ChildCount() {
 		member := classBody.Child(i)
-		if member.Kind() != "public_field_definition" && member.Kind() != "field_definition" {
+		if kindOf(kinds, member) != "public_field_definition" && kindOf(kinds, member) != "field_definition" {
 			continue
 		}
 		for j := range member.ChildCount() {
 			dec := member.Child(j)
-			if dec.Kind() != "decorator" {
+			if kindOf(kinds, dec) != "decorator" {
 				continue
 			}
-			name, arg := emberDecoratorNameArg(dec, src)
+			name, arg := emberDecoratorNameArg(kinds, dec, src)
 			if attrNames[name] && arg != "" {
 				seen[arg] = true
 			}
@@ -1935,8 +1936,8 @@ func isEmberEngineRoutesFile(relFile string) (engine string, ok bool) {
 // as Router.map, emitting engine-relative routes labeled for composition. The
 // composition itself happens in the repo-level post-pass, where every mount is
 // visible.
-func extractEmberEngineRoutes(root *sitter.Node, src []byte, relFile, engine string) []facts.Fact {
-	routes := extractEmberRoutes(root, src, relFile)
+func extractEmberEngineRoutes(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile, engine string) []facts.Fact {
+	routes := extractEmberRoutes(kinds, root, src, relFile)
 	for i := range routes {
 		routes[i].Props["ember_engine"] = engine
 		routes[i].Props["router"] = "engine"

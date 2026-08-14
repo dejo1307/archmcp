@@ -3,7 +3,9 @@ package dotnetextractor
 import (
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	sitter "github.com/tree-sitter/go-tree-sitter"
+	csharp "github.com/tree-sitter/tree-sitter-c-sharp/bindings/go"
 )
 
 // ── Node text ───────────────────────────────────────────────────────────────
@@ -22,7 +24,7 @@ func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
 		return nil
 	}
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
-		if c := node.Child(i); c.Kind() == kind {
+		if c := node.Child(i); kindOf(c) == kind {
 			return c
 		}
 	}
@@ -31,7 +33,7 @@ func findChildByKind(node *sitter.Node, kind string) *sitter.Node {
 
 func sameNode(a, b *sitter.Node) bool {
 	return a != nil && b != nil && a.StartByte() == b.StartByte() && a.EndByte() == b.EndByte() &&
-		a.Kind() == b.Kind()
+		kindOf(a) == kindOf(b)
 }
 
 // containsAny reports whether node is one of the listed nodes. Used to skip the
@@ -66,7 +68,7 @@ func argCount(invocation *sitter.Node) int {
 	}
 	n := 0
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
-		if args.Child(i).Kind() == "argument" {
+		if kindOf(args.Child(i)) == "argument" {
 			n++
 		}
 	}
@@ -80,7 +82,7 @@ func paramCount(node *sitter.Node) int {
 	}
 	n := 0
 	for i := uint(0); i < uint(params.ChildCount()); i++ {
-		if params.Child(i).Kind() == "parameter" {
+		if kindOf(params.Child(i)) == "parameter" {
 			n++
 		}
 	}
@@ -97,7 +99,7 @@ func modifierSet(node *sitter.Node, src []byte) map[string]bool {
 	out := make(map[string]bool, 4)
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		if c.Kind() == "modifier" {
+		if kindOf(c) == "modifier" {
 			out[nodeText(c, src)] = true
 		}
 	}
@@ -141,7 +143,7 @@ func (w *astWalker) memberName(node *sitter.Node) string {
 		return nodeText(n, w.src)
 	}
 	// destructor_declaration / conversion_operator_declaration have no name field.
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "destructor_declaration":
 		if len(w.typeStack) > 0 {
 			return "~" + w.typeStack[len(w.typeStack)-1]
@@ -170,7 +172,7 @@ func collectMemberNames(body *sitter.Node, src []byte) map[string]bool {
 	scan = func(n *sitter.Node) {
 		for i := uint(0); i < uint(n.ChildCount()); i++ {
 			c := n.Child(i)
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "method_declaration", "property_declaration":
 				if nn := c.ChildByFieldName("name"); nn != nil {
 					out[nodeText(nn, src)] = true
@@ -179,7 +181,7 @@ func collectMemberNames(body *sitter.Node, src []byte) map[string]bool {
 				if decl := findChildByKind(c, "variable_declaration"); decl != nil {
 					for j := uint(0); j < uint(decl.ChildCount()); j++ {
 						d := decl.Child(j)
-						if d.Kind() != "variable_declarator" {
+						if kindOf(d) != "variable_declarator" {
 							continue
 						}
 						if nn := d.ChildByFieldName("name"); nn != nil {
@@ -221,7 +223,7 @@ func isDataHolderBody(body *sitter.Node) bool {
 	var scan func(*sitter.Node) bool // returns false when a method is found
 	scan = func(node *sitter.Node) bool {
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
-			switch c := node.Child(i); c.Kind() {
+			switch c := node.Child(i); kindOf(c) {
 			case "method_declaration", "operator_declaration", "conversion_operator_declaration":
 				return false
 			case "field_declaration", "property_declaration", "event_field_declaration":
@@ -249,7 +251,7 @@ func countConstructors(body *sitter.Node) int {
 	scan = func(node *sitter.Node) {
 		for i := uint(0); i < uint(node.ChildCount()); i++ {
 			c := node.Child(i)
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "constructor_declaration":
 				n++
 			case "preproc_if", "preproc_else", "preproc_elif":
@@ -270,7 +272,7 @@ func extensionReceiver(node *sitter.Node, src []byte) (string, bool) {
 	}
 	for i := uint(0); i < uint(params.ChildCount()); i++ {
 		p := params.Child(i)
-		if p.Kind() != "parameter" {
+		if kindOf(p) != "parameter" {
 			continue
 		}
 		// Only the FIRST parameter can be the extension receiver.
@@ -291,7 +293,7 @@ func typeFullName(node *sitter.Node, src []byte) string {
 	if node == nil {
 		return ""
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "nullable_type", "array_type", "pointer_type":
 		return typeFullName(node.ChildByFieldName("type"), src)
 	case "generic_name":
@@ -401,7 +403,7 @@ func (w *astWalker) baseTypes(node *sitter.Node) []string {
 	// large fan-in that the graph then carried into every traversal.
 	for i := uint(0); i < uint(bl.NamedChildCount()); i++ {
 		c := bl.NamedChild(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "argument_list":
 			continue // the primary-constructor arguments to a base class
 		case "primary_constructor_base_type":
@@ -430,7 +432,7 @@ func firstNamedChild(node *sitter.Node) *sitter.Node {
 // resolution, and it is used only to decide whether to OFFER a target to the
 // resolution pass; a receiver that is not a declared type resolves to nothing.
 func isTypeNameShaped(recvNode *sitter.Node, recv string) bool {
-	if recvNode.Kind() != "identifier" && recvNode.Kind() != "generic_name" {
+	if kindOf(recvNode) != "identifier" && kindOf(recvNode) != "generic_name" {
 		return false
 	}
 	if recv == "" {
@@ -462,7 +464,7 @@ func (c loopClass) repeats() bool { return c != loopConstant }
 // syntacticLoopClass classifies a loop so a fixed-size one does not inflate a
 // genuine O(n) into a false O(n²).
 func syntacticLoopClass(node *sitter.Node, src []byte) loopClass {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "for_statement":
 		cond := node.ChildByFieldName("condition")
 		if cond == nil {
@@ -487,14 +489,14 @@ func syntacticLoopClass(node *sitter.Node, src []byte) loopClass {
 // constantCondition reports whether a for-loop's condition bounds it by a literal
 // (`i < 10`), rather than by something derived from the input (`i < items.Count`).
 func constantCondition(cond *sitter.Node, src []byte) bool {
-	if cond.Kind() != "binary_expression" {
+	if kindOf(cond) != "binary_expression" {
 		return false
 	}
 	right := cond.ChildByFieldName("right")
 	if right == nil {
 		return false
 	}
-	switch right.Kind() {
+	switch kindOf(right) {
 	case "integer_literal":
 		return true
 	case "identifier":
@@ -509,7 +511,7 @@ func constantIterable(value *sitter.Node, src []byte) bool {
 	if value == nil {
 		return false
 	}
-	switch value.Kind() {
+	switch kindOf(value) {
 	case "array_creation_expression", "implicit_array_creation_expression",
 		"collection_expression", "initializer_expression":
 		return true
@@ -556,7 +558,7 @@ var iterators = map[string]bool{
 // when the call is not an element-wise iteration.
 func iteratorLambda(node *sitter.Node, src []byte) *sitter.Node {
 	fn := node.ChildByFieldName("function")
-	if fn == nil || fn.Kind() != "member_access_expression" {
+	if fn == nil || kindOf(fn) != "member_access_expression" {
 		return nil
 	}
 	nameNode := fn.ChildByFieldName("name")
@@ -569,12 +571,12 @@ func iteratorLambda(node *sitter.Node, src []byte) *sitter.Node {
 	}
 	for i := uint(0); i < uint(args.ChildCount()); i++ {
 		a := args.Child(i)
-		if a.Kind() != "argument" {
+		if kindOf(a) != "argument" {
 			continue
 		}
 		for j := uint(0); j < uint(a.NamedChildCount()); j++ {
 			c := a.NamedChild(j)
-			if c.Kind() == "lambda_expression" || c.Kind() == "anonymous_method_expression" {
+			if kindOf(c) == "lambda_expression" || kindOf(c) == "anonymous_method_expression" {
 				return c
 			}
 		}
@@ -645,3 +647,18 @@ var cheapMethods = map[string]bool{
 	"GetEnumerator": true, "CompareTo": true, "Clone": true, "Dispose": true,
 	"nameof": true, "Select": true, "Where": true, "Any": true, "First": true,
 }
+
+// csharpKinds names C# node kinds without allocating; see tsutil.KindTable for why
+// kindOf(Node) is worth avoiding (3.28 GB and 180 M allocations on one snapshot of
+// dotnet/runtime).
+//
+// A package-level table is safe here because this extractor parses exactly one
+// grammar with tree-sitter. The other four languages it reads — Razor, XAML, VB.NET
+// and F# — are handled by scanners, not by a tree-sitter parse, so there is no second
+// symbol-id space for these ids to be read against. TestKindTable_MatchesNodeKind
+// asserts the equivalence over real sources.
+var csharpKinds = tsutil.KindsFor(csharp.Language())
+
+// kindOf is nodeText's counterpart for a node's type: the allocation-free spelling of
+// kindOf(node).
+func kindOf(node *sitter.Node) string { return csharpKinds.Of(node) }

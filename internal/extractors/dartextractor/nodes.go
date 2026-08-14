@@ -44,7 +44,7 @@ func childOfKind(n *sitter.Node, kinds ...string) *sitter.Node {
 	}
 	for _, c := range namedChildren(n) {
 		for _, k := range kinds {
-			if c.Kind() == k {
+			if kindOf(c) == k {
 				return c
 			}
 		}
@@ -67,7 +67,7 @@ func firstOfKind(n *sitter.Node, kinds ...string) *sitter.Node {
 		cur := queue[0]
 		queue = queue[1:]
 		for _, c := range namedChildren(cur) {
-			if want[c.Kind()] {
+			if want[kindOf(c)] {
 				return c
 			}
 			queue = append(queue, c)
@@ -79,7 +79,7 @@ func firstOfKind(n *sitter.Node, kinds ...string) *sitter.Node {
 // identifierChild returns the first direct `identifier` child's text.
 func identifierChild(n *sitter.Node, src []byte) string {
 	for _, c := range namedChildren(n) {
-		if c.Kind() == "identifier" {
+		if kindOf(c) == "identifier" {
 			return c.Utf8Text(src)
 		}
 	}
@@ -92,7 +92,7 @@ func identifierNames(n *sitter.Node, src []byte) []string {
 	var out []string
 	var visit func(*sitter.Node)
 	visit = func(node *sitter.Node) {
-		switch node.Kind() {
+		switch kindOf(node) {
 		case "initialized_identifier", "static_final_declaration":
 			if name := identifierChild(node, src); name != "" {
 				out = append(out, name)
@@ -122,7 +122,7 @@ func nextBody(kids []*sitter.Node, i int) *sitter.Node {
 	if i+1 >= len(kids) {
 		return nil
 	}
-	if kids[i+1].Kind() == "function_body" {
+	if kindOf(kids[i+1]) == "function_body" {
 		return kids[i+1]
 	}
 	return nil
@@ -132,7 +132,7 @@ func nextBody(kids []*sitter.Node, i int) *sitter.Node {
 func annotationsBefore(kids []*sitter.Node, i int, src []byte) []string {
 	var out []string
 	for j := i - 1; j >= 0; j-- {
-		if kids[j].Kind() != "annotation" {
+		if kindOf(kids[j]) != "annotation" {
 			break
 		}
 		if name := annotationName(kids[j], src); name != "" {
@@ -150,7 +150,7 @@ func annotationsBefore(kids []*sitter.Node, i int, src []byte) []string {
 func annotationNames(n *sitter.Node, src []byte) []string {
 	var out []string
 	for _, c := range namedChildren(n) {
-		if c.Kind() != "annotation" {
+		if kindOf(c) != "annotation" {
 			continue
 		}
 		if name := annotationName(c, src); name != "" {
@@ -163,7 +163,7 @@ func annotationNames(n *sitter.Node, src []byte) []string {
 // annotationName reduces `@Foo(bar)` and `@foo` to `Foo` / `foo`.
 func annotationName(n *sitter.Node, src []byte) string {
 	for _, c := range namedChildren(n) {
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "identifier", "type_identifier":
 			return c.Utf8Text(src)
 		}
@@ -186,7 +186,7 @@ func supertypeNames(n *sitter.Node, src []byte) []string {
 	add := func(node *sitter.Node) {
 		var visit func(*sitter.Node)
 		visit = func(x *sitter.Node) {
-			if x.Kind() == "type_identifier" {
+			if kindOf(x) == "type_identifier" {
 				name := x.Utf8Text(src)
 				// A type argument is not a supertype: `extends State<HomePage>`
 				// conforms to State, not to HomePage.
@@ -196,7 +196,7 @@ func supertypeNames(n *sitter.Node, src []byte) []string {
 				}
 				return
 			}
-			if x.Kind() == "type_arguments" {
+			if kindOf(x) == "type_arguments" {
 				return
 			}
 			for _, c := range namedChildren(x) {
@@ -206,7 +206,7 @@ func supertypeNames(n *sitter.Node, src []byte) []string {
 		visit(node)
 	}
 	for _, c := range namedChildren(n) {
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "superclass", "interfaces", "mixins", "enum_interfaces":
 			add(c)
 		}
@@ -222,7 +222,7 @@ func supertypeNames(n *sitter.Node, src []byte) []string {
 func signatureName(n *sitter.Node, src []byte) string {
 	name := ""
 	for _, c := range namedChildren(n) {
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "identifier":
 			name = c.Utf8Text(src)
 		case "formal_parameter_list":
@@ -243,7 +243,7 @@ func signatureName(n *sitter.Node, src []byte) string {
 func constructorName(n *sitter.Node, typeName string, src []byte) string {
 	var ids []string
 	for _, c := range namedChildren(n) {
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "identifier":
 			ids = append(ids, c.Utf8Text(src))
 		case "formal_parameter_list":
@@ -269,7 +269,7 @@ func hasToken(n *sitter.Node, token string) bool {
 	}
 	for i := uint(0); i < n.ChildCount(); i++ {
 		c := n.Child(i)
-		if c != nil && !c.IsNamed() && c.Kind() == token {
+		if c != nil && !c.IsNamed() && kindOf(c) == token {
 			return true
 		}
 	}
@@ -278,7 +278,7 @@ func hasToken(n *sitter.Node, token string) bool {
 	for _, c := range namedChildren(n) {
 		for i := uint(0); i < c.ChildCount(); i++ {
 			g := c.Child(i)
-			if g != nil && !g.IsNamed() && g.Kind() == token {
+			if g != nil && !g.IsNamed() && kindOf(g) == token {
 				return true
 			}
 		}
@@ -293,7 +293,7 @@ func isAsync(body *sitter.Node) bool {
 	}
 	for i := uint(0); i < body.ChildCount(); i++ {
 		c := body.Child(i)
-		if c != nil && !c.IsNamed() && (c.Kind() == "async" || c.Kind() == "async*") {
+		if c != nil && !c.IsNamed() && (kindOf(c) == "async" || kindOf(c) == "async*") {
 			return true
 		}
 	}

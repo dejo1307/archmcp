@@ -65,7 +65,7 @@ func (c *clientWalker) walk(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "member_call_expression":
 		c.handleMemberCall(node)
 	case "scoped_call_expression":
@@ -83,7 +83,7 @@ func (c *clientWalker) walk(node *sitter.Node) {
 // chains such as Http::withToken($t)->get('/path').
 func (c *clientWalker) handleMemberCall(node *sitter.Node) {
 	method := node.ChildByFieldName("name")
-	if method == nil || method.Kind() != "name" {
+	if method == nil || kindOf(method) != "name" {
 		return
 	}
 	obj := node.ChildByFieldName("object")
@@ -122,7 +122,7 @@ func (c *clientWalker) handleMemberCall(node *sitter.Node) {
 func (c *clientWalker) handleScopedCall(node *sitter.Node) {
 	scope := node.ChildByFieldName("scope")
 	method := node.ChildByFieldName("name")
-	if scope == nil || method == nil || scope.Kind() != "name" {
+	if scope == nil || method == nil || kindOf(scope) != "name" {
 		return
 	}
 	if phpText(scope, c.src) != "Http" {
@@ -140,7 +140,7 @@ func (c *clientWalker) handleScopedCall(node *sitter.Node) {
 // 'url'), curl_init('url'), and file_get_contents('url').
 func (c *clientWalker) handleFunctionCall(node *sitter.Node) {
 	fn := node.ChildByFieldName("function")
-	if fn == nil || fn.Kind() != "name" {
+	if fn == nil || kindOf(fn) != "name" {
 		return
 	}
 	args := node.ChildByFieldName("arguments")
@@ -207,7 +207,7 @@ func (c *clientWalker) clientFramework(recv string, facade bool, method string) 
 // facade root it returns the facade class name (the scope) and facade=true.
 func chainRootReceiver(obj *sitter.Node, src []byte) (recv string, facade bool) {
 	for obj != nil {
-		switch obj.Kind() {
+		switch kindOf(obj) {
 		case "member_call_expression", "nullsafe_member_call_expression":
 			// Descend through a call chain ($http->withFoo()->get(...)).
 			obj = obj.ChildByFieldName("object")
@@ -279,7 +279,7 @@ func positionalArg(args *sitter.Node, idx int) *sitter.Node {
 	pos := 0
 	for i := uint(0); i < args.ChildCount(); i++ {
 		a := args.Child(i)
-		if a.Kind() != "argument" {
+		if kindOf(a) != "argument" {
 			continue
 		}
 		if a.ChildByFieldName("name") != nil {

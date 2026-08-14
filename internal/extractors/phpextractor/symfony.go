@@ -39,7 +39,7 @@ func (w *symfonyRouteWalker) walk(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "namespace_definition":
 		w.namespace = phpText(node.ChildByFieldName("name"), w.src)
 	case "class_declaration":
@@ -71,7 +71,7 @@ func (w *symfonyRouteWalker) handleClass(node *sitter.Node) {
 	}
 	for i := uint(0); i < body.ChildCount(); i++ {
 		m := body.Child(i)
-		if m.Kind() != "method_declaration" {
+		if kindOf(m) != "method_declaration" {
 			continue
 		}
 		r, ok := w.routeOf(m)
@@ -149,10 +149,10 @@ func findRouteAttribute(node *sitter.Node, src []byte) *sitter.Node {
 		if found != nil || n == nil {
 			return
 		}
-		if n.Kind() == "attribute" {
+		if kindOf(n) == "attribute" {
 			for i := uint(0); i < n.ChildCount(); i++ {
 				c := n.Child(i)
-				if (c.Kind() == "name" || c.Kind() == "qualified_name") &&
+				if (kindOf(c) == "name" || kindOf(c) == "qualified_name") &&
 					lastNsSegment(phpText(c, src)) == "Route" {
 					found = n
 					return
@@ -178,7 +178,7 @@ func parseRouteAttribute(attr *sitter.Node, src []byte) symfonyRoute {
 	positional := 0
 	for i := uint(0); i < args.ChildCount(); i++ {
 		a := args.Child(i)
-		if a.Kind() != "argument" {
+		if kindOf(a) != "argument" {
 			continue
 		}
 		nameNode := a.ChildByFieldName("name")
@@ -213,7 +213,7 @@ var (
 // immediately preceding a declaration.
 func parseRouteAnnotation(node *sitter.Node, src []byte) (symfonyRoute, bool) {
 	prev := node.PrevNamedSibling()
-	if prev == nil || prev.Kind() != "comment" {
+	if prev == nil || kindOf(prev) != "comment" {
 		return symfonyRoute{}, false
 	}
 	text := phpText(prev, src)
@@ -247,13 +247,13 @@ func symfonyMethods(val *sitter.Node, src []byte) []string {
 	if v := methodConst(val, src); v != "" {
 		return []string{v}
 	}
-	if val.Kind() != "array_creation_expression" {
+	if kindOf(val) != "array_creation_expression" {
 		return nil
 	}
 	var out []string
 	for i := uint(0); i < val.ChildCount(); i++ {
 		el := val.Child(i)
-		if el.Kind() != "array_element_initializer" {
+		if kindOf(el) != "array_element_initializer" {
 			continue
 		}
 		for j := uint(0); j < el.ChildCount(); j++ {
@@ -272,12 +272,12 @@ func symfonyMethods(val *sitter.Node, src []byte) []string {
 // "" for any other class constant (e.g. SomeController::class). The constant name is
 // the last name child of the class_constant_access_expression.
 func methodConst(node *sitter.Node, src []byte) string {
-	if node == nil || node.Kind() != "class_constant_access_expression" {
+	if node == nil || kindOf(node) != "class_constant_access_expression" {
 		return ""
 	}
 	constName := ""
 	for i := uint(0); i < node.ChildCount(); i++ {
-		if c := node.Child(i); c.Kind() == "name" {
+		if c := node.Child(i); kindOf(c) == "name" {
 			constName = phpText(c, src)
 		}
 	}

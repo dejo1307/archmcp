@@ -3,6 +3,7 @@ package tsextractor
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,18 +180,18 @@ func isVueFile(path string) bool {
 }
 
 // containsCreateRouterCall reports whether the AST subtree contains a createRouter() call.
-func containsCreateRouterCall(node *sitter.Node, src []byte) bool {
+func containsCreateRouterCall(kinds *tsutil.KindTable, node *sitter.Node, src []byte) bool {
 	if node == nil {
 		return false
 	}
-	if node.Kind() == "call_expression" {
+	if kindOf(kinds, node) == "call_expression" {
 		fn := node.ChildByFieldName("function")
-		if fn != nil && fn.Kind() == "identifier" && nodeText(fn, src) == "createRouter" {
+		if fn != nil && kindOf(kinds, fn) == "identifier" && nodeText(fn, src) == "createRouter" {
 			return true
 		}
 	}
 	for i := range node.ChildCount() {
-		if containsCreateRouterCall(node.Child(i), src) {
+		if containsCreateRouterCall(kinds, node.Child(i), src) {
 			return true
 		}
 	}
@@ -198,7 +199,7 @@ func containsCreateRouterCall(node *sitter.Node, src []byte) bool {
 }
 
 // extractVueSFC extracts architectural facts from a Vue Single File Component.
-func (e *TSExtractor) extractVueSFC(rawSrc []byte, relFile string, isNuxt bool, aliases map[string]tsAlias) []facts.Fact {
+func (e *TSExtractor) extractVueSFC(kinds *tsutil.KindTable, rawSrc []byte, relFile string, isNuxt bool, aliases map[string]tsAlias) []facts.Fact {
 	var result []facts.Fact
 	blocks := extractVueScriptBlocks(rawSrc)
 
@@ -207,7 +208,7 @@ func (e *TSExtractor) extractVueSFC(rawSrc []byte, relFile string, isNuxt bool, 
 		if block.IsSetup {
 			isSetup = true
 		}
-		result = append(result, e.extractVueScriptBlock(block, relFile, isNuxt, aliases)...)
+		result = append(result, e.extractVueScriptBlock(kinds, block, relFile, isNuxt, aliases)...)
 	}
 
 	dir := filepath.Dir(relFile)
@@ -265,7 +266,7 @@ func (e *TSExtractor) extractVueSFC(rawSrc []byte, relFile string, isNuxt bool, 
 
 // extractVueScriptBlock parses a single <script> block from a Vue SFC and
 // returns the extracted facts with line numbers adjusted to the original file.
-func (e *TSExtractor) extractVueScriptBlock(block *vueScriptBlock, relFile string, isNuxt bool, aliases map[string]tsAlias) []facts.Fact {
+func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueScriptBlock, relFile string, isNuxt bool, aliases map[string]tsAlias) []facts.Fact {
 	isTSX := block.Lang == "tsx"
 	lang := typescript.LanguageTypescript()
 	if isTSX {
@@ -284,7 +285,7 @@ func (e *TSExtractor) extractVueScriptBlock(block *vueScriptBlock, relFile strin
 	root := tree.RootNode()
 
 	var result []facts.Fact
-	result = append(result, e.extractImports(root, block.Content, relFile, aliases)...)
+	result = append(result, e.extractImports(kinds, root, block.Content, relFile, aliases)...)
 
 	ctx := &extractCtx{
 		src:       block.Content,
@@ -293,11 +294,11 @@ func (e *TSExtractor) extractVueScriptBlock(block *vueScriptBlock, relFile strin
 		isTSX:     isTSX,
 		isVue:     true,
 		isNuxt:    isNuxt,
-		importMap: buildImportSymbols(root, block.Content, relFile, aliases),
+		importMap: buildImportSymbols(kinds, root, block.Content, relFile, aliases),
 	}
-	decls := e.extractDeclarations(root, ctx)
+	decls := e.extractDeclarations(kinds, root, ctx)
 
-	if exported := collectExportedLocalNames(root, block.Content); len(exported) > 0 {
+	if exported := collectExportedLocalNames(kinds, root, block.Content); len(exported) > 0 {
 		for i := range decls {
 			if decls[i].Kind != facts.KindSymbol {
 				continue

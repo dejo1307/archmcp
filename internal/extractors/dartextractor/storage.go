@@ -45,7 +45,7 @@ func (w *walker) extractStorage(root *sitter.Node) {
 // actually holds, so it is what the fact carries.
 func (w *walker) driftTables(root *sitter.Node) {
 	for _, n := range namedChildren(root) {
-		if n.Kind() != "class_definition" {
+		if kindOf(n) != "class_definition" {
 			continue
 		}
 		supers := supertypeNames(n, w.src)
@@ -78,7 +78,7 @@ func (w *walker) tableNameOverride(class *sitter.Node) string {
 	}
 	kids := namedChildren(body)
 	for i, c := range kids {
-		if c.Kind() != "method_signature" {
+		if kindOf(c) != "method_signature" {
 			continue
 		}
 		getter := firstOfKind(c, "getter_signature")
@@ -97,7 +97,7 @@ func (w *walker) tableNameOverride(class *sitter.Node) string {
 // annotatedStores emits a storage fact per class carrying a marker annotation.
 func (w *walker) annotatedStores(root *sitter.Node, anno, altAnno, framework, kind string) {
 	for _, n := range namedChildren(root) {
-		if n.Kind() != "class_definition" {
+		if kindOf(n) != "class_definition" {
 			continue
 		}
 		annos := annotationNames(n, w.src)
@@ -129,7 +129,7 @@ func (w *walker) firestoreCollections(root *sitter.Node) {
 	visit = func(n *sitter.Node) {
 		kids := namedChildren(n)
 		for i, c := range kids {
-			if c.Kind() != "selector" || childOfKind(c, "argument_part") == nil {
+			if kindOf(c) != "selector" || childOfKind(c, "argument_part") == nil {
 				continue
 			}
 			name, _, _ := w.calleeOf(kids, i)

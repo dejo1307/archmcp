@@ -207,7 +207,7 @@ func (w *rubyWalker) recordCallMetrics(target string) {
 // flag. (A `Const.foo` that resolves to this exact method is handled by the caller
 // via a selfName match before reaching here.)
 func (w *rubyWalker) recordSelfAwareMetrics(target string, recv *sitter.Node) {
-	if recv == nil || recv.Kind() == "self" {
+	if recv == nil || kindOf(recv) == "self" {
 		w.recordCallMetrics(target)
 		return
 	}
@@ -305,7 +305,7 @@ func (w *rubyWalker) walkStatement(node *sitter.Node) {
 	if node == nil || !node.IsNamed() {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "module":
 		w.handleModule(node)
 	case "class":
@@ -615,7 +615,7 @@ func isClassHoldingReceiver(recv *sitter.Node, src []byte) bool {
 	if recv == nil {
 		return false
 	}
-	switch recv.Kind() {
+	switch kindOf(recv) {
 	case "identifier", "instance_variable":
 		switch rubyText(recv, src) {
 		case "klass", "clazz", "klazz", "@klass", "@clazz", "@klazz":
@@ -648,7 +648,7 @@ func constantBoundReceiver(recv *sitter.Node, src []byte) bool {
 	if recv == nil {
 		return false
 	}
-	switch recv.Kind() {
+	switch kindOf(recv) {
 	case "integer", "array", "hash", "string_array", "symbol_array":
 		return true
 	case "constant":
@@ -751,14 +751,14 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 	// as the cyclomatic pass. `case` itself is not counted (each `when` branch is);
 	// loop constructs are counted in their own handling below.
 	if w.metrics != nil {
-		switch node.Kind() {
+		switch kindOf(node) {
 		case "if", "elsif", "unless", "if_modifier", "unless_modifier",
 			"when", "rescue", "conditional":
 			w.metrics.decisions++
 		}
 	}
 
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "method", "singleton_method", "class", "module", "singleton_class":
 		return
 	case "super":
@@ -822,12 +822,12 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 			} else {
 				w.recordSelfAwareMetrics(target, recv)
 			}
-		} else if recv == nil && method != nil && method.Kind() == "identifier" {
+		} else if recv == nil && method != nil && kindOf(method) == "identifier" {
 			if name := rubyText(method, w.src); !rubyNonCalls[name] {
 				w.addCall(ownerIdx, seen, name)
 				w.recordCallMetrics(name)
 			}
-		} else if recv != nil && method != nil && method.Kind() == "identifier" {
+		} else if recv != nil && method != nil && kindOf(method) == "identifier" {
 			// A no-arg call on a receiver that callTarget suppressed. Bare target
 			// (no ".") -> no coupling impact. Skip keywords and common
 			// attribute/enumerable reads so a dead method sharing a name with
@@ -836,8 +836,8 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 			switch {
 			case rubyNonCalls[name] || rubyCheapMethods[name]:
 				// keyword / cheap attribute-or-enumerable read — ignore
-			case recv.Kind() == "call" || strings.HasSuffix(name, "?") || strings.HasSuffix(name, "!") ||
-				(isVarReceiver(recv.Kind()) && strings.Contains(name, "_")) ||
+			case kindOf(recv) == "call" || strings.HasSuffix(name, "?") || strings.HasSuffix(name, "!") ||
+				(isVarReceiver(kindOf(recv)) && strings.Contains(name, "_")) ||
 				isClassHoldingReceiver(recv, w.src):
 				// Chained receiver (ActiveRecord scope / class-method chains
 				// `Model.scope1.scope2.final`, `assoc.class_method`, `x.class.method`),
@@ -973,7 +973,7 @@ func dynamicSymbolPrefix(node *sitter.Node, src []byte) string {
 	sawInterp := false
 	for i := uint(0); i < node.ChildCount(); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "interpolation":
 			sawInterp = true
 			i = node.ChildCount() // stop at the first interpolation
@@ -1013,13 +1013,13 @@ func dispatchSymbolArg(args *sitter.Node, src []byte) string {
 		if !c.IsNamed() {
 			continue
 		}
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "simple_symbol":
 			return strings.TrimPrefix(rubyText(c, src), ":")
 		case "string":
 			// Static string only (no interpolation): the literal is the method name.
 			for j := uint(0); j < c.ChildCount(); j++ {
-				if c.Child(j).Kind() == "interpolation" {
+				if kindOf(c.Child(j)) == "interpolation" {
 					return ""
 				}
 			}
@@ -1034,7 +1034,7 @@ func dispatchSymbolArg(args *sitter.Node, src []byte) string {
 func stringLiteralContent(node *sitter.Node, src []byte) string {
 	var b strings.Builder
 	for i := uint(0); i < node.ChildCount(); i++ {
-		if node.Child(i).Kind() == "string_content" {
+		if kindOf(node.Child(i)) == "string_content" {
 			b.WriteString(rubyText(node.Child(i), src))
 		}
 	}
@@ -1064,13 +1064,13 @@ func (w *rubyWalker) walkTestRefs(node *sitter.Node, add func(string)) {
 	if node == nil || !node.IsNamed() {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "call":
 		method := node.ChildByFieldName("method")
 		recv := node.ChildByFieldName("receiver")
 		if target := w.callTarget(node); target != "" {
 			add(target)
-		} else if recv == nil && method != nil && method.Kind() == "identifier" {
+		} else if recv == nil && method != nil && kindOf(method) == "identifier" {
 			if name := rubyText(method, w.src); !rubyNonCalls[name] {
 				add(name)
 			}
@@ -1226,7 +1226,7 @@ func collectBlockParams(node *sitter.Node, src []byte, out map[string]bool) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "block", "do_block":
 		if params := node.ChildByFieldName("parameters"); params != nil {
 			collectIdentifiers(params, src, out)
@@ -1242,7 +1242,7 @@ func collectIdentifiers(node *sitter.Node, src []byte, out map[string]bool) {
 	if node == nil {
 		return
 	}
-	if node.Kind() == "identifier" {
+	if kindOf(node) == "identifier" {
 		out[rubyText(node, src)] = true
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
@@ -1257,13 +1257,13 @@ func collectAssignTargets(node *sitter.Node, src []byte, out map[string]bool) {
 	if node == nil {
 		return
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "assignment", "operator_assignment":
 		switch left := node.ChildByFieldName("left"); {
 		case left == nil:
-		case left.Kind() == "identifier":
+		case kindOf(left) == "identifier":
 			out[rubyText(left, src)] = true
-		case left.Kind() == "left_assignment_list":
+		case kindOf(left) == "left_assignment_list":
 			collectIdentifiers(left, src, out)
 		}
 	}
@@ -1291,7 +1291,7 @@ func (w *rubyWalker) callTarget(node *sitter.Node) string {
 		return ""
 	}
 
-	switch recv.Kind() {
+	switch kindOf(recv) {
 	case "constant", "scope_resolution":
 		return rubyText(recv, w.src) + "." + methodName
 	case "self":
@@ -1313,7 +1313,7 @@ func (w *rubyWalker) callTarget(node *sitter.Node) string {
 		// (receiver kind "self", method "class"). Emit the OUTER method name, bare.
 		// No args-gate: the receiver is provably the class, so the name is provably
 		// a method (unlike a lowercase-variable attribute read).
-		if innerRecv := recv.ChildByFieldName("receiver"); innerRecv != nil && innerRecv.Kind() == "self" {
+		if innerRecv := recv.ChildByFieldName("receiver"); innerRecv != nil && kindOf(innerRecv) == "self" {
 			if innerMethod := recv.ChildByFieldName("method"); innerMethod != nil && rubyText(innerMethod, w.src) == "class" {
 				return methodName
 			}
@@ -1321,7 +1321,7 @@ func (w *rubyWalker) callTarget(node *sitter.Node) string {
 		// Chained call, e.g. Rails.logger.info(x): use the inner call's method
 		// name as a pseudo-receiver when it is a lowercase identifier.
 		inner := recv.ChildByFieldName("method")
-		if inner != nil && inner.Kind() == "identifier" && node.ChildByFieldName("arguments") != nil {
+		if inner != nil && kindOf(inner) == "identifier" && node.ChildByFieldName("arguments") != nil {
 			return rubyText(inner, w.src) + "." + methodName
 		}
 	}
@@ -1337,7 +1337,7 @@ func (w *rubyWalker) handleAssignment(node *sitter.Node) {
 	}
 
 	// CONSTANT = ... (all-caps only, matching the former regex).
-	if left.Kind() == "constant" {
+	if kindOf(left) == "constant" {
 		constName := rubyText(left, w.src)
 		if !isAllCaps(constName) {
 			return
@@ -1365,7 +1365,7 @@ func (w *rubyWalker) handleAssignment(node *sitter.Node) {
 	}
 
 	// self.table_name = "foo" on an ActiveRecord model.
-	if s := w.cur(); s != nil && s.isModel && left.Kind() == "call" {
+	if s := w.cur(); s != nil && s.isModel && kindOf(left) == "call" {
 		if rubyText(left, w.src) == "self.table_name" {
 			if tbl := firstStringArg(node.ChildByFieldName("right"), w.src); tbl != "" {
 				w.out = append(w.out, facts.Fact{
@@ -1610,7 +1610,7 @@ func (w *rubyWalker) constName(node *sitter.Node) string {
 	if node == nil {
 		return ""
 	}
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "constant", "scope_resolution":
 		return rubyText(node, w.src)
 	}
@@ -1630,7 +1630,7 @@ func (w *rubyWalker) superclassName(node *sitter.Node) string {
 	}
 	for i := uint(0); i < node.ChildCount(); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "constant", "scope_resolution":
 			return rubyText(c, w.src)
 		case "call":
@@ -1638,7 +1638,7 @@ func (w *rubyWalker) superclassName(node *sitter.Node) string {
 			if recv == nil {
 				continue
 			}
-			switch recv.Kind() {
+			switch kindOf(recv) {
 			case "constant", "scope_resolution":
 				return rubyText(c, w.src)
 			}
@@ -1655,7 +1655,7 @@ func bodyHasConcern(body *sitter.Node, src []byte) bool {
 	}
 	for i := uint(0); i < body.ChildCount(); i++ {
 		c := body.Child(i)
-		if c.Kind() != "call" || c.ChildByFieldName("receiver") != nil {
+		if kindOf(c) != "call" || c.ChildByFieldName("receiver") != nil {
 			continue
 		}
 		if rubyText(c.ChildByFieldName("method"), src) != "extend" {
@@ -1676,7 +1676,7 @@ func firstStringArg(node *sitter.Node, src []byte) string {
 	}
 	var find func(n *sitter.Node) *sitter.Node
 	find = func(n *sitter.Node) *sitter.Node {
-		if n.Kind() == "string" {
+		if kindOf(n) == "string" {
 			return n
 		}
 		for i := uint(0); i < n.ChildCount(); i++ {
@@ -1691,7 +1691,7 @@ func firstStringArg(node *sitter.Node, src []byte) string {
 		return ""
 	}
 	for i := uint(0); i < s.ChildCount(); i++ {
-		if s.Child(i).Kind() == "string_content" {
+		if kindOf(s.Child(i)) == "string_content" {
 			return rubyText(s.Child(i), src)
 		}
 	}
@@ -1705,7 +1705,7 @@ func firstConstArg(args *sitter.Node, src []byte) string {
 	}
 	for i := uint(0); i < args.ChildCount(); i++ {
 		c := args.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "constant", "scope_resolution":
 			return rubyText(c, src)
 		}
@@ -1721,7 +1721,7 @@ func symbolArgs(args *sitter.Node, src []byte) []string {
 	}
 	for i := uint(0); i < args.ChildCount(); i++ {
 		c := args.Child(i)
-		if c.Kind() == "simple_symbol" {
+		if kindOf(c) == "simple_symbol" {
 			out = append(out, strings.TrimPrefix(rubyText(c, src), ":"))
 		}
 	}
@@ -1746,10 +1746,10 @@ func firstPositionalPath(args *sitter.Node, src []byte) string {
 	}
 	for i := uint(0); i < args.ChildCount(); i++ {
 		c := args.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "string":
 			for j := uint(0); j < c.ChildCount(); j++ {
-				if c.Child(j).Kind() == "string_content" {
+				if kindOf(c.Child(j)) == "string_content" {
 					return rubyText(c.Child(j), src)
 				}
 			}
@@ -1759,9 +1759,9 @@ func firstPositionalPath(args *sitter.Node, src []byte) string {
 			// Rails hash-rocket route form: `get 'path' => 'ctrl#action'`. The path is
 			// the STRING key of the pair. A `to:`/`as:` keyword pair has a symbol/label
 			// key (hash_key_symbol), not a string, so it is not treated as a path.
-			if k := c.ChildByFieldName("key"); k != nil && k.Kind() == "string" {
+			if k := c.ChildByFieldName("key"); k != nil && kindOf(k) == "string" {
 				for j := uint(0); j < k.ChildCount(); j++ {
-					if k.Child(j).Kind() == "string_content" {
+					if kindOf(k.Child(j)) == "string_content" {
 						return rubyText(k.Child(j), src)
 					}
 				}

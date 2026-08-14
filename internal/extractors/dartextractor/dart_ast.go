@@ -106,10 +106,10 @@ func extractFile(src []byte, relFile string, pkgs *packageIndex, inheritedImport
 // walkDirectives handles import/export/part/part-of and emits dependency facts.
 func (w *walker) walkDirectives(root *sitter.Node) {
 	for _, n := range namedChildren(root) {
-		switch n.Kind() {
+		switch kindOf(n) {
 		case "import_or_export":
 			for _, c := range namedChildren(n) {
-				switch c.Kind() {
+				switch kindOf(c) {
 				case "library_import":
 					w.importDirective(c, false)
 				case "library_export":
@@ -219,7 +219,7 @@ func (w *walker) uriOf(n *sitter.Node) string {
 		if found != "" {
 			return
 		}
-		switch node.Kind() {
+		switch kindOf(node) {
 		case "configurable_uri", "uri", "string_literal":
 			txt := strings.TrimSpace(node.Utf8Text(w.src))
 			txt = strings.Trim(txt, `"'`)
@@ -253,7 +253,7 @@ func (w *walker) walkDeclarations(root *sitter.Node) {
 	kids := namedChildren(root)
 	for i := 0; i < len(kids); i++ {
 		n := kids[i]
-		switch n.Kind() {
+		switch kindOf(n) {
 		case "class_definition":
 			w.classDecl(n, "class")
 		case "mixin_declaration":
@@ -363,7 +363,7 @@ func (w *walker) memberDecls(body *sitter.Node, typeName string) []memberInfo {
 	kids := namedChildren(body)
 	for i := 0; i < len(kids); i++ {
 		n := kids[i]
-		switch n.Kind() {
+		switch kindOf(n) {
 		case "method_signature":
 			// A concrete member: signature here, body in the next sibling.
 			bodyNode := nextBody(kids, i)
@@ -398,7 +398,7 @@ func (w *walker) memberDecls(body *sitter.Node, typeName string) []memberInfo {
 func (w *walker) declarationMember(n *sitter.Node, typeName string, annos []string) []memberInfo {
 	var out []memberInfo
 	for _, c := range namedChildren(n) {
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "constructor_signature", "factory_constructor_signature", "constant_constructor_signature":
 			name := constructorName(c, typeName, w.src)
 			full := w.qualify(typeName + "." + name)
@@ -474,7 +474,7 @@ func (w *walker) methodDecl(sig, body *sitter.Node, typeName string, annos []str
 		inner = sig
 	}
 	var name string
-	switch inner.Kind() {
+	switch kindOf(inner) {
 	case "factory_constructor_signature", "constructor_signature":
 		name = constructorName(inner, typeName, w.src)
 	default:
@@ -489,7 +489,7 @@ func (w *walker) methodDecl(sig, body *sitter.Node, typeName string, annos []str
 		"language": "dart", "symbol_kind": facts.SymbolMethod,
 		"exported": !strings.HasPrefix(name, "_"),
 	}
-	switch inner.Kind() {
+	switch kindOf(inner) {
 	case "getter_signature":
 		props["accessor"] = "getter"
 	case "setter_signature":
@@ -590,7 +590,7 @@ func (w *walker) enumDecl(n *sitter.Node) {
 func (w *walker) typeAliasDecl(n *sitter.Node) {
 	name := ""
 	for _, c := range namedChildren(n) {
-		if c.Kind() == "type_identifier" {
+		if kindOf(c) == "type_identifier" {
 			name = c.Utf8Text(w.src)
 			break
 		}
@@ -626,9 +626,9 @@ func (w *walker) injectRelations(sig *sitter.Node) []facts.Relation {
 	var rels []facts.Relation
 	var visit func(*sitter.Node)
 	visit = func(n *sitter.Node) {
-		if n.Kind() == "formal_parameter" {
+		if kindOf(n) == "formal_parameter" {
 			for _, c := range namedChildren(n) {
-				if c.Kind() != "type_identifier" {
+				if kindOf(c) != "type_identifier" {
 					continue
 				}
 				t := c.Utf8Text(w.src)
@@ -697,7 +697,7 @@ func isDataHolder(members []memberInfo) bool {
 // reference to one stays unresolved rather than resolving to a half-built string.
 func (w *walker) recordStringConstants(list *sitter.Node, typeName string) {
 	for _, d := range namedChildren(list) {
-		if d.Kind() != "static_final_declaration" && d.Kind() != "initialized_identifier" {
+		if kindOf(d) != "static_final_declaration" && kindOf(d) != "initialized_identifier" {
 			continue
 		}
 		name := identifierChild(d, w.src)

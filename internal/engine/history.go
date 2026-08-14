@@ -2,6 +2,8 @@ package engine
 
 import (
 	"bufio"
+	"encoding/json"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -49,7 +51,7 @@ func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snap
 		Git:     meta.Git,
 		Parents: gitParents(repoPath),
 		Repos:   repoRefs(e, b),
-		Summary: summarize(&current, previousSnapshotFor(repoPath, e.cfg.Output.Dir)),
+		Summary: summarize(&current, previousSideFor(repoPath, e.cfg.Output.Dir)),
 	}
 
 	opts := inthistory.Options{
@@ -125,14 +127,45 @@ func readLines(path string) ([]string, error) {
 	return lines, nil
 }
 
-// previousSnapshotFor loads the rotated preceding snapshot, or nil when there is none
+// previousSide describes the rotated preceding snapshot WITHOUT its facts: the small
+// parts are read into memory, and the facts stay on disk behind a source that streams
+// them on demand.
+//
+// The facts are the whole reason this type exists. summarize needs counts from them,
+// not the facts themselves, and loading a kernel-sized previous snapshot to produce
+// seven integers cost 386 MiB — at the end of a run, alongside the snapshot it was
+// being compared against. Insights and meta are kept whole because they are small and
+// the findings comparison genuinely needs their content.
+type previousSide struct {
+	facts    diff.FactSource
+	insights []facts.Insight
+	meta     facts.SnapshotMeta
+}
+
+// previousSideFor prepares the rotated preceding snapshot, or nil when there is none
 // (the first snapshot of a repository, or a history enabled after the fact).
-func previousSnapshotFor(repoPath, outputDir string) *facts.Snapshot {
-	prev, err := LoadSnapshotDir(filepath.Join(repoPath, outputDir, PreviousSubdir))
-	if err != nil {
+func previousSideFor(repoPath, outputDir string) *previousSide {
+	dir := filepath.Join(repoPath, outputDir, PreviousSubdir)
+	factsPath := filepath.Join(dir, "facts.jsonl")
+	if _, err := os.Stat(factsPath); err != nil {
 		return nil
 	}
-	return prev
+	p := &previousSide{
+		facts: diff.JSONLSource(func() (io.ReadCloser, error) { return os.Open(factsPath) }),
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "insights.json")); err == nil {
+		var ins []facts.Insight
+		if err := json.Unmarshal(data, &ins); err == nil {
+			p.insights = ins
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "snapshot.meta.json")); err == nil {
+		var meta facts.SnapshotMeta
+		if err := json.Unmarshal(data, &meta); err == nil {
+			p.meta = meta
+		}
+	}
+	return p
 }
 
 // summarize reduces a snapshot pair to the counts a log line needs.
@@ -141,7 +174,12 @@ func previousSnapshotFor(repoPath, outputDir string) *facts.Snapshot {
 // than a delta: the first snapshot of a repository did not ADD ten thousand facts, it
 // found them, and a renderer shown a delta there reports the entire codebase as the work
 // of whoever ran enola first.
-func summarize(current *facts.Snapshot, previous *facts.Snapshot) pkghistory.Summary {
+// It computes the delta by COUNTING rather than by building it. diff.Compute produces
+// the same numbers and is still what diff_snapshot uses, but it materialises every
+// added, removed and changed fact plus both sides' edge sets to do it — 261 MiB on a
+// warm dotnet/runtime run, on top of the 386 MiB of loading the baseline. A summary
+// needs none of that; see diff.Counts.
+func summarize(current *facts.Snapshot, previous *previousSide) pkghistory.Summary {
 	s := pkghistory.Summary{
 		FactCount:    len(current.Facts),
 		InsightCount: len(current.Insights),
@@ -151,26 +189,35 @@ func summarize(current *facts.Snapshot, previous *facts.Snapshot) pkghistory.Sum
 		return s
 	}
 
-	d := diff.Compute(previous, current)
-	s.FactsAdded = len(d.FactsAdded)
-	s.FactsRemoved = len(d.FactsRemoved)
-	s.FactsChanged = len(d.FactsChanged)
-	s.EdgesAdded = len(d.EdgesAdded)
-	s.EdgesRemoved = len(d.EdgesRemoved)
+	counts, err := diff.CountFacts(previous.facts, current.Facts)
+	if err != nil {
+		// The previous snapshot is unreadable. Record the revision with absolute
+		// counts rather than dropping it: a history with a gap is worse than one
+		// whose delta is missing, and the cause is logged.
+		log.Printf("[engine] warning: could not summarize the delta against previous/: %v", err)
+		s.Initial = true
+		return s
+	}
+	s.FactsAdded = counts.FactsAdded
+	s.FactsRemoved = counts.FactsRemoved
+	s.FactsChanged = counts.FactsChanged
+	s.EdgesAdded = counts.EdgesAdded
+	s.EdgesRemoved = counts.EdgesRemoved
 	// The structural-cause buckets only. The incidental ones exist precisely because a
 	// finding can appear without this change causing it, and a log line is the last place
 	// that distinction should be dropped.
-	s.FindingsNew = len(d.FindingsNew)
-	s.FindingsResolved = len(d.FindingsResolved)
+	findings := diff.ClassifyFindings(previous.insights, current.Insights, counts.TouchedNames)
+	s.FindingsNew = findings.New
+	s.FindingsResolved = findings.Resolved
 	// Not simply !Comparable: elapsed time between two revisions is the normal shape of a
 	// timeline, and flagging it would mark most of a release-sampled history as suspect.
-	s.Incomparable = d.Comparability.InvalidatesDelta()
+	s.Incomparable = diff.CompareMeta(previous.meta, current.Meta).InvalidatesDelta()
 
 	byKind := map[string]int{}
-	for kind, n := range diff.KindCounts(d.FactsAdded) {
+	for kind, n := range counts.AddedByKind {
 		byKind[kind] += n
 	}
-	for kind, n := range diff.KindCounts(d.FactsRemoved) {
+	for kind, n := range counts.RemovedByKind {
 		byKind[kind] -= n
 	}
 	for kind, n := range byKind {

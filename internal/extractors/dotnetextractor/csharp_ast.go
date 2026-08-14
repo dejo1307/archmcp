@@ -245,7 +245,7 @@ func (w *astWalker) walkTopLevelChildren(node *sitter.Node) {
 }
 
 func (w *astWalker) walkTopLevel(node *sitter.Node) {
-	switch node.Kind() {
+	switch kindOf(node) {
 	case "using_directive":
 		w.handleUsing(node)
 	case "namespace_declaration":
@@ -316,7 +316,7 @@ func (w *astWalker) handleUsing(node *sitter.Node) {
 	path := ""
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "qualified_name", "identifier", "generic_name", "alias_qualified_name":
 			if alias != "" && nodeText(c, w.src) == alias {
 				continue // the alias itself, not the target
@@ -393,7 +393,7 @@ func (w *astWalker) handleTypeDecl(node *sitter.Node, kind string) {
 			f.Props[m] = true
 		}
 	}
-	if node.Kind() == "record_declaration" {
+	if kindOf(node) == "record_declaration" {
 		f.Props["record"] = true
 	}
 	// State and no behaviour: a DTO, a constants holder, an attribute. Read by the
@@ -431,7 +431,7 @@ func (w *astWalker) handleTypeDecl(node *sitter.Node, kind string) {
 	// constructor. For a `record` they are also its public properties.
 	if params := findChildByKind(node, "parameter_list"); params != nil {
 		w.injectParams(params, idx)
-		if node.Kind() == "record_declaration" {
+		if kindOf(node) == "record_declaration" {
 			w.recordPositionalProperties(params)
 		}
 	}
@@ -484,7 +484,7 @@ func (w *astWalker) handleEnum(node *sitter.Node) {
 	}
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		if c.Kind() != "enum_member_declaration" {
+		if kindOf(c) != "enum_member_declaration" {
 			continue
 		}
 		mn := c.ChildByFieldName("name")
@@ -549,7 +549,7 @@ func (w *astWalker) handleDelegate(node *sitter.Node) {
 func (w *astWalker) walkMembers(body *sitter.Node) {
 	for i := uint(0); i < uint(body.ChildCount()); i++ {
 		c := body.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "class_declaration":
 			w.handleTypeDecl(c, facts.SymbolClass)
 		case "interface_declaration":
@@ -626,7 +626,7 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 	idx := len(w.out) - 1
 	w.pushOwner(idx)
 
-	if node.Kind() == "method_declaration" && len(w.typeStack) > 0 {
+	if kindOf(node) == "method_declaration" && len(w.typeStack) > 0 {
 		w.noteAction(node, w.canonicalName(w.enclosingType()), w.out[idx].Name, name)
 		// A Refit attribute on an interface method declares an OUTBOUND request the
 		// same way [HttpGet] declares an inbound one.
@@ -637,7 +637,7 @@ func (w *astWalker) handleMethod(node *sitter.Node) {
 	// every constructor rather than only a sole one (Java's rule) would turn a
 	// value type's convenience overloads into dependencies, so the same
 	// restriction applies: one constructor, or none of them.
-	if node.Kind() == "constructor_declaration" && w.soleConstructor() {
+	if kindOf(node) == "constructor_declaration" && w.soleConstructor() {
 		if params := node.ChildByFieldName("parameters"); params != nil {
 			w.injectParams(params, w.ownerStack[len(w.ownerStack)-2])
 		}
@@ -656,7 +656,7 @@ func (w *astWalker) handleProperty(node *sitter.Node) {
 	mods := modifierSet(node, w.src)
 	exported := w.exported(mods, false)
 	name := w.memberName(node)
-	if node.Kind() == "indexer_declaration" {
+	if kindOf(node) == "indexer_declaration" {
 		name = "this[]"
 	}
 	if !exported || name == "" {
@@ -718,7 +718,7 @@ func (w *astWalker) handleField(node *sitter.Node) {
 	}
 	for i := uint(0); i < uint(decl.ChildCount()); i++ {
 		c := decl.Child(i)
-		if c.Kind() != "variable_declarator" {
+		if kindOf(c) != "variable_declarator" {
 			continue
 		}
 		nameNode := c.ChildByFieldName("name")
@@ -740,7 +740,7 @@ func (w *astWalker) handleField(node *sitter.Node) {
 		if mods["static"] {
 			props["static"] = true
 		}
-		if node.Kind() == "event_field_declaration" {
+		if kindOf(node) == "event_field_declaration" {
 			props["event"] = true
 		}
 		w.out = append(w.out, facts.Fact{
@@ -763,7 +763,7 @@ func (w *astWalker) handleField(node *sitter.Node) {
 func (w *astWalker) recordPositionalProperties(params *sitter.Node) {
 	for i := uint(0); i < uint(params.ChildCount()); i++ {
 		p := params.Child(i)
-		if p.Kind() != "parameter" {
+		if kindOf(p) != "parameter" {
 			continue
 		}
 		nameNode := p.ChildByFieldName("name")
@@ -805,7 +805,7 @@ func (w *astWalker) injectParams(params *sitter.Node, ownerIdx int) {
 	}
 	for i := uint(0); i < uint(params.ChildCount()); i++ {
 		p := params.Child(i)
-		if p.Kind() != "parameter" {
+		if kindOf(p) != "parameter" {
 			continue
 		}
 		t := w.targetForType(p.ChildByFieldName("type"))
@@ -900,7 +900,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 	if node == nil {
 		return
 	}
-	kind := node.Kind()
+	kind := kindOf(node)
 
 	// A lambda is a deferred scope: its body runs when the delegate is invoked,
 	// not once per iteration of the loops it was created inside. An iterator's own
@@ -951,7 +951,7 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		// once for the same reason; its condition and update genuinely repeat, so
 		// they stay inside.
 		var outer []*sitter.Node
-		switch node.Kind() {
+		switch kindOf(node) {
 		case "foreach_statement":
 			outer = append(outer, node.ChildByFieldName("right"))
 		case "for_statement":
@@ -1086,7 +1086,7 @@ func (w *astWalker) handleInvocation(node *sitter.Node) {
 	}
 	args := argCount(node)
 
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "identifier", "generic_name":
 		name := simpleTypeName(nodeText(fn, w.src))
 		if ioMethods[name] {

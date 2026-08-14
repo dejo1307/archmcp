@@ -107,7 +107,7 @@ func (w *dslWalker) walkPekko(n *sitter.Node, prefix, method string, unresolved 
 	if n == nil {
 		return
 	}
-	if n.Kind() == "call_expression" {
+	if kindOf(n) == "call_expression" {
 		if name, args, block := w.splitDirective(n); name != "" {
 			// A verb directive fixes the method for everything below it.
 			if verb, ok := pekkoVerbs[name]; ok && block != nil {
@@ -164,19 +164,19 @@ func (w *dslWalker) walkPekko(n *sitter.Node, prefix, method string, unresolved 
 func (w *dslWalker) conjoinedVerbs(pathCall *sitter.Node) []string {
 	// Walk out through any parentheses to the conjunction, and no further.
 	p := pathCall.Parent()
-	for p != nil && p.Kind() == "parenthesized_expression" {
+	for p != nil && kindOf(p) == "parenthesized_expression" {
 		p = p.Parent()
 	}
-	if p == nil || p.Kind() != "infix_expression" {
+	if p == nil || kindOf(p) != "infix_expression" {
 		return nil
 	}
 	var verbs []string
 	var scan func(n *sitter.Node)
 	scan = func(n *sitter.Node) {
-		switch n.Kind() {
+		switch kindOf(n) {
 		case "infix_expression":
 			for i := uint(0); i < n.ChildCount(); i++ {
-				if c := n.Child(i); c.IsNamed() && c.Kind() != "operator_identifier" {
+				if c := n.Child(i); c.IsNamed() && kindOf(c) != "operator_identifier" {
 					scan(c)
 				}
 			}
@@ -198,7 +198,7 @@ func (w *dslWalker) verbsInBlock(block *sitter.Node) []string {
 	var verbs []string
 	var scan func(n *sitter.Node)
 	scan = func(n *sitter.Node) {
-		if n.Kind() == "call_expression" {
+		if kindOf(n) == "call_expression" {
 			name, _, inner := w.splitDirective(n)
 			if verb, ok := pekkoVerbs[name]; ok {
 				verbs = appendUnique(verbs, verb)
@@ -212,7 +212,7 @@ func (w *dslWalker) verbsInBlock(block *sitter.Node) []string {
 			}
 			return
 		}
-		if n.Kind() == "identifier" {
+		if kindOf(n) == "identifier" {
 			if verb, ok := pekkoVerbs[w.text(n)]; ok {
 				verbs = appendUnique(verbs, verb)
 			}
@@ -245,14 +245,14 @@ func (w *dslWalker) splitDirective(n *sitter.Node) (name string, args, block *si
 		if !c.IsNamed() {
 			continue
 		}
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "call_expression":
 			// The curried form: the inner call carries the name and arguments.
 			inner := firstNamedChild(c)
-			if inner != nil && (inner.Kind() == "identifier" || inner.Kind() == "field_expression") {
+			if inner != nil && (kindOf(inner) == "identifier" || kindOf(inner) == "field_expression") {
 				name = w.lastIdentifier(inner)
 				for j := uint(0); j < c.ChildCount(); j++ {
-					if a := c.Child(j); a.IsNamed() && a.Kind() == "arguments" {
+					if a := c.Child(j); a.IsNamed() && kindOf(a) == "arguments" {
 						args = a
 					}
 				}
@@ -273,7 +273,7 @@ func (w *dslWalker) splitDirective(n *sitter.Node) (name string, args, block *si
 }
 
 func (w *dslWalker) lastIdentifier(n *sitter.Node) string {
-	if n.Kind() == "identifier" {
+	if kindOf(n) == "identifier" {
 		return w.text(n)
 	}
 	var last *sitter.Node
@@ -296,7 +296,7 @@ func (w *dslWalker) pathSegments(args *sitter.Node) (path string, ok bool) {
 	resolved := true
 	var scan func(n *sitter.Node)
 	scan = func(n *sitter.Node) {
-		switch n.Kind() {
+		switch kindOf(n) {
 		case "string":
 			parts = append(parts, strings.Trim(w.text(n), `"`))
 			return
@@ -304,7 +304,7 @@ func (w *dslWalker) pathSegments(args *sitter.Node) (path string, ok bool) {
 			// `"v1" / "admin"` and `Segment / "x"` compose left to right.
 			for i := uint(0); i < n.ChildCount(); i++ {
 				c := n.Child(i)
-				if !c.IsNamed() || c.Kind() == "operator_identifier" {
+				if !c.IsNamed() || kindOf(c) == "operator_identifier" {
 					continue
 				}
 				scan(c)
@@ -370,9 +370,9 @@ func extractHTTP4sRoutes(root *sitter.Node, src []byte, relFile, dir string) []f
 	w := &dslWalker{src: src, relFile: relFile, dir: dir}
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
-		if n.Kind() == "call_expression" && w.isHTTP4sOf(n) {
+		if kindOf(n) == "call_expression" && w.isHTTP4sOf(n) {
 			for i := uint(0); i < n.ChildCount(); i++ {
-				if c := n.Child(i); c.Kind() == "case_block" {
+				if c := n.Child(i); kindOf(c) == "case_block" {
 					w.emitHTTP4sCases(c)
 				}
 			}
@@ -392,10 +392,10 @@ func (w *dslWalker) isHTTP4sOf(n *sitter.Node) bool {
 	if fn == nil {
 		return false
 	}
-	if fn.Kind() == "generic_function" {
+	if kindOf(fn) == "generic_function" {
 		fn = firstNamedChild(fn)
 	}
-	if fn == nil || fn.Kind() != "field_expression" {
+	if fn == nil || kindOf(fn) != "field_expression" {
 		return false
 	}
 	txt := strings.ReplaceAll(w.text(fn), " ", "")
@@ -406,12 +406,12 @@ func (w *dslWalker) isHTTP4sOf(n *sitter.Node) bool {
 func (w *dslWalker) emitHTTP4sCases(caseBlock *sitter.Node) {
 	for i := uint(0); i < caseBlock.ChildCount(); i++ {
 		c := caseBlock.Child(i)
-		if c.Kind() != "case_clause" {
+		if kindOf(c) != "case_clause" {
 			continue
 		}
 		for j := uint(0); j < c.ChildCount(); j++ {
 			p := c.Child(j)
-			if !p.IsNamed() || p.Kind() != "infix_pattern" {
+			if !p.IsNamed() || kindOf(p) != "infix_pattern" {
 				continue
 			}
 			if method, path, ok := w.parseHTTP4sPattern(p); ok {
@@ -443,7 +443,7 @@ func (w *dslWalker) parseHTTP4sPattern(n *sitter.Node) (method, path string, ok 
 	var sawArrow bool
 	var flatten func(node *sitter.Node)
 	flatten = func(node *sitter.Node) {
-		if node.Kind() != "infix_pattern" {
+		if kindOf(node) != "infix_pattern" {
 			operands = append(operands, node)
 			return
 		}
@@ -452,7 +452,7 @@ func (w *dslWalker) parseHTTP4sPattern(n *sitter.Node) (method, path string, ok 
 			if !c.IsNamed() {
 				continue
 			}
-			if c.Kind() == "operator_identifier" {
+			if kindOf(c) == "operator_identifier" {
 				if w.text(c) == "->" {
 					sawArrow = true
 				}
@@ -473,7 +473,7 @@ func (w *dslWalker) parseHTTP4sPattern(n *sitter.Node) (method, path string, ok 
 
 	var segs []string
 	for _, o := range operands[1:] {
-		switch o.Kind() {
+		switch kindOf(o) {
 		case "identifier":
 			t := w.text(o)
 			if t == "Root" {
@@ -503,7 +503,7 @@ func (w *dslWalker) extractorBinding(n *sitter.Node) string {
 	var last string
 	for i := uint(0); i < n.ChildCount(); i++ {
 		c := n.Child(i)
-		if c.IsNamed() && c.Kind() == "identifier" {
+		if c.IsNamed() && kindOf(c) == "identifier" {
 			last = w.text(c)
 		}
 	}

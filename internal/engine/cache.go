@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"fmt"
 	"io"
 	"os"
@@ -1667,10 +1668,43 @@ func ExtractorVersion() string { return cacheVersion }
 // Reuse is correct because an extractor is a deterministic function of its inputs
 // (verified: parallel and serial runs produce byte-identical facts), and a key
 // captures every input that can change its output — see computeExtractorKeys.
+// # Write-through
+//
+// Entries are written to disk AS THEY ARE PRODUCED, into a temp file opened when the
+// cache is created and renamed into place by save. Nothing accumulates in memory
+// waiting to be written.
+//
+// Holding them was the single largest allocation in a snapshot. On a kernel-sized
+// repository one extractor produces one 800 MB entry, and both routes retained it
+// for the rest of the run: put marshalled the facts into a buffer (reaching 1.5 GB
+// through bytes.Buffer's doubling — half the live heap at the measured peak), and on
+// a warm run get moved the decoded bytes from prev to next, keeping them alive
+// alongside the facts they had just been decoded into.
+//
+// Writing costs no more than it did — the same bytes reach the same file — it just
+// happens earlier, and each entry becomes collectable the moment it is written.
 type extractorCache struct {
-	prev map[string]json.RawMessage // loaded from disk
-	next map[string]json.RawMessage // to persist (this run's keys only)
+	prev map[string]json.RawMessage // loaded from disk, drained by get
 	hits int
+
+	// noPersist records that save will never be called. Such a cache still SERVES
+	// entries — a read-only mode should reuse a warm cache, that is most of what
+	// makes it fast — but opens no temp file and writes nothing, because there is
+	// nowhere for it to go. `enola --explain` sets it, via SetPersistCache(false).
+	//
+	// Negative form so the ZERO VALUE writes nothing rather than writing to a nil
+	// file. Stated positively, a struct literal that forgot the field would try to
+	// stream into a closed spool.
+	noPersist bool
+
+	// Spool state. dest is the final path; tmp lives beside it so the rename cannot
+	// cross a filesystem boundary (os.Rename returns EXDEV and loses atomicity).
+	dest    string
+	tmp     *os.File
+	w       *bufio.Writer
+	entries int    // entries emitted this run
+	werr    error  // first write/encode failure; surfaced by save
+	closed  bool   // save or discard has run; further writes are refused
 }
 
 // buildIdentity identifies the binary that produced a cache entry: the release
@@ -1724,10 +1758,20 @@ var errColdCache = errors.New("cold cache")
 // the decoded entry map — each about that size — alive simultaneously, at the exact
 // point in a run where the fact store is also being built. Decoding entry by entry
 // retains only the entries.
-func loadExtractorCache(path string) *extractorCache {
+func loadExtractorCache(path string, persist bool) *extractorCache {
 	c := &extractorCache{
-		prev: map[string]json.RawMessage{},
-		next: map[string]json.RawMessage{},
+		prev:      map[string]json.RawMessage{},
+		noPersist: !persist,
+		dest:      path,
+	}
+	if persist {
+		// A spool that cannot be opened degrades this run to no caching rather than
+		// failing it: the snapshot is still correct, just cold next time. Reported,
+		// because a repository that silently never caches looks like a slow enola.
+		if err := c.openSpool(); err != nil {
+			log.Printf("[engine] extractor cache not writable (%v); continuing without saving it", err)
+			c.noPersist = true
+		}
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -1853,11 +1897,15 @@ func (c *extractorCache) get(key string) ([]facts.Fact, bool) {
 	if err := json.Unmarshal(raw, &ff); err != nil {
 		return nil, false
 	}
-	c.next[key] = raw // keep the clean, pre-mutation bytes
-	// Hand the bytes over rather than sharing them. Each key is fetched at most once
-	// per run (one lookup per extractor in runExtractors), so leaving it in prev only
-	// pinned a second reference to every reused entry for the rest of the run — on a
-	// fully-warm kernel run, the entire 800 MB twice over.
+	// Write the clean, pre-mutation bytes straight through to the spool. They are
+	// already in memory, so this costs a copy to a buffered file and buys their
+	// release: before write-through they stayed live until save, next to the facts
+	// they had just been decoded into.
+	c.writeEntry(key, raw)
+	// Drop the last reference. Each key is fetched at most once per run (one lookup
+	// per extractor in runExtractors), so keeping it in prev only pinned every
+	// reused entry for the rest of the run — on a fully-warm kernel run, 800 MB of
+	// bytes whose only remaining purpose was to be copied to disk unchanged.
 	delete(c.prev, key)
 	c.hits++
 	return ff, true
@@ -1865,108 +1913,179 @@ func (c *extractorCache) get(key string) ([]facts.Fact, bool) {
 
 // put stores ff for key. It marshals immediately (before the engine tags or
 // otherwise mutates the facts) so the persisted bytes stay clean.
+//
+// A no-op when this cache will never be saved: encoding is the single largest
+// allocation in a snapshot, and doing it for bytes nobody will write is the most
+// expensive way to do nothing. See the noPersist field.
+//
+// The facts are encoded ONE AT A TIME into the spool's buffer rather than through
+// json.Marshal (or json.Encoder, which is no better — it marshals the whole value
+// into an internal buffer before writing a byte). A whole extractor's output is
+// 800 MB on a kernel-sized repository; a single fact is a few hundred bytes, and
+// becomes garbage as soon as it is written.
 func (c *extractorCache) put(key string, ff []facts.Fact) {
-	raw, err := json.Marshal(ff)
-	if err != nil {
+	if c.noPersist || c.closed {
 		return
 	}
-	c.next[key] = raw
+	if !c.beginEntry(key) {
+		return
+	}
+	_, _ = c.w.WriteString("[")
+	for i := range ff {
+		if i > 0 {
+			_, _ = c.w.WriteString(",")
+		}
+		b, err := json.Marshal(ff[i])
+		if err != nil {
+			c.fail(fmt.Errorf("encoding cached fact %q: %w", ff[i].Name, err))
+			return
+		}
+		_, _ = c.w.Write(b)
+	}
+	_, _ = c.w.WriteString("]")
 }
 
-// save writes the keys used this run to path, stamped with the binary that produced
-// them so a later run by a different build discards rather than reuses them.
+// openSpool creates the temp file this run streams into and writes the header.
 //
-// It streams into a temp file and renames, for two reasons. Marshalling the whole
-// cacheFile built one []byte as large as the file — 800 MB on a kernel-sized repo, on
-// top of the entries it was copying from — at the very end of a run, when the fact
-// store and graph are both still live. And the previous os.WriteFile left a truncated
-// file behind if the process died mid-write, which the next run would read as a cold
-// cache: correct, but it silently threw away a whole warm run.
-func (c *extractorCache) save(path string) error {
-	// Staged in the same directory so the rename stays on one filesystem: across a
-	// mount boundary os.Rename fails with EXDEV and the atomicity is lost.
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+// The header goes out FIRST and in this order because decode depends on it: version
+// and build precede entries, which is what lets a stale cache be rejected after a few
+// dozen bytes instead of after parsing 800 MB and throwing it away.
+func (c *extractorCache) openSpool() error {
+	if err := os.MkdirAll(filepath.Dir(c.dest), 0o755); err != nil {
+		return err
+	}
+	// Staged in the destination directory so the rename stays on one filesystem.
+	tmp, err := os.CreateTemp(filepath.Dir(c.dest), "."+filepath.Base(c.dest)+".tmp-")
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer func() {
-		// No-op once the rename has succeeded; cleans up on every failure path.
-		_ = os.Remove(tmpName)
-	}()
+	c.tmp = tmp
+	c.w = bufio.NewWriterSize(tmp, cacheBufSize)
 
-	w := bufio.NewWriterSize(tmp, cacheBufSize)
-	if err := c.encode(w); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := w.Flush(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		return err // CreateTemp makes 0600; match the mode WriteFile used to produce
-	}
-	return os.Rename(tmpName, path)
-}
-
-// encode writes the cacheFile shape (see that type) entry by entry.
-//
-// Keys are emitted in sorted order because json.Marshal sorts map keys, and the file
-// stayed a pure function of its contents as a result. Nothing hashes the cache, so
-// this is not load-bearing — but a cache file that reorders itself on every write for
-// no reason is a bad thing to hand somebody debugging a stale-facts report.
-//
-// w is a *bufio.Writer rather than an io.Writer so that write errors can be ignored
-// here and collected once at Flush: bufio records the first error and turns every
-// subsequent write into a no-op.
-func (c *extractorCache) encode(w *bufio.Writer) error {
 	ver, err := json.Marshal(cacheVersion)
 	if err != nil {
-		return err
+		return c.abandonSpool(err)
 	}
 	build, err := json.Marshal(buildIdentity())
 	if err != nil {
+		return c.abandonSpool(err)
+	}
+	_, _ = c.w.WriteString(`{"version":`)
+	_, _ = c.w.Write(ver)
+	_, _ = c.w.WriteString(`,"build":`)
+	_, _ = c.w.Write(build)
+	_, _ = c.w.WriteString(`,"entries":{`)
+	return nil
+}
+
+// abandonSpool tears down a half-opened spool and returns err, so openSpool's
+// failure paths cannot leak the temp file.
+func (c *extractorCache) abandonSpool(err error) error {
+	if c.tmp != nil {
+		name := c.tmp.Name()
+		_ = c.tmp.Close()
+		_ = os.Remove(name)
+		c.tmp, c.w = nil, nil
+	}
+	return err
+}
+
+// beginEntry writes the `"key":` prefix (and the separating comma after the first
+// entry), reporting whether the caller should go on to write the value. It returns
+// false once a write has failed, so a broken spool stops accumulating rather than
+// producing a file that is half-valid.
+func (c *extractorCache) beginEntry(key string) bool {
+	if c.noPersist || c.closed || c.werr != nil {
+		return false
+	}
+	kb, err := json.Marshal(key)
+	if err != nil {
+		c.fail(err)
+		return false
+	}
+	if c.entries > 0 {
+		_, _ = c.w.WriteString(",")
+	}
+	c.entries++
+	_, _ = c.w.Write(kb)
+	_, _ = c.w.WriteString(":")
+	return true
+}
+
+// writeEntry emits a whole pre-encoded entry, used for bytes carried forward from a
+// previous run's file (see get). Empty values are skipped: decode never produces one
+// and put never writes one, but emitting `"key":` with no value would make the entire
+// file unparseable, which is worth one branch to prevent.
+func (c *extractorCache) writeEntry(key string, raw json.RawMessage) {
+	if len(raw) == 0 || !c.beginEntry(key) {
+		return
+	}
+	_, _ = c.w.Write(raw)
+}
+
+// fail records the first write or encode error. bufio latches its own errors the same
+// way, so later writes are harmless no-ops and save reports the original cause.
+func (c *extractorCache) fail(err error) {
+	if c.werr == nil {
+		c.werr = err
+	}
+}
+
+// save closes the entries object and renames the spool into place, so a reader either
+// sees the previous cache or this one and never a half-written file. A process that
+// dies mid-run leaves only the temp file, which nothing reads.
+//
+// It writes to the path the cache was opened with. There is no path argument: the temp
+// file has to be created next to its destination for the rename to stay on one
+// filesystem, so the destination is fixed when the cache is created, and a save
+// elsewhere could not honour it.
+//
+// Entries appear in the order they were produced — extractor order — rather than
+// sorted, which is the one observable change from buffering them. That order is still
+// a pure function of the repository and config, so a cache file does not churn between
+// runs; it simply is not sorted. Sorting would mean holding every entry to the end,
+// which is the thing this exists to stop.
+func (c *extractorCache) save() error {
+	if c.noPersist || c.closed {
+		return nil
+	}
+	c.closed = true
+	if c.werr != nil {
+		return c.abandonSpool(c.werr)
+	}
+
+	tmpName := c.tmp.Name()
+	_, _ = c.w.WriteString("}}")
+	if err := c.w.Flush(); err != nil {
+		return c.abandonSpool(err)
+	}
+	if err := c.tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		c.tmp, c.w = nil, nil
 		return err
 	}
-	_, _ = w.WriteString(`{"version":`)
-	_, _ = w.Write(ver)
-	_, _ = w.WriteString(`,"build":`)
-	_, _ = w.Write(build)
-	_, _ = w.WriteString(`,"entries":{`)
-
-	keys := make([]string, 0, len(c.next))
-	for k := range c.next {
-		keys = append(keys, k)
+	c.tmp, c.w = nil, nil
+	// CreateTemp makes 0600; match the mode os.WriteFile used to produce.
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		_ = os.Remove(tmpName)
+		return err
 	}
-	sort.Strings(keys)
-
-	first := true
-	for _, k := range keys {
-		raw := c.next[k]
-		if len(raw) == 0 {
-			// put never stores an empty value and decode never produces one, so this
-			// is unreachable — but writing it would emit `"key":` with no value and
-			// make the whole file unparseable, which is worth one branch to prevent.
-			continue
-		}
-		if !first {
-			_, _ = w.WriteString(",")
-		}
-		first = false
-		kb, err := json.Marshal(k)
-		if err != nil {
-			return err
-		}
-		_, _ = w.Write(kb)
-		_, _ = w.WriteString(":")
-		_, _ = w.Write(raw)
+	if err := os.Rename(tmpName, c.dest); err != nil {
+		_ = os.Remove(tmpName)
+		return err
 	}
-	_, _ = w.WriteString("}}")
 	return nil
+}
+
+// discard closes the spool without publishing it. It must be called on every path
+// that does not reach save — a snapshot that fails during extraction, say — or the
+// temp file survives the process. Safe to call after save, and safe to defer.
+func (c *extractorCache) discard() {
+	if c.closed {
+		return
+	}
+	c.closed = true
+	_ = c.abandonSpool(nil)
 }
 
 // computeExtractorKeys returns a cache key for every extractor that implements

@@ -241,7 +241,7 @@ func (w *astWalker) walk(n *sitter.Node) {
 	if n == nil {
 		return
 	}
-	switch n.Kind() {
+	switch kindOf(n) {
 	case "package_clause":
 		w.handlePackage(n)
 		return
@@ -334,7 +334,7 @@ func (w *astWalker) walk(n *sitter.Node) {
 func (w *astWalker) isBooleanOperator(n *sitter.Node) bool {
 	for i := uint(0); i < n.ChildCount(); i++ {
 		c := n.Child(i)
-		if c.Kind() != "operator_identifier" {
+		if kindOf(c) != "operator_identifier" {
 			continue
 		}
 		switch w.text(c) {
@@ -362,7 +362,7 @@ func (w *astWalker) handleFor(n *sitter.Node) {
 		if !c.IsNamed() {
 			continue
 		}
-		if c.Kind() == "enumerators" {
+		if kindOf(c) == "enumerators" {
 			w.walk(c) // evaluated once, at the enclosing depth
 			continue
 		}
@@ -401,7 +401,7 @@ func (w *astWalker) handleCall(n *sitter.Node) {
 		return
 	}
 	// `f[T](x)` wraps the callee in a generic_function; unwrap to the callee.
-	if fn.Kind() == "generic_function" {
+	if kindOf(fn) == "generic_function" {
 		if inner := firstNamedChild(fn); inner != nil {
 			fn = inner
 		}
@@ -413,7 +413,7 @@ func (w *astWalker) handleCall(n *sitter.Node) {
 	// curried case, where the inner call emits its own edge.
 	walkCallee := false
 
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "field_expression":
 		recvNode, method = w.splitFieldExpression(fn)
 		receiver = w.simpleName(recvNode)
@@ -496,7 +496,7 @@ func (w *astWalker) receiverIsAtMostOnce(recvNode *sitter.Node) bool {
 	if recvNode == nil {
 		return false
 	}
-	switch recvNode.Kind() {
+	switch kindOf(recvNode) {
 	case "identifier", "type_identifier":
 		return atMostOnceReceivers[w.text(recvNode)]
 	case "field_expression":
@@ -519,7 +519,7 @@ func (w *astWalker) calleeName(n *sitter.Node) string {
 	if fn == nil {
 		return ""
 	}
-	switch fn.Kind() {
+	switch kindOf(fn) {
 	case "generic_function":
 		if inner := firstNamedChild(fn); inner != nil {
 			return w.calleeName(inner.Parent())
@@ -643,7 +643,7 @@ func (w *astWalker) pushScope(n *sitter.Node) func() {
 			if !c.IsNamed() {
 				continue
 			}
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "parameters", "class_parameters", "parameter_types":
 				scan(c)
 			case "parameter", "class_parameter":
@@ -653,11 +653,11 @@ func (w *astWalker) pushScope(n *sitter.Node) func() {
 					if !g.IsNamed() {
 						continue
 					}
-					if g.Kind() == "identifier" && name == "" {
+					if kindOf(g) == "identifier" && name == "" {
 						name = w.text(g)
 						continue
 					}
-					if isTypeNode(g.Kind()) && typeName == "" {
+					if isTypeNode(kindOf(g)) && typeName == "" {
 						typeName = w.baseTypeName(g)
 					}
 				}
@@ -712,7 +712,7 @@ func (w *astWalker) declaresAbstractMember(body *sitter.Node) bool {
 			if !c.IsNamed() {
 				continue
 			}
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "function_declaration", "val_declaration", "var_declaration":
 				found = true
 				return
@@ -749,7 +749,7 @@ func (w *astWalker) collectMembers(body *sitter.Node) map[string]bool {
 			if !c.IsNamed() {
 				continue
 			}
-			switch c.Kind() {
+			switch kindOf(c) {
 			case "function_definition", "function_declaration", "type_definition",
 				"class_definition", "object_definition", "trait_definition",
 				"enum_definition":
@@ -762,7 +762,7 @@ func (w *astWalker) collectMembers(body *sitter.Node) map[string]bool {
 				if p == nil {
 					p = c.ChildByFieldName("name")
 				}
-				if p != nil && p.Kind() == "identifier" {
+				if p != nil && kindOf(p) == "identifier" {
 					members[w.text(p)] = true
 				}
 				continue
@@ -802,7 +802,7 @@ func (w *astWalker) simpleName(n *sitter.Node) string {
 	if n == nil {
 		return ""
 	}
-	switch n.Kind() {
+	switch kindOf(n) {
 	case "identifier", "type_identifier":
 		return w.text(n)
 	}
@@ -824,12 +824,12 @@ func firstNamedChild(n *sitter.Node) *sitter.Node {
 func callHasBlockArg(call *sitter.Node) bool {
 	for i := uint(0); i < call.ChildCount(); i++ {
 		c := call.Child(i)
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "block", "lambda_expression":
 			return true
 		case "arguments":
 			for j := uint(0); j < c.ChildCount(); j++ {
-				switch c.Child(j).Kind() {
+				switch kindOf(c.Child(j)) {
 				case "block", "lambda_expression", "case_block":
 					return true
 				}
@@ -884,14 +884,14 @@ func (w *astWalker) handleImport(n *sitter.Node) {
 		if !c.IsNamed() {
 			continue
 		}
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "namespace_selectors":
 			for j := uint(0); j < c.ChildCount(); j++ {
 				s := c.Child(j)
 				if !s.IsNamed() {
 					continue
 				}
-				switch s.Kind() {
+				switch kindOf(s) {
 				case "arrow_renamed_identifier", "renamed_identifier":
 					// `Helper => H`: the FQN is built from the ORIGINAL name, the
 					// lookup key is the LOCAL one, because that is what the code
@@ -997,7 +997,7 @@ func (w *astWalker) handleTypeLike(n *sitter.Node, symbolKind string) {
 	// at the source level. It keeps symbol_kind=class (no new vocabulary) and says
 	// which it is in a prop, because "how many classes does this repo have" and
 	// "which of them are singletons" are different questions.
-	switch n.Kind() {
+	switch kindOf(n) {
 	case "object_definition":
 		props["scala_object"] = true
 	case "package_object":
@@ -1011,7 +1011,7 @@ func (w *astWalker) handleTypeLike(n *sitter.Node, symbolKind string) {
 		// interfaces" on a package that is mostly data: one corpus package of 92
 		// header value types was reported rigid with exactly that suggestion, which
 		// is not actionable for types whose whole content is their fields.
-		if n.Kind() != "object_definition" {
+		if kindOf(n) != "object_definition" {
 			props["data_holder"] = true
 		}
 	}
@@ -1097,7 +1097,7 @@ func (w *astWalker) addSupertypes(idx int, n *sitter.Node) {
 	seen := map[string]bool{}
 	for i := uint(0); i < ext.ChildCount(); i++ {
 		c := ext.Child(i)
-		if !c.IsNamed() || c.Kind() == "arguments" {
+		if !c.IsNamed() || kindOf(c) == "arguments" {
 			continue
 		}
 		name := w.baseTypeName(c)
@@ -1117,7 +1117,7 @@ func (w *astWalker) handleEnumCase(n *sitter.Node) {
 	if name == "" {
 		// `case Red, Green, Blue` — several names share one node.
 		for i := uint(0); i < n.ChildCount(); i++ {
-			if c := n.Child(i); c.IsNamed() && c.Kind() == "identifier" {
+			if c := n.Child(i); c.IsNamed() && kindOf(c) == "identifier" {
 				w.emitEnumCase(n, w.text(c))
 			}
 		}
@@ -1169,7 +1169,7 @@ func (w *astWalker) handleFunction(n *sitter.Node) {
 		props["receiver"] = w.typeStack[len(w.typeStack)-1]
 	}
 	props["symbol_kind"] = kind
-	if n.Kind() == "function_declaration" {
+	if kindOf(n) == "function_declaration" {
 		// No body: an abstract member of a trait or abstract class.
 		props["abstract"] = true
 	}
@@ -1220,7 +1220,7 @@ func (w *astWalker) handleValue(n *sitter.Node, symbolKind string) {
 		nameNode = n.ChildByFieldName("name")
 	}
 	name := ""
-	if nameNode != nil && (nameNode.Kind() == "identifier" || nameNode.Kind() == "stable_identifier") {
+	if nameNode != nil && (kindOf(nameNode) == "identifier" || kindOf(nameNode) == "stable_identifier") {
 		name = w.text(nameNode)
 	}
 	if name == "" {
@@ -1296,7 +1296,7 @@ func (w *astWalker) handleGiven(n *sitter.Node) {
 		if name == "" {
 			for i := uint(0); i < n.ChildCount(); i++ {
 				c := n.Child(i)
-				if c.IsNamed() && isTypeNode(c.Kind()) {
+				if c.IsNamed() && isTypeNode(kindOf(c)) {
 					name = w.baseTypeName(c)
 					break
 				}
@@ -1357,7 +1357,7 @@ func (w *astWalker) handleInstanceExpression(n *sitter.Node) {
 		if !c.IsNamed() {
 			continue
 		}
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "arguments", "template_body", "with_template_body", "indented_block", "block":
 			continue // handled below
 		}
@@ -1381,7 +1381,7 @@ func (w *astWalker) handleInstanceExpression(n *sitter.Node) {
 		if !c.IsNamed() {
 			continue
 		}
-		switch c.Kind() {
+		switch kindOf(c) {
 		case "arguments", "template_body", "with_template_body", "indented_block", "block":
 			w.walk(c)
 		}
@@ -1474,11 +1474,11 @@ func (w *astWalker) baseTypeName(n *sitter.Node) string {
 	if n == nil {
 		return ""
 	}
-	switch n.Kind() {
+	switch kindOf(n) {
 	case "generic_type":
 		// The type constructor is the first named child; the rest are arguments.
 		for i := uint(0); i < n.ChildCount(); i++ {
-			if c := n.Child(i); c.IsNamed() && c.Kind() != "type_arguments" {
+			if c := n.Child(i); c.IsNamed() && kindOf(c) != "type_arguments" {
 				return w.baseTypeName(c)
 			}
 		}
@@ -1497,7 +1497,7 @@ func (w *astWalker) baseTypeName(n *sitter.Node) string {
 		}
 		return ""
 	}
-	if isTypeNode(n.Kind()) {
+	if isTypeNode(kindOf(n)) {
 		return normalizeDotted(w.text(n))
 	}
 	return ""
@@ -1524,7 +1524,7 @@ func (w *astWalker) isExported(n *sitter.Node) bool {
 // modifierText returns the text of the declaration's `modifiers` node, or "".
 func (w *astWalker) modifierText(n *sitter.Node) string {
 	for i := uint(0); i < n.ChildCount(); i++ {
-		if c := n.Child(i); c.Kind() == "modifiers" {
+		if c := n.Child(i); kindOf(c) == "modifiers" {
 			return w.text(c)
 		}
 	}
@@ -1542,7 +1542,7 @@ func sameNode(a, b *sitter.Node) bool {
 // token kind — how the grammar represents `case` on a class or object.
 func hasTokenChild(n *sitter.Node, kind string) bool {
 	for i := uint(0); i < n.ChildCount(); i++ {
-		if n.Child(i).Kind() == kind {
+		if kindOf(n.Child(i)) == kind {
 			return true
 		}
 	}
