@@ -1090,6 +1090,18 @@ func (e *Engine) runRenderers(ctx context.Context, snapshot *facts.Snapshot) ([]
 // WriteArtifacts writes all snapshot artifacts to the output directory,
 // including facts.jsonl, insights.json, and snapshot.meta.json.
 func (e *Engine) WriteArtifacts(repoPath string) error {
+	// Paced like generation, and for a sharper reason: THIS is where a snapshot peaks.
+	// Serializing facts.jsonl and reading it back for the history allocates heavily
+	// against a store and graph that are both still live, and it runs after
+	// GenerateSnapshot has restored the default GOGC — so the most expensive moment of
+	// a run was the one moment nothing was pacing. Measured on the kernel, the peak
+	// lands in the last 0.2s of a 139s run and this line removes it: 4,328 → 3,697 MiB.
+	//
+	// Inside the method rather than around its six call sites (cmd, server, two in
+	// command/check, command/hook, bootstrap), so a library caller gets it too and no
+	// new call site can forget it.
+	defer snapshotGCPercent()()
+
 	// Load the published bundle once and read only from it. The bundle is immutable,
 	// so serializing facts/insights/meta here is race-free even if another generate
 	// publishes a newer bundle meanwhile.

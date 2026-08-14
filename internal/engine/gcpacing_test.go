@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"runtime/debug"
 	"testing"
+
+	"github.com/enola-labs/enola/internal/config"
 )
 
 // The pacing change must be invisible outside the snapshot. A generate that lowered
@@ -64,4 +67,42 @@ func withoutGOGC(t *testing.T) {
 		}
 		_ = os.Unsetenv("GOGC")
 	})
+}
+
+// Both halves of a snapshot pace the collector, and BOTH must hand it back. This runs
+// the real pair rather than the helper in isolation, because the bug it guards is a
+// scoping mistake — phase 1b paced GenerateSnapshot and left WriteArtifacts, where the
+// peak actually is, running at the default. A future refactor that moves the defer, or
+// returns early before it, would restore that silently.
+func TestSnapshotGCPercent_RestoredAfterAFullSnapshot(t *testing.T) {
+	withoutGOGC(t)
+
+	repo := t.TempDir()
+	writeRepoFile(t, repo, "go.mod", "module example.com/pace\n\ngo 1.25\n")
+	writeRepoFile(t, repo, "pkg/x.go", "package pkg\n\nfunc X() string { return \"x\" }\n")
+
+	cfg := config.Default()
+	cfg.Repo = repo
+	cfg.Explainers = nil
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const sentinel = 173 // nothing else uses this value, so a leak is unambiguous
+	original := debug.SetGCPercent(sentinel)
+	t.Cleanup(func() { debug.SetGCPercent(original) })
+
+	if _, err := e.GenerateSnapshot(context.Background(), repo, false); err != nil {
+		t.Fatalf("GenerateSnapshot: %v", err)
+	}
+	if got := debug.SetGCPercent(sentinel); got != sentinel {
+		t.Errorf("after GenerateSnapshot GOGC = %d, want the caller's %d", got, sentinel)
+	}
+	if err := e.WriteArtifacts(repo); err != nil {
+		t.Fatalf("WriteArtifacts: %v", err)
+	}
+	if got := debug.SetGCPercent(sentinel); got != sentinel {
+		t.Errorf("after WriteArtifacts GOGC = %d, want the caller's %d", got, sentinel)
+	}
 }

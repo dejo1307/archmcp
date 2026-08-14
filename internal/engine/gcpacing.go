@@ -14,7 +14,8 @@ import (
 // trade is unusually good here because extraction is bound on tree-sitter parsing
 // through cgo rather than on the collector.
 //
-// Measured on dotnet/runtime, cold, otherwise identical runs:
+// Measured on dotnet/runtime, cold, otherwise identical runs (extraction only; see
+// WriteArtifacts for the separate measurement of the artifact-writing window):
 //
 //	GOGC   peak heap   wall
 //	100    1,481 MiB   56.3 s
@@ -27,8 +28,13 @@ import (
 // the collector starts running continuously and the curve turns.
 const snapshotGCPercentValue = 25
 
-// snapshotGCPercent lowers GOGC for the duration of a snapshot and returns the
-// function that restores it. Call as `defer snapshotGCPercent()()`.
+// snapshotGCPercent lowers GOGC for the duration of one piece of snapshot work and
+// returns the function that restores it. Call as `defer snapshotGCPercent()()`.
+//
+// Both halves of a snapshot use it — GenerateSnapshot and WriteArtifacts — because
+// both allocate heavily against a live store, and covering only the first left the
+// actual peak unpaced. See the comment at WriteArtifacts. The brief return to the
+// default between the two calls is immaterial: nothing of size allocates there.
 //
 // It is scoped to the call rather than set once at startup, deliberately. GOGC is
 // process-global, and enola is imported as a library as well as run as a binary;
