@@ -517,7 +517,7 @@ so the demonstration proves its own limit in the same run.
 | Largest Go | Grafana — 10,313 files, 167,987 facts, 7.4s / 4.6s |
 | Throughput | 3,100–30,300 facts/sec depending on language |
 | Parse errors, all 81 repositories | **0** |
-| Memory | peak heap per run is recorded by the sweep (`--memstats`) alongside time and hashes. The Linux kernel is the high-water mark at **5,965 MB**; only five others exceed 1 GB (GitLab 1,629, dotnet/runtime 1,600, roslyn 1,427, rust-lang/rust 1,302, dart-sdk 1,261). No repository required tuning on this machine |
+| Memory | peak heap per run is recorded by the sweep (`--memstats`) alongside time and hashes. The Linux kernel is the high-water mark at **5,228 MB**; only five others exceed 1 GB (GitLab 1,549, dotnet/runtime 1,454, roslyn 1,320, dart-sdk 1,266, rust-lang/rust 1,128). No repository required tuning on this machine |
 
 Warm runs are 1.09×–5.78× faster than cold (over the 57 repositories whose cold run
 exceeds 0.5s; below that the timing is noise), from the per-file content-hash cache
