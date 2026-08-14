@@ -128,7 +128,7 @@ func (v Verdict) Render() string {
 	if len(v.Advisories) > 0 {
 		sb.WriteString("\nNew findings (advisory — below the failure policy):\n")
 		writeFindings(&sb, v.Advisories)
-		sb.WriteString("\nConfidence < 1.00 is a candidate to verify, not a verdict.\n")
+		sb.WriteString(advisoryNote(v.Advisories, v.Policy))
 	}
 
 	if len(v.Resolved) > 0 {
@@ -148,6 +148,39 @@ func (v Verdict) Render() string {
 	v.writeWhatChanged(&sb)
 
 	return sb.String()
+}
+
+// advisoryNote explains why the findings just listed did not fail the build. There are
+// exactly two reasons, and one line cannot honestly cover both: a finding under the
+// confidence floor is an estimate, while a finding that MET the floor landed here only
+// because its explainer is outside --fail-on.
+//
+// The single line this replaced said "Confidence < 1.00 is a candidate to verify" over
+// lists whose every entry read `1.00` — a declared-layer violation or an intent set
+// difference, both proven by construction. The contradiction was visible one line above
+// the claim, which is the worst place for a tool that sells exactness to be sloppy. The
+// floor is also printed rather than hardcoded, so --min-confidence=0.5 no longer prints
+// a sentence about 1.00.
+func advisoryNote(ins []facts.Insight, p Policy) string {
+	floor := p.minConfidence()
+	var belowFloor, metFloor bool
+	for _, in := range ins {
+		if in.Confidence < floor {
+			belowFloor = true
+		} else {
+			metFloor = true
+		}
+	}
+	switch {
+	case belowFloor && metFloor:
+		return fmt.Sprintf("\nMixed: the ones under %.2f are candidates to verify, not verdicts. The rest met the\nfloor and were not failed because their explainer is outside [%s].\n",
+			floor, strings.Join(p.failExplainers(), ", "))
+	case metFloor:
+		return fmt.Sprintf("\nThese met the %.2f confidence floor. They did not fail the build because their\nexplainer is outside [%s] — add it to --fail-on to enforce them.\n",
+			floor, strings.Join(p.failExplainers(), ", "))
+	default:
+		return fmt.Sprintf("\nConfidence < %.2f is a candidate to verify, not a verdict.\n", floor)
+	}
 }
 
 // listCap is how many entries each list prints before summarizing the rest. Enough to
