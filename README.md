@@ -352,7 +352,7 @@ It joins the two sides wherever they meet: a web client's `fetch()` to the route
 r.HandleFunc("/courses", listCourses)
 ```
 
-The `/api` was attached somewhere else entirely - in whatever function set this router up, quite possibly in another package. Compare the two strings literally and you find nothing, so enola follows that prefix across function and package boundaries (*interprocedurally*) and files the route under the address it actually answers on: `/api/courses`. Same story for Axum's `.nest()`, Rails' `scope` and `namespace`, and a Swift endpoint enum whose version prefix lives three files away in a protocol extension.
+The `/api` was attached somewhere else entirely - in whatever function set this router up, quite possibly in another package. Compare the two strings literally and you find nothing, so enola follows that prefix across function and package boundaries (*interprocedurally*) and files the route under the address it actually answers on: `/api/courses`. Same story for an Express router declared in `routes/webhooks.js` and mounted in `index.js`, Axum's `.nest()`, Rails' `scope` and `namespace`, and a Swift endpoint enum whose version prefix lives three files away in a protocol extension.
 
 Once both ends line up, `enola check` grades a change spanning two repos exactly the way it grades one that doesn't.
 
@@ -373,7 +373,7 @@ That reports, per service, how many outbound calls it found, how many it matched
 | Go         | `go.mod` (gorilla/mux + chi route composition / gRPC clients / Kafka topics aware) |
 | Java       | `pom.xml` (Maven) or `.java` sources (Spring routes / JPA / Lombok DI / Dubbo SPI aware) |
 | JavaScript | `tsconfig.json` / `package.json` with TypeScript (parsed by the TypeScript extractor) |
-| TypeScript | `tsconfig.json` / `package.json` with TypeScript (Next.js, React Navigation & monorepo aware) |
+| TypeScript | `tsconfig.json` / `package.json` with TypeScript (Next.js, React Navigation & monorepo aware; Express sub-router mounts composed across files) |
 | Vue        | `package.json` with `vue` dependency (Nuxt / Vue Router / Composition API aware) |
 | Svelte     | `package.json` with `svelte` dependency (SvelteKit routing / `$lib` alias aware) |
 | Ember      | `package.json` with `ember-source` dependency (`.gts`/`.gjs` template tags, `.hbs` templates, router map, ember-data) |

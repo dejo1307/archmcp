@@ -148,7 +148,18 @@ func (r *Runner) Install(args []string, remove bool) {
 		r.installFatal("%v", err)
 	}
 	fmt.Println()
-	printPlan(applied)
+	// The preview above and the result below are the same list in the overwhelmingly
+	// common case, and printing it twice reads as a rendering bug rather than as a
+	// report: with --yes there is not even a confirmation prompt between the two
+	// copies. So the second one collapses to a single line UNLESS it diverges, which
+	// is the only case where re-reading it tells you something — a file that changed
+	// under the preview, or a write that could not be made.
+	if n := countChanged(applied); n > 0 && samePlan(planned, applied) {
+		fmt.Printf("%s — %s as previewed.\n", appliedVerb(remove), plural(n, "file"))
+	} else {
+		fmt.Println("Applied (differs from the preview):")
+		printPlan(applied)
+	}
 
 	// Stamp the heartbeat so `enola doctor` can later say "installed on X, never fired
 	// since" — the one report that distinguishes hooks that are wired up from hooks that
@@ -243,6 +254,50 @@ func printPlan(rs []install.Result) {
 		}
 		fmt.Println(line)
 	}
+}
+
+// samePlan reports whether applying produced exactly the plan that was previewed —
+// same entries, same order, same reasons. Compared in full rather than by count: a
+// `created` that came back `unchanged`, or a reason that changed, is precisely the
+// divergence worth showing the whole list for.
+func samePlan(planned, applied []install.Result) bool {
+	if len(planned) != len(applied) {
+		return false
+	}
+	for i := range planned {
+		if planned[i] != applied[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// countChanged counts the entries that actually touched a file, which is what the
+// one-line summary reports. `skipped` and `unchanged` entries are in the plan for
+// the reasons they carry, and counting them would overstate what was done.
+func countChanged(rs []install.Result) int {
+	n := 0
+	for _, r := range rs {
+		switch r.Action {
+		case install.ActionCreated, install.ActionUpdated, install.ActionRemoved:
+			n++
+		}
+	}
+	return n
+}
+
+func appliedVerb(remove bool) string {
+	if remove {
+		return "Removed"
+	}
+	return "Written"
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // changesAnything reports whether any file would actually be touched, so an idempotent

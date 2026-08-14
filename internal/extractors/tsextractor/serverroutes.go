@@ -87,7 +87,13 @@ func serverBindings(src []byte) map[string]serverBinding {
 		if !ok || !b.isRouter || b.mounted {
 			continue
 		}
-		if parent, ok := out[string(m[1])]; ok {
+		// Only a parent whose OWN mount point is known can give one to a child.
+		// Mounting onto an unmounted sub-router — `apiRouter.use('/orders', orders)`
+		// in a file that does not itself mount apiRouter — yields the fragment
+		// "/orders", which is exactly the wrong fact this pass exists to avoid: the
+		// route really serves "/api/orders". The child stays unmounted here and
+		// routermount.go composes it once both mounts are visible.
+		if parent, ok := out[string(m[1])]; ok && parent.mounted {
 			b.prefix = facts.JoinRoutePath(parent.prefix, prefix)
 			b.mounted = true
 			b.framework = parent.framework

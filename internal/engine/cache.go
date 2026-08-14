@@ -1647,7 +1647,41 @@ import (
 // The goldens move: ruby_sample's 13 route facts each gain a handler prop and a
 // handled_by relation. No route is added or lost in the fixture, which is the point —
 // the fixture is a single-file application, the shape that already worked.
-const cacheVersion = "v197"
+// v198: the TS extractor composes Express sub-router mounts ACROSS FILES, the last
+// of the major frameworks still resolving mounts only within one file.
+//
+// serverroutes.go emits a route only when the mount is written in the same file as
+// the router, and deliberately emits NOTHING otherwise: `router.post('/login')` in a
+// module mounted at '/webhooks' elsewhere serves '/webhooks/login', and the fragment
+// would be a wrong fact that can false-match another repo's route. Correct, and also
+// silent on the layout every Express service uses — routes in `src/api/*.ts`, the
+// `app.use('/api', router)` in `src/server.ts`. A four-route service split that way
+// contributed zero route facts, which reads as a backend that serves nothing.
+//
+// tsextractor/routermount.go adds the repo-wide half, the same shape as Go v125,
+// Axum v130, FastAPI v133 and Rails v197: each file reports its routers, the routes
+// held back on them, its mounts, and its imports/exports resolved to files; a
+// fixpoint then propagates prefixes outward from the application roots. It resolves
+// ESM and CommonJS, renamed named exports, a router returned by a factory
+// (`app.use('/api', routes())`), and mounts nested several files deep; a router
+// mounted at N prefixes emits its routes once per prefix. Composed routes carry
+// `mount_composed=true`. Everything unresolvable — a non-literal prefix, an external
+// module, a router nothing mounts — still emits nothing, so the pass can add a route
+// or correct its path but never invent one.
+//
+// Two fixes fall out of the same work. serverroutes.go now requires a mount's PARENT
+// to be mounted before it composes: `apiRouter.use('/orders', orders)` in a file that
+// does not itself mount apiRouter used to emit the fragment '/orders/:id' for a route
+// really serving '/api/orders/:id' — the exact wrong-fact case the pass exists to
+// avoid, reached through the same-file path. And an import written WITH an extension
+// (`./orders.js`, which TypeScript's nodenext resolution makes mandatory) now
+// resolves to the `.ts` file it names, where before it resolved to nothing.
+//
+// The ts_express_multirepo golden gains the two '/webhooks/login' routes it had been
+// suppressing, and the consumer's call to that path stops being an unresolved edge:
+// cross-repo endpoint count 2 → 3, http_client coverage resolved 3 → 4. Cached
+// TypeScript/JavaScript snapshots must re-extract.
+const cacheVersion = "v198"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
