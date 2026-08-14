@@ -6,6 +6,7 @@ import (
 	"log"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/pkg/plugin"
@@ -18,7 +19,7 @@ func (b *Binder) Name() string            { return "messaging-contract" }
 func (b *Binder) Stage() plugin.BindStage { return plugin.StagePostLink }
 
 type contractRef struct {
-	identity, operationID, file string
+	identity, operationID, file, protocol string
 }
 
 type binding struct {
@@ -36,6 +37,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		key := operationKey(f)
 		contracts[key] = append(contracts[key], contractRef{
 			identity: contractIdentity(f), operationID: f.PropString("operationId"), file: f.File,
+			protocol: f.PropString(facts.PropMessaging),
 		})
 	}
 
@@ -45,7 +47,7 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		if !isCodeOperation(f) {
 			continue
 		}
-		matches := contracts[operationKey(f)]
+		matches := compatibleContracts(contracts[operationKey(f)], f.PropString(facts.PropMessaging))
 		if len(matches) != 1 {
 			continue
 		}
@@ -109,6 +111,38 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		log.Printf("[binder:messaging-contract] bound %d messaging call site(s) to AsyncAPI operations", bound)
 	}
 	return nil
+}
+
+func compatibleContracts(candidates []contractRef, codeProtocol string) []contractRef {
+	out := make([]contractRef, 0, len(candidates))
+	for _, candidate := range candidates {
+		if messagingProtocolsCompatible(codeProtocol, candidate.protocol) {
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+// messagingProtocolsCompatible permits a missing protocol for backward
+// compatibility with contracts whose server is unspecified, and treats Kafka's
+// secure variant as the same broker family. Explicitly different technologies
+// must never bind merely because their channel name and direction coincide.
+func messagingProtocolsCompatible(codeProtocol, contractProtocol string) bool {
+	codeProtocol = strings.ToLower(strings.TrimSpace(codeProtocol))
+	contractProtocol = strings.ToLower(strings.TrimSpace(contractProtocol))
+	if codeProtocol == "" || contractProtocol == "" {
+		return true
+	}
+	return messagingProtocolFamily(codeProtocol) == messagingProtocolFamily(contractProtocol)
+}
+
+func messagingProtocolFamily(protocol string) string {
+	switch protocol {
+	case "kafka", "kafka-secure":
+		return "kafka"
+	default:
+		return protocol
+	}
 }
 
 func isContractOperation(f facts.Fact) bool {

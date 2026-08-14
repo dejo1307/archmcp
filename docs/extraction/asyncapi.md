@@ -53,6 +53,11 @@ exact topic+operation pair to a unique AsyncAPI operation in the same repository
   and an `implemented_by` relation to the code symbol.
 - Multiple matching contract operations are ambiguous and remain unbound.
 
+Protocol compatibility is part of that match. Kafka and `kafka-secure` are one
+broker family, while an explicitly MQTT, AMQP, or WebSocket contract cannot bind
+to a Kafka call site even if its channel name and direction are identical. A
+missing contract protocol remains eligible for specifications with no server.
+
 The Kafka-import gate is required: ordinary in-process event buses frequently use
 methods named `Publish` and `Subscribe`, and treating those as broker operations
 would manufacture contract coverage that does not exist.

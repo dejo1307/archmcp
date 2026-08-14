@@ -89,3 +89,66 @@ func TestBindTypeScriptKafkaCall(t *testing.T) {
 		}
 	}
 }
+
+func TestProtocolCompatibility(t *testing.T) {
+	tests := []struct {
+		name             string
+		contractProtocol string
+		wantBound        bool
+	}{
+		{name: "Kafka", contractProtocol: "kafka", wantBound: true},
+		{name: "Kafka secure", contractProtocol: "kafka-secure", wantBound: true},
+		{name: "unspecified", contractProtocol: "", wantBound: true},
+		{name: "MQTT", contractProtocol: "mqtt", wantBound: false},
+		{name: "AMQP", contractProtocol: "amqp", wantBound: false},
+		{name: "WebSocket", contractProtocol: "wss", wantBound: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			contractFact := contract("shared.events", facts.MessagingOperationPublish, "publishEvent", "asyncapi.yaml")
+			if tt.contractProtocol != "" {
+				contractFact.Props[facts.PropMessaging] = tt.contractProtocol
+			}
+			codeFact := code("shared.events", facts.MessagingOperationPublish, "events.Publish", 12)
+			codeFact.Props[facts.PropMessaging] = "kafka"
+			store := facts.NewStore()
+			store.Add(contractFact, codeFact)
+			if err := New().Bind(context.Background(), store); err != nil {
+				t.Fatal(err)
+			}
+			bound := false
+			for _, f := range store.FactsRef() {
+				if isCodeOperation(f) {
+					bound = f.Props[facts.PropMessagingContractBound] == true
+				}
+			}
+			if bound != tt.wantBound {
+				t.Fatalf("bound = %v, want %v", bound, tt.wantBound)
+			}
+		})
+	}
+}
+
+func TestProtocolDisambiguatesSameTopicOperations(t *testing.T) {
+	kafkaContract := contract("shared.events", facts.MessagingOperationPublish, "publishKafka", "kafka.yaml")
+	kafkaContract.Props[facts.PropMessaging] = "kafka-secure"
+	mqttContract := contract("shared.events", facts.MessagingOperationPublish, "publishMQTT", "mqtt.yaml")
+	mqttContract.Props[facts.PropMessaging] = "mqtt"
+	codeFact := code("shared.events", facts.MessagingOperationPublish, "events.Publish", 12)
+	codeFact.Props[facts.PropMessaging] = "kafka"
+	store := facts.NewStore()
+	store.Add(kafkaContract, mqttContract, codeFact)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range store.FactsRef() {
+		if isCodeOperation(f) {
+			if f.Props[facts.PropMessagingContractBound] != true || f.PropString(facts.PropMessagingContractOperationID) != "publishKafka" {
+				t.Fatalf("Kafka call binding = %+v", f.Props)
+			}
+		}
+		if isContractOperation(f) && f.PropString("operationId") == "publishMQTT" && f.Props[facts.PropMessagingImplementationCount] != nil {
+			t.Fatalf("MQTT contract received Kafka implementation: %+v", f)
+		}
+	}
+}
