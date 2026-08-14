@@ -270,7 +270,7 @@ enola parses your source with tree-sitter and language-specific extractors, norm
 
 **Deterministic.** The same commit yields the same answer, every time: across 72 open-source repositories indexed three times each, all 72 produced a byte-identical snapshot ID and a byte-identical fact file, over 6.8 million facts with zero parse errors ([BENCHMARKS.md](docs/BENCHMARKS.md)). Every snapshot carries a **receipt**: enola's version, the git ref and whether the tree was dirty, the extractors used, and a snapshot ID that's a `sha256` fingerprint of the facts rather than a random UUID. Before comparing two snapshots, enola checks they were built the same way - a different extractor set or changed ignore rules makes a diff meaningless, and it reports that instead of treating the mismatch as your change.
 
-**Fast enough for every commit.** On that same corpus, a warm re-index of an unchanged tree took 6.8s for grafana (10,313 files, 167,987 facts) and 49.6s for the Linux kernel (55,399 files, 1.9M facts). Full per-repository numbers, cold and warm, are in [BENCHMARKS.md](docs/BENCHMARKS.md).
+**Fast enough for every commit.** On that same corpus, a warm re-index of an unchanged tree took 4.6s for grafana (10,313 files, 167,987 facts) and 24.3s for the Linux kernel (55,408 files, 1.9M facts). Full per-repository numbers, cold and warm, are in [BENCHMARKS.md](docs/BENCHMARKS.md).
 
 **Local.** enola runs as a local binary reading local files. Nothing leaves your machine, and there is no license check anywhere in this repository.
 
