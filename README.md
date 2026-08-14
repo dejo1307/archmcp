@@ -231,7 +231,7 @@ A cycle is when two modules end up depending on each other. `billing` imports `i
 - outbound calls enola could not match to any route it loaded (`coverage`)
 - which repositories in a cluster ended up depending on which (`crossrepo`)
 
-**Any of them can fail the build.** `--fail-on` takes those names, and `--min-confidence` sets the floor within them - see the table below. Two more things can fail it that are not findings at all, and neither is on by default:
+**Any of them can fail the build.** `--fail-on` takes the eleven names above as a comma-separated list - all of them, not just the two or three that show up in examples - and `--min-confidence` sets the floor within them. Two more things can fail it that are not findings at all, and neither is on by default:
 
 - **scope spillover** - packages your change reached outside the area you declared with `--target`, gated with `--max-spillover=N`. A change can trip this with zero failing findings.
 - **a gate that could not run.** A missing baseline or a bad flag exits `2`; a baseline that isn't comparable to the current code exits `3` and enola declines to grade rather than blaming your change. Neither is a judgement about the code, and neither is suppressed by `--warn-only`.
@@ -243,11 +243,12 @@ A cycle is when two modules end up depending on each other. `billing` imports `i
 | You want | Run |
 |---|---|
 | The default: fail only on new cycles | `enola check` |
-| Also fail on violations of a layer order you declared | `enola check --fail-on=cycles,layers` |
-| ...and on layer violations enola inferred rather than you declaring them | `enola check --fail-on=cycles,layers --min-confidence=0.8` |
-| Also fail on a cross-repo seam nobody declared | `enola check --fail-on=cycles,intent` |
+| Also fail on a cross-repo seam nobody declared, and on violations of a layer order you declared | `enola check --fail-on=cycles,intent,layers` |
+| Everything above, plus the eight explainers enola infers rather than proves | `enola check --fail-on=cycles,intent,layers,crossrepo,coverage,unused-routes,god-class,hotspots,dependency-depth,exported-surface,complexity-outliers --min-confidence=0.8` |
 | Report everything, fail nothing | `enola check --warn-only` |
 | Fail if the change spread outside the area you named | `enola check --target=internal/auth --max-spillover=0` |
+
+**Only three of the eleven can fail at the default floor.** `cycles`, `intent`, and `layers` when the layer order is declared in `enola-intent.yaml` are the ones enola computes with certainty, so only they reach `1.00`. Everything else is inferred, and caps below `1.00` by design ([`MaxHeuristicConfidence`](internal/explainers/common/common.go) is `0.95`) - which is why the third row above needs `--min-confidence` as well as the names. Adding an inferred explainer to `--fail-on` and nothing else changes nothing at all.
 
 That last row is a different question from the others. `--target` is you saying *"this change is about `internal/auth`"*; enola works out which packages depend on it, then reports any package your change touched that isn't in that group - something you edited that your own description didn't cover. Two snapshots can tell you what changed; only you can say what you meant to change.
 
@@ -256,7 +257,7 @@ That last row is a different question from the others. `--target` is you saying 
 
 - **`--fail-on` replaces the default, it doesn't add to it.** `--fail-on=layers` stops failing on cycles. Write `--fail-on=cycles,layers` if you want both.
 - **`--min-confidence` lowers the bar; it doesn't raise it.** The default floor is `1.00`, which is already the strictest setting there is. `--min-confidence=0.8` makes the gate fail on *more*, not less.
-- **Naming an explainer is not always enough, because confidence is per finding.** `layers` emits violations of a layer order you *declared* at `1.00` and violations of a pattern it *recognised* at `0.80`. So on a repo with no declared layer order, `--fail-on=cycles,layers` on its own changes nothing until you also pass `--min-confidence=0.8`.
+- **Confidence is per finding, not per explainer.** `layers` is the one that catches people: violations of a layer order you *declared* score `1.00`, violations of a pattern it *recognised* score `0.80`. So on a repo with no declared layer order, `--fail-on=cycles,layers` changes nothing until you also pass `--min-confidence=0.8`.
 - **A misspelled name is not an error.** It just never matches anything, so the gate goes quiet instead of complaining. `enola check --json` prints the policy that actually ran - compare it against what you typed.
 - **`--warn-only` silences findings, not problems.** Findings and spillover breaches are downgraded to warnings; the check still exits non-zero if it couldn't run at all (`2`), or if the baseline isn't comparable to the current code (`3`).
 
