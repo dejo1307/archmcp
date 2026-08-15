@@ -14,6 +14,7 @@ import (
 // says why a baseline is untrustworthy or merely caveated rather than only that it is.
 var kindMeaning = map[diff.WarningKind]string{
 	diff.WarnDifferentRepo:   "the two snapshots are of different repositories, so the delta is not about your change",
+	diff.WarnRepoLabel:       "the same repository is labelled differently on the two sides, so no fact matches across them and the delta describes neither snapshot",
 	diff.WarnVersionMismatch: "different enola versions extract differently, so unchanged code can appear as churn",
 	diff.WarnExtractorSet:    "a language present on one side only makes all of its facts appear added or removed",
 	diff.WarnExplainerSet:    "an explainer present on one side only makes all of its findings appear new or resolved; the facts and coupling in this delta are unaffected",

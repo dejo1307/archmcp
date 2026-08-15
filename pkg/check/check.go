@@ -221,7 +221,11 @@ func BlockingKinds(c diff.Comparability) []diff.WarningKind {
 }
 
 var blockingKinds = map[diff.WarningKind]bool{
-	diff.WarnDifferentRepo:   true,
+	diff.WarnDifferentRepo: true,
+	// Same repository, different fact labels: nothing matches across the two sides, so
+	// the delta is a fiction the gate must not grade. It reached production as a green
+	// job reporting the entire repository as added and removed.
+	diff.WarnRepoLabel:       true,
 	diff.WarnVersionMismatch: true,
 	diff.WarnExtractorSet:    true,
 	diff.WarnIgnoreGlobs:     true,

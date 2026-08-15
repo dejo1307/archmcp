@@ -116,6 +116,9 @@ func TestEvaluate_StaleBaselineWarnsAndStillGrades(t *testing.T) {
 func TestEvaluate_BlockingDeclinesRatherThanFails(t *testing.T) {
 	for _, kind := range []diff.WarningKind{
 		diff.WarnDifferentRepo,
+		// Same repository, incompatible fact labels — the gate must decline rather than
+		// grade a delta in which nothing can match.
+		diff.WarnRepoLabel,
 		diff.WarnVersionMismatch,
 		diff.WarnExtractorSet,
 		diff.WarnIgnoreGlobs,

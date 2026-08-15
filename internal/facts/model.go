@@ -232,7 +232,13 @@ type Snapshot struct {
 // let a consumer (a human, a diff, or an agent improving enola itself) judge how
 // complete the extraction was before trusting it.
 type SnapshotMeta struct {
-	RepoPath     string     `json:"repo_path"`
+	RepoPath string `json:"repo_path"`
+	// RepoLabel is the label the facts in this snapshot are tagged with, and therefore
+	// part of every fact's diff key. Two snapshots of the same repository labelled
+	// differently share no keys, so this is recorded to be COMPARED — see
+	// diff.compareMeta. Empty on snapshots written before it existed, where the reader
+	// falls back to the checkout directory name, which is what those builds used.
+	RepoLabel    string     `json:"repo_label,omitempty"`
 	GeneratedAt  string     `json:"generated_at"`
 	Duration     string     `json:"duration"`
 	Extractors   []string   `json:"extractors"`

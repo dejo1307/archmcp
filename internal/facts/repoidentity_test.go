@@ -191,3 +191,33 @@ func TestSameRepo_NormalizesLegacyRawRemotes(t *testing.T) {
 		t.Error("a raw remote from an older snapshot must normalize to the same identity as a current one")
 	}
 }
+
+// RepoLabel is part of every fact's diff key, so what it derives from decides whether
+// two snapshots of one repository can be compared at all.
+func TestRepoLabel_PrefersTheRepositoryNameOverTheDirectory(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		remote string
+		path   string
+		want   string
+	}{
+		{"remote names the repo, not the checkout", "https://github.com/enola-labs/enola.git", "/tmp/wt/base", "enola"},
+		{"the same repo checked out elsewhere agrees", "git@github.com:enola-labs/enola.git", "/home/runner/work/enola/enola", "enola"},
+		{"no remote falls back to the directory", "", "/src/my-app", "my-app"},
+		{"a remote with no path is not a name", "https://github.com", "/src/my-app", "my-app"},
+		{"windows path, no remote", "", `C:\src\my-app`, "my-app"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RepoLabel(tt.remote, tt.path); got != tt.want {
+				t.Errorf("RepoLabel(%q, %q) = %q, want %q", tt.remote, tt.path, got, tt.want)
+			}
+		})
+	}
+
+	// The property that matters: one repository, two checkout names, one label.
+	base := RepoLabel("https://github.com/acme/demo.git", "/tmp/enola-action-xyz/base")
+	head := RepoLabel("https://github.com/acme/demo.git", "/home/runner/work/demo/demo")
+	if base != head {
+		t.Errorf("the same repository produced two labels: %q vs %q", base, head)
+	}
+}

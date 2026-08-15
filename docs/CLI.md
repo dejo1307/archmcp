@@ -493,7 +493,9 @@ The baseline is a pinned artifact rather than "whatever state the tool last held
 | `2` | **error** - the gate could not run (no baseline pinned, bad argument, inverted snapshot pair) |
 | `3` | **declined** - the baseline is not comparable, so it refused to grade |
 
-`3` is deliberately not `1`. When the two snapshots were built over different inputs - a different enola version, a different extractor set, changed ignore globs - the delta describes *how they were produced*, not what you edited. Reporting that as a failing change would be a lie, so the gate says it declined and why.
+`3` is deliberately not `1`. When the two snapshots were built over different inputs - a different enola version, a different extractor set, changed ignore globs, or the same repository indexed under two different labels - the delta describes *how they were produced*, not what you edited. Reporting that as a failing change would be a lie, so the gate says it declined and why.
+
+**Repository labels are part of that.** Every fact carries the label of the repository it came from, and a diff matches facts on it, so two snapshots that label one repository differently share no facts at all. The label is the repository's name from its git remote when the indexed directory is that repository's root - so a worktree, a second clone, and a CI checkout all agree - and the checkout directory name otherwise. When the two sides disagree anyway, the gate declines with `repo_label` rather than reporting your whole repository as rewritten.
 
 **A stale baseline warns; it never blocks.** Past three days it tells you exactly how stale and what that means (the delta now also contains whatever the repo itself changed in between) - then grades anyway, because a long-lived baseline is a legitimate way to measure a multi-day refactor and only you know which you meant.
 

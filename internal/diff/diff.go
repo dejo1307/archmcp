@@ -95,6 +95,11 @@ type WarningKind string
 const (
 	// WarnDifferentRepo — baseline and current are different repositories.
 	WarnDifferentRepo WarningKind = "different_repo"
+	// WarnRepoLabel — the two snapshots are the same repository but their facts carry
+	// different repo labels, so no fact on one side can match its counterpart on the
+	// other. Distinct from WarnDifferentRepo: the repository IS the same, which is why
+	// the identity check waves it through, and the delta is nonetheless total fiction.
+	WarnRepoLabel WarningKind = "repo_label"
 	// WarnVersionMismatch — different enola versions, so extractor changes between
 	// them can appear as spurious churn.
 	WarnVersionMismatch WarningKind = "version_mismatch"
@@ -144,7 +149,7 @@ const (
 func (c Comparability) InvalidatesDelta() bool {
 	for _, k := range c.Kinds {
 		switch k {
-		case WarnDifferentRepo, WarnVersionMismatch, WarnExtractorSet,
+		case WarnDifferentRepo, WarnRepoLabel, WarnVersionMismatch, WarnExtractorSet,
 			WarnIgnoreGlobs, WarnInvertedPair, WarnUnclassified:
 			return true
 		}
@@ -344,6 +349,16 @@ func repoMismatchDetail(base, cur facts.SnapshotMeta) string {
 		"directory name was compared", orDash(base.RepoPath), orDash(cur.RepoPath))
 }
 
+// repoLabelOf is the label a snapshot's facts carry. Snapshots written before the label
+// was recorded get the rule those builds used — the checkout directory name — so an old
+// baseline is compared on what actually tagged it rather than on today's rule.
+func repoLabelOf(m facts.SnapshotMeta) string {
+	if m.RepoLabel != "" {
+		return m.RepoLabel
+	}
+	return facts.RepoDirName(m.RepoPath)
+}
+
 func remoteOf(m facts.SnapshotMeta) string {
 	if m.Git == nil {
 		return ""
@@ -367,6 +382,21 @@ func compareMeta(base, cur facts.SnapshotMeta) Comparability {
 		c.add(WarnDifferentRepo,
 			"baseline and current are different repositories (%s) — the delta is unlikely to be meaningful",
 			repoMismatchDetail(base, cur))
+	} else if bl, cl := repoLabelOf(base), repoLabelOf(cur); bl != "" && cl != "" && bl != cl {
+		// Same repository, different labels on the facts. Every fact key embeds the label
+		// (factKey), so NOTHING matches across the two sides and the delta reports the
+		// whole graph as added and removed. Findings survive it — they are keyed by title
+		// — which is what made this look like a plausible verdict rather than a broken
+		// comparison: a real regression count over a fabricated delta.
+		//
+		// It reaches here through the identity check rather than instead of it: a git
+		// worktree, or any second checkout under another directory name, shares the
+		// remote that SameRepo trusts.
+		c.add(WarnRepoLabel,
+			"baseline and current label the same repository differently (%q vs %q), so no fact matches "+
+				"across them — re-pin the baseline from the checkout you are grading, or index both "+
+				"from a repository root so the label comes from the remote rather than the directory",
+			bl, cl)
 	}
 
 	if base.EnolaVersion == "" || cur.EnolaVersion == "" {

@@ -118,6 +118,11 @@ func remoteIdentity(m SnapshotMeta) string {
 	return NormalizeRemote(m.Git.Remote)
 }
 
+// RepoDirName exposes repoDirName: what a repository's label was before it came from
+// the remote, which a reader needs to interpret a snapshot that predates the recorded
+// label (see diff.repoLabelOf).
+func RepoDirName(path string) string { return repoDirName(path) }
+
 // repoDirName is the last path segment of a repository path, accepting either separator.
 // filepath.Base alone is not enough here: a baseline pinned on a Linux CI runner and read
 // on a Windows workstation (or the reverse) carries the separator of the machine that
@@ -130,6 +135,46 @@ func repoDirName(path string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// RepoLabel is the short name every fact extracted from a repository is tagged with,
+// and it is part of the key a diff matches facts on (internal/diff.factKey). That makes
+// it an IDENTITY question, not a display one: two snapshots of the same repository whose
+// facts carry different labels share no keys at all, so the delta between them reports
+// the entire graph as added and removed.
+//
+// It used to be `filepath.Base(repoPath)` alone, which answered that question with the
+// name of a directory. A git worktree, a CI job that checks the base out beside the head,
+// a second clone under another name — each produced a different label for the same code,
+// while SameRepo (which prefers the remote) went on reporting them as the same repository.
+// The two answers disagreed, and the gate graded a delta in which nothing matched.
+//
+// So the label now comes from the same signal SameRepo trusts first: the repository NAME
+// from the normalized remote — the last segment of "github.com/enola-labs/enola" — falling
+// back to the checkout directory name when there is no remote to read. Short and human
+// either way; the full identity stays in RepoIdentity, which is what gets compared.
+func RepoLabel(remote, repoPath string) string {
+	if name := repoNameFromRemote(remote); name != "" {
+		return name
+	}
+	return repoDirName(repoPath)
+}
+
+// repoNameFromRemote is the last path segment of a normalized remote: the repository's
+// own name, without its host or owner. Empty when the remote is absent or degenerate —
+// a remote normalizing to a bare host has no repository name in it, and inventing one
+// from the host would label every such repo identically.
+func repoNameFromRemote(remote string) string {
+	id := NormalizeRemote(remote)
+	if id == "" {
+		return ""
+	}
+	i := strings.LastIndex(id, "/")
+	if i < 0 {
+		// No path at all — a host, or something that did not parse as a URL. Not a name.
+		return ""
+	}
+	return id[i+1:]
 }
 
 // NormalizeRepoLabel lowercases a repo label and strips '-' and '_', so "app-web",

@@ -303,7 +303,32 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		return nil, fmt.Errorf("resolving repo path: %w", err)
 	}
 
-	repoLabel := filepath.Base(absRepo)
+	// Captured ONCE, here, because two things need it and they must agree: the repo
+	// label every fact is tagged with (below) and the snapshot's own git provenance
+	// (Meta.Git, further down). Deriving the label from a second `git remote` read
+	// would let the two drift apart on a repository whose remote changed mid-run.
+	git := gitInfo(absRepo, e.cfg.Output.Dir)
+	var remote string
+	if git != nil {
+		remote = git.Remote
+	}
+	// The repository NAME, not the directory it happens to sit in — see facts.RepoLabel.
+	repoLabel := repoLabelFor(absRepo, remote)
+	// A cluster can hold two repositories whose NAMES agree and whose owners do not
+	// (acme/web and other-org/web). Labels are how facts from different repos stay
+	// apart, and graph nodes are name-keyed, so a collision would silently MERGE two
+	// repositories into one — worse than the directory-derived label this replaced,
+	// which at least differed whenever the checkouts did. Fall back to the directory
+	// for the second arrival: it keeps them separate and it is what enola labelled
+	// them before.
+	if appendMode {
+		if prev := e.current.Load(); prev != nil {
+			if taken, ok := prev.repoPaths[repoLabel]; ok && taken != absRepo {
+				repoLabel = filepath.Base(absRepo)
+				log.Printf("[engine] repo label from remote collides with %q; using directory name %q", taken, repoLabel)
+			}
+		}
+	}
 
 	// Resolve this repo's declared intent: its own enola-intent.yaml, the
 	// cluster config's entry, or the cluster entry overriding the file
@@ -377,7 +402,13 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		// Retroactively tag facts from a prior single-repo snapshot so they
 		// are filterable by repo alongside the newly appended facts.
 		if prev.snapshot != nil && work.Count() > 0 {
-			prevLabel := filepath.Base(prev.snapshot.Meta.RepoPath)
+			// The label those facts actually carry, which since RepoLabel came from the
+			// remote is no longer the directory name. Older snapshots recorded none, and
+			// for them the directory IS what tagged the facts.
+			prevLabel := prev.snapshot.Meta.RepoLabel
+			if prevLabel == "" {
+				prevLabel = filepath.Base(prev.snapshot.Meta.RepoPath)
+			}
 			if _, alreadyTracked := workRepoPaths[prevLabel]; !alreadyTracked {
 				tagged := work.TagUntagged(prevLabel, prevLabel+"/")
 				if tagged > 0 {
@@ -545,8 +576,13 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			// say — see facts.SnapshotMeta.ExtractorVersion.
 			ExtractorVersion: cacheVersion,
 			SnapshotID:       finishSnapshotID(idHasher, version.Version, configHash),
-			Git:              gitInfo(absRepo, e.cfg.Output.Dir),
+			Git:              git,
 			ConfigHash:       configHash,
+			// The label the facts in this snapshot actually carry. Recorded rather than
+			// re-derived on read: a baseline outlives the build that wrote it, and a
+			// reader that recomputed the label would apply TODAY's rule to YESTERDAY's
+			// facts and conclude they match when their keys do not.
+			RepoLabel: repoLabel,
 
 			FilesSeen:          len(files),
 			FilesParsed:        e.store.CountFilesWithFacts(files, parsedPrefix),

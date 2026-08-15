@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -252,4 +253,47 @@ func countHeuristicInsights(insights []facts.Insight) int {
 		}
 	}
 	return n
+}
+
+// repoLabelFor names the repository whose facts this snapshot is about.
+//
+// A remote identifies a repository ROOT and nothing below it, so it may only name the
+// label when the indexed directory IS that root. Skipping the check labelled every
+// sub-directory of a git repository with the parent's name — and a cluster assembled
+// from directories inside one repository (a monorepo's apps, this repository's own
+// cross-repo example) collapsed into a single label, merging two graphs into one, since
+// graph nodes are name-keyed. That is a worse failure than the directory-derived label
+// this replaced, so the remote is used only where it is actually an identity.
+func repoLabelFor(absRepo, remote string) string {
+	if remote != "" && isGitTopLevel(absRepo) {
+		return facts.RepoLabel(remote, absRepo)
+	}
+	return filepath.Base(absRepo)
+}
+
+// isGitTopLevel reports whether absRepo is the root of its git repository (a clone or a
+// linked worktree, both of which have their own root). Symlinks are resolved on both
+// sides: on macOS a temporary directory is reached as /var/... and reported by git as
+// /private/var/..., and comparing the two raw would answer "not the root" everywhere.
+func isGitTopLevel(absRepo string) bool {
+	top, err := runGit(absRepo, "rev-parse", "--show-toplevel")
+	if err != nil || top == "" {
+		return false
+	}
+	return samePath(top, absRepo)
+}
+
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		return false
+	}
+	return ra == rb
 }
