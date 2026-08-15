@@ -1,0 +1,81 @@
+# enola's own declared architecture — read by enola, on enola.
+#
+# This file is the thing the README asks you to write, written for this repository. The
+# CI job gates on it (`fail-on: layers`), so it is enforced rather than aspirational: a
+# pull request that makes a package depend outwards fails, and the finding names the
+# import that did it.
+#
+# The order is OUTERMOST FIRST. Each layer may depend on the ones below it and on its
+# own peers; depending upwards is the violation. Declaring it is also what makes the
+# verdict exact — a layer order enola recognises for itself caps at confidence 0.80,
+# while a declared one is verdicted at 1.00, which is the floor `enola check` gates at.
+#
+# Why the split is where it is:
+#
+#   entrypoint     the binary. Nothing may import into it.
+#   surface        what a human or an agent talks to: the CLI commands, the installer,
+#                  the report renderers, the gate itself.
+#   orchestration  wiring — what builds an engine, serves it over MCP, and watches it.
+#   engine         the pipeline that turns a repository into a snapshot, and the config
+#                  that parameterises it.
+#   analysis       the passes the engine runs: extract, link, explain, render, diff.
+#                  They know about facts and about nothing above them, which is what
+#                  lets a new extractor be written without reading the engine.
+#   core           the fact model and the small shared utilities everything rests on,
+#                  plus the pkg/ types published so a plugin can speak the same
+#                  vocabulary. `internal/` importing `pkg/plugin` looks backwards and is
+#                  not: the contract is published outward, the implementation lives
+#                  inward, and both sit at the bottom.
+#
+# Note what is NOT declared here: no rule about cycles. Go's compiler already refuses
+# them between packages, and enola has no business restating a constraint the toolchain
+# enforces. This file states the one thing the compiler cannot check.
+layers:
+  - name: entrypoint
+    paths: ["cmd/**"]
+  - name: surface
+    paths:
+      - "pkg/command/**"
+      - "pkg/cli/**"
+      - "pkg/install/**"
+      - "pkg/explain/**"
+      - "pkg/dashboard/**"
+      - "pkg/check/**"
+      - "pkg/diff/**"
+  - name: orchestration
+    paths:
+      - "pkg/bootstrap/**"
+      - "internal/server/**"
+      - "internal/drift/**"
+  - name: engine
+    paths:
+      - "internal/engine/**"
+      - "internal/config/**"
+  - name: analysis
+    paths:
+      - "internal/extractors/**"
+      - "internal/linkers/**"
+      - "internal/explainers/**"
+      - "internal/renderers/**"
+      - "internal/diff/**"
+      - "internal/conformance/**"
+      - "internal/intent/**"
+      - "internal/history/**"
+  - name: core
+    paths:
+      - "internal/facts/**"
+      - "internal/version/**"
+      - "internal/filelock/**"
+      - "internal/parallel/**"
+      - "internal/litfold/**"
+      - "internal/gqlscan/**"
+      - "internal/hookstate/**"
+      - "internal/updatecheck/**"
+      - "internal/upgrade/**"
+      - "internal/cachecov/**"
+      - "pkg/facts/**"
+      - "pkg/plugin/**"
+      - "pkg/history/**"
+      - "pkg/coverage/**"
+      - "pkg/status/**"
+      - "pkg/mcputil/**"

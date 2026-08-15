@@ -50,17 +50,21 @@ func writeBaselineMeta(t *testing.T, meta facts.SnapshotMeta, auto bool) string 
 
 func TestStopOutcome_ClassifiesEveryPath(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		verdict check.Verdict
-		ok      bool
-		want    hookstate.Outcome
+		name     string
+		verdict  check.Verdict
+		ok       bool
+		reported bool
+		want     hookstate.Outcome
 	}{
-		{"graded, nothing wrong", check.Evaluate(&diff.SnapshotDiff{}, check.Policy{}), true, hookstate.OutcomeClean},
-		{"could not grade", declined(diff.WarnVersionMismatch), true, hookstate.OutcomeDeclined},
-		{"nothing to grade against", check.Verdict{}, false, hookstate.OutcomeUnavailable},
+		{"graded, nothing wrong", check.Evaluate(&diff.SnapshotDiff{}, check.Policy{}), true, false, hookstate.OutcomeClean},
+		{"could not grade", declined(diff.WarnVersionMismatch), true, false, hookstate.OutcomeDeclined},
+		{"nothing to grade against", check.Verdict{}, false, false, hookstate.OutcomeUnavailable},
+		// Clean exit, and the hook still spoke: findings no policy enforces. Filing this
+		// as OutcomeClean would tell `doctor` the hook has been silent all week.
+		{"clean but reported", check.Evaluate(&diff.SnapshotDiff{}, check.Policy{}), true, true, hookstate.OutcomeReported},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := stopOutcome(tt.verdict, tt.ok); got != tt.want {
+			if got := stopOutcome(tt.verdict, tt.ok, tt.reported); got != tt.want {
 				t.Errorf("stopOutcome = %q, want %q", got, tt.want)
 			}
 		})
@@ -185,4 +189,36 @@ func contains(hay, needle string) bool {
 		}
 	}
 	return false
+}
+
+// The verdict an agent is handed for an UNENFORCED finding has one job beyond reporting:
+// it must leave the judgement with the user. Nothing failed, so nothing has decided
+// whether the change is acceptable — an agent that decides for itself either "fixes"
+// architecture the user chose, or files the session as clean over a real finding.
+func TestUnenforcedReport_HandsTheDecisionToTheUser(t *testing.T) {
+	v := check.Evaluate(&diff.SnapshotDiff{
+		Comparability: diff.Comparability{Comparable: true},
+		FindingsNew: []facts.Insight{
+			{Source: "layers", Title: "Layer violation: storage -> delivery", Confidence: 1.0},
+		},
+	}, check.Policy{})
+
+	report := unenforcedReport("enola", v)
+
+	for _, want := range []string{
+		"NOTHING FAILED",
+		"USER'S DECISION",
+		"enola check --fail-on=…",
+		"Layer violation: storage -> delivery",
+	} {
+		if !contains(report, want) {
+			t.Errorf("report is missing %q:\n%s", want, report)
+		}
+	}
+	// The two ways an agent could wrongly settle it on its own.
+	for _, want := range []string{"rather than a failed build", "Do not revert or refactor on your own initiative"} {
+		if !contains(report, want) {
+			t.Errorf("report must explicitly rule out settling it alone; missing %q:\n%s", want, report)
+		}
+	}
 }

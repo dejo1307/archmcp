@@ -20,7 +20,7 @@ func TestEvaluate_ExplainerSetIsAdvisoryNotBlocking(t *testing.T) {
 		},
 	}
 
-	v := Evaluate(d, Policy{})
+	v := Evaluate(d, legacyDefault())
 
 	if v.Status == StatusIncomparable {
 		t.Errorf("Status = %q, want a graded status — an explainer mismatch must not decline", v.Status)
@@ -47,7 +47,7 @@ func TestRender_ExplainerSetIsCategorisedAsAdvisory(t *testing.T) {
 		},
 	}
 
-	out := Evaluate(d, Policy{}).Render()
+	out := Evaluate(d, legacyDefault()).Render()
 
 	if !strings.Contains(out, "dead-code") {
 		t.Errorf("rendered verdict does not mention the differing explainer:\n%s", out)
@@ -79,7 +79,7 @@ func TestEvaluate_ExplainerSetStillGradesRegressions(t *testing.T) {
 		}},
 	}
 
-	v := Evaluate(d, Policy{})
+	v := Evaluate(d, legacyDefault())
 
 	if v.Status != StatusRegression {
 		t.Errorf("Status = %q, want %q", v.Status, StatusRegression)

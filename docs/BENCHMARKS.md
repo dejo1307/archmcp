@@ -315,6 +315,11 @@ the repository through four states, and see what each one is graded as.
 For each repository below, files were **added, never edited**, so every revert is a
 delete. The cycle case adds two new modules that import each other.
 
+**The policy these runs enforced was `--fail-on=cycles`**, stated because it has to be:
+`enola check` fails nothing unless a policy names it, so the FAIL column is what that
+flag does, not what a bare run does. The column that matters for precision is the same
+either way — the delta itself, and the fact that it is exactly one finding.
+
 | Repository | Language | Pre-existing findings | No change | Benign addition | Injected cycle | Reverted |
 |---|---|---|---|---|---|---|
 | gitea | Go | 171 | PASS · +0 facts | PASS · +2 facts | **FAIL · 1 regression** | PASS · +0 |
@@ -356,7 +361,7 @@ and the symbols appear, the cycle does not. Injecting one would mean editing
 `Package.swift`, and then "reverted" would be a file restore rather than a delete,
 which is exactly the property that makes the no-change column worth reading.
 
-### Why only cycles fail
+### What is eligible to fail at all
 
 Across the corpus enola produced **29,633 findings**. Broken down:
 
@@ -370,17 +375,23 @@ Across the corpus enola produced **29,633 findings**. Broken down:
 | complexity-outliers | 829 | statistical outlier |
 | dependency-depth | 464 | statistical outlier |
 
-**The cycles row is not all one thing, and the difference is the whole gate.** The
+**None of these fail anything by default** — `enola check` names no explainer unless
+you do. The number worth reading is how much of the corpus is even *eligible* to fail
+at the `1.00` floor, whatever you name: only findings enola proves reach it, and every
+statistical row above caps below it by construction.
+
+**The cycles row is not all one thing, and the difference is instructive.** The
 explainer emits a load-order cycle at confidence `1.0` and, separately, a *highly
 coupled module cluster* at `0.4` — mutual references between directories in an
 autoloaded codebase (Rails, say), where constants resolve lazily and there is no
 load-order defect to break. Both carry `source: cycles`, so counting the explainer
-overstates the gate: **937 of the 1,057 are at `1.0`**, and the default policy fails
-on new `cycles` findings at confidence `>= 1.00`.
+overstates what `--fail-on=cycles` would do: **937 of the 1,057 are at `1.0`**.
 
-So **3.16% of findings are eligible to fail a build** — 937 of 29,633. The other
-96.84% are reported and let you through. That ratio is the design, not an accident: a
-gate that fails on one thing, and says which, is a gate people leave switched on.
+So **3.16% of findings could fail a build even with every explainer named** — 937 of
+29,633. The other 96.84% are reported and let you through however you configure it.
+That ratio is the design: the confidence floor keeps an estimate from breaking a build
+even when someone asks it to, and the empty default keeps enola from asking on your
+behalf.
 
 ## 3. Cross-repo resolution, misses included
 

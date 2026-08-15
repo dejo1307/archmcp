@@ -73,8 +73,30 @@ missing field, never a silently ignored section.
 Declaring a layer order buys more than documentation. The `layers`
 explainer verdicts a declared order at confidence `1.00` — declared,
 not recognised — where a pattern it inferred for itself caps at
-`0.80`. Since `enola check` gates at a `1.00` floor by default, only a
-declared order is enforceable with `--fail-on=cycles,layers` alone.
+`0.80`. Since `enola check` gates at a `1.00` floor, only a declared
+order is enforceable with `--fail-on=layers` alone; an inferred one
+also needs `--min-confidence=0.8`.
+
+`--fail-on` is the whole opt-in: enola fails nothing until it is
+passed, so a declared layer order is a rule you wrote down and then
+chose to enforce, in that order.
+
+enola's own [`enola-intent.yaml`](../enola-intent.yaml) is the worked
+example, and its CI runs `--fail-on=layers` against it. Two things in
+it are worth copying: the layers are grouped by ROLE rather than by
+directory tree (`pkg/` and `internal/` both appear at several levels,
+because visibility is not a layer), and the file states in prose why
+each boundary is where it is — a declaration nobody can explain is one
+nobody will maintain. What it deliberately does not declare is anything
+about cycles: Go's compiler already refuses those between packages, and
+a declaration that restates the toolchain earns nothing.
+
+**Declaring an order does not fail the pull request that declares it.**
+The `layers` explainer emits an exact finding announcing the pattern it
+matched, which is a description rather than a violation; the gate
+routes those to a `Descriptive (never graded)` section and never counts
+them. The first thing your new declaration reports is therefore itself,
+harmlessly.
 
 ## The page schema
 

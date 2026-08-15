@@ -793,3 +793,42 @@ func TestComparability_InvalidatesDeltaSeparatesRebuildsFromElapsedTime(t *testi
 		t.Error("a real mismatch alongside an advisory one must still invalidate")
 	}
 }
+
+// A worktree, a second clone, a CI job that checks the base out beside the head: the
+// same repository under two directory names. SameRepo waves those through on the shared
+// remote — correctly, they ARE one repository — but every fact key embeds the repo
+// label, so if the labels differ nothing matches and the delta is the whole graph added
+// and removed. Findings survive it (keyed by title), which is what let a fabricated
+// delta carry a plausible verdict on top of it.
+func TestCompareMeta_SameRepoDifferentLabelIsBlocking(t *testing.T) {
+	side := func(label, path string) facts.SnapshotMeta {
+		return facts.SnapshotMeta{
+			RepoPath:  path,
+			RepoLabel: label,
+			Git:       &facts.GitInfo{Remote: "github.com/acme/demo"},
+		}
+	}
+
+	c := compareMeta(side("base", "/tmp/wt/base"), side("demo", "/work/demo"))
+	if !c.HasKind(WarnRepoLabel) {
+		t.Fatalf("a label mismatch must be reported, got kinds %v", c.Kinds)
+	}
+	if !c.InvalidatesDelta() {
+		t.Error("a delta in which no fact can match must not be graded")
+	}
+	if c.HasKind(WarnDifferentRepo) {
+		t.Error("it is the SAME repository — reporting a different one sends the reader after the wrong remedy")
+	}
+
+	// Matching labels: nothing to say, whatever the paths are.
+	if same := compareMeta(side("demo", "/tmp/wt/base"), side("demo", "/work/demo")); same.HasKind(WarnRepoLabel) {
+		t.Errorf("identical labels must not warn: %v", same.Warnings)
+	}
+
+	// A baseline predating the recorded label is read under the rule that tagged it —
+	// the checkout directory name — rather than under today's.
+	old := facts.SnapshotMeta{RepoPath: "/tmp/wt/demo", Git: &facts.GitInfo{Remote: "github.com/acme/demo"}}
+	if c := compareMeta(old, side("demo", "/work/demo")); c.HasKind(WarnRepoLabel) {
+		t.Errorf("a pre-label baseline whose directory matched must still compare: %v", c.Warnings)
+	}
+}

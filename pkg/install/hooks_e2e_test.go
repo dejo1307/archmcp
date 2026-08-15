@@ -103,9 +103,11 @@ func A() string { return "a" + b.B() }
 			fired, readIfPresent(settings))
 	}
 	// Firing is necessary but not sufficient: a hook that runs and stays silent
-	// leaves the session ungraded just as completely.
-	if !strings.Contains(stdout, "structural regression") {
-		t.Errorf("the Stop hook produced no regression verdict for a repo with a real cycle.\n"+
+	// leaves the session ungraded just as completely. The repo declares no policy, so
+	// the cycle is REPORTED rather than failed — the finding still has to reach the
+	// agent, which is the whole point of the hook.
+	if !strings.Contains(stdout, "Cyclic dependency detected") {
+		t.Errorf("the Stop hook produced no verdict for a repo with a real cycle.\n"+
 			"stdout:\n%s\nstderr:\n%s", stdout, readIfPresent(filepath.Join(log, "stderr.log")))
 	}
 	// SessionStart was already correct, and is the control: if neither fired, the
@@ -129,7 +131,9 @@ func buildEnola(ctx context.Context, t *testing.T, work string) string {
 }
 
 // writeCyclePendingRepo creates a two-package Go module with a single edge b -> a.
-// Adding the opposite edge closes a cycle, which is what the default policy fails on.
+// Adding the opposite edge closes a cycle — a finding enola computes exactly, which is
+// what the Stop hook reports even though no policy here enforces it (nothing fails by
+// default; see check.DefaultFailExplainers).
 func writeCyclePendingRepo(t *testing.T, work string) string {
 	t.Helper()
 	repo := filepath.Join(work, "repo")

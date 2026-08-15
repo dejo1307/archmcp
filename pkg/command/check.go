@@ -100,9 +100,9 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	fs.SetOutput(os.Stderr)
 	var (
 		baseline      = fs.String("baseline", "pinned", "what to compare against: pinned, previous, or a path to a directory holding facts.jsonl")
-		failOn        = fs.String("fail-on", "", "comma-separated explainer names whose new findings fail (default: cycles)")
+		failOn        = fs.String("fail-on", "", "comma-separated explainer names whose new findings fail (default: none — the run reports and exits 0)")
 		minConfidence = fs.Float64("min-confidence", 0, "confidence floor within --fail-on explainers (default: 1.00)")
-		warnOnly      = fs.Bool("warn-only", false, "report everything but always exit 0 on findings (blocking/usage errors still apply)")
+		warnOnly      = fs.Bool("warn-only", false, "downgrade a --fail-on / --max-spillover policy to warnings (blocking/usage errors still apply)")
 		asJSON        = fs.Bool("json", false, "emit the verdict as JSON instead of text")
 		focus         = fs.String("focus", "", "narrow the delta to entries referencing this module/file/symbol")
 		detail        = fs.Bool("detail", false, "print the full delta (changed edges and facts) under the verdict")
@@ -114,8 +114,12 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" check [flags] [config_path]\n\n"+
 			"Grade what a change did to the architecture, against a pinned baseline.\n\n"+
+			"Nothing fails until you say what should: with no --fail-on and no --max-spillover\n"+
+			"every finding is reported and the run exits 0. The eleven explainer names --fail-on\n"+
+			"accepts are: cycles, layers, intent, crossrepo, coverage, unused-routes, god-class,\n"+
+			"hotspots, dependency-depth, exported-surface, complexity-outliers.\n\n"+
 			"Exit codes:\n"+
-			"  0  clean      no structural regression\n"+
+			"  0  clean      nothing the policy enforces\n"+
 			"  1  regression the policy was violated\n"+
 			"  2  error      the gate could not run (no baseline, bad flag, inverted pair)\n"+
 			"  3  declined   the baseline is not comparable; refusing to grade\n\nFlags:\n")

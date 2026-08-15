@@ -190,6 +190,29 @@ type Insight struct {
 	Confidence  float64    `json:"confidence"` // 0.0 - 1.0
 	Evidence    []Evidence `json:"evidence"`
 	Actions     []string   `json:"suggested_actions,omitempty"`
+
+	// Informational marks a finding that DESCRIBES the graph rather than complaining
+	// about it — "Architecture pattern: declared (enola)", "Intent override: the cluster
+	// config replaced this repo's declaration". They are worth reporting and must never
+	// be gradeable, and the distinction is not expressible in confidence: both are exact,
+	// which is precisely the problem. A repository that declares a layer order for the
+	// first time emits a new `layers` finding at 1.00 describing the declaration, and
+	// under --fail-on=layers that would fail the very pull request that adopted the
+	// policy. See check.Policy.fails.
+	Informational bool `json:"informational,omitempty"`
+}
+
+// Label is the repo label the facts in this snapshot carry, and the only correct way to
+// ask that question of a snapshot. Recomputing it from RepoPath is what let the engine
+// and its readers disagree: since the label came to depend on the git remote, a caller
+// deriving one from the directory would look up facts under a key nothing is stored at
+// and quietly count zero. Snapshots written before the label was recorded fall back to
+// the directory name, which is what tagged their facts.
+func (m SnapshotMeta) Label() string {
+	if m.RepoLabel != "" {
+		return m.RepoLabel
+	}
+	return RepoDirName(m.RepoPath)
 }
 
 // Evidence links an insight back to concrete facts/files/symbols.
@@ -222,7 +245,13 @@ type Snapshot struct {
 // let a consumer (a human, a diff, or an agent improving enola itself) judge how
 // complete the extraction was before trusting it.
 type SnapshotMeta struct {
-	RepoPath     string     `json:"repo_path"`
+	RepoPath string `json:"repo_path"`
+	// RepoLabel is the label the facts in this snapshot are tagged with, and therefore
+	// part of every fact's diff key. Two snapshots of the same repository labelled
+	// differently share no keys, so this is recorded to be COMPARED — see
+	// diff.compareMeta. Empty on snapshots written before it existed, where the reader
+	// falls back to the checkout directory name, which is what those builds used.
+	RepoLabel    string     `json:"repo_label,omitempty"`
 	GeneratedAt  string     `json:"generated_at"`
 	Duration     string     `json:"duration"`
 	Extractors   []string   `json:"extractors"`
@@ -420,7 +449,7 @@ type GraphReceipt struct {
 
 // GraphRepoEntry describes one repository's membership in the current graph.
 type GraphRepoEntry struct {
-	Label           string   `json:"label"`                       // filepath.Base(absRepo); the store's repo label
+	Label           string   `json:"label"`                       // the store's repo label (see RepoLabel); NOT necessarily the directory name
 	Path            string   `json:"path"`                        // absolute repo root
 	Git             *GitInfo `json:"git,omitempty"`               // ref/commit/dirty; nil for non-git dirs
 	AddedAt         string   `json:"added_at"`                    // RFC3339 UTC, first time this label entered the graph (merged forward across regenerations)

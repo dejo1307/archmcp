@@ -1,0 +1,10 @@
+# The layer order this module is built to, outermost first: delivery may depend on api,
+# api may depend on storage, and nothing may depend the other way round.
+#
+# Declaring it is what makes a violation exact. An order enola only RECOGNISES caps at
+# confidence 0.80; a declared one is verdicted at 1.00, which is the floor `enola check`
+# gates at — so a declared order is the one you can put in front of a build.
+layers:
+  - {name: delivery, paths: ["web/**", "notify/**"]}
+  - {name: api,      paths: ["api/**"]}
+  - {name: storage,  paths: ["storage/**"]}

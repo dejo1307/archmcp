@@ -26,14 +26,14 @@ func TestRender_AdvisoryNoteNamesTheActualReason(t *testing.T) {
 		{
 			name:       "proven finding outside --fail-on names the explainer, not confidence",
 			advisories: []facts.Insight{insight("layers", "Layer violation: storage -> api", 1.0)},
-			policy:     Policy{},
+			policy:     legacyDefault(),
 			wantSubstr: []string{"met the 1.00 confidence floor", "outside [cycles]", "--fail-on"},
 			notSubstr:  []string{"candidate to verify"},
 		},
 		{
 			name:       "estimate under the floor is a candidate to verify",
 			advisories: []facts.Insight{insight("god-class", "God class (400 dependents)", 0.7)},
-			policy:     Policy{},
+			policy:     legacyDefault(),
 			wantSubstr: []string{"Confidence < 1.00 is a candidate to verify"},
 			notSubstr:  []string{"--fail-on"},
 		},
@@ -43,7 +43,7 @@ func TestRender_AdvisoryNoteNamesTheActualReason(t *testing.T) {
 				insight("layers", "Layer violation: storage -> api", 1.0),
 				insight("hotspots", "Call-graph hotspot", 0.7),
 			},
-			policy:     Policy{},
+			policy:     legacyDefault(),
 			wantSubstr: []string{"Mixed", "under 1.00 are candidates to verify", "outside [cycles]"},
 		},
 		{
@@ -51,7 +51,7 @@ func TestRender_AdvisoryNoteNamesTheActualReason(t *testing.T) {
 			// sentence about 1.00, which describes a gate the caller did not run.
 			name:       "a lowered floor is reported as the floor that ran",
 			advisories: []facts.Insight{insight("god-class", "God class (400 dependents)", 0.3)},
-			policy:     Policy{MinConfidence: 0.5},
+			policy:     Policy{FailExplainers: []string{"cycles"}, MinConfidence: 0.5},
 			wantSubstr: []string{"Confidence < 0.50 is a candidate to verify"},
 			notSubstr:  []string{"1.00"},
 		},

@@ -114,7 +114,7 @@ Everything below is a prompt you type at your agent in plain English. enola pick
 
 > "Generate an architectural snapshot of /path/to/my/project"
 
-That's the whole setup. Snapshots are fast - seconds even on very large polyglot repos - and your agent now has all 13 tools plus a ready-to-read summary at `.enola/llm_context.md`.
+That's the whole setup. Snapshots are fast - seconds even on very large polyglot repos - and your agent now has all 16 tools (`enola --list`) plus a ready-to-read summary at `.enola/llm_context.md`.
 
 #### 2. Understand it
 
@@ -153,8 +153,9 @@ Two prompts, no file re-reading, no review meeting. Repeat until the diff is bor
 **The same loop without an agent.** Everything above is also a shell command, so the check can run in a git hook or CI instead of depending on the agent remembering to ask:
 
 ```bash
-enola baseline pin      # before editing
-enola check             # after - exits 1 on a structural regression
+enola baseline pin              # before editing
+enola check                     # after - reports the delta, always exits 0
+enola check --fail-on=layers    # …or exits 1 on what you named
 ```
 
 See [The gate - `enola check`](#the-gate---enola-check).
@@ -455,16 +456,18 @@ enola install --hooks
 This installs both halves of the loop, so it runs without anyone remembering to:
 
 - **`SessionStart`** freezes the architecture as a baseline when a session begins - the "before".
-- **`Stop`** grades what the session changed when your agent finishes a turn, and hands the verdict back **only if** the change introduced a structural regression.
+- **`Stop`** grades what the session changed when your agent finishes a turn, and hands the verdict back **only if** there is something to say: a structural regression under the policy you set, or - since the default policy is empty - a finding enola measured exactly and did not enforce.
 
-The agent gets a chance to fix a dependency cycle before telling you it's done, rather than you finding it in review.
+The agent gets a chance to fix the layer it crossed before telling you it's done, rather than you finding it in review.
+
+**When nothing was enforced, the decision stays yours.** The verdict handed to the agent says the run exited `0`, that this is a report rather than a failed build, and that whether the change is acceptable is not the agent's call: it is told to show you the findings and ask - accept it, change it, or set a policy that would fail on it next time - and explicitly not to revert or refactor on its own initiative, nor to describe the session as clean without mentioning them.
 
 It is deliberately opt-in and deliberately quiet:
 
 - **Session start is never delayed.** The baseline snapshot runs detached, so the hook returns in milliseconds whether your repo takes 0.2 seconds or two minutes to index. A timeout would only *cap* that cost; detaching removes it.
 - **Your own baseline is never replaced.** A baseline you pinned yourself - or that your agent pinned with `set_baseline` - is left alone. Only one enola pinned automatically is refreshed, and only when the tree has actually moved.
 - **Several open terminals do one snapshot, not six.** The pin is single-flight across processes; sessions that arrive while one is running do nothing.
-- **Silent unless it matters.** No baseline, nothing changed, a clean result, an incomparable baseline - all produce no output at all. The gate speaks only when the change actually regressed the architecture.
+- **Silent unless it matters.** No baseline, nothing changed, an architecture that moved without producing a single finding, an incomparable baseline - all produce no output at all. The gate speaks when the change regressed the architecture under your policy, or when it introduced a finding enola computes exactly (a declared-layer violation, an intent mismatch, a cycle) that no policy enforced. Estimates below the confidence floor never trigger it, or a re-ranked hotspot list would become a session report.
 - **It never blocks.** The verdict is context the agent can act on, not a wall it has to get past.
 - **It never breaks your session.** Every failure path - no snapshot, unreadable input, a directory that isn't a repository - exits cleanly and says nothing. A broken enola must never look like a broken session.
 - **It merges into your config.** Your existing hooks, permissions and settings are preserved; `uninstall` removes exactly enola's entries and nothing else.
@@ -487,20 +490,24 @@ The baseline is a pinned artifact rather than "whatever state the tool last held
 
 | Exit | Meaning |
 |------|---------|
-| `0` | **clean** - no structural regression |
+| `0` | **clean** - nothing the policy enforces (which, with no `--fail-on`, is everything) |
 | `1` | **regression** - the policy was violated |
 | `2` | **error** - the gate could not run (no baseline pinned, bad argument, inverted snapshot pair) |
 | `3` | **declined** - the baseline is not comparable, so it refused to grade |
 
-`3` is deliberately not `1`. When the two snapshots were built over different inputs - a different enola version, a different extractor set, changed ignore globs - the delta describes *how they were produced*, not what you edited. Reporting that as a failing change would be a lie, so the gate says it declined and why.
+`3` is deliberately not `1`. When the two snapshots were built over different inputs - a different enola version, a different extractor set, changed ignore globs, or the same repository indexed under two different labels - the delta describes *how they were produced*, not what you edited. Reporting that as a failing change would be a lie, so the gate says it declined and why.
+
+**Repository labels are part of that.** Every fact carries the label of the repository it came from, and a diff matches facts on it, so two snapshots that label one repository differently share no facts at all. The label is the repository's name from its git remote when the indexed directory is that repository's root - so a worktree, a second clone, and a CI checkout all agree - and the checkout directory name otherwise. When the two sides disagree anyway, the gate declines with `repo_label` rather than reporting your whole repository as rewritten.
 
 **A stale baseline warns; it never blocks.** Past three days it tells you exactly how stale and what that means (the delta now also contains whatever the repo itself changed in between) - then grades anyway, because a long-lived baseline is a legitimate way to measure a multi-day refactor and only you know which you meant.
 
-**What fails by default is narrow: a newly introduced dependency cycle, and nothing else.** Everything below that is reported, not failed - so a red gate is always real. Widen it per repo:
+**Nothing fails by default.** A bare `enola check` runs all eleven explainers, reports every finding the change introduced, and exits `0` - saying in its own output that no policy was in effect, because a gate that enforces nothing must never be mistaken for a gate that found nothing. What breaks the build is what you name:
 
 ```bash
-enola check --fail-on=cycles,layers --min-confidence=0.8   # also fail on new layer violations
-enola check --warn-only                                    # report everything, never fail
+enola check --fail-on=layers                               # fail on a declared layer order
+enola check --fail-on=layers,cycles,intent                 # …and cycles, and undeclared seams
+enola check --fail-on=god-class --min-confidence=0.8       # an inferred one needs a lower floor
+enola check --fail-on=layers --warn-only                   # enforce, but only warn this time
 enola check --json                                         # machine-readable verdict
 enola check --detail                                       # full delta under the verdict
 enola check --baseline=previous                            # compare against the preceding snapshot
@@ -547,25 +554,28 @@ The output names what moved rather than counting it - the added symbols with the
 FAIL — 1 structural regression introduced.
 
 Regressions (fail):
-  - [cycles] 1.00 — Cyclic dependency detected (2 modules)
-      module "pkga" is part of the cycle
+  - [layers] 1.00 — Layer violation: storage -> delivery
+      import of notify
+
+Policy: fail on new findings from [layers] at confidence >= 1.00.
 
 What changed
-  symbols      +2
+  symbols      +1
   dependencies +1
-  edges        +4  (imports +1, calls +1, declares +2)
+  edges        +4  (imports +1, calls +2, declares +1)
 
-Added (3):
-  symbol     pkga.AlphaViaB                    pkga/a.go:7
-  symbol     pkgb.Helper                       pkgb/b.go:7
-  dependency pkga -> example.com/gate/pkgb     pkga/a.go:3
+Added (2):
+  symbol     storage.LoadPrice                            storage/storage.go:11
+  dependency storage -> layersgate/notify                 storage/storage.go:3
 
 New coupling (4):
-  pkga                --imports--> pkgb
-  pkga.AlphaViaB      --calls--> pkgb.Helper
-  pkga.AlphaViaB      --declares--> pkga
-  pkgb.Helper         --declares--> pkgb
+  storage                                      --imports--> notify
+  storage.LoadPrice                            --calls--> notify.SendReceipt
+  storage.LoadPrice                            --calls--> storage.ReadPrice
+  storage.LoadPrice                            --declares--> storage
 ```
+
+That is `enola check --fail-on=layers` on [`examples/layers-gate/`](../examples/layers-gate/), verbatim. Without the flag the same run prints the same finding under `New findings (reported — no failure policy set)` and exits `0`.
 
 Lists cap at 12 entries with a `--detail` pointer, and `declares` edges - the mechanical one-per-new-symbol link to their module - always sort last, since they say nothing about what got coupled.
 

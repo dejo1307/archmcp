@@ -93,6 +93,16 @@ jobs:
         with:
           config: mcp-arch.yaml
           base-sha: ${{ steps.base.outputs.sha }}
+          # enola enforces nothing unless asked, this repository included. This is the
+          # policy THIS codebase chose for itself: the layer order declared in
+          # enola-intent.yaml, verdicted at 1.00 because it is declared rather than
+          # inferred. Other repositories will reasonably choose otherwise — that is the
+          # whole reason it is a flag and not a default.
+          #
+          # Not `cycles`: this is Go, and the compiler already refuses an import cycle
+          # between packages. The layer order is the part it cannot check — nothing stops
+          # a core package importing the CLI surface today except this file.
+          fail-on: layers
 
   # golangci-lint v2 (action @v9). The repo baseline is clean, so this gates the
   # whole tree — any new finding fails the build. Linter set in .golangci.yml.

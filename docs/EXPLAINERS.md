@@ -61,7 +61,10 @@ the entities the claim is about. There are eleven, and they fall into five kinds
   A repo that DECLARES its layer order is verdicted against the declaration as well:
   that pattern is stated rather than guessed, so it and its violations are proof-class.
   It sits beside the recognised pattern, not in place of it — recognition scores itself
-  over the whole snapshot, so it has no per-repo off switch.
+  over the whole snapshot, so it has no per-repo off switch. Both patterns are reported
+  as findings that merely NAME the architecture, marked informational and never graded:
+  they are exact, and gating on them would fail the change that declared an order for
+  saying so. Only the violations under them can fail a build.
 - **Reporters.** `crossrepo`, `coverage` and `unused-routes` compute nothing of their
   own; they summarise what the cross-repo linker already resolved — which repositories
   depend on which, where enola failed to follow a call, and which routes no loaded

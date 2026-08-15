@@ -121,18 +121,20 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Comment: "Report over a whole cluster", Command: bin.Name + " --explain cluster.yaml"},
 			{Comment: "Generate snapshot with custom config", Command: bin.Name + " --generate my-config.yaml"},
 			{Comment: "Freeze another repo's architecture before editing it (see THE GATE)", Command: bin.Name + " baseline pin /path/to/repo"},
-			{Comment: "Grade your changes to it (exit 1 on a structural regression)", Command: bin.Name + " check /path/to/repo"},
+			{Comment: "Report what your changes did to it (reports everything, fails nothing)", Command: bin.Name + " check /path/to/repo"},
 			{Comment: "Report what the pinned baseline describes", Command: bin.Name + " baseline show /path/to/repo"},
 			{Comment: "Tell your agents enola is here (instructions only)", Command: bin.Name + " install"},
 			{Comment: "…and close the loop automatically at the end of a session", Command: bin.Name + " install --hooks"},
 			{Comment: "Preview what install would change, writing nothing", Command: bin.Name + " install --hooks --dry-run"},
 			{Comment: "Remove it all again", Command: bin.Name + " uninstall"},
-			{Comment: "Report a regression without failing the build", Command: bin.Name + " check --warn-only"},
+			{Comment: "Fail on a violation of a layer order you declared", Command: bin.Name + " check --fail-on=layers"},
+			{Comment: "Enforce a policy you set, but only warn this time", Command: bin.Name + " check --fail-on=layers --warn-only"},
 			{Comment: "See which cross-repo edges resolved, and which did not", Command: bin.Name + " coverage cluster.yaml"},
 			{Comment: "Just the blind spots", Command: bin.Name + " coverage --unresolved cluster.yaml"},
 			{Comment: "Are the session hooks actually firing?", Command: bin.Name + " doctor"},
 			{Comment: "Compare against the preceding snapshot instead of the pin", Command: bin.Name + " check --baseline=previous"},
-			{Comment: "Also fail on new layer violations", Command: bin.Name + " check --fail-on=cycles,layers --min-confidence=0.8"},
+			{Comment: "Fail on a layer order enola only INFERRED (never reaches 1.00)", Command: bin.Name + " check --fail-on=layers --min-confidence=0.8"},
+			{Comment: "Opt into the cycle check as well", Command: bin.Name + " check --fail-on=layers,cycles"},
 			{Comment: "Did the change stay where you said it would?", Command: bin.Name + " check --target=internal/auth"},
 			{Comment: "…and fail if it reached anywhere else", Command: bin.Name + " check --target=internal/auth --max-spillover=0"},
 			{Comment: "Check MCP server status", Command: bin.Name + " --status"},
@@ -156,8 +158,8 @@ func gateSection(bin Binary) Section {
 	return Section{
 		Title: "THE GATE — grading a change",
 		Body: fmt.Sprintf(`  Tests tell you whether behaviour still works. This tells you whether a change
-  altered the STRUCTURE of the system in a way nobody asked for — a new dependency
-  cycle, coupling between modules that had no business knowing about each other.
+  altered the STRUCTURE of the system in a way nobody asked for — a layer crossed the
+  wrong way, coupling between modules that had no business knowing about each other.
 
   It needs a "before" to compare against, so the order matters:
 
@@ -176,6 +178,11 @@ func gateSection(bin Binary) Section {
   be run as often as you like and re-run after a fix. It exits 0 when clean, 1 on a
   structural regression, 2 when it could not run, and 3 when it declined to grade
   because the baseline is not comparable — 3 is never a statement about your change.
+
+  Step 3 fails nothing on its own. It reports every finding the change introduced and
+  exits 0; "--fail-on=<explainer,…>" names the ones that should break the build, and
+  "--max-spillover=N" bounds how far outside "--target" the change may reach. A run
+  with neither says so in its output rather than printing a bare PASS.
 
   A path that names a DIRECTORY is a repository; one that names a FILE is a config.
 `, bin.Name, bin.Name),

@@ -16,6 +16,14 @@ import (
 	"github.com/enola-labs/enola/pkg/check"
 )
 
+// checkPolicyCycles names the cycles explainer explicitly. These end-to-end tests are
+// about the gate mechanics — a new cycle fails, a pre-existing one does not — and an
+// empty Policy now enforces nothing, so the policy has to be stated for them to mean
+// anything. See check.DefaultFailExplainers.
+func checkPolicyCycles() check.Policy {
+	return check.Policy{FailExplainers: []string{"cycles"}}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -81,7 +89,7 @@ func TestGate_NewCycleFailsTheBuild(t *testing.T) {
 		t.Fatalf("load baseline: %v", err)
 	}
 
-	v := check.Evaluate(diff.Compute(base, currentOf(eng)), check.Policy{})
+	v := check.Evaluate(diff.Compute(base, currentOf(eng)), checkPolicyCycles())
 
 	if v.Status != check.StatusRegression {
 		t.Errorf("status = %q, want %q\n%s", v.Status, check.StatusRegression, v.Render())
@@ -130,7 +138,7 @@ func TestGate_NoChangeIsClean(t *testing.T) {
 		t.Fatalf("load baseline: %v", err)
 	}
 
-	v := check.Evaluate(diff.Compute(base, currentOf(eng)), check.Policy{})
+	v := check.Evaluate(diff.Compute(base, currentOf(eng)), checkPolicyCycles())
 
 	if v.Status != check.StatusClean {
 		t.Errorf("status = %q, want %q — an unchanged repo must pass\n%s", v.Status, check.StatusClean, v.Render())
@@ -176,7 +184,7 @@ func TestGate_PreExistingCycleIsNotARegression(t *testing.T) {
 		t.Fatalf("load baseline: %v", err)
 	}
 
-	v := check.Evaluate(diff.Compute(base, currentOf(eng)), check.Policy{})
+	v := check.Evaluate(diff.Compute(base, currentOf(eng)), checkPolicyCycles())
 
 	if v.Status != check.StatusClean {
 		t.Errorf("status = %q, want %q — a pre-existing cycle is not a regression\n%s",

@@ -255,11 +255,12 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 		}
 		seenOverride[f.Repo] = true
 		insights = append(insights, facts.Insight{
-			Title:       fmt.Sprintf("Intent override: cluster config replaces %s's own declaration", f.Repo),
-			Description: fmt.Sprintf("%s carries its own %s, and the cluster config's intent entry overrides it wholesale for this run — the repo file was not consulted. Informational: an override must never be only in a log.", f.Repo, "enola-intent.yaml"),
-			Confidence:  1.0,
-			Evidence:    []facts.Evidence{{Fact: f.Name, Detail: "declaration source: cluster config (overriding repo file)"}},
-			Actions:     []string{"Delete the cluster entry when the repo file should own its declaration"},
+			Title:         fmt.Sprintf("Intent override: cluster config replaces %s's own declaration", f.Repo),
+			Description:   fmt.Sprintf("%s carries its own %s, and the cluster config's intent entry overrides it wholesale for this run — the repo file was not consulted. Informational: an override must never be only in a log.", f.Repo, "enola-intent.yaml"),
+			Confidence:    1.0,
+			Informational: true, // An override is a fact about the run, not a defect in the code.
+			Evidence:      []facts.Evidence{{Fact: f.Name, Detail: "declaration source: cluster config (overriding repo file)"}},
+			Actions:       []string{"Delete the cluster entry when the repo file should own its declaration"},
 		})
 	}
 

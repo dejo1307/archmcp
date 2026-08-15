@@ -14,6 +14,7 @@ import (
 // says why a baseline is untrustworthy or merely caveated rather than only that it is.
 var kindMeaning = map[diff.WarningKind]string{
 	diff.WarnDifferentRepo:   "the two snapshots are of different repositories, so the delta is not about your change",
+	diff.WarnRepoLabel:       "the same repository is labelled differently on the two sides, so no fact matches across them and the delta describes neither snapshot",
 	diff.WarnVersionMismatch: "different enola versions extract differently, so unchanged code can appear as churn",
 	diff.WarnExtractorSet:    "a language present on one side only makes all of its facts appear added or removed",
 	diff.WarnExplainerSet:    "an explainer present on one side only makes all of its findings appear new or resolved; the facts and coupling in this delta are unaffected",
@@ -76,6 +77,12 @@ func (v Verdict) Render() string {
 			// regression" here would be false, and it is the line a reader skims.
 			fmt.Fprintf(&sb, "PASS (--warn-only) — %s reported, not failed.\n",
 				plural(len(v.Failures), "structural regression", "structural regressions"))
+		case !v.Policy.Enforcing() && len(v.Advisories) > 0:
+			// Nothing was enforced AND the change introduced findings. "No structural
+			// regression" would be a lie by omission here: the run had no grounds to call
+			// anything a regression, which is not the same as having looked and found none.
+			fmt.Fprintf(&sb, "PASS — %s reported, nothing enforced: no policy set.\n",
+				plural(len(v.Advisories), "new finding", "new findings"))
 		case len(v.Advisories) > 0 || v.EdgesAdded > 0 || v.FactsAdded > 0 || v.FactsRemoved > 0:
 			sb.WriteString("PASS — no structural regression.\n")
 		default:
@@ -126,9 +133,23 @@ func (v Verdict) Render() string {
 	}
 
 	if len(v.Advisories) > 0 {
-		sb.WriteString("\nNew findings (advisory — below the failure policy):\n")
+		// "below the failure policy" presumes there is one. With no --fail-on these
+		// findings are not below anything — they are simply unenforced, and saying
+		// otherwise invites the reader to go looking for the threshold they missed.
+		// Enforcing() is the wrong question here: a spillover threshold grades scope,
+		// not findings, so it leaves these just as unenforced as no policy at all.
+		if len(v.Policy.failExplainers()) > 0 {
+			sb.WriteString("\nNew findings (advisory — below the failure policy):\n")
+		} else {
+			sb.WriteString("\nNew findings (reported — no failure policy set):\n")
+		}
 		writeFindings(&sb, v.Advisories)
 		sb.WriteString(advisoryNote(v.Advisories, v.Policy))
+	}
+
+	if len(v.Descriptive) > 0 {
+		sb.WriteString("\nDescriptive (never graded) — what the change declared or renamed, not a problem:\n")
+		writeFindings(&sb, v.Descriptive)
 	}
 
 	if len(v.Resolved) > 0 {
@@ -163,6 +184,24 @@ func (v Verdict) Render() string {
 // a sentence about 1.00.
 func advisoryNote(ins []facts.Insight, p Policy) string {
 	floor := p.minConfidence()
+	// No --fail-on at all. The two branches below both end "...outside [%s]", which with
+	// an empty policy renders as "outside []" — a bracket pair the reader has to decode
+	// into "nothing was enforced". Say it in words instead, and say what to type.
+	//
+	// The two cases differ by one clause that has to be right: with a --max-spillover
+	// threshold set, this run CAN fail, and it may already have — printing "nothing in
+	// this run could fail the build" under a FAIL headline is the flattest contradiction
+	// the report is capable of.
+	if len(p.failExplainers()) == 0 {
+		if len(p.Thresholds) > 0 {
+			return "\nNo --fail-on policy is set, so no FINDING could fail this run — only the threshold\n" +
+				"above grades it. These are reported for you to judge; enforce the ones you want\n" +
+				"enforced: --fail-on=layers (`enola check --help` lists all eleven).\n"
+		}
+		return "\nNo --fail-on policy is set, so nothing in this run could fail the build. These are\n" +
+			"reported for you to judge. Enforce the ones you want enforced: --fail-on=layers\n" +
+			"(`enola check --help` lists all eleven).\n"
+	}
 	var belowFloor, metFloor bool
 	for _, in := range ins {
 		if in.Confidence < floor {
@@ -181,6 +220,28 @@ func advisoryNote(ins []facts.Insight, p Policy) string {
 	default:
 		return fmt.Sprintf("\nConfidence < %.2f is a candidate to verify, not a verdict.\n", floor)
 	}
+}
+
+// UnenforcedAtFloor returns the new findings that met the confidence floor and were
+// reported rather than failed, only because the policy does not name their explainer.
+//
+// It exists because "nothing failed" and "nothing was found" stopped being the same
+// sentence when the default policy became empty. A surface that speaks only on a
+// FAILING verdict — the Stop hook — would otherwise go permanently quiet on an
+// out-of-the-box install, which is the loop silently not running. These are the findings
+// enola computes exactly (a declared-layer violation, an intent set difference, a cycle
+// if that explainer is on): worth telling an agent about even when no policy asked for
+// them. Estimates below the floor are not, or every re-ranked hotspot list becomes a
+// session report.
+func (v Verdict) UnenforcedAtFloor() []facts.Insight {
+	floor := v.Policy.minConfidence()
+	var out []facts.Insight
+	for _, in := range v.Advisories {
+		if in.Confidence >= floor {
+			out = append(out, in)
+		}
+	}
+	return out
 }
 
 // listCap is how many entries each list prints before summarizing the rest. Enough to

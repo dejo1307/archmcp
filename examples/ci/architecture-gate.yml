@@ -1,8 +1,12 @@
 # enola architectural regression gate — GitHub Actions.
 #
 # It answers what tests do not: did this pull request change the STRUCTURE of the system
-# in a way nobody asked for? A newly introduced dependency cycle fails the job; findings
-# below that threshold are reported in the log and allowed through.
+# in a way nobody asked for?
+#
+# THE POLICY IS THE --fail-on LINE, and it is the one thing here you have to choose.
+# `enola check` on its own reports every finding and exits 0 — a job that calls it
+# without --fail-on is a report, not a gate, and it will be green forever. Findings from
+# explainers outside the list are still reported in the log.
 #
 # IF YOU JUST WANT THE GATE: enola-labs/enola-action does all of this in one step. It
 # pins the exact pull-request base itself, so there is no baseline artifact to publish
@@ -92,7 +96,10 @@ jobs:
             echo "It will start enforcing once publish-baseline has run on the default branch."
             exit 0
           fi
-          enola check --baseline baseline
+          # --fail-on is the gate. `layers` needs a declared layer order in
+          # enola-intent.yaml to reach the 1.00 floor; add cycles, intent or any of the
+          # other eight explainers your repository wants enforced.
+          enola check --baseline baseline --fail-on=layers
 
       # `enola check` exit codes:
       #   0 clean · 1 regression (job fails) · 2 error · 3 declined (not comparable)
@@ -105,7 +112,7 @@ jobs:
 
       - name: Publish the verdict as JSON
         if: always() && steps.baseline.outcome == 'success'
-        run: enola check --baseline baseline --json > architecture-verdict.json || true
+        run: enola check --baseline baseline --fail-on=layers --json > architecture-verdict.json || true
 
       - uses: actions/upload-artifact@v4
         if: always()
