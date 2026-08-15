@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"path/filepath"
 	"time"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -149,7 +148,10 @@ func (e *Engine) stalenessEntries(gr *facts.GraphReceipt, grErr error, snap *fac
 		return nil
 	}
 	return []facts.GraphRepoEntry{{
-		Label: filepath.Base(snap.Meta.RepoPath),
+		// The label the facts actually carry — the restore path keys its repoPaths map
+		// off this entry, so a directory-derived guess would restore a graph nothing
+		// could be looked up in.
+		Label: snap.Meta.Label(),
 		Path:  snap.Meta.RepoPath,
 		Git:   snap.Meta.Git,
 	}}

@@ -150,7 +150,7 @@ func (e *Engine) repoEntries(b *snapshotBundle) []facts.GraphRepoEntry {
 			return nil
 		}
 		abs := b.snapshot.Meta.RepoPath
-		repos = map[string]string{filepath.Base(abs): abs}
+		repos = map[string]string{b.snapshot.Meta.Label(): abs}
 	}
 
 	entries := make([]facts.GraphRepoEntry, 0, len(repos))

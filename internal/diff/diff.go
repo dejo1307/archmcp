@@ -352,12 +352,7 @@ func repoMismatchDetail(base, cur facts.SnapshotMeta) string {
 // repoLabelOf is the label a snapshot's facts carry. Snapshots written before the label
 // was recorded get the rule those builds used — the checkout directory name — so an old
 // baseline is compared on what actually tagged it rather than on today's rule.
-func repoLabelOf(m facts.SnapshotMeta) string {
-	if m.RepoLabel != "" {
-		return m.RepoLabel
-	}
-	return facts.RepoDirName(m.RepoPath)
-}
+func repoLabelOf(m facts.SnapshotMeta) string { return m.Label() }
 
 func remoteOf(m facts.SnapshotMeta) string {
 	if m.Git == nil {

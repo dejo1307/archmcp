@@ -221,3 +221,17 @@ func TestRepoLabel_PrefersTheRepositoryNameOverTheDirectory(t *testing.T) {
 		t.Errorf("the same repository produced two labels: %q vs %q", base, head)
 	}
 }
+
+// Every reader asks a snapshot what its facts are labelled with through Label(), and
+// the answer has to be the label those facts actually carry — including for a snapshot
+// written before the label was recorded, whose facts were tagged with the directory.
+func TestSnapshotMeta_Label(t *testing.T) {
+	recorded := SnapshotMeta{RepoPath: "/tmp/wt/base", RepoLabel: "demo"}
+	if got := recorded.Label(); got != "demo" {
+		t.Errorf("Label() = %q, want the recorded label %q", got, "demo")
+	}
+	old := SnapshotMeta{RepoPath: "/src/my-app"}
+	if got := old.Label(); got != "my-app" {
+		t.Errorf("Label() = %q, want the directory name %q for a pre-label snapshot", got, "my-app")
+	}
+}

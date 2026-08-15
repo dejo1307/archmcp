@@ -202,6 +202,19 @@ type Insight struct {
 	Informational bool `json:"informational,omitempty"`
 }
 
+// Label is the repo label the facts in this snapshot carry, and the only correct way to
+// ask that question of a snapshot. Recomputing it from RepoPath is what let the engine
+// and its readers disagree: since the label came to depend on the git remote, a caller
+// deriving one from the directory would look up facts under a key nothing is stored at
+// and quietly count zero. Snapshots written before the label was recorded fall back to
+// the directory name, which is what tagged their facts.
+func (m SnapshotMeta) Label() string {
+	if m.RepoLabel != "" {
+		return m.RepoLabel
+	}
+	return RepoDirName(m.RepoPath)
+}
+
 // Evidence links an insight back to concrete facts/files/symbols.
 type Evidence struct {
 	File   string `json:"file,omitempty"`
@@ -436,7 +449,7 @@ type GraphReceipt struct {
 
 // GraphRepoEntry describes one repository's membership in the current graph.
 type GraphRepoEntry struct {
-	Label           string   `json:"label"`                       // filepath.Base(absRepo); the store's repo label
+	Label           string   `json:"label"`                       // the store's repo label (see RepoLabel); NOT necessarily the directory name
 	Path            string   `json:"path"`                        // absolute repo root
 	Git             *GitInfo `json:"git,omitempty"`               // ref/commit/dirty; nil for non-git dirs
 	AddedAt         string   `json:"added_at"`                    // RFC3339 UTC, first time this label entered the graph (merged forward across regenerations)

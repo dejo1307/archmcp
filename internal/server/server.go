@@ -1011,7 +1011,10 @@ func (s *Server) registerTools() {
 		)
 
 		if appendMode {
-			repoLabel := filepath.Base(absRepo)
+			// What the facts are ACTUALLY tagged with — this string is handed to the
+			// agent as the value to pass to query_facts(repo=…), so a guess here sends
+			// it querying a label nothing is stored under.
+			repoLabel := snapshot.Meta.Label()
 			autoNote := ""
 			if autoAppended {
 				autoNote = " (auto-enabled: different repo detected)"

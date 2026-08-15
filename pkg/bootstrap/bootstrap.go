@@ -483,7 +483,7 @@ func GraphStateFunc(eng *Engine) status.GraphFunc {
 		repos := eng.RepoPaths()
 		if len(repos) == 0 && snap != nil && snap.Meta.RepoPath != "" {
 			// Single-repo graph: RepoPaths stays empty until a repo is appended.
-			repos = map[string]string{filepath.Base(snap.Meta.RepoPath): snap.Meta.RepoPath}
+			repos = map[string]string{snap.Meta.Label(): snap.Meta.RepoPath}
 		}
 		for label, path := range repos {
 			r := status.InstanceRepo{Label: label, Path: path}
@@ -557,7 +557,11 @@ func AutoLoadSnapshot(eng *Engine, cfg *config.Config) map[string]int {
 	if _, err := os.Stat(filepath.Join(dir, "facts.jsonl")); err != nil {
 		return nil // nothing on disk; start empty
 	}
-	label := filepath.Base(repoPath)
+	// The label from the snapshot on disk, not from the directory it sits in. The map
+	// below is what repo-scoped queries and fact counts are keyed by, so guessing it
+	// from the path restores a graph whose facts nothing can find — silently, as an
+	// empty result rather than an error.
+	label := restoredLabel(dir, repoPath)
 	if err := eng.RestoreFromDir(dir, map[string]string{label: repoPath}, label); err != nil {
 		log.Printf("[bootstrap] warning: failed to restore snapshot from %s: %v", dir, err)
 		return nil
@@ -570,6 +574,21 @@ func AutoLoadSnapshot(eng *Engine, cfg *config.Config) map[string]int {
 		return map[string]int{repoPath: int(snap.Meta.SourceBytes / charsPerToken)}
 	}
 	return nil
+}
+
+// restoredLabel reads the repo label recorded in a snapshot directory, falling back to
+// the checkout directory name when the snapshot predates the recorded label — which is
+// exactly what labelled the facts in that older snapshot.
+func restoredLabel(dir, repoPath string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "snapshot.meta.json"))
+	if err != nil {
+		return filepath.Base(repoPath)
+	}
+	var meta facts.SnapshotMeta
+	if err := json.Unmarshal(data, &meta); err != nil || meta.RepoLabel == "" {
+		return filepath.Base(repoPath)
+	}
+	return meta.RepoLabel
 }
 
 // charsPerToken converts source bytes to tokens, matching the heuristic used
