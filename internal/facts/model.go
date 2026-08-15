@@ -190,6 +190,16 @@ type Insight struct {
 	Confidence  float64    `json:"confidence"` // 0.0 - 1.0
 	Evidence    []Evidence `json:"evidence"`
 	Actions     []string   `json:"suggested_actions,omitempty"`
+
+	// Informational marks a finding that DESCRIBES the graph rather than complaining
+	// about it — "Architecture pattern: declared (enola)", "Intent override: the cluster
+	// config replaced this repo's declaration". They are worth reporting and must never
+	// be gradeable, and the distinction is not expressible in confidence: both are exact,
+	// which is precisely the problem. A repository that declares a layer order for the
+	// first time emits a new `layers` finding at 1.00 describing the declaration, and
+	// under --fail-on=layers that would fail the very pull request that adopted the
+	// policy. See check.Policy.fails.
+	Informational bool `json:"informational,omitempty"`
 }
 
 // Evidence links an insight back to concrete facts/files/symbols.

@@ -13,6 +13,13 @@ func insight(source, title string, confidence float64) facts.Insight {
 	return facts.Insight{Source: source, Title: title, Confidence: confidence}
 }
 
+// legacyDefault is the policy the gate once applied when the caller named none. It is
+// spelled out here rather than assumed, because the empty Policy no longer means it —
+// an unstated policy now enforces nothing (see DefaultFailExplainers). These tests are
+// about how a NAMED explainer grades, so they name one; TestEvaluate_NoPolicyFailsNothing
+// covers the unstated case.
+func legacyDefault() Policy { return Policy{FailExplainers: []string{"cycles"}} }
+
 // TestEvaluate_ConfidenceAndExplainerBands is the policy table. The two cases that
 // matter most are the ones that would break a naive "fail on confidence 1.0" gate:
 // god-class clamps a statistical outlier to 1.0, and layers emits an informational
@@ -38,7 +45,7 @@ func TestEvaluate_ConfidenceAndExplainerBands(t *testing.T) {
 			v := Evaluate(&diff.SnapshotDiff{
 				Comparability: diff.Comparability{Comparable: true},
 				FindingsNew:   []facts.Insight{tc.finding},
-			}, Policy{})
+			}, legacyDefault())
 
 			if tc.wantFail {
 				if v.Status != StatusRegression {
@@ -74,7 +81,7 @@ func TestEvaluate_StaleBaselineWarnsAndStillGrades(t *testing.T) {
 	d := &diff.SnapshotDiff{}
 	d.AddWarningKind(diff.WarnStaleBaseline, "baseline is 9 days older than the current snapshot — …")
 
-	v := Evaluate(d, Policy{})
+	v := Evaluate(d, legacyDefault())
 
 	if v.Status != StatusClean {
 		t.Errorf("status = %q, want %q: a stale baseline must not block grading", v.Status, StatusClean)
@@ -99,7 +106,7 @@ func TestEvaluate_StaleBaselineWarnsAndStillGrades(t *testing.T) {
 
 	// And it must still grade: the same delta with a real cycle fails despite being stale.
 	d.FindingsNew = []facts.Insight{insight("cycles", "Cyclic dependency detected (2 modules)", 1.0)}
-	if got := Evaluate(d, Policy{}); got.Status != StatusRegression {
+	if got := Evaluate(d, legacyDefault()); got.Status != StatusRegression {
 		t.Errorf("status = %q, want %q: staleness must not suppress a real regression", got.Status, StatusRegression)
 	}
 }
@@ -121,7 +128,7 @@ func TestEvaluate_BlockingDeclinesRatherThanFails(t *testing.T) {
 			}
 			d.AddWarningKind(kind, "something is not comparable")
 
-			v := Evaluate(d, Policy{})
+			v := Evaluate(d, legacyDefault())
 			if v.Status != StatusIncomparable {
 				t.Errorf("status = %q, want %q", v.Status, StatusIncomparable)
 			}
@@ -145,7 +152,7 @@ func TestEvaluate_AddWarningFailsClosed(t *testing.T) {
 	d := &diff.SnapshotDiff{}
 	d.AddWarning("the working tree changed since the current snapshot was taken")
 
-	v := Evaluate(d, Policy{})
+	v := Evaluate(d, legacyDefault())
 	if v.Status != StatusIncomparable {
 		t.Errorf("status = %q, want %q: an unclassified caveat must fail closed", v.Status, StatusIncomparable)
 	}
@@ -157,7 +164,7 @@ func TestEvaluate_InvertedPairIsUsageError(t *testing.T) {
 	d := &diff.SnapshotDiff{}
 	d.AddWarningKind(diff.WarnInvertedPair, "the baseline is newer than the snapshot it is being compared against")
 
-	v := Evaluate(d, Policy{})
+	v := Evaluate(d, legacyDefault())
 	if v.Status != StatusUsageError {
 		t.Errorf("status = %q, want %q", v.Status, StatusUsageError)
 	}
@@ -174,7 +181,7 @@ func TestEvaluate_BlockingOutranksInvertedPair(t *testing.T) {
 	d.AddWarningKind(diff.WarnInvertedPair, "inverted")
 	d.AddWarningKind(diff.WarnDifferentRepo, "different repo")
 
-	if got := Evaluate(d, Policy{}).Status; got != StatusIncomparable {
+	if got := Evaluate(d, legacyDefault()).Status; got != StatusIncomparable {
 		t.Errorf("status = %q, want %q", got, StatusIncomparable)
 	}
 }
@@ -186,7 +193,7 @@ func TestEvaluate_WarnOnly(t *testing.T) {
 		Comparability: diff.Comparability{Comparable: true},
 		FindingsNew:   []facts.Insight{insight("cycles", "Cyclic dependency detected", 1.0)},
 	}
-	v := Evaluate(d, Policy{WarnOnly: true})
+	v := Evaluate(d, Policy{FailExplainers: []string{"cycles"}, WarnOnly: true})
 
 	if v.Status != StatusClean || v.ExitCode() != 0 {
 		t.Errorf("status = %q exit = %d, want %q / 0", v.Status, v.ExitCode(), StatusClean)
@@ -220,7 +227,7 @@ func TestEvaluate_CustomPolicy(t *testing.T) {
 		Comparability: diff.Comparability{Comparable: true},
 		FindingsNew:   []facts.Insight{insight("layers", "Layer violation: domain -> adapter", 0.8)},
 	}
-	if got := Evaluate(d, Policy{}).Status; got != StatusClean {
+	if got := Evaluate(d, legacyDefault()).Status; got != StatusClean {
 		t.Fatalf("default policy status = %q, want %q", got, StatusClean)
 	}
 	strict := Policy{FailExplainers: []string{"layers"}, MinConfidence: 0.75}
@@ -232,7 +239,7 @@ func TestEvaluate_CustomPolicy(t *testing.T) {
 // TestVerdict_JSONReportsEffectivePolicy — a CI consumer must see the policy that was
 // ENFORCED, not the zero values the caller happened to leave unset.
 func TestVerdict_JSONReportsEffectivePolicy(t *testing.T) {
-	v := Evaluate(&diff.SnapshotDiff{Comparability: diff.Comparability{Comparable: true}}, Policy{})
+	v := Evaluate(&diff.SnapshotDiff{Comparability: diff.Comparability{Comparable: true}}, legacyDefault())
 	raw, err := v.JSON()
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +292,7 @@ func TestStatus_ExitCodesAreDistinct(t *testing.T) {
 
 // TestEvaluate_NilDiffIsUsageError — no delta means the gate did not run.
 func TestEvaluate_NilDiffIsUsageError(t *testing.T) {
-	if got := Evaluate(nil, Policy{}); got.Status != StatusUsageError {
+	if got := Evaluate(nil, legacyDefault()); got.Status != StatusUsageError {
 		t.Errorf("status = %q, want %q", got.Status, StatusUsageError)
 	}
 }
@@ -307,7 +314,7 @@ func TestRender_ShowsWhatChangedNotJustHowMuch(t *testing.T) {
 			{Source: "pkg/check -> sort", Kind: "imports", Target: "sort"},
 		},
 	}
-	out := Evaluate(d, Policy{}).Render()
+	out := Evaluate(d, legacyDefault()).Render()
 
 	// The names of what was added, not merely a count.
 	for _, want := range []string{"pkg/check.Evaluate", "pkg/check/check.go:180", "cmd/enola.main"} {
@@ -355,7 +362,7 @@ func TestRender_AltersOnlyReportsVisibleChanges(t *testing.T) {
 			},
 		},
 	}
-	out := Evaluate(d, Policy{}).Render()
+	out := Evaluate(d, legacyDefault()).Render()
 
 	if strings.Contains(out, "0.77 -> 0.77") {
 		t.Errorf("rendered a confidence change invisible at the printed precision:\n%s", out)
@@ -385,9 +392,9 @@ func TestRender_IsDeterministic(t *testing.T) {
 			{Source: "a.B", Kind: "calls", Target: "c.D"},
 		},
 	}
-	first := Evaluate(d, Policy{}).Render()
+	first := Evaluate(d, legacyDefault()).Render()
 	for i := 0; i < 20; i++ {
-		if got := Evaluate(d, Policy{}).Render(); got != first {
+		if got := Evaluate(d, legacyDefault()).Render(); got != first {
 			t.Fatalf("render is not deterministic across runs:\n--- first ---\n%s\n--- run %d ---\n%s", first, i, got)
 		}
 	}
@@ -404,7 +411,7 @@ func TestRender_DoesNotMutateTheDiff(t *testing.T) {
 		},
 	}
 	before := append([]diff.Edge(nil), d.EdgesAdded...)
-	_ = Evaluate(d, Policy{}).Render()
+	_ = Evaluate(d, legacyDefault()).Render()
 
 	for i := range before {
 		if d.EdgesAdded[i] != before[i] {
@@ -415,11 +422,152 @@ func TestRender_DoesNotMutateTheDiff(t *testing.T) {
 
 // TestEvaluate_CleanIsQuiet — the no-change case must read as unambiguously clean.
 func TestEvaluate_CleanIsQuiet(t *testing.T) {
-	v := Evaluate(&diff.SnapshotDiff{Comparability: diff.Comparability{Comparable: true}}, Policy{})
+	v := Evaluate(&diff.SnapshotDiff{Comparability: diff.Comparability{Comparable: true}}, legacyDefault())
 	if v.Status != StatusClean {
 		t.Fatalf("status = %q, want %q", v.Status, StatusClean)
 	}
 	if out := v.Render(); !strings.Contains(out, "PASS") {
 		t.Errorf("render = %q, want a PASS headline", out)
+	}
+}
+
+// TestEvaluate_NoPolicyFailsNothing is the default the gate now ships: a caller who
+// named no explainer gets every finding REPORTED and an exit code of 0, including the
+// ones enola proves. It replaced an implicit fail-on-cycles, which meant a Go or Rails
+// repository was graded against a rule about cycles it had never asked for.
+func TestEvaluate_NoPolicyFailsNothing(t *testing.T) {
+	d := &diff.SnapshotDiff{
+		Comparability: diff.Comparability{Comparable: true},
+		FindingsNew: []facts.Insight{
+			insight("cycles", "Cyclic dependency detected (2 modules)", 1.0),
+			insight("layers", "Layer violation: storage -> api", 1.0),
+		},
+	}
+
+	v := Evaluate(d, Policy{})
+
+	if v.Status != StatusClean || v.ExitCode() != 0 {
+		t.Errorf("status = %q exit = %d, want %q / 0: an unstated policy may not fail a build", v.Status, v.ExitCode(), StatusClean)
+	}
+	if len(v.Failures) != 0 {
+		t.Errorf("failures = %d, want 0", len(v.Failures))
+	}
+	if len(v.Advisories) != 2 {
+		t.Fatalf("advisories = %d, want 2: not failing is not the same as not reporting", len(v.Advisories))
+	}
+	if v.Policy.Enforcing() {
+		t.Error("Enforcing() = true for a policy that names nothing")
+	}
+
+	// The exit code is the same as a genuinely clean run, so the TEXT has to carry the
+	// difference — otherwise "PASS" reads as "enola looked and found nothing".
+	out := v.Render()
+	for _, want := range []string{"2 new findings reported", "no policy set", "--fail-on"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render must say what it did NOT do; missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "outside []") {
+		t.Errorf("render printed an empty policy as a bracket pair:\n%s", out)
+	}
+	if strings.Contains(out, "PASS — no structural regression") {
+		t.Errorf("render claimed a clean structure while listing two findings:\n%s", out)
+	}
+}
+
+// TestPolicy_SpilloverAloneIsEnforcing — --max-spillover with no --fail-on is a real
+// gate. It fails on scope and on no findings at all, so it must not be lumped in with
+// "no policy set" and it must still be able to reach exit 1.
+func TestPolicy_SpilloverAloneIsEnforcing(t *testing.T) {
+	p := Policy{Thresholds: []Threshold{{Measurement: "spillover_packages", FailAt: 1}}}
+	if !p.Enforcing() {
+		t.Fatal("Enforcing() = false for a policy that gates spillover")
+	}
+
+	v := Evaluate(&diff.SnapshotDiff{Comparability: diff.Comparability{Comparable: true}}, p,
+		Measurement{Name: "spillover_packages", Label: "package(s) reached outside the declared scope", Count: 1})
+
+	if v.Status != StatusRegression || v.ExitCode() != 1 {
+		t.Errorf("status = %q exit = %d, want %q / 1", v.Status, v.ExitCode(), StatusRegression)
+	}
+}
+
+// TestUnenforcedAtFloor_KeepsProvenFindingsOnly is what the Stop hook speaks on. With
+// no policy every finding lands in Advisories, and reporting all of them would hand an
+// agent a re-ranked hotspot list every session; the floor is what keeps it to the ones
+// enola measures exactly.
+func TestUnenforcedAtFloor_KeepsProvenFindingsOnly(t *testing.T) {
+	v := Evaluate(&diff.SnapshotDiff{
+		Comparability: diff.Comparability{Comparable: true},
+		FindingsNew: []facts.Insight{
+			insight("layers", "Layer violation: storage -> api", 1.0),
+			insight("hotspots", "Call-graph hotspot", 0.7),
+		},
+	}, Policy{})
+
+	got := v.UnenforcedAtFloor()
+	if len(got) != 1 || got[0].Source != "layers" {
+		t.Fatalf("UnenforcedAtFloor() = %+v, want only the 1.00 layers finding", got)
+	}
+
+	// Once the explainer IS enforced the finding is a failure, not an unenforced one —
+	// otherwise the hook would repeat what the gate already failed on.
+	enforced := Evaluate(&diff.SnapshotDiff{
+		Comparability: diff.Comparability{Comparable: true},
+		FindingsNew:   []facts.Insight{insight("layers", "Layer violation: storage -> api", 1.0)},
+	}, Policy{FailExplainers: []string{"layers"}})
+	if len(enforced.UnenforcedAtFloor()) != 0 {
+		t.Errorf("UnenforcedAtFloor() = %+v, want empty when the policy names the explainer", enforced.UnenforcedAtFloor())
+	}
+}
+
+// TestEvaluate_DescriptiveFindingsAreNeverGraded is the trap this repository walked
+// into by adopting its own advice: declare a layer order, and the `layers` explainer
+// emits an EXACT finding announcing the declaration. Gating on `layers` would then fail
+// the very pull request that added enola-intent.yaml — a build broken by a description
+// of itself.
+func TestEvaluate_DescriptiveFindingsAreNeverGraded(t *testing.T) {
+	pattern := insight("layers", "Architecture pattern: declared (enola)", 1.0)
+	pattern.Informational = true
+
+	v := Evaluate(&diff.SnapshotDiff{
+		Comparability: diff.Comparability{Comparable: true},
+		FindingsNew:   []facts.Insight{pattern, insight("layers", "Layer violation: core -> surface", 1.0)},
+	}, Policy{FailExplainers: []string{"layers"}})
+
+	if v.Status != StatusRegression {
+		t.Fatalf("status = %q, want %q: the real violation must still fail", v.Status, StatusRegression)
+	}
+	if len(v.Failures) != 1 || v.Failures[0].Title != "Layer violation: core -> surface" {
+		t.Errorf("failures = %+v, want only the violation", v.Failures)
+	}
+	if len(v.Descriptive) != 1 || !v.Descriptive[0].Informational {
+		t.Errorf("descriptive = %+v, want the pattern finding", v.Descriptive)
+	}
+	// Not silently dropped either: it is reported under its own heading, and the reason
+	// it did not fail is that it describes rather than complains — not the floor, and
+	// not the explainer list, which is what the advisory note would have claimed.
+	if len(v.Advisories) != 0 {
+		t.Errorf("advisories = %+v, want none: a description is not an advisory", v.Advisories)
+	}
+	out := v.Render()
+	if !strings.Contains(out, "Descriptive (never graded)") || !strings.Contains(out, "declared (enola)") {
+		t.Errorf("render dropped the descriptive finding:\n%s", out)
+	}
+}
+
+// The same finding must not reach the Stop hook either — an agent asked to hand the
+// user a decision about "Architecture pattern: declared" would be asking about nothing.
+func TestUnenforcedAtFloor_SkipsDescriptiveFindings(t *testing.T) {
+	pattern := insight("layers", "Architecture pattern: declared (enola)", 1.0)
+	pattern.Informational = true
+
+	v := Evaluate(&diff.SnapshotDiff{
+		Comparability: diff.Comparability{Comparable: true},
+		FindingsNew:   []facts.Insight{pattern},
+	}, Policy{})
+
+	if got := v.UnenforcedAtFloor(); len(got) != 0 {
+		t.Errorf("UnenforcedAtFloor() = %+v, want empty", got)
 	}
 }

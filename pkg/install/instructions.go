@@ -26,8 +26,8 @@ Before changing code whose blast radius is not obvious:
 
 After a structural change, re-run ` + "`generate_snapshot`" + ` and ` + "`diff_snapshot`" + ` to see what
 the change actually did: findings introduced or resolved, coupling added, symbols added
-or removed. A dependency cycle or unintended coupling is a reason to fix the change
-before presenting it, not something to mention afterwards.
+or removed. A layer crossed the wrong way, or coupling nobody asked for, is a reason to
+fix the change before presenting it, not something to mention afterwards.
 
 Prefer these over re-deriving structure by grepping. They are exact, and they cost a
 fraction of the file reading they replace.`
@@ -38,8 +38,16 @@ fraction of the file reading they replace.`
 const HooksNote = `
 
 enola's hook is installed for this project: at the end of a session it reports the
-architectural delta if — and only if — the change introduced a structural regression.
-It never blocks, and it stays silent when the change is clean.
+architectural delta if — and only if — the change introduced something worth reading,
+which is either a regression under the policy this repository set (` + "`--fail-on`" + `) or a
+finding enola measured exactly and no policy enforced. It never blocks, and it stays
+silent when the change is clean.
+
+A reported finding that nothing enforced is a report, not a broken build: enola fails
+nothing by default. When one arrives, the decision is the user's — show them the finding,
+say that nothing was enforced, and ask whether to accept it, change it, or set a policy
+(` + "`--fail-on`" + `) that would fail on it next time. Do not revert work over it on your
+own initiative, and do not describe the session as clean without mentioning it.
 
 It speaks in one other case: when it could not grade the change at all, because the
 baseline is not comparable to the current snapshot. That is NOT a verdict about your

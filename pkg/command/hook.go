@@ -90,7 +90,15 @@ func (r *Runner) runStopHook(ctx context.Context) {
 	// ShouldReport is asked BEFORE recording, because recording is what makes the next
 	// identical decline a repeat.
 	sayDecline := ok && declineKey != "" && hookstate.ShouldReport(outDir, hookstate.EventStop, declineKey)
-	hookstate.RecordFiredWithReason(outDir, hookstate.EventStop, stopOutcome(verdict, ok), declineKey)
+
+	// Findings the run measured exactly and did not fail, because no policy named them.
+	// The hook reports these: an agent that hears nothing after closing a layer violation
+	// concludes the change was clean, and on a default install nothing fails at all.
+	unenforced := []facts.Insight(nil)
+	if ok && verdict.Status == check.StatusClean {
+		unenforced = verdict.UnenforcedAtFloor()
+	}
+	hookstate.RecordFiredWithReason(outDir, hookstate.EventStop, stopOutcome(verdict, ok, len(unenforced) > 0), declineKey)
 
 	var context string
 	switch {
@@ -98,6 +106,9 @@ func (r *Runner) runStopHook(ctx context.Context) {
 		context = "enola graded the architectural change made in this session and found a structural " +
 			"regression. This was not necessarily intended — review it before considering the task " +
 			"finished, and either fix it or say why it is deliberate.\n\n" + verdict.Render()
+
+	case len(unenforced) > 0:
+		context = unenforcedReport(r.name(), verdict)
 
 	case sayDecline:
 		// The gate could not grade at all, and saying nothing would be indistinguishable
@@ -300,19 +311,44 @@ func shouldAutoPin(baselineDir, repoDir, outputDir string, current *facts.Snapsh
 	return now.Commit != base.Meta.Git.Commit
 }
 
+// unenforcedReport is what an agent is handed when the session introduced a finding
+// enola measures exactly and no policy enforced it.
+//
+// Reported, not failed — and the distinction has an owner. With no policy set, NOTHING
+// has decided whether this change is acceptable: the gate had no grounds to, and an
+// agent inferring a verdict from an unenforced finding is exactly the judgement enola
+// declines to make on the user's behalf. So the instruction is to surface it and hand
+// the decision over, rather than to fix it, revert it, or quietly accept it. Both silent
+// outcomes are wrong for the same reason — each answers a question that was the user's.
+func unenforcedReport(bin string, v check.Verdict) string {
+	return "enola graded the architectural change made in this session. NOTHING FAILED: this " +
+		"repository has no failure policy set, so the gate had no grounds to fail anything and the " +
+		"run exited 0. The change did introduce findings enola measures exactly.\n\n" +
+		"WHETHER THIS IS ACCEPTABLE IS THE USER'S DECISION, NOT YOURS. Before presenting this task " +
+		"as finished: show them the findings below, say plainly that nothing was enforced and that " +
+		"this is a report rather than a failed build, and ask them to decide — accept it as " +
+		"intended, have you change it, or set a policy (`" + bin + " check --fail-on=…`) so that a " +
+		"future run does fail on it. Do not revert or refactor on your own initiative over these, " +
+		"and do not report the session as clean without mentioning them.\n\n" + v.Render()
+}
+
 // stopOutcome classifies a Stop-hook run for the heartbeat.
 //
 // The distinction that earns its keep is OutcomeDeclined: the hook is silent for an
 // incomparable baseline exactly as it is silent for a clean change, and only a
 // heartbeat can tell an operator which of the two has been happening all week.
-func stopOutcome(v check.Verdict, ok bool) hookstate.Outcome {
+//
+// reported covers the other way the hook now speaks without failing: a clean verdict
+// carrying findings no policy enforces. The heartbeat records whether the hook SPOKE,
+// so a run that handed the agent a report must not be filed as a silent clean one.
+func stopOutcome(v check.Verdict, ok, reported bool) hookstate.Outcome {
 	if !ok {
 		return hookstate.OutcomeUnavailable
 	}
-	switch v.Status {
-	case check.StatusRegression:
+	switch {
+	case v.Status == check.StatusRegression, reported:
 		return hookstate.OutcomeReported
-	case check.StatusIncomparable:
+	case v.Status == check.StatusIncomparable:
 		return hookstate.OutcomeDeclined
 	default:
 		return hookstate.OutcomeClean

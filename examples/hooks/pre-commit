@@ -8,8 +8,13 @@
 #     git config core.hooksPath .githooks
 #
 # It answers the question a test suite does not: did this change alter the STRUCTURE of
-# the system in a way nobody asked for? By default only a newly introduced dependency
-# cycle fails the commit; everything else is reported and allowed through.
+# the system in a way nobody asked for?
+#
+# NOTE THE POLICY BELOW. `enola check` fails nothing on its own — it reports and exits 0
+# — so a hook that just calls it can never block a commit. The --fail-on list is what
+# makes this a gate, and it is the one line here worth editing: name the explainers your
+# repository actually wants enforced. `layers` needs a declared layer order in
+# enola-intent.yaml to reach the 1.00 floor; without one it matches nothing.
 #
 # `enola check` is read-only — it writes nothing to .enola/ and leaves your pinned
 # baseline in place, so it is safe to run on every commit and as often as you like.
@@ -31,8 +36,15 @@ fi
 # `|| status=$?` rather than a bare call: under `set -e` a non-zero exit would abort the
 # hook before the status could be inspected, so every regression would surface as a bare
 # failed hook with no explanation of which code it was.
+#
+# EDIT THIS LIST. It is the whole policy: cycles, layers, intent, crossrepo, coverage,
+# unused-routes, god-class, hotspots, dependency-depth, exported-surface,
+# complexity-outliers. The inferred ones cap below 1.00, so enforcing any of them needs
+# --min-confidence=0.8 as well.
+FAIL_ON="${ENOLA_FAIL_ON:-layers}"
+
 status=0
-enola check || status=$?
+enola check --fail-on="$FAIL_ON" || status=$?
 
 case $status in
   0) ;;

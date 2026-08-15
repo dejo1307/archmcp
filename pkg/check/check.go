@@ -47,23 +47,27 @@ func (s Status) ExitCode() int {
 	}
 }
 
-// DefaultFailExplainers is the set of explainers whose new findings break a build
-// by default: dependency cycles, and nothing else.
+// DefaultFailExplainers is empty, and that is the design: enola measures, reports, and
+// fails nothing until you name what should fail.
 //
-// The obvious design — "fail on confidence 1.0, because ARCHITECTURE.md says 1.0 is a
-// structural fact and anything below is a heuristic" — does not survive contact with the
-// explainers. Two of them reach 1.0 without being structural defects:
+// It used to hold "cycles". A dependency cycle is exactly measurable, which made it a
+// tempting default — but exactly measurable is not the same as universally unwanted.
+// Go's own standard library is written in a language whose packages cannot form one and
+// whose authors treat the restriction as a design constraint rather than a virtue; a
+// Rails app assembles most of its graph at runtime and its community does not read a
+// cycle between two app/ directories as a defect at all. Shipping a default that breaks
+// those builds meant enola arrived asserting a position on someone else's architecture
+// before it had measured anything, and the first thing a Go or Rails team had to learn
+// was which flag turns the opinion off.
 //
-//   - god-class computes confidence from a fan-in ratio and CLAMPS it to 1.0, so a
-//     statistical outlier at twice the threshold presents as a certainty;
-//   - layers emits an informational "Architecture pattern: X" finding whose confidence is
-//     the share of the codebase matching the pattern, which can be 1.0 — and detecting a
-//     different pattern after a reorganization is not a regression.
+// So the gate now enforces only what the caller states: --fail-on names the explainers,
+// --max-spillover bounds the scope check, and a run with neither reports its findings and
+// exits 0. Nothing is hidden by that — an unenforced run says so in its own output rather
+// than printing a green line that could be mistaken for an all-clear (see Render).
 //
-// Gating on the number alone would therefore fail builds for a new statistical outlier and
-// for a re-detected architecture pattern. So the explainer is the primary filter and
-// confidence is a floor applied within it. See MinConfidence.
-var DefaultFailExplainers = []string{"cycles"}
+// Deprecated: retained so a consumer that referenced this symbol still compiles. It is
+// empty and no longer consulted; set Policy.FailExplainers to enforce anything.
+var DefaultFailExplainers []string
 
 // DefaultMinConfidence is the floor applied WITHIN the failing explainers.
 //
@@ -111,7 +115,8 @@ type Breach struct {
 // Policy decides which parts of a delta are allowed to fail a build.
 type Policy struct {
 	// FailExplainers are the explainer names whose new findings fail the gate.
-	// Empty means DefaultFailExplainers.
+	// EMPTY MEANS NOTHING FAILS: every new finding is reported as an advisory and the
+	// verdict is clean. See DefaultFailExplainers for why the empty set is the default.
 	FailExplainers []string `json:"fail_explainers"`
 	// MinConfidence is the floor within FailExplainers. Zero means DefaultMinConfidence.
 	MinConfidence float64 `json:"min_confidence"`
@@ -137,10 +142,11 @@ func (p Policy) thresholdFor(name string) (Threshold, bool) {
 }
 
 // resolved fills in the defaults, so a Verdict records the policy that was actually
-// ENFORCED rather than the one the caller happened to type. Without it, JSON output
-// reported `min_confidence: 0` and `fail_explainers: null` for a run that in fact
-// gated on cycles at 1.0 — a consumer reading those numbers would draw the wrong
-// conclusion about what the gate checked.
+// ENFORCED rather than the one the caller happened to type. It matters most for the
+// floor: a caller who set FailExplainers and left MinConfidence at zero is gating at
+// 1.00, and JSON reporting `min_confidence: 0` would tell a consumer the opposite.
+// FailExplainers is carried through untouched — an empty list is now a real answer
+// ("nothing could fail"), not a stand-in for a default.
 func (p Policy) resolved() Policy {
 	return Policy{
 		FailExplainers: p.failExplainers(),
@@ -151,10 +157,17 @@ func (p Policy) resolved() Policy {
 }
 
 func (p Policy) failExplainers() []string {
-	if len(p.FailExplainers) == 0 {
-		return DefaultFailExplainers
-	}
 	return p.FailExplainers
+}
+
+// Enforcing reports whether this policy can fail anything at all. A run where it is
+// false still grades and still reports; it just has no grounds to exit non-zero, and
+// its output has to say so rather than print an unqualified PASS.
+//
+// Thresholds count: --max-spillover=0 with no --fail-on is a legitimate gate that
+// enforces scope and no findings.
+func (p Policy) Enforcing() bool {
+	return len(p.FailExplainers) > 0 || len(p.Thresholds) > 0
 }
 
 func (p Policy) minConfidence() float64 {
@@ -166,6 +179,13 @@ func (p Policy) minConfidence() float64 {
 
 // fails reports whether one new finding violates the policy.
 func (p Policy) fails(in facts.Insight) bool {
+	// A descriptive finding is never a violation, whatever its confidence or explainer.
+	// Without this, declaring a layer order for the first time fails the pull request
+	// that declared it: the `layers` explainer emits an exact finding SAYING SO, and
+	// --fail-on=layers would grade the description alongside the violations.
+	if in.Informational {
+		return false
+	}
 	if in.Confidence < p.minConfidence() {
 		return false
 	}
@@ -242,6 +262,11 @@ type Verdict struct {
 	// Incidental are findings that moved with no structural cause in this change —
 	// a drifting statistical threshold or a re-ranked top-N. Never graded.
 	Incidental []facts.Insight `json:"incidental,omitempty"`
+	// Descriptive are new findings that describe the graph rather than complain about
+	// it (facts.Insight.Informational). Kept out of Advisories rather than merged into
+	// them: the advisory note explains why a finding did NOT fail, and neither of its
+	// reasons — under the floor, or outside --fail-on — is true of these.
+	Descriptive []facts.Insight `json:"descriptive,omitempty"`
 
 	// Measurements are every count the caller supplied, gated or not. Breaches are the
 	// subset that met a threshold; a fatal one makes the status a regression exactly as
@@ -328,9 +353,12 @@ func Evaluate(d *diff.SnapshotDiff, p Policy, measurements ...Measurement) Verdi
 	}
 
 	for _, in := range d.FindingsNew {
-		if p.fails(in) {
+		switch {
+		case in.Informational:
+			v.Descriptive = append(v.Descriptive, in)
+		case p.fails(in):
 			v.Failures = append(v.Failures, in)
-		} else {
+		default:
 			v.Advisories = append(v.Advisories, in)
 		}
 	}

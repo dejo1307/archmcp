@@ -20,7 +20,7 @@ func TestMeasurementsWithoutThresholdsChangeNothing(t *testing.T) {
 		{Name: "new_high_perf", Label: "new high-severity performance finding(s)", Count: 42},
 	}
 
-	v := Evaluate(cleanDiff(), Policy{}, m...)
+	v := Evaluate(cleanDiff(), legacyDefault(), m...)
 
 	if v.Status != StatusClean {
 		t.Errorf("Status = %q, want %q — an ungated measurement must not grade", v.Status, StatusClean)
@@ -155,7 +155,7 @@ func TestRenderCombinesFindingsAndBreaches(t *testing.T) {
 		{Source: "cycles", Title: "Cyclic dependency detected (2 modules)", Confidence: 1.0},
 	}}
 
-	out := Evaluate(d, Policy{Thresholds: []Threshold{{Measurement: "orphans", FailAt: 1}}},
+	out := Evaluate(d, Policy{FailExplainers: []string{"cycles"}, Thresholds: []Threshold{{Measurement: "orphans", FailAt: 1}}},
 		Measurement{Name: "orphans", Label: "orphan(s)", Count: 2}).Render()
 
 	if !strings.Contains(out, "FAIL — 2 structural regressions introduced") {

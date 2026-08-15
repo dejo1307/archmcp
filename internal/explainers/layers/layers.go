@@ -354,11 +354,12 @@ func (e *LayerExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 			evidence = append(evidence, facts.Evidence{Fact: mod, Detail: fmt.Sprintf("module %q maps to declared layer %q", mod, dp.Modules[mod])})
 		}
 		insights = append(insights, facts.Insight{
-			Title:       fmt.Sprintf("Architecture pattern: %s", dp.Name),
-			Description: fmt.Sprintf("Declared layer order with %d layers and %d classified modules. Declared, not recognised: confidence is exact.", len(dp.Layers), len(dp.Modules)),
-			Confidence:  1.0,
-			Evidence:    evidence,
-			Actions:     []string{"Keep the declaration beside the code it governs"},
+			Title:         fmt.Sprintf("Architecture pattern: %s", dp.Name),
+			Description:   fmt.Sprintf("Declared layer order with %d layers and %d classified modules. Declared, not recognised: confidence is exact.", len(dp.Layers), len(dp.Modules)),
+			Confidence:    1.0,
+			Informational: true, // Describes the declaration; the violations below are the findings.
+			Evidence:      evidence,
+			Actions:       []string{"Keep the declaration beside the code it governs"},
 		})
 		violations := e.detectViolations(store, dp)
 		for i := range violations {
@@ -386,10 +387,11 @@ func (e *LayerExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 		}
 
 		insights = append(insights, facts.Insight{
-			Title:       fmt.Sprintf("Architecture pattern: %s", best.Name),
-			Description: fmt.Sprintf("Detected %s architecture pattern with %.0f%% confidence. Found %d layers with %d classified modules.", best.Name, best.Confidence*100, len(best.Layers), len(best.Modules)),
-			Confidence:  best.Confidence,
-			Evidence:    evidence,
+			Title:         fmt.Sprintf("Architecture pattern: %s", best.Name),
+			Description:   fmt.Sprintf("Detected %s architecture pattern with %.0f%% confidence. Found %d layers with %d classified modules.", best.Name, best.Confidence*100, len(best.Layers), len(best.Modules)),
+			Confidence:    best.Confidence,
+			Informational: true, // Which pattern was recognised is not a defect, at any confidence.
+			Evidence:      evidence,
 			Actions: []string{
 				"Ensure new code follows the detected layer structure",
 				"Review cross-layer dependencies for violations",

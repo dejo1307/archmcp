@@ -229,8 +229,16 @@ func Compute(eng *bootstrap.Engine) *Report {
 			case strings.HasPrefix(in.Title, "Layer violation"):
 				r.LayerViolations++
 			case strings.HasPrefix(in.Title, "Architecture pattern:"):
-				r.Architecture = strings.TrimSpace(strings.TrimPrefix(in.Title, "Architecture pattern:"))
-				r.ArchConfidence = in.Confidence
+				// A repository that DECLARES its layer order produces two of these: the
+				// declared pattern at 1.00 and whatever layout enola also recognised. Last
+				// one wins would report the guess and hide the declaration — on a repo whose
+				// gate is enforcing the declaration, which makes the report contradict the
+				// verdict. Highest confidence wins instead, and the declared one is emitted
+				// first so it survives a tie.
+				if in.Confidence > r.ArchConfidence {
+					r.Architecture = strings.TrimSpace(strings.TrimPrefix(in.Title, "Architecture pattern:"))
+					r.ArchConfidence = in.Confidence
+				}
 			case strings.HasPrefix(in.Title, "Cross-repo dependencies"):
 				r.CrossRepoEdges = firstParenInt(in.Title)
 

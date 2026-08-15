@@ -6,9 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1736,9 +1736,9 @@ type extractorCache struct {
 	dest    string
 	tmp     *os.File
 	w       *bufio.Writer
-	entries int    // entries emitted this run
-	werr    error  // first write/encode failure; surfaced by save
-	closed  bool   // save or discard has run; further writes are refused
+	entries int   // entries emitted this run
+	werr    error // first write/encode failure; surfaced by save
+	closed  bool  // save or discard has run; further writes are refused
 }
 
 // buildIdentity identifies the binary that produced a cache entry: the release
