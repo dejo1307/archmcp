@@ -89,7 +89,7 @@ jobs:
             "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
           echo "sha=$(git merge-base HEAD "origin/${{ github.base_ref }}")" >> "$GITHUB_OUTPUT"
 
-      - uses: enola-labs/enola-action@v1
+      - uses: enola-labs/enola-action@v2
         with:
           config: mcp-arch.yaml
           base-sha: ${{ steps.base.outputs.sha }}
