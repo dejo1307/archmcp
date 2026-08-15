@@ -31,6 +31,23 @@ Thank you for your interest in contributing to enola. Every contribution — cod
 
    It also runs one check **CI cannot run at all**. See below.
 
+## The architecture gate on your pull request
+
+CI runs enola on enola: your change is graded against the layer order this repository
+declares in [`enola-intent.yaml`](enola-intent.yaml), with `--fail-on=layers`. A package
+depending outwards — anything under `internal/` reaching up into `pkg/command`, say —
+fails the job and the finding names the import that did it.
+
+Two things follow for a contributor:
+
+- **Moving or adding a package means updating the declaration.** A package no declared
+  path matches is not a violation, it is *unclassified*: it produces no findings, so the
+  gate would quietly stop covering your code. `go test ./internal/intent/` fails when
+  that happens, which is the only reason it is caught.
+- **Nothing else is enforced.** enola fails on what a policy names and nothing more, so
+  cycles, god-classes and the rest are reported on your pull request and allowed
+  through. That is deliberate — see [the README](README.md#what-fails-the-build).
+
 ## Measuring memory
 
 Two hidden flags, kept out of `--help` because they are development instruments

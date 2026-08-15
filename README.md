@@ -452,7 +452,7 @@ It is silent for builds from source, never runs when `CI` is set, and turns off 
 - **[docs/EXTENDING.md](docs/EXTENDING.md)** - teaching enola a connection it does not know: binders, cross-repo signals, and the `linking:` vocabulary that fixes a wrong edge from config rather than a patch.
 - **[docs/INTENT.md](docs/INTENT.md)** - declared intent: the `enola-intent.yaml` / cluster / `enola_intent:` frontmatter carriers, the full vocabulary (via, relations, origin channels), what compiles, how verdicts behave, and the working rules for keeping declarations truthful.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - the concept, the fact model, the pipeline, the MCP tool reference, and the value model.
-- **[examples/](examples/)** - ready-made per-language and multi-repo configs, plus a pre-commit hook and a CI workflow.
+- **[examples/](examples/)** - [`layers-gate/`](examples/layers-gate/) is the gate on five packages in one command; [`cross-repo/`](examples/cross-repo/) is the two-service demo. Plus ready-made per-language and multi-repo configs, a pre-commit hook and a CI workflow.
 - **[enola-action](https://github.com/enola-labs/enola-action)** - the GitHub Action: the same check on every pull request, as source annotations and an architecture delta in the job summary, with no baseline artifact to manage.
 
 ## Found it useful?

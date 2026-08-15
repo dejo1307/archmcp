@@ -114,7 +114,7 @@ Everything below is a prompt you type at your agent in plain English. enola pick
 
 > "Generate an architectural snapshot of /path/to/my/project"
 
-That's the whole setup. Snapshots are fast - seconds even on very large polyglot repos - and your agent now has all 13 tools plus a ready-to-read summary at `.enola/llm_context.md`.
+That's the whole setup. Snapshots are fast - seconds even on very large polyglot repos - and your agent now has all 16 tools (`enola --list`) plus a ready-to-read summary at `.enola/llm_context.md`.
 
 #### 2. Understand it
 
@@ -458,7 +458,9 @@ This installs both halves of the loop, so it runs without anyone remembering to:
 - **`SessionStart`** freezes the architecture as a baseline when a session begins - the "before".
 - **`Stop`** grades what the session changed when your agent finishes a turn, and hands the verdict back **only if** there is something to say: a structural regression under the policy you set, or - since the default policy is empty - a finding enola measured exactly and did not enforce.
 
-The agent gets a chance to fix the layer it crossed before telling you it's done, rather than you finding it in review. When nothing was enforced, the verdict it is handed says so, and says not to treat it as a broken build.
+The agent gets a chance to fix the layer it crossed before telling you it's done, rather than you finding it in review.
+
+**When nothing was enforced, the decision stays yours.** The verdict handed to the agent says the run exited `0`, that this is a report rather than a failed build, and that whether the change is acceptable is not the agent's call: it is told to show you the findings and ask - accept it, change it, or set a policy that would fail on it next time - and explicitly not to revert or refactor on its own initiative, nor to describe the session as clean without mentioning them.
 
 It is deliberately opt-in and deliberately quiet:
 
