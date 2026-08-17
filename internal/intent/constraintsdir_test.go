@@ -186,6 +186,36 @@ func TestLoadRepoFile_AbsentOrEmptyDirIsANoop(t *testing.T) {
 	}
 }
 
+// TestLoadRepoFile_FileNamedEnolaAtRootIsAbsence pins the one shape that is not
+// ErrNotExist. Both declaration directories hang off a single `enola/` parent,
+// and the most ordinary thing in a Go repo — `go build -o enola .` — puts a plain
+// file exactly there. ReadDir then returns ENOTDIR, which used to propagate out
+// of LoadRepoFile and abort the entire snapshot for a repo that had declared
+// nothing at all.
+func TestLoadRepoFile_FileNamedEnolaAtRootIsAbsence(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "enola"), []byte("not a directory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	files, problems, err := LoadConstraintsDir(dir)
+	if files != nil || problems != nil || err != nil {
+		t.Fatalf("constraints beside a file named enola = (%v, %v, %v), want all nil", files, problems, err)
+	}
+	recipes, recipeProblems, err := LoadRecipesDir(dir)
+	if recipes != nil || recipeProblems != nil || err != nil {
+		t.Fatalf("recipes beside a file named enola = (%v, %v, %v), want all nil", recipes, recipeProblems, err)
+	}
+
+	d, err := LoadRepoFile(dir)
+	if err != nil {
+		t.Fatalf("a repo declaring nothing must load cleanly, got: %v", err)
+	}
+	if d != nil {
+		t.Fatalf("declared nothing, got %+v", d)
+	}
+}
+
 func TestLoadRepoFile_ConstraintsDirOnlyDeclaration(t *testing.T) {
 	dir := writeConstraintsRepo(t, "", map[string]string{"adapters.yaml": constraintsAdaptersFile})
 	d, err := LoadRepoFile(dir)

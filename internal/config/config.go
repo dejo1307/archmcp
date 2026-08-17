@@ -203,6 +203,22 @@ type OutputConfig struct {
 	MaxContextTokens int    `yaml:"max_context_tokens"`
 }
 
+// KnownExplainers is every explainer this build ships, in the order Default runs
+// them. It is deliberately the ONLY list of explainer names in the tree that
+// anything reads: the default config below, and `check --fail-on`'s validation and
+// help text, all derive from it.
+//
+// They were separate lists before, and the drift was not hypothetical — four
+// explainers (constraints, domain, query-loops, entry-points) shipped enforceable
+// while --fail-on's help named eleven of the fifteen, so the one a caller most
+// wanted to gate on looked unsupported. A name added here becomes gateable,
+// documented and validated in the same edit, or it does not exist.
+var KnownExplainers = []string{
+	"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class",
+	"hotspots", "dependency-depth", "exported-surface", "complexity-outliers",
+	"intent", "constraints", "domain", "query-loops", "entry-points",
+}
+
 // Default returns a Config with sensible defaults.
 func Default() *Config {
 	return &Config{
@@ -512,7 +528,7 @@ func Default() *Config {
 			"**/test_driver/**/*.dart",
 		},
 		Extractors: []string{"cpp", "dart", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent"},
-		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent", "constraints", "domain", "query-loops", "entry-points"},
+		Explainers: append([]string(nil), KnownExplainers...),
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
 			Dir:              defaultOutputDir,

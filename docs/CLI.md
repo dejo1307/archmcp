@@ -504,10 +504,11 @@ The baseline is a pinned artifact rather than "whatever state the tool last held
 
 **A stale baseline warns; it never blocks.** Past three days it tells you exactly how stale and what that means (the delta now also contains whatever the repo itself changed in between) - then grades anyway, because a long-lived baseline is a legitimate way to measure a multi-day refactor and only you know which you meant.
 
-**Nothing fails by default.** A bare `enola check` runs all eleven explainers, reports every finding the change introduced, and exits `0` - saying in its own output that no policy was in effect, because a gate that enforces nothing must never be mistaken for a gate that found nothing. What breaks the build is what you name:
+**Nothing fails by default.** A bare `enola check` runs all fifteen explainers, reports every finding the change introduced, and exits `0` - saying in its own output that no policy was in effect, because a gate that enforces nothing must never be mistaken for a gate that found nothing. What breaks the build is what you name:
 
 ```bash
 enola check --fail-on=layers                               # fail on a declared layer order
+enola check --fail-on=constraints                          # fail on a declared rule breach
 enola check --fail-on=layers,cycles,intent                 # …and cycles, and undeclared seams
 enola check --fail-on=god-class --min-confidence=0.8       # an inferred one needs a lower floor
 enola check --fail-on=layers --warn-only                   # enforce, but only warn this time
@@ -517,6 +518,18 @@ enola check --baseline=previous                            # compare against the
 enola check --focus=internal/auth                          # narrow the delta to what you touched
 enola check --write                                        # also persist the snapshot (default: read-only)
 ```
+
+The fifteen names `--fail-on` accepts are `cycles`, `layers`, `intent`, `constraints`,
+`crossrepo`, `coverage`, `unused-routes`, `god-class`, `hotspots`, `dependency-depth`,
+`exported-surface`, `complexity-outliers`, `domain`, `query-loops` and `entry-points`.
+
+**A name it does not recognise is refused, not ignored.** `--fail-on=cyles` exits `2`
+and names what it could not match, rather than exiting `0` while enforcing nothing —
+a misspelled gate would otherwise be indistinguishable from a passing one in CI.
+Matching is exact, so `CYCLES` is refused too: case-insensitivity here would be a
+guess about which explainer you meant, and this flag exists to remove guesses about
+what fails. A spec mixing valid and invalid names is refused whole, because enforcing
+the valid half is the same defect wearing a smaller number.
 
 **Declaring what you meant to change.** The flags above grade the delta. `--target` grades
 it against your *intent*: reverse-dependency impact analysis runs on the pre-change graph,

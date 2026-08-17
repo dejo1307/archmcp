@@ -217,7 +217,7 @@ New findings (reported — no failure policy set):
 
 No --fail-on policy is set, so nothing in this run could fail the build. These are
 reported for you to judge. Enforce the ones you want enforced: --fail-on=layers
-(`enola check --help` lists all eleven).
+(`enola check --help` lists all fifteen).
 ```
 
 A gate that enforces nothing has to *say* it enforces nothing. Silence there is indistinguishable from an all-clear, and that is the one failure mode a green exit code cannot report on its own.
@@ -447,7 +447,7 @@ It is silent for builds from source, never runs when `CI` is set, and turns off 
 - **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** - reproducibility, delta precision, cross-repo coverage and scale, measured on 81 public repositories.
 - **[docs/SNAPSHOTS.md](docs/SNAPSHOTS.md)** - why enola computes a graph on demand and keeps it as an addressable snapshot, rather than maintaining one continuously-updated graph, and where the opposite choice is the right one.
 - **[docs/GLOSSARY.md](docs/GLOSSARY.md)** - the words enola uses in its own output - finding, baseline, receipt, coverage gap, incidental shift - defined in one place.
-- **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** - what the eleven explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 29,633 findings about a corpus into the one that is about your change.
+- **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** - what the fifteen explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 9,131 findings about a corpus into the one that is about your change.
 - **[docs/extraction/](docs/extraction/)** - per language, what specific code produces which facts, from committed fixtures, and what each extractor deliberately does not resolve.
 - **[docs/EXTENDING.md](docs/EXTENDING.md)** - teaching enola a connection it does not know: binders, cross-repo signals, and the `linking:` vocabulary that fixes a wrong edge from config rather than a patch.
 - **[docs/INTENT.md](docs/INTENT.md)** - declared intent: the `enola-intent.yaml` / cluster / `enola_intent:` frontmatter carriers, the full vocabulary (via, relations, origin channels), what compiles, how verdicts behave, and the working rules for keeping declarations truthful.

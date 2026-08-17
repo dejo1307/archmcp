@@ -52,7 +52,7 @@ func LoadRecipesDir(repoPath string) ([]Recipe, []string, error) {
 	dir := filepath.Join(repoPath, filepath.FromSlash(RecipesDirName))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if dirAbsent(err) {
 			return nil, nil, nil
 		}
 		return nil, nil, fmt.Errorf("reading %s: %w", dir, err)

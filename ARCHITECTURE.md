@@ -606,6 +606,32 @@ The pre-edit contract, answered before the edit. For a target — a file path or
 - **Both sides of a rule bind.** A component named as a rule's target (`to`, `only`, `protect`) carries that rule in its contract too: the reader touching the protected side learns who owns it.
 - **Honest empty states.** A snapshot with no declared components answers *not asked*; a declared snapshot where nothing contains the target answers with an empty component list. The two never look the same.
 
+### `plan_check` — "what would this change do, before it exists?"
+
+`constraints_for` answers for a target that is already named; this answers for a change that has not been made. Given paths or symbols it returns the governing constraints and the blast radius over the current snapshot; given a `patch` — a unified diff — it additionally applies that diff to a **scratch copy**, re-extracts, and returns the constraint verdicts that *would* appear, split into what the patch would introduce and what it would resolve.
+
+| Parameter | Description |
+|-----------|-------------|
+| `paths` | Repo-relative paths the intended change touches. May not exist yet. |
+| `symbols` | Exact fact names the intended change touches; resolves against the snapshot. |
+| `patch` | A unified diff to evaluate counterfactually. |
+| `max_tokens` | Optional hard cap. |
+
+- **The working tree is never written.** The patch is applied to a scratch copy and thrown away; a malformed diff is an error, not a partial application. This is a report, never a gate — the verdicts are for the caller to weigh.
+- **A path with no facts still has a contract.** A file the patch creates has no measured fact to reach, so the blast radius is empty while the governing rules are not. Both are reported, and the absence is stated rather than rendered as zero risk.
+
+### `endpoint_impact` — "what does changing this URL reach?"
+
+The route-shaped counterpart to `impact_analysis`: use that one when you have a symbol, this one when what you have is a URL. It matches an endpoint as a substring of the path, optionally verb-prefixed (`GET /v1/candidates`), and walks route → the controller serving it → the models that controller touches → the models associated with those → the tables behind them, plus the callers, including the frontend screen a calling route module implements.
+
+| Parameter | Description |
+|-----------|-------------|
+| `endpoint` *(required)* | Path substring, optionally prefixed with an HTTP verb. |
+| `max_tokens` | Optional hard cap. |
+
+- **It answers about what the application serves.** Client call sites and mock-server routes are excluded, so a match is a route this codebase responds to rather than one it calls.
+- **The model hops rest on `association` facts.** A model's declared `has_many`/`belongs_to` is what carries the walk past the controller; a codebase whose relations are built at runtime stops at the first hop, and the report shows where it stopped.
+
 ### `coverage_report` — "which cross-repo edges did enola resolve, and which did it miss?"
 
 Per-service edge-coverage report, so you can tell a genuinely isolated service from one whose outbound edges enola simply couldn't resolve. For each `service` node it shows resolved outbound dependencies and, per edge type (currently `http_client`), how many call sites were detected, resolved to a loaded service, and left unresolved — then classifies the service as `connected`, `coverage_gap` (no resolved edges but unresolved call sites detected — likely *not* isolated), or `isolated` (a genuine leaf). Use it before concluding a service stands alone. Multi-repo only; single-repo snapshots have no service nodes. Surfaces the `coverage` explainer's underlying `edge_coverage` counts.

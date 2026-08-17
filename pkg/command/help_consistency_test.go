@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/pkg/cli"
 )
 
@@ -84,5 +85,53 @@ func TestOwnSubcommandsAreNotDispatched(t *testing.T) {
 	}
 	if got := New(cli.Binary{Name: "enola"}, "upgrade").closestSubcommand("upgrad"); got != "upgrade" {
 		t.Errorf("closestSubcommand(%q) = %q, want %q — an own subcommand must still be suggested", "upgrad", got, "upgrade")
+	}
+}
+
+// The names `check --fail-on` ACCEPTS must be exactly the explainers the engine runs,
+// and a name that is not one of them must be REFUSED rather than silently enforced.
+//
+// This is TestDocumentedCommandsAreDispatchable one flag down. The help text carried its
+// own hand-written list of eleven names while the engine ran fifteen, so
+// `--fail-on=constraints` — the flag for the feature 0.4.0 is built around — read as
+// unsupported; and `--fail-on=cyles` was accepted and enforced nothing, which made a typo
+// in a CI config indistinguishable from a green build.
+func TestParseFailOn_RefusesNamesNoExplainerHas(t *testing.T) {
+	for _, name := range config.KnownExplainers {
+		named, unknown := parseFailOn(name)
+		if len(unknown) != 0 || len(named) != 1 || named[0] != name {
+			t.Errorf("parseFailOn(%q) = (%v, %v), want it accepted — the engine runs it", name, named, unknown)
+		}
+	}
+
+	for _, spec := range []string{"cyles", "CYCLES", "not-an-explainer", "Cycles"} {
+		named, unknown := parseFailOn(spec)
+		if len(unknown) != 1 || len(named) != 0 {
+			t.Errorf("parseFailOn(%q) = (%v, %v), want it rejected: matching is exact, and a near miss is still a policy nobody stated", spec, named, unknown)
+		}
+	}
+
+	// Half a policy is the same defect wearing a smaller number.
+	named, unknown := parseFailOn("cycles,cyles")
+	if len(unknown) != 1 || unknown[0] != "cyles" {
+		t.Errorf("parseFailOn(\"cycles,cyles\") unknown = %v, want [cyles] reported rather than the good half enforced", unknown)
+	}
+	if len(named) != 1 || named[0] != "cycles" {
+		t.Errorf("parseFailOn(\"cycles,cyles\") named = %v, want the valid name still parsed so the caller can report both", named)
+	}
+
+	// Whitespace and empty segments are formatting, not names.
+	if named, unknown := parseFailOn(" cycles , , layers "); len(unknown) != 0 || len(named) != 2 {
+		t.Errorf("parseFailOn with spacing = (%v, %v), want both names and no complaint", named, unknown)
+	}
+}
+
+// Every explainer the default config runs must be one --fail-on can name. An explainer
+// that ships un-gateable is a finding nobody can act on in CI.
+func TestEveryDefaultExplainerIsGateable(t *testing.T) {
+	for _, n := range config.Default().Explainers {
+		if _, unknown := parseFailOn(n); len(unknown) != 0 {
+			t.Errorf("default config runs explainer %q, which --fail-on rejects", n)
+		}
 	}
 }

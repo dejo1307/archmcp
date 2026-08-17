@@ -22,6 +22,11 @@ Fixture: [`ruby_sample`](../../internal/engine/testdata/repos/ruby_sample/)
 | an ERB template | a `file_ref` carrying its helper and presenter calls | `file_ref` |
 | `spec/**/*_spec.rb`, `test/**/*_test.rb` | a reference-only `test_ref` | `test_ref` |
 | `class X < Sequel::Model(:customers)` | a model with the literal dataset table | `storage` |
+| `has_many :versions` | the model's declared relation to another model | `association` |
+| `db/schema.rb` / `db/structure.sql` | each table's column census, folded onto the model that reads it | `storage` |
+| `data-controller="autocomplete"` in an ERB view | a `stimulus-binding:` dependency at `markup-declared` | `dependency` |
+| `turbo_frame_tag :post_1` | a `turbo-frame:` dependency naming the frame id | `dependency` |
+| `broadcasts_to :room` | a `broadcast:` dependency at `literal-declared` | `dependency` |
 | `field :page_views` in a root type | a server GraphQL route `Query.pageViews` | `route` |
 | `"query { pageViews { total } }"` | a client GraphQL route per root field | `route` |
 | `connection.post(build_url("/pageview"))` | a client route derived through the wrapper literal | `route` |
@@ -197,6 +202,111 @@ stripped back to the base name everywhere the class name alone is meant —
 `superclass` and the `implements` target say `Sequel::Model`, never
 `Sequel::Model(:customers)`. (Until v154 the call form was dropped entirely
 and the dataset idiom emitted no storage fact.)
+
+### Where a table name comes from, and how sure enola is
+
+Every model storage fact carries `table_source`, because "the table this model
+reads" is answered by four different mechanisms with four different strengths:
+
+| `table_source` | Came from |
+|---|---|
+| `derived` | the class name, pluralised — a convention, not a statement |
+| `declared` | `self.table_name = "…"` in the model |
+| `prefixed` | a namespace's `def self.table_name_prefix` prepended to a derived name |
+
+A declared table **corrects the model's own fact** rather than adding a second one.
+Until v208 `self.table_name = "active_admin_comments"` emitted a free-floating
+`storage` fact under that name while the model beside it still claimed the derived
+`comments`, so the graph asserted a table that did not exist and missed the one that
+did. There is now one fact per thing: `ActiveAdmin::Comment` with
+`table=active_admin_comments, table_source=declared`. The interpolated form Rails
+apps actually write — `"#{table_name_prefix}active_admin_comments#{table_name_suffix}"`
+— resolves to its literal part.
+
+A namespace prefix is applied only to a *derived* name, because Rails does not prefix
+a table you stated yourself; prefixing a declared one would replace a fact with a
+guess. And a computed or interpolated `table_name_prefix` states nothing, so nothing
+is applied.
+
+**An abstract class has no table.** `self.abstract_class = true` means the class
+exists to be inherited from, so it emits no storage fact at all. `ActiveStorage::Record`
+previously claimed a table named `records`.
+
+### The schema files, read as the database's own account
+
+`db/schema.rb` and `db/structure.sql` state what the model layer can only infer. Each
+`create_table` / `CREATE TABLE` contributes a column census, and where a model already
+claims that table the census is **folded onto the model's existing fact** — one table,
+one storage identity — rather than becoming a second node:
+
+```
+storage  ApiKey  props: storage_kind=model, table=api_keys, table_source=derived,
+                        columns="created_at expires_at hashed_key id …"
+```
+
+`structure.sql` additionally yields single-column `fk_constraints` as
+`"column->reftable"`. Both readers are line- and regex-based over the shapes the
+dumpers actually emit: composite foreign keys and unrecognised lines are skipped, never
+guessed. The correction above runs *before* the fold, so a prefixed table's census
+lands on the model that reads it rather than on whichever model the unprefixed name
+collided with.
+
+## Associations — what a model says it is related to
+
+`has_many`, `has_one`, `belongs_to` and `has_and_belongs_to_many` each emit an
+`association` fact naming the declaring model, the macro, and the target:
+
+```
+association  ApiKey#api_key_rubygem_scope
+             props: model=ApiKey, macro=has_one, association=api_key_rubygem_scope,
+                    target=ApiKeyRubygemScope, target_source=derived
+```
+
+`target_source` is `derived` when the class name was inferred from the association
+name and `declared` when `class_name:` stated it. These are what let
+[`enola endpoint`](../CLI.md) walk from a URL to the tables behind it: route →
+controller → the models it touches → the models *those* are associated with → tables.
+
+Associations are deliberately **not** import edges. A bidirectional Rails relation
+would otherwise manufacture a dependency cycle that does not exist in the load order;
+see [EXPLAINERS.md](../EXPLAINERS.md).
+
+## The view layer — bindings stated in markup
+
+Rails puts real wiring in HTML attributes, where no amount of Ruby parsing will find
+it. Three shapes are read, each recorded at the honesty level it actually has rather
+than resolved into a call edge it cannot justify:
+
+```erb
+<div data-controller="autocomplete"
+     data-action="click->autocomplete#choose keydown->autocomplete#highlight">
+```
+
+```
+dependency  stimulus-binding: app/views/home/index.html.erb -> autocomplete
+            props: framework=stimulus, binding=data-action,
+                   resolution_level=markup-declared,
+                   stimulus_handlers="choose highlight"
+            relations: calls -> app/javascript/controllers.AutocompleteController.choose
+```
+
+The fact links to `app/javascript/controllers/<name>_controller.(js|ts)` only when that
+conventional file exists; otherwise it stays name-only. An ERB interpolation in the
+attribute is not a plain Stimulus token and declares nothing.
+
+Literal Turbo frame ids — `turbo_frame_tag :post_1`, `data-turbo-frame="results"` —
+become `turbo-frame:` dependencies, because a frame id is an identity two markup sites
+share. `dom_id` calls, interpolation and the reserved `_top` target emit nothing.
+Model-side `broadcasts_to` with a literal symbol or string stream becomes
+`broadcast: <Model> -> <stream>` at `literal-declared`; the common lambda form computes
+its stream per record at runtime and emits nothing.
+
+**importmap-rails apps are JavaScript projects.** The TypeScript extractor claims every
+`.js` file, but detection knew only `package.json` and `tsconfig` shapes — so a Rails
+app whose pins live in `config/importmap.rb` and which ships no `package.json` never
+ran it. On one 8-repo census that was 74 of 100 skipped-with-cause files, every one a
+claimed, parseable, unparsed source file. `config/importmap.rb` now switches the
+extractor on; vendored minified bundles under `vendor/javascript` are still skipped.
 
 ## GraphQL — the server half and the Ruby client half
 

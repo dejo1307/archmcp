@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/conformance"
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/engine"
@@ -91,6 +93,33 @@ func (r *Runner) resolveTarget(arg string) target {
 	return target{engine: eng, repoPaths: repoPaths, configNote: note, cfgPath: cfgPath}
 }
 
+// parseFailOn splits a --fail-on spec into the explainer names that exist and the ones
+// that do not, so the caller can refuse rather than enforce a policy it could not read.
+//
+// An unrecognised name used to be accepted and enforce nothing, which is the one failure
+// this flag must not have: `--fail-on=cyles` exited 0 on a tree where `--fail-on=cycles`
+// exited 1, so a typo in a CI config was indistinguishable from a passing build for as
+// long as nobody read the policy line.
+//
+// Matching is EXACT. `CYCLES` is not `cycles`, because a case-insensitive match would be
+// a guess about which explainer was meant, and this flag exists to remove guesses about
+// what fails. A spec mixing good and bad names reports the bad ones rather than quietly
+// enforcing the good half — half a policy is the same defect wearing a smaller number.
+func parseFailOn(spec string) (named, unknown []string) {
+	for _, raw := range strings.Split(spec, ",") {
+		n := strings.TrimSpace(raw)
+		if n == "" {
+			continue
+		}
+		if slices.Contains(config.KnownExplainers, n) {
+			named = append(named, n)
+			continue
+		}
+		unknown = append(unknown, n)
+	}
+	return named, unknown
+}
+
 // runCheck is the `enola check` gate: snapshot the repo, diff it against a baseline,
 // grade the delta, and exit with a code CI can act on.
 //
@@ -116,9 +145,10 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" check [flags] [config_path]\n\n"+
 			"Grade what a change did to the architecture, against a pinned baseline.\n\n"+
 			"Nothing fails until you say what should: with no --fail-on and no --max-spillover\n"+
-			"every finding is reported and the run exits 0. The eleven explainer names --fail-on\n"+
-			"accepts are: cycles, layers, intent, crossrepo, coverage, unused-routes, god-class,\n"+
-			"hotspots, dependency-depth, exported-surface, complexity-outliers.\n\n"+
+			"every finding is reported and the run exits 0. The names --fail-on accepts are\n"+
+			// Printed from the same list the validation checks, so the two cannot
+			// disagree — which they did, for four explainers, until v0.4.0.
+			"exactly these, and are case-sensitive:\n  "+strings.Join(config.KnownExplainers, ", ")+"\n\n"+
 			"Exit codes:\n"+
 			"  0  clean      nothing the policy enforces\n"+
 			"  1  regression the policy was violated\n"+
@@ -149,10 +179,19 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		})
 	}
 	if *failOn != "" {
-		for _, name := range strings.Split(*failOn, ",") {
-			if n := strings.TrimSpace(name); n != "" {
-				policy.FailExplainers = append(policy.FailExplainers, n)
+		named, unknown := parseFailOn(*failOn)
+		policy.FailExplainers = append(policy.FailExplainers, named...)
+		if len(unknown) > 0 {
+			noun := "no explainer is called"
+			if len(unknown) > 1 {
+				noun = "no explainers are called"
 			}
+			fmt.Fprintf(os.Stderr, "%s check: --fail-on names what %s: %s\n",
+				r.name(), noun, strings.Join(unknown, ", "))
+			fmt.Fprintf(os.Stderr, "The %d names it accepts are: %s\n",
+				len(config.KnownExplainers), strings.Join(config.KnownExplainers, ", "))
+			fmt.Fprintf(os.Stderr, "Refusing to run: a policy that enforces nothing must not look like a passing one.\n")
+			os.Exit(check.StatusUsageError.ExitCode())
 		}
 	}
 
