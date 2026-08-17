@@ -79,7 +79,7 @@ it.
 
 That distinction is carried in the confidence score, and it is exact rather than
 decorative: `1.0` means proven, and only `cycles`, `intent`'s set-difference verdicts,
-and declared-layer violations ever reach it. Every explainer that
+declared-layer violations and declared-constraint breaches ever reach it. Every explainer that
 computes a saturating score — a fan-in ratio, a coverage share — clamps strictly below
 `1.0`, so a statistical outlier can never present itself as a certainty.
 

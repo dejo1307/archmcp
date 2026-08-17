@@ -413,7 +413,16 @@ func (r *Runner) gradeQuietly(ctx context.Context, repoDir string) (check.Verdic
 	// the one place the cost would be paid over and over.
 	current := &facts.Snapshot{Meta: snap.Meta, Facts: eng.Store().FactsRef(), Insights: snap.Insights}
 
-	return check.Evaluate(diff.Compute(base, current), check.Policy{}), outDir, true
+	// The same ledger and strict semantics as `enola check`, so the two surfaces
+	// cannot reach different verdicts from the same tree. The one divergence is
+	// deliberate: a malformed ledger fails `check` loudly at exit 2, while the
+	// hook — whose contract is to never disturb a session — proceeds without
+	// suppressions and lets `check` deliver the actionable error.
+	policy := check.Policy{}
+	if suppressions, err := check.LoadSuppressions(anchor); err == nil {
+		policy.Suppressions = suppressions
+	}
+	return check.EvaluateCurrent(diff.Compute(base, current), policy, current.Insights), outDir, true
 }
 
 // configForRepo prefers a config inside the repository, matching how `enola check`

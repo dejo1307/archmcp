@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/enola-labs/enola/internal/explainers/constraints"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -130,6 +131,13 @@ const (
 	// since the snapshot). Deliberately NOT advisory — a gate must fail closed on a
 	// caveat it cannot categorize.
 	WarnUnclassified WarningKind = "unclassified"
+	// WarnUnionMembership — a repository the baseline measured is absent from the
+	// current snapshot. Blocking, for the same reason WarnDifferentRepo is: every
+	// fact, edge and verdict about that repo's code went missing at once, and the
+	// delta describes a different estate. WarnDifferentRepo cannot see it —
+	// facts.SameRepo compares the snapshot's own identity, and a union's members
+	// are not that, so a union that lost a member compared clean.
+	WarnUnionMembership WarningKind = "union_membership"
 )
 
 // InvalidatesDelta reports whether a warning means the numbers describe something OTHER
@@ -150,7 +158,7 @@ func (c Comparability) InvalidatesDelta() bool {
 	for _, k := range c.Kinds {
 		switch k {
 		case WarnDifferentRepo, WarnRepoLabel, WarnVersionMismatch, WarnExtractorSet,
-			WarnIgnoreGlobs, WarnInvertedPair, WarnUnclassified:
+			WarnIgnoreGlobs, WarnInvertedPair, WarnUnclassified, WarnUnionMembership:
 			return true
 		}
 	}
@@ -211,6 +219,36 @@ type SnapshotDiff struct {
 	FindingsNewIncidental      []facts.Insight `json:"findings_new_incidental,omitempty"`
 	FindingsResolvedIncidental []facts.Insight `json:"findings_resolved_incidental,omitempty"`
 
+	// FindingsSilenced are constraint breaches that stopped being reported
+	// because the member they named LEFT ITS COMPONENT — the code the finding
+	// cites is still measured, the declaration still stands, and the selector no
+	// longer selects it. They are held out of FindingsResolved because printing
+	// them under "resolved by this change" reports a rule losing its subject as a
+	// rule being satisfied, which is a regression rendered as a win. Changing a
+	// class's superclass silences every rule that named it exactly this way, and
+	// no evidence on the finding itself can tell the two apart — only the two
+	// memberships can, which is why the comparison lives here.
+	FindingsSilenced []facts.Insight `json:"findings_silenced,omitempty"`
+
+	// FindingsUndeclared are constraint breaches that stopped being reported
+	// because the DECLARATION changed: the rule was deleted, its form was
+	// swapped under a preserved id, or the witness was exempted. The breaching
+	// code is untouched in all three, and all three printed under "resolved by
+	// this change" at exit 0 — the exemption reporting the same breach twice,
+	// once honestly as excused and once falsely as fixed. Held out of
+	// FindingsResolved because a law that stopped asking the question is not an
+	// answer to it.
+	FindingsUndeclared []facts.Insight `json:"findings_undeclared,omitempty"`
+
+	// FindingsUnattributed are constraint breaches this pair of snapshots cannot
+	// say anything about: the witness's repository left a union snapshot, or the
+	// baseline carried the finding without the declaration that produced it.
+	// Neither is a fix and neither is a declaration change, and both otherwise
+	// landed in FindingsResolved — an unchanged, still-breaching witness printed
+	// as good news. Held out of every graded bucket because the honest statement
+	// is that no comparison was possible.
+	FindingsUnattributed []facts.Insight `json:"findings_unattributed,omitempty"`
+
 	// FindingsChanged are findings that survived under the same identity but whose
 	// content moved. Facts have had this since the beginning (FactsChanged); findings
 	// never did, so a content-only change was reported as no change at all.
@@ -231,6 +269,14 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 	}
 	if baseline != nil && current != nil {
 		d.Comparability = compareMeta(baseline.Meta, current.Meta)
+		// The union arm, which the meta cannot answer: a multi-repo snapshot's
+		// members are labels on its facts, not fields of its identity.
+		if gone := droppedRepos(baseline, current); len(gone) > 0 {
+			d.Comparability.add(WarnUnionMembership,
+				"the baseline measured %s and this snapshot does not — every verdict about that code went quiet at once, so a breach that stopped being reported is not a breach that was fixed",
+				strings.Join(gone, ", "))
+			d.Comparability.Comparable = false
+		}
 	} else {
 		// No baseline (or no current) to check against — the delta stands alone, so
 		// there is nothing it could be incomparable with.
@@ -315,13 +361,21 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 			}
 		}
 	}
+	silenced := newSilencing(baseline, current)
 	for k, baseGroup := range baseFind {
 		curGroup := curFind[k]
 		for i := len(curGroup); i < len(baseGroup); i++ {
 			in := baseGroup[i]
-			if findingHasStructuralCause(in, touched) {
+			switch {
+			case silenced.byDeclarationChange(in):
+				d.FindingsUndeclared = append(d.FindingsUndeclared, in)
+			case silenced.byMembershipChange(in):
+				d.FindingsSilenced = append(d.FindingsSilenced, in)
+			case silenced.byUnattributable(in):
+				d.FindingsUnattributed = append(d.FindingsUnattributed, in)
+			case findingHasStructuralCause(in, touched):
 				d.FindingsResolved = append(d.FindingsResolved, in)
-			} else {
+			default:
 				d.FindingsResolvedIncidental = append(d.FindingsResolvedIncidental, in)
 			}
 		}
@@ -409,10 +463,16 @@ func compareMeta(base, cur facts.SnapshotMeta) Comparability {
 		// change to an extractor is graded as though it were a change to the code: enola's
 		// own fix for a fabricated-fact bug removed 21 facts and was reported, comparably
 		// and confidently, as a deletion.
+		//
+		// The marker also moves for a change that derives differently from identical
+		// facts, so the wording names the graph and the findings too: a class newly wired
+		// to its own methods leaves facts.jsonl byte-identical and still re-ranks every
+		// outlier explainer.
 		c.add(WarnVersionMismatch,
-			"baseline was generated by a build that EXTRACTS differently (%s vs %s) — the two enola "+
-				"builds report the same version, so this is a local build whose extractors changed; "+
-				"facts will move for reasons that have nothing to do with your change",
+			"baseline was generated by a build that EXTRACTS OR DERIVES differently (%s vs %s) — the "+
+				"two enola builds report the same version, so this is a local build whose extractors "+
+				"or graph changed; facts, the graph or the findings will move for reasons that have "+
+				"nothing to do with your change",
 			base.ExtractorVersion, cur.ExtractorVersion)
 	}
 
@@ -609,6 +669,18 @@ func findingHasStructuralCause(in facts.Insight, touched map[string]struct{}) bo
 	if len(in.Evidence) == 0 {
 		return true
 	}
+	// A constraint finding is never incidental. The incidental bucket exists for
+	// claims whose threshold moves on its own — a mean+2σ outlier, a re-ranked
+	// top-N — and a declared rule has neither: it appeared because the graph
+	// changed under a declaration, or because the declaration changed. The
+	// entity test cannot see that, because the fail-closed findings cite the
+	// COMPONENT and a component is exactly what does not change when the code
+	// moves out from under its selector. Grading them by evidence entity meant
+	// the 1.0 "selector cannot be evaluated" finding was filed as incidental and
+	// exited 0 — a vacuous pass wearing the shape of the guarantee against it.
+	if in.Source == constraints.ExplainerName {
+		return true
+	}
 	for _, ev := range in.Evidence {
 		for _, e := range []string{ev.Fact, ev.Symbol, ev.File} {
 			if e == "" {
@@ -628,7 +700,8 @@ func (d *SnapshotDiff) Empty() bool {
 		len(d.EdgesAdded) == 0 && len(d.EdgesRemoved) == 0 &&
 		len(d.FindingsNew) == 0 && len(d.FindingsResolved) == 0 &&
 		len(d.FindingsNewIncidental) == 0 && len(d.FindingsResolvedIncidental) == 0 &&
-		len(d.FindingsChanged) == 0
+		len(d.FindingsSilenced) == 0 && len(d.FindingsUndeclared) == 0 &&
+		len(d.FindingsUnattributed) == 0 && len(d.FindingsChanged) == 0
 }
 
 // Focused returns a copy of the diff narrowed to entries that reference focus
@@ -685,6 +758,21 @@ func (d *SnapshotDiff) Focused(focus string) *SnapshotDiff {
 	for _, in := range d.FindingsNewIncidental {
 		if insightMatches(in, focus) {
 			out.FindingsNewIncidental = append(out.FindingsNewIncidental, in)
+		}
+	}
+	for _, in := range d.FindingsSilenced {
+		if insightMatches(in, focus) {
+			out.FindingsSilenced = append(out.FindingsSilenced, in)
+		}
+	}
+	for _, in := range d.FindingsUndeclared {
+		if insightMatches(in, focus) {
+			out.FindingsUndeclared = append(out.FindingsUndeclared, in)
+		}
+	}
+	for _, in := range d.FindingsUnattributed {
+		if insightMatches(in, focus) {
+			out.FindingsUnattributed = append(out.FindingsUnattributed, in)
 		}
 	}
 	for _, in := range d.FindingsResolvedIncidental {
@@ -1008,6 +1096,9 @@ func (d *SnapshotDiff) sortAll() {
 	}
 	sort.Slice(d.FindingsNew, byFinding(d.FindingsNew))
 	sort.Slice(d.FindingsResolved, byFinding(d.FindingsResolved))
+	sort.Slice(d.FindingsSilenced, byFinding(d.FindingsSilenced))
+	sort.Slice(d.FindingsUndeclared, byFinding(d.FindingsUndeclared))
+	sort.Slice(d.FindingsUnattributed, byFinding(d.FindingsUnattributed))
 	sort.Slice(d.FindingsNewIncidental, byFinding(d.FindingsNewIncidental))
 	sort.Slice(d.FindingsResolvedIncidental, byFinding(d.FindingsResolvedIncidental))
 	sort.Slice(d.FindingsChanged, func(i, j int) bool {

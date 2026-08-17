@@ -18,6 +18,7 @@ import (
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/drift"
 	"github.com/enola-labs/enola/internal/engine"
+	"github.com/enola-labs/enola/internal/explainers/constraints"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/updatecheck"
 	"github.com/enola-labs/enola/internal/version"
@@ -1696,6 +1697,35 @@ func (s *Server) registerTools() {
 		return textResult(capTokens(sb.String(), args.MaxTokens, false)), nil, nil
 	})
 
+	// Tool: constraints_for
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "constraints_for",
+		Description: "The pre-edit contract for a file or fact: which declared constraint components contain it, what every rule binding those components says (in words, with the rationale it was declared with and its enforcement mode), and the current constraint violations whose evidence names the target. " +
+			"Guidance rules ride each component's own guidance list — steering, not law — carrying the advice message, its mode, and each exemplar of prior art annotated present, absent, or unmeasured against this snapshot. " +
+			"Ask BEFORE editing — the target may be a file path that does not exist yet, matched against component patterns, so the answer covers code about to be written. " +
+			"target= is a file path (repo-relative) or an exact fact name; matching is exact and fail-closed, like the constraints explainer's own. " +
+			"Returns JSON. An empty result distinguishes 'no constraint components compiled in this snapshot' (the contract was not asked) from 'nothing binds this target'.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args constraintsForArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		if args.Target == "" {
+			return errorResult("target is required"), nil, nil
+		}
+		target := s.normalizeToRelative(args.Target)
+		bindings, declared := constraints.ContractFor(store, target)
+		if !declared {
+			return textResult("No constraint components are compiled into this snapshot — the contract was not asked. " +
+				"Components and rules ride enola_intent page declarations and compile at snapshot time; see docs/INTENT.md."), nil, nil
+		}
+		resp := constraintsForResponse{Target: target, Components: bindings}
+		if snap := s.eng.Snapshot(); snap != nil {
+			resp.Violations = constraints.ViolationsReferencing(snap.Insights, target)
+		}
+		return jsonResultCapped(resp, args.MaxTokens)
+	})
+
 	// Tool: coverage_report
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "coverage_report",
@@ -3288,6 +3318,21 @@ type governingIntentArgs struct {
 	Target    string `json:"target" jsonschema:"required,A fact name (exact match)\\, a file path (label-prefixed or repo-relative)\\, or a compiled page path"`
 	Repo      string `json:"repo,omitempty" jsonschema:"Repo label to disambiguate a file path measured in more than one repo"`
 	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens)"`
+}
+
+// constraintsForArgs are the arguments for the constraints_for tool.
+type constraintsForArgs struct {
+	Target    string `json:"target" jsonschema:"required,A file path (repo-relative\\, may not exist yet) or an exact fact name"`
+	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens)"`
+}
+
+// constraintsForResponse is the constraints_for tool's JSON shape: the
+// components containing the target, each with the rules binding it, plus the
+// current constraint violations whose evidence names the target.
+type constraintsForResponse struct {
+	Target     string                         `json:"target"`
+	Components []constraints.ComponentBinding `json:"components"`
+	Violations []facts.Insight                `json:"violations,omitempty"`
 }
 
 // readSourceWindow reads lines from a file around the given line number.

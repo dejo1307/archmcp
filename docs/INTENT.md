@@ -267,6 +267,993 @@ inventing an edge. And a declared seam **no linker can measure yet**
 honest state, not noise; judge it once in whatever ledger your
 workflow keeps and it stays acknowledged.
 
+## Declared constraints — the repo's law
+
+Everything above states what an architecture *is meant to look like*;
+constraints state what it is **not allowed to do**, and the
+`constraints` explainer verdicts them against the measured graph on
+every snapshot. Two sections carry the whole vocabulary: `components`
+name sets of measured facts, `rules` state enforcement over them.
+
+Constraints are **file-level only**: they live in `enola-intent.yaml`
+or under `enola/constraints/` (or a cluster config's `intent:` entry,
+which overrides the repo's files wholesale) — never on a page. A page
+carrying `components:` or `rules:` is a validation error, not a
+merge: constraints are the repo's declared desired architecture,
+reviewed beside the code they govern, and a decision page references
+rule ids rather than carrying the rules themselves.
+
+### The constraints directory
+
+A repo whose law outgrows one file splits it into per-domain files
+under `enola/constraints/*.yaml` — visible source at the repo root,
+never under `.enola/`. Each file carries the same two sections the
+inline declaration does (`components:` and/or `rules:`), and loading
+merges every file's entries after the inline ones, in sorted filename
+order, so the resolved sets are deterministic; inline stays legal for
+small repos. Validation runs over the merged set — a rule in
+`billing.yaml` may name a component declared in `domains.yaml` or
+inline — but one component name or rule id declared twice across
+sources is an error naming both declaring files, and each compiled
+fact cites the file that declared it, so a verdict names
+`billing.yaml` rather than the merged whole. The split is what makes
+CODEOWNERS work: each domain's file routes to the team that owns that
+domain's law.
+
+### Components
+
+A component names the facts its selector matches:
+
+```yaml
+components:
+  - name: domain                 # lowercase token
+    match: ["app/domain/**"]     # exact path, or prefix/** subtree — nothing else
+    kind: module                 # optional: module, route, storage, symbol
+    name_pattern: Billing        # optional: exactly one fact, by exact name
+    service: billing             # optional: one repo of a multi-repo snapshot,
+                                 # by exact repo label
+    where: { framework: rails }  # optional: a predicate over measured fact props
+```
+
+`match` speaks the same bounded glob dialect declared layers use: an
+exact repo-relative path, or a `prefix/**` subtree. Any other glob
+form is rejected at parse time, so a selector the evaluator would
+silently fail to match is an error the author sees instead. Membership
+is exact — path equality or declared subtree over a fact's file, an
+optional kind narrowing, an optional exact fact name — and a fact with
+no file matches nothing. A component whose selector matches nothing
+surfaces as a standing 0.4 advisory, so vacuous compliance never reads
+as compliance.
+
+`service` scopes the selector to one repository of a multi-repo
+(append-mode) snapshot, by the exact repo label every appended fact
+carries. It ANDs with the other narrowings — members are facts of
+that repo — and it is the one selector that makes `match` optional: a
+component with a `service` and no patterns is the whole service, and
+then it also contains the synthetic service node the cross-repo
+linker emits, so service-to-service `depends_on` edges are walkable
+like any other. A fact with no repo label matches no service, fail
+closed.
+
+#### Selecting by concept: `where`
+
+`where` selects members by what the measured facts **carry** instead of
+by where their files sit, so a rule can name an enforceable concept
+rather than a directory. It is a **membership** selector and only that:
+the forms that read a member's own props take it, the forms that walk
+edges refuse it at declaration time — see *`where` is membership-only*
+below for why, and for the two things that would change it.
+
+```yaml
+components:
+  - name: view-components
+    where: { superclass: "ViewComponent::Base" }
+  - name: ember-components
+    where: { framework: ember, symbol_kind: class }
+  - name: models
+    where: { kind: storage, storage_kind: model }
+  - name: hairy-methods
+    where: { symbol_kind: method, cyclomatic: ">=20" }
+```
+
+Every key names something the extractors measured. That is the whole
+vocabulary: **a predicate can only reach a concept the facts already
+carry**. Two worked examples of the limit, both measured on a
+production Rails+Ember monolith (153,252 facts, 2026-08-13):
+
+- `{ framework: ember, symbol_kind: class }` selects 2,200 Ember
+  component classes. It works because the TypeScript extractor puts
+  `framework: ember` on the class.
+- There is **no predicate in this vocabulary that names a Stimulus
+  controller.** `framework: stimulus` is set on the `static
+  targets`/`values` field members, never on the class
+  (`tsextractor/ts.go`), so it returns 52 method facts and
+  `{ framework: stimulus, symbol_kind: class }` returns 0. Selecting on
+  the base class instead depends on what the TypeScript extractor emits
+  in the snapshot you are reading, which is a moving target and not a
+  property of this vocabulary: ask the snapshot
+  (`query_facts kind=symbol prop=superclass`) rather than this page.
+  What does not move is that 42 of the 50 controllers are written
+  `export default class extends Controller`, anonymously, so a
+  name-based selector reaches at most 8 of them however the base class
+  is measured.
+
+- **Conjunction only.** Every pair must hold. There is no `or` and no
+  negation: a disjunction is two components, which reads better than a
+  nested boolean, and a negation asks the snapshot to answer for facts
+  it may simply never have measured.
+- **`kind` is the one reserved key**; every other key is a fact property
+  name. `kind` narrows the fact kind, the same narrowing the component's
+  own `kind:` field carries — declaring both spellings is an error
+  rather than a silent precedence rule.
+- **`superclass:` is one level, and only one.** The extractor records
+  `superclass` exactly as the source wrote it, so
+  `superclass: ViewComponent::Base` selects the classes that name that
+  parent *directly* and nothing written underneath them: on the monolith
+  that is 269 of the 357 classes whose ancestry reaches it, 310 of 531
+  for `ApplicationRecord`. This vocabulary has no transitive spelling —
+  a rule that must cover a hierarchy names each level, or widens the
+  component another way.
+
+  A component whose members are named as the parent by classes it does
+  not contain gets a 0.4 advisory carrying the count and the classes —
+  the case neither the dead-selector nor the unmeasured-property
+  advisory could see, because the selector worked and simply reached
+  less than the concept it names. Its witnesses are lexical, like the
+  property, and the count is **neither a floor nor a ceiling**. It
+  misses: a subclass that spelled its parent relatively — the
+  unqualified `Base` inside a module — writes text no member's fact name
+  equals. It over-attributes: the index is keyed on the parent as
+  written and read by the member's resolved fact name, so a
+  module-scoped `Base` and a top-level `Base` are one key, and
+  `Widgets::Card < Base` is named as a subclass of a member it does not
+  inherit from. Both are the same fact about `superclass` — it is source
+  text, and no reading of it is transitive or namespace-aware without a
+  resolution pass the extractor did not make.
+- **Values match one whole member at a time**, the same containment the
+  `require` form's `when_prop_contains` reads set props with. For the
+  space-joined set props (`columns`, `fk_constraints`, `decorators`)
+  that is containment; for a scalar prop — which decomposes into a
+  single token — it is exactly equality. One semantic, not two, and
+  never a substring: `company_id` is not satisfied by
+  `parent_company_id`.
+- **Numeric props take thresholds**: `">=20"`, `"<=2"`, `">0"`,
+  `"<3.5"`. Quote them — a bare `>=` opens a folded scalar in YAML.
+
+  The grammar is one ASCII comparator and one decimal number: an
+  optional `-`, digits, an optional fractional part. Nothing else
+  parses, and everything else is a named error rather than a literal
+  string nothing will ever equal. `"=>30"`, the hash-rocket
+  transposition, is rejected. So are Go's other numeric literal forms,
+  each of which meant something no reader of the YAML would guess:
+  `"<=Inf"` validated clean and selected every fact carrying the
+  property as a number, `">=1_0"` means ten, `">=0x1fp0"` means
+  thirty-one. So are the comparators a rendered document leaves behind —
+  `"≥30"`, `"≤30"`, `"≫30"`, `"﹥30"`, `"⇒30"`, `"❯30"` — which arrive
+  by exactly the route `"=>30"` does and select nothing. That screen is
+  an **allowlist**, not a list of named runes: enumerating the ones that
+  look like a relation has no edge, and every one left off compiled to a
+  literal token. A value may open with any ASCII rune, or with a letter,
+  a digit or a combining mark — the alphabets an identifier is written
+  in. A non-ASCII symbol or punctuation rune opens nothing this grammar
+  can mean.
+
+  A threshold against a property no measured fact carries as a number is
+  a 1.0 finding for the same reason an unmeasured property is — it can
+  never hold.
+- **A value carries no whitespace, of any kind.** The screen reads the
+  same alphabet the decoder splits on, so a non-breaking space pasted
+  out of a rendered document is refused exactly as a plain one is. The
+  compiled form percent-escapes whitespace so the round trip is
+  lossless, and a compiled predicate that does not decode back into
+  property tests selects nothing and says so. A declaration never
+  compiles to a predicate different from what it says — in either
+  direction.
+- **`where` ANDs with `match`, `service`, `kind` and `name_pattern`**,
+  for the same reason every field on a component narrows and none
+  widens: a component carrying both a path scope and a predicate is
+  their intersection, which is how a path scope you trust gets
+  sharpened rather than replaced. A `where` alone needs no `match`: the
+  predicate is the selector.
+
+  The AND holds wherever a component is joined to a file, including the
+  edge TARGET join: a file-granular import target names no fact, so it
+  is resolved against the component's `match` globs, and for a
+  predicate component that join additionally requires the component to
+  have measured a member in the resolved file. A path component keeps
+  the plain glob join — its globs ARE its claim about files. The edge
+  target join is unreachable for a predicate component today, because
+  an edge form naming one is refused at declaration time (below); the
+  AND is written where the join is defined rather than where it is
+  called, so relaxing that refusal cannot silently widen it.
+- **An unmeasured property fails closed and loudly.** A `where` naming
+  a property no measured fact in the snapshot carries is a validation
+  problem in `constraints lint` (exit 1, with near-miss suggestions)
+  and a 1.0 finding from the explainer, and every rule naming that
+  component emits **no verdict** — because an empty component makes
+  every rule over it hold, and that reads exactly like compliance. This
+  is distinct from the 0.4 dead-selector advisory, which covers a
+  measured property whose value happens to match nothing.
+
+  The census is scoped to the component's **own service**: a component
+  reading `service: billing` is judged against billing's facts, never
+  against the union's. A component naming a service the snapshot does
+  not contain is unasked before the question is asked — the 0.4
+  absent-service advisory, never a 1.0 measurement claim about a repo
+  that was never loaded.
+- **A constraint finding is never incidental.** The gate's ratchet
+  files a finding as incidental when the change touched nothing it
+  cites, which is right for a moving mean+2σ threshold and wrong for a
+  declared rule: the fail-closed findings cite the COMPONENT, and a
+  component is exactly what does not change when the code moves out
+  from under its selector. Constraint findings are graded on their own
+  terms, so the 1.0 "selector cannot be evaluated" finding fails
+  `check` when a snapshot stops measuring what a declaration reads.
+- **A breach that stopped being reported is not automatically a breach
+  that was fixed.** `check` prints two further sections rather than
+  folding either into "Resolved by this change". *No longer verdicted* —
+  the code the breach named is still measured and no longer selected by
+  the component its rule binds; changing a class's superclass silences
+  every rule that named it exactly this way. *No longer declared* — the
+  rule was deleted, re-formed under a preserved id, or the witness was
+  carved out by an exemption, with the breaching code untouched.
+  Neither is graded, both are legitimate acts, and neither reads as good
+  news.
+
+  A third section, *not attributable to this change*, covers what the
+  pair of snapshots has no standing to judge at all: the repository a
+  witness was measured in left a union snapshot (which reads exactly
+  like deleted code, and which `WarnDifferentRepo` cannot see because it
+  keys on the snapshot's own identity rather than on the union's
+  members — there is a `union_membership` warning for it now), or the
+  baseline carried the finding without the declaration that produced it.
+
+  The inverse matters as much and is more ordinary, because it steals
+  credit for work someone did. A rule's declaration identity now
+  excludes its bookkeeping — `source`, `recipe`, `instance` and
+  `because` — so moving a rule between constraints files or relabelling
+  a recipe instance no longer files every breach the same change fixed
+  under "the law stopped asking". Exemptions are compared **per
+  witness** rather than as one blob, so adding a carve-out for witness X
+  and fixing witness Y in one change credits Y to the change that fixed
+  it.
+
+#### `where` is membership-only: no edge form takes a predicate
+
+A predicate selects the facts that CARRY a property, and every property
+this vocabulary can test — `superclass`, `symbol_kind`, `storage_kind`,
+`framework`, `cyclomatic`, `decorators` — is measured on the **class**.
+The call graph connects **methods**. In Ruby a class's calls ride its
+`Owner#method` facts, which carry none of those props and therefore
+cannot be members of the component; on the monolith all 39,601 `imports`
+edges ride dependency facts, which carry none of them either, and whose
+targets are paths rather than fact names. So a rule that resolves a
+predicate component against a measured edge resolves it against nothing
+— on the source side because the edge sits on a fact the predicate
+cannot select, and on the target side because the edge names a path.
+
+**Therefore a component carrying a `where:` may not be party to an edge
+form at all.** It is refused at declaration time — a validation problem
+naming the component, the rule, the role and what to use instead, which
+`constraints lint` reports (exit 1) and which every config-load path
+rejects, so no such rule ever compiles into a fact:
+
+| refused | accepted |
+| --- | --- |
+| the subject of `forbid`, `forbid_reach`, `allow`, `protect`, `private`, `require_edge`, `protocol` | the subject of `forbid_fact`, `cap`, `require`, `require_defines`, `require_name`, `guide` |
+| a `to:`, `owners:`, `only:`, `except:` or `steps:` value of any rule | |
+
+The accepted column is the whole of what reads a member's own props, and
+those forms are exactly where a concept earns its keep: cap the surface,
+require a column, require a method, require a name, guide an editor. The
+refused column is the whole of what reads an edge. The two are
+enumerated from the schema's own form table, so a form added later
+without a decision about it fails a test rather than defaulting into
+either column.
+
+**Why a refusal rather than a narrower rule.** Four earlier rounds tried
+to make the edge forms honest position by position — refuse the
+file-level carrier, then the target join, then the roles whose empty
+resolution manufactures breaches — and each round left the roles nobody
+had thought of silently wrong, because "resolved to nothing" and
+"resolved to nothing that breaches" are rendered identically by every
+surface. Refusing at authoring time is total instead of nearly total: a
+declaration that cannot be right does not load.
+
+**What would make the edge forms honest** is two things this vocabulary
+does not have, and both are real work rather than a patch. `Graph.methodOwner`
+has to learn the `#` separator so a method fact can be attributed to the
+class that owns it (PR #92, not merged). And there has to be a DECLARED
+notion of member ownership — that a class's methods' edges count as the
+class's edges — because that is a semantic choice about what a component
+means, not an implementation detail. Until both land, an edge-walking
+rule over a concept is a question the snapshot cannot answer, and the
+honest answer to a question you cannot answer is to refuse it.
+
+Edge reach and the `inherits:` closure are held out (PR #94, not
+merged) with those two blockers named.
+
+The pre-edit contract answers for a raw path when the snapshot carries
+a member in it — the arm `plan --paths` needs, since a `where`-only
+component has no match patterns for a path to join. A file nobody has
+written yet is still refused: nothing has been measured about it, and
+that is exactly what a predicate cannot answer for.
+
+### The eleven rule forms
+
+Every rule has a lowercase-token `id`, unique per declaration, and a
+mandatory `because:` — the rationale every resulting finding surfaces,
+so a violation always says why the rule exists, not only that it was
+broken. The edge forms (`forbid`, `allow`, `protect`) also need a
+`via:` from the closed edge vocabulary: `calls`, `depends_on`,
+`implements`, `imports`. `implements` walks inheritance and mixin
+inclusion — the include/extend/prepend edges the Ruby extractor
+emits — so who-may-include rules need no form of their own.
+
+```yaml
+rules:
+  - id: domain-stays-pure        # forbid: this component must not reach that one
+    forbid: domain
+    to: adapters
+    via: depends_on
+    because: "the domain must not know its delivery mechanisms"
+
+  - id: web-through-services     # allow: edges may land only in the named components
+    allow: web
+    only: [services]
+    via: calls
+    because: "controllers orchestrate; they never reach storage directly"
+
+  - id: billing-owned            # protect: only the named owners may reach this one
+    protect: billing
+    owners: [payments]
+    via: calls
+    because: "billing invariants are enforced at the payments boundary"
+
+  - id: pack-internals           # private: non-exported members stay inside
+    private: billing
+    except: [payments]           # optional: components also allowed to reach in
+    because: "only the pack's public surface is a contract"
+
+  - id: no-legacy-helpers        # forbid_fact: this component must be empty
+    forbid_fact: legacy
+    because: "app/legacy is frozen; new code lands in app/domain"
+
+  - id: bounded-public-api       # cap: membership must not exceed a count
+    cap: public_api
+    max_members: 20
+    because: "every exported surface here is a compatibility promise"
+
+  - id: company-fk               # require: members must carry a prop value
+    require: tables
+    when_prop_contains: {prop: columns, value: company_id}
+    must_prop_contain: {prop: fk_constraints, value: company_id->companies}
+    because: "tenant isolation rides the company FK; a bare company_id column is a leak"
+
+  - id: jobs-perform             # require_defines: class members must define a method
+    require_defines: jobs
+    method: perform
+    because: "the queue calls perform on every job"
+
+  - id: jobs-named-job           # require_name: member names must match a convention
+    require_name: jobs
+    pattern: "*Job"              # prefix*, *suffix, or an exact name — nothing else
+    because: "the scheduler discovers jobs by their suffix"
+
+  - id: every-event-consumed     # require_edge: every member must have an edge
+    require_edge: events
+    to: handlers                 # optional: omit to accept the edge from anywhere
+    via: calls
+    direction: inbound           # inbound: someone points at the member
+                                 # outbound: the member points somewhere
+    because: "an event nobody consumes is dead weight or a silent contract break"
+
+  - id: checkout-protocol        # protocol: members conform to an ordered step list
+    protocol: checkout-callers   # the component whose members must conform
+    steps:                       # ordered step components, first step first
+      - validate-cart
+      - reserve-stock
+      - charge-payment
+    via: calls
+    because: "Charging without reserving oversells; reserving without validating reserves garbage."
+```
+
+`require_defines` verdicts protocol: every class-kind member symbol of
+the component must have a measured method symbol of the declared name,
+in either qualified shape the extractors emit — `<Class>#<method>`
+(instance) or `<Class>.<method>` (class-level). A class that inherits,
+includes or extends anything is **out of the rule's scope**, not in
+breach of it: the definition could ride composition (a superclass, an
+included concern) the store does not resolve through, and fail-closed
+means never guessing a composed definition absent. The form therefore
+verdicts exactly the classes whose omission is visible.
+
+`require_name` verdicts convention: every member fact's name must
+match the declared pattern. The dialect is deliberately bounded —
+`prefix*`, `*suffix`, or an exact name, never a general glob or
+regex — for the same reason `match` patterns are: a convention the
+evaluator would silently mis-apply must be impossible to declare.
+Every member is in scope; a name always exists.
+
+`private` verdicts visibility: members of the component whose measured
+`exported` prop is `false` may be reached only from inside the
+component (or from an `except:` component), over **every** rule-via
+edge kind at once — privacy is about any measured reach, so the form
+carries no `via:` of its own. Non-exported is the extractor's own
+measurement (Go capitalization, Ruby `private` markers and packwerk
+public dirs, TypeScript `export`, Python underscore prefixes, …); a
+member with no boolean `exported` prop, or whose facts disagree about
+visibility, is out of the rule's scope, fail closed.
+
+`require_edge` verdicts existence — the one form that demands an edge
+rather than forbidding one. For **every** member of the component, at
+least one measured edge of the `via` kind must exist in the declared
+`direction`: `inbound` means some source points at the member,
+`outbound` means the member points somewhere. With a `to:` the demand
+narrows to edges whose counterpart is one of that component's members;
+without one, any measured via-edge satisfies. A member with zero such
+edges is a violation with the member as its witness — `OrderPlaced has
+no inbound calls edge from handlers` — at the same proof-class `1.0`
+every decided rule verdicts at. Measurability fails closed on the
+snapshot's own extraction census: an absence only verdicts where facts
+of the searched side's file kinds demonstrably source `via`-kind edges
+elsewhere in the snapshot. A member whose absence the census cannot
+back — the member's own file kind sources no such edges anywhere
+(outbound), or the searched sources include a file kind that sources
+other edge kinds but never this one (inbound) — is **skipped** with a
+named count in one 0.4 advisory per rule, never silently compliant and
+never falsely violated, the same honest degrade the reach skip and the
+dead-selector advisory set the shape for.
+
+`protocol` verdicts ordered obligation — **structurally, never
+temporally**. The steps are an ordered list of components; for every
+member of the `protocol` component, a measured `via` edge into step
+K's members obliges measured `via` edges into every step 1..K-1's
+members. A caller that reaches `charge-payment` without
+`reserve-stock` is a violation with the member as its witness —
+`OrderFlow calls charge-payment without reserve-stock`, naming the
+highest skipped step — while a member touching every prerequisite,
+touching only step 1, or touching no step at all stays silent: the
+protocol binds participants, not bystanders. See "Protocol ordering"
+below for what this form can and cannot honestly claim.
+
+`require` verdicts what a member fact *carries* rather than what edges
+it makes: every member matching the optional `when_prop_contains` gate
+(every member, when the gate is omitted) must satisfy
+`must_prop_contain`. Containment is whole-member over the fact's
+space-separated set prop — `columns contains company_id` is never
+satisfied by `parent_company_id` — and a member whose gated prop was
+never measured is out of the rule's scope, not in breach of it. The
+census props the company-FK example reads (`columns`,
+`fk_constraints`) are measured from whichever schema dump the project
+keeps — `db/structure.sql` or `db/schema.rb`, the SQL one winning where
+both exist — in the same shape either way.
+
+A breach is a decided-rule finding at confidence `1.0` — the rule is
+declared and each membership is either an exact fact name or a target
+grounded on the measured file it names, and the verdict says which —
+with the rule's `because` in the description. Target resolution fails
+closed: an edge whose target names nothing measured is skipped, never
+guessed into a violation.
+
+### Decorator discipline — the cached-getter example
+
+The TypeScript extractor records every decorated class member's (and
+class's) decorators as a sorted, deduped, space-separated `decorators`
+set prop, marks `get` accessors with `symbol_kind: getter`, and counts
+each getter's distinct outgoing call edges into `getter_calls` —
+emitted even at 0, so measured-cheap and unmeasured never look the
+same. That makes a caching convention like "expensive getters carry
+`@cached`" declarable over measured facts:
+
+```yaml
+components:
+  - name: component-getters
+    kind: symbol
+    match: ["app/components/**"]
+rules:
+  - id: expensive-getters-carry-cached
+    require: component-getters
+    when_prop_contains: {prop: symbol_kind, value: getter}
+    must_prop_contain: {prop: decorators, value: cached}
+    mode: advisory
+    because: "mined 2026-08-11 over a large Rails monolith: 106 of 10283
+      getters carry @cached (60 of 6992 in components), and even of getters
+      with >=5 outgoing calls only 7 of 290 carry it — while every one of the
+      106 @cached getters skews expensive (52% loop vs 17% of the uncached).
+      The revealed convention is weak: @cached is deliberate, not ambient, so
+      the rule is advisory and judged-cheap getters are absorbed by
+      witness-named exemptions, never by silencing the rule."
+```
+
+Two honesty boundaries the form imposes. The expense boundary itself
+is not expressible as a gate — `getter_calls` is a count and
+`when_prop_contains` is set membership — so the boundary lives in the
+mined evidence carried by `because:` and in exemptions: a getter
+judged cheap gets a witness-named exemption, never a weaker rule. And
+a member whose `symbol_kind` was never measured (a file class the
+extractor cannot classify) is out of the when clause's scope, not in
+breach of it. Template read fan-in is deliberately absent from the
+expense signals: no template->member edge exists to derive it from —
+the .hbs scanner refuses bare `{{name}}` as ambiguous and strict-mode
+`.gts` tokens resolve against imports only — and a guessed fan-in is
+worse than an absent one.
+
+### Concern rules
+
+Concern discipline composes from the edge forms — no dedicated form
+exists because none is needed. "Concerns must not depend on their
+includers" is a `forbid … via: calls`; "only models may include model
+concerns" is a `protect … via: implements` over the measured include
+edges; both sides are named by ordinary path components:
+
+```yaml
+components:
+  - name: model-concerns
+    match: ["app/models/concerns/**"]
+  - name: models
+    match: ["app/models/**"]
+rules:
+  - id: concerns-off-their-includers
+    forbid: model-concerns
+    to: models
+    via: calls
+    because: "a concern calling its includer is an inheritance cycle in disguise"
+  - id: only-models-include
+    protect: model-concerns
+    owners: [models]
+    via: implements
+    because: "model concerns assume an ActiveRecord includer"
+```
+
+An include whose constant resolves to nothing measured verdicts
+nothing — fail closed, like every other target resolution here.
+
+### Existential edges — the first recipe primitive
+
+Everything above forbids: edges that must not exist, members that must
+not exist, names and props that must not deviate. `require_edge` is
+the vocabulary's first **existential** primitive — the building block
+recipes for whole architectural styles compose from — because an
+event-driven, plugin, or pub/sub architecture is not defined by what
+its parts must avoid but by what must be *wired*: every event has a
+handler, every job class is enqueued somewhere, every route is called
+by some client, every interface has an implementor. Before this form,
+an orphaned event was invisible — nothing forbidden happened; nothing
+happened at all — and the only existence check in the system was the
+unused-routes explainer's routes-versus-clients census, one hardwired
+special case of exactly this shape.
+
+The worked event-driven pair:
+
+```yaml
+components:
+  - name: events
+    match: ["app/events/**"]
+    kind: symbol
+  - name: handlers
+    match: ["app/handlers/**"]
+rules:
+  - id: every-event-consumed     # an event nothing calls is dead weight
+    require_edge: events
+    to: handlers
+    via: calls
+    direction: inbound
+    because: "an event nobody consumes is dead weight or a silent contract break"
+  - id: every-handler-subscribes # a handler that calls no event is wiring debt
+    require_edge: handlers
+    to: events
+    via: calls
+    direction: outbound
+    because: "a handler consuming nothing is dead wiring the bus will never invoke"
+```
+
+`OrderPlaced` with a measured handler call stays silent;
+`OrderCancelled` with none verdicts at `1.0` with the member as its
+stable witness. Modes, `exempt:` (witness is the member identity, e.g.
+`OrderCancelled has no inbound calls edge from handlers`), the check
+gate's delta scoping, and `constraints_for`/plan's obligation
+statements (`members of events must have an inbound calls edge from
+handlers`) all apply exactly as they do to every other law form.
+
+### Protocol ordering — structural conformance, never runtime order
+
+`protocol` closes the last gap in the rule vocabulary's expressiveness
+table: ordered interaction sequences. It does so with a form that is
+honest about what a static fact graph can and cannot verify.
+
+**What a static graph cannot verify:** temporal ordering. "validate is
+CALLED before charge at runtime" is a claim about execution sequence,
+and no dependency snapshot — however complete — can back it. A tool
+that graded runtime order from static edges would be lying about its
+own evidence, so this form does not.
+
+**What it mechanically verifies instead:** structural protocol
+conformance. A member of the protocol component that makes a measured
+`via` edge into step K's surface without measured `via` edges into
+every earlier step's surface is a caller that *structurally skips a
+mandatory step* — it demonstrably wires the later step and demonstrably
+does not wire the prerequisite. That absence is decidable from the
+graph, verdicted at the same proof-class `1.0` every decided rule
+gets, and every violation description states the boundary in as many
+words: structural protocol conformance, not runtime ordering.
+
+The worked checkout protocol: `CompleteFlow` calling all three steps
+stays silent; `OrderFlow` calling `validate-cart` and `charge-payment`
+but never `reserve-stock` verdicts as `OrderFlow calls charge-payment
+without reserve-stock` (the highest skipped step titles the witness;
+the description lists every missing prerequisite); a file that touches
+no step is a bystander the rule does not bind. Measurability rides the
+same extraction census `require_edge` fails closed on: a member whose
+(repo, file-extension) class never demonstrably sources `via`-kind
+edges is **skipped by name** in one 0.4 advisory per rule — a wiring
+file whose calls the extractor cannot see might be a step-skipping
+caller, and that silence must stay visible. A step whose component
+matches nothing raises the ordinary dead-selector advisory.
+
+Ordering claims carry a **verification level** by design: every
+compiled protocol rule fact carries `verification: structural`, the
+only level this snapshot can honestly claim, and the schema leaves
+room for a future `observed` level owned by the runtime provider —
+which could capture real call sequences and verdict actual order the
+way the structural level verdicts wiring. Only the structural level
+exists today, and nothing in the system pretends otherwise.
+
+Everything else composes as usual: modes, `exempt:` (the witness is
+the violation identity, e.g. `OrderFlow calls charge-payment without
+reserve-stock`), the check gate's delta scoping, and
+`constraints_for`/plan's obligation statement (`members of
+checkout-callers that reach charge-payment via calls must also reach
+reserve-stock, validate-cart, in the declared order of obligation —
+structural conformance, not runtime ordering`). A protocol rule in a
+recipe references roles as its steps, so one declared order
+instantiates per bounded context — the checkout example above is the
+natural recipe body. With this form the ArchSpec parity table's
+protocols family graduates from partial to **covered-structural**: the
+structural half of ordered-interaction sequences is expressible and
+verdictable, the runtime half remains future provider work, and the
+parity re-measure belongs to the next harness run.
+
+### Recipes — named patterns as instantiable bundles
+
+A recurring architectural pattern — event-driven, ports-and-adapters,
+a migration target state — is the same handful of rules written again
+and again with different paths in the component selectors. A
+**recipe** names the pattern once: role slots plus parameterized
+rules, instantiated per bounded context by binding paths to roles.
+Two artifacts carry it:
+
+**Recipe definitions** live in `enola/recipes/<name>.yaml`, beside
+the constraints directory — visible source, never under `.enola/`.
+One recipe per file: a `recipe:` name, `roles:` slots, and `rules:`
+in the full existing rule vocabulary, referencing **roles** instead
+of components:
+
+```yaml
+recipe: event-driven
+roles:
+  - name: events
+  - name: bus
+  - name: handlers
+rules:
+  - id: events-consumed
+    require_edge: events
+    to: handlers
+    via: calls
+    direction: inbound
+    because: "An event nobody consumes is dead weight."
+  - id: only-bus-calls-handlers
+    protect: handlers
+    owners: [bus]
+    via: calls
+    because: "Handlers are reached through the bus, never directly."
+  - id: events-are-named
+    require_name: events
+    pattern: "*Event"
+    because: "The suffix is the contract."
+```
+
+**Instantiations** live in the existing `enola/constraints/*.yaml`
+files, as `use_recipe:` entries binding each role to a real component
+selector (the same `match`/`service`/`kind`/`name_pattern`/`where`
+narrowings a component takes, so a role a recipe only reads the props
+of can be bound to a concept — `surface: { where: { superclass:
+StandardError } }` — as readily as to a directory; a role some rule in
+the recipe resolves against an edge cannot, and binding a `where:` to
+one is refused on the EXPANDED declaration, naming the expanded
+component):
+
+```yaml
+use_recipe:
+  - recipe: event-driven
+    as: orders-events
+    bind:
+      events:   { match: ["app/events/orders/**"] }
+      bus:      { match: ["app/lib/event_bus.rb"] }
+      handlers: { match: ["app/handlers/orders/**"] }
+    mode: advisory
+    exempt:
+      - rule: events-consumed
+        witness: "LegacyOrderMigratedEvent has no inbound calls edge from orders-events/handlers"
+        owner: "dana"
+        because: "Fired only by the migration backfill, consumed manually."
+        since: "2026-08-11"
+```
+
+**Recipes are a compile-time concept.** Each instantiation expands
+into ordinary components (`orders-events/events`) and ordinary rules
+(`orders-events/events-consumed`) at load time, with role references
+substituted for instance components, and the expanded set flows
+through the same validation, compilation and evaluation machinery
+every hand-written rule uses — the engine never sees a recipe. That
+is what makes every existing capability compose for free: modes,
+exemptions, guidance, lifecycle telemetry (per instance-prefixed rule
+id), mining, `plan`/`constraints_for`, check rendering, the Exempted
+bucket, dead-exemption warnings. The instance-wide `mode:` overrides
+every expanded rule's mode; per-rule modes declared in the recipe are
+the defaults when the instance declares none. Exemptions attach at
+the instance, scoped to a recipe rule by its unprefixed id, because a
+template cannot know concrete witnesses — a recipe rule carrying
+`exempt:` is a validation error.
+
+Validation is file-cited and fail-closed, like everything else in the
+vocabulary: a recipe rule referencing an undeclared role, an
+instantiation missing a binding for any role the rules reference,
+binding a role the recipe does not declare, duplicate recipe names
+across files (both cited), duplicate instance names across files
+(both cited — the expanded ids would collide), an exemption naming a
+rule the recipe lacks, and `use_recipe` inside a recipe (no recursion
+in v1) are all errors. The one warning: a declared role no rule
+references is a **dead role** — reported, never fatal.
+`constraints lint` lists each recipe (name, roles, rule count) and
+each instantiation under its declaring file (instance, recipe,
+bindings, expanded rule count), and expanded rules keep their
+provenance all the way to the verdict: a violation's description
+traces to `rule orders-events/events-consumed (recipe event-driven,
+instantiated in enola/constraints/orders.yaml)`, so a reviewer can
+walk law back to pattern.
+
+Two recipes this vocabulary is aimed at, as sketches — documented
+here, not shipped files, because each repo binds its own paths:
+
+**The vanilla Rails views recipe** (Stimulus/Hotwire, no SPA): the
+extractors already measure markup wiring — `stimulus-binding` facts
+from `data-controller` attributes resolved to
+`app/javascript/controllers/` at `markup-declared` level, and
+`turbo-frame` declaration/reference facts from `turbo_frame_tag`. A
+`rails-views` recipe binds `views`, `controllers` (Stimulus), and
+`components` roles per domain: `require_edge` demands every Stimulus
+controller is bound by some view (inbound, so a dead controller is a
+breach instead of invisible), `require_name` holds the
+`*_controller.js` convention, and a `forbid` keeps views from
+reaching application services directly. Instantiated once per domain
+slice, the same three rules police every slice's markup wiring
+without a per-domain rewrite.
+
+**The Ember-to-Rails page-migration recipe**: the migration's target
+state, declared per page. Roles for the `rails-page` (the new
+views/controller subtree) and the `ember-remnant` (the legacy route's
+app code); the rules are `forbid_fact` on the remnant (a migrated
+page's Ember code must be gone), `require_edge` demanding the Rails
+page is actually routed, and naming/reach rules for the new subtree's
+conventions. Each page migration is one `use_recipe` entry — and
+because every instantiation expands to rules with stable
+instance-prefixed ids, the drift telemetry that trends mining runs
+counts conforming pages over time: the migration's progress is the
+number of instances whose rules verdict clean, measured, not
+asserted.
+
+### Cross-repo rules
+
+With service-scoped components the rule forms reach across
+repositories — the edges are the ones the cross-repo linker measures
+(service-to-service and finer), so "the frontend must not touch
+billing's internal surface" is one forbid:
+
+```yaml
+components:
+  - name: frontend
+    service: frontend
+  - name: billing-internal
+    service: billing
+    match: ["internal/**"]
+rules:
+  - id: no-internal-reach
+    forbid: frontend
+    to: billing-internal
+    via: calls
+    because: "internal surfaces are not a contract"
+```
+
+The counterparty rule intentcheck's seams follow applies here too: a
+component naming a service absent from the snapshot is **unasked** —
+every rule naming it emits no verdicts, because a snapshot cannot
+answer for a repo it does not contain — and one 0.4 advisory
+(`Constraint component … names service … not present in this
+snapshot`) keeps the silence visible, exactly like the dead-selector
+advisory.
+
+### Modes
+
+- **`ratchet`** (the default): breaches verdict at `1.0` and the check
+  gate fails **new** ones — pre-existing violations stay silent, the
+  same delta scoping every finding gets.
+- **`advisory`**: breaches report at `0.9`, deliberately below the
+  gate's floor, titled `Advisory constraint … violated` — the
+  declaring file chose reporting over enforcement.
+- **`strict`**: breaches are titled `Strict constraint … violated` and
+  fail `enola check` **even when the baseline already carried them** —
+  the one deliberate exception to delta scoping, for rules decided to
+  hold *now* rather than merely to stop getting worse.
+
+A strict violation's only override is the **suppression ledger**, a
+committed `.enola/suppressions.yaml` the gate only ever reads:
+
+```yaml
+entries:
+  - rule: company-fk             # or finding_title_prefix: "…" — exactly one
+    owner: alice
+    reason: "legacy tables migrate in Q4"
+    date: "2026-08-10"
+```
+
+Every entry is a signed excuse — owner, reason and date are required,
+parsing is strict, and an invalid ledger rejects as a whole. A
+suppressed finding is reported in the verdict's own `Suppressed`
+bucket (text and JSON) and never fails; the ledger applies to ratchet
+findings too. enola never writes this file.
+
+### Exemptions — declared carve-outs
+
+A rule may carry an `exempt:` list: declared, reasoned carve-outs
+riding the law itself. Each entry names one **witness** — the exact
+violation identity the rule would otherwise report, the same string a
+violation is titled with (`users must have fk_constraints containing
+company_id->companies`, `app/domain/billing -> app/adapters/http via
+depends_on`) and the same identity the lifecycle ledger folds on —
+plus who decided the carve-out, why, and when:
+
+```yaml
+rules:
+  - id: company-fk
+    require: tables
+    when_prop_contains: {prop: columns, value: company_id}
+    must_prop_contain: {prop: fk_constraints, value: company_id->companies}
+    because: "tenant isolation joins through companies"
+    exempt:
+      - witness: "legacy_imports must have fk_constraints containing company_id->companies"
+        owner: dana
+        because: "legacy_imports keys company_id to the archived companies snapshot, not companies"
+        since: "2026-08-01"
+```
+
+All four fields are required — an exemption without an owner, a
+reason and a date is how a violation becomes permanent silently, so a
+partial entry rejects at parse, cited under its declaring file.
+Witnesses are matched exactly; there are no glob forms.
+
+An exempted witness produces **no violation in any mode** — ratchet,
+advisory, strict, all unchanged for every other witness. Instead it
+produces one `Exempted from constraint <id>: <witness>` finding at
+`0.9`: rendered in `enola check`'s own `Exempted by declaration`
+bucket (on every run, not only the one that introduced it) and in the
+insight listings, always carrying the owner, the date and the reason —
+counted, never silent. An exemption whose witness matches nothing the
+rule reports is a **dead exemption**, warned at `0.4` like the
+dead-selector advisory: it either outlived its violation (delete it)
+or never matched (fix the witness).
+
+Exempted witnesses are decisions, not debt: the lifecycle ledger
+keeps them out of a rule's standing-violation set and the lifecycle
+report lists them separately ("N exempted by declaration").
+`constraints lint` validates every entry and counts exemptions per
+file; `constraints_for` and `plan_check` report each bound rule's
+exemptions with their reasons, so an agent about to edit sees the
+carve-out beside the law. Mining proposes no exemptions ever — it
+reports reality, and a carve-out is a decision only an operator signs.
+
+The decision hierarchy, strongest first — reach for the earliest one
+that is true:
+
+1. **Fix it** — the violation is wrong and the rule stands. No
+   vocabulary needed.
+2. **Exempt it** (`exempt:` on the rule) — the witness is *decided to
+   be out of the rule's scope*, permanently and with a reason, and the
+   decision should live beside the law it carves out of.
+3. **Suppress it** (`.enola/suppressions.yaml`) — the violation is
+   real and stands, but strict-mode enforcement must not block while
+   it is being worked off: a temporary, signed excuse in the gate's
+   own ledger, separate from the declaration.
+4. **Baseline it** (ratchet's implicit merge-base baseline) — nobody
+   decided anything: the violation predates the rule and the ratchet
+   merely stops it getting worse. Invisible and unreasoned, which is
+   exactly why anything decided deserves one of the forms above.
+
+### Guidance rules
+
+Everything above is law — a rule states what the architecture must
+not do, and a breach is a decided finding. The `guide` form is
+**steering**: "similar implementations here used X; consider it." It
+names a component and carries the advice itself, with optional
+exemplars pointing at prior art:
+
+```yaml
+components:
+  - name: components
+    match: ["app/components/**"]
+rules:
+  - id: getters-cached
+    guide: components
+    message: "Expensive derived getters here use @cached — consider it (see exemplars)"
+    exemplars:
+      - app/components/sortable-table.js
+      - app/components/avatar-stack.js
+    because: "recomputing derived state on every render is the recurring perf bug here"
+```
+
+`message` is required — the advice is what a guidance rule delivers.
+`exemplars` name prior art by repo-relative file path or exact fact
+name; they are shape-checked at parse time (non-empty, whitespace-free)
+but **never required to exist** — prior art may move without the
+advice going stale. Existence is a delivery concern: `constraints_for`
+annotates each exemplar `present`/`absent` against the current
+snapshot (a measured fact carrying it as its file or its exact name;
+fail closed — unresolvable is absent), and `constraints lint` reports
+absent exemplars as a note, never an error. Presence is a
+**tri-state**: with no snapshot to measure against (`plan`'s
+declarations-only mode) every exemplar is `unmeasured`, rendered
+`unmeasured — no snapshot` — "absent" and "never looked" must never
+read the same.
+
+The whole point is **pre-edit** steering: a `constraints_for` query
+for a target inside a guided component — including a file that does
+not exist yet — returns the guidance in its own `guidance` list,
+separate from the law under `rules`: message, mode, annotated
+exemplars. Two modes, both non-enforcing:
+
+- **`notify`** (the default): the contract channel only — **no
+  finding, ever**.
+- **`advisory`**: additionally ONE `0.9` finding per guided component,
+  titled `Guidance for <component>: <rule id>` — never one per member,
+  because guidance is not a violation census — so the advice rides
+  `check` output visibly and can never fail anything.
+
+The enforce-class modes (`ratchet`, `strict`) are rejected on a
+guidance rule at validation — and so is `exempt:`, because guidance
+emits no violations to exempt. Graduation to law means writing a law
+form — a `forbid`, a `require`, a `require_name` — on the declaring
+file, not hardening the guidance.
+
+Guidance also rides the gate: **advice travels with the diff, never
+gates.** When `enola check` grades a delta, every guidance rule whose
+component contains a file the change touched — added, removed or
+modified, derived from the fact delta — renders in its own
+`Guidance for this change (N)` section: rule id, message, `because:`,
+and the exemplars with their tri-state presence. The JSON verdict
+carries the same entries in a `guidance` array (rule, component,
+message, mode, because, exemplars, matched changed files), sorted by
+rule id and stable across runs. A guidance entry is **not** a
+violation, is counted by no failure policy, and never moves the exit
+code in any mode combination; guidance for components the delta never
+touched stays silent, so a ten-file change surfaces only the advice
+those ten files selected. A partial (intersection-graded) verdict
+carries guidance the same way, over its own graded delta; a declined
+or errored gate carries none, because there is no trustworthy delta
+for the advice to travel with.
+
+### `constraints lint`
+
+The authoring loop. `enola constraints lint` parses the declaration
+(repo file, `enola/constraints/` files — each listed with its own
+component and rule counts, plus its `use_recipe:` instantiations —
+`enola/recipes/` definitions, and any cluster override), reports **every**
+validation problem with its file context rather than dying on the first, and —
+when a snapshot exists on disk — resolves each component against it so
+you see what a selector actually selects before a rule built on it
+verdicts anything. No snapshot degrades to a named validation-only
+mode; nothing is generated or written. Exit `1` on validation
+problems, `0` otherwise.
+
 ## Working with intent, the enola way
 
 1. **Declare only what you know.** A declaration triggers

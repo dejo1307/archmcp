@@ -18,7 +18,7 @@ func insight(source, title string, confidence float64) facts.Insight {
 // an unstated policy now enforces nothing (see DefaultFailExplainers). These tests are
 // about how a NAMED explainer grades, so they name one; TestEvaluate_NoPolicyFailsNothing
 // covers the unstated case.
-func legacyDefault() Policy { return Policy{FailExplainers: []string{"cycles"}} }
+func legacyDefault() Policy { return Policy{FailExplainers: []string{"cycles", "constraints"}} }
 
 // TestEvaluate_ConfidenceAndExplainerBands is the policy table. The two cases that
 // matter most are the ones that would break a naive "fail on confidence 1.0" gate:
@@ -33,6 +33,8 @@ func TestEvaluate_ConfidenceAndExplainerBands(t *testing.T) {
 	}{
 		{"cycle at 1.0 fails", insight("cycles", "Cyclic dependency detected (2 modules)", 1.0), true},
 		{"coupled cluster at 0.4 does not fail", insight("cycles", "Highly coupled module cluster (9 modules)", 0.4), false},
+		{"constraint violation at 1.0 fails", insight("constraints", "Constraint domain-stays-pure violated: a -> b via depends_on", 1.0), true},
+		{"dead constraint selector at 0.4 does not fail", insight("constraints", "Constraint component ghost matches nothing", 0.4), false},
 		{"god-class clamped to 1.0 does not fail", insight("god-class", "God class (400 dependents)", 1.0), false},
 		{"architecture pattern at 1.0 does not fail", insight("layers", "Architecture pattern: hexagonal", 1.0), false},
 		{"layer violation at 0.8 does not fail", insight("layers", "Layer violation: domain -> adapter", 0.8), false},
@@ -260,8 +262,8 @@ func TestVerdict_JSONReportsEffectivePolicy(t *testing.T) {
 	if got.Status != string(StatusClean) {
 		t.Errorf("status = %q, want %q", got.Status, StatusClean)
 	}
-	if len(got.Policy.FailExplainers) != 1 || got.Policy.FailExplainers[0] != "cycles" {
-		t.Errorf("fail_explainers = %v, want [cycles]", got.Policy.FailExplainers)
+	if len(got.Policy.FailExplainers) != 2 || got.Policy.FailExplainers[0] != "cycles" || got.Policy.FailExplainers[1] != "constraints" {
+		t.Errorf("fail_explainers = %v, want [cycles constraints]", got.Policy.FailExplainers)
 	}
 	if got.Policy.MinConfidence != DefaultMinConfidence {
 		t.Errorf("min_confidence = %v, want %v", got.Policy.MinConfidence, DefaultMinConfidence)
