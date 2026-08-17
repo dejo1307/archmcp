@@ -1254,6 +1254,142 @@ verdicts anything. No snapshot degrades to a named validation-only
 mode; nothing is generated or written. Exit `1` on validation
 problems, `0` otherwise.
 
+### `constraints mine`
+
+Discovering the law instead of writing it. `enola constraints mine`
+walks the current snapshot's fact store for **near-invariants** —
+high-regularity properties with named exceptions — and reports each
+one as a candidate constraint declaration in this vocabulary. Four
+regularity families are mined:
+
+- **Prop implications** (`require` + `when_prop_contains` /
+  `must_prop_contain`): facts of one kind whose prop A contains X
+  nearly always have prop B containing Y — the company-fk shape
+  ("storage facts whose columns contain company_id nearly always
+  have fk_constraints containing company_id->companies"), plus the
+  unconditional form when a prop value holds across nearly the whole
+  kind. A conditional candidate must beat the consequent's base rate,
+  or the antecedent added no information and the unconditional form
+  is the honest rule.
+- **Naming** (`require_name` + `pattern`): facts of one kind under a
+  directory subtree nearly all matching one bounded pattern
+  (`prefix*` / `*suffix`), mined at word boundaries and emitted only
+  where the cluster beats the whole population's match rate.
+- **Edge regularities** (`forbid`/`to` and `allow`/`only`): via-edges
+  leaving a directory cluster nearly never land in some other cluster
+  (with the actual crossings named), or land almost entirely inside a
+  small set of clusters. A forbid candidate needs at least one
+  would-be violation: a zero-crossing pair is indistinguishable from
+  no opportunity and would flood the report with unevidenced law.
+- **Method presence** (`require_defines` + `method`): plain classes
+  (no inheritance, no mixins — the same fail-closed scope the
+  evaluator uses) under a cluster nearly all defining one method.
+
+Every candidate carries its regularity as a numerator/denominator,
+**names every exception** (fact and file), and renders a would-be
+declaration that `constraints lint` accepts verbatim — the emitted
+YAML round-trips through the real parser, and the named exceptions
+are exactly the violations the rule would report if adopted. The
+report is ranked by confidence x support; the support floor,
+confidence floor and exception ceiling are flags
+(`--min-support`, `--min-confidence`, `--max-exceptions`), printed in
+the report header, and anything below a floor is suppressed **with a
+count**, never silently. `--jsonl` writes the full report as an
+artifact beside the ranked text.
+
+Every candidate also carries a **stable identity** — the regularity's
+semantic key, built from what the rule is *about* (family, scope, and
+the rule's own parameters: the antecedent/consequent prop pair, the
+cluster and pattern, the source/target clusters and via, the cluster
+and method) with the parts pipe-joined and escaped. It deliberately
+excludes everything that moves between snapshots: the rank, the
+numerator and denominator, the exception list, and the statement text
+the numbers are printed into. Mining the same repository twice
+therefore names the same regularity with the same identity even as
+its numbers shift, which is what makes candidates from different runs
+foldable into a time series: a regularity is *the same rule observed
+again*, never *the same rank re-occupied*. The identity is exported
+on every candidate line of the `--jsonl` artifact.
+
+**Candidates are proposals, never self-adopting law.** Mining reads
+an existing snapshot and writes nothing: it never generates a
+snapshot, never touches `enola/constraints/`, never modifies a
+declaration, and never feeds the check path. Adopting a candidate is
+the operator's act: copy the would-be declaration into a file under
+`enola/constraints/`, rewrite `because:` into the real rationale (the
+mined text is evidence, not a decision), review the mode (candidates
+propose `advisory`; graduation to `ratchet` or `strict` is a
+decision), reconcile its components with ones already declared, and
+commit it for review like any other law. Exit `0` when a report was
+produced (even an empty one), `2` when there is no snapshot to mine.
+
+### `plan` / `plan_check` — the pre-edit contract
+
+The contract, moved into the planning loop. `enola plan` (and the
+`plan_check` MCP tool, the same code path) answers, **before any edit
+lands in the tree**: which declared constraints govern the intended
+change, what the change's blast radius is, and — for a patch — which
+constraint verdicts WOULD appear if it were applied.
+
+Three input forms:
+
+- `--paths a.rb,b.rb` (or positional paths): for each path, the
+  declared components whose selectors cover it — a path nobody has
+  written yet still answers, which is the pre-edit point — with every
+  rule binding them (statement, mode, `because:`, declaring file),
+  plus the path's blast radius: fan-in and fan-out over the current
+  snapshot's rule-via edges, exact counts with capped, sorted samples.
+- `--symbols X,Y`: the same, keyed by exact fact name. A name nothing
+  measured carries is reported as unmeasured, never guessed at.
+- `--patch change.diff`: the **counterfactual**. The unified diff is
+  applied to a scratch copy of the repository — the working tree and
+  its `.enola` are never touched — facts are regenerated over the
+  scratch tree and over the unpatched tree, the constraints engine
+  verdicts both, and the delta is reported in three buckets: **new**
+  (violations the patch would introduce, each naming the rule, the
+  would-be witness, and its `because:`), **resolved** (violations the
+  patch would clear), and **unchanged**. A patch that does not apply,
+  or that touches files outside the snapshot's scope, is a named
+  error, never a guess.
+
+`--json` emits the report as a stable machine-readable document —
+targets with their governing rules and blast radius, the snapshot's
+generation timestamp and staleness, and the counterfactual buckets —
+which is the agent-facing contract.
+
+Honesty rules, same as everywhere else in this vocabulary: an
+identical plan against an identical snapshot renders byte-identically
+(everything is sorted); when no rule governs a target the report says
+so explicitly rather than staying silent; when the on-disk snapshot no
+longer matches the working tree the report states the staleness
+(generation timestamp plus the drifted files) instead of silently
+answering from old facts. Governance answers from the working tree's
+declarations (`enola-intent.yaml` plus `enola/constraints/`), so an
+edit to the law is visible without regenerating a snapshot.
+
+**A report, never a gate.** Like `enola check`, the verdict is for
+the caller to weigh: `plan` exits `0` whenever a report was produced —
+counterfactual violations included — and `2` only when it could not
+run (a patch that does not apply, `--symbols` with no snapshot, an
+invalid declaration). It never writes into the target tree, never
+mutates the repo's `.enola`, and the counterfactual's scratch
+materialization is deleted when the call returns.
+
+The agent workflow this is built for:
+
+1. `enola plan --paths <files you intend to touch>` (or `plan_check`)
+   — read the governing rules and the blast radius before writing
+   anything.
+2. Shape the change so it satisfies the contract; for a concrete
+   patch, `enola plan --patch change.diff` names the rule any
+   violating edge would breach while the tree is still clean.
+3. Make the edit.
+4. `enola check` after — the gate confirms what the plan predicted.
+
+This ordering is the point: the self-correction benchmark measures
+that violations drop sharply when the contract is in reach at
+planning time rather than at the CI gate, and plan-check is that
+contract as a first-class query.
 ## Working with intent, the enola way
 
 1. **Declare only what you know.** A declaration triggers

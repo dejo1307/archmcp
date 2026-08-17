@@ -47,6 +47,7 @@ layers:
       - "pkg/bootstrap/**"
       - "internal/server/**"
       - "internal/drift/**"
+      - "pkg/plan/**"
   - name: engine
     paths:
       - "internal/engine/**"
@@ -61,6 +62,7 @@ layers:
       - "internal/conformance/**"
       - "internal/intent/**"
       - "internal/history/**"
+      - "internal/mining/**"
   - name: core
     paths:
       - "internal/facts/**"

@@ -36,6 +36,8 @@ var expectedTools = []string{
 	"find_path",
 	"impact_analysis",
 	"governing_intent",
+	"constraints_for",
+	"plan_check",
 	"coverage_report",
 }
 
@@ -342,6 +344,126 @@ func TestE2E_GoverningIntent(t *testing.T) {
 	}
 }
 
+// TestE2E_ConstraintsFor drives the pre-edit contract through the wire: a
+// snapshot with no declared components answers "not asked"; a governed
+// snapshot answers per target with the binding rules and the violations whose
+// evidence names it — including a path no fact measures, which is the pre-edit
+// point.
+func TestE2E_ConstraintsFor(t *testing.T) {
+	s := startInMemory(t)
+	s.snapshot(t)
+
+	out := text(s.call(t, "constraints_for", map[string]any{"target": "pkg/a/a.go"}))
+	if !strings.Contains(out, "not asked") {
+		t.Errorf("a snapshot without declared components must answer 'not asked'; got:\n%s", out)
+	}
+
+	// Constraints are the repo's declared desired architecture, so they live in
+	// the always-validated declaration file — not on a page.
+	decl := "components:\n" +
+		"  - {name: pkg-a, match: [pkg/a/**]}\n" +
+		"  - {name: pkg-b, match: [pkg/b/**]}\n" +
+		"rules:\n" +
+		"  - {id: a-avoids-b, forbid: pkg-a, to: pkg-b, via: imports,\n" +
+		"     because: a must stay deliverable without b}\n"
+	if err := os.WriteFile(filepath.Join(s.repo, "enola-intent.yaml"), []byte(decl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res := s.call(t, "generate_snapshot", map[string]any{"repo_path": s.repo, "fresh": true}); res.IsError {
+		t.Fatalf("generate_snapshot returned error: %s", text(res))
+	}
+
+	out = text(s.call(t, "constraints_for", map[string]any{"target": "pkg/a/a.go"}))
+	for _, want := range []string{
+		"pkg-a",
+		"a-avoids-b",
+		"pkg-a must not reach pkg-b via imports",
+		"a must stay deliverable without b",
+		"ratchet",
+		"Constraint a-avoids-b violated",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("contract for a bound file must carry %q; got:\n%s", want, out)
+		}
+	}
+
+	// A file nobody has written yet still answers by pattern — the pre-edit case.
+	out = text(s.call(t, "constraints_for", map[string]any{"target": "pkg/a/new_file.go"}))
+	if !strings.Contains(out, "pkg-a must not reach pkg-b via imports") {
+		t.Errorf("an unwritten file inside a component must still get its contract; got:\n%s", out)
+	}
+
+	out = text(s.call(t, "constraints_for", map[string]any{"target": "elsewhere/free.go"}))
+	if strings.Contains(out, "a-avoids-b") {
+		t.Errorf("an unbound target must bind to nothing; got:\n%s", out)
+	}
+}
+
+func TestE2E_PlanCheck(t *testing.T) {
+	s := startInMemory(t)
+	s.snapshot(t)
+
+	out := text(s.call(t, "plan_check", map[string]any{"paths": []string{"pkg/a/a.go"}}))
+	if !strings.Contains(out, `"constraints_declared": false`) {
+		t.Errorf("plan_check on an undeclared repo must say constraints_declared false; got:\n%s", out)
+	}
+
+	decl := "components:\n" +
+		"  - {name: pkg-a, match: [pkg/a/**]}\n" +
+		"  - {name: pkg-b, match: [pkg/b/**]}\n" +
+		"rules:\n" +
+		"  - {id: a-avoids-b, forbid: pkg-a, to: pkg-b, via: imports,\n" +
+		"     because: a must stay deliverable without b}\n"
+	if err := os.WriteFile(filepath.Join(s.repo, "enola-intent.yaml"), []byte(decl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res := s.call(t, "generate_snapshot", map[string]any{"repo_path": s.repo, "fresh": true}); res.IsError {
+		t.Fatalf("generate_snapshot returned error: %s", text(res))
+	}
+
+	out = text(s.call(t, "plan_check", map[string]any{"paths": []string{"pkg/a/new_file.go"}}))
+	for _, want := range []string{"pkg-a", "a-avoids-b", "a must stay deliverable without b", `"no_rule_governs": false`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan_check for a governed pre-edit path must carry %q; got:\n%s", want, out)
+		}
+	}
+
+	patch := "--- /dev/null\n+++ b/pkg/a/extra.go\n@@ -0,0 +1,3 @@\n+package a\n+\n+func Extra() int { return 3 }\n"
+	out = text(s.call(t, "plan_check", map[string]any{"patch": patch}))
+	if !strings.Contains(out, `"unchanged"`) || !strings.Contains(out, "a-avoids-b") {
+		t.Errorf("the counterfactual must carry the pre-existing a-avoids-b breach as unchanged; got:\n%s", out)
+	}
+	if !strings.Contains(out, `"new": []`) {
+		t.Errorf("an additive patch must introduce no new breach; got:\n%s", out)
+	}
+	if !strings.Contains(out, `"source": "enola-intent.yaml"`) {
+		t.Errorf("governance must cite the working tree's declaring file, not the engine's resolved copy; got:\n%s", out)
+	}
+
+	res := s.call(t, "plan_check", map[string]any{"patch": patch})
+	if res.IsError {
+		t.Fatalf("plan_check errored: %s", text(res))
+	}
+
+	res = s.call(t, "plan_check", map[string]any{"patch": "garbage, not a diff\n"})
+	if !res.IsError || !strings.Contains(text(res), "no file changes") {
+		t.Errorf("a non-diff patch must be a named error; got IsError=%v:\n%s", res.IsError, text(res))
+	}
+
+	drifted := filepath.Join(s.repo, "pkg", "b", "b.go")
+	data, err := os.ReadFile(drifted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(drifted, append(data, []byte("\nfunc Drifted() {}\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = text(s.call(t, "plan_check", map[string]any{"paths": []string{"pkg/a/a.go"}}))
+	if !strings.Contains(out, `"staleness"`) || !strings.Contains(out, "modified") {
+		t.Errorf("plan_check over a drifted tree must state the staleness; got:\n%s", out)
+	}
+}
+
 func TestE2E_CoverageReport(t *testing.T) {
 	s := startInMemory(t)
 	s.snapshot(t)
@@ -373,6 +495,7 @@ func TestE2E_RequiredArgValidation(t *testing.T) {
 		{"find_path", map[string]any{"from": "pkg/a"}}, // missing "to"
 		{"impact_analysis", map[string]any{}},
 		{"show_symbol", map[string]any{}},
+		{"constraints_for", map[string]any{}},
 	}
 	for _, c := range cases {
 		t.Run(c.tool, func(t *testing.T) {

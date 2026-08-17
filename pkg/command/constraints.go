@@ -17,8 +17,10 @@ import (
 	"github.com/enola-labs/enola/pkg/check"
 )
 
-// Constraints is `enola constraints lint` — the authoring loop for the
-// declared-constraint vocabulary. It parses each repo's declaration
+// Constraints is `enola constraints <lint|mine>` — the authoring loop for the
+// declared-constraint vocabulary. `mine` (see ConstraintsMine) proposes
+// candidate declarations out of the snapshot's own regularities; `lint`
+// parses each repo's declaration
 // (enola-intent.yaml, any enola/constraints/*.yaml files, and any
 // cluster-config override), reports every
 // validation problem with its file context, and — when a snapshot exists on
@@ -31,13 +33,20 @@ import (
 // declaration is valid, 1 when any validation problem was reported, 2 when the
 // command could not run at all.
 func (r *Runner) Constraints(args []string) {
+	if len(args) > 0 && args[0] == "mine" {
+		r.ConstraintsMine(args[1:])
+		return
+	}
 	fs := flag.NewFlagSet("constraints", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" constraints lint [repo_path|config_path]\n\n"+
+		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" constraints <lint|mine> [repo_path|config_path]\n\n"+
 			"lint validates the declared constraint vocabulary — inline in enola-intent.yaml\n"+
 			"and per-domain files under enola/constraints/ — and resolves each component\n"+
 			"against the current snapshot, if one exists (else validation only).\n\n"+
+			"mine searches the current snapshot's fact store for near-invariants and\n"+
+			"reports them as candidate constraint declarations — proposals for operator\n"+
+			"review, never self-adopting law. Run `"+r.name()+" constraints mine --help`.\n\n"+
 			"Exit codes (lint):\n"+
 			"  0  every declaration is valid\n"+
 			"  1  validation problems were reported\n"+
