@@ -148,6 +148,11 @@ func TestServe_RepoArgumentAuthoritative_CwdElsewhere(t *testing.T) {
 	if !strings.Contains(out, "repo-a-guards-alpha") {
 		t.Errorf("constraints_for must answer for the repo the server was launched with, regardless of cwd; got:\n%s", out)
 	}
+
+	out = callTool(t, cs, "plan_check", map[string]any{"paths": []string{"pkg/a/a.go"}})
+	if !strings.Contains(out, "repo-a-guards-alpha") {
+		t.Errorf("plan_check must answer for the repo the server was launched with, regardless of cwd; got:\n%s", out)
+	}
 }
 
 func TestServe_RepoArgumentWins_CwdInsideAnotherRepo(t *testing.T) {
@@ -166,6 +171,7 @@ func TestServe_RepoArgumentWins_CwdInsideAnotherRepo(t *testing.T) {
 		args map[string]any
 	}{
 		{"constraints_for", map[string]any{"target": "pkg/a/a.go"}},
+		{"plan_check", map[string]any{"paths": []string{"pkg/a/a.go"}}},
 	} {
 		out := callTool(t, cs, tool.name, tool.args)
 		if !strings.Contains(out, "rule-of-repo-a") {

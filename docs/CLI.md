@@ -378,6 +378,7 @@ Every path argument follows the same rule: **a directory is a repository, a file
 | `uninstall [--global]` | Remove everything `install` wrote, leaving the rest of each file byte-for-byte as it was. |
 | `baseline pin\|show\|clear [repo\|config]` | Manage the diff baseline - the "before" a change is graded against. `pin` snapshots the repository and freezes it (no separate `--generate` needed); `show` reports what the current baseline describes; `clear` removes it. Stored per repository, in that repo's `.enola/baseline`, so several repos each keep their own. |
 | `check [flags] [repo\|config]` | **Grade what a change did to the architecture**, and exit with a code CI can act on. Read-only: writes nothing and leaves the baseline in place, so it can be run repeatedly. See [The gate](#the-gate---enola-check). |
+| `plan [flags] [path...] [repo\|config]` | **The pre-edit contract.** Which declared constraints govern an intended change (`--paths`, `--symbols`), its blast radius over the current snapshot, and — for a `--patch` — the constraint verdicts that WOULD appear, evaluated over a scratch copy before any edit lands in the tree. Nothing is written; a report, never a gate. Exits `0` on any produced report, `2` when it could not run. See [INTENT.md](INTENT.md). |
 | `upgrade` | Download and install the latest release over the running binary. |
 
 | Flag | What it does |

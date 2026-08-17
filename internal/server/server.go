@@ -24,6 +24,7 @@ import (
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/coverage"
 	"github.com/enola-labs/enola/pkg/mcputil"
+	"github.com/enola-labs/enola/pkg/plan"
 	"github.com/enola-labs/enola/pkg/status"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -105,6 +106,8 @@ type Server struct {
 	freshBanner string
 	freshAt     time.Time
 
+	planFactory plan.EngineFactory
+
 	// updateSaid is set once the "a newer enola exists" notice has been attached to a
 	// tool result, so it is said once per SERVER PROCESS and never again.
 	//
@@ -178,6 +181,10 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) SetToolCallback(cb func(status.ToolCall)) {
 	fn := toolCallbackFunc(cb)
 	s.toolCallback.Store(&fn)
+}
+
+func (s *Server) SetPlanEngineFactory(factory plan.EngineFactory) {
+	s.planFactory = factory
 }
 
 // fireToolCallback invokes the tool callback if set. Safe to call concurrently
@@ -1724,6 +1731,56 @@ func (s *Server) registerTools() {
 			resp.Violations = constraints.ViolationsReferencing(snap.Insights, target)
 		}
 		return jsonResultCapped(resp, args.MaxTokens)
+	})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "plan_check",
+		Description: "Plan an intended change BEFORE editing: for each target — paths (which may not exist yet) or exact fact names — the declared constraint components and rules governing it, with mode and the because: each was declared with, plus its blast radius (fan-in/fan-out over the current snapshot, capped samples with exact counts). " +
+			"Pass patch= (a unified diff) for the counterfactual: the patch is applied to a scratch copy of the repo — the working tree and its .enola are never touched — facts are regenerated there, and the constraint verdicts that WOULD appear are reported in new/resolved/unchanged buckets, each naming the rule, the would-be witness, and its because:. " +
+			"Governance answers from the working tree's declarations (enola-intent.yaml plus enola/constraints/), so an edit to the law is visible without regenerating. " +
+			"A patch that does not apply, or that touches files outside the snapshot's scope, is a named error, never a guess. When no rule governs a target the report says so explicitly, and the snapshot's staleness relative to the tree is stated rather than silently answered around. " +
+			"A report, never a gate: like enola check, the verdict is for the caller to weigh. Returns JSON.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args planCheckArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		repoPath := s.currentRepoPath()
+		if repoPath == "" {
+			return errorResult("No snapshot available. Run generate_snapshot first."), nil, nil
+		}
+		if len(args.Paths) == 0 && len(args.Symbols) == 0 && args.Patch == "" {
+			return errorResult("nothing to plan: give paths, symbols, or patch"), nil, nil
+		}
+		label := filepath.Base(repoPath)
+		contractStore, err := plan.ContractStore(repoPath, store.All(), s.eng.Config().Intent[label])
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		info := plan.SnapshotInfo{}
+		if snap := s.eng.Snapshot(); snap != nil {
+			info.GeneratedAt = snap.Meta.GeneratedAt
+		}
+		if d, driftErr := s.eng.Drift(repoPath); driftErr == nil && (d.Unknown || d.Any()) {
+			info.Staleness = d.Summary(5)
+		}
+		paths := make([]string, 0, len(args.Paths))
+		for _, p := range args.Paths {
+			paths = append(paths, s.normalizeToRelative(p))
+		}
+		deps := plan.Deps{
+			RepoPath:      repoPath,
+			RepoLabel:     label,
+			Store:         contractStore,
+			Snapshot:      info,
+			OutputDirName: s.eng.Config().Output.Dir,
+			NewEngine:     s.planFactory,
+		}
+		report, err := plan.Compute(ctx, plan.Request{Paths: paths, Symbols: args.Symbols, Patch: []byte(args.Patch)}, deps)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		return jsonResultCapped(report, args.MaxTokens)
 	})
 
 	// Tool: coverage_report
@@ -3324,6 +3381,13 @@ type governingIntentArgs struct {
 type constraintsForArgs struct {
 	Target    string `json:"target" jsonschema:"required,A file path (repo-relative\\, may not exist yet) or an exact fact name"`
 	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens)"`
+}
+
+type planCheckArgs struct {
+	Paths     []string `json:"paths,omitempty" jsonschema:"Repo-relative file paths the intended change touches (they may not exist yet)"`
+	Symbols   []string `json:"symbols,omitempty" jsonschema:"Exact fact names the intended change touches"`
+	Patch     string   `json:"patch,omitempty" jsonschema:"A unified diff to evaluate counterfactually over a scratch copy — the working tree is never touched"`
+	MaxTokens int      `json:"max_tokens,omitempty" jsonschema:"Optional hard cap on output size (approx tokens)"`
 }
 
 // constraintsForResponse is the constraints_for tool's JSON shape: the

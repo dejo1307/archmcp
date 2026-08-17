@@ -66,6 +66,7 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/vocab"
 	"github.com/enola-labs/enola/internal/renderers/llmcontext"
 	"github.com/enola-labs/enola/internal/server"
+	"github.com/enola-labs/enola/pkg/plan"
 	"github.com/enola-labs/enola/pkg/plugin"
 	"github.com/enola-labs/enola/pkg/status"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -266,6 +267,23 @@ func (s *Server) MCP() *mcp.Server {
 	return s.srv.MCPServer()
 }
 
+func (s *Server) SetPlanEngineFactory(factory plan.EngineFactory) {
+	s.srv.SetPlanEngineFactory(factory)
+}
+
+func PlanEngineFactory(cfg *config.Config) plan.EngineFactory {
+	return func() (plan.Generator, error) {
+		eng, err := engine.New(cfg)
+		if err != nil {
+			return nil, err
+		}
+		registerOSSPlugins(eng, cfg)
+		wrapped := &Engine{eng: eng}
+		wrapped.SetPersistCache(false)
+		return wrapped, nil
+	}
+}
+
 // Options controls bootstrap behavior.
 type Options struct {
 	// ConfigPath is the path to the YAML config file. Default: "mcp-arch.yaml".
@@ -381,7 +399,11 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create engine: %w", err)
 	}
+	registerOSSPlugins(eng, cfg)
+	return &Engine{eng: eng}, cfg, nil
+}
 
+func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	// Register all OSS extractors
 	eng.RegisterExtractor(cppextractor.New())
 	eng.RegisterExtractor(dotnetextractor.New())
@@ -450,8 +472,6 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 
 	// Register all OSS renderers
 	eng.RegisterRenderer(llmcontext.New(cfg.Output.MaxContextTokens))
-
-	return &Engine{eng: eng}, cfg, nil
 }
 
 // NewServer creates an MCP server wired to the given Engine.
@@ -460,6 +480,7 @@ func NewServer(eng *Engine, cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	srv.SetPlanEngineFactory(PlanEngineFactory(cfg))
 	// The one place the soft memory limit is worth announcing. ConfigureRuntime is
 	// silent (see its doc) because a working default is not news on every CLI
 	// invocation — but a server is long-lived, holds whole graphs in memory, and its
