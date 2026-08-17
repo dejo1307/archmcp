@@ -472,6 +472,9 @@ func decorations(e history.Entry) string {
 	if e.Summary.Incomparable {
 		parts = append(parts, "incomparable")
 	}
+	if e.Origin != "" {
+		parts = append(parts, "from "+e.Origin)
+	}
 	// In a multi-repo graph the other repositories' positions belong on the row, because
 	// the drawn shape cannot express them (see multiRepoNote).
 	for _, r := range e.Repos {

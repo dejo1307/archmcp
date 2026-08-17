@@ -121,6 +121,93 @@ garbage; `--thin-older-than=90d` drops old contents while keeping the timeline, 
 
 ---
 
+## Sharing a history across machines
+
+Everything above is per-machine: blame and diff can only answer about what *this* machine saw.
+`enola history` shares the record through a **directory store** — plain files that can live
+anywhere files can: a git repository, a shared mount, an S3-synced folder. No daemon, no
+database, no network code in enola itself; whatever already syncs the directory is the transport.
+
+```
+$ enola history push /mnt/arch-history      # copy local revisions in
+$ enola history pull /mnt/arch-history      # import what other machines pushed
+$ enola history verify /mnt/arch-history    # walk every chain; name gaps and tampering
+$ enola history gc /mnt/arch-history --keep-last 500          # prints; deletes nothing
+$ enola history gc /mnt/arch-history --keep-last 500 --apply  # prunes, on record
+```
+
+Set `history.shared_dir` in the config and the store argument can be dropped — and `blame` and
+`diff` then answer from the **union** of the local history and the store, naming where every
+revision came from:
+
+```
+$ enola blame Billing::Ledger
+e8847af  2026-08-03 17:54  (d2293a18, main)  [local, store:dev-laptop-1f2a]
+    + symbol      Billing::Ledger  (app/models/billing/ledger.rb:4)
+$ enola diff aaaa000..bbbb111
+# aaaa000..bbbb111 · 2026-03-02 → 2026-08-03 · left from store:ci-runner-3c9d, right from local
+```
+
+### The store contract
+
+```
+<store>/format                      the format marker ("shared-history/1")
+<store>/entries/sha256-<id>.json.gz one immutable file per revision, named by snapshot id
+<store>/chains/<source>.jsonl       one append-only chain per pushing machine
+```
+
+An **entry** carries a revision's canonical fact and insight lines plus the provenance a diff
+needs (versions, plugin sets, config hash) — and nothing observation-specific: no timestamp, no
+sequence number, no branch name. That is what makes it content-addressed in the strong sense:
+the same snapshot pushed from two machines produces **byte-identical** files, which is why a
+sync-level last-writer-wins on an entry file can never lose information.
+
+A **chain record** is the observation: who saw that snapshot, when, at which commit. Each record
+carries the SHA-256 of its predecessor's line, so the chain is tamper-evident — edit, remove or
+reorder a record and every record after it stops verifying. Each machine also remembers the last
+record it pushed, and refuses to push onto a store whose chain no longer contains it, which is
+what catches a chain truncated from the end.
+
+### Why concurrent writers cannot corrupt it
+
+The store is safe under any file-level sync because no file ever has two writers:
+
+- **Entry files are immutable and content-addressed.** Two machines pushing the same snapshot
+  write the same bytes under the same name; a conflict resolved either way is a no-op. A pusher
+  that finds the file present writes nothing.
+- **Each chain file has exactly one writer** — the machine named in its filename. Two machines
+  pushing concurrently touch two different chain files, so there is nothing for a syncer to
+  merge and no interleaving to get wrong.
+
+The price of that shape is that ordering across machines is reconstructed at read time (by
+timestamp, exactly as a backfilled local history already is), not recorded — a price the local
+format already decided to pay when it made `Seq` machine-local.
+
+### Retention that stays honest
+
+`history gc` takes `--keep-last N` and/or `--keep-since` (revisions satisfying either are kept),
+and never deletes silently: without `--apply` it only prints what would go. An applied prune
+appends a **prune record** to the chain naming every removed revision, so forever after, a
+missing payload divides into two different answers — *pruned by retention on this date under
+this policy* (verify counts it, pull and blame report it as pruned) and *a gap the store cannot
+explain* (verify names it as a problem). Chain records themselves are never deleted: the
+timeline of what was observed outlives the contents.
+
+### Setting one up for an org
+
+1. Pick a location every machine can sync: a dedicated git repository, an NFS mount, an
+   S3/GCS bucket behind `rclone`/`aws s3 sync`.
+2. Set `history.shared_dir` in the repository's `mcp-arch.yaml` (or pass the directory
+   explicitly), and `enola history push` after snapshots — from CI, a cron entry, or by hand.
+3. New machines run `enola --generate` once (so the repository's identity is recorded), then
+   `enola history pull`. From then on `blame` and `diff` answer over the shared record.
+4. `enola history verify` in CI is the cheap standing check that the store is intact.
+
+A revision pulled from another machine keeps that machine as its `origin` — `log`, `blame` and
+`show` print it — so a historical claim is always attributable to the machine that observed it.
+
+---
+
 ## The rule this feature lives under
 
 [SNAPSHOTS.md](SNAPSHOTS.md) rests on a claim about **authority**: everything enola writes is

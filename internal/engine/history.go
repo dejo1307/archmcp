@@ -55,9 +55,10 @@ func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snap
 	}
 
 	opts := inthistory.Options{
-		WorkingKeep: e.cfg.History.WorkingKeep,
-		BlobKeep:    e.cfg.History.BlobKeep,
-		Contents:    e.historyContents(meta, &current, factsPath),
+		WorkingKeep:  e.cfg.History.WorkingKeep,
+		RevisionKeep: e.cfg.History.RevisionKeep,
+		BlobKeep:     e.cfg.History.BlobKeep,
+		Contents:     e.historyContents(meta, &current, factsPath),
 	}
 	recorded, err := inthistory.Append(root, entry, opts)
 	if err != nil {

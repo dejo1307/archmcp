@@ -31,12 +31,28 @@ import (
 // that the session cannot outgrow its own commit.
 const DefaultWorkingKeep = 20
 
+// DefaultRevisionKeep is how many revisions the log keeps IN TOTAL before the oldest are
+// dropped, committed ones included.
+//
+// The per-commit working cap bounds one session's residue; nothing bounded the log
+// itself, and an append-only file that only ever grows is a history somebody eventually
+// deletes whole. 200 revisions is months of committed work at ~600 bytes a line, the
+// same order DefaultBlobKeep already settled on for contents — and everything dropped is
+// re-derivable by re-snapshotting the commit, because the history is derived, never
+// authoritative.
+const DefaultRevisionKeep = 200
+
 // Options tunes one append.
 type Options struct {
 	// WorkingKeep is the per-commit cap on unanchored revisions. Zero means
 	// DefaultWorkingKeep; negative means keep everything (for a caller that has decided
 	// it wants the full loop, e.g. while debugging enola itself).
 	WorkingKeep int
+
+	// RevisionKeep is the total cap on the log: appending past it drops the oldest
+	// revisions, whatever their kind. Zero means DefaultRevisionKeep; negative means
+	// keep everything.
+	RevisionKeep int
 
 	// Contents is the revision's storable payload. Nil records a header-only revision —
 	// the timeline still shows it and says what it changed, but `show` cannot reconstruct
@@ -53,6 +69,13 @@ func (o Options) workingKeep() int {
 		return DefaultWorkingKeep
 	}
 	return o.WorkingKeep
+}
+
+func (o Options) revisionKeep() int {
+	if o.RevisionKeep == 0 {
+		return DefaultRevisionKeep
+	}
+	return o.RevisionKeep
 }
 
 // Append records one revision, and reports whether it was recorded.
@@ -85,9 +108,15 @@ func Append(root string, e pkghistory.Entry, opts Options) (bool, error) {
 	}
 	defer lock.Release()
 
+	// Read refuses a store whose format marker this build does not know, which is what
+	// keeps the append from corrupting a newer layout; a marker-less store is format 1
+	// and gets its marker stamped below.
 	entries, err := pkghistory.Read(root)
 	if err != nil && !isNoHistory(err) {
 		return false, err
+	}
+	if err := stampFormat(root); err != nil {
+		log.Printf("[history] warning: could not stamp the format marker: %v", err)
 	}
 
 	if last, ok := pkghistory.Last(entries); ok && sameRevision(last, e) {
@@ -114,8 +143,12 @@ func Append(root string, e pkghistory.Entry, opts Options) (bool, error) {
 	}
 
 	// Evicting rewrites the log, so it has to happen before the append rather than as a
-	// separate pass — otherwise the line just written would itself be a candidate.
-	if kept, evicted := evictWorking(entries, e, opts.workingKeep()); evicted > 0 {
+	// separate pass — otherwise the line just written would itself be a candidate. The
+	// total revision cap composes after the working cap: what survives the session
+	// ring still counts against the log's overall bound.
+	kept, evicted := evictWorking(entries, e, opts.workingKeep())
+	kept, capped := capRevisions(kept, opts.revisionKeep())
+	if evicted+capped > 0 {
 		if err := rewrite(logPath, append(kept, e)); err != nil {
 			return false, err
 		}
@@ -207,6 +240,35 @@ func nextSeq(entries []pkghistory.Entry) int {
 		}
 	}
 	return highest + 1
+}
+
+// stampFormat writes the store's format marker when none exists yet. An existing marker
+// is never touched: a known one is already right, and an unknown one belongs to the
+// build that wrote it — Read has refused before this runs.
+func stampFormat(root string) error {
+	path := filepath.Join(root, pkghistory.FormatFileName)
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n", pkghistory.FormatVersion)), 0o644)
+}
+
+// capRevisions returns the entries to keep under the total revision cap, and how many
+// fell off the front. The incoming entry occupies one slot, so the existing ones may
+// fill keep-1 — the same accounting evictWorking does. Only log LINES are dropped here:
+// a dropped revision's blob segment goes when gc finds nothing referring to it, which is
+// the one order of operations that can never strand a reader.
+//
+// keep < 0 disables the cap entirely.
+func capRevisions(entries []pkghistory.Entry, keep int) ([]pkghistory.Entry, int) {
+	if keep < 0 {
+		return entries, 0
+	}
+	surplus := len(entries) - (keep - 1)
+	if surplus <= 0 {
+		return entries, 0
+	}
+	return entries[surplus:], surplus
 }
 
 // evictWorking returns the entries to keep, and how many were dropped, when appending
