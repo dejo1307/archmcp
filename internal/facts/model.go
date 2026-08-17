@@ -2,6 +2,7 @@ package facts
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -37,6 +38,28 @@ const (
 	// is SUPPOSED to do, and the intent explainer verdicts the two against each
 	// other. Carries intent_kind plus provenance (source, overridden).
 	KindIntent = "intent"
+
+	// KindExtraction is one extractor's account of what it saw and could not
+	// resolve, for one repository. It carries the same `edge_coverage` prop the
+	// cross-repo layer puts on a service, because coverage in this codebase
+	// travels as facts — the linker's sink is an accumulator convenience, never
+	// the channel. An extractor that reports nothing emits no fact at all, so a
+	// consumer can tell "reported zero" from "never reported".
+	KindExtraction = "extraction"
+
+	// KindAssociation is one declared relationship between two models — a Rails
+	// belongs_to/has_one/has_many/has_and_belongs_to_many, or another framework's
+	// equivalent. It names its target rather than referencing the target's fact,
+	// because an association whose other end was never extracted is exactly the
+	// cross-boundary relationship most worth knowing about, and an edge that can
+	// only exist when both ends were read would drop it silently.
+	//
+	// An association whose target cannot be named emits NO fact and increments
+	// the extractor's coverage counter instead. Every consumer of this graph
+	// treats an edge as something you can follow, so an edge with no target is
+	// either ignored or miscounted; "I saw 45 of these and could not name their
+	// targets" belongs in a report, not in an untraversable edge.
+	KindAssociation = "association"
 	// KindTestRef is a reference-only fact emitted from a test/spec file. It carries
 	// solely RelCalls relations naming the production symbols the test exercises
 	// (Name/File are the test file path). Test files are excluded from normal
@@ -112,6 +135,7 @@ const MethodAny = "*"
 const (
 	SymbolFunc      = "function"
 	SymbolMethod    = "method"
+	SymbolGetter    = "getter"
 	SymbolStruct    = "struct"
 	SymbolInterface = "interface"
 	SymbolType      = "type"
@@ -261,16 +285,22 @@ type SnapshotMeta struct {
 	FactCount    int        `json:"fact_count"`
 	InsightCount int        `json:"insight_count"`
 
+	// Providers is the external-provider census: one record per configured
+	// provider, whether it contributed facts or was skipped. It feeds the
+	// receipt and the provider-set comparability check.
+	Providers []ProviderRecord `json:"providers,omitempty"`
+
 	// Receipt / provenance fields. Hash values carry a "sha256:" prefix.
 	EnolaVersion string   `json:"enola_version,omitempty"` // build version that produced this snapshot
 	SnapshotID   string   `json:"snapshot_id,omitempty"`   // content fingerprint (see engine.newSnapshotIDHasher); stable across reruns on the same inputs
 	Git          *GitInfo `json:"git,omitempty"`           // repo VCS state, nil when not a git repo
 	ConfigHash   string   `json:"config_hash,omitempty"`   // hash of the effective config (extractors, explainers, renderers, globs, output) — a superset of IgnoreGlobHash
 
-	// ExtractorVersion identifies the EXTRACTION BEHAVIOUR that produced this graph:
+	// ExtractorVersion identifies the BEHAVIOUR that produced this graph:
 	// internal/engine.cacheVersion, the constant bumped whenever an extractor starts
-	// reading something differently (and guarded by internal/cachecov, which refuses a
-	// bump without a covering test).
+	// reading something differently — or whenever the same facts start producing a
+	// different graph, which moves findings on an unedited tree just as surely (and
+	// guarded by internal/cachecov, which refuses a bump without a covering test).
 	//
 	// It is provenance EnolaVersion cannot supply. A released binary carries a version
 	// that moves with every release, so an upgrade is visible; a local build carries the
@@ -305,7 +335,46 @@ type SnapshotMeta struct {
 	ParseErrorSample   []ParseError      `json:"parse_error_sample,omitempty"` // a capped sample of those failures
 	HeuristicInsights  int               `json:"heuristic_insights,omitempty"` // count of insights with confidence < 1.0 (heuristics, vs. structural facts)
 	Coverage           *CoverageSummary  `json:"coverage,omitempty"`           // cross-repo edge-coverage rollup, nil in single-repo mode
+	Census             *FileCensus       `json:"census,omitempty"`             // per-file walk accounting: every visited file in exactly one bucket
 	OutputHashes       map[string]string `json:"output_hashes,omitempty"`      // artifact name -> "sha256:"-prefixed hash of its written bytes
+}
+
+// ProviderRecord is one configured external fact provider's entry in the
+// snapshot's provider census: what it is called, the version it reported, and
+// how many facts it contributed — or, for a provider that contributed nothing,
+// that it was skipped and why. Skips are recorded rather than dropped because
+// the alternative evidence is an absence, and "this machine does not have the
+// tool installed" must be readable from the receipt, not inferred from missing
+// facts.
+type ProviderRecord struct {
+	Name      string          `json:"name"`
+	Version   string          `json:"version,omitempty"`
+	FactCount int             `json:"fact_count"`
+	Skipped   bool            `json:"skipped,omitempty"`
+	Reason    string          `json:"reason,omitempty"`
+	Census    *ProviderCensus `json:"census,omitempty"`
+}
+
+type ProviderCensus struct {
+	FilesSeen          int           `json:"files_seen"`
+	DeclarationsParsed int           `json:"declarations_parsed"`
+	ConstructsSkipped  int           `json:"constructs_skipped"`
+	SkipCauses         []CensusCause `json:"skip_causes,omitempty"`
+}
+
+// RanProviders returns the names of the providers that actually contributed to
+// a census (not skipped), sorted. This is the set comparability compares: a
+// provider that ran on one side only makes all of its facts appear added or
+// removed, exactly as a differing extractor set does.
+func RanProviders(records []ProviderRecord) []string {
+	var names []string
+	for _, r := range records {
+		if !r.Skipped {
+			names = append(names, r.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // FileHash tracks a file's content hash for incremental updates.
@@ -343,6 +412,44 @@ type ParseError struct {
 	Msg       string `json:"msg"`
 }
 
+// FileCensus is the per-file accounting of one repository walk: every file the
+// walker visited lands in exactly one bucket, so parsed + excluded + skipped
+// always sums back to walked and no file can quietly fall out of the account.
+// Files inside pruned directories are visited by nothing and are therefore in
+// no bucket, matching how FilesSkipped/DirsSkipped already split that cost.
+//
+// The buckets state different claims. ExcludedByIgnore is configuration: the
+// operator said not to look. ExcludedByKind is vocabulary: no enabled extractor
+// declares ownership of the file's extension (via plugin.FileOwner — an
+// extractor that probes content rather than paths claims no extension, so its
+// unparsed candidates count here), and ExcludedKinds records which extensions,
+// so a receipt names the languages a graph is blind to instead of hiding them
+// in a smaller parse count. SkippedWithCause is the parseable-unparsed set —
+// an extractor claimed the file and it still produced no fact — each with the
+// most specific cause the run recorded.
+type FileCensus struct {
+	FilesWalked      int            `json:"files_walked"`
+	Parsed           int            `json:"parsed"`
+	ExcludedByIgnore int            `json:"excluded_by_ignore"`
+	ExcludedByKind   int            `json:"excluded_by_kind"`
+	ExcludedKinds    map[string]int `json:"excluded_kinds,omitempty"`
+	SkippedWithCause int            `json:"skipped_with_cause"`
+	TopSkipCauses    []CensusCause  `json:"top_skip_causes,omitempty"`
+}
+
+// CensusCause is one aggregated skip cause and how many files it accounts for,
+// ordered by count so the receipt leads with the biggest hole.
+type CensusCause struct {
+	Cause string `json:"cause"`
+	Count int    `json:"count"`
+}
+
+// Sums reports whether the buckets add back up to the walked count — the
+// identity the census is built on.
+func (c *FileCensus) Sums() bool {
+	return c.Parsed+c.ExcludedByIgnore+c.ExcludedByKind+c.SkippedWithCause == c.FilesWalked
+}
+
 // CoverageSummary is a snapshot-level rollup of the cross-repo edge coverage the
 // linker records per service, so a receipt reflects unresolved outbound edges
 // without the consumer running coverage_report.
@@ -351,6 +458,19 @@ type CoverageSummary struct {
 	CoverageGaps    int `json:"coverage_gaps"`            // services classified ServiceCoverageGap: no resolved outbound edge, yet unresolved call sites were detected. A service that resolved some edges is partially covered, not a gap
 	UnresolvedEdges int `json:"unresolved_edges"`         // detected outbound edges that did not resolve to a loaded service (internal blind spots; excludes external)
 	ExternalEdges   int `json:"external_edges,omitempty"` // detected outbound edges to hardcoded external hosts (third-party APIs) — expected, not a blind spot
+
+	// ExtractorsReporting counts extractors that accounted for their own misses.
+	// It is deliberately separate from the service tallies above: an extraction
+	// blind spot ("this macro declares routes I cannot read") is a different
+	// claim from a cross-repo one ("this call site names a service I cannot
+	// find"), and summing them would answer neither question.
+	//
+	// Zero here means nobody reported, which is NOT the same as nothing missed —
+	// the distinction this field exists to preserve, and the one that let an
+	// unresolved counter read 0 over 1,363 templates it never examined.
+	ExtractorsReporting int `json:"extractors_reporting,omitempty"`
+	// ExtractionUnresolved is what those reporting extractors could not resolve.
+	ExtractionUnresolved int `json:"extraction_unresolved,omitempty"`
 }
 
 // Receipt is the compact, machine-readable manifest written to receipt.json — a
@@ -373,6 +493,7 @@ type Receipt struct {
 	Extractors       []string          `json:"extractors"`
 	Explainers       []string          `json:"explainers"`
 	Renderers        []string          `json:"renderers,omitempty"`
+	Providers        []ProviderRecord  `json:"providers,omitempty"`
 	ConfigHash       string            `json:"config_hash,omitempty"`
 	IgnoreGlobHash   string            `json:"ignore_glob_hash,omitempty"`
 	OutputHashes     map[string]string `json:"output_hashes,omitempty"`
@@ -394,6 +515,7 @@ type ReceiptQuality struct {
 	ParseErrorSample  []ParseError     `json:"parse_error_sample,omitempty"`
 	HeuristicInsights int              `json:"heuristic_insights"`
 	Coverage          *CoverageSummary `json:"coverage,omitempty"`
+	Census            *FileCensus      `json:"census,omitempty"`
 }
 
 // Receipt projects a SnapshotMeta into the compact receipt manifest.
@@ -409,6 +531,7 @@ func (m SnapshotMeta) Receipt() Receipt {
 		Extractors:       m.Extractors,
 		Explainers:       m.Explainers,
 		Renderers:        m.Renderers,
+		Providers:        m.Providers,
 		ConfigHash:       m.ConfigHash,
 		IgnoreGlobHash:   m.IgnoreGlobHash,
 		OutputHashes:     m.OutputHashes,
@@ -424,6 +547,7 @@ func (m SnapshotMeta) Receipt() Receipt {
 			ParseErrorSample:  m.ParseErrorSample,
 			HeuristicInsights: m.HeuristicInsights,
 			Coverage:          m.Coverage,
+			Census:            m.Census,
 		},
 	}
 }

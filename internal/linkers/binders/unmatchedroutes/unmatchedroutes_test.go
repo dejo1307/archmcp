@@ -120,3 +120,181 @@ func TestFlagUnmatchedRoutes_ClearsStaleVerdict(t *testing.T) {
 		}
 	}
 }
+
+// The server-side mirror of ClearsStaleVerdict, and the one the positive marker
+// broke on arrival. A route matched while one set of repos was loaded, then found
+// unmatched once a later append changed the index, kept saying both — 3,433 routes
+// of the estate carried the pair, and a reader filtering on either marker got a
+// population that overlapped the other by half.
+func TestFlagUnmatchedRoutes_VerdictsAreMutuallyExclusiveAcrossAppends(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		// The first call keeps backend an HTTP provider throughout, so the second
+		// route's verdict is about that route rather than about the repo.
+		clientRouteFact("app", "/api/items/{id}", "GET"),
+		clientRouteFact("app", "/api/other/{id}", "GET"),
+		serverRouteFact("backend", "/api/items/{id}", "GET"),
+		serverRouteFact("backend", "/api/other/{id}", "GET"),
+	)
+	bind(t, store)
+
+	for _, f := range store.All() {
+		if f.Repo == "backend" && !f.PropBool(PropMatchedByClients) {
+			t.Fatalf("precondition: %s should be matched; props=%+v", f.Name, f.Props)
+		}
+	}
+
+	// The caller moves off /api/other, as a later append would show.
+	store.UpdateWhere(func(f *facts.Fact) {
+		if f.Repo == "app" && f.Name == "/api/other/{id}" {
+			f.Name = "/api/third/{id}"
+		}
+	})
+	bind(t, store)
+
+	for _, f := range store.All() {
+		if f.Repo != "backend" || f.Name != "/api/other/{id}" {
+			continue
+		}
+		if !f.PropBool(PropUnmatchedByClients) {
+			t.Errorf("the route lost its caller and should be unmatched; props=%+v", f.Props)
+		}
+		if _, has := f.Props[PropMatchedByClients]; has {
+			t.Errorf("a route cannot be both matched and unmatched; props=%+v", f.Props)
+		}
+	}
+}
+
+// A route the linker declined to reason about carries no verdict in either
+// direction. The else-branch used to claim every one of them as matched, which is
+// how 2,997 unexamined routes entered the denominator of a coverage proportion.
+func TestFlagUnmatchedRoutes_DeclinedRoutesCarryNoVerdict(t *testing.T) {
+	page := serverRouteFact("backend", "/dashboard", "GET")
+	page.Props["type"] = "page"
+	verbless := serverRouteFact("backend", "/api/webhooks/stripe", "")
+
+	store := facts.NewStore()
+	store.Add(
+		clientRouteFact("app", "/api/items/{id}", "GET"),
+		serverRouteFact("backend", "/api/items/{id}", "GET"),
+		page,
+		verbless,
+	)
+	bind(t, store)
+
+	for _, f := range store.All() {
+		if f.Name != "/dashboard" && f.Name != "/api/webhooks/stripe" {
+			continue
+		}
+		if _, has := f.Props[PropMatchedByClients]; has {
+			t.Errorf("%s was never evaluated and must not read as matched; props=%+v", f.Name, f.Props)
+		}
+		if _, has := f.Props[PropUnmatchedByClients]; has {
+			t.Errorf("%s was never evaluated and must not read as unmatched; props=%+v", f.Name, f.Props)
+		}
+	}
+}
+
+// A route identity is repo + method + path, and two facts can share one: an Ember
+// page route declared on the same path as the Rails route beneath it. Deciding a
+// verdict by identity alone hands the page route whatever the served route got —
+// which put unmatched_by_clients on `/*path` in the estate, the exact outcome
+// IsUIRoute exists to prevent.
+func TestFlagUnmatchedRoutes_ColocatedPageRouteKeepsNoVerdict(t *testing.T) {
+	page := serverRouteFact("backend", "/reports/{id}", "GET")
+	page.Props["type"] = "page"
+
+	store := facts.NewStore()
+	store.Add(
+		clientRouteFact("app", "/api/items/{id}", "GET"),
+		serverRouteFact("backend", "/api/items/{id}", "GET"),
+		serverRouteFact("backend", "/reports/{id}", "GET"), // served, no caller
+		page, // same identity, not served
+	)
+	bind(t, store)
+
+	var seen bool
+	for _, f := range store.All() {
+		if f.PropString("type") != "page" {
+			continue
+		}
+		seen = true
+		if _, has := f.Props[PropUnmatchedByClients]; has {
+			t.Errorf("a page route must not inherit the served route's unused verdict; props=%+v", f.Props)
+		}
+		if _, has := f.Props[PropMatchedByClients]; has {
+			t.Errorf("a page route must not inherit a matched verdict either; props=%+v", f.Props)
+		}
+	}
+	if !seen {
+		t.Fatal("precondition: the page route should be in the store")
+	}
+	for _, f := range store.All() {
+		if f.Name == "/reports/{id}" && f.PropString("type") == "" && !f.PropBool(PropUnmatchedByClients) {
+			t.Errorf("the served route on the same path should still be flagged; props=%+v", f.Props)
+		}
+	}
+}
+
+func graphqlRouteFact(repo, name, role string) facts.Fact {
+	return facts.Fact{Kind: facts.KindRoute, Name: name, Repo: repo,
+		Props: map[string]any{facts.PropRole: role, facts.PropRouteType: facts.RouteTypeGraphQL}}
+}
+
+// The GraphQL seam had a join and no verdict: the signal resolved client
+// operations against loaded schemas, kept per-client coverage counters, and
+// recorded nothing about whether a DECLARED operation is consumed. 201
+// operations across the estate carried no marker at all, which reads exactly
+// like a surface nothing can assess.
+func TestFlagUnmatchedRoutes_GraphQLOperationsGetTheSameVerdicts(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		graphqlRouteFact("app", "Query.candidates", facts.RoleClient),
+		graphqlRouteFact("api", "Query.candidates", facts.RoleServer),
+		graphqlRouteFact("api", "Mutation.retireThis", facts.RoleServer),
+	)
+	bind(t, store)
+
+	for _, f := range store.All() {
+		if f.Repo != "api" {
+			continue
+		}
+		switch f.Name {
+		case "Query.candidates":
+			if !f.PropBool(PropMatchedByClients) {
+				t.Errorf("a selected operation is matched; props=%+v", f.Props)
+			}
+		case "Mutation.retireThis":
+			if !f.PropBool(PropUnmatchedByClients) {
+				t.Errorf("an operation no client selects is unmatched; props=%+v", f.Props)
+			}
+		}
+	}
+}
+
+// A schema no loaded client selects anything from is not a schema of unused
+// operations — it is a schema nobody asked about. Same vacuity rule the HTTP
+// side applies to a repo that serves no cross-repo client.
+func TestFlagUnmatchedRoutes_UnconsumedSchemaGetsNoVerdict(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		graphqlRouteFact("app", "Query.candidates", facts.RoleClient),
+		graphqlRouteFact("api", "Query.candidates", facts.RoleServer),
+		graphqlRouteFact("lonely", "Query.nobodyAsks", facts.RoleServer),
+		graphqlRouteFact("lonely", "Mutation.norThis", facts.RoleServer),
+	)
+	bind(t, store)
+
+	for _, f := range store.All() {
+		if f.Repo != "lonely" {
+			continue
+		}
+		if _, has := f.Props[PropUnmatchedByClients]; has {
+			t.Errorf("%s: every operation unused describes the snapshot, not the schema; props=%+v",
+				f.Name, f.Props)
+		}
+		if _, has := f.Props[PropMatchedByClients]; has {
+			t.Errorf("%s: nothing selected it, so it is not matched either; props=%+v", f.Name, f.Props)
+		}
+	}
+}

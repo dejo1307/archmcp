@@ -296,16 +296,18 @@ func NewGraph(ff []Fact) *Graph {
 
 	// Third pass: synthesize "has_method" edges linking an owner type symbol
 	// (struct/interface/class/type) to its method symbols. Extractors emit a
-	// method as a sibling fact named "<owner>.<method>" with no edge back to the
-	// owner, so forward traversal from a type would otherwise surface none of its
-	// methods (and transitively none of their calls). This is language-agnostic:
-	// any fact named "<knownType>.<member>" gets wired to its owner.
+	// method as a sibling fact named "<owner>.<method>" or, for a Ruby instance
+	// method, "<owner>#<method>", with no edge back to the owner, so forward
+	// traversal from a type would otherwise surface none of its methods (and
+	// transitively none of their calls). This is language-agnostic: any fact named
+	// "<knownType>#<member>" or "<knownType>.<member>" gets wired to its owner, and
+	// methodOwner tries both because a "#" is not always the separator.
 	for _, f := range ff {
 		if f.Kind != KindSymbol {
 			continue
 		}
 		sk, _ := f.Props["symbol_kind"].(string)
-		if sk != SymbolMethod && sk != SymbolFunc {
+		if sk != SymbolMethod && sk != SymbolFunc && sk != SymbolGetter {
 			continue
 		}
 		if owner := g.methodOwner(f.Name); owner != "" {
@@ -517,17 +519,44 @@ func (g *Graph) factIdxsOf(id uint32) []int32 {
 }
 
 // methodOwner returns the owner type name for a method fact name of the form
-// "<owner>.<method>", but only when <owner> is itself a known symbol fact whose
-// symbol_kind is a type (struct/interface/class/type). Returns "" otherwise.
+// "<owner>.<method>" or "<owner>#<method>", but only when <owner> is itself a
+// known symbol fact whose symbol_kind is a type (struct/interface/class/type).
+// Returns "" otherwise.
+//
+// Ruby names an instance method "Analytics::GoogleTagManager#render?" and a
+// singleton method "Analytics::GoogleTagManager.configure", so "#" is tried
+// first: where it does separate a method from its owner, a "." after it could
+// only be part of the method's own name.
+//
+// It falls back to the last "." because "#" is not always a separator, and the
+// two languages that put one elsewhere both reach this function. Rust escapes a
+// keyword identifier as "r#async", so a method fact is named "src.Reader.r#async"
+// and the "#"-split owner is "src.Reader.r". Every directory-prefixed name —
+// TypeScript, Python, Kotlin, Swift, Java — carries a "#" in a directory name
+// down into every symbol beneath it, so one directory named "v1#legacy" would
+// otherwise unwire that whole subtree. In both the "#"-derived owner names
+// nothing the graph declares, and the last "." is the real separator; the type
+// guard below is what makes trying the second candidate safe, since an owner no
+// fact declares as a type yields no edge either way.
 func (g *Graph) methodOwner(name string) string {
+	if hash := strings.LastIndex(name, "#"); hash > 0 {
+		if owner := g.declaredTypeNamed(name[:hash]); owner != "" {
+			return owner
+		}
+	}
 	dot := strings.LastIndex(name, ".")
 	if dot <= 0 {
 		return ""
 	}
-	owner := name[:dot]
+	return g.declaredTypeNamed(name[:dot])
+}
+
+// declaredTypeNamed returns name when a symbol fact declares it with a type
+// symbol_kind (struct/interface/class/type), and "" otherwise.
+func (g *Graph) declaredTypeNamed(name string) string {
 	// A method's owner is a symbol, so resolve with that context rather than the
 	// bare name — a type sharing a name with a module must still find the type.
-	idx, ok := g.factIndexFor(owner, RelHasMethod)
+	idx, ok := g.factIndexFor(name, RelHasMethod)
 	if !ok {
 		return ""
 	}
@@ -537,7 +566,7 @@ func (g *Graph) methodOwner(name string) string {
 	}
 	switch sk, _ := of.Props["symbol_kind"].(string); sk {
 	case SymbolStruct, SymbolInterface, SymbolClass, SymbolType:
-		return owner
+		return name
 	}
 	return ""
 }
@@ -1379,6 +1408,67 @@ func (g *Graph) ArchitecturalFanIn(name string) int {
 		}
 	}
 	return n
+}
+
+// ArchitecturalForwardEdges returns the outgoing edges of name restricted to what
+// the symbol reaches OUT to — the forward counterpart of ArchitecturalReverseEdges,
+// and what an explainer wants when it means "the things this symbol depends on".
+//
+// It drops RelHasMethod, because containment in either direction is not outgoing
+// coupling: a type does not depend on its methods, it contains them, and their
+// outgoing calls are already counted as the methods' own fan-out. Orientation is
+// not something this filter may assume. NewGraph synthesizes the edge owner -> method,
+// but grpcextractor emits it the other way, from an RPC method OUT to its service
+// (grpc.go), and providers.go admits the kind in whichever orientation a provider
+// sends. Counting containment as outgoing coupling makes raw out-degree a size
+// measure, which is the god-class signal rather than the pinch-point one — on a large
+// Rails monolith it puts an importer base class (449 lines, 102 one-line delegations,
+// exactly ONE call out) at out-degree 104.
+//
+// Nothing else is filtered. The reverse filter's other two arms cannot fire here:
+// a symbol never points at a reference-only fact (test_ref/file_ref/route), and
+// RelInstantiates in this direction is the symbol really constructing another type.
+func (g *Graph) ArchitecturalForwardEdges(name string) []Edge {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	id, ok := g.lookup(name)
+	if !ok {
+		return nil
+	}
+	tgts, rels := g.adjOf(id, false)
+	var out []Edge
+	for i, tid := range tgts {
+		if !g.isArchitecturalForwardEdge(rels[i]) {
+			continue
+		}
+		out = append(out, Edge{RelKind: g.relName(rels[i]), Target: g.names[tid]})
+	}
+	return out
+}
+
+// ArchitecturalFanOut counts the outgoing architectural-coupling edges of name — the
+// same filter as ArchitecturalForwardEdges, without building the slice.
+func (g *Graph) ArchitecturalFanOut(name string) int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	id, ok := g.lookup(name)
+	if !ok {
+		return 0
+	}
+	_, rels := g.adjOf(id, false)
+	n := 0
+	for _, rel := range rels {
+		if g.isArchitecturalForwardEdge(rel) {
+			n++
+		}
+	}
+	return n
+}
+
+// isArchitecturalForwardEdge applies the coupling filter to one outgoing edge, given
+// its relation kind. Callers hold the lock.
+func (g *Graph) isArchitecturalForwardEdge(relID uint16) bool {
+	return g.relName(relID) != RelHasMethod
 }
 
 // isArchitecturalEdge applies the coupling filter to one incoming edge, given its

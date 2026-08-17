@@ -73,6 +73,7 @@ layers:
       - "internal/updatecheck/**"
       - "internal/upgrade/**"
       - "internal/cachecov/**"
+      - "internal/estateref/**"
       - "pkg/facts/**"
       - "pkg/plugin/**"
       - "pkg/history/**"

@@ -267,9 +267,15 @@ func TestDegrees_MatchMaterializedEdges(t *testing.T) {
 		if got, want := g.ArchitecturalFanIn(name), len(g.ArchitecturalReverseEdges(name)); got != want {
 			t.Errorf("ArchitecturalFanIn(%q) = %d, but ArchitecturalReverseEdges returned %d", name, got, want)
 		}
-		// The architectural view is a strict subset of the raw reverse index.
+		if got, want := g.ArchitecturalFanOut(name), len(g.ArchitecturalForwardEdges(name)); got != want {
+			t.Errorf("ArchitecturalFanOut(%q) = %d, but ArchitecturalForwardEdges returned %d", name, got, want)
+		}
+		// The architectural view is a strict subset of the raw index, in both directions.
 		if arch, raw := g.ArchitecturalFanIn(name), len(g.ReverseEdges(name)); arch > raw {
 			t.Errorf("ArchitecturalFanIn(%q) = %d exceeds raw fan-in %d", name, arch, raw)
+		}
+		if arch, raw := g.ArchitecturalFanOut(name), g.FanOut(name); arch > raw {
+			t.Errorf("ArchitecturalFanOut(%q) = %d exceeds raw fan-out %d", name, arch, raw)
 		}
 	}
 }

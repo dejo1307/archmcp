@@ -23,9 +23,9 @@ type scopedQuery struct {
 // symbolKinds classifies a kind: value that additionally constrains
 // Props["symbol_kind"] (which QueryOpts has no dedicated field for).
 var symbolKinds = map[string]bool{
-	facts.SymbolFunc: true, facts.SymbolMethod: true, facts.SymbolStruct: true,
-	facts.SymbolInterface: true, facts.SymbolType: true, facts.SymbolClass: true,
-	facts.SymbolVariable: true, facts.SymbolConstant: true,
+	facts.SymbolFunc: true, facts.SymbolMethod: true, facts.SymbolGetter: true,
+	facts.SymbolStruct: true, facts.SymbolInterface: true, facts.SymbolType: true,
+	facts.SymbolClass: true, facts.SymbolVariable: true, facts.SymbolConstant: true,
 }
 
 // parseScopedQuery splits an input into optional scope filters and a bare term.
@@ -208,7 +208,7 @@ func scoreCandidate(f facts.Fact, sq scopedQuery) float64 {
 	switch sk, _ := f.Props["symbol_kind"].(string); sk {
 	case facts.SymbolStruct, facts.SymbolClass, facts.SymbolInterface, facts.SymbolType:
 		score += 0.15 // type-level: the usual target of a bare name
-	case facts.SymbolFunc, facts.SymbolMethod:
+	case facts.SymbolFunc, facts.SymbolMethod, facts.SymbolGetter:
 		score -= 0.15 // members are slightly less likely for a bare name
 	}
 	if f.Kind == facts.KindModule {

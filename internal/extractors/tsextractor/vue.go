@@ -295,6 +295,7 @@ func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueS
 		isVue:     true,
 		isNuxt:    isNuxt,
 		importMap: buildImportSymbols(kinds, root, block.Content, relFile, aliases),
+		imports:   buildEmberImportBindings(kinds, root, block.Content, relFile, aliases),
 	}
 	decls := e.extractDeclarations(kinds, root, ctx)
 

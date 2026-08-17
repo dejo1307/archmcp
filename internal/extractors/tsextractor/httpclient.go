@@ -258,6 +258,17 @@ func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 			facts.PropSource: facts.RouteSourceTSHTTPClient,
 			"api":            api,
 		}
+		// A route declared in a mock server describes what the tests pretend the
+		// backend does, not what any backend serves. The repository already keeps
+		// that line — test files are excluded from normal indexing and emit
+		// reference-only facts so explainers keying off routes are unaffected —
+		// and a mock is the same claim in a directory the exclusion does not
+		// cover. Tagged rather than dropped: 192 of one monolith's 298 client
+		// route facts are Mirage, and a population nobody counts is the failure
+		// this estate keeps finding.
+		if testDoublePath(relFile) {
+			props["test_double"] = true
+		}
 		if derived != "" {
 			props["derived"] = derived
 		}
@@ -609,4 +620,16 @@ func cleanTSPath(raw string, bases map[string]string) (string, bool) {
 func tsAPIHint(relFile string) string {
 	base := filepath.Base(relFile)
 	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+// testDoublePath reports whether a file declares a mock server rather than a
+// client. Mirage is Ember's convention and lives in a directory named for it;
+// nothing here guesses from file contents.
+func testDoublePath(relFile string) bool {
+	for _, segment := range strings.Split(filepath.ToSlash(relFile), "/") {
+		if segment == "mirage" || segment == "msw" || segment == "__mocks__" {
+			return true
+		}
+	}
+	return false
 }

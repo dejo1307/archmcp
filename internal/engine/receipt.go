@@ -161,10 +161,23 @@ func runGit(repoPath string, args ...string) (string, error) {
 // spots worth reporting, it just is not a gap.
 func coverageSummary(store *facts.Store) *facts.CoverageSummary {
 	services := store.ByKind(facts.KindService)
-	if len(services) == 0 {
+	extractions := store.ByKind(facts.KindExtraction)
+	if len(services) == 0 && len(extractions) == 0 {
 		return nil
 	}
 	sum := &facts.CoverageSummary{ServicesTotal: len(services)}
+
+	// An extractor accounts for its own blind spots in the same edge_coverage
+	// shape, and the tallies stay separate on purpose: "this macro declares
+	// routes I cannot read" and "this call site names a service I cannot find"
+	// are different claims, and one number answering both answers neither.
+	for _, extraction := range extractions {
+		sum.ExtractorsReporting++
+		sum.ExtractionUnresolved += readCoverageField(extraction, "unresolved")
+	}
+	if len(services) == 0 {
+		return sum
+	}
 	for _, svc := range services {
 		detected := readCoverageField(svc, "detected")
 		unresolved := readCoverageField(svc, "unresolved")

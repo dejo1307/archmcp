@@ -596,6 +596,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			ParseErrorSample:   capParseErrors(parseErrs),
 			HeuristicInsights:  countHeuristicInsights(allInsights),
 			Coverage:           coverageSummary(e.store),
+			Census:             e.fileCensus(files, parsedPrefix, skips, usedExtractors, parseErrs),
 		},
 		// FactsRef aliases the store's slice rather than copying it. This is safe:
 		// `work` is published (below) and then NEVER mutated again — the next

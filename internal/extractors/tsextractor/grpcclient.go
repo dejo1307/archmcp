@@ -39,13 +39,55 @@ type grpcService struct {
 // keyed by the client class name (e.g. "UserServiceClient", @protobuf-ts /
 // grpc-web); byService is keyed by the exported service-definition const name
 // (e.g. "UserService", connect-es) that a consumer passes to createClient(...).
+//
+// ambiguousClass and ambiguousService record the names that must never resolve.
+// Both maps are keyed by a SHORT name, so a service declared in two proto
+// packages — ordinary API-versioning practice — collides here. Keeping the last
+// writer would answer confidently from a derivation that failed, and would
+// answer differently depending on the order the files were scanned in. The sets
+// are sticky: once a name is dropped, neither a later stub file nor a
+// conventional name derived from a fully-qualified one puts it back.
+//
+// Re-registration under the SAME fully-qualified name is not a collision. A
+// service legitimately registers from more than one file — connect-es splits
+// _pb and _connect, a barrel re-exports, a checked-in dist/ copy repeats the
+// whole stub — and treating those as ambiguous would cost real edges.
 type grpcStubIndex struct {
-	byClass   map[string]*grpcService
-	byService map[string]*grpcService
+	byClass          map[string]*grpcService
+	byService        map[string]*grpcService
+	ambiguousClass   map[string]bool
+	ambiguousService map[string]bool
 }
 
 func (idx *grpcStubIndex) empty() bool {
 	return idx == nil || (len(idx.byClass) == 0 && len(idx.byService) == 0)
+}
+
+// bindClass registers a client class name against its service, dropping the name
+// the moment a service with a differing fully-qualified name claims it.
+func (idx *grpcStubIndex) bindClass(name string, svc *grpcService) {
+	if name == "" || idx.ambiguousClass[name] {
+		return
+	}
+	if existing, present := idx.byClass[name]; present && existing.fq != svc.fq {
+		idx.ambiguousClass[name] = true
+		delete(idx.byClass, name)
+		return
+	}
+	idx.byClass[name] = svc
+}
+
+// bindService registers a service-definition const name, under the same rule.
+func (idx *grpcStubIndex) bindService(name string, svc *grpcService) {
+	if name == "" || idx.ambiguousService[name] {
+		return
+	}
+	if existing, present := idx.byService[name]; present && existing.fq != svc.fq {
+		idx.ambiguousService[name] = true
+		delete(idx.byService, name)
+		return
+	}
+	idx.byService[name] = svc
 }
 
 var (
@@ -105,7 +147,12 @@ func looksLikeGRPCStub(src []byte) bool {
 // itself (a cheap marker check skips non-stub files) because the index must be
 // complete before the per-file extraction pass runs.
 func buildGRPCStubIndex(repoPath string, tsFiles []string) *grpcStubIndex {
-	idx := &grpcStubIndex{byClass: map[string]*grpcService{}, byService: map[string]*grpcService{}}
+	idx := &grpcStubIndex{
+		byClass:          map[string]*grpcService{},
+		byService:        map[string]*grpcService{},
+		ambiguousClass:   map[string]bool{},
+		ambiguousService: map[string]bool{},
+	}
 
 	for _, rel := range tsFiles {
 		src, err := os.ReadFile(filepath.Join(repoPath, rel))
@@ -134,22 +181,18 @@ func buildGRPCStubIndex(repoPath string, tsFiles []string) *grpcStubIndex {
 		// conventional "<ServiceName>Client" name derived from the FQN.
 		for _, m := range reClientClass.FindAllStringSubmatch(text, -1) {
 			if cls := m[1]; strings.HasSuffix(cls, "Client") {
-				idx.byClass[cls] = svc
+				idx.bindClass(cls, svc)
 			}
 		}
-		if conv := lastSegment(fq) + "Client"; idx.byClass[conv] == nil {
-			idx.byClass[conv] = svc
-		}
+		idx.bindClass(lastSegment(fq)+"Client", svc)
 
 		// connect-es: a consumer passes the exported service-definition const to
 		// createClient(...), so associate each `export const X` in this stub file
 		// with its service. Also register the conventional "<ServiceName>" name.
 		for _, m := range reServiceConst.FindAllStringSubmatch(text, -1) {
-			idx.byService[m[1]] = svc
+			idx.bindService(m[1], svc)
 		}
-		if conv := lastSegment(fq); idx.byService[conv] == nil {
-			idx.byService[conv] = svc
-		}
+		idx.bindService(lastSegment(fq), svc)
 	}
 
 	if idx.empty() {

@@ -22,8 +22,12 @@ import (
 // Glob support is deliberately the ceiling the layer-intent decision set:
 // an exact module path, or a `prefix/**` subtree — nothing more.
 
-// declaredPatterns builds one archPattern per repo that declares layers.
-func declaredPatterns(store *facts.Store) []*archPattern {
+// declaredPatterns builds the archPattern for the one repo named by repo, out
+// of the declarations that name it as their owner. A declaration governs the
+// codebase it is written for and nothing else: read across a union, one repo's
+// declared taxonomy verdicted another repo's imports wherever their module names
+// happened to collide, and reported it at confidence 1.0.
+func declaredPatterns(store *facts.Store, repo string) []*archPattern {
 	type entry struct {
 		name  string
 		order int
@@ -53,6 +57,9 @@ func declaredPatterns(store *facts.Store) []*archPattern {
 		owner := f.PropString("intent_owner")
 		if owner == "" {
 			owner = f.Repo
+		}
+		if owner != repo {
+			continue
 		}
 		byRepo[owner] = append(byRepo[owner], entry{name: f.PropString("layer_name"), order: order, paths: paths})
 	}
