@@ -186,3 +186,19 @@ func keys(m map[string]facts.Fact) []string {
 	}
 	return out
 }
+
+func TestKafkaReassignedTopicIsNotFolded(t *testing.T) {
+	src := `package events
+import "github.com/segmentio/kafka-go"
+func publish(w *kafka.Writer, x bool) {
+	topic := "orders.a"
+	if x { topic = "orders.b" }
+	w.WriteMessages(nil, kafka.Message{Topic: topic})
+}`
+	got := kafkaTopics(t, src)
+	for _, f := range got {
+		if f.PropString(facts.PropSource) == facts.MessagingSourceGoKafkaCall {
+			t.Fatalf("mutable topic produced fabricated call-site fact: %+v", f)
+		}
+	}
+}

@@ -15,6 +15,10 @@ func TestExplainMessagingCoverage(t *testing.T) {
 			facts.PropMessagingContractStatus: facts.MessagingContractStatusUndeclared,
 			facts.PropMessagingOperation:      facts.MessagingOperationPublish, "code_symbol": "src.publishOrder",
 		}},
+		facts.Fact{Kind: facts.KindStorage, Name: "orders.undeclared", File: "events.ts", Line: 42, Repo: "orders", Props: map[string]any{
+			facts.PropMessagingContractStatus: facts.MessagingContractStatusUndeclared,
+			facts.PropMessagingOperation:      facts.MessagingOperationPublish, "code_symbol": "src.publishOrder",
+		}},
 		// A repeated identical call-site fact should not duplicate evidence.
 		facts.Fact{Kind: facts.KindStorage, Name: "orders.undeclared", File: "events.ts", Repo: "orders", Props: map[string]any{
 			facts.PropMessagingContractStatus: facts.MessagingContractStatusUndeclared,
@@ -38,7 +42,7 @@ func TestExplainMessagingCoverage(t *testing.T) {
 	if !strings.Contains(got[0].Title, "Undeclared messaging operations") || got[0].Confidence != 0.9 {
 		t.Fatalf("undeclared insight = %+v", got[0])
 	}
-	if len(got[0].Evidence) != 1 || got[0].Evidence[0].Symbol != "src.publishOrder" {
+	if len(got[0].Evidence) != 2 || got[0].Evidence[0].Symbol != "src.publishOrder" {
 		t.Fatalf("undeclared evidence = %+v", got[0].Evidence)
 	}
 	if !strings.Contains(got[1].Title, "Unimplemented messaging contract candidates") || got[1].Confidence != 0.65 {

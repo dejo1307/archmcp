@@ -58,7 +58,7 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 		// Historically every topic fact came from Kafka-aware code extraction.
 		// AsyncAPI introduces other protocols into the same fact kind; an explicit
 		// non-Kafka protocol must not manufacture a via=kafka dependency.
-		if protocol := f.PropString(facts.PropMessaging); protocol != "" && !isKafkaProtocol(protocol) {
+		if protocol := f.PropString(facts.PropMessaging); protocol != "" && !facts.IsKafkaProtocol(protocol) {
 			continue
 		}
 		// A contract can state direction explicitly. Publishing to a topic is an
@@ -78,17 +78,5 @@ func (s *Signal) Contribute(in plugin.SignalInput, out plugin.EvidenceSink) {
 		e := out.Edge(f.Repo, label)
 		e.Via(facts.ViaKafka)
 		e.Sample(plugin.BucketTopics, f.Name)
-	}
-}
-
-// isKafkaProtocol classifies AsyncAPI's Kafka-family protocol labels. The
-// security suffix describes broker authentication/transport security (for
-// example SASL/SCRAM or mTLS), not a different messaging technology.
-func isKafkaProtocol(protocol string) bool {
-	switch strings.ToLower(strings.TrimSpace(protocol)) {
-	case "kafka", "kafka-secure":
-		return true
-	default:
-		return false
 	}
 }

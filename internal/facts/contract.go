@@ -1,5 +1,7 @@
 package facts
 
+import "strings"
+
 // This file is the SHARED VOCABULARY that crosses the extractor -> linker boundary.
 //
 // An extractor writes a prop value; a linker, binder or explainer in a different
@@ -68,6 +70,22 @@ func IsMessagingCodeSource(source string) bool {
 	default:
 		return false
 	}
+}
+
+// MessagingProtocolFamily normalizes protocol aliases shared by contract binding
+// and cross-repository signals. Security suffixes describe transport/authentication,
+// not a distinct broker technology.
+func MessagingProtocolFamily(protocol string) string {
+	switch normalized := strings.ToLower(strings.TrimSpace(protocol)); normalized {
+	case "kafka", "kafka-secure":
+		return "kafka"
+	default:
+		return normalized
+	}
+}
+
+func IsKafkaProtocol(protocol string) bool {
+	return MessagingProtocolFamily(protocol) == "kafka"
 }
 
 // Props written by the messaging contract binder.

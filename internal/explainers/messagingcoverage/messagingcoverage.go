@@ -20,6 +20,7 @@ func (*Explainer) Name() string { return "messaging-coverage" }
 
 type item struct {
 	name, file, symbol, detail string
+	line                       int
 }
 
 // Explain emits the two highest-value messaging coverage findings: static code
@@ -37,7 +38,7 @@ func (*Explainer) Explain(_ context.Context, store *facts.Store) ([]facts.Insigh
 		switch f.PropString(facts.PropMessagingContractStatus) {
 		case facts.MessagingContractStatusUndeclared:
 			addItem(undeclared, repo, item{
-				name: f.Name, file: f.File, symbol: f.PropString("code_symbol"),
+				name: f.Name, file: f.File, line: f.Line, symbol: f.PropString("code_symbol"),
 				detail: fmt.Sprintf("%s %s has no matching AsyncAPI operation", f.PropString(facts.PropMessagingOperation), f.Name),
 			})
 		}
@@ -84,7 +85,7 @@ func addItem(groups map[string]map[string]item, repo string, it item) {
 	if groups[repo] == nil {
 		groups[repo] = map[string]item{}
 	}
-	key := it.file + "\x00" + it.name + "\x00" + it.symbol
+	key := it.file + "\x00" + fmt.Sprint(it.line) + "\x00" + it.name + "\x00" + it.symbol
 	groups[repo][key] = it
 }
 
@@ -108,6 +109,9 @@ func sortedItems(in map[string]item) []item {
 		}
 		if out[i].name != out[j].name {
 			return out[i].name < out[j].name
+		}
+		if out[i].line != out[j].line {
+			return out[i].line < out[j].line
 		}
 		return out[i].symbol < out[j].symbol
 	})

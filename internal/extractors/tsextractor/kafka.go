@@ -18,7 +18,6 @@ func extractTSKafkaFacts(kinds *tsutil.KindTable, root *sitter.Node, src []byte,
 		return nil
 	}
 	dir := filepath.ToSlash(filepath.Dir(relFile))
-	bindings := tsKafkaStringBindings(kinds, root, src)
 	seen := map[string]bool{}
 	var out []facts.Fact
 
@@ -54,6 +53,7 @@ func extractTSKafkaFacts(kinds *tsutil.KindTable, root *sitter.Node, src []byte,
 				}
 			}
 		case "call_expression":
+			bindings := tsKafkaStringBindingsFor(kinds, root, node, src)
 			topic, operation, role, call := tsKafkaCall(kinds, node, src, bindings)
 			if topic != "" {
 				line := int(node.StartPosition().Row) + 1
@@ -187,9 +187,13 @@ func firstNamedChild(kinds *tsutil.KindTable, node *sitter.Node) *sitter.Node {
 	return nil
 }
 
-func tsKafkaStringBindings(kinds *tsutil.KindTable, root *sitter.Node, src []byte) map[string]string {
+// tsKafkaStringBindingsFor returns constants visible at a call site. Conflicts are
+// scoped to their enclosing function, so the conventional `const topic = ...` in
+// two independent functions does not make both bindings ambiguous.
+func tsKafkaStringBindingsFor(kinds *tsutil.KindTable, root, call *sitter.Node, src []byte) map[string]string {
 	values := map[string]string{}
 	ambiguous := map[string]bool{}
+	callScope := tsKafkaFunctionScope(kinds, call)
 	var walk func(*sitter.Node)
 	walk = func(node *sitter.Node) {
 		if kindOf(kinds, node) == "variable_declarator" {
@@ -197,6 +201,10 @@ func tsKafkaStringBindings(kinds *tsutil.KindTable, root *sitter.Node, src []byt
 			// be reassigned through control flow this lightweight pass cannot prove.
 			parent := node.Parent()
 			if parent != nil && strings.HasPrefix(strings.TrimSpace(nodeText(parent, src)), "const ") {
+				declScope := tsKafkaFunctionScope(kinds, node)
+				if declScope != nil && !sameTSNode(declScope, callScope) {
+					return
+				}
 				name, value := node.ChildByFieldName("name"), node.ChildByFieldName("value")
 				if name != nil && value != nil && kindOf(kinds, name) == "identifier" {
 					literal := tsKafkaStringValue(kinds, value, src, nil)
@@ -218,6 +226,23 @@ func tsKafkaStringBindings(kinds *tsutil.KindTable, root *sitter.Node, src []byt
 	}
 	walk(root)
 	return values
+}
+
+func tsKafkaFunctionScope(kinds *tsutil.KindTable, node *sitter.Node) *sitter.Node {
+	for current := node; current != nil; current = current.Parent() {
+		switch kindOf(kinds, current) {
+		case "function_declaration", "generator_function_declaration", "function_expression", "generator_function", "arrow_function", "method_definition":
+			return current
+		}
+	}
+	return nil
+}
+
+func sameTSNode(a, b *sitter.Node) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.StartByte() == b.StartByte() && a.EndByte() == b.EndByte()
 }
 
 func tsKafkaStringValue(kinds *tsutil.KindTable, node *sitter.Node, src []byte, bindings map[string]string) string {

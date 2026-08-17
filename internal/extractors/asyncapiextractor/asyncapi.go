@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -96,7 +97,7 @@ func parseFile(absPath, relFile, repoPath string) ([]facts.Fact, error) {
 	servers := serverProtocols(mapValue(doc["servers"]), absPath, resolver)
 	defaultContentType := stringValue(doc["defaultContentType"])
 	var operations []operation
-	if strings.HasPrefix(version, "3.") {
+	if asyncAPIMajor(version) == 3 {
 		operations = operationsV3(doc, absPath, resolver)
 	} else {
 		operations = operationsV2(channels, absPath, resolver)
@@ -322,7 +323,30 @@ func localRefTail(ref string) string {
 }
 func mapValue(v any) map[string]any { m, _ := v.(map[string]any); return m }
 func sliceValue(v any) []any        { s, _ := v.([]any); return s }
-func stringValue(v any) string      { s, _ := v.(string); return s }
+func stringValue(v any) string {
+	switch value := v.(type) {
+	case string:
+		return value
+	case float64:
+		formatted := strconv.FormatFloat(value, 'f', -1, 64)
+		// YAML decodes an unquoted semantic version such as 3.0 as the number 3.
+		// Restore a minor component so version dispatch still recognizes it as 3.x.
+		if !strings.Contains(formatted, ".") {
+			formatted += ".0"
+		}
+		return formatted
+	case int:
+		return strconv.Itoa(value)
+	default:
+		return ""
+	}
+}
+
+func asyncAPIMajor(version string) int {
+	major, _, _ := strings.Cut(strings.TrimSpace(version), ".")
+	n, _ := strconv.Atoi(major)
+	return n
+}
 func stringList(v any) []string {
 	var out []string
 	for _, item := range sliceValue(v) {

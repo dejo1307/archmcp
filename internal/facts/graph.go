@@ -1480,7 +1480,7 @@ func (g *Graph) isArchitecturalEdge(srcID uint32, relID uint16) bool {
 	// class or a call-graph hotspot. Exclude it from fan-in / centrality (and the
 	// outlier distribution). Traversal, impact_analysis, find_path and orphans read
 	// the unfiltered index and still see it.
-	if rk == RelInstantiates {
+	if rk == RelInstantiates || rk == RelImplementedBy {
 		return false
 	}
 	if idx, ok := g.factIndexForID(srcID, rk); ok && isReferenceOnlyKind(g.facts[idx].Kind) {

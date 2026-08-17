@@ -87,3 +87,19 @@ const publish = (producer) => producer.produce(topic, null, Buffer.from('{}'))
 	}
 	t.Fatal("missing node-rdkafka produce fact")
 }
+
+func TestExtractTSKafkaConstantsAreFunctionScoped(t *testing.T) {
+	got := extractAll(t, map[string]string{"events.ts": `import { Kafka } from 'kafkajs'
+function first(p: any) { const topic = 'orders.first'; p.send({topic: topic, messages: []}) }
+function second(p: any) { const topic = 'orders.second'; p.send({topic: topic, messages: []}) }
+`}, false)
+	seen := map[string]bool{}
+	for _, f := range got {
+		if f.PropString(facts.PropSource) == facts.MessagingSourceTSKafkaCall {
+			seen[f.Name] = true
+		}
+	}
+	if !seen["orders.first"] || !seen["orders.second"] {
+		t.Fatalf("function-scoped topic constants were dropped: %+v", got)
+	}
+}

@@ -59,8 +59,8 @@ func TestKafkaProtocolFamily(t *testing.T) {
 		"mqtt": false, "kafkaish": false, "": false,
 	}
 	for protocol, want := range tests {
-		if got := isKafkaProtocol(protocol); got != want {
-			t.Errorf("isKafkaProtocol(%q) = %v, want %v", protocol, got, want)
+		if got := facts.IsKafkaProtocol(protocol); got != want {
+			t.Errorf("facts.IsKafkaProtocol(%q) = %v, want %v", protocol, got, want)
 		}
 	}
 }

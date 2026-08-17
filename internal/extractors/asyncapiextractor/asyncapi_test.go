@@ -105,6 +105,60 @@ func TestExtractV2(t *testing.T) {
 	}
 }
 
+func TestUnquotedTwoPartVersionDetectsAndExtracts(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "asyncapi.yaml", "asyncapi: 2.0\nchannels:\n  orders.created:\n    publish: {message: {name: Order}}\n")
+	ok, err := New().Detect(repo)
+	if err != nil || !ok {
+		t.Fatalf("Detect = %v, %v", ok, err)
+	}
+	if got := extract(t, repo); len(got) != 1 {
+		t.Fatalf("Extract got %d facts: %+v", len(got), got)
+	}
+}
+
+func TestUnquotedV3TwoPartVersionUsesV3Operations(t *testing.T) {
+	repo := t.TempDir()
+	writeSpec(t, repo, "asyncapi.yaml", `asyncapi: 3.0
+channels:
+  orders:
+    address: orders.created
+operations:
+  publishOrder:
+    action: send
+    channel: {$ref: '#/channels/orders'}
+    messages: []
+  receiveOrder:
+    action: receive
+    channel: {$ref: '#/channels/orders'}
+    messages: []
+`)
+	ok, err := New().Detect(repo)
+	if err != nil || !ok {
+		t.Fatalf("Detect = %v, %v", ok, err)
+	}
+	got := extract(t, repo)
+	if len(got) != 2 {
+		t.Fatalf("Extract got %d facts, want v3 send and receive: %+v", len(got), got)
+	}
+	for _, f := range got {
+		if f.PropString("asyncapi_version") != "3.0" {
+			t.Errorf("asyncapi_version = %q, want 3.0", f.PropString("asyncapi_version"))
+		}
+	}
+}
+
+func TestAsyncAPIMajor(t *testing.T) {
+	for version, want := range map[string]int{
+		"2": 2, "2.0": 2, "2.6.0": 2,
+		"3": 3, "3.0": 3, "3.1.0": 3,
+	} {
+		if got := asyncAPIMajor(version); got != want {
+			t.Errorf("asyncAPIMajor(%q) = %d, want %d", version, got, want)
+		}
+	}
+}
+
 func TestExtractV3JSONAndChannelRef(t *testing.T) {
 	repo := t.TempDir()
 	writeSpec(t, repo, "asyncapi.json", `{

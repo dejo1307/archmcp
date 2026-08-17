@@ -180,6 +180,7 @@ func kafkaPackageStringBindings(f *ast.File) map[string]string {
 }
 
 func collectKafkaStringBindings(root ast.Node, out map[string]string) {
+	ambiguous := map[string]bool{}
 	ast.Inspect(root, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.ValueSpec:
@@ -187,9 +188,14 @@ func collectKafkaStringBindings(root ast.Node, out map[string]string) {
 		case *ast.AssignStmt:
 			for i, lhs := range node.Lhs {
 				id, ok := lhs.(*ast.Ident)
-				if ok && i < len(node.Rhs) {
+				if ok && i < len(node.Rhs) && !ambiguous[id.Name] {
 					if value := kafkaTopicExpr(node.Rhs[i], out); value != "" {
-						out[id.Name] = value
+						if _, exists := out[id.Name]; exists {
+							delete(out, id.Name)
+							ambiguous[id.Name] = true
+						} else {
+							out[id.Name] = value
+						}
 					}
 				}
 			}

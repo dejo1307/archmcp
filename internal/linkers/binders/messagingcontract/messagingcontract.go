@@ -160,21 +160,12 @@ func compatibleContracts(candidates []contractRef, codeProtocol string) []contra
 // secure variant as the same broker family. Explicitly different technologies
 // must never bind merely because their channel name and direction coincide.
 func messagingProtocolsCompatible(codeProtocol, contractProtocol string) bool {
-	codeProtocol = strings.ToLower(strings.TrimSpace(codeProtocol))
-	contractProtocol = strings.ToLower(strings.TrimSpace(contractProtocol))
+	codeProtocol = strings.TrimSpace(codeProtocol)
+	contractProtocol = strings.TrimSpace(contractProtocol)
 	if codeProtocol == "" || contractProtocol == "" {
 		return true
 	}
-	return messagingProtocolFamily(codeProtocol) == messagingProtocolFamily(contractProtocol)
-}
-
-func messagingProtocolFamily(protocol string) string {
-	switch protocol {
-	case "kafka", "kafka-secure":
-		return "kafka"
-	default:
-		return protocol
-	}
+	return facts.MessagingProtocolFamily(codeProtocol) == facts.MessagingProtocolFamily(contractProtocol)
 }
 
 func isContractOperation(f facts.Fact) bool {
