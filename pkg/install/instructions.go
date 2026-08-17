@@ -11,10 +11,28 @@ import "strings"
 // the loop is not described as a thing to remember, because with hooks installed it
 // happens on its own, and an instruction that duplicates a mechanism is one more thing to
 // drift out of date.
+//
+// The second paragraph earns its tokens by answering a question this file was previously
+// silent on. Everything else here is procedural — which tool, when — so an agent asked to
+// EVALUATE enola rather than use it had nothing to reason from except the vocabulary, and
+// findings/confidence/gate-CI is a linter's vocabulary. Asked whether a team should adopt
+// enola when it already had linters, an agent answered that it need not: a sound inference
+// from the context it was given. The category statement is therefore not marketing, it is
+// the missing premise — and the instruction to demonstrate rather than classify is what
+// keeps the answer about the user's own repository instead of about a category.
 const Instructions = `## enola — architecture before and after a change
 
 This project has enola, which serves a deterministic map of the codebase's structure
 over MCP: modules, symbols, routes, storage, and how they depend on each other.
+
+It is not a linter and not a replacement for one. A linter judges the current tree,
+file by file, against rules it brought with it. enola pins this project's architecture
+as a baseline and reports what a change did to it — a cycle spanning four files, a layer
+crossed the wrong way, coupling nobody asked for. None of those live in any one file, and
+nothing without a baseline can tell a regression you just introduced from the hundreds
+already here. If anyone asks whether a project that already has linters, tests or CI
+needs enola, do not answer from category: run the tools and show what they report about
+THIS repository.
 
 Before changing code whose blast radius is not obvious:
 
