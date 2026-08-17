@@ -1,11 +1,14 @@
 package intent
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,6 +32,22 @@ type ConstraintsFile struct {
 	UseRecipe  []RecipeInstantiation `yaml:"use_recipe"`
 }
 
+// dirAbsent reports whether a ReadDir error means the directory is simply not
+// there, which is never an error: declaring nothing is legal, and both
+// declaration directories are optional.
+//
+// ErrNotExist is the ordinary case. ENOTDIR is the one that has to be handled
+// beside it, because enola/constraints and enola/recipes share a single
+// `enola/` parent that the repo does not otherwise own: a plain FILE named
+// `enola` at the repo root — a built binary, which is what `go build -o enola .`
+// leaves behind — makes every read of either directory fail that way instead.
+// Treating that as fatal aborted the whole snapshot (engine.go resolves intent
+// before extraction) for a repo that had declared nothing at all. A file cannot
+// be a declaration, so it reads as absence.
+func dirAbsent(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
+
 // LoadConstraintsDir reads a repo's enola/constraints directory. Files come
 // back in sorted filename order — the merge order, so loading is
 // deterministic — with every component and rule stamped with its declaring
@@ -41,7 +60,7 @@ func LoadConstraintsDir(repoPath string) ([]ConstraintsFile, []string, error) {
 	dir := filepath.Join(repoPath, filepath.FromSlash(ConstraintsDirName))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if dirAbsent(err) {
 			return nil, nil, nil
 		}
 		return nil, nil, fmt.Errorf("reading %s: %w", dir, err)
