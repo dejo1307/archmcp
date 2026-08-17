@@ -218,6 +218,10 @@ func (e *Engine) RegisterExtractor(ext plugin.Extractor) {
 	e.eng.RegisterExtractor(ext)
 }
 
+func (e *Engine) Extractors() []plugin.Extractor {
+	return e.eng.Extractors()
+}
+
 // RegisterExplainer adds an explainer to the engine.
 func (e *Engine) RegisterExplainer(exp plugin.Explainer) {
 	e.eng.RegisterExplainer(exp)

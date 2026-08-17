@@ -70,6 +70,13 @@ func computeConfigHash(cfg *config.Config) string {
 	writeSortedSection("renderers", cfg.Renderers)
 	writeSortedSection("ignore", cfg.Ignore)
 	writeSortedSection("test_globs", cfg.TestGlobs)
+	// Providers contribute facts, so the configured set — command and pinned
+	// version included — is part of what a snapshot was generated over.
+	provLines := make([]string, 0, len(cfg.Providers))
+	for _, p := range cfg.Providers {
+		provLines = append(provLines, p.Name+"\x00"+strings.Join(p.Command, "\x00")+"\x00"+p.ExpectedVersion)
+	}
+	writeSortedSection("providers", provLines)
 	fmt.Fprintf(&sb, "output_dir:%s\nmax_context_tokens:%d\nincremental:%t\n",
 		cfg.Output.Dir, cfg.Output.MaxContextTokens, cfg.IncrementalEnabled())
 	// The linking vocabulary changes which cross-repo edges are drawn, so it changes

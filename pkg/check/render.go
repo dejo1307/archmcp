@@ -17,6 +17,7 @@ var kindMeaning = map[diff.WarningKind]string{
 	diff.WarnRepoLabel:       "the same repository is labelled differently on the two sides, so no fact matches across them and the delta describes neither snapshot",
 	diff.WarnVersionMismatch: "different enola builds extract or derive differently, so unchanged code can appear as churn",
 	diff.WarnExtractorSet:    "a language present on one side only makes all of its facts appear added or removed",
+	diff.WarnProviderSet:     "a provider that ran on one side only makes all of its facts appear added or removed",
 	diff.WarnExplainerSet:    "an explainer present on one side only makes all of its findings appear new or resolved; the facts and coupling in this delta are unaffected",
 	diff.WarnIgnoreGlobs:     "the set of files parsed changed, so some of this delta is exclusion changes, not code changes",
 	diff.WarnUnclassified:    "an uncategorized caveat was raised; the gate fails closed rather than grade what it cannot judge",
@@ -70,10 +71,15 @@ func (v Verdict) Render() string {
 	var sb strings.Builder
 
 	switch v.Status {
-	case StatusClean:
+	case StatusClean, StatusPartialClean:
 		pass := "PASS"
 		warnOnly := "PASS (--warn-only)"
 		graded := "no structural regression"
+		if v.Status == StatusPartialClean {
+			pass = "PASS (partial verdict)"
+			warnOnly = "PASS (partial verdict, --warn-only)"
+			graded = "no structural regression in the graded intersection"
+		}
 		switch {
 		case len(v.Failures) > 0:
 			// --warn-only. Say what the policy WOULD have done: reporting "no structural
@@ -88,10 +94,12 @@ func (v Verdict) Render() string {
 				plural(len(v.Advisories), "new finding", "new findings"))
 		case len(v.Advisories) > 0 || len(v.Suppressed) > 0 || len(v.Exempted) > 0 || len(v.Silenced) > 0 || len(v.Undeclared) > 0 || len(v.Unattributed) > 0 || v.EdgesAdded > 0 || v.FactsAdded > 0 || v.FactsRemoved > 0:
 			fmt.Fprintf(&sb, "%s — %s.\n", pass, graded)
+		case v.Status == StatusPartialClean:
+			fmt.Fprintf(&sb, "%s — no architectural change in the graded intersection.\n", pass)
 		default:
 			sb.WriteString("PASS — no architectural change.\n")
 		}
-	case StatusRegression:
+	case StatusRegression, StatusPartialRegression:
 		// Breaches count toward the headline. A change that trips only a measurement
 		// threshold has zero failing FINDINGS, and reporting "0 structural regressions
 		// introduced" above a FAIL is the kind of contradiction that makes a reader stop
@@ -102,7 +110,11 @@ func (v Verdict) Render() string {
 				n++
 			}
 		}
-		fmt.Fprintf(&sb, "FAIL — %s introduced.\n", plural(n, "structural regression", "structural regressions"))
+		fail := "FAIL"
+		if v.Status == StatusPartialRegression {
+			fail = "FAIL (partial verdict)"
+		}
+		fmt.Fprintf(&sb, "%s — %s introduced.\n", fail, plural(n, "structural regression", "structural regressions"))
 	case StatusUsageError:
 		sb.WriteString("ERROR — the gate could not run.\n")
 	case StatusIncomparable:
@@ -110,6 +122,7 @@ func (v Verdict) Render() string {
 		sb.WriteString("This is NOT a statement about your change. The delta below would describe how the two\nsnapshots were produced, not what you edited.\n")
 	}
 
+	v.writeIntersection(&sb)
 	v.writeComparability(&sb)
 	v.writeBreaches(&sb)
 
@@ -588,6 +601,56 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return "…" + string(runes[len(runes)-(max-1):])
+}
+
+func (v Verdict) writeIntersection(sb *strings.Builder) {
+	g := v.Intersection
+	if g == nil {
+		return
+	}
+	sb.WriteString("\nPartial verdict — the two snapshots were produced by different producer sets, so only\nfacts from producers present in BOTH snapshots were graded. This is NOT a full verdict.\n")
+	fmt.Fprintf(sb, "  Graded over the shared producer set (%s: %s).\n",
+		plural(g.Families(), "family", "families"), strings.Join(sharedFamilyNames(g), ", "))
+	for _, ex := range g.Excluded {
+		fmt.Fprintf(sb, "  Excluded from grading: %s (%s lacks it) — %s.\n",
+			producerLabel(ex), ex.LackedBy, exclusionTally(ex))
+	}
+	sb.WriteString("  A regression among an excluded producer's facts cannot be graded here and is NOT reported.\n")
+}
+
+func sharedFamilyNames(g *IntersectionGrading) []string {
+	names := append([]string(nil), g.SharedExtractors...)
+	for _, p := range g.SharedProviders {
+		names = append(names, p+" provider")
+	}
+	return names
+}
+
+func producerLabel(ex ExcludedProducer) string {
+	if ex.Kind == ProducerProvider {
+		return ex.Name + " provider"
+	}
+	return ex.Name
+}
+
+func exclusionTally(ex ExcludedProducer) string {
+	var parts []string
+	side := func(label string, factN, findingN int) {
+		if factN == 0 && findingN == 0 {
+			return
+		}
+		s := fmt.Sprintf("%s %s", plural(factN, "fact", "facts"), label)
+		if findingN > 0 {
+			s = fmt.Sprintf("%s and %s %s", plural(factN, "fact", "facts"), plural(findingN, "finding", "findings"), label)
+		}
+		parts = append(parts, s)
+	}
+	side("on the baseline side", ex.BaselineFactsExcluded, ex.BaselineFindingsExcluded)
+	side("on the current side", ex.CurrentFactsExcluded, ex.CurrentFindingsExcluded)
+	if len(parts) == 0 {
+		return "no facts on either side matched it"
+	}
+	return strings.Join(parts, ", ") + " not graded"
 }
 
 // writeComparability prints every warning verbatim plus what its category means for

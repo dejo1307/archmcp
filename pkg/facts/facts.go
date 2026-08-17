@@ -38,7 +38,11 @@ type (
 	CoverageSummary = internal.CoverageSummary
 	ParseError      = internal.ParseError
 	GitInfo         = internal.GitInfo
+	ProviderRecord  = internal.ProviderRecord
+	ProviderCensus  = internal.ProviderCensus
 )
+
+var RanProviders = internal.RanProviders
 
 // Graph / impact-analysis types (aliases — identical to the internal types).
 // Re-exported so out-of-module consumers (the enterprise architecture validator)

@@ -10,6 +10,7 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/crossrepo/signals/graphqlsig"
 	httpsignal "github.com/enola-labs/enola/internal/linkers/crossrepo/signals/http"
 	"github.com/enola-labs/enola/internal/linkers/vocab"
+	"github.com/enola-labs/enola/internal/providers"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -83,6 +84,11 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	flaggedServer, flaggedClient := 0, 0
 	store.UpdateWhere(func(f *facts.Fact) {
 		if f.Kind != facts.KindRoute {
+			return
+		}
+		if f.PropString(providers.PropResolutionLevel) == providers.LevelRuntimeObserved {
+			delete(f.Props, PropMatchedByClients)
+			delete(f.Props, PropUnmatchedByClients)
 			return
 		}
 		// A client-role route is a call site, never a served endpoint: it carries the

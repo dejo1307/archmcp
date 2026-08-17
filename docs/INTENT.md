@@ -1241,6 +1241,133 @@ carries guidance the same way, over its own graded delta; a declined
 or errored gate carries none, because there is no trustworthy delta
 for the advice to travel with.
 
+### The provider seam
+
+A tool enola does not ship can contribute measured facts through the
+engine config's `providers:` block: an executable run once with
+`--version` and once with the repository path, emitting facts as JSONL
+in the store's own schema. The contract is fail-closed end to end —
+one invalid line rejects the provider's whole output, a provider fact
+may not collide with an extractor fact's kind+name identity, and every
+fact must carry a **`resolution_level`** prop: the provider's own
+honesty declaration of how it resolved what it emitted (the same
+vocabulary the Stimulus pass uses for its `markup-declared` binding
+facts). The seam stamps provenance (`provider`, `provider_version`)
+onto every accepted fact, and each run lands in the receipt's provider
+**census** — including providers that contributed nothing and why. The
+census is comparability: a delta whose two snapshots ran different
+provider sets (`provider_set`) is never graded as a full verdict,
+exactly as a differing extractor set is. `enola check` grades the
+**intersection** — only facts from producers that ran on both sides,
+the disputed provider's facts excluded by their stamped `provider`
+prop and named in a partial verdict that says what went ungraded —
+and still declines outright when fact identity itself is in doubt (a
+different enola version or build, repository, or ignore set).
+
+The `resolution_level` vocabulary is closed, for the same reason the
+kind and relation vocabularies are — a level nothing knows how to
+weigh is a claim nothing can act on: `constant-receiver`,
+`lexical-self`, `name-only`, `literal-declared`, `markup-declared`,
+`convention-derived`, `runtime-observed`, and `declared`.
+`runtime-observed` is its own level, not a stronger static one: it
+states that a **booted application** reported the fact, and a fact
+carrying it must also carry an **`observed_via`** prop naming the
+observation channel (`rails-boot`, `query-counter`) — runtime
+provenance without a channel is a claim that cannot be re-derived.
+`declared` is the mirror obligation on the static side: it states
+that a **signature file claims** the fact — a type annotation, not
+code observed or run — and a fact carrying it must also carry a
+**`declared_in`** prop naming that signature file, because a
+declaration is not source: the claim can drift from the
+implementation, so a consumer must always be able to weigh it apart
+from extracted and runtime truth, and find the file that made it.
+
+A provider may additionally report its own coverage accounting over
+one stderr line prefixed `enola-provider-census: ` — files seen,
+declarations parsed, constructs skipped with named causes — which the
+seam validates as strictly as the facts and carries into the
+receipt's provider census, the same honesty discipline the engine's
+file census applies to its own walk.
+
+### The runtime provider
+
+`examples/providers/ruby/runtime/enola_runtime_provider.rb` is the reference
+collector for runtime-observed facts. It reads capture files from
+`.enola-runtime/*.json` in the target repository — captures an
+operator produced by running the app, never something the snapshot
+produces — and emits them through the seam. Two capture schemas are
+recognized: the booted-Rails capture (`source: "enola runtime"`,
+the final route table plus reflected associations and table bindings,
+which only exist after boot) and the query-counter capture
+(`source: "activesupport-notifications"`, database queries per
+application frame measured under a spec run). Facts are namespaced
+(`runtime-route:`, `runtime-association:`, `runtime-storage:`,
+`runtime-queries:`) so they add observations without colliding with
+the identities the extractors own, and every fact carries
+`resolution_level: runtime-observed` plus its `observed_via` channel.
+
+The contract is fail-closed end to end: a boot capture reporting any
+`unreachable` subject is refused whole (an incomplete boot must not
+become partial truth), an unrecognized capture source is refused by
+name, and a repository with no captures contributes zero facts — a
+visible census entry, never an error. After the merge, the engine
+cross-links observations to measurements: an extracted route fact
+whose method and path a `runtime-route:` observation reports gains
+**`runtime_observed: true`** and the merged, sorted `observed_via`
+set, so runtime truth is queryable on the measured graph
+(`query_facts(kind=route, prop=runtime_observed, prop_value=true)`)
+and constraint rules can verdict over it (a `require` on
+`observed_via`, a `forbid_fact` over a component selecting
+observations). Runtime truth informs the graph; it never gates
+anything by itself — observations carry no linker verdicts
+(`unmatched_by_clients` never lands on one) and stay out of the
+unused-routes censuses, because an observation of the booted
+application is not a static route the linker could assess.
+
+### The RBS/Sorbet provider
+
+`examples/providers/ruby/rbs/enola_rbs_provider.rb` brings declared Ruby types into
+the graph as facts. One provider covers both signature dialects: RBS
+files (`**/*.rbs`), Sorbet interface files (`**/*.rbi`), and inline
+Sorbet `sig { }` blocks in `**/*.rb` — pure-Ruby stdlib parsing (a
+conservative hand parser, `json` only), deliberately not the `rbs`
+gem: the gem's parser is a native extension whose rendering drifts
+across gem versions, and a fact stream that depends on which rbs a
+machine has installed is not deterministic. The hand parser reads the
+common declaration forms and **fails closed by name** on everything
+else — an attr declaration, a mixin, a type alias, an unrecognized
+sig chain link each land in the census as a counted skip cause, never
+as a guessed fact, and a structurally broken signature file is
+discarded whole with its already-parsed declarations retracted from
+the parsed count.
+
+Two fact shapes, both `symbol` facts at level `declared` with
+`declared_in` pointing at the signature file: **method contracts**
+(`rbs-signature: Billing::Ledger#record`, carrying receiver, method,
+singleton, the rendered signature, per-parameter declarations —
+`untyped` and `T.untyped` recorded, never omitted — the return type,
+overload counts where RBS declares overloads, and one `has_method`
+relation targeting the method identity) and **type declarations**
+(`rbs-decl: Billing::Ledger`, carrying `decl_kind`
+class/module/interface, type parameters where generic, and the
+declared superclass). The namespaced names add declarations without
+colliding with the identities the extractors own.
+
+After the merge the engine cross-links claims to measurements,
+mirroring the runtime cross-link: an extracted symbol whose exact
+class+method identity a declared contract names gains **`typed:
+true`**, the merged sorted `declared_signature` summary, and the
+merged sorted `declared_in` file set — never touching the extractor's
+account of the symbol itself. Declared truth is then queryable
+(`query_facts(kind=symbol, prop=typed, prop_value=true)`) and
+constraint rules can verdict over it — a `require` on `declared_in`
+over an API component, a `forbid_fact` over a component selecting
+retired contracts — with every verdict citing the signature file that
+made the claim. A declaration is a claim about the implementation,
+not proof of it: the provider records what the signature file says,
+the level says who said it, and nothing presents the claim as
+inferred or verified.
+
 ### `constraints lint`
 
 The authoring loop. `enola constraints lint` parses the declaration
@@ -1390,6 +1517,7 @@ This ordering is the point: the self-correction benchmark measures
 that violations drop sharply when the contract is in reach at
 planning time rather than at the CI gate, and plan-check is that
 contract as a first-class query.
+
 ## Working with intent, the enola way
 
 1. **Declare only what you know.** A declaration triggers

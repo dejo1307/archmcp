@@ -10,6 +10,7 @@ import (
 
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/linkers/vocab"
+	"github.com/enola-labs/enola/internal/providers"
 )
 
 func bind(t *testing.T, store *facts.Store) {
@@ -295,6 +296,35 @@ func TestFlagUnmatchedRoutes_UnconsumedSchemaGetsNoVerdict(t *testing.T) {
 		}
 		if _, has := f.Props[PropMatchedByClients]; has {
 			t.Errorf("%s: nothing selected it, so it is not matched either; props=%+v", f.Name, f.Props)
+		}
+	}
+}
+
+func TestFlagUnmatchedRoutes_RuntimeObservationsCarryNoVerdict(t *testing.T) {
+	store := facts.NewStore()
+	observation := facts.Fact{Kind: facts.KindRoute, Name: "runtime-route: GET /api/orders",
+		Repo: "backend", File: ".enola-runtime/boot.json",
+		Props: map[string]any{
+			providers.PropResolutionLevel: providers.LevelRuntimeObserved,
+			providers.PropObservedVia:     "rails-boot",
+			"method":                      "GET",
+			"path":                        "/api/orders",
+			PropUnmatchedByClients:        true,
+		}}
+	store.Add(
+		serverRouteFact("backend", "/api/orders/{orderId}", "GET"),
+		observation,
+	)
+	bind(t, store)
+	for _, f := range store.FactsRef() {
+		if f.Name != "runtime-route: GET /api/orders" {
+			continue
+		}
+		if _, claimed := f.Props[PropUnmatchedByClients]; claimed {
+			t.Errorf("an observation must carry no linker verdict, got %+v", f.Props)
+		}
+		if _, claimed := f.Props[PropMatchedByClients]; claimed {
+			t.Errorf("an observation must carry no linker verdict, got %+v", f.Props)
 		}
 	}
 }

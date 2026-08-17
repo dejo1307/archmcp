@@ -124,6 +124,20 @@ func TestAttachGuidance_SkipsUngradedVerdicts(t *testing.T) {
 	}
 }
 
+func TestAttachGuidance_PartialVerdictsCarryGuidanceOverTheGradedDelta(t *testing.T) {
+	store := guidanceIntentStore()
+	v := Evaluate(guidedDelta(), Policy{})
+	v.Status = StatusPartialClean
+	v.Intersection = &IntersectionGrading{SharedExtractors: []string{"go"}}
+	v = AttachGuidance(v, store)
+	if len(v.Guidance) != 1 {
+		t.Fatalf("guidance = %+v, want it on a partial verdict over the graded intersection's own delta", v.Guidance)
+	}
+	if v.ExitCode() != 0 || v.Status != StatusPartialClean {
+		t.Errorf("verdict = %q exit %d, guidance must not regrade a partial verdict", v.Status, v.ExitCode())
+	}
+}
+
 func TestAttachGuidance_NeverLandsInTheExemptedBucket(t *testing.T) {
 	v := AttachGuidance(Evaluate(guidedDelta(), Policy{}), guidanceIntentStore())
 	if len(v.Exempted) != 0 || len(v.Failures) != 0 || len(v.Advisories) != 0 || len(v.Suppressed) != 0 {
