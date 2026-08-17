@@ -11,7 +11,7 @@ func AttachGuidance(v Verdict, store *facts.Store) Verdict {
 		return v
 	}
 	switch v.Status {
-	case StatusClean, StatusRegression:
+	case StatusClean, StatusRegression, StatusPartialClean, StatusPartialRegression:
 	default:
 		return v
 	}

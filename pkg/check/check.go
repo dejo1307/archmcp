@@ -30,14 +30,17 @@ const (
 	// Distinct from StatusRegression on purpose: "I refuse to grade this" must never
 	// be reported as "your change is bad".
 	StatusIncomparable Status = "incomparable"
+
+	StatusPartialClean      Status = "partial_clean"
+	StatusPartialRegression Status = "partial_regression"
 )
 
 // ExitCode maps a status to the process exit code.
 func (s Status) ExitCode() int {
 	switch s {
-	case StatusClean:
+	case StatusClean, StatusPartialClean:
 		return 0
-	case StatusRegression:
+	case StatusRegression, StatusPartialRegression:
 		return 1
 	case StatusUsageError:
 		return 2
@@ -241,7 +244,10 @@ var blockingKinds = map[diff.WarningKind]bool{
 	diff.WarnRepoLabel:       true,
 	diff.WarnVersionMismatch: true,
 	diff.WarnExtractorSet:    true,
-	diff.WarnIgnoreGlobs:     true,
+	// A provider is a fact source exactly as an extractor is, so a differing
+	// ran-provider set invalidates the fact delta the same way.
+	diff.WarnProviderSet: true,
+	diff.WarnIgnoreGlobs: true,
 	// Fail closed on a caveat this package cannot categorize — see diff.AddWarning.
 	diff.WarnUnclassified: true,
 }
@@ -319,6 +325,8 @@ type Verdict struct {
 	// numbers.
 	Measurements []Measurement `json:"measurements,omitempty"`
 	Breaches     []Breach      `json:"breaches,omitempty"`
+
+	Intersection *IntersectionGrading `json:"intersection_grading,omitempty"`
 
 	Guidance []constraints.GuidanceMatch `json:"guidance,omitempty"`
 

@@ -63,6 +63,7 @@ layers:
       - "internal/intent/**"
       - "internal/history/**"
       - "internal/mining/**"
+      - "internal/providers/**"
   - name: core
     paths:
       - "internal/facts/**"

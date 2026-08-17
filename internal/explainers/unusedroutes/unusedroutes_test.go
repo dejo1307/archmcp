@@ -266,3 +266,43 @@ func TestExplain_ReportsWhatWasNotAssessed(t *testing.T) {
 		t.Errorf("the unassessed count must appear in the finding, got %q", insights[0].Description)
 	}
 }
+
+func TestExplain_RuntimeObservationsStayOutOfEveryCensus(t *testing.T) {
+	store := facts.NewStore()
+	runtimeProps := func(method, path string) map[string]any {
+		return map[string]any{
+			"resolution_level": "runtime-observed",
+			"observed_via":     "rails-boot",
+			"method":           method,
+			"path":             path,
+		}
+	}
+	store.Add(
+		facts.Fact{Kind: facts.KindService, Name: "svc", Repo: "svc"},
+		flaggedRoute("svc", "/api/orders", "GET"),
+		facts.Fact{Kind: facts.KindRoute, Name: "/api/items", Repo: "svc",
+			Props: map[string]any{"method": "GET", "role": "server", "matched_by_clients": true}},
+		facts.Fact{Kind: facts.KindRoute, Name: "runtime-route: GET /api/orders", Repo: "svc",
+			File: ".enola-runtime/boot.json", Props: runtimeProps("GET", "/api/orders")},
+		facts.Fact{Kind: facts.KindRoute, Name: "runtime-route: GET /admin/avo", Repo: "svc",
+			File: ".enola-runtime/boot.json", Props: runtimeProps("GET", "/admin/avo")},
+	)
+
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("expected 1 insight, got %d: %+v", len(insights), insights)
+	}
+	in := insights[0]
+	if !strings.Contains(in.Title, "1 of 2 route(s)") {
+		t.Errorf("observations must not enter the denominator, got %q", in.Title)
+	}
+	if strings.Contains(in.Description, "A further") {
+		t.Errorf("observations must not count as linker-declined routes, got %q", in.Description)
+	}
+	if strings.Contains(in.Description, "runtime-route") {
+		t.Errorf("an observation leaked into the candidate list: %q", in.Description)
+	}
+}

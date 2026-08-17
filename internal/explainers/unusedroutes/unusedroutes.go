@@ -17,6 +17,7 @@ import (
 	"sort"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/providers"
 )
 
 // incompleteClientsShare is the proportion of unmatched routes above which the
@@ -62,6 +63,9 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 		if role, _ := f.Props["role"].(string); role == "client" {
 			continue
 		}
+		if level, _ := f.Props[providers.PropResolutionLevel].(string); level == providers.LevelRuntimeObserved {
+			continue
+		}
 		// Only routes the linker actually evaluated. It declines, with reasons,
 		// to reason about UI routes, GraphQL operations, methodless routes and
 		// generic paths like /health — 3,471 of the estate's 9,135 server routes
@@ -88,6 +92,9 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	byRepo := map[string][]route{}
 	for _, f := range store.ByKind(facts.KindRoute) {
 		if f.Props == nil || f.Props["unmatched_by_clients"] != true {
+			continue
+		}
+		if level, _ := f.Props[providers.PropResolutionLevel].(string); level == providers.LevelRuntimeObserved {
 			continue
 		}
 		repo := f.Repo

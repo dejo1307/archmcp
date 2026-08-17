@@ -241,6 +241,8 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	// against the CURRENT snapshot, baselined or not — the one deliberate
 	// exception to delta scoping.
 	verdict := check.EvaluateCurrent(d, policy, current.Insights, measurements...)
+	verdict = check.RegradeIntersection(verdict, base, current, policy,
+		check.OwnershipFromExtractors(eng.Extractors()), current.Insights, *focus, measurements...)
 	verdict = check.AttachGuidance(verdict, eng.Store())
 
 	if *asJSON {

@@ -107,6 +107,13 @@ const (
 	// WarnExtractorSet — the extractor sets differ, so one language's facts appear
 	// wholesale as added or removed.
 	WarnExtractorSet WarningKind = "extractor_set"
+	// WarnProviderSet — the sets of external providers that RAN differ, so one
+	// provider's facts appear wholesale as added or removed. Blocking for the
+	// same reason the extractor arm is: the fact delta is the substrate, and a
+	// provider is a fact source exactly as an extractor is. A configured
+	// provider that was SKIPPED on both sides is not in either set — skipping
+	// contributed nothing, so it cannot distort anything.
+	WarnProviderSet WarningKind = "provider_set"
 	// WarnExplainerSet — the explainer sets differ, so one explainer's findings appear
 	// wholesale as new or resolved. Advisory rather than blocking: the fact delta is
 	// unaffected, so the change is still gradeable — only the finding attribution for
@@ -158,7 +165,8 @@ func (c Comparability) InvalidatesDelta() bool {
 	for _, k := range c.Kinds {
 		switch k {
 		case WarnDifferentRepo, WarnRepoLabel, WarnVersionMismatch, WarnExtractorSet,
-			WarnIgnoreGlobs, WarnInvertedPair, WarnUnclassified, WarnUnionMembership:
+			WarnProviderSet, WarnIgnoreGlobs, WarnInvertedPair, WarnUnclassified,
+			WarnUnionMembership:
 			return true
 		}
 	}
@@ -488,6 +496,23 @@ func compareMeta(base, cur facts.SnapshotMeta) Comparability {
 	if only := missingFrom(cur.Extractors, base.Extractors); len(only) > 0 {
 		c.add(WarnExtractorSet,
 			"current run added extractor(s) not in the baseline: %s — their facts will all appear as ADDED",
+			strings.Join(only, ", "))
+	}
+
+	// The same two arms for external PROVIDERS, compared over the set that RAN:
+	// a provider skipped on one side (tool not installed, version mismatch)
+	// contributed no facts there, so its whole output reads as this change's
+	// delta — the extractor-set failure mode arriving through configuration
+	// that never changed.
+	baseProviders, curProviders := facts.RanProviders(base.Providers), facts.RanProviders(cur.Providers)
+	if only := missingFrom(baseProviders, curProviders); len(only) > 0 {
+		c.add(WarnProviderSet,
+			"baseline had provider(s) that did not run in the current snapshot: %s — their facts will all appear as REMOVED",
+			strings.Join(only, ", "))
+	}
+	if only := missingFrom(curProviders, baseProviders); len(only) > 0 {
+		c.add(WarnProviderSet,
+			"current run has provider(s) that did not run in the baseline: %s — their facts will all appear as ADDED",
 			strings.Join(only, ", "))
 	}
 
