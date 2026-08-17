@@ -159,9 +159,16 @@ type HistoryConfig struct {
 	// travel with the checkout (to commit it, or to publish it from CI).
 	Dir string `yaml:"dir,omitempty"`
 
+	SharedDir string `yaml:"shared_dir,omitempty"`
+
 	// WorkingKeep caps how many unanchored revisions (dirty tree, or no git at all) are
 	// kept per base commit. Zero means the built-in default; negative keeps every one.
 	WorkingKeep int `yaml:"working_keep,omitempty"`
+
+	// RevisionKeep caps how many revisions the log keeps in total, committed ones
+	// included — appending past it drops the oldest. Zero means the built-in default
+	// (200); negative keeps every one.
+	RevisionKeep int `yaml:"revision_keep,omitempty"`
 
 	// Blobs stores each revision's facts and findings, not just the line describing what
 	// changed — the difference between a timeline you can read and one you can replay

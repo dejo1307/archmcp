@@ -25,6 +25,7 @@ type Blame struct {
 	// history would answer "never" for something it simply could not see.
 	Scanned int
 	Skipped int
+	Pruned  int
 }
 
 // BlameEvent is one appearance or disappearance.
@@ -35,6 +36,8 @@ type BlameEvent struct {
 	// edge's endpoints — and paraphrasing it would lose the detail the question was about.
 	Added   []string
 	Removed []string
+
+	Origins []string `json:"origins,omitempty"`
 }
 
 // BlameOptions narrows a blame.
@@ -59,6 +62,10 @@ type BlameOptions struct {
 // Comparing the matching subset of one reconstructed revision against the next asks the
 // question that was actually asked: did this appear BETWEEN these two observations?
 func BlameLines(root string, entries []Entry, pattern string, opts BlameOptions) (*Blame, error) {
+	return BlameUnion(root, LocalUnion(entries), nil, pattern, opts)
+}
+
+func BlameUnion(localRoot string, revs []UnionRevision, sh *Share, pattern string, opts BlameOptions) (*Blame, error) {
 	if pattern == "" {
 		return nil, errors.New("blame needs something to look for")
 	}
@@ -66,18 +73,20 @@ func BlameLines(root string, entries []Entry, pattern string, opts BlameOptions)
 	b := &Blame{Pattern: pattern}
 
 	var prev []string
-	for _, e := range entries {
-		if e.Blob == nil {
-			b.Skipped++
-			continue
-		}
-		factLines, insightLines, _, err := LoadLines(root, e.Blob.Segment, e.Blob.Member)
+	for _, u := range revs {
+		factLines, insightLines, err := u.Lines(localRoot, sh)
 		if err != nil {
-			if errors.Is(err, ErrThinned) {
+			var pruned *PrunedError
+			var gap *GapError
+			switch {
+			case errors.As(err, &pruned):
+				b.Pruned++
+				continue
+			case errors.As(err, &gap), errors.Is(err, ErrThinned):
 				b.Skipped++
 				continue
 			}
-			return nil, fmt.Errorf("revision %s: %w", e.Short(), err)
+			return nil, fmt.Errorf("revision %s: %w", u.Entry.Short(), err)
 		}
 		b.Scanned++
 
@@ -91,7 +100,7 @@ func BlameLines(root string, entries []Entry, pattern string, opts BlameOptions)
 		if len(added) == 0 && len(removed) == 0 {
 			continue
 		}
-		b.Events = append(b.Events, BlameEvent{Entry: e, Added: added, Removed: removed})
+		b.Events = append(b.Events, BlameEvent{Entry: u.Entry, Added: added, Removed: removed, Origins: u.Origins})
 		if opts.FirstOnly && len(added) > 0 {
 			break
 		}

@@ -110,6 +110,8 @@ type Entry struct {
 	// Refs are names pointing at this revision ("baseline", a tag, a user mark).
 	Refs []string `json:"refs,omitempty"`
 
+	Origin string `json:"origin,omitempty"`
+
 	// Blob locates the stored facts/insights for this revision. Nil means the revision
 	// is header-only — either a P0 history (no blobs written yet) or one thinned by gc,
 	// in which case the contents are recoverable with `enola log --backfill`.

@@ -82,12 +82,16 @@ func (r *Runner) Diff(args []string) {
 	fs.SetOutput(os.Stderr)
 	asJSON := fs.Bool("json", false, "emit the delta as JSON")
 	focus := fs.String("focus", "", "narrow the delta to entries referencing this module, file or symbol")
+	store := fs.String("store", "", "also resolve revisions from a shared history store (default: history.shared_dir)")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr,
 			"Usage: "+r.name()+" diff [flags] <revA>..<revB> [repo_path|config_path]\n\n"+
 				"Show the architecture delta between two recorded revisions.\n\n"+
 				"Each side is a snapshot id or its prefix, a git commit, HEAD~N, @<seq>, a ref\n"+
 				"name, or `latest`. An omitted side means the oldest (left) or newest (right).\n\n"+
+				"With a shared store (--store, or history.shared_dir) both sides resolve over\n"+
+				"the union of the local history and the store, and the header names where\n"+
+				"each side came from.\n\n"+
 				"Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -104,7 +108,13 @@ func (r *Runner) Diff(args []string) {
 		r.diffFatal("%q is not a range — use <revA>..<revB> (either side may be empty)", spec)
 	}
 
-	entries, root := r.historyFor(repoArg)
+	local, root, sh := r.historyWithStore(repoArg, *store, r.diffFatal)
+	repo, err := history.UnionRepo(local, sh, "")
+	if err != nil {
+		r.diffFatal("%v", err)
+	}
+	revs := history.BuildUnion(local, sh, repo)
+	entries := history.UnionEntries(revs)
 	if len(entries) == 0 {
 		r.diffFatal("no revisions recorded")
 	}
@@ -121,15 +131,46 @@ func (r *Runner) Diff(args []string) {
 		r.diffFatal("right side: %v", err)
 	}
 
-	d := diff.Compute(
-		r.reconstruct(root, left, "revision "+left.Short()),
-		r.reconstruct(root, right, "revision "+right.Short()),
-	)
+	leftSnap, leftOrigin := r.reconstructUnion(root, sh, revs, left, "revision "+left.Short())
+	rightSnap, rightOrigin := r.reconstructUnion(root, sh, revs, right, "revision "+right.Short())
+	d := diff.Compute(leftSnap, rightSnap)
 	if *focus != "" {
 		d = d.Focused(*focus)
 	}
-	r.emitDiff(fmt.Sprintf("%s..%s · %s → %s",
-		left.Short(), right.Short(), shortDate(left.At), shortDate(right.At)), d, *asJSON, "diff")
+	header := fmt.Sprintf("%s..%s · %s → %s",
+		left.Short(), right.Short(), shortDate(left.At), shortDate(right.At))
+	if sh != nil {
+		header += fmt.Sprintf(" · left from %s, right from %s", leftOrigin, rightOrigin)
+	}
+	r.emitDiff(header, d, *asJSON, "diff")
+}
+
+func (r *Runner) reconstructUnion(root string, sh *history.Share, revs []history.UnionRevision, e history.Entry, what string) (*facts.Snapshot, string) {
+	if sh == nil {
+		return r.reconstruct(root, e, what), "local"
+	}
+	for _, u := range revs {
+		if u.Entry.ID != e.ID || u.Entry.Seq != e.Seq {
+			continue
+		}
+		if u.Local && u.Entry.Blob != nil {
+			snap, err := history.Load(root, u.Entry)
+			if err == nil {
+				return snap, "local"
+			}
+			if !errors.Is(err, history.ErrThinned) {
+				r.diffFatal("reconstructing %s: %v", what, err)
+			}
+		}
+		if u.Record != nil {
+			snap, err := sh.LoadSnapshot(*u.Record)
+			if err != nil {
+				r.diffFatal("reconstructing %s from the shared store: %v", what, err)
+			}
+			return snap, "store:" + u.Record.Source
+		}
+	}
+	return r.reconstruct(root, e, what), "local"
 }
 
 // historyFor resolves the positional repo argument to the recorded entries and their root,

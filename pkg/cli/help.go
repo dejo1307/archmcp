@@ -87,6 +87,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			bin.Name + " diff <revA>..<revB> [repo_path|config_path]",
 			bin.Name + " blame [flags] <pattern> [repo_path|config_path]",
 			bin.Name + " gc [flags] [repo_path|config_path]",
+			bin.Name + " history <push|pull|verify|gc> [store_dir] [repo_path|config_path]",
 			bin.Name + " install [--hooks] [--global] [repo_path]",
 		},
 		Commands: []FlagDoc{
@@ -103,6 +104,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Flag: "diff", Desc: "EXPERIMENTAL. Show the architecture delta between any two recorded\nrevisions — the question a week of work produces, where \"show\" answers\nfor a single one. Either side of the range may be empty, meaning the\noldest or newest recorded revision."},
 			{Flag: "blame", Desc: "EXPERIMENTAL. Show when something entered the architecture and when\nit left — \"when did this module start importing that one?\", which a\nsnapshot cannot answer however good it is, because it is a question\nabout the past. Matches a name, a path, or both ends of an edge\nagainst the recorded facts; --findings searches findings instead,\nand --first stops at the introduction."},
 			{Flag: "gc", Desc: "EXPERIMENTAL. Report what the architecture history holds — how many\nrevisions, how many can still be replayed, how much disk — and remove\nwhat it no longer needs. With no flags it removes only garbage;\n--thin-older-than and --prune-working discard things a reader could\nstill reach, so each has to be asked for."},
+			{Flag: "history", Desc: "EXPERIMENTAL. Share the architecture history between machines through\na directory store — a git repository, a shared mount, an S3-synced\nfolder. Plain files, content-addressed, tamper-evident. \"push\" copies\nlocal revisions in, \"pull\" imports what other machines pushed,\n\"verify\" walks every chain and names gaps and tampering, \"gc\" applies\nretention — printed first, deleted only with --apply, recorded in the\nchain. Point it with history.shared_dir or the first argument."},
 			{Flag: "doctor", Desc: "Report whether the session hooks are actually FIRING in this\nrepository, not merely configured. `install --hooks` can write a\nconfiguration your agent silently ignores — it reports success\neither way — so this asks the only question that settles it: when\ndid each hook last run, and what did it conclude? A report, not a\ngate: always exits 0."},
 		},
 		Flags: []FlagDoc{
