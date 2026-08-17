@@ -98,6 +98,10 @@ const (
 	PropMessagingContractStatus       = "messaging_contract_status"
 	PropMessagingContractCandidates   = "messaging_contract_candidate_count"
 	PropMessagingImplementationStatus = "messaging_implementation_status"
+	// PropMessagingDuplicateOf lists files declaring a semantically conflicting
+	// version of this operation. Equivalent bundled copies are canonicalized.
+	PropMessagingDuplicateOf   = "messaging_duplicate_of"
+	PropMessagingCanonicalFile = "messaging_canonical_file"
 )
 
 // Messaging contract binding verdicts. These make a missing binding

@@ -50,6 +50,52 @@ func TestExplainMessagingCoverage(t *testing.T) {
 	}
 }
 
+func TestExplainFlagsConflictingContracts(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindStorage, Name: "orders.created", File: "old.yaml", Repo: "orders", Props: map[string]any{
+			facts.PropMessagingOperation:            facts.MessagingOperationPublish,
+			facts.PropMessagingDuplicateOf:          []string{"new.yaml"},
+			facts.PropMessagingImplementationStatus: facts.MessagingImplementationImplemented,
+		}},
+		facts.Fact{Kind: facts.KindStorage, Name: "orders.created", File: "new.yaml", Repo: "orders", Props: map[string]any{
+			facts.PropMessagingOperation:            facts.MessagingOperationPublish,
+			facts.PropMessagingDuplicateOf:          []string{"old.yaml"},
+			facts.PropMessagingImplementationStatus: facts.MessagingImplementationImplemented,
+		}},
+	)
+	got, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0].Title, "Conflicting messaging contracts") {
+		t.Fatalf("got %+v", got)
+	}
+	if len(got[0].Evidence) != 2 {
+		t.Fatalf("evidence = %+v", got[0].Evidence)
+	}
+}
+
+func TestExplainCountsOnlyCanonicalUnimplementedContract(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindStorage, Name: "orders.created", File: "asyncapi.yaml", Repo: "orders", Props: map[string]any{
+			facts.PropMessagingOperation: facts.MessagingOperationPublish, facts.PropMessagingImplementationStatus: facts.MessagingImplementationUnimplemented,
+		}},
+		facts.Fact{Kind: facts.KindStorage, Name: "orders.created", File: "bundle/asyncapi.yaml", Repo: "orders", Props: map[string]any{
+			facts.PropMessagingOperation: facts.MessagingOperationPublish, facts.PropMessagingImplementationStatus: facts.MessagingImplementationUnimplemented,
+			facts.PropMessagingCanonicalFile: "asyncapi.yaml",
+		}},
+	)
+	got, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].Evidence) != 1 || got[0].Evidence[0].File != "asyncapi.yaml" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 func TestExplainCleanStoreProducesNothing(t *testing.T) {
 	got, err := New().Explain(context.Background(), facts.NewStore())
 	if err != nil || len(got) != 0 {

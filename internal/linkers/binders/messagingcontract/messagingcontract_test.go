@@ -190,3 +190,122 @@ func TestProtocolDisambiguatesSameTopicOperations(t *testing.T) {
 		}
 	}
 }
+
+func TestBundledDuplicateSpecDoesNotFabricateAmbiguity(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "asyncapi.yaml"),
+		contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "bundle/asyncapi.yaml"),
+		code("orders.created", facts.MessagingOperationPublish, "events.PublishOrder", 12),
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range store.FactsRef() {
+		if isCodeOperation(f) {
+			if f.PropString(facts.PropMessagingContractStatus) != facts.MessagingContractStatusBound {
+				t.Fatalf("identical bundled declaration must still bind cleanly: %+v", f.Props)
+			}
+			if f.Props[facts.PropMessagingContractCandidates] != 1 {
+				t.Fatalf("bundled duplicate must not count as a second candidate: %+v", f.Props)
+			}
+		}
+		if isContractOperation(f) {
+			if _, dup := f.Props[facts.PropMessagingDuplicateOf]; dup {
+				t.Fatalf("identical declaration must not be flagged as a conflict: %+v", f.Props)
+			}
+		}
+	}
+}
+
+func TestBundledDuplicateUsesOneUnimplementedCanonical(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "asyncapi.yaml"),
+		contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "bundle/asyncapi.yaml"),
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	canonical, copies := 0, 0
+	for _, f := range store.FactsRef() {
+		if !isContractOperation(f) {
+			continue
+		}
+		if f.PropString(facts.PropMessagingCanonicalFile) == "" {
+			canonical++
+		} else {
+			copies++
+		}
+	}
+	if canonical != 1 || copies != 1 {
+		t.Fatalf("canonical=%d copies=%d, want 1 and 1", canonical, copies)
+	}
+}
+
+func TestSameSchemaNameWithDifferentDigestConflicts(t *testing.T) {
+	first := contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "one.yaml")
+	second := contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "two.yaml")
+	first.Props["message_schema"] = "schemas.yaml#/messages/Order"
+	second.Props["message_schema"] = "schemas.yaml#/messages/Order"
+	first.Props["message_schema_digest"] = "digest-one"
+	second.Props["message_schema_digest"] = "digest-two"
+	store := facts.NewStore()
+	store.Add(first, second, code("orders.created", facts.MessagingOperationPublish, "events.PublishOrder", 12))
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range store.FactsRef() {
+		if isCodeOperation(f) && f.PropString(facts.PropMessagingContractStatus) != facts.MessagingContractStatusAmbiguous {
+			t.Fatalf("different schema payloads must remain ambiguous: %+v", f.Props)
+		}
+	}
+}
+
+func TestEquivalentCopyInheritsConflicts(t *testing.T) {
+	a := contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "a.yaml")
+	b := contract("orders.created", facts.MessagingOperationPublish, "different", "b.yaml")
+	c := contract("orders.created", facts.MessagingOperationPublish, "publishOrder", "c.yaml")
+	store := facts.NewStore()
+	store.Add(a, b, c)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range store.FactsRef() {
+		if !isContractOperation(f) || f.File != "c.yaml" {
+			continue
+		}
+		conflicts, _ := f.Props[facts.PropMessagingDuplicateOf].([]string)
+		if len(conflicts) != 1 || conflicts[0] != "b.yaml" {
+			t.Fatalf("copy conflicts = %v, want [b.yaml]", conflicts)
+		}
+	}
+}
+
+func TestConflictingContractDeclarationIsFlaggedAndStaysAmbiguous(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		contract("orders.created", facts.MessagingOperationPublish, "publishOrderV1", "old.yaml"),
+		contract("orders.created", facts.MessagingOperationPublish, "publishOrderV2", "new.yaml"),
+		code("orders.created", facts.MessagingOperationPublish, "events.PublishOrder", 12),
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string][]string{}
+	for _, f := range store.FactsRef() {
+		if isCodeOperation(f) && f.PropString(facts.PropMessagingContractStatus) != facts.MessagingContractStatusAmbiguous {
+			t.Fatalf("conflicting declarations must stay ambiguous: %+v", f.Props)
+		}
+		if isContractOperation(f) {
+			dup, _ := f.Props[facts.PropMessagingDuplicateOf].([]string)
+			seen[f.PropString("operationId")] = dup
+		}
+	}
+	if len(seen["publishOrderV1"]) != 1 || seen["publishOrderV1"][0] != "new.yaml" {
+		t.Errorf("publishOrderV1 duplicate-of = %v, want [new.yaml]", seen["publishOrderV1"])
+	}
+	if len(seen["publishOrderV2"]) != 1 || seen["publishOrderV2"][0] != "old.yaml" {
+		t.Errorf("publishOrderV2 duplicate-of = %v, want [old.yaml]", seen["publishOrderV2"])
+	}
+}

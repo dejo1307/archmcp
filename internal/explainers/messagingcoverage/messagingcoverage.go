@@ -30,6 +30,7 @@ type item struct {
 func (*Explainer) Explain(_ context.Context, store *facts.Store) ([]facts.Insight, error) {
 	undeclared := map[string]map[string]item{}
 	unimplemented := map[string]map[string]item{}
+	duplicates := map[string]map[string]item{}
 	for _, f := range store.ByKind(facts.KindStorage) {
 		repo := f.Repo
 		if repo == "" {
@@ -42,7 +43,8 @@ func (*Explainer) Explain(_ context.Context, store *facts.Store) ([]facts.Insigh
 				detail: fmt.Sprintf("%s %s has no matching AsyncAPI operation", f.PropString(facts.PropMessagingOperation), f.Name),
 			})
 		}
-		if f.PropString(facts.PropMessagingImplementationStatus) == facts.MessagingImplementationUnimplemented {
+		if f.PropString(facts.PropMessagingImplementationStatus) == facts.MessagingImplementationUnimplemented &&
+			f.PropString(facts.PropMessagingCanonicalFile) == "" {
 			label := f.PropString("operationId")
 			if label == "" {
 				label = f.Name
@@ -51,6 +53,12 @@ func (*Explainer) Explain(_ context.Context, store *facts.Store) ([]facts.Insigh
 				name: f.Name, file: f.File,
 				detail: fmt.Sprintf("AsyncAPI operation %s (%s %s) has no detected implementation",
 					label, f.PropString(facts.PropMessagingOperation), f.Name),
+			})
+		}
+		if others, ok := f.Props[facts.PropMessagingDuplicateOf].([]string); ok && len(others) > 0 {
+			addItem(duplicates, repo, item{
+				name: f.Name, file: f.File,
+				detail: fmt.Sprintf("%s %s also declared, inconsistently, in %s", f.PropString(facts.PropMessagingOperation), f.Name, strings.Join(others, ", ")),
 			})
 		}
 	}
@@ -76,6 +84,17 @@ func (*Explainer) Explain(_ context.Context, store *facts.Store) ([]facts.Insigh
 			Confidence: 0.65,
 			Evidence:   evidence(items),
 			Actions:    []string{"Verify each operation against wrappers and runtime topic configuration", "Add the implementing repository or client library to the snapshot if it is missing"},
+		})
+	}
+	for _, repo := range sortedRepos(duplicates) {
+		items := sortedItems(duplicates[repo])
+		insights = append(insights, facts.Insight{
+			Title: fmt.Sprintf("Conflicting messaging contracts: %d operation(s) in %s declared inconsistently across specs", len(items), repo),
+			Description: fmt.Sprintf("Enola found %d AsyncAPI operation(s) in %s declared more than once with different content — a different operationId, message or schema — across the specs loaded. A binding to either cannot be resolved. Samples: %s.",
+				len(items), repo, samples(items)),
+			Confidence: 0.9,
+			Evidence:   evidence(items),
+			Actions:    []string{"Reconcile the conflicting spec files, or remove the stale one"},
 		})
 	}
 	return insights, nil

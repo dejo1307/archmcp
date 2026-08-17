@@ -136,6 +136,7 @@ func parseFile(absPath, relFile, repoPath string) ([]facts.Fact, error) {
 		}
 		optional(props, "message", op.message)
 		optional(props, "message_schema", op.messageInfo.schemaName)
+		optional(props, "message_schema_digest", op.messageInfo.schemaDigest)
 		optional(props, "schema_format", op.messageInfo.schemaFormat)
 		contentType := op.contentType
 		if contentType == "" {

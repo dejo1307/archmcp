@@ -3,6 +3,7 @@ package messagingcontract
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"sort"
 	"strconv"
@@ -19,7 +20,7 @@ func (b *Binder) Name() string            { return "messaging-contract" }
 func (b *Binder) Stage() plugin.BindStage { return plugin.StagePostLink }
 
 type contractRef struct {
-	identity, operationID, file, protocol string
+	identity, operationID, file, protocol, content string
 }
 
 type binding struct {
@@ -29,16 +30,48 @@ type binding struct {
 
 func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 	all := store.FactsRef()
+	rawContracts := map[string][]contractRef{}
 	contracts := map[string][]contractRef{}
+	duplicateOf := map[string][]string{}
+	canonicalOf := map[string]string{}
 	for _, f := range all {
 		if !isContractOperation(f) {
 			continue
 		}
 		key := operationKey(f)
-		contracts[key] = append(contracts[key], contractRef{
+		rawContracts[key] = append(rawContracts[key], contractRef{
 			identity: contractIdentity(f), operationID: f.PropString("operationId"), file: f.File,
-			protocol: f.PropString(facts.PropMessaging),
+			protocol: f.PropString(facts.PropMessaging), content: contractContentKey(f),
 		})
+	}
+	// Cluster equivalent declarations first, then compare clusters. This makes
+	// conflict metadata independent of traversal order (A, conflicting B, copy A).
+	for key, refs := range rawContracts {
+		groups := map[string][]contractRef{}
+		var groupOrder []string
+		for _, ref := range refs {
+			groupKey := ref.protocol + "\x00" + ref.content
+			if _, ok := groups[groupKey]; !ok {
+				groupOrder = append(groupOrder, groupKey)
+			}
+			groups[groupKey] = append(groups[groupKey], ref)
+		}
+		for _, groupKey := range groupOrder {
+			members := groups[groupKey]
+			canonical := members[0]
+			contracts[key] = append(contracts[key], canonical)
+			for _, member := range members {
+				canonicalOf[member.identity] = canonical.identity
+				for _, otherKey := range groupOrder {
+					if otherKey == groupKey {
+						continue
+					}
+					for _, other := range groups[otherKey] {
+						duplicateOf[member.identity] = append(duplicateOf[member.identity], other.file)
+					}
+				}
+			}
+		}
 	}
 
 	bindings := map[string]binding{}
@@ -113,6 +146,8 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		delete(f.Props, facts.PropMessagingImplementationCount)
 		delete(f.Props, facts.PropMessagingImplementedBy)
 		delete(f.Props, facts.PropMessagingImplementationStatus)
+		delete(f.Props, facts.PropMessagingDuplicateOf)
+		delete(f.Props, facts.PropMessagingCanonicalFile)
 		kept := f.Relations[:0]
 		for _, relation := range f.Relations {
 			if relation.Kind != facts.RelImplementedBy {
@@ -121,8 +156,20 @@ func (b *Binder) Bind(_ context.Context, store *facts.Store) error {
 		}
 		f.Relations = kept
 		identity := contractIdentity(*f)
-		set := implementers[identity]
-		implementationCount := len(implementations[identity])
+		if dup := dedupSorted(duplicateOf[identity]); len(dup) > 0 {
+			f.Props[facts.PropMessagingDuplicateOf] = dup
+		}
+		canonical := canonicalOf[identity]
+		if canonical != "" && canonical != identity {
+			for _, ref := range contracts[operationKey(*f)] {
+				if ref.identity == canonical {
+					f.Props[facts.PropMessagingCanonicalFile] = ref.file
+					break
+				}
+			}
+		}
+		set := implementers[canonical]
+		implementationCount := len(implementations[canonical])
 		f.Props[facts.PropMessagingImplementationCount] = implementationCount
 		if implementationCount == 0 {
 			f.Props[facts.PropMessagingImplementationStatus] = facts.MessagingImplementationUnimplemented
@@ -190,4 +237,34 @@ func contractIdentity(f facts.Fact) string {
 
 func codeIdentity(f facts.Fact) string {
 	return operationKey(f) + "\x00" + f.File + "\x00" + strconv.Itoa(f.Line) + "\x00" + f.PropString("code_symbol")
+}
+
+func contractContentKey(f facts.Fact) string {
+	props := make(map[string]any, len(f.Props))
+	for key, value := range f.Props {
+		switch key {
+		case "spec_file", facts.PropMessagingContractBound, facts.PropMessagingContractOperationID,
+			facts.PropMessagingContractFile, facts.PropMessagingImplementationCount,
+			facts.PropMessagingImplementedBy, facts.PropMessagingContractStatus,
+			facts.PropMessagingContractCandidates, facts.PropMessagingImplementationStatus,
+			facts.PropMessagingDuplicateOf, facts.PropMessagingCanonicalFile:
+			continue
+		}
+		props[key] = value
+	}
+	encoded, _ := json.Marshal(props) // extractor props are JSON-compatible
+	return string(encoded)
+}
+
+func dedupSorted(files []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		if !seen[file] {
+			seen[file] = true
+			out = append(out, file)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

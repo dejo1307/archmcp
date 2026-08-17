@@ -51,7 +51,12 @@ exact topic+operation pair to a unique AsyncAPI operation in the same repository
 - The code fact gains `messaging_contract_bound`, the operation ID, and spec file.
 - The contract gains `messaging_implementation_count`, `messaging_implemented_by`,
   and an `implemented_by` relation to the code symbol.
-- Multiple matching contract operations are ambiguous and remain unbound.
+- Multiple matching contract operations are ambiguous and remain unbound — unless
+  their extracted operation metadata and resolved payload schema are semantically
+  equivalent. Equivalent bundled or generated copies count as one candidate; a
+  non-canonical copy records `messaging_canonical_file`. Two files that disagree
+  about the same channel, operation and protocol each gain
+  `messaging_duplicate_of`, naming the conflicting file.
 
 Protocol compatibility is part of that match. Kafka and `kafka-secure` are one
 broker family, while an explicitly MQTT, AMQP, or WebSocket contract cannot bind
@@ -64,13 +69,15 @@ would manufacture contract coverage that does not exist.
 
 ## Messaging contract coverage
 
-The `messaging-coverage` explainer turns binding verdicts into two actionable
+The `messaging-coverage` explainer turns binding verdicts into three actionable
 findings, available through `query_insights(explainer="messaging-coverage")`:
 
 - A static Go or TypeScript Kafka call with no matching AsyncAPI operation is an
   **undeclared messaging operation** (confidence 0.9).
 - An AsyncAPI operation with no detected supported implementation is an
   **unimplemented contract candidate** (confidence 0.65).
+- Two specs declaring the same channel, operation and protocol with different
+  content is a **conflicting messaging contract** (confidence 0.9).
 
 The second is intentionally a candidate rather than a dead-code verdict: an
 implementation may use a wrapper, dynamic topic, unsupported client library, or

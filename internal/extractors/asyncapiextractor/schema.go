@@ -1,6 +1,9 @@
 package asyncapiextractor
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 )
@@ -9,7 +12,7 @@ import (
 // and payload chain to identify the schema and its formats, but does not emit
 // field-level facts until a compatibility or impact consumer can use them.
 type messageInfo struct {
-	name, contentType, schemaFormat, schemaName string
+	name, contentType, schemaFormat, schemaName, schemaDigest string
 }
 
 func messageInfoFor(raw any, baseFile string, resolver *refResolver) messageInfo {
@@ -32,6 +35,13 @@ func messageInfoFor(raw any, baseFile string, resolver *refResolver) messageInfo
 	payload := resolver.resolve(message.value["payload"], message.absFile)
 	if len(payload.value) == 0 || info.name == "" {
 		return info
+	}
+	// encoding/json orders map keys, giving equivalent YAML and JSON payloads the
+	// same stable digest while keeping schemas with the same name but different
+	// definitions distinct during cross-file contract deduplication.
+	if normalized, err := json.Marshal(payload.value); err == nil {
+		sum := sha256.Sum256(normalized)
+		info.schemaDigest = hex.EncodeToString(sum[:])
 	}
 	rel, err := filepath.Rel(resolver.repoRoot, payload.absFile)
 	if err == nil {

@@ -283,6 +283,9 @@ Line:
 	if topic.Props["message_schema"] != schemaName {
 		t.Errorf("message_schema = %v, want %s", topic.Props["message_schema"], schemaName)
 	}
+	if topic.PropString("message_schema_digest") == "" {
+		t.Error("message_schema_digest must identify the resolved payload content")
+	}
 	if topic.Props["schema_format"] != "application/schema+json;version=draft-07" {
 		t.Errorf("schema_format = %v", topic.Props["schema_format"])
 	}
