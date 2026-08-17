@@ -23,6 +23,7 @@ Fixtures: [`go_sample`](../../internal/engine/testdata/repos/go_sample/) ·
 | a `.proto` service + generated client | both sides of a gRPC edge | `route` |
 | a Kafka topic constant | a topic, attributed to the service that owns it | `storage` |
 | `*_test.go` | a reference-only `test_ref`, so test-only callees are not dead | `test_ref` |
+| a method named in an `interface` block | a symbol, so the contract is in the graph too | `symbol` |
 
 ## Modules, symbols and imports
 

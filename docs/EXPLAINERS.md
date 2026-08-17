@@ -28,21 +28,26 @@ All of which buys a finding you can trust. It does not buy a verdict — and the
 between those two is what the rest of this document is about.
 
 Across the 81 public repositories swept in [BENCHMARKS.md](BENCHMARKS.md), enola's
-eleven explainers produced **29,633 findings**. Every one of them is derived rather than
+fifteen explainers produced **9,131 findings**. Every one of them is derived rather than
 guessed, and that number is still the problem rather than the achievement. Nobody is
-going to read 29,633 findings. Nobody is going to fix them. A report that hands you all
+going to read 9,131 findings. Nobody is going to fix them. A report that hands you all
 of them has told you something true and useless in the same breath, and the honest
 response to it is to close the tab.
+
+It was 29,633 until `hotspots` was capped at its top 20 per repository. That one
+explainer was roughly 80% of every finding enola produced, so its ranking decided what
+a reader saw first and the other fourteen sat underneath it. Capping it did not make
+the remaining count small enough to read, which is the point of everything below.
 
 So the question that decides whether any of this is worth running is not *what can you
 find*. It is **what happens to a finding after you have found it** — and that depends
 entirely on the thing [SNAPSHOTS.md](SNAPSHOTS.md) describes: whether your graph is a
 value you can compare against another one, or a picture of right now.
 
-## Eleven explainers: two proofs and nine estimates
+## Fifteen explainers: three proofs and twelve estimates
 
 An explainer reads the fact graph and emits **findings** — a claim, a confidence, and
-the entities the claim is about. There are eleven, and they fall into five kinds:
+the entities the claim is about. There are fifteen, and they fall into six kinds:
 
 - **The proofs.** `cycles` runs Tarjan's SCC over the resolved import edges — a cycle
   either exists or it does not. `intent` diffs DECLARED architecture (a repo's
@@ -52,6 +57,13 @@ the entities the claim is about. There are eleven, and they fall into five kinds
   declared seam the graph never measured, a page relation to an uncompiled page, a
   measurable code anchor no fact touches, a seam covered only by superseded intent —
   are capped below 1.0, because each absence can be drift or an extraction miss.
+  `constraints` is the third: it verdicts the declared components-and-rules vocabulary
+  against the measured graph — a component resolves to the facts its match patterns
+  select, and a rule states one of twelve enforceable forms over components (`forbid`,
+  `forbid_reach`, `allow-only`, `protect`, `private`, and the rest). A breach is set
+  membership over measured edges, so it is proof-class; the one place it estimates is
+  a `forbid_reach` membership too large to walk, which degrades to a single `0.4`
+  advisory rather than guessing.
 - **Outlier tests.** `god-class`, `hotspots` and `complexity-outliers` compute a
   distribution over your repository and flag what sits above `mean + 2σ`.
 - **Graph shape.** `dependency-depth` measures the longest transitive import chain;
@@ -69,11 +81,25 @@ the entities the claim is about. There are eleven, and they fall into five kinds
   own; they summarise what the cross-repo linker already resolved — which repositories
   depend on which, where enola failed to follow a call, and which routes no loaded
   client calls.
+- **The declaration-shaped ones.** Every explainer above keys off symbols, modules and
+  their dependency edges, which left the route, storage and association facts the
+  extractors emit feeding nothing. `domain` asks the questions those facts answer —
+  what a Rails application's declarations say about its data and its API, rather than
+  about the shape of its code. `query-loops` reports a database query issued once per
+  iteration of a data-sized loop, and deliberately reports only the shape it can prove:
+  the detector everyone asks for — `record.association` inside a loop — funnels to zero
+  true positives on a large monolith, because the graph has no receiver type inference
+  for Ruby and `candidate.posts` and `client.post` are the same string to it.
+  `entry-points` marks the symbols a framework invokes directly — a routed controller
+  action, a job a queue drains, a mailer, a rake task — so that reachability has roots
+  at all. It stops at marking them: reachability *from* them reports 86% of a
+  monolith's symbols unreachable, which is the receiver-typing gap showing through
+  rather than a finding about the monolith, so that verdict is not shipped.
 
 What each one computes, every threshold it uses and what it deliberately ignores is in
 [ARCHITECTURE.md → Insights](../ARCHITECTURE.md#insights-explainers). The distinction
-that matters here is smaller and blunter: **two of the eleven prove something. The
-other nine estimate.** A cycle is a fact about your import graph. A god class is an opinion
+that matters here is smaller and blunter: **three of the fifteen prove something. The
+other twelve estimate.** A cycle is a fact about your import graph. A god class is an opinion
 about your repository, expressed as a number, and reasonable people can disagree with
 it.
 
@@ -85,20 +111,20 @@ computes a saturating score — a fan-in ratio, a coverage share — clamps stri
 
 ## A list of everything wrong is not a list of anything you did
 
-Here is the shape of the problem, from the corpus. Fifteen repositories, before anyone
+Here is the shape of the problem, from the corpus. Eighteen repositories, before anyone
 changed a line:
 
-> **1,228 pre-existing findings.** Up to 171 in a single repository.
+> **1,395 pre-existing findings.** Up to 141 in a single repository.
 
 Now make a change. Add a feature, fix a bug, let an agent refactor a package. Two
 questions look similar and are not:
 
-1. *What is wrong with this repository?* — 1,228 answers, none of them yours.
+1. *What is wrong with this repository?* — 1,395 answers, none of them yours.
 2. *What did my change do to it?* — the question you can actually act on.
 
-Almost every one of those 1,228 findings was there before you opened the editor. You did
+Almost every one of those 1,395 findings was there before you opened the editor. You did
 not write them, you are not going to fix them today, and a tool that reports them
-alongside your change has buried the one thing you needed in 1,227 things you did not.
+alongside your change has buried the one thing you needed in 1,394 things you did not.
 This is how structural analysis dies in practice: not because the analysis is wrong, but
 because the signal-to-noise ratio makes the honest response *turn it off*.
 
@@ -117,17 +143,17 @@ time. And because every finding carries the entities it is about — the modules
 cycle, the symbol with the fan-in, the dependency edge that crossed a layer — a finding
 can be checked against what your change actually touched.
 
-Put those together and the report inverts. Instead of *1,228 findings, one of which might
+Put those together and the report inverts. Instead of *1,395 findings, one of which might
 be new*, you get:
 
 > **FAIL — 1 structural regression introduced.**
 
-Measured, on those same fifteen repositories: an injected dependency cycle was reported
-as **exactly one regression, and not one of the 1,228 pre-existing findings was repeated**
+Measured, on those same eighteen repositories: an injected dependency cycle was reported
+as **exactly one regression, and not one of the 1,395 pre-existing findings was repeated**
 ([BENCHMARKS.md § 2](BENCHMARKS.md#2-delta-precision--the-ratchet)). Revert the change
 and it goes quiet again. The verdict is a function of the tree, not of history.
 
-That is the whole trick, and it is not a smarter explainer. It is the same ten
+That is the whole trick, and it is not a smarter explainer. It is the same fifteen
 explainers run twice, over two values that both still exist.
 
 ## Three answers, and the third is the interesting one
@@ -142,7 +168,7 @@ Comparing findings across two snapshots gives three outcomes, not two:
 
 That third bucket is small, unglamorous, and the reason the gate stays switched on.
 
-Most of the eleven explainers are relative to your repository. `mean + 2σ` moves when the
+Most of the fifteen explainers are relative to your repository. `mean + 2σ` moves when the
 population moves. A ranked top-N list has fixed membership size, so when a worse
 offender is deleted the next module rises into the window — and a finding "appears" for
 a module nobody edited. Both are real effects of statistics, not of your work.

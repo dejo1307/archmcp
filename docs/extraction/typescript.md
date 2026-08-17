@@ -31,6 +31,13 @@ Fixtures: [`ts_sample`](../../internal/engine/testdata/repos/ts_sample/) ·
 | an ember-data `Model` subclass | a model with its dasherized name | `storage` |
 | top-level statements | a `file_ref` carrying the call edges | `file_ref` |
 | `*.test.ts`, `*.spec.tsx` | a reference-only `test_ref` | `test_ref` |
+| `constructor(…)` | a symbol like any other member | `symbol` |
+| `@Input()` on a class member | the member's `decorators` prop | `symbol` |
+| `get total()` | a symbol, not a skipped accessor | `symbol` |
+| `class A extends B` | an `extends` prop naming the base and the module it came from | `symbol` |
+| `exports.name = function` (CommonJS) | a declared symbol | `symbol` |
+| `this.x = …` inside a method | the method's `assigns_fields` prop | `symbol` |
+| any function or method | `takes_parameters`, whether it declares one at all | `symbol` |
 
 ## Routes — NestJS controller prefixes
 

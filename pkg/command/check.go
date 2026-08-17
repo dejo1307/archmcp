@@ -116,9 +116,10 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" check [flags] [config_path]\n\n"+
 			"Grade what a change did to the architecture, against a pinned baseline.\n\n"+
 			"Nothing fails until you say what should: with no --fail-on and no --max-spillover\n"+
-			"every finding is reported and the run exits 0. The eleven explainer names --fail-on\n"+
-			"accepts are: cycles, layers, intent, crossrepo, coverage, unused-routes, god-class,\n"+
-			"hotspots, dependency-depth, exported-surface, complexity-outliers.\n\n"+
+			"every finding is reported and the run exits 0. The fifteen explainer names --fail-on\n"+
+			"accepts are: cycles, layers, intent, constraints, crossrepo, coverage, unused-routes,\n"+
+			"god-class, hotspots, dependency-depth, exported-surface, complexity-outliers, domain,\n"+
+			"query-loops, entry-points.\n\n"+
 			"Exit codes:\n"+
 			"  0  clean      nothing the policy enforces\n"+
 			"  1  regression the policy was violated\n"+

@@ -9,8 +9,9 @@ searching the web will not tell you.
 
 **Fact** — the unit of the graph, and the only thing enola treats as knowledge. A fact
 is one typed thing that exists in your code: a `module`, a `symbol`, a `route`, a
-`storage` target, a `dependency`, or a `service` (a whole repository, in a multi-repo
-graph). Every fact is derived by a parser or a deterministic algorithm — never guessed
+`storage` target, a `dependency`, an `association` (a model's declared relation to
+another, which is what lets a query walk from a URL to the tables behind it), or a
+`service` (a whole repository, in a multi-repo graph). Every fact is derived by a parser or a deterministic algorithm — never guessed
 by a model, never retrieved by similarity.
 
 **Relation / edge** — a typed link between facts: `imports`, `calls`, `declares`,
@@ -27,7 +28,7 @@ extraction and before any analysis.
 
 ## What enola computes
 
-**Explainer** — an analysis that reads the fact graph and emits findings. There are ten.
+**Explainer** — an analysis that reads the fact graph and emits findings. There are fifteen.
 See [docs/EXPLAINERS.md](EXPLAINERS.md).
 
 **Finding** (also **insight**) — one claim an explainer makes, carrying a title, a
