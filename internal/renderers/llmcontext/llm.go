@@ -482,8 +482,14 @@ func (r *LLMContextRenderer) renderCriticalModules(snapshot *facts.Snapshot) str
 		}
 	}
 
+	// Candidates are collected out of a map, so without the name key equal scores
+	// order — and at the top-10 cut, are selected — by map iteration, and two runs
+	// over one repository render different tables.
 	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].Score > scored[j].Score
+		if scored[i].Score != scored[j].Score {
+			return scored[i].Score > scored[j].Score
+		}
+		return scored[i].Name < scored[j].Name
 	})
 
 	// Show top 10
@@ -687,7 +693,10 @@ func detectDominantLanguage(snapshot *facts.Snapshot) string {
 	best := ""
 	bestCount := 0
 	for lang, count := range counts {
-		if count > bestCount {
+		// Same map-iteration hazard as the critical-module ranking: a tie on count
+		// must be settled by name, or the guidance a tied repository renders
+		// changes between two runs of one binary.
+		if count > bestCount || (count == bestCount && lang < best) {
 			best = lang
 			bestCount = count
 		}

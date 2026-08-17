@@ -997,3 +997,33 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Errorf("after concurrent adds: Count() = %d, want %d", got, n)
 	}
 }
+
+func TestUpdateRange_MutatesOnlyFromTheStartIndex(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		Fact{Kind: KindRoute, Name: "/before", Props: map[string]any{"method": "GET"}},
+	)
+	windowStart := s.Count()
+	s.Add(
+		Fact{Kind: KindRoute, Name: "/inside", Props: map[string]any{"method": "GET"}},
+		Fact{Kind: KindRoute, Name: "/also-inside"},
+	)
+	touched := 0
+	s.UpdateRange(windowStart, func(f *Fact) {
+		if f.Props == nil {
+			f.Props = map[string]any{}
+		}
+		f.Props["touched"] = true
+		touched++
+	})
+	if touched != 2 {
+		t.Fatalf("touched = %d, want only the window's 2 facts", touched)
+	}
+	ff := s.FactsRef()
+	if _, claimed := ff[0].Props["touched"]; claimed {
+		t.Errorf("a fact before the window start was mutated: %+v", ff[0].Props)
+	}
+	if ff[1].Props["touched"] != true || ff[2].Props["touched"] != true {
+		t.Errorf("window facts not mutated: %+v, %+v", ff[1].Props, ff[2].Props)
+	}
+}

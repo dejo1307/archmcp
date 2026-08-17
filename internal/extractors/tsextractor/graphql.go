@@ -99,8 +99,75 @@ func extractGraphQLClientOps(text, relFile, source string) []facts.Fact {
 	return out
 }
 
-// gqlTag matches gql`…` / graphql`…` tagged template literals.
-var gqlTag = regexp.MustCompile("(?s)\\b(?:gql|graphql)`([^`]*)`")
+// gqlTagOpen matches the opening of a gql`…` / graphql`…` tagged template.
+//
+// The leading class is load-bearing: a tag sits where an expression starts, so
+// the character before it is punctuation or whitespace, never part of a path.
+// `uri: ${this.config.railsURL}/graphql` ends in the word and a backtick and is
+// not a tag at all — the backtick closes the surrounding template — and a
+// pattern keyed only on the word matched it. Where the body ENDS is not a regex
+// question at all; see templateBody.
+var gqlTagOpen = regexp.MustCompile("(?:^|[\\s=(,{\\[:;>?])(?:gql|graphql)`")
+
+// templateBody returns the span of a template literal whose opening backtick is
+// at start, handling the one thing a regex cannot: `${…}` interpolations that
+// contain their own template literals, and therefore their own backticks.
+//
+// The old pattern was `([^`]*)`, which ends the body at the first inner
+// backtick. One frontend's analytics reports interpolate a whole selection —
+// `${inOverview ? `sessionPageviewQuery(…) {…}` : `…`}` — so the captured body
+// was the operation head and half an interpolation, with no closing brace in
+// it. Two consequences, and the quiet one is worse. The visible one: the head
+// regex had no `${…}` to skip, so it stopped at the interpolation's brace and
+// read the JavaScript variable as the operation's first field, which is where
+// Query.inOverview and Query.onlyVisits came from. The quiet one: every real
+// root field after the truncation point was never seen at all.
+func templateBody(text string, start int) (body string, end int) {
+	i := start + 1
+	for i < len(text) {
+		switch {
+		case text[i] == '\\':
+			i += 2
+		case text[i] == '`':
+			return text[start+1 : i], i + 1
+		case text[i] == '$' && i+1 < len(text) && text[i+1] == '{':
+			i = skipInterpolation(text, i+2)
+		default:
+			i++
+		}
+	}
+	// Unterminated: return nothing. The tempting alternative — hand back the
+	// rest of the file, since an operation at the top of it still names its
+	// root fields — is how `uri: ${config.railsURL}/graphql` came to be read
+	// as a tag opening. The backtick after that word CLOSES an ordinary
+	// template, so the scan ran to end of file and read an Apollo options
+	// object as a document, emitting Query.variables and Query.network. A
+	// missing edge beats a wrong one.
+	return "", len(text)
+}
+
+// skipInterpolation walks from just past a `${` to just past its matching `}`,
+// following nested braces and any template literals inside — which may
+// themselves interpolate.
+func skipInterpolation(text string, i int) int {
+	braces := 1
+	for i < len(text) && braces > 0 {
+		switch text[i] {
+		case '\\':
+			i++
+		case '{':
+			braces++
+		case '}':
+			braces--
+		case '`':
+			_, next := templateBody(text, i)
+			i = next
+			continue
+		}
+		i++
+	}
+	return i
+}
 
 // extractGraphQLTagFacts pulls client operations out of a source file's tagged
 // templates.
@@ -110,11 +177,18 @@ func extractGraphQLTagFacts(src []byte, relFile string) []facts.Fact {
 		return nil
 	}
 	var out []facts.Fact
-	for _, m := range gqlTag.FindAllStringSubmatchIndex(text, -1) {
-		for _, f := range extractGraphQLClientOps(text[m[2]:m[3]], relFile, facts.RouteSourceGraphQLTag) {
-			f.Line += strings.Count(text[:m[2]], "\n")
+	for at := 0; at < len(text); {
+		m := gqlTagOpen.FindStringIndex(text[at:])
+		if m == nil {
+			break
+		}
+		open := at + m[1] - 1
+		body, end := templateBody(text, open)
+		for _, f := range extractGraphQLClientOps(body, relFile, facts.RouteSourceGraphQLTag) {
+			f.Line += strings.Count(text[:open+1], "\n")
 			out = append(out, f)
 		}
+		at = end
 	}
 	return out
 }

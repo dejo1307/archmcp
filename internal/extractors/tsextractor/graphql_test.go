@@ -111,3 +111,51 @@ func TestGraphQLDocDetect_GradleNestedDocuments(t *testing.T) {
 		t.Fatal("Gradle-nested Apollo documents (app/src/main/graphql/) must detect — the Gradle-layout case")
 	}
 }
+
+// A gql tag whose interpolation carries its own template literal. The old
+// pattern ended the body at the first inner backtick, which cut the document in
+// half: the visible cost was a JavaScript variable read as the first root
+// field, the quiet one was every real field after the cut never being seen.
+func TestGraphQLTag_InterpolatedTemplateInsideTheDocument(t *testing.T) {
+	src := []byte("const q = (inOverview = false) => gql`\n" +
+		"  query DeviceQuery($dateRange: DateRangeAttributes!) {\n" +
+		"    deviceQuery: ${\n" +
+		"      inOverview\n" +
+		"        ? `sessionPageviewQuery(dateRange: $dateRange) { total }`\n" +
+		"        : `combinedQuery(dateRange: $dateRange) { total }`\n" +
+		"    }\n" +
+		"    candidates {\n" +
+		"      id\n" +
+		"    }\n" +
+		"  }\n" +
+		"`;\n")
+
+	var names []string
+	for _, f := range extractGraphQLTagFacts(src, "q.ts") {
+		names = append(names, f.Name)
+	}
+	if len(names) != 1 || names[0] != "Query.candidates" {
+		t.Errorf("want only the statically named root field, got %v", names)
+	}
+}
+
+// The word `graphql` followed by a backtick is not always a tag: here the
+// backtick CLOSES an ordinary template literal. Reading it as an opening one
+// ran the scan to end of file and turned an Apollo options object into a
+// document — Query.variables and Query.network, from a file with no GraphQL in
+// it at all.
+func TestGraphQLTag_WordInAPathIsNotATag(t *testing.T) {
+	src := []byte("const link = () => ({\n" +
+		"  uri: `${this.config.railsURL}/graphql`,\n" +
+		"  defaultOptions: {\n" +
+		"    query: {\n" +
+		"      fetchPolicy: 'network-only',\n" +
+		"      variables,\n" +
+		"    },\n" +
+		"  },\n" +
+		"});\n")
+
+	if got := extractGraphQLTagFacts(src, "apollo.ts"); len(got) != 0 {
+		t.Errorf("no tag here, so no facts; got %+v", got)
+	}
+}

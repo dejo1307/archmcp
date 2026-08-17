@@ -1681,7 +1681,253 @@ import (
 // suppressing, and the consumer's call to that path stops being an unresolved edge:
 // cross-repo endpoint count 2 → 3, http_client coverage resolved 3 → 4. Cached
 // TypeScript/JavaScript snapshots must re-extract.
-const cacheVersion = "v198"
+// v199: Ruby reads db/structure.sql when present — the database's own account of the
+// schema, which model-derived storage facts can only infer. Each pg_dump CREATE TABLE
+// yields a storage fact (or, for a table an ActiveRecord/Sequel model already claims,
+// a census folded onto the model's existing fact — one table, one storage identity)
+// carrying sorted `columns` and single-column `fk_constraints` ("column->reftable")
+// props, which is what lets a declared require-rule verdict schema discipline (every
+// company_id column carries its companies FK) from measured facts. Line/regex-based on
+// the pg_dump shapes only; composite FKs and unrecognized lines are skipped, never
+// guessed.
+// v200: Stimulus markup bindings become named facts. A `data-controller="x"` or
+// `data-action="click->x#y"` attribute in an .html.erb view emits one dependency-style
+// fact per declared controller identifier ("stimulus-binding: <file> -> <x>", with a
+// `binding` prop naming the declaring attributes) at resolution_level
+// "markup-declared" — the honest level: the binding is stated in markup, not resolved
+// through code. The fact links to app/javascript/controllers/<x>_controller.(js|ts)
+// only when that conventional file exists; otherwise it stays name-only. Identifiers
+// that are not plain Stimulus tokens (ERB interpolations) declare nothing — fail
+// closed, never a guessed edge.
+// v201: finding 0007's next markup slice, fail-closed at every shape. Literal Turbo
+// frame ids (`turbo_frame_tag :post_1`, `data-turbo-frame="results"`) in view
+// templates become dependency facts named "turbo-frame: <file> -> <id>" at
+// markup-declared — the frame id is an identity two markup sites share, so it is
+// recorded without resolution; dom_id calls, interpolation and the reserved `_top`
+// target emit nothing. Model-side `broadcasts_to` with a literal symbol/string
+// stream becomes "broadcast: <Model> -> <stream>" at literal-declared; the common
+// lambda form computes its stream per record at runtime and emits nothing. And the
+// TS extractor tags the static targets/values fields it already parses on
+// conventionally-placed Stimulus controllers with classification props
+// (framework=stimulus, stimulus_static=targets|values) — props only, on symbols
+// that already exist, so a consumer can finally ask which controllers declare
+// which magic accessors.
+// v202: importmap-rails apps are detected as JavaScript projects. The TS extractor
+// claimed every .js file (its FileOwner glob) but Detect knew only package.json and
+// tsconfig shapes, so a Rails app whose pins live in config/importmap.rb — which
+// ships no package.json at all — never ran the extractor: on the census that was
+// 74 of the 8-repo sample's 100 skipped-with-cause files (once-campfire), every one
+// of them a claimed, parseable, unparsed source file. config/importmap.rb presence
+// now switches the extractor on; vendored minified bundles under vendor/javascript
+// are still skipped by the existing minified gate, which is the honest account.
+// v203: the rest of the view-composition surface, fail-closed at every shape. A
+// hand-written `<turbo-frame id="composer">` element declares its frame id exactly
+// as turbo_frame_tag does — it is the helper's rendered output, and the shape a
+// helper-free view writes — so it now emits the same "turbo-frame:" fact; an id
+// carrying ERB still fails the id gate. And a literal render target (`render
+// "accounts/help_contact"`, quoted, with or without partial:) becomes a dependency
+// fact "render: <view> -> <target>" at literal-declared, linked to the partial file
+// only when Rails' underscore lookup finds it on disk — `render @post`,
+// interpolation and variables emit nothing, so view-to-view composition enters the
+// graph without a single guessed edge.
+// v204: CommonJS export assignments declare symbols. `exports.name = function` and
+// `module.exports.name = function` are the whole public surface of a classic Node
+// module, and no declaration-shaped case ever fired on them — an Express
+// controller written that way emitted nothing, which the census surfaced as
+// "claimed by typescript, no facts emitted". The member-assignment-of-a-function
+// shape now yields an exported function symbol; plain values, re-exported
+// identifiers and whole-object `module.exports = {…}` still emit nothing, because
+// there is no member name to carry or no declaration to classify without guessing.
+// v205: Go interface methods declare symbols. An interface declaration's named
+// methods each emit a symbol fact (pkgDir.Iface.Method, symbol_kind method,
+// exported per the method name's own Go case, receiver carrying the interface
+// name) beside the interface fact that was already emitted. The constraints
+// evaluator resolves edge targets by exact fact name, fail closed, and a call
+// through an interface value targets exactly that name — so a declared forbid
+// rule over a dependency visibly in the source yielded zero verdicts (finding
+// 0009, gin's c.engine.HTMLRender.Instance). The declaration is measured, not
+// guessed: embedded interfaces expand nothing, and no edge to an implementation
+// is fabricated. TS interfaces share the missing-member shape but not the
+// defect: without type inference the TS extractor never resolves a call target
+// to dir.Iface.method, so emitting the members would add facts no edge can
+// ground on. Ruby has no interface construct — a module's methods are real
+// definitions and already emit symbols.
+// v206: three census-named vocabulary gaps closed. The TS extractor claims and
+// parses .mjs — the file is the same ESM the extractor already reads in .js,
+// only the extension differed, so a Node project's native-ESM half was
+// excluded-by-kind — and .mjs joins the module-resolution extension order so
+// an extensionless import can land on it. Jbuilder views (.jbuilder) go
+// through the Ruby template reference pass with the whole file as the Ruby
+// region: a Jbuilder template IS plain Ruby (the json builder DSL), so helpers
+// and decorators called only from a JSON view stop reading as dead, while the
+// reference-only shape keeps views out of the symbol set. And the Ruby
+// extractor's FileOwner now claims what its Extract already reads — ERB/Slim/
+// HAML templates and Jbuilder views — which both moves those files out of the
+// census's excluded-by-kind bucket (they were parsed while reading as a
+// vocabulary gap) and fixes a real cache defect: a template edit did not
+// invalidate the extractor's cache key even though its facts carry the
+// template's references.
+//
+// v207: TypeScript class members carry their decorators, and get accessors become
+// their own symbol kind. Every decorated class member (method, getter, field) and
+// every decorated class gains a `decorators` prop — the sorted, deduped decorator
+// names with arguments stripped (`cached`, `tracked`, `action`, `service`,
+// `Controller`, …), space-joined in the set-valued string form the constraint
+// evaluator's prop containment and the prop-implication miner both read (the
+// columns/fk_constraints precedent) — read from the same nodes the route/service
+// passes already walk, so a convention like "expensive getters carry @cached"
+// becomes a mechanically checkable prop instead of prose. A `get` accessor emits
+// symbol_kind getter (a new vocabulary value beside function/method; consumers
+// that treated methods as callable members treat getters the same) with a
+// getter_calls prop counting its distinct outgoing call edges — emitted even at
+// 0, so measured-cheap and unmeasured never look the same. Set accessors stay
+// methods: only the read path is a getter. Template read fan-in is deliberately
+// NOT emitted — no template->member edge exists to derive it from (the .hbs
+// scanner refuses bare {{name}} as ambiguous, and strict-mode .gts tokens
+// resolve against imports only), and a guessed fan-in is worse than an absent
+// one.
+//
+// v208: a Rails namespace's declared table_name_prefix corrects the models nested
+// under it. `def self.table_name_prefix` on a module records its literal on that
+// module's symbol fact (a plain string only — an interpolated or computed prefix
+// states nothing), and a whole-repo pass prepends it to the table of every model
+// storage fact whose root namespace declares one and whose table_source is
+// derived. A declared table is left exactly as the source states it: Rails does
+// not prefix a `self.table_name`, so prefixing one would replace a stated fact
+// with a derived guess. The correction runs before the structure.sql fold, so the
+// dump's column census lands on the model that reads the prefixed relation rather
+// than on whichever model the unprefixed name collided with.
+//
+// The same version carries finding 0007's method-level residual. A Stimulus
+// data-action no longer loses the method after the `#`: the binding fact carries
+// the sorted `stimulus_handlers` set the view invokes on that controller (action
+// options like `:prevent` are not part of a method name), and the new
+// stimulus-resolver binder grounds each one on the member the controller file
+// declares, reporting the rest as `stimulus_unresolved` beside a
+// stimulus:actions coverage fact. Nothing is derived from a class name — an
+// identifier that grounded no file grounds no handler either. The controller
+// file itself now also resolves outside app/javascript/controllers: the
+// conventional root wins outright, and failing it the single file in the tree
+// whose path ends with the identifier's relative path grounds it, so an app
+// registering controllers from app/components stops being name-only. Two
+// candidates are an ambiguity and ground nothing.
+//
+// And the TypeScript gRPC stub index grows the ambiguity guard its Go sibling
+// has carried since finding 0003. Both of its keys are short names, so a service
+// declared in two proto packages collides; the name is now dropped the moment a
+// service with a DIFFERING fully-qualified name claims it, stickily, and the
+// conventional "<Service>Client" / "<Service>" names go through the same gate so
+// a derived name cannot put back what a collision dropped. Re-registration under
+// the same fq is not a collision — a split _pb/_connect pair, a barrel
+// re-export and a checked-in dist/ copy all do it — so no edge that resolves
+// today stops resolving. Emitting nothing is the whole point: an edge to one of
+// two API versions is wrong half the time, and the ambiguity is not published as
+// a fact property, which is the settled answer on the Go side.
+// v209: the Rails default schema dump joins the SQL one. db/schema.rb is read
+// into exactly the census db/structure.sql already produces — the sorted
+// `columns` set and the sorted `from_column->to_table` `fk_constraints` set,
+// through the same fold onto whichever model claims the table — so a constraint
+// written against either prop verdicts identically whichever format a project
+// keeps, and the half of the Rails world that never opted into structure.sql
+// stops producing no schema facts at all. Where both files exist structure.sql
+// wins outright and schema.rb is not read: opting into the SQL format is what
+// makes it the authoritative dump, and one database read twice would fold two
+// censuses onto one storage identity. The reader is a bounded line parser
+// rather than a Ruby grammar for the reason the pg_dump one is not a SQL
+// grammar — SchemaDumper writes one statement per line in a handful of stable
+// shapes, and a line outside them contributes nothing. The implicit primary key
+// is synthesized (`id`, the declared `primary_key:`, or none under `id: false`)
+// because it is a column the SQL dump would have written out. An
+// add_foreign_key without an explicit `column:` does not invent the name
+// ActiveSupport's inflector would derive: it CHOOSES the single `<stem>_id`
+// column the table declares that the referenced table is a plural of, and
+// states nothing where none or several match — the silence a composite key
+// already gets on the SQL side.
+//
+// v210: a JavaScript class says which base class it extends, and which module
+// that name came from. The class fact carries `superclass` — the identifier as
+// written, one level, the same meaning rubyextractor gives the prop — and
+// `superclass_module`, read from the file's own import table. The second prop is
+// what JavaScript needs and Ruby does not: a Ruby superclass token is a globally
+// resolvable constant, while a JavaScript one is bound by an import, so the bare
+// `Controller` is @hotwired/stimulus' base class on 150 of one production Ember
+// frontend's classes and @ember/controller's on 259 others, and a prop carrying
+// only the identifier fuses two unrelated hierarchies. The module is the same
+// string the file's own dependency fact already records as its imports target —
+// the specifier for a package, the repo-relative path for a file, resolved through
+// tsconfig aliases where the project declares them — and it is never derived
+// from the identifier's spelling or the file's location: a base class the file
+// declares itself or a global like Error or HTMLElement carries the name and no
+// module at all.
+//
+// Only an identifier names a base class. `extends Base<T>` is one (the type
+// arguments are applied to the base, not a second reading of it), while
+// `extends Service.extend(Mixin)`, `extends Turbo.navigator.view.snapshot.
+// constructor`, a ternary, a subscript and `extends new Factory()` reach their
+// base through a value the source never states, so they emit nothing rather than
+// name the mixin factory or the namespace object — the seven such classes in
+// that frontend are exactly the forms where a nearest-identifier answer
+// would have been wrong. No inheritance relation accompanies the props: the
+// identifier alone is not a symbol identity when a repository writes the same
+// `Controller` 409 times against two different base classes, and the local name a
+// default or aliased import binds is not the name the exporting file declares, so
+// an edge built from either would be a resolution nothing measured. The Ember
+// component/service/model classifier now reads its heritage through the same
+// single reader, and .vue and .svelte script blocks resolve theirs through the
+// same import table.
+// v211: NOT an extractor change — the first entry here that is not. Owner resolution
+// wires a Ruby class to its instance methods ("Owner#method"), which no split on the
+// last "." ever reached: 23,127 has_method edges appear on the monolith out of the
+// same facts, and the two outlier explainers stop counting a type's own methods as
+// calls out of it. facts.jsonl is byte-identical across the change (cmp, monolith and
+// a third repository in this estate), so nothing cached is stale — but a baseline
+// pinned by a v210 build and graded by this one reports 30 moved findings over an
+// unedited tree, and without a bump prints "PASS — no architectural change" while
+// doing it. The constant is the provenance marker as well as the cache key; this line
+// is what widening it costs.
+// v212: a TypeScript constructor is a fact. The member walk skipped `#`-private
+// members and `constructor` in one condition, and the two are not alike: a private
+// member has no callers to measure, while a constructor runs on every instantiation
+// and what it calls is the whole of "this class fetches when it is built". Measured
+// on a large Ember application, 323 constructors, 306 of which call something, and
+// the finding count did not move at all — 503 before and after, with no finding
+// naming a constructor, so the dead-symbol reasoning does not mistake a member
+// invoked by `new` for an uncalled one. It is bumped on the provenance argument the
+// header states rather than on cache staleness: a baseline pinned by a v211 build
+// must not grade a tree that now carries constructors as unchanged.
+// v213: a TypeScript method records the fields it assigns on itself, as the Ruby
+// extractor already did. `this.args.user.name = x` records `args` — the outermost
+// property after `this`, because that is what a convention speaks about and the
+// path beyond it varies per call site without changing the answer. Only `this` is
+// followed: an assignment to a local or to another object is not a claim about the
+// member's own state. It is what makes "data flows down and actions flow up"
+// enforceable — 212 methods on a large Ember application write through their own
+// arguments — and the finding count did not move, 503 before and after.
+// v214: a TypeScript member records whether it declares a parameter at all. A
+// modifier is handed the element it is attached to, so a modifier declaring no
+// parameter is not modifying anything — it is a side effect fired by render,
+// which is the convention the prop exists to make selectable. The answer is
+// "yes"/"no" on every member rather than a prop present only when true, because
+// a rule matches a VALUE and a prop that is absent on the compliant half would
+// select nobody to verdict. A rest parameter counts as one: the member still
+// receives what it is handed. Measured on a large Ember application, 21,689
+// members carry it, 6,341 of them declaring parameters, and the finding count
+// did not move — 503 before and after. It is bumped on the provenance argument
+// the header states rather than on cache staleness: a baseline pinned by a v213
+// build must not grade a tree whose members now carry this prop as unchanged.
+// v215: takes_parameters reaches the module-level function symbols it always
+// meant to cover. v214 emitted it only from the class-member walk, so the
+// dominant Ember modifier form — `export default modifier((element, ...) => ...)`
+// at module scope — carried no answer at all, and a rule demanding "yes" read
+// the silence as a breach rather than as an unmeasured member. Measured on a
+// large Ember application, all eight members such a rule named were
+// module-level modifiers that do take their element: 8 false verdicts, 0 true
+// ones. The prop is now emitted wherever a callable symbol is, function
+// declarations and arrow-bound consts included, which takes the estate from
+// 21,689 members carrying it to 22,963 and drops those eight verdicts to zero.
+// Absence stops being ambiguous for this prop, which is what the rule form
+// needs: it cannot tell "measured, declares none" from "never looked".
+const cacheVersion = "v215"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

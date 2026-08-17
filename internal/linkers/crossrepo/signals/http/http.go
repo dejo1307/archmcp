@@ -260,9 +260,17 @@ func serviceHint(f facts.Fact) string {
 // --- server-side inverse: routes no loaded client calls ---
 
 // other repo loaded there are no clients for a route to be unused by.
-func UnmatchedServerRouteKeys(m *routeindex.Matcher, all []facts.Fact) map[string]bool {
+//
+// It returns two sets, and the second is not derivable from the first. Evaluated
+// holds the routes this pass was able to reason about at all; unmatched holds the
+// subset of those it found no caller for. Everything the pass declines — a UI
+// route, a GraphQL operation, a route with no verb, a generic path like /health,
+// and every route in a repo that serves no cross-repo client — is absent from
+// BOTH, because "no caller found" and "never looked" are different verdicts and a
+// caller that cannot tell them apart will publish the second as the first.
+func ServerRouteVerdicts(m *routeindex.Matcher, all []facts.Fact) (evaluated, unmatched map[string]bool) {
 	if len(reposOf(all)) < 2 {
-		return nil
+		return nil, nil
 	}
 
 	// Index server routes by normalized path-suffix + method, exactly as linkHTTP
@@ -271,15 +279,11 @@ func UnmatchedServerRouteKeys(m *routeindex.Matcher, all []facts.Fact) map[strin
 	server := map[string][]routeindex.RouteRef{}
 	identities := map[string]bool{}
 	for _, f := range all {
-		if f.Kind != facts.KindRoute || f.Repo == "" || routeindex.RoleOf(f) == facts.RoleClient ||
-			routeindex.IsUIRoute(f) || f.PropString(facts.PropRouteType) == facts.RouteTypeGraphQL {
-			continue
-		}
-		method := routeindex.NormalizeMethod(f.PropString("method"))
-		if method == "" {
-			continue
-		}
-		// Skip low-signal generic paths (/health, /status, /metrics): the matcher
+		// The same predicate the binder applies per fact, so a route excluded here
+		// cannot be handed a verdict there through an identity it shares with a
+		// route that was included.
+		//
+		// Generic paths (/health, /status, /metrics) are part of it: the matcher
 		// refuses to link these (a client call to one is dropped by the same
 		// routeindex.IsGenericPath filter below), so we cannot reliably tell whether a client
 		// uses them — and infra / non-client callers commonly do. Excluding them
@@ -288,9 +292,10 @@ func UnmatchedServerRouteKeys(m *routeindex.Matcher, all []facts.Fact) map[strin
 		// This is a vocabulary test, not a segment count, so a named single-segment
 		// route (/activate) does enter the candidate set — it is linkable, and its
 		// used/unused verdict is therefore meaningful.
-		if m.IsGenericPath(m.NormalizePath(f.Name)) {
+		if !m.IsLinkable(f) {
 			continue
 		}
+		method := routeindex.NormalizeMethod(f.PropString("method"))
 		identities[routeindex.RouteIdentityKey(f.Repo, method, f.Name)] = true
 		for _, p := range m.ServerPaths(f) {
 			ref := routeindex.RouteRef{Repo: f.Repo, Method: method, Path: f.Name, FullPath: p}
@@ -330,14 +335,18 @@ func UnmatchedServerRouteKeys(m *routeindex.Matcher, all []facts.Fact) map[strin
 	// frontend's own page routes, a mobile app) has no clients among the loaded
 	// repos, so flagging its routes would be vacuous noise — skip it, the same way
 	// a single-repo snapshot is skipped, applied per repo.
-	unmatched := map[string]bool{}
+	evaluated, unmatched = map[string]bool{}, map[string]bool{}
 	for id := range identities {
-		if matched[id] || !providerRepos[routeindex.RepoFromIdentity(id)] {
+		if !providerRepos[routeindex.RepoFromIdentity(id)] {
+			continue
+		}
+		evaluated[id] = true
+		if matched[id] {
 			continue
 		}
 		unmatched[id] = true
 	}
-	return unmatched
+	return evaluated, unmatched
 }
 
 // The Reason* constants are the exhaustive set of values written to a client route's

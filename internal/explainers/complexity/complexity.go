@@ -143,7 +143,7 @@ func isCallable(s facts.Fact) bool {
 	if !ok {
 		return true
 	}
-	return kind == facts.SymbolFunc || kind == facts.SymbolMethod
+	return kind == facts.SymbolFunc || kind == facts.SymbolMethod || kind == facts.SymbolGetter
 }
 
 // intProp coerces a Props value to int. Extractors store ints in memory, but a

@@ -496,7 +496,7 @@ func Default() *Config {
 			"**/test_driver/**/*.dart",
 		},
 		Extractors: []string{"cpp", "dart", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent"},
-		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent"},
+		Explainers: []string{"cycles", "layers", "crossrepo", "coverage", "unused-routes", "god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers", "intent", "domain", "query-loops", "entry-points"},
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{
 			Dir:              defaultOutputDir,

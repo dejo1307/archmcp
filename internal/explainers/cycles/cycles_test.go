@@ -203,11 +203,13 @@ func TestExplain_WithCycle(t *testing.T) {
 	}
 }
 
-// TestExplain_OversizedClusterSoftened: an SCC larger than maxCycleModules is not
-// a fixable cycle (in autoloaded Ruby/Rails it is the expected topology). It must
-// be reported once as a soft, low-confidence "Highly coupled module cluster" note
-// whose title does NOT start with "Cyclic dependency" (so pkg/explain won't count
-// it as a cycle), not as a confidence-1.0 alarm.
+// TestExplain_OversizedClusterSoftened: an SCC larger than maxCycleModules is
+// reported as a coupling cluster rather than a fixable cycle — the advice
+// differs, because "introduce an interface" means nothing for a 99-node
+// component. The *title* carries that distinction so pkg/explain does not count
+// it as a cycle.
+//
+// Confidence deliberately does NOT carry it. See TestExplain_ClusterConfidenceIsMonotone.
 func TestExplain_OversizedClusterSoftened(t *testing.T) {
 	n := maxCycleModules + 3
 	modules := make([]string, n)
@@ -235,8 +237,8 @@ func TestExplain_OversizedClusterSoftened(t *testing.T) {
 	if !strings.HasPrefix(in.Title, "Highly coupled module cluster") {
 		t.Errorf("expected a coupling-cluster title, got %q", in.Title)
 	}
-	if in.Confidence >= 1.0 {
-		t.Errorf("cluster confidence should be soft (<1.0), got %v", in.Confidence)
+	if in.Confidence != 1.0 {
+		t.Errorf("a cluster is as certain as the cycle it grew from; got %v", in.Confidence)
 	}
 	if len(in.Evidence) > maxClusterMembers {
 		t.Errorf("cluster evidence not capped: got %d, want <= %d", len(in.Evidence), maxClusterMembers)
@@ -512,5 +514,44 @@ func TestUnknownCompilationUnit_KeepsBuildDefectWording(t *testing.T) {
 	}
 	if len(ins) != 1 || !strings.Contains(ins[0].Description, "can cause initialization issues") {
 		t.Errorf("a language with no compilation-unit prop must keep the original wording: %+v", ins)
+	}
+}
+
+// A larger cycle must never be reported as less severe than a smaller one.
+//
+// This is the defect a colleague found on a real Rails app: adding an edge that
+// grew an 8-module cycle to 10 resolved a confidence-1.0 finding and replaced it
+// with a 0.4 advisory, so a strictly worse graph reported as an improvement and
+// passed a `--min-confidence=0.8` gate it had previously failed. Confidence
+// means "is this real"; encoding "is this easy to fix" in it made the gate blind
+// exactly where the problem was worst.
+func TestExplain_ClusterConfidenceIsMonotone(t *testing.T) {
+	ring := func(n int) facts.Insight {
+		t.Helper()
+		modules := make([]string, n)
+		deps := map[string][]string{}
+		for i := 0; i < n; i++ {
+			modules[i] = fmt.Sprintf("app/m%02d", i)
+		}
+		for i := 0; i < n; i++ {
+			deps[modules[i]] = []string{modules[(i+1)%n]}
+		}
+		insights, err := New().Explain(context.Background(), makeStore(modules, deps))
+		if err != nil {
+			t.Fatalf("Explain: %v", err)
+		}
+		if len(insights) != 1 {
+			t.Fatalf("expected exactly one insight for a %d-module ring, got %d", n, len(insights))
+		}
+		return insights[0]
+	}
+
+	small := ring(maxCycleModules)
+	grown := ring(maxCycleModules + 2)
+
+	if grown.Confidence < small.Confidence {
+		t.Fatalf("growing a cycle from %d to %d modules lowered confidence %v -> %v; "+
+			"a worse graph must never report as an improvement",
+			maxCycleModules, maxCycleModules+2, small.Confidence, grown.Confidence)
 	}
 }

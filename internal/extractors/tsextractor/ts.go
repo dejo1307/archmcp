@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -117,6 +118,15 @@ func hasTSMarkers(dir string) bool {
 		if hasPkgDependency(dir, pkg) {
 			return true
 		}
+	}
+
+	// config/importmap.rb marks the same Rails frontend when importmap-rails
+	// manages it: pins live in Ruby, so the app ships no package.json at all and
+	// every package.json rule above is blind to it — an importmap app's whole
+	// app/javascript tree (Stimulus controllers included) was claimed by this
+	// extractor and never parsed.
+	if _, err := os.Stat(filepath.Join(dir, "config", "importmap.rb")); err == nil {
+		return true
 	}
 	// A dependency-free plain-JavaScript package is still a JavaScript project:
 	// a Node CLI with zero deps declares itself structurally (bin, main,
@@ -300,8 +310,9 @@ type extractCtx struct {
 	isSvelteKit bool
 	orms        ormFlags
 	importMap   map[string]string
-	ioBindings  map[string]bool // local names bound to imports from a network module (I/O sinks)
-	knownFiles  map[string]bool // repo-relative (slash) paths of all indexed TS/JS files
+	imports     emberImportBindings // the file's import table, read for the module a superclass identifier came from
+	ioBindings  map[string]bool     // local names bound to imports from a network module (I/O sinks)
+	knownFiles  map[string]bool     // repo-relative (slash) paths of all indexed TS/JS files
 }
 
 func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
@@ -402,6 +413,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		isSvelteKit: isSvelteKit,
 		orms:        orms,
 		importMap:   buildImportSymbols(kinds, root, src, relFile, aliases),
+		imports:     buildEmberImportBindings(kinds, root, src, relFile, aliases),
 		ioBindings:  buildIOImportBindings(kinds, root, src),
 		knownFiles:  knownFiles,
 	}
@@ -666,6 +678,19 @@ func (e *TSExtractor) extractNode(kinds *tsutil.KindTable, node *sitter.Node, ct
 			f.Props["abstract"] = true
 		}
 
+		// The base class the source names, and the module the file imported that
+		// name from. No relation accompanies them: the identifier alone is not a
+		// symbol identity (409 classes in one frontend write the same `Controller`
+		// against two unrelated base classes), and the local name a default or
+		// aliased import binds is not the name the exporting file declares, so an
+		// edge built from either would be a resolution nothing measured.
+		if super := tsSuperclassName(kinds, node, src); super != "" {
+			f.Props[superclassProp] = super
+			if module := ctx.imports.modules[super]; module != "" {
+				f.Props[superclassModuleProp] = module
+			}
+		}
+
 		// Check for implements clause (nested under class_heritage)
 		for j := range node.ChildCount() {
 			c := node.Child(j)
@@ -689,6 +714,9 @@ func (e *TSExtractor) extractNode(kinds *tsutil.KindTable, node *sitter.Node, ct
 
 		classBody := findChildByKind(kinds, node, "class_body")
 		classifySymbol(kinds, &f, symbolName, classBody, ctx, facts.SymbolClass)
+		if names := classDecoratorNames(kinds, node, src); names != "" {
+			f.Props["decorators"] = names
+		}
 		result = append(result, f)
 
 		// TypeORM: a class decorated @Entity is a table. The storage fact is a COMPANION
@@ -713,8 +741,20 @@ func (e *TSExtractor) extractNode(kinds *tsutil.KindTable, node *sitter.Node, ct
 
 		// Extract class methods
 		if classBody != nil {
+			var pendingDecorators []string
 			for j := range classBody.ChildCount() {
 				member := classBody.Child(j)
+				if kindOf(kinds, member) == "decorator" {
+					if dn, _ := decoratorNameArgs(kinds, member, src); dn != "" {
+						pendingDecorators = append(pendingDecorators, dn)
+					}
+					continue
+				}
+				if kindOf(kinds, member) == "comment" || !member.IsNamed() {
+					continue
+				}
+				memberDecorators := append(pendingDecorators, ownDecoratorNames(kinds, member, src)...)
+				pendingDecorators = nil
 				if kindOf(kinds, member) != "method_definition" && kindOf(kinds, member) != "public_field_definition" {
 					continue
 				}
@@ -726,7 +766,13 @@ func (e *TSExtractor) extractNode(kinds *tsutil.KindTable, node *sitter.Node, ct
 					continue
 				}
 				mName := nodeText(methodName, src)
-				if strings.HasPrefix(mName, "#") || mName == "constructor" {
+				// A `#`-prefixed member is private to the class in the language's
+				// own sense and has no callers to measure. A constructor does: it
+				// runs on every instantiation, and what it calls is the difference
+				// between a class that builds itself and one that fetches. Skipping
+				// both together left "nothing may be fetched from a constructor"
+				// with no fact to stand on.
+				if strings.HasPrefix(mName, "#") {
 					continue
 				}
 				isPrivate := false
@@ -746,6 +792,20 @@ func (e *TSExtractor) extractNode(kinds *tsutil.KindTable, node *sitter.Node, ct
 					"language":    "typescript",
 					"receiver":    symbolName,
 				}
+				if names := decoratorSetProp(memberDecorators); names != "" {
+					mProps["decorators"] = names
+				}
+				if takes, ok := declaresParameters(kinds, member); ok {
+					mProps["takes_parameters"] = takes
+				}
+				if isGetterDefinition(kinds, member) {
+					mProps["symbol_kind"] = facts.SymbolGetter
+					mProps["getter_calls"] = countCallRelations(callRels)
+				}
+				if stimulusStaticField(kinds, member, mName, relFile) {
+					mProps["framework"] = "stimulus"
+					mProps["stimulus_static"] = mName
+				}
 				applyTSMetrics(mProps, m)
 				result = append(result, facts.Fact{
 					Kind:      facts.KindSymbol,
@@ -755,6 +815,30 @@ func (e *TSExtractor) extractNode(kinds *tsutil.KindTable, node *sitter.Node, ct
 					Props:     mProps,
 					Relations: mRels,
 				})
+			}
+		}
+
+	case "expression_statement":
+		// CommonJS export assignment: `exports.name = function` /
+		// `module.exports.name = function`. None of the declaration-shaped cases
+		// fire in a classic Node file, so a CommonJS module's whole public
+		// surface was invisible — an Express controller written as
+		// `exports.index = function(req, res)` emitted nothing at all. Only the
+		// member-assignment-of-a-function shape emits a symbol; a plain value,
+		// a re-exported identifier, or a whole-object `module.exports = {…}`
+		// carries no declaration this pass can name without guessing.
+		assign := findChildByKind(kinds, node, "assignment_expression")
+		if assign == nil {
+			break
+		}
+		name := commonJSExportName(kinds, assign.ChildByFieldName("left"), src)
+		if name == "" {
+			break
+		}
+		if right := assign.ChildByFieldName("right"); right != nil {
+			switch kindOf(kinds, right) {
+			case "function_expression", "arrow_function", "generator_function":
+				result = append(result, e.funcSymbol(kinds, node, right, ctx, name, true))
 			}
 		}
 
@@ -832,6 +916,9 @@ func (e *TSExtractor) extractNode(kinds *tsutil.KindTable, node *sitter.Node, ct
 				Relations: vRels,
 			}
 			if symbolKind == facts.SymbolFunc {
+				if takes, ok := declaresParameters(kinds, decl); ok {
+					f.Props["takes_parameters"] = takes
+				}
 				applyTSMetrics(f.Props, vMetrics)
 			}
 			classifySymbol(kinds, &f, symbolName, body, ctx, symbolKind)
@@ -855,6 +942,36 @@ func (e *TSExtractor) extractNode(kinds *tsutil.KindTable, node *sitter.Node, ct
 
 // funcSymbol builds a function/component symbol fact. declNode supplies the source
 // location; body is walked for outgoing calls and JSX-based classification.
+// commonJSExportName returns the exported member name when left is the
+// `exports.<name>` or `module.exports.<name>` shape, and "" for every other
+// assignment target — including bare `module.exports`, whose assigned value
+// has no member name to carry.
+func commonJSExportName(kinds *tsutil.KindTable, left *sitter.Node, src []byte) string {
+	if left == nil || kindOf(kinds, left) != "member_expression" {
+		return ""
+	}
+	prop := left.ChildByFieldName("property")
+	if prop == nil || kindOf(kinds, prop) != "property_identifier" {
+		return ""
+	}
+	obj := left.ChildByFieldName("object")
+	if obj == nil {
+		return ""
+	}
+	if kindOf(kinds, obj) == "identifier" && nodeText(obj, src) == "exports" {
+		return nodeText(prop, src)
+	}
+	if kindOf(kinds, obj) == "member_expression" {
+		inner := obj.ChildByFieldName("object")
+		innerProp := obj.ChildByFieldName("property")
+		if inner != nil && kindOf(kinds, inner) == "identifier" && nodeText(inner, src) == "module" &&
+			innerProp != nil && nodeText(innerProp, src) == "exports" {
+			return nodeText(prop, src)
+		}
+	}
+	return ""
+}
+
 func (e *TSExtractor) funcSymbol(kinds *tsutil.KindTable, declNode, body *sitter.Node, ctx *extractCtx, name string, exported bool) facts.Fact {
 	rels := []facts.Relation{{Kind: facts.RelDeclares, Target: ctx.dir}}
 	callRels, m := collectCallsWithMetrics(kinds, body, ctx.src, ctx.dir, "", ctx.importMap, ctx.ioBindings, ctx.dir+"."+name, name)
@@ -870,6 +987,9 @@ func (e *TSExtractor) funcSymbol(kinds *tsutil.KindTable, declNode, body *sitter
 			"language":    "typescript",
 		},
 		Relations: rels,
+	}
+	if takes, ok := declaresParameters(kinds, declNode); ok {
+		f.Props["takes_parameters"] = takes
 	}
 	applyTSMetrics(f.Props, m)
 	classifySymbol(kinds, &f, name, body, ctx, facts.SymbolFunc)
@@ -1115,8 +1235,8 @@ func detectNextJSAt(dir string) bool {
 
 func isTypeScriptFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".ts" || ext == ".tsx" || ext == ".vue" || ext == ".js" || ext == ".jsx" || ext == ".svelte" ||
-		ext == ".gts" || ext == ".gjs" || ext == ".hbs" || ext == ".graphql" || ext == ".gql"
+	return ext == ".ts" || ext == ".tsx" || ext == ".vue" || ext == ".js" || ext == ".jsx" || ext == ".mjs" ||
+		ext == ".svelte" || ext == ".gts" || ext == ".gjs" || ext == ".hbs" || ext == ".graphql" || ext == ".gql"
 }
 
 // minifiedLineThreshold is the line length above which a file is treated as
@@ -1654,7 +1774,7 @@ func resolveImportPath(importPath, fileDir string, aliases map[string]tsAlias) (
 
 // tsModuleExts are the source extensions a bare import path may resolve to, tried in
 // TS-before-JS order (a project with both prefers the typed file).
-var tsModuleExts = []string{".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte", ".gts", ".gjs"}
+var tsModuleExts = []string{".ts", ".tsx", ".js", ".jsx", ".mjs", ".vue", ".svelte", ".gts", ".gjs"}
 
 // resolveModuleFile resolves an extensionless internal import path to the actual
 // source file backing it, using the set of known indexed files. It returns the
@@ -2184,6 +2304,8 @@ type tsBodyMetrics struct {
 	inScalingSeen      map[string]bool // dedup set for callsInScalingLoop
 	recursive          bool            // body directly calls the enclosing function
 	ioDirect           bool            // body directly invokes a network/file I/O primitive
+	fieldsWritten      []string        // distinct `this.<name>` targets the body assigns to
+	writeSeen          map[string]bool // dedup set for fieldsWritten
 }
 
 // tsIterators are array/collection methods whose callback runs once per element —
@@ -2535,6 +2657,8 @@ func (w *tsBodyWalker) walk(n *sitter.Node) {
 	// the cyclomatic pass.
 	if w.metrics != nil {
 		switch kind {
+		case "assignment_expression", "augmented_assignment_expression":
+			w.metrics.noteFieldWrite(w.kinds, n, w.src)
 		case "if_statement", "ternary_expression", "switch_case", "catch_clause":
 			w.metrics.decisions++
 		case "binary_expression":
@@ -2709,11 +2833,102 @@ func (w *tsBodyWalker) walkCallbackSubtree(n, cb *sitter.Node, bounded bool) {
 // deduplicated RelCalls relations plus per-function complexity metrics,
 // used for function/method/arrow facts. selfName/selfShort enable direct-recursion
 // detection.
+// declaresParameters reports whether a member's own function takes any
+// parameter, as `yes` or `no`, and nothing when the member has no function at
+// all. A callback that ignores what it is handed is a general smell and the
+// specific one a framework convention names: a modifier is given the element it
+// is attached to, and one that declares no parameter is being used as a bare
+// side-effect trigger rather than as a modifier. The answer is a word rather
+// than a count because a rule asks "does it take one", and the property forms
+// compare a value rather than order it — a count would need a threshold the
+// consequent has no way to write.
+//
+// Only the member's OWN function is read: the first parameter list under the
+// member, not one belonging to a callback nested inside it, which would answer
+// about somebody else's signature.
+func declaresParameters(kinds *tsutil.KindTable, member *sitter.Node) (string, bool) {
+	var params *sitter.Node
+	var find func(n *sitter.Node, depth int)
+	find = func(n *sitter.Node, depth int) {
+		if params != nil || n == nil || depth > 3 {
+			return
+		}
+		for i := range n.ChildCount() {
+			c := n.Child(i)
+			if c == nil {
+				continue
+			}
+			switch kindOf(kinds, c) {
+			case "formal_parameters":
+				params = c
+				return
+			case "arrow_function", "function_expression", "call_expression", "arguments":
+				find(c, depth+1)
+			}
+			if params != nil {
+				return
+			}
+		}
+	}
+	find(member, 0)
+	if params == nil {
+		return "", false
+	}
+	for i := range params.ChildCount() {
+		switch kindOf(kinds, params.Child(i)) {
+		case "(", ")", ",":
+		default:
+			return "yes", true
+		}
+	}
+	return "no", true
+}
+
 func collectCallsWithMetrics(kinds *tsutil.KindTable, node *sitter.Node, src []byte, dir, className string, importMap map[string]string, ioBindings map[string]bool, selfName, selfShort string) ([]facts.Relation, *tsBodyMetrics) {
 	m := &tsBodyMetrics{}
 	w := &tsBodyWalker{src: src, kinds: kinds, dir: dir, className: className, importMap: importMap, ioBindings: ioBindings, selfName: selfName, selfShort: selfShort, metrics: m, seen: make(map[string]bool)}
 	w.walk(node)
 	return w.rels, m
+}
+
+// noteFieldWrite records an assignment whose target is rooted at `this`, under
+// the outermost property that follows it: `this.args.user.name = x` records
+// `args`, and `this.selected = y` records `selected`. The root is what a
+// convention speaks about — a component must not write through its arguments,
+// a tracked function must not set the state it is derived from — and the exact
+// path beyond it varies per call site without changing the answer.
+//
+// Only `this` is followed. An assignment to a local, a parameter, or another
+// object is not a claim about the member's own state, and recording it would
+// make the prop a list of everything the body touches rather than of what it
+// mutates on itself.
+func (m *tsBodyMetrics) noteFieldWrite(kinds *tsutil.KindTable, n *sitter.Node, src []byte) {
+	if m == nil || n.ChildCount() == 0 {
+		return
+	}
+	target := n.Child(0)
+	if target == nil || kindOf(kinds, target) != "member_expression" {
+		return
+	}
+	root := target
+	var field string
+	for root != nil && kindOf(kinds, root) == "member_expression" {
+		if prop := root.ChildByFieldName("property"); prop != nil {
+			field = nodeText(prop, src)
+		}
+		root = root.ChildByFieldName("object")
+	}
+	if root == nil || kindOf(kinds, root) != "this" || field == "" {
+		return
+	}
+	if m.writeSeen == nil {
+		m.writeSeen = map[string]bool{}
+	}
+	if m.writeSeen[field] {
+		return
+	}
+	m.writeSeen[field] = true
+	m.fieldsWritten = append(m.fieldsWritten, field)
 }
 
 // applyTSMetrics writes the complexity props onto a function/method fact's Props.
@@ -2722,6 +2937,10 @@ func applyTSMetrics(props map[string]any, m *tsBodyMetrics) {
 		return
 	}
 	props["cyclomatic"] = 1 + m.decisions
+	if len(m.fieldsWritten) > 0 {
+		sort.Strings(m.fieldsWritten)
+		props["fields_written"] = m.fieldsWritten
+	}
 	if m.loopDepth > 0 {
 		props["loop_depth"] = m.loopDepth
 		// Emit the scaling depth (bounded loops discounted) alongside — even when 0 — so

@@ -11,6 +11,8 @@ package coverage
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -21,6 +23,80 @@ type CoverageExplainer struct{}
 // New creates a new CoverageExplainer.
 func New() *CoverageExplainer {
 	return &CoverageExplainer{}
+}
+
+// maxUnresolvedCallers caps the breakdown, matching the sibling explainers.
+const maxUnresolvedCallers = 8
+
+// unresolvedCallers names the components whose outbound calls match no route in
+// any loaded repository, most-calls-first.
+func unresolvedCallers(store *facts.Store, repo string) []facts.Evidence {
+	served := map[string]bool{}
+	for _, fact := range store.ByKind(facts.KindRoute) {
+		if role, _ := fact.Props["role"].(string); role == "client" {
+			continue
+		}
+		served[routeKey(fact)] = true
+	}
+
+	byComponent := map[string]int{}
+	for _, fact := range store.ByKind(facts.KindRoute) {
+		if fact.Repo != repo {
+			continue
+		}
+		if role, _ := fact.Props["role"].(string); role != "client" {
+			continue
+		}
+		if isDouble, _ := fact.Props["test_double"].(bool); isDouble {
+			continue
+		}
+		if served[routeKey(fact)] {
+			continue
+		}
+		component := fact.File
+		if idx := strings.LastIndex(component, "/"); idx > 0 {
+			component = component[:idx]
+		}
+		byComponent[component]++
+	}
+	if len(byComponent) == 0 {
+		return nil
+	}
+
+	components := make([]string, 0, len(byComponent))
+	for component := range byComponent {
+		components = append(components, component)
+	}
+	sort.Slice(components, func(i, j int) bool {
+		if byComponent[components[i]] != byComponent[components[j]] {
+			return byComponent[components[i]] > byComponent[components[j]]
+		}
+		return components[i] < components[j]
+	})
+	if len(components) > maxUnresolvedCallers {
+		components = components[:maxUnresolvedCallers]
+	}
+
+	out := make([]facts.Evidence, 0, len(components))
+	for _, component := range components {
+		out = append(out, facts.Evidence{
+			Fact:   component,
+			Detail: fmt.Sprintf("%d unresolved outbound call site(s) from here", byComponent[component]),
+		})
+	}
+	return out
+}
+
+// routeKey compares a client's path dialect against a server's.
+func routeKey(fact facts.Fact) string {
+	method, _ := fact.Props["method"].(string)
+	segments := strings.Split(fact.Name, "/")
+	for i, segment := range segments {
+		if segment == "{}" || strings.HasPrefix(segment, ":") || strings.HasPrefix(segment, "*") {
+			segments[i] = ":param"
+		}
+	}
+	return strings.ToUpper(method) + " " + strings.TrimSuffix(strings.Join(segments, "/"), "/")
 }
 
 func (e *CoverageExplainer) Name() string {
@@ -46,6 +122,12 @@ func (e *CoverageExplainer) Explain(ctx context.Context, store *facts.Store) ([]
 
 		outbound := facts.DependsOnCount(svc)
 		evidence := []facts.Evidence{{Fact: svc.Name, Detail: coverageDetail(cov)}}
+		// "External target or unloaded repo" is the honest ambiguity, and it is
+		// also the whole question: one means add a repository to the cluster, the
+		// other means this is a third party and nothing is missing. Naming the
+		// components that make the unresolved calls answers it on sight —
+		// lib/opensearch is not a repository anyone forgot.
+		evidence = append(evidence, unresolvedCallers(store, svc.Repo)...)
 
 		var insight facts.Insight
 		if facts.ClassifyService(outbound, detected, unresolved) == facts.ServiceCoverageGap {

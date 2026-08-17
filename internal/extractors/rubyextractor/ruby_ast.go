@@ -69,6 +69,73 @@ func extractFileAST(src []byte, relFile string, isRails, exportedByPackwerk bool
 
 // ensureFileRefFact returns the index of this file's lazily-created file-scope
 // reference fact (facts.KindFileRef), creating it on first use.
+// setModelTable corrects the enclosing model's table claim with the one the
+// class declared, and records that it was declared rather than derived — the
+// same distinction the association work carries, for the same reason: a derived
+// name is a convention holding and a declared one is a statement in the source.
+func (w *rubyWalker) setModelTable(table string) {
+	for i := len(w.out) - 1; i >= 0; i-- {
+		fact := w.out[i]
+		if fact.Kind != facts.KindStorage || fact.Props == nil {
+			continue
+		}
+		if kind, _ := fact.Props["storage_kind"].(string); kind != "model" {
+			continue
+		}
+		fact.Props["table"] = table
+		fact.Props["table_source"] = "declared"
+		return
+	}
+}
+
+// setModuleTableNamePrefix records on the enclosing module's symbol fact the
+// literal its `def self.table_name_prefix` returns. Only a module carries one —
+// Rails reads it off the namespace a model is nested in — and only a body that
+// is a single plain string is read: a computed or interpolated prefix is a value
+// this pass cannot know, and it states nothing rather than a guess.
+func (w *rubyWalker) setModuleTableNamePrefix(node *sitter.Node) {
+	s := w.cur()
+	if s == nil || s.kind != "module" || s.symFactIdx < 0 {
+		return
+	}
+	if prefix := plainStringBody(node.ChildByFieldName("body"), w.src); prefix != "" {
+		w.out[s.symFactIdx].Props["table_name_prefix"] = prefix
+	}
+}
+
+// plainStringBody returns the literal a method body consists of when that body is
+// exactly one plain string — one statement, no interpolation. Every other shape
+// returns "", so a prefix assembled at runtime never becomes a fact.
+func plainStringBody(body *sitter.Node, src []byte) string {
+	if body == nil {
+		return ""
+	}
+	node := body
+	if node.Kind() == "body_statement" {
+		var only *sitter.Node
+		for i := uint(0); i < node.NamedChildCount(); i++ {
+			child := node.NamedChild(i)
+			if child.Kind() == "comment" {
+				continue
+			}
+			if only != nil {
+				return ""
+			}
+			only = child
+		}
+		node = only
+	}
+	if node == nil || node.Kind() != "string" {
+		return ""
+	}
+	for i := uint(0); i < node.NamedChildCount(); i++ {
+		if node.NamedChild(i).Kind() != "string_content" {
+			return ""
+		}
+	}
+	return stringLiteralContent(node, src)
+}
+
 func (w *rubyWalker) ensureFileRefFact() int {
 	if w.fileRefIdx < 0 {
 		w.out = append(w.out, facts.Fact{
@@ -155,6 +222,111 @@ type rubyBodyMetrics struct {
 	callsInLoop []string        // distinct call targets invoked at loop depth >= 1
 	inLoopSeen  map[string]bool // dedup set for callsInLoop
 	recursive   bool            // body directly calls the enclosing method
+
+	// fieldsRead/fieldsWritten record which instance variables the body
+	// touches. They answer "which methods actually use @client", which is the
+	// question behind every extract-class refactor and which the graph could
+	// not be asked before.
+	//
+	// Instance variables only. Class variables are a separate namespace and
+	// merging them would overstate cohesion, per the fact-model research; a
+	// controller's @ivars are view parameters rather than encapsulated state,
+	// which is why the population that matters here is services (0.68 ivar
+	// references per method) rather than models (0.13, and 146 of 503 of those
+	// are memoization).
+	fieldsRead    []string
+	fieldsWritten []string
+	fieldSeen     map[string]bool
+
+	// blockBindings records `param=collection` for each enumerable block in the
+	// body. It is the one piece of type information Ruby gives away for free,
+	// and it is exactly the N+1 shape: `form_questions.each { |q| q.form_answers }`
+	// issues a query per iteration only because `q` is a FormQuestion. Without
+	// the binding, `q.form_answers` and `client.post` are the same string to
+	// this graph, which is why the association-read detector measured to zero
+	// true findings on the monolith.
+	//
+	// The binding is recorded, not resolved. Turning `form_questions` into
+	// `FormQuestion` needs the model index, which lives a layer up — the
+	// extractor states what it saw and the consumer joins it.
+	blockBindings []string
+	blockSeen     map[string]bool
+
+	// localTypes records `name=Class` for a variable assigned from a constant's
+	// factory or finder. It is the receiver information this graph has never
+	// had: 1,062 such assignments on the monolith, typing 1,238 association
+	// reads that currently resolve to nothing because `@meeting.candidates` and
+	// `client.post` are the same shape without it.
+	//
+	// Only a constant receiver types anything. `x = helper.build` says nothing
+	// about x, and guessing there is the name-coincidence failure that produced
+	// seven candidates and zero true findings.
+	localTypes []string
+	localSeen  map[string]bool
+}
+
+// typingMethods are the constant-receiver calls whose result is an instance of
+// that constant. A class method that returns something else — `Company.count`,
+// `Company.table_name` — types nothing.
+var typingMethods = map[string]bool{
+	"new": true, "find": true, "find_by": true, "find_by!": true,
+	"create": true, "create!": true, "first": true, "last": true,
+	"find_or_create_by": true, "find_or_initialize_by": true,
+}
+
+func (m *rubyBodyMetrics) recordLocalType(name, class string) {
+	if m == nil || name == "" || class == "" {
+		return
+	}
+	entry := name + "=" + class
+	if m.localSeen == nil {
+		m.localSeen = map[string]bool{}
+	}
+	if m.localSeen[entry] {
+		return
+	}
+	m.localSeen[entry] = true
+	m.localTypes = append(m.localTypes, entry)
+}
+
+func (m *rubyBodyMetrics) recordBlockBinding(param, collection string) {
+	if m == nil || param == "" || collection == "" {
+		return
+	}
+	entry := param + "=" + collection
+	if m.blockSeen == nil {
+		m.blockSeen = map[string]bool{}
+	}
+	if m.blockSeen[entry] {
+		return
+	}
+	m.blockSeen[entry] = true
+	m.blockBindings = append(m.blockBindings, entry)
+}
+
+// recordFieldAccess notes one instance-variable read or write on the method
+// being walked. Deduped per method and per mode: the fact is which members a
+// method touches, not how many times.
+func (m *rubyBodyMetrics) recordFieldAccess(name string, write bool) {
+	if m == nil || name == "" || !strings.HasPrefix(name, "@") || strings.HasPrefix(name, "@@") {
+		return
+	}
+	if m.fieldSeen == nil {
+		m.fieldSeen = map[string]bool{}
+	}
+	mode := "r"
+	if write {
+		mode = "w"
+	}
+	if m.fieldSeen[mode+name] {
+		return
+	}
+	m.fieldSeen[mode+name] = true
+	if write {
+		m.fieldsWritten = append(m.fieldsWritten, name)
+		return
+	}
+	m.fieldsRead = append(m.fieldsRead, name)
 }
 
 // rubyIterators are methods whose block runs once per element — i.e. a loop.
@@ -467,7 +639,10 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 	// dataset form `Sequel::Model(:table)`, whose literal argument is the
 	// physical table (inferTableName is the fallback when the argument is
 	// absent or dynamic).
-	isModel := isARBaseClass(superclassBase)
+	// `self.abstract_class = true` says this class backs no table — it exists to
+	// be inherited from. ApplicationRecord is the canonical one, and emitting a
+	// storage fact for it invents a table called application_records.
+	isModel := isARBaseClass(superclassBase) && !declaresAbstractClass(node, w.src)
 	sequelTable, isSequel := sequelModelBase(superclass)
 	if isModel || isSequel {
 		table := inferTableName(qual)
@@ -486,6 +661,7 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 			Props: map[string]any{
 				"storage_kind": "model",
 				"table":        table,
+				"table_source": "derived",
 				"language":     "ruby",
 				"framework":    framework,
 			},
@@ -525,6 +701,14 @@ func (w *rubyWalker) handleMethod(node *sitter.Node, isClassMethod bool) {
 	name := rubyText(node.ChildByFieldName("name"), w.src)
 	if name == "" {
 		return
+	}
+
+	// `def self.table_name_prefix` states what Rails puts in front of every table
+	// name derived under this namespace. The models it governs live in other
+	// files, so the literal belongs on the module's own fact, where the whole-repo
+	// pass that corrects them can read it.
+	if isClassMethod && name == "table_name_prefix" {
+		w.setModuleTableNamePrefix(node)
 	}
 
 	// An instance method (`def foo`, not `def self.x`) directly in a module body
@@ -599,6 +783,22 @@ func (w *rubyWalker) handleMethod(node *sitter.Node, isClassMethod bool) {
 	}
 	if len(w.metrics.callsInLoop) > 0 {
 		props["calls_in_loop"] = w.metrics.callsInLoop
+	}
+	if len(w.metrics.fieldsRead) > 0 {
+		sort.Strings(w.metrics.fieldsRead)
+		props["fields_read"] = w.metrics.fieldsRead
+	}
+	if len(w.metrics.fieldsWritten) > 0 {
+		sort.Strings(w.metrics.fieldsWritten)
+		props["fields_written"] = w.metrics.fieldsWritten
+	}
+	if len(w.metrics.blockBindings) > 0 {
+		sort.Strings(w.metrics.blockBindings)
+		props["block_bindings"] = w.metrics.blockBindings
+	}
+	if len(w.metrics.localTypes) > 0 {
+		sort.Strings(w.metrics.localTypes)
+		props["local_types"] = w.metrics.localTypes
 	}
 	if w.metrics.recursive {
 		props["recursive_self"] = true
@@ -863,6 +1063,18 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 				// `u.posts` or `record.reload`). It is not a graph edge, but its method
 				// name feeds the perf metric so the enterprise analyzer can flag
 				// lazy-loaded association / per-iteration I/O (N+1).
+				//
+				// The RECEIVER is kept when it is a plain variable, and that is the
+				// whole difference between a name and an N+1. `form_questions.each { |q|
+				// q.form_answers }` is a query per iteration only because `q` is a
+				// FormQuestion; recording it as bare `form_answers` throws away the one
+				// thing that makes it decidable, and a consumer joining block bindings
+				// to association facts found exactly zero because of it. With the
+				// receiver, `q.form_answers` joins to `q=form_questions` and resolves.
+				if isVarReceiver(recv.Kind()) {
+					w.recordInLoopCall(rubyText(recv, w.src) + "." + name)
+					break
+				}
 				w.recordInLoopCall(name)
 			}
 		}
@@ -872,6 +1084,16 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 		// the Python comprehension handling).
 		block := node.ChildByFieldName("block")
 		isIter := block != nil && method != nil && rubyIterators[rubyText(method, w.src)]
+		if isIter && recv != nil && w.metrics != nil {
+			// Only a named receiver is worth binding: `[1,2].each` says nothing
+			// about the element's type, while `form_questions.each` names the
+			// collection whose target the consumer can resolve.
+			if isVarReceiver(recv.Kind()) || recv.Kind() == "call" {
+				if param := blockParamName(block, w.src); param != "" {
+					w.metrics.recordBlockBinding(param, lastSegment(rubyText(recv, w.src)))
+				}
+			}
+		}
 		// A constant-bounded iterator (`6.times`, `[…].each`, `STOP_CHARS.any?`) runs a
 		// fixed number of times regardless of the method's input, so it still counts as
 		// a loop (cyclomatic) but must not add scaling loop DEPTH — otherwise a literal
@@ -907,6 +1129,40 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 			}
 			w.walkForCalls(c, ownerIdx, seen, locals)
 		}
+		return
+	case "assignment", "operator_assignment":
+		// `@client = …` is a write; `@count += 1` is both. Handled here rather
+		// than in the declaration pass because that pass runs with metrics off,
+		// and handled before the generic descent because descending would walk
+		// the target as if it were a read — which is how the first version
+		// reported every write as a read.
+		// `x = Meeting.find(id)` types x as a Meeting for the rest of the body.
+		if left := node.ChildByFieldName("left"); left != nil &&
+			(left.Kind() == "identifier" || left.Kind() == "instance_variable") {
+			if right := node.ChildByFieldName("right"); right != nil && right.Kind() == "call" {
+				recv := right.ChildByFieldName("receiver")
+				meth := right.ChildByFieldName("method")
+				if recv != nil && meth != nil && recv.Kind() == "constant" &&
+					typingMethods[rubyText(meth, w.src)] {
+					w.metrics.recordLocalType(rubyText(left, w.src), rubyText(recv, w.src))
+				}
+			}
+		}
+		if left := node.ChildByFieldName("left"); left != nil && left.Kind() == "instance_variable" {
+			name := rubyText(left, w.src)
+			w.metrics.recordFieldAccess(name, true)
+			if node.Kind() == "operator_assignment" {
+				// `||=` and `+=` read the current value before storing.
+				w.metrics.recordFieldAccess(name, false)
+			}
+			if right := node.ChildByFieldName("right"); right != nil {
+				w.walkForCalls(right, ownerIdx, seen, locals)
+			}
+			return
+		}
+	case "instance_variable":
+		// A read of `@client`.
+		w.metrics.recordFieldAccess(rubyText(node, w.src), false)
 		return
 	case "identifier":
 		// A bare identifier outside callee position: either an arg-less method
@@ -1335,6 +1591,14 @@ func (w *rubyWalker) handleAssignment(node *sitter.Node) {
 	if left == nil {
 		return
 	}
+	// `@client = …` is a write. It is recorded here rather than in the
+	// identifier walk because that walk cannot tell an assignment target from a
+	// read, and the read/write split is what makes the fact useful: a method
+	// that only reads a field is a candidate to move with it, one that writes
+	// is not.
+	if left.Kind() == "instance_variable" {
+		w.metrics.recordFieldAccess(rubyText(left, w.src), true)
+	}
 
 	// CONSTANT = ... (all-caps only, matching the former regex).
 	if kindOf(left) == "constant" {
@@ -1364,22 +1628,16 @@ func (w *rubyWalker) handleAssignment(node *sitter.Node) {
 		return
 	}
 
-	// self.table_name = "foo" on an ActiveRecord model.
+	// self.table_name = "foo" on an ActiveRecord model. The declaration answers
+	// the question the model's `table` prop asks, so it CORRECTS that prop rather
+	// than becoming a fact of its own: nothing in the graph refers to a table
+	// except through the model that uses it, and one declaration producing both a
+	// wrong derived claim and its own correction is two facts where there is one
+	// thing.
 	if s := w.cur(); s != nil && s.isModel && kindOf(left) == "call" {
 		if rubyText(left, w.src) == "self.table_name" {
 			if tbl := firstStringArg(node.ChildByFieldName("right"), w.src); tbl != "" {
-				w.out = append(w.out, facts.Fact{
-					Kind: facts.KindStorage,
-					Name: tbl,
-					File: w.relFile,
-					Line: line(node),
-					Props: map[string]any{
-						"storage_kind": "table",
-						"language":     "ruby",
-						"framework":    "rails",
-						"explicit":     true,
-					},
-				})
+				w.setModelTable(tbl)
 			}
 		}
 	}
@@ -1801,4 +2059,46 @@ func rubyText(node *sitter.Node, src []byte) string {
 		return ""
 	}
 	return string(src[node.StartByte():node.EndByte()])
+}
+
+// declaresAbstractClass reports whether a class body sets abstract_class.
+func declaresAbstractClass(node *sitter.Node, src []byte) bool {
+	body := node.ChildByFieldName("body")
+	if body == nil {
+		return false
+	}
+	for i := uint(0); i < body.ChildCount(); i++ {
+		child := body.Child(i)
+		if child.Kind() != "assignment" {
+			continue
+		}
+		left := child.ChildByFieldName("left")
+		right := child.ChildByFieldName("right")
+		if left == nil || right == nil {
+			continue
+		}
+		if rubyText(left, src) == "self.abstract_class" && rubyText(right, src) == "true" {
+			return true
+		}
+	}
+	return false
+}
+
+// blockParamName is the first parameter of a do/brace block, which is the
+// element variable for every enumerable that matters here.
+func blockParamName(block *sitter.Node, src []byte) string {
+	if block == nil {
+		return ""
+	}
+	params := block.ChildByFieldName("parameters")
+	if params == nil {
+		return ""
+	}
+	for i := uint(0); i < params.NamedChildCount(); i++ {
+		child := params.NamedChild(i)
+		if child != nil && child.Kind() == "identifier" {
+			return rubyText(child, src)
+		}
+	}
+	return ""
 }

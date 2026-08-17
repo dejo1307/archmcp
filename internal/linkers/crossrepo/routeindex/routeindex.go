@@ -146,6 +146,30 @@ func RepoFromIdentity(id string) string {
 	return id
 }
 
+// IsLinkable reports whether a server route is one this matcher can reason about
+// at all: it must be a repo-labelled server route with an HTTP verb, and not a UI
+// page route, a GraphQL operation or a generic path the matcher refuses to link on.
+//
+// It exists as a predicate rather than as an inline chain because the answer has
+// to be reached per FACT and not per identity. RouteIdentity is repo + method +
+// path, and an Ember page route sitting on the same path as a Rails route shares
+// its key: 54 identities in the estate cover 119 route facts, 29 of them mixing a
+// page route with a served one. A caller that decides "did this route match?" by
+// looking its identity up in a set built from linkable routes hands the Rails
+// route's verdict to the page route beside it — which is how `/*path` came to be
+// reported as an unused endpoint despite IsUIRoute existing to prevent exactly
+// that.
+func (m *Matcher) IsLinkable(f facts.Fact) bool {
+	if f.Kind != facts.KindRoute || f.Repo == "" || RoleOf(f) == facts.RoleClient ||
+		IsUIRoute(f) || f.PropString(facts.PropRouteType) == facts.RouteTypeGraphQL {
+		return false
+	}
+	if NormalizeMethod(f.PropString("method")) == "" {
+		return false
+	}
+	return !m.IsGenericPath(m.NormalizePath(f.Name))
+}
+
 func RoleOf(f facts.Fact) string { return f.PropString(facts.PropRole) }
 
 // uiRouteTypes are the `type` values the file-based/DSL UI routers stamp on

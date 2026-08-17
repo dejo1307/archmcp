@@ -1,6 +1,7 @@
 package llmcontext
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -88,6 +89,19 @@ func TestDetectDominantLanguage(t *testing.T) {
 				{Kind: facts.KindModule, Props: map[string]any{"language": "swift"}},
 			},
 			"swift",
+		},
+		{
+			// A tie is settled by name, not by whichever key the map happened to
+			// yield first: on a repository split evenly between two languages the
+			// guidance rendered changed between two runs of one binary.
+			"tie settled by name",
+			[]facts.Fact{
+				{Kind: facts.KindModule, Props: map[string]any{"language": "swift"}},
+				{Kind: facts.KindModule, Props: map[string]any{"language": "swift"}},
+				{Kind: facts.KindModule, Props: map[string]any{"language": "go"}},
+				{Kind: facts.KindModule, Props: map[string]any{"language": "go"}},
+			},
+			"go",
 		},
 	}
 
@@ -216,14 +230,16 @@ func TestRiskZones_IncludesCyclesAndViolations(t *testing.T) {
 	}
 }
 
-func TestCriticalModules_FanInFanOut(t *testing.T) {
+// threeWayTieSnapshot returns the shape a tie takes in a real repository: a, b
+// and c all import lib-core, so lib-core scores 3 and the three importers tie at
+// 1 with nothing but their names to separate them.
+func threeWayTieSnapshot() *facts.Snapshot {
 	ff := []facts.Fact{
 		{Kind: facts.KindModule, Name: "lib-core"},
 		{Kind: facts.KindModule, Name: "a"},
 		{Kind: facts.KindModule, Name: "b"},
 		{Kind: facts.KindModule, Name: "c"},
 	}
-	// a, b, c all import lib-core → lib-core has fanIn=3
 	for _, src := range []string{"a", "b", "c"} {
 		ff = append(ff, facts.Fact{
 			Kind: facts.KindDependency,
@@ -233,8 +249,11 @@ func TestCriticalModules_FanInFanOut(t *testing.T) {
 			},
 		})
 	}
+	return makeSnapshot(ff, nil)
+}
 
-	snapshot := makeSnapshot(ff, nil)
+func TestCriticalModules_FanInFanOut(t *testing.T) {
+	snapshot := threeWayTieSnapshot()
 	r := New(4000)
 	artifacts, err := r.Render(context.Background(), snapshot)
 	if err != nil {
@@ -248,6 +267,21 @@ func TestCriticalModules_FanInFanOut(t *testing.T) {
 	// lib-core has fanIn=3, fanOut=0, score=3 → "low" criticality
 	if !strings.Contains(content, "| 3 | 0 |") {
 		t.Error("expected lib-core to have fanIn=3, fanOut=0")
+	}
+}
+
+// One snapshot rendered twice must produce one document. The rankings are built
+// out of maps, so before the name tie-breaks a tie ordered by Go's randomized map
+// iteration and the same snapshot rendered differently on nearly every pass. The
+// receipt's output_hashes cannot assert this: llm_context.md's footer carries the
+// wall clock, so its hash never repeats across two runs regardless.
+func TestRender_RepeatedRendersAreIdentical(t *testing.T) {
+	snapshot := threeWayTieSnapshot()
+	first := mustRender(t, snapshot)
+	for i := 2; i <= 64; i++ {
+		if got := mustRender(t, snapshot); !bytes.Equal(first, got) {
+			t.Fatalf("render %d differs from the first:\nfirst:\n%s\nrender %d:\n%s", i, first, i, got)
+		}
 	}
 }
 

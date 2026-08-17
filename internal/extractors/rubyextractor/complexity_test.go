@@ -165,8 +165,13 @@ end
 	if got := rbIntProp(t, f, "loop_depth"); got != 1 {
 		t.Errorf("loop_depth = %d, want 1 (constant inner loop must not multiply)", got)
 	}
-	if cil := rbStrSlice(f, "calls_in_loop"); !rbContains(cil, "save") {
-		t.Errorf("calls_in_loop = %v, want to contain save (per-iteration I/O still flagged)", cil)
+	// `u.save`, not bare `save`: the receiver is kept for a variable receiver,
+	// because dropping it is what made an association read indistinguishable
+	// from any other method of the same name. A consumer joining block bindings
+	// to association facts found exactly zero candidates while the receiver was
+	// being discarded.
+	if cil := rbStrSlice(f, "calls_in_loop"); !rbContains(cil, "u.save") {
+		t.Errorf("calls_in_loop = %v, want to contain u.save (per-iteration I/O still flagged, with its receiver)", cil)
 	}
 }
 
@@ -340,8 +345,8 @@ end
 `
 	f := symbolsByName(extractFileAST([]byte(src), "app/report.rb", false, false))["Report#run"]
 	cil := rbStrSlice(f, "calls_in_loop")
-	if !rbContains(cil, "posts") {
-		t.Errorf("calls_in_loop = %v, want to contain posts (association read)", cil)
+	if !rbContains(cil, "u.posts") {
+		t.Errorf("calls_in_loop = %v, want to contain u.posts (association read, with its receiver)", cil)
 	}
 	if rbContains(cil, "name") {
 		t.Errorf("calls_in_loop = %v, must NOT contain name (cheap attribute)", cil)
@@ -361,8 +366,13 @@ func TestRbComplexity_InLoopAssociationChain(t *testing.T) {
 end
 `
 	f := symbolsByName(extractFileAST([]byte(src), "app/report.rb", false, false))["Report#run"]
-	if cil := rbStrSlice(f, "calls_in_loop"); !rbContains(cil, "posts") {
-		t.Errorf("calls_in_loop = %v, want to contain posts", cil)
+	// `u.posts` with its receiver, and bare `count` for the chained call whose
+	// receiver is itself a call rather than a variable. The receiver is kept
+	// only where it is a plain variable, which is where it can be typed — a
+	// chain's intermediate cannot be, and guessing at one is what produced a
+	// detector with seven candidates and zero true findings.
+	if cil := rbStrSlice(f, "calls_in_loop"); !rbContains(cil, "u.posts") {
+		t.Errorf("calls_in_loop = %v, want to contain u.posts", cil)
 	}
 }
 
@@ -438,8 +448,8 @@ end
 	if !rbContains(cil, "notify") {
 		t.Errorf("calls_in_loop = %v, want to contain notify", cil)
 	}
-	if !rbContains(cil, "posts") {
-		t.Errorf("calls_in_loop = %v, want to contain posts (real association read on block var)", cil)
+	if !rbContains(cil, "user.posts") {
+		t.Errorf("calls_in_loop = %v, want to contain user.posts (association read on a block var, receiver kept so it can be typed)", cil)
 	}
 }
 

@@ -30,8 +30,15 @@ import (
 //      client interface + method are in the index.
 
 // goGRPCStub is one resolved gRPC client: its methods mapped to wire paths.
+//
+// ambiguous records the methods that must never be emitted. The index is keyed
+// by the short service name, so a service declared in two proto packages —
+// ordinary API-versioning practice — collides here. Keeping the last writer
+// would answer confidently from a derivation that failed, and would answer
+// differently from run to run.
 type goGRPCStub struct {
-	methods map[string]string // Go method name → "/fq.Service/Method"
+	methods   map[string]string // Go method name → "/fq.Service/Method"
+	ambiguous map[string]bool
 }
 
 // goGRPCStubIndex maps an exported client interface name (e.g. "UserServiceClient",
@@ -73,10 +80,22 @@ func buildGoGRPCStubIndex(files []*ast.File) *goGRPCStubIndex {
 			iface := afterLastDot(grpcServiceOf(s)) + "Client"
 			stub := idx.byClient[iface]
 			if stub == nil {
-				stub = &goGRPCStub{methods: map[string]string{}}
+				stub = &goGRPCStub{methods: map[string]string{}, ambiguous: map[string]bool{}}
 				idx.byClient[iface] = stub
 			}
-			stub.methods[grpcMethodOf(s)] = s
+			method := grpcMethodOf(s)
+			if stub.ambiguous[method] {
+				return true
+			}
+			if existing, present := stub.methods[method]; present && existing != s {
+				// Two proto packages declare this service. Which one a call
+				// site means cannot be derived from the short name, so nothing
+				// is emitted: a missing edge is honest, a guessed one is not.
+				stub.ambiguous[method] = true
+				delete(stub.methods, method)
+				return true
+			}
+			stub.methods[method] = s
 			return true
 		})
 	}

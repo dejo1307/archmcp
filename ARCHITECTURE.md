@@ -835,7 +835,11 @@ Cross-repo linking is the part of enola hardest to verify from the outside, so i
 
 ### Finding unused endpoints
 
-The same client/server route matching that draws cross-repo edges also answers its inverse: **which server routes does no loaded client call?** After linking, every server `route` a client matched is left untouched; every one that *no* client resolved to — by the identical normalized path + method join — is tagged `unmatched_by_clients: true` on the route fact.
+The same client/server route matching that draws cross-repo edges also answers its inverse: **which server routes does no loaded client call?** After linking, every server `route` a client resolved to is tagged `matched_by_clients: true`, and every one that *no* client resolved to — by the identical normalized path + method join — is tagged `unmatched_by_clients: true`.
+
+**A route can also carry neither, and that is a third verdict rather than a gap.** The pass declines to reason about UI page routes, GraphQL operations, routes with no HTTP verb, generic paths like `/health`, and every route in a repo that serves no cross-repo client at all. Those get no marker, because "no client calls this" and "nothing checked" are different claims and only the first is evidence. The positive marker exists for the same reason: with only the negative one, a matched route and an unexamined route were indistinguishable, so `unmatched_by_clients: false` matched nothing and absence of a marker read as measurement of absence. Exactly one of the two markers is present on any route the linker evaluated, and the pair is cleared and rewritten on every re-link so an append that changes the index cannot leave both behind.
+
+The `unused-routes` finding reports the declined count beside the ratio for the same reason: `27 of 39 unused` and `27 of 39, with a further 827 the pass could not assess` describe different repositories.
 
 The direct way to get the candidate list is the `unused-routes` finding:
 
@@ -849,7 +853,7 @@ which returns the per-service rollup with the out-of-snapshot caveat and suggest
 query_facts(kind=route, prop=unmatched_by_clients, prop_value=true, repo="<service>")
 ```
 
-(`query_facts(kind=route, output_mode=summary)` also reports the `unmatched_by_clients` count under a `## Flags` heading, so the signal is visible while sizing a route query.)
+(`query_facts(kind=route, output_mode=summary)` also reports the `unmatched_by_clients` count under a `## Flags` heading, so the signal is visible while sizing a route query.) Swap the prop for `matched_by_clients` to get the confirmed-in-use set; routes in neither answer are the ones nothing assessed.
 
 This is the candidate set for dead-endpoint cleanup, computed deterministically rather than grepped-and-guessed — the matching reuses the linker's exact path normalization (so a backend's `/api/settings/x` correctly counts as called by a client's base-relative `settings/x`), and it discriminates by method, so a read endpoint that clients hit stays clean while the `POST`/`PUT`/`DELETE` on the same path can still be flagged. Two guards keep it honest: only repos that actually serve a cross-repo client are considered (a frontend's own page routes are never flagged), and matching errs toward *use* — any path+method hit, at any confidence, counts — so the set is biased toward false negatives.
 

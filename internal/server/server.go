@@ -1535,6 +1535,24 @@ func (s *Server) registerTools() {
 		return jsonResult(resp)
 	})
 
+	// Tool: endpoint_impact
+	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: "endpoint_impact",
+		Description: "Answer what changing an HTTP endpoint reaches: the route, the controller serving it, the models that controller touches, the models associated with those, and the physical tables behind them. " +
+			"Use impact_analysis when you have a symbol; use this when what you have is a URL. " +
+			"Client call sites and mock-server routes are excluded — this answers about what the application serves. " +
+			"Each hop can run out, and the result names the one that did: a route whose controller does not resolve is reported as reaching an UNKNOWN set, not an empty one.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args endpointImpactArgs) (*mcp.CallToolResult, any, error) {
+		store := s.eng.Store()
+		if store.Count() == 0 {
+			return errorResult("No facts available. Run generate_snapshot first."), nil, nil
+		}
+		if args.Endpoint == "" {
+			return errorResult("endpoint is required"), nil, nil
+		}
+		return jsonResult(store.AnalyzeEndpoint(args.Endpoint, args.MaxRoutes))
+	})
+
 	// Tool: impact_analysis
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "impact_analysis",
@@ -2632,6 +2650,11 @@ type findPathArgs struct {
 }
 
 // impactAnalysisArgs are the arguments for the impact_analysis tool.
+type endpointImpactArgs struct {
+	Endpoint  string `json:"endpoint" jsonschema:"required,The HTTP endpoint being changed. Substring match on the path, optionally prefixed with a verb: 'GET /v1/candidates' or just '/v1/candidates'."`
+	MaxRoutes int    `json:"max_routes,omitempty" jsonschema:"How many matched endpoints to follow (1-200). A bare prefix can match hundreds. Default: 25."`
+}
+
 type impactAnalysisArgs struct {
 	Target         string `json:"target" jsonschema:"required,The node being changed (fact name, substring match). Supports scoped prefixes repo:/kind:/file: to disambiguate."`
 	MaxDepth       int    `json:"max_depth,omitempty" jsonschema:"How many hops of impact to compute (1-10). Default: 3."`

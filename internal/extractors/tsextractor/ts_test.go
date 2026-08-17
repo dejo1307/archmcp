@@ -1229,6 +1229,105 @@ func TestDetect_HotwireStimulusApp(t *testing.T) {
 	}
 }
 
+// TestCommonJSExportAssignments: `exports.name = function` and
+// `module.exports.name = function` declare that name as an exported function
+// symbol — the whole public surface of a classic Node module. Everything short
+// of that shape (a plain value, a re-exported identifier, whole-object
+// module.exports) emits no symbol: there is no member name to carry, or no
+// declaration to classify.
+func TestCommonJSExportAssignments(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"controllers/main.js": `'use strict'
+
+exports.index = function(req, res){
+  res.render('index');
+};
+
+module.exports.list = (req, res) => {
+  res.json([]);
+};
+
+exports.VERSION = '1.0';
+exports.helper = someImportedName;
+module.exports = function whole(){};
+`,
+	}, false)
+
+	index, ok := findFact(ff, "controllers.index")
+	if !ok {
+		t.Fatalf("exports.index did not become a symbol; facts: %+v", ff)
+	}
+	if index.Props["symbol_kind"] != facts.SymbolFunc || index.Props["exported"] != true {
+		t.Errorf("exports.index props = %+v, want an exported function", index.Props)
+	}
+	list, ok := findFact(ff, "controllers.list")
+	if !ok {
+		t.Fatalf("module.exports.list did not become a symbol")
+	}
+	if list.Props["symbol_kind"] != facts.SymbolFunc || list.Props["exported"] != true {
+		t.Errorf("module.exports.list props = %+v, want an exported function", list.Props)
+	}
+	for _, name := range []string{"controllers.VERSION", "controllers.helper", "controllers.whole"} {
+		if _, found := findFact(ff, name); found {
+			t.Errorf("%s emitted a symbol; only the member-assignment-of-a-function shape declares", name)
+		}
+	}
+}
+
+func TestExtract_MJSModules(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/helper.mjs": `export function formatName(user) {
+  return user.first + " " + user.last;
+}
+`,
+		"src/index.mjs": `import { formatName } from "./helper.mjs";
+
+export function greet(user) {
+  return "hello " + formatName(user);
+}
+`,
+	}, false)
+
+	formatName, ok := findFact(ff, "src.formatName")
+	if !ok {
+		t.Fatalf("an .mjs ESM export did not become a symbol; facts: %+v", ff)
+	}
+	if formatName.Props["symbol_kind"] != facts.SymbolFunc || formatName.Props["exported"] != true {
+		t.Errorf("src.formatName props = %+v, want an exported function", formatName.Props)
+	}
+	greet, ok := findFact(ff, "src.greet")
+	if !ok {
+		t.Fatal("the importing .mjs file's export did not become a symbol")
+	}
+	if !hasRelation(greet, facts.RelCalls, "src.formatName") {
+		t.Errorf("greet should carry a calls edge to the imported .mjs function; relations = %v", greet.Relations)
+	}
+}
+
+func TestDetect_ImportmapRailsApp(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pin := `pin "@hotwired/stimulus", to: "stimulus.min.js"` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "config", "importmap.rb"), []byte(pin), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := New().Detect(dir)
+	if err != nil || !ok {
+		t.Fatalf("Detect = %v, %v — an importmap-rails app pins in Ruby and has no package.json", ok, err)
+	}
+
+	bare := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(bare, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = New().Detect(bare)
+	if err != nil || ok {
+		t.Fatalf("Detect = %v, %v — a config/ directory alone is not a JavaScript project", ok, err)
+	}
+}
+
 func TestDetect_PlainNodePackageWithoutDependencies(t *testing.T) {
 	dir := t.TempDir()
 	pkg := `{"name": "some-cli", "type": "module", "bin": {"some-cli": "./bin/cli.js"}}`
@@ -1329,5 +1428,119 @@ func TestResolveImportPath_ExactBeatsPrefix(t *testing.T) {
 	}
 	if got, _ := resolveImportPath("@acme/other", "src", aliases); got != "public/@acme/other" {
 		t.Errorf("prefix still applies to non-exact specifiers, got %q", got)
+	}
+}
+
+func TestExtract_MemberDecoratorsAndGetterKind(t *testing.T) {
+	ff := extractAll(t, map[string]string{
+		"src/panel.ts": `import { cached, tracked } from '@glimmer/tracking';
+import { action } from '@ember/object';
+
+@classic
+export default class Panel {
+  @tracked count = 0;
+
+  @cached
+  @cached
+  get expensive() {
+    return this.compute() + this.helper();
+  }
+
+  get plain() {
+    return 1;
+  }
+
+  set volume(v) {
+    this.count = v;
+  }
+
+  @action
+  submit() {
+    this.compute();
+  }
+
+  compute() {
+    return 1;
+  }
+
+  helper() {
+    return 2;
+  }
+}
+`,
+	}, false)
+
+	panel, ok := findFact(ff, "src.Panel")
+	if !ok {
+		t.Fatalf("class fact missing; facts: %+v", ff)
+	}
+	if got, want := panel.Props["decorators"], "classic"; got != want {
+		t.Errorf("class decorators = %v, want %v", got, want)
+	}
+
+	expensive, ok := findFact(ff, "src.Panel.expensive")
+	if !ok {
+		t.Fatal("decorated getter emitted no symbol")
+	}
+	if expensive.Props["symbol_kind"] != facts.SymbolGetter {
+		t.Errorf("symbol_kind = %v, want getter", expensive.Props["symbol_kind"])
+	}
+	if got, want := expensive.Props["decorators"], "cached"; got != want {
+		t.Errorf("getter decorators = %v, want deduped %v", got, want)
+	}
+	if got := expensive.Props["getter_calls"]; got != 2 {
+		t.Errorf("getter_calls = %v, want 2", got)
+	}
+
+	plain, ok := findFact(ff, "src.Panel.plain")
+	if !ok {
+		t.Fatal("undecorated getter emitted no symbol")
+	}
+	if plain.Props["symbol_kind"] != facts.SymbolGetter {
+		t.Errorf("plain getter symbol_kind = %v, want getter", plain.Props["symbol_kind"])
+	}
+	if _, present := plain.Props["decorators"]; present {
+		t.Errorf("undecorated getter must carry no decorators prop, got %v", plain.Props["decorators"])
+	}
+	if got := plain.Props["getter_calls"]; got != 0 {
+		t.Errorf("plain getter_calls = %v, want measured 0", got)
+	}
+
+	volume, ok := findFact(ff, "src.Panel.volume")
+	if !ok {
+		t.Fatal("setter emitted no symbol")
+	}
+	if volume.Props["symbol_kind"] != facts.SymbolMethod {
+		t.Errorf("setter symbol_kind = %v, want method — only get accessors are getters", volume.Props["symbol_kind"])
+	}
+
+	count, ok := findFact(ff, "src.Panel.count")
+	if !ok {
+		t.Fatal("decorated field emitted no symbol")
+	}
+	if got, want := count.Props["decorators"], "tracked"; got != want {
+		t.Errorf("field decorators = %v, want %v", got, want)
+	}
+
+	submit, ok := findFact(ff, "src.Panel.submit")
+	if !ok {
+		t.Fatal("decorated method emitted no symbol")
+	}
+	if submit.Props["symbol_kind"] != facts.SymbolMethod {
+		t.Errorf("decorated method symbol_kind = %v, want method", submit.Props["symbol_kind"])
+	}
+	if got, want := submit.Props["decorators"], "action"; got != want {
+		t.Errorf("method decorators = %v, want %v", got, want)
+	}
+	if _, present := submit.Props["getter_calls"]; present {
+		t.Error("a plain method must not carry getter_calls")
+	}
+
+	compute, ok := findFact(ff, "src.Panel.compute")
+	if !ok {
+		t.Fatal("undecorated method emitted no symbol")
+	}
+	if _, present := compute.Props["decorators"]; present {
+		t.Errorf("undecorated method must carry no decorators prop, got %v", compute.Props["decorators"])
 	}
 }

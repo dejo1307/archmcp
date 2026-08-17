@@ -1,0 +1,128 @@
+package facts
+
+import "testing"
+
+func endpointStore() *Store {
+	st := NewStore()
+	st.Add(
+		Fact{Kind: KindRoute, Name: "/v1/candidates/:id", Props: map[string]any{
+			"method": "GET", "handler": "api/v1/candidates#show"}},
+		Fact{Kind: KindRoute, Name: "/v1/candidates/:id", Props: map[string]any{
+			"method": "DELETE", "handler": "api/v1/candidates#destroy"}},
+		// A mock and a client call site must never be followed: they describe
+		// what something else does, not what this app serves.
+		Fact{Kind: KindRoute, Name: "/v1/candidates/:id", Props: map[string]any{
+			"method": "GET", "role": "client", "test_double": true}},
+		Fact{Kind: KindSymbol, Name: "Api::V1::CandidatesController", Props: map[string]any{
+			"symbol_kind": SymbolClass}, Relations: []Relation{{Kind: RelCalls, Target: "Candidate"}}},
+		Fact{Kind: KindSymbol, Name: "Candidate", Props: map[string]any{"symbol_kind": SymbolClass}},
+		Fact{Kind: KindStorage, Name: "Candidate", Props: map[string]any{
+			"storage_kind": "model", "table": "candidates"}},
+		Fact{Kind: KindStorage, Name: "JobApplication", Props: map[string]any{
+			"storage_kind": "model", "table": "job_applications"}},
+		Fact{Kind: KindAssociation, Name: "Candidate#job_applications", Props: map[string]any{
+			"model": "Candidate", "target": "JobApplication", "macro": "has_many"}},
+	)
+	st.BuildGraph()
+	return st
+}
+
+func TestAnalyzeEndpointWalksTheWholeChain(t *testing.T) {
+	got := endpointStore().AnalyzeEndpoint("GET /v1/candidates", 25)
+	if len(got.Routes) != 1 {
+		t.Fatalf("one server route matches GET, got %d: %+v", len(got.Routes), got.Routes)
+	}
+	if len(got.Controllers) != 1 || got.Controllers[0] != "Api::V1::CandidatesController" {
+		t.Errorf("controllers = %v", got.Controllers)
+	}
+	if len(got.Models) != 1 || got.Models[0] != "Candidate" {
+		t.Errorf("models = %v", got.Models)
+	}
+	if len(got.Associated) != 1 || got.Associated[0] != "JobApplication" {
+		t.Errorf("associated = %v — one association hop out from the model the controller reaches", got.Associated)
+	}
+	if len(got.Tables) != 2 {
+		t.Errorf("tables = %v, want both the model's and the associated model's", got.Tables)
+	}
+	if got.StoppedAt != "" {
+		t.Errorf("the chain completed, so nothing stopped it: %q", got.StoppedAt)
+	}
+}
+
+// TestAnalyzeEndpointNamesTheHopThatRanOut is the property that keeps an empty
+// answer honest: "touches nothing" and "I stopped here" are different claims.
+func TestAnalyzeEndpointNamesTheHopThatRanOut(t *testing.T) {
+	st := NewStore()
+	st.Add(Fact{Kind: KindRoute, Name: "/orphan", Props: map[string]any{
+		"method": "GET", "handler": "nowhere#show"}})
+	st.BuildGraph()
+
+	got := st.AnalyzeEndpoint("/orphan", 25)
+	if len(got.Routes) != 1 {
+		t.Fatalf("the route itself is still reported: %+v", got)
+	}
+	if got.StoppedAt != "controller" {
+		t.Errorf("StoppedAt = %q, want controller", got.StoppedAt)
+	}
+
+	missing := st.AnalyzeEndpoint("/nothing-here", 25)
+	if missing.StoppedAt != "route" {
+		t.Errorf("StoppedAt = %q, want route", missing.StoppedAt)
+	}
+}
+
+// TestAnalyzeEndpointIgnoresMocksAndClients pins that the traversal answers
+// about what this application serves.
+func TestAnalyzeEndpointIgnoresMocksAndClients(t *testing.T) {
+	got := endpointStore().AnalyzeEndpoint("/v1/candidates", 25)
+	for _, route := range got.Routes {
+		if route.Handler == "" {
+			t.Errorf("a mock or client route was followed: %+v", route)
+		}
+	}
+	if len(got.Routes) != 2 {
+		t.Errorf("both server routes and neither double: %d", len(got.Routes))
+	}
+}
+
+// TestAnalyzeEndpointFindsTheFrontendScreen covers the cross-stack half: the
+// models say what an endpoint writes, the callers say who notices. The screen
+// is matched on the Ember route NAME rather than its URL, because a route that
+// overrides its path — which is most of the interesting ones — has a name the
+// file layout mirrors and a URL it does not.
+func TestAnalyzeEndpointFindsTheFrontendScreen(t *testing.T) {
+	st := NewStore()
+	st.Add(
+		Fact{Kind: KindRoute, Name: "/app/api/available_companies", Props: map[string]any{
+			"method": "GET", "handler": "app/api/available_companies#index"}},
+		Fact{Kind: KindRoute, Name: "/admin/company-linking", Props: map[string]any{
+			"method": "GET", "framework": "ember", "ember_route_name": "admin-company-linking"}},
+		Fact{Kind: KindRoute, Name: "/app/api/available_companies",
+			File:  "ember_app/app/routes/admin-company-linking.ts",
+			Props: map[string]any{"method": "GET", "role": "client"}},
+		Fact{Kind: KindRoute, Name: "/app/api/available_companies",
+			File:  "ember_app/app/components/picker.ts",
+			Props: map[string]any{"method": "GET", "role": "client"}},
+		// A mock calling the same endpoint is not a caller that notices.
+		Fact{Kind: KindRoute, Name: "/app/api/available_companies",
+			File:  "ember_app/app/mirage/routes.js",
+			Props: map[string]any{"method": "GET", "role": "client", "test_double": true}},
+	)
+	st.BuildGraph()
+
+	got := st.AnalyzeEndpoint("GET /app/api/available_companies", 25)
+	if len(got.Callers) != 2 {
+		t.Fatalf("two real callers and no mock, got %d: %+v", len(got.Callers), got.Callers)
+	}
+	byFile := map[string]string{}
+	for _, caller := range got.Callers {
+		byFile[caller.File] = caller.Screen
+	}
+	if screen := byFile["ember_app/app/routes/admin-company-linking.ts"]; screen != "/admin/company-linking" {
+		t.Errorf("route module resolves to its screen, got %q", screen)
+	}
+	// A component may be used by many screens, so claiming one would be a guess.
+	if screen := byFile["ember_app/app/components/picker.ts"]; screen != "" {
+		t.Errorf("a component names no single screen, got %q", screen)
+	}
+}

@@ -751,3 +751,19 @@ func findPairValue(args *sitter.Node, key string, src []byte) *sitter.Node {
 	}
 	return nil
 }
+
+// positionalSymbols returns the direct symbol arguments of a call, ignoring
+// keyword pairs: the `:a, :b` of `concerns :a, :b`.
+func positionalSymbols(args *sitter.Node, src []byte) []string {
+	if args == nil {
+		return nil
+	}
+	var out []string
+	for i := uint(0); i < args.ChildCount(); i++ {
+		child := args.Child(i)
+		if child.Kind() == "simple_symbol" {
+			out = append(out, strings.TrimPrefix(rubyText(child, src), ":"))
+		}
+	}
+	return out
+}

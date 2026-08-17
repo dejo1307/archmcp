@@ -918,6 +918,114 @@ func TestTraverse_ForwardFromStructSurfacesMethodCalls(t *testing.T) {
 	}
 }
 
+// buildRubyMethodStore mirrors the rubyextractor's naming: an instance method is a
+// sibling fact named "<class>#<method>", a singleton method "<class>.<method>", and
+// a def outside any class "<dir>.<method>". It also carries the two shapes that must
+// stay unwired — a "#" name whose owner no fact declares, and one whose owner is a
+// symbol that is not a type.
+func buildRubyMethodStore() *Graph {
+	s := NewStore()
+	ruby := func(kind string) map[string]any {
+		return map[string]any{"symbol_kind": kind, "language": "ruby"}
+	}
+	s.Add(
+		Fact{Kind: KindSymbol, Name: "Analytics::GoogleTagManager", File: "app/models/analytics/google_tag_manager.rb", Line: 1,
+			Props: ruby(SymbolClass)},
+		Fact{Kind: KindSymbol, Name: "Analytics::GoogleTagManager#render?", File: "app/models/analytics/google_tag_manager.rb", Line: 12,
+			Props:     ruby(SymbolMethod),
+			Relations: []Relation{{Kind: RelCalls, Target: "Analytics::Consent.granted?"}}},
+		Fact{Kind: KindSymbol, Name: "Analytics::GoogleTagManager.configure", File: "app/models/analytics/google_tag_manager.rb", Line: 4,
+			Props: ruby(SymbolFunc)},
+		Fact{Kind: KindSymbol, Name: "Analytics::Consent", File: "app/models/analytics/consent.rb", Line: 1,
+			Props: ruby(SymbolClass)},
+		Fact{Kind: KindSymbol, Name: "Analytics::Consent.granted?", File: "app/models/analytics/consent.rb", Line: 3,
+			Props: ruby(SymbolFunc)},
+		Fact{Kind: KindSymbol, Name: "Comparable#<=>", File: "app/models/analytics/consent.rb", Line: 20,
+			Props: ruby(SymbolMethod)},
+		Fact{Kind: KindSymbol, Name: "settings", File: "config/settings.rb", Line: 1,
+			Props: ruby(SymbolVariable)},
+		Fact{Kind: KindSymbol, Name: "settings#reload", File: "config/settings.rb", Line: 5,
+			Props: ruby(SymbolMethod)},
+		Fact{Kind: KindSymbol, Name: "lib/tasks.reindex", File: "lib/tasks/reindex.rb", Line: 1,
+			Props: ruby(SymbolMethod)},
+	)
+	s.BuildGraph()
+	return s.Graph()
+}
+
+func hasMethodEdge(g *Graph, owner, method string) bool {
+	for _, e := range g.ForwardEdges(owner) {
+		if e.RelKind == RelHasMethod && e.Target == method {
+			return true
+		}
+	}
+	return false
+}
+
+func ownedBy(g *Graph, method string) []string {
+	var owners []string
+	for _, e := range g.ReverseEdges(method) {
+		if e.RelKind == RelHasMethod {
+			owners = append(owners, e.Target)
+		}
+	}
+	return owners
+}
+
+func TestNewGraph_ClassToRubyInstanceMethodEdges(t *testing.T) {
+	g := buildRubyMethodStore()
+
+	if !hasMethodEdge(g, "Analytics::GoogleTagManager", "Analytics::GoogleTagManager#render?") {
+		t.Errorf("expected has_method edge to the instance method, got %+v", g.ForwardEdges("Analytics::GoogleTagManager"))
+	}
+	if !hasMethodEdge(g, "Analytics::GoogleTagManager", "Analytics::GoogleTagManager.configure") {
+		t.Errorf("expected has_method edge to the singleton method, got %+v", g.ForwardEdges("Analytics::GoogleTagManager"))
+	}
+}
+
+func TestNewGraph_RubyMethodOwnerMustBeAKnownType(t *testing.T) {
+	g := buildRubyMethodStore()
+
+	for _, method := range []string{"Comparable#<=>", "settings#reload", "lib/tasks.reindex"} {
+		if owners := ownedBy(g, method); len(owners) > 0 {
+			t.Errorf("%q was wired to %v; its owner is not a known type", method, owners)
+		}
+	}
+}
+
+func TestTraverse_ForwardFromRubyClassSurfacesInstanceMethodCalls(t *testing.T) {
+	g := buildRubyMethodStore()
+
+	result := g.Traverse("Analytics::GoogleTagManager", "forward", nil, nil, 5, 100)
+
+	names := nodeNames(result.Nodes)
+	for _, want := range []string{"Analytics::GoogleTagManager#render?", "Analytics::Consent.granted?"} {
+		if !contains(names, want) {
+			t.Errorf("forward traverse from the class missing %q; got %v", want, names)
+		}
+	}
+}
+
+// The separator that splits a method from its owner is "#" wherever one appears; a
+// "." earlier in the name belongs to the owner.
+func TestNewGraph_HashSeparatorWinsOverDot(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		Fact{Kind: KindSymbol, Name: "Reports", File: "reports.rb", Line: 1,
+			Props: map[string]any{"symbol_kind": SymbolClass}},
+		Fact{Kind: KindSymbol, Name: "Reports.Weekly", File: "reports.rb", Line: 5,
+			Props: map[string]any{"symbol_kind": SymbolClass}},
+		Fact{Kind: KindSymbol, Name: "Reports.Weekly#render", File: "reports.rb", Line: 9,
+			Props: map[string]any{"symbol_kind": SymbolMethod}},
+	)
+	s.BuildGraph()
+	g := s.Graph()
+
+	if got := ownedBy(g, "Reports.Weekly#render"); len(got) != 1 || got[0] != "Reports.Weekly" {
+		t.Errorf("owner of Reports.Weekly#render = %v, want [Reports.Weekly]", got)
+	}
+}
+
 func TestTraverse_UnresolvedTargetMarked(t *testing.T) {
 	g, _ := buildTypeMethodStore()
 
@@ -1190,6 +1298,47 @@ func TestArchitecturalReverse_ExcludesInstantiate(t *testing.T) {
 	// Forward keeps the constructing side (fan-out is unaffected).
 	if !hasSrc(g.ForwardEdges("pkg.build"), "pkg.Data") {
 		t.Errorf("ForwardEdges must keep the instantiate edge; got %v", g.ForwardEdges("pkg.build"))
+	}
+}
+
+// TestArchitecturalForwardEdges_ExcludeOwnedMethods — a type's has_method edges point
+// at its own body, so they are containment rather than outgoing coupling. Counting
+// them turns out-degree into a size measure, and the explainer that reads it calls the
+// number "calls out to". The raw forward index still carries them: traversal,
+// impact_analysis and find_path are what those edges were synthesized for.
+func TestArchitecturalForwardEdges_ExcludeOwnedMethods(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		Fact{Kind: KindSymbol, Name: "Batch", File: "app/batch.rb",
+			Props:     map[string]any{"symbol_kind": SymbolClass},
+			Relations: []Relation{{Kind: RelCalls, Target: "Runner.run"}}},
+		Fact{Kind: KindSymbol, Name: "Batch#first", File: "app/batch.rb",
+			Props: map[string]any{"symbol_kind": SymbolMethod}},
+		Fact{Kind: KindSymbol, Name: "Batch#second", File: "app/batch.rb",
+			Props: map[string]any{"symbol_kind": SymbolMethod}},
+		Fact{Kind: KindSymbol, Name: "Runner", File: "app/runner.rb",
+			Props: map[string]any{"symbol_kind": SymbolClass}},
+		Fact{Kind: KindSymbol, Name: "Runner.run", File: "app/runner.rb",
+			Props: map[string]any{"symbol_kind": SymbolFunc}},
+	)
+	s.BuildGraph()
+	g := s.Graph()
+
+	if got, want := g.FanOut("Batch"), 3; got != want {
+		t.Fatalf("precondition: FanOut(Batch) = %d, want %d (one call plus two owned methods)", got, want)
+	}
+	arch := g.ArchitecturalForwardEdges("Batch")
+	if len(arch) != 1 || arch[0].Target != "Runner.run" {
+		t.Errorf("ArchitecturalForwardEdges(Batch) = %v, want only the call to Runner.run", arch)
+	}
+	if got, want := g.ArchitecturalFanOut("Batch"), len(arch); got != want {
+		t.Errorf("ArchitecturalFanOut = %d but ArchitecturalForwardEdges has %d", got, want)
+	}
+	if got := g.ArchitecturalFanOut("no.such.symbol"); got != 0 {
+		t.Errorf("ArchitecturalFanOut(absent) = %d, want 0", got)
+	}
+	if got := g.ArchitecturalForwardEdges("no.such.symbol"); got != nil {
+		t.Errorf("ArchitecturalForwardEdges(absent) = %v, want nil", got)
 	}
 }
 
