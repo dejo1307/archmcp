@@ -2,6 +2,7 @@ package intent
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -63,7 +64,182 @@ func CompileFacts(d *Declaration) []facts.Fact {
 			Props: base("layer", map[string]any{"layer_name": l.Name, "order": i, "paths": append([]string(nil), l.Paths...)}),
 		})
 	}
+	for _, c := range d.Components {
+		// Patterns are sorted before joining so the compiled fact — and every
+		// fingerprint downstream of it — is a function of the declared SET, not
+		// of the YAML order the author happened to write.
+		match := append([]string(nil), c.Match...)
+		sort.Strings(match)
+		extra := map[string]any{
+			"component": c.Name,
+			"match":     strings.Join(match, " "),
+		}
+		if c.Service != "" {
+			extra["service"] = c.Service
+		}
+		// Both spellings of the kind narrowing compile to the one kind prop —
+		// the predicate's reserved key is the same narrowing, not a second one,
+		// so nothing downstream of compilation has to know which spelling the
+		// author used.
+		if kind := c.FactKind(); kind != "" {
+			extra["kind"] = kind
+		}
+		if c.NamePattern != "" {
+			extra["name_pattern"] = c.NamePattern
+		}
+		if where := EncodeWhere(c.Predicate()); where != "" {
+			extra["where"] = where
+		}
+		if c.Recipe != "" {
+			extra["recipe"] = c.Recipe
+			extra["instance"] = c.Instance
+			extra["role"] = c.Role
+		}
+		out = append(out, facts.Fact{
+			Kind:  facts.KindIntent,
+			Name:  "component: " + c.Name,
+			File:  constraintDeclaringFile(c.SourceFile, extra),
+			Props: base("component", extra),
+		})
+	}
+	for _, r := range d.Rules {
+		// Mode is normalized at compile time: an absent mode and an explicit
+		// ratchet declare the same enforcement, so they must fingerprint the
+		// same. Guidance defaults to notify — steering's quiet channel — for
+		// the same fingerprint reason.
+		mode := r.Mode
+		if mode == "" {
+			if r.Guide != "" {
+				mode = "notify"
+			} else {
+				mode = "ratchet"
+			}
+		}
+		extra := map[string]any{
+			"rule":    r.ID,
+			"mode":    mode,
+			"because": r.Because,
+		}
+		switch {
+		case r.Forbid != "":
+			extra["forbid"] = r.Forbid
+			extra["via"] = r.Via
+			if len(r.ToName) > 0 {
+				targets := append([]string(nil), r.ToName...)
+				sort.Strings(targets)
+				extra["to_name"] = strings.Join(targets, " ")
+			} else {
+				extra["to"] = r.To
+			}
+		case r.ForbidReach != "":
+			extra["forbid_reach"] = r.ForbidReach
+			extra["to"] = r.To
+			// An absent via is the whole rule-via vocabulary at verdict time, so
+			// only a declared narrowing fingerprints.
+			if r.Via != "" {
+				extra["via"] = r.Via
+			}
+		case r.Allow != "":
+			// Sorted for the same reason a component's match patterns are: the
+			// compiled fact is a function of the declared SET.
+			only := append([]string(nil), r.Only...)
+			sort.Strings(only)
+			extra["allow"] = r.Allow
+			extra["only"] = strings.Join(only, " ")
+			extra["via"] = r.Via
+		case r.Protect != "":
+			owners := append([]string(nil), r.Owners...)
+			sort.Strings(owners)
+			extra["protect"] = r.Protect
+			extra["owners"] = strings.Join(owners, " ")
+			extra["via"] = r.Via
+		case r.Private != "":
+			extra["private"] = r.Private
+			if len(r.Except) > 0 {
+				except := append([]string(nil), r.Except...)
+				sort.Strings(except)
+				extra["except"] = strings.Join(except, " ")
+			}
+		case r.ForbidFact != "":
+			extra["forbid_fact"] = r.ForbidFact
+		case r.Cap != "":
+			extra["cap"] = r.Cap
+			extra["max_members"] = r.MaxMembers
+		case r.RequireEdge != "":
+			extra["require_edge"] = r.RequireEdge
+			extra["direction"] = r.Direction
+			extra["via"] = r.Via
+			if r.To != "" {
+				extra["to"] = r.To
+			}
+			if len(r.WhenEdgeTo) > 0 {
+				targets := append([]string(nil), r.WhenEdgeTo...)
+				sort.Strings(targets)
+				extra["when_edge_to"] = strings.Join(targets, " ")
+				extra["when_via"] = r.WhenVia
+			}
+		case r.Protocol != "":
+			extra["protocol"] = r.Protocol
+			extra["steps"] = strings.Join(r.Steps, " ")
+			extra["via"] = r.Via
+			extra["verification"] = "structural"
+		case r.RequireDefines != "":
+			extra["require_defines"] = r.RequireDefines
+			extra["method"] = r.Method
+		case r.RequireName != "":
+			extra["require_name"] = r.RequireName
+			extra["pattern"] = r.Pattern
+		case r.Guide != "":
+			extra["guide"] = r.Guide
+			extra["message"] = r.Message
+			if len(r.Exemplars) > 0 {
+				exemplars := append([]string(nil), r.Exemplars...)
+				sort.Strings(exemplars)
+				extra["exemplars"] = strings.Join(exemplars, " ")
+			}
+		case r.Require != "":
+			extra["require"] = r.Require
+			extra["must_prop"] = r.MustPropContain.Prop
+			extra["must_value"] = r.MustPropContain.Value
+			if r.WhenPropContains != nil {
+				extra["when_prop"] = r.WhenPropContains.Prop
+				extra["when_value"] = r.WhenPropContains.Value
+			}
+			if len(r.WhenEdgeTo) > 0 {
+				targets := append([]string(nil), r.WhenEdgeTo...)
+				sort.Strings(targets)
+				extra["when_edge_to"] = strings.Join(targets, " ")
+				extra["via"] = r.Via
+			}
+		}
+		if len(r.Exempt) > 0 {
+			extra["exempt"] = EncodeExemptions(r.Exempt)
+		}
+		if r.Recipe != "" {
+			extra["recipe"] = r.Recipe
+			extra["instance"] = r.Instance
+		}
+		out = append(out, facts.Fact{
+			Kind:  facts.KindIntent,
+			Name:  "rule: " + r.ID,
+			File:  constraintDeclaringFile(r.SourceFile, extra),
+			Props: base("rule", extra),
+		})
+	}
 	return out
+}
+
+// constraintDeclaringFile resolves which file a compiled component or rule
+// fact cites: the constraints-directory file that declared it, or the repo
+// declaration file for inline entries. A directory-declared entry also
+// overrides the fact's source prop (extra wins over base), so govern and
+// verdicts name billing.yaml rather than the merged declaration.
+func constraintDeclaringFile(sourceFile string, extra map[string]any) string {
+	if sourceFile == "" {
+		return RepoFileName
+	}
+	extra["source"] = sourceFile
+	return sourceFile
 }
 
 // CompilePageFacts turns a page's enola_intent block into intent facts whose
@@ -109,6 +285,13 @@ func CompilePageFacts(p *PageIntent, pageFile string) []facts.Fact {
 					"to":          r.To,
 					"source":      pageFile,
 				},
+				// Also a graph relation, not only a prop. Every traversal in the
+				// system walks Relations — traverse, find_path, impact_analysis,
+				// crossrepo — so an edge that lives only in props is invisible to
+				// all of them, and `govern` worked purely because it reimplements
+				// the join by hand. The props stay: they are what govern and the
+				// intentcheck explainer already read.
+				Relations: []facts.Relation{{Kind: facts.RelDependsOn, Target: r.To}},
 			})
 		}
 		for _, a := range pg.Anchors {
@@ -122,6 +305,13 @@ func CompilePageFacts(p *PageIntent, pageFile string) []facts.Fact {
 					"path":         a.Path,
 					"source":       pageFile,
 				},
+				// Repo-qualified, because that is how a file is named everywhere
+				// else in a union and an unqualified path would bind to whichever
+				// repository happened to have one by that name.
+				Relations: []facts.Relation{{
+					Kind:   facts.RelDependsOn,
+					Target: a.Repo + "/" + a.Path,
+				}},
 			})
 		}
 	}

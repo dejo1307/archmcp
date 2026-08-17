@@ -22,6 +22,15 @@ type PageIntent struct {
 	Consumes []PageSeam  `yaml:"consumes"`
 	Layers   []PageLayer `yaml:"layers"`
 	Claims   []Claim     `yaml:"claims"`
+
+	// Components and Rules are not page vocabulary: constraints are the repo's
+	// declared desired architecture and live in enola-intent.yaml, where they
+	// are always validated — a page declares decisions that reference rule ids,
+	// never the rules themselves. The keys are still decoded so a page that
+	// carries them fails loudly in Validate instead of silently losing its law.
+	Components yaml.Node `yaml:"components"`
+	Rules      yaml.Node `yaml:"rules"`
+	UseRecipe  yaml.Node `yaml:"use_recipe"`
 }
 
 // PageDecl declares the page itself as a knowledge node: what kind of
@@ -213,6 +222,12 @@ func (p *PageIntent) Validate() error {
 		default:
 			problems = append(problems, fmt.Sprintf("claims[%d]: unknown metric %q (allowed: fact-count, seam)", i, c.Metric))
 		}
+	}
+	if !p.Components.IsZero() || !p.Rules.IsZero() {
+		problems = append(problems, fmt.Sprintf("components/rules are not page vocabulary — constraints declare the repo's desired architecture and live in %s (a page's decision references rule ids, never the rules themselves)", RepoFileName))
+	}
+	if !p.UseRecipe.IsZero() {
+		problems = append(problems, fmt.Sprintf("use_recipe is not page vocabulary — recipe instantiations live in %s/*.yaml files, beside the code they govern", ConstraintsDirName))
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid %s block: %s", PageIntentKey, strings.Join(problems, "; "))

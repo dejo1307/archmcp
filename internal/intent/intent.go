@@ -46,6 +46,16 @@ type Declaration struct {
 	Serves   []Surface `yaml:"serves"`
 	Layers   []Layer   `yaml:"layers"`
 
+	// Components and Rules are the repo's declared desired architecture — its
+	// law, not a decision about it. They live here, in the always-validated
+	// declaration beside the code they govern, rather than on wiki pages:
+	// pages record decisions, and a decision references rule ids — it never
+	// carries the rules themselves.
+	Components []ConstraintComponent `yaml:"components"`
+	Rules      []ConstraintRule      `yaml:"rules"`
+
+	UseRecipe yaml.Node `yaml:"use_recipe"`
+
 	// Source records where this declaration came from: the repo file's path,
 	// or ClusterSource. Overridden reports that a repo file existed but the
 	// cluster entry won (wholesale, per the intent-file-format decision).
@@ -84,6 +94,17 @@ type Layer struct {
 // problem names what is allowed — a parse error a user can act on without
 // reading source.
 func (d *Declaration) Validate() error {
+	if problems := d.Problems(); len(problems) > 0 {
+		return fmt.Errorf("invalid intent declaration: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// Problems returns every validation problem individually — the list Validate
+// folds into its single error. Exported for surfaces that report per problem
+// rather than fail on the first (`constraints lint`), so authoring feedback
+// and snapshot-time validation can never check different rules.
+func (d *Declaration) Problems() []string {
 	var problems []string
 	for i, c := range d.Consumes {
 		if c.Repo == "" {
@@ -106,10 +127,10 @@ func (d *Declaration) Validate() error {
 			problems = append(problems, fmt.Sprintf("layers[%d] (%s): no paths", i, l.Name))
 		}
 	}
-	if len(problems) > 0 {
-		return fmt.Errorf("invalid intent declaration: %s", strings.Join(problems, "; "))
+	if !d.UseRecipe.IsZero() {
+		problems = append(problems, fmt.Sprintf("use_recipe is not inline vocabulary — instantiations live in %s/*.yaml files, beside the code each bounded context governs", ConstraintsDirName))
 	}
-	return nil
+	return append(problems, constraintProblems(d.Components, d.Rules)...)
 }
 
 // AllowedVia reports whether a via names a linker mechanism.
@@ -136,26 +157,58 @@ func Parse(data []byte) (*Declaration, error) {
 	return &d, nil
 }
 
-// LoadRepoFile reads a repo's enola-intent.yaml if present. A missing file is
-// (nil, nil) — declaring nothing is not an error; a present-but-invalid file
-// is an error, never silently ignored.
+// LoadRepoFile reads a repo's declared intent: enola-intent.yaml if present,
+// plus any enola/constraints/*.yaml files merged after the inline sections.
+// Validation runs on the merged declaration, so a rule in one constraints
+// file may name a component declared inline or in another file. Nothing
+// declared anywhere is (nil, nil) — declaring nothing is not an error;
+// anything present-but-invalid is an error, never silently ignored.
 func LoadRepoFile(repoPath string) (*Declaration, error) {
 	path := filepath.Join(repoPath, RepoFileName)
+	var fromFile *Declaration
 	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
+	switch {
+	case os.IsNotExist(err):
+	case err != nil:
 		return nil, fmt.Errorf("reading %s: %w", path, err)
+	default:
+		var d Declaration
+		if err := yaml.Unmarshal(data, &d); err != nil {
+			return nil, fmt.Errorf("%s: parsing intent declaration: %w", path, err)
+		}
+		// Repo-relative on purpose: an absolute path would embed the machine's
+		// checkout location in a fact and break cross-machine byte-identity.
+		d.Source = RepoFileName
+		fromFile = &d
 	}
-	d, err := Parse(data)
+	files, fileProblems, err := LoadConstraintsDir(repoPath)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, err
 	}
-	// Repo-relative on purpose: an absolute path would embed the machine's
-	// checkout location in a fact and break cross-machine byte-identity.
-	d.Source = RepoFileName
-	return d, nil
+	recipes, recipeFileProblems, err := LoadRecipesDir(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	recipeProblems, _ := RecipeProblems(recipes)
+	problems := append(append(fileProblems, recipeFileProblems...), recipeProblems...)
+	merged := MergeConstraintsFiles(fromFile, files)
+	merged, expandProblems := ApplyRecipes(merged, files, recipes)
+	problems = append(problems, expandProblems...)
+	if len(problems) > 0 {
+		// Every path that rejects a declaration says so in the same words, so a
+		// reader downstream — the benchmark oracle among them — can tell a
+		// declaration this build cannot read from a generation that failed for
+		// any other reason. The problems this path collects are declaration
+		// problems and nothing else.
+		return nil, fmt.Errorf("%s: invalid intent declaration: %s", repoPath, strings.Join(problems, "; "))
+	}
+	if merged == nil {
+		return nil, nil
+	}
+	if err := merged.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Join(repoPath, filepath.FromSlash(merged.Source)), err)
+	}
+	return merged, nil
 }
 
 // Resolve applies the composition rule to one repo's two possible sources:

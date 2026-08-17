@@ -1,0 +1,310 @@
+package command
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/enola-labs/enola/internal/explainers/constraints"
+	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/intent"
+	"github.com/enola-labs/enola/pkg/bootstrap"
+	"github.com/enola-labs/enola/pkg/check"
+)
+
+// Constraints is `enola constraints lint` — the authoring loop for the
+// declared-constraint vocabulary. It parses each repo's declaration
+// (enola-intent.yaml, any enola/constraints/*.yaml files, and any
+// cluster-config override), reports every
+// validation problem with its file context, and — when a snapshot exists on
+// disk — resolves each declared component against it so an author sees what a
+// selector actually selects BEFORE a rule built on it verdicts anything. It
+// never generates a snapshot and never writes: a missing snapshot degrades to
+// validation-only, named as such.
+//
+// Exit codes follow the gate's contract where it overlaps: 0 when every
+// declaration is valid, 1 when any validation problem was reported, 2 when the
+// command could not run at all.
+func (r *Runner) Constraints(args []string) {
+	fs := flag.NewFlagSet("constraints", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" constraints lint [repo_path|config_path]\n\n"+
+			"lint validates the declared constraint vocabulary — inline in enola-intent.yaml\n"+
+			"and per-domain files under enola/constraints/ — and resolves each component\n"+
+			"against the current snapshot, if one exists (else validation only).\n\n"+
+			"Exit codes (lint):\n"+
+			"  0  every declaration is valid\n"+
+			"  1  validation problems were reported\n"+
+			"  2  the command could not run\n")
+	}
+	if err := fs.Parse(args); err != nil {
+		os.Exit(check.StatusUsageError.ExitCode())
+	}
+	rest := fs.Args()
+	if len(rest) == 0 || rest[0] != "lint" {
+		fs.Usage()
+		os.Exit(check.StatusUsageError.ExitCode())
+	}
+
+	var arg string
+	if len(rest) > 1 {
+		arg = rest[1]
+	}
+	tgt := r.resolveTarget(arg)
+	fmt.Fprintf(os.Stderr, r.name()+" constraints lint: %s\n", tgt.configNote)
+	// Read-only like check and coverage: linting a declaration must not touch
+	// the cache, the snapshot, or anything else on disk.
+	tgt.engine.SetPersistCache(false)
+
+	problems := 0
+	declared := facts.NewStore()
+	for _, repoPath := range tgt.repoPaths {
+		problems += r.lintRepoDeclaration(tgt.engine.Config().Intent[filepath.Base(repoPath)], repoPath, declared)
+	}
+
+	problems += r.lintResolveComponents(tgt.engine, tgt.repoPaths[0], declared)
+
+	if problems > 0 {
+		fmt.Printf("\nFAIL — %s.\n", plural(problems, "validation problem"))
+		os.Exit(1)
+	}
+	fmt.Println("\nOK — every declaration is valid.")
+	os.Exit(0)
+}
+
+// lintRepoDeclaration reports one repo's declaration sources — the inline
+// file, each enola/constraints file with its own counts, and any cluster
+// entry — and their validation problems, compiles whatever resolved cleanly
+// into declared for the component pass, and returns the problem count.
+// Constraints-file problems come out of the merged declaration already citing
+// their file, so each is printed under the file that declared it.
+func (r *Runner) lintRepoDeclaration(clusterDecl *intent.Declaration, repoPath string, declared *facts.Store) int {
+	label := filepath.Base(repoPath)
+
+	filePath := filepath.Join(repoPath, intent.RepoFileName)
+	var fileDecl *intent.Declaration
+	fileProblems := []string{}
+	switch data, err := os.ReadFile(filePath); {
+	case os.IsNotExist(err):
+	case err != nil:
+		r.constraintsFatal("reading %s: %v", filePath, err)
+	default:
+		var d intent.Declaration
+		if yamlErr := yaml.Unmarshal(data, &d); yamlErr != nil {
+			fileProblems = append(fileProblems, fmt.Sprintf("not parseable as YAML: %v", yamlErr))
+		} else {
+			d.Source = intent.RepoFileName
+			fileDecl = &d
+		}
+	}
+
+	dirFiles, dirProblems, err := intent.LoadConstraintsDir(repoPath)
+	if err != nil {
+		r.constraintsFatal("%v", err)
+	}
+	recipes, recipeFileProblems, err := intent.LoadRecipesDir(repoPath)
+	if err != nil {
+		r.constraintsFatal("%v", err)
+	}
+	recipeProblems, recipeWarnings := intent.RecipeProblems(recipes)
+
+	hasFile := fileDecl != nil || len(fileProblems) > 0
+	hasDir := len(dirFiles) > 0 || len(dirProblems) > 0
+	hasRecipes := len(recipes) > 0 || len(recipeFileProblems) > 0
+	switch {
+	case !hasFile && !hasDir && !hasRecipes && clusterDecl == nil:
+		fmt.Printf("\n%s: no declaration (%s absent, no %s/ files, no cluster intent entry) — nothing to lint.\n", label, intent.RepoFileName, intent.ConstraintsDirName)
+		return 0
+	case !hasFile && !hasDir && clusterDecl == nil:
+		fmt.Printf("\n%s: recipe definitions under %s/ only — nothing declares or instantiates them yet.\n", label, intent.RecipesDirName)
+	case clusterDecl != nil && (hasFile || hasDir):
+		fmt.Printf("\n%s: cluster config overrides the repo's declaration wholesale; both are linted, the cluster entry governs.\n", label)
+	case clusterDecl != nil:
+		fmt.Printf("\n%s: declared by the cluster config's intent entry.\n", label)
+	case hasFile && hasDir:
+		fmt.Printf("\n%s: declared by %s plus %s under %s/.\n", label, intent.RepoFileName, plural(len(dirFiles), "constraints file"), intent.ConstraintsDirName)
+	case hasDir:
+		fmt.Printf("\n%s: declared by constraints files under %s/.\n", label, intent.ConstraintsDirName)
+	default:
+		fmt.Printf("\n%s: declared by %s.\n", label, intent.RepoFileName)
+	}
+
+	count := 0
+	if fileDecl != nil {
+		fmt.Printf("  %s: %d component(s), %d rule(s), %d exemption(s)\n", filePath, len(fileDecl.Components), len(fileDecl.Rules), exemptionCount(fileDecl.Rules))
+	}
+	recipeByName := map[string]intent.Recipe{}
+	for _, rec := range recipes {
+		if _, seen := recipeByName[rec.Name]; !seen {
+			recipeByName[rec.Name] = rec
+		}
+	}
+	for _, f := range dirFiles {
+		fmt.Printf("  %s: %d component(s), %d rule(s), %d exemption(s)\n", f.Path, len(f.Components), len(f.Rules), exemptionCount(f.Rules))
+		for _, inst := range f.UseRecipe {
+			expanded := 0
+			if rec, found := recipeByName[inst.Recipe]; found {
+				expanded = len(rec.Rules)
+			}
+			binds := make([]string, 0, len(inst.Bind))
+			for role := range inst.Bind {
+				binds = append(binds, role)
+			}
+			sort.Strings(binds)
+			bound := "nothing"
+			if len(binds) > 0 {
+				bound = strings.Join(binds, ", ")
+			}
+			fmt.Printf("    use_recipe %s (recipe %s): binds %s, expands %s\n", inst.As, inst.Recipe, bound, plural(expanded, "rule"))
+		}
+	}
+	for _, rec := range recipes {
+		roles := make([]string, 0, len(rec.Roles))
+		for _, role := range rec.Roles {
+			roles = append(roles, role.Name)
+		}
+		fmt.Printf("  %s: recipe %s — roles %s, %s\n", rec.Path, rec.Name, strings.Join(roles, ", "), plural(len(rec.Rules), "rule"))
+	}
+	report := func(source string, list []string) {
+		for _, p := range list {
+			fmt.Printf("  %s: %s\n", source, p)
+			count++
+		}
+	}
+	report(filePath, fileProblems)
+	for _, p := range dirProblems {
+		fmt.Printf("  %s\n", p)
+		count++
+	}
+	for _, p := range recipeFileProblems {
+		fmt.Printf("  %s\n", p)
+		count++
+	}
+	for _, p := range recipeProblems {
+		fmt.Printf("  %s\n", p)
+		count++
+	}
+	for _, w := range recipeWarnings {
+		fmt.Printf("  %s\n", w)
+	}
+
+	merged := intent.MergeConstraintsFiles(fileDecl, dirFiles)
+	merged, expandProblems := intent.ApplyRecipes(merged, dirFiles, recipes)
+	for _, p := range expandProblems {
+		fmt.Printf("  %s\n", p)
+		count++
+	}
+	if merged != nil {
+		for _, p := range merged.Problems() {
+			if strings.HasPrefix(p, intent.ConstraintsDirName+"/") {
+				fmt.Printf("  %s\n", p)
+			} else {
+				fmt.Printf("  %s: %s\n", filePath, p)
+			}
+			count++
+		}
+	}
+	if clusterDecl != nil {
+		// Cluster entries were already validated when the config loaded — an
+		// invalid one never reaches this command — so Problems here is a
+		// belt-and-braces re-check that also keeps the report symmetric.
+		fmt.Printf("  cluster intent entry %s: %d component(s), %d rule(s), %d exemption(s)\n", label, len(clusterDecl.Components), len(clusterDecl.Rules), exemptionCount(clusterDecl.Rules))
+		report("cluster intent entry "+label, clusterDecl.Problems())
+	}
+
+	resolved := intent.Resolve(merged, clusterDecl)
+	if resolved != nil && len(resolved.Problems()) == 0 {
+		declared.Add(intent.CompileFacts(resolved)...)
+	}
+	return count
+}
+
+// lintResolveComponents joins the declared components against the snapshot on
+// disk, if any: measured facts from the snapshot, component and rule facts
+// from the declarations as they stand NOW — the file being edited, not the
+// copy compiled into the snapshot — so the counts answer for the author's
+// working tree. It returns the number of problems the join found. A selector
+// naming a property the snapshot does not measure is one, because a predicate
+// nothing can evaluate is a broken declaration rather than an empty component.
+// It fails here, at authoring time, rather than being read as law from its own
+// silence. A predicate component in an edge-walking role needs no snapshot to
+// refuse: it is a defect of the declaration alone, and the validation pass
+// above has already reported it.
+func (r *Runner) lintResolveComponents(eng *bootstrap.Engine, anchor string, declared *facts.Store) int {
+	if len(declared.ByKind(facts.KindIntent)) == 0 {
+		return 0
+	}
+	outDir := eng.OutputDir(anchor)
+	snap, err := bootstrap.LoadSnapshotDir(outDir)
+	if err != nil {
+		fmt.Printf("\nComponent resolution: no snapshot at %s - validation only.\n", outDir)
+		return 0
+	}
+	store := facts.NewStore()
+	for _, f := range snap.Facts {
+		if f.Kind == facts.KindIntent {
+			continue
+		}
+		store.Add(f)
+	}
+	store.Add(declared.ByKind(facts.KindIntent)...)
+
+	unevaluableList := constraints.UnevaluableSelectors(store)
+	unevaluable := map[string]bool{}
+	for _, u := range unevaluableList {
+		unevaluable[u.Component] = true
+	}
+	unasked := constraints.UnaskedComponents(store)
+
+	fmt.Printf("\nComponent resolution against the snapshot at %s:\n", outDir)
+	for _, c := range constraints.MemberCounts(store) {
+		note := ""
+		switch {
+		case unasked[c.Component] != "":
+			note = "  <- names service " + unasked[c.Component] + ", absent from this snapshot; unasked, never failed"
+		case unevaluable[c.Component]:
+			note = "  <- selector cannot be evaluated against this snapshot"
+		case c.Members == 0:
+			note = "  <- matches nothing; every rule naming it holds vacuously"
+		}
+		fmt.Printf("  %-24s %d member(s)%s\n", c.Component, c.Members, note)
+		if c.Selector != "" {
+			fmt.Printf("  %-24s   %s\n", "", c.Selector)
+		}
+	}
+	if len(unevaluableList) > 0 {
+		fmt.Printf("\nSelectors this snapshot cannot evaluate:\n")
+		for _, u := range unevaluableList {
+			suggestion := ""
+			if len(u.NearMiss) > 0 {
+				suggestion = fmt.Sprintf(" (measured properties with similar names: %s)", strings.Join(u.NearMiss, ", "))
+			}
+			fmt.Printf("  %s: %s%s — declared in %s\n", u.Component, u.Problem(), suggestion, u.Source)
+		}
+	}
+	if absent := constraints.AbsentExemplars(store); len(absent) > 0 {
+		fmt.Printf("\nGuidance exemplars the snapshot cannot resolve (a note, not an error):\n")
+		for _, n := range absent {
+			fmt.Printf("  %s: %s\n", n.Rule, n.Exemplar)
+		}
+	}
+	return len(unevaluableList)
+}
+
+func exemptionCount(rules []intent.ConstraintRule) int {
+	n := 0
+	for _, rule := range rules {
+		n += len(rule.Exempt)
+	}
+	return n
+}
+
+func (r *Runner) constraintsFatal(format string, args ...any) {
+	r.cmdFatal("constraints", format, args...)
+}

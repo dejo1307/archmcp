@@ -15,7 +15,7 @@ import (
 var kindMeaning = map[diff.WarningKind]string{
 	diff.WarnDifferentRepo:   "the two snapshots are of different repositories, so the delta is not about your change",
 	diff.WarnRepoLabel:       "the same repository is labelled differently on the two sides, so no fact matches across them and the delta describes neither snapshot",
-	diff.WarnVersionMismatch: "different enola versions extract differently, so unchanged code can appear as churn",
+	diff.WarnVersionMismatch: "different enola builds extract or derive differently, so unchanged code can appear as churn",
 	diff.WarnExtractorSet:    "a language present on one side only makes all of its facts appear added or removed",
 	diff.WarnExplainerSet:    "an explainer present on one side only makes all of its findings appear new or resolved; the facts and coupling in this delta are unaffected",
 	diff.WarnIgnoreGlobs:     "the set of files parsed changed, so some of this delta is exclusion changes, not code changes",
@@ -71,20 +71,23 @@ func (v Verdict) Render() string {
 
 	switch v.Status {
 	case StatusClean:
+		pass := "PASS"
+		warnOnly := "PASS (--warn-only)"
+		graded := "no structural regression"
 		switch {
 		case len(v.Failures) > 0:
 			// --warn-only. Say what the policy WOULD have done: reporting "no structural
 			// regression" here would be false, and it is the line a reader skims.
-			fmt.Fprintf(&sb, "PASS (--warn-only) — %s reported, not failed.\n",
+			fmt.Fprintf(&sb, "%s — %s reported, not failed.\n", warnOnly,
 				plural(len(v.Failures), "structural regression", "structural regressions"))
 		case !v.Policy.Enforcing() && len(v.Advisories) > 0:
 			// Nothing was enforced AND the change introduced findings. "No structural
 			// regression" would be a lie by omission here: the run had no grounds to call
 			// anything a regression, which is not the same as having looked and found none.
-			fmt.Fprintf(&sb, "PASS — %s reported, nothing enforced: no policy set.\n",
+			fmt.Fprintf(&sb, "%s — %s reported, nothing enforced: no policy set.\n", pass,
 				plural(len(v.Advisories), "new finding", "new findings"))
-		case len(v.Advisories) > 0 || v.EdgesAdded > 0 || v.FactsAdded > 0 || v.FactsRemoved > 0:
-			sb.WriteString("PASS — no structural regression.\n")
+		case len(v.Advisories) > 0 || len(v.Suppressed) > 0 || len(v.Exempted) > 0 || len(v.Silenced) > 0 || len(v.Undeclared) > 0 || len(v.Unattributed) > 0 || v.EdgesAdded > 0 || v.FactsAdded > 0 || v.FactsRemoved > 0:
+			fmt.Fprintf(&sb, "%s — %s.\n", pass, graded)
 		default:
 			sb.WriteString("PASS — no architectural change.\n")
 		}
@@ -152,10 +155,40 @@ func (v Verdict) Render() string {
 		writeFindings(&sb, v.Descriptive)
 	}
 
+	if len(v.Suppressed) > 0 {
+		// Its own section, never folded into advisories: these findings are real
+		// and someone signed them away. The header names the ledger so an auditor
+		// knows where the signatures live.
+		fmt.Fprintf(&sb, "\nSuppressed (%d) — excused by %s, never failed:\n", len(v.Suppressed), SuppressionsFileName)
+		writeFindings(&sb, v.Suppressed)
+	}
+
+	if len(v.Exempted) > 0 {
+		fmt.Fprintf(&sb, "\nExempted by declaration (%d) — carve-outs the rules themselves declare, never failed:\n", len(v.Exempted))
+		writeFindings(&sb, v.Exempted)
+	}
+
 	if len(v.Resolved) > 0 {
 		fmt.Fprintf(&sb, "\nResolved by this change (%d):\n", len(v.Resolved))
 		writeFindings(&sb, v.Resolved)
 	}
+
+	if len(v.Silenced) > 0 {
+		fmt.Fprintf(&sb, "\nNo longer verdicted (%d) — the code these breaches named is still measured and\nno longer selected by the component its rule binds. The rule lost its subject;\nnothing was fixed:\n", len(v.Silenced))
+		writeFindings(&sb, v.Silenced)
+	}
+
+	if len(v.Undeclared) > 0 {
+		fmt.Fprintf(&sb, "\nNo longer declared (%d) — the rule that reported these was deleted, re-formed\nunder the same id, or carved out by an exemption. The breaching code is\nunchanged; the law stopped asking:\n", len(v.Undeclared))
+		writeFindings(&sb, v.Undeclared)
+	}
+
+	if len(v.Unattributed) > 0 {
+		fmt.Fprintf(&sb, "\nNot attributable to this change (%d) — the repository these breaches were\nmeasured in is absent from this snapshot, or the baseline carried the finding\nwithout the declaration that produced it. Nothing here was compared; whether\nthe code was fixed is not something these two snapshots can say:\n", len(v.Unattributed))
+		writeFindings(&sb, v.Unattributed)
+	}
+
+	v.writeGuidance(&sb)
 
 	// Findings first (graded, then resolved, then merely moved), structure after: the
 	// reader is asking "is anything wrong?" before "what did I touch?".
@@ -583,6 +616,26 @@ func writeKinds(sb *strings.Builder, kinds []diff.WarningKind) {
 			fmt.Fprintf(sb, "    %s — %s\n", k, m)
 		} else {
 			fmt.Fprintf(sb, "    %s\n", k)
+		}
+	}
+}
+
+func (v Verdict) writeGuidance(sb *strings.Builder) {
+	if len(v.Guidance) == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "\nGuidance for this change (%d) — advice for files this delta touched; steering, never graded:\n", len(v.Guidance))
+	for _, g := range v.Guidance {
+		fmt.Fprintf(sb, "  guidance %s [%s]: %s\n      because: %s\n", g.Rule, g.Mode, g.Message, g.Because)
+		for _, ex := range g.Exemplars {
+			fmt.Fprintf(sb, "      exemplar %s (%s)\n", ex.Exemplar, ex.Label())
+		}
+		for i, f := range g.MatchedFiles {
+			if i == listCap {
+				fmt.Fprintf(sb, "      … %d more changed files in %s\n", len(g.MatchedFiles)-listCap, g.Component)
+				break
+			}
+			fmt.Fprintf(sb, "      changed: %s\n", f)
 		}
 	}
 }

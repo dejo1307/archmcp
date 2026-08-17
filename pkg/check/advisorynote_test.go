@@ -26,14 +26,14 @@ func TestRender_AdvisoryNoteNamesTheActualReason(t *testing.T) {
 		{
 			name:       "proven finding outside --fail-on names the explainer, not confidence",
 			advisories: []facts.Insight{insight("layers", "Layer violation: storage -> api", 1.0)},
-			policy:     legacyDefault(),
+			policy:     Policy{FailExplainers: []string{"cycles"}},
 			wantSubstr: []string{"met the 1.00 confidence floor", "outside [cycles]", "--fail-on"},
 			notSubstr:  []string{"candidate to verify"},
 		},
 		{
 			name:       "estimate under the floor is a candidate to verify",
 			advisories: []facts.Insight{insight("god-class", "God class (400 dependents)", 0.7)},
-			policy:     legacyDefault(),
+			policy:     Policy{FailExplainers: []string{"cycles"}},
 			wantSubstr: []string{"Confidence < 1.00 is a candidate to verify"},
 			notSubstr:  []string{"--fail-on"},
 		},
@@ -43,7 +43,7 @@ func TestRender_AdvisoryNoteNamesTheActualReason(t *testing.T) {
 				insight("layers", "Layer violation: storage -> api", 1.0),
 				insight("hotspots", "Call-graph hotspot", 0.7),
 			},
-			policy:     legacyDefault(),
+			policy:     Policy{FailExplainers: []string{"cycles"}},
 			wantSubstr: []string{"Mixed", "under 1.00 are candidates to verify", "outside [cycles]"},
 		},
 		{
