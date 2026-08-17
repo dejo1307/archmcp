@@ -217,7 +217,7 @@ New findings (reported — no failure policy set):
 
 No --fail-on policy is set, so nothing in this run could fail the build. These are
 reported for you to judge. Enforce the ones you want enforced: --fail-on=layers
-(`enola check --help` lists all sixteen).
+(`enola check --help` lists all 16).
 ```
 
 A gate that enforces nothing has to *say* it enforces nothing. Silence there is indistinguishable from an all-clear, and that is the one failure mode a green exit code cannot report on its own.
@@ -331,7 +331,7 @@ New findings (reported — no failure policy set):
 
 No --fail-on policy is set, so no FINDING could fail this run — only the threshold
 above grades it. These are reported for you to judge; enforce the ones you want
-enforced: --fail-on=layers (`enola check --help` lists all sixteen).
+enforced: --fail-on=layers (`enola check --help` lists all 16).
 ```
 
 The `--target` you declare is a claim about intent, and this is the gate holding you to it. Nothing here is a judgement about `telemetry` - the code may be perfectly good. It is a report that the change did something its own description didn't cover.
