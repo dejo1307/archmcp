@@ -523,13 +523,13 @@ The fifteen names `--fail-on` accepts are `cycles`, `layers`, `intent`, `constra
 `crossrepo`, `coverage`, `unused-routes`, `god-class`, `hotspots`, `dependency-depth`,
 `exported-surface`, `complexity-outliers`, `domain`, `query-loops` and `entry-points`.
 
-> **A name it does not recognise is currently accepted and enforces nothing.**
-> `--fail-on=cyles` exits `0` on a repository where `--fail-on=cycles` exits `1`, and
-> the names are case-sensitive, so `CYCLES` is not `cycles` either. The verdict does
-> print the policy it applied — `explainer is outside [cyles]` — which is the only
-> place a typo shows. Until that is validated, check the `Policy:` line the first time
-> you wire a gate up, because a misspelled gate is indistinguishable from a passing one
-> in CI.
+**A name it does not recognise is refused, not ignored.** `--fail-on=cyles` exits `2`
+and names what it could not match, rather than exiting `0` while enforcing nothing —
+a misspelled gate would otherwise be indistinguishable from a passing one in CI.
+Matching is exact, so `CYCLES` is refused too: case-insensitivity here would be a
+guess about which explainer you meant, and this flag exists to remove guesses about
+what fails. A spec mixing valid and invalid names is refused whole, because enforcing
+the valid half is the same defect wearing a smaller number.
 
 **Declaring what you meant to change.** The flags above grade the delta. `--target` grades
 it against your *intent*: reverse-dependency impact analysis runs on the pre-change graph,
