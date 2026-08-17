@@ -242,11 +242,11 @@ func advisoryNote(ins []facts.Insight, p Policy) string {
 		if len(p.Thresholds) > 0 {
 			return "\nNo --fail-on policy is set, so no FINDING could fail this run — only the threshold\n" +
 				"above grades it. These are reported for you to judge; enforce the ones you want\n" +
-				"enforced: --fail-on=layers (`enola check --help` lists all eleven).\n"
+				"enforced: --fail-on=layers (`enola check --help` lists all twelve).\n"
 		}
 		return "\nNo --fail-on policy is set, so nothing in this run could fail the build. These are\n" +
 			"reported for you to judge. Enforce the ones you want enforced: --fail-on=layers\n" +
-			"(`enola check --help` lists all eleven).\n"
+			"(`enola check --help` lists all twelve).\n"
 	}
 	var belowFloor, metFloor bool
 	for _, in := range ins {
