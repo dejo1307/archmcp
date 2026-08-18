@@ -29,12 +29,12 @@ package tsextractor
 
 import (
 	"bytes"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -250,7 +250,7 @@ func collectRouterExports(src []byte, f *routerFile) {
 // resolve to a file in this snapshot are kept: an external package is not a router
 // this repository declares.
 func collectRouterImports(src []byte, relFile string, aliases map[string]tsAlias, knownFiles map[string]bool) map[string]importRef {
-	fileDir := filepath.Dir(relFile)
+	fileDir := factpath.Dir(relFile)
 	out := map[string]importRef{}
 
 	resolve := func(spec string) (string, bool) {
@@ -494,7 +494,7 @@ func composeRouterMounts(files []*routerFile) []facts.Fact {
 			if len(mounts) == 0 {
 				continue // mounted nowhere resolvable: still silent, by design
 			}
-			dir := filepath.ToSlash(filepath.Dir(f.relFile))
+			dir := factpath.Dir(f.relFile)
 			seen := map[string]bool{}
 			for _, prefix := range mounts {
 				for _, r := range f.pending[ident] {

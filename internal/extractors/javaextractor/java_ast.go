@@ -1,9 +1,9 @@
 package javaextractor
 
 import (
-	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	java "github.com/tree-sitter/tree-sitter-java/bindings/go"
@@ -33,7 +33,7 @@ func extractFileAST(src []byte, relFile string) []facts.Fact {
 	w := &astWalker{
 		src:       src,
 		relFile:   relFile,
-		dir:       filepath.Dir(relFile),
+		dir:       factpath.Dir(relFile),
 		importMap: make(map[string]string),
 	}
 	root := tree.RootNode()

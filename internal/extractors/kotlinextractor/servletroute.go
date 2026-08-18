@@ -1,10 +1,10 @@
 package kotlinextractor
 
 import (
-	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -29,7 +29,7 @@ var servletRegistration = regexp.MustCompile(`\.addServlet(?:WithMapping)?\s*\(\
 // are left as written; the linker's normalizePath collapses {x}/:x/<x>/* forms.
 func extractServletRouteFacts(src []byte, relFile string) []facts.Fact {
 	var out []facts.Fact
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 
 	for i, line := range strings.Split(string(src), "\n") {
 		m := servletRegistration.FindStringSubmatch(line)

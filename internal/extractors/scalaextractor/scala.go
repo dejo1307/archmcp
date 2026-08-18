@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/extractors/jvmsrc"
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -184,7 +185,7 @@ func (e *ScalaExtractor) Extract(ctx context.Context, repoPath string, files []s
 	filePkg := make(map[string]string, len(scalaFiles))
 	for i, r := range perFileFacts {
 		allFacts = append(allFacts, r.facts...)
-		modules[filepath.ToSlash(filepath.Dir(scalaFiles[i]))] = true
+		modules[factpath.Dir(scalaFiles[i])] = true
 		if r.pkg != "" {
 			filePkg[scalaFiles[i]] = r.pkg
 		}

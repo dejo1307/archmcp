@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -94,7 +95,7 @@ func extractRenderTargets(repoPath, relFile string, src []byte) []facts.Fact {
 // outside any views tree has no root to resolve against, so its targets stay
 // name-only.
 func partialFile(repoPath, relFile, target string) string {
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 	slash := strings.LastIndex(target, "/")
 	if slash >= 0 {
 		idx := strings.LastIndex(filepath.ToSlash(relFile), "/views/")

@@ -42,7 +42,7 @@ func detectGraphQLDocs(repoPath string) bool {
 		maxDepth = 8
 	}
 	found := false
-	root := filepath.Clean(repoPath)
+	root := filepath.Clean(repoPath) //factpath:host
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || found {
 			return filepath.SkipAll

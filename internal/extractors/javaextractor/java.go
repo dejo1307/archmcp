@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/extractors/jvmsrc"
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -70,7 +71,7 @@ func (e *JavaExtractor) Extract(ctx context.Context, repoPath string, files []st
 	modules := make(map[string]bool)
 	for i, ff := range perFileFacts {
 		allFacts = append(allFacts, ff...)
-		modules[filepath.Dir(javaFiles[i])] = true
+		modules[factpath.Dir(javaFiles[i])] = true
 	}
 
 	// Cross-language package index (.kt AND .java) so a Java import of a Kotlin

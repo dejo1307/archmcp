@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -49,7 +50,7 @@ func isHCLFile(path string) bool {
 // Detect probes for any .tf/.hcl file within three directory levels.
 func (e *Extractor) Detect(repoPath string) (bool, error) {
 	found := false
-	root := filepath.Clean(repoPath)
+	root := filepath.Clean(repoPath) //factpath:host
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || found {
 			return filepath.SkipAll
@@ -100,7 +101,7 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, files []string
 	byDir := map[string][]string{}
 	for _, relFile := range files {
 		if isHCLFile(relFile) {
-			dir := filepath.ToSlash(filepath.Dir(relFile))
+			dir := factpath.Dir(relFile)
 			byDir[dir] = append(byDir[dir], relFile)
 		}
 	}
@@ -162,7 +163,7 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, files []string
 				if sm := moduleSource.FindStringSubmatch(b.body); sm != nil {
 					src := sm[1]
 					if strings.HasPrefix(src, "./") || strings.HasPrefix(src, "../") {
-						resolved := filepath.ToSlash(filepath.Clean(filepath.Join(dir, src)))
+						resolved := factpath.Clean(factpath.Join(dir, src))
 						out = append(out, facts.Fact{
 							Kind: facts.KindDependency,
 							Name: dir + " -> " + resolved,

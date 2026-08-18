@@ -2,10 +2,10 @@ package cppextractor
 
 import (
 	"github.com/enola-labs/enola/internal/extractors/tsutil"
-	"path/filepath"
 	"strings"
 	"unicode"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	c "github.com/tree-sitter/tree-sitter-c/bindings/go"
@@ -51,7 +51,7 @@ func extractFileAST(src []byte, relFile, lang string, macros macroTable) []facts
 		src:            src,
 		kinds:          kinds,
 		relFile:        relFile,
-		dir:            filepath.Dir(relFile),
+		dir:            factpath.Dir(relFile),
 		lang:           lang,
 		fileMethods:    buildFileMethodIndex(kinds, tree.RootNode(), src),
 		moduleOwnerIdx: -1,

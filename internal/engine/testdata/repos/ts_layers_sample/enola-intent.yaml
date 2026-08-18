@@ -1,0 +1,23 @@
+service:
+  name: layered-web
+  description: a four-layer web app, declared outermost first
+
+# The declared order this fixture exists to pin. Two things are deliberate:
+#
+#   - `web-legacy` names a directory that does not exist. A layer selecting nothing
+#     is a real authoring mistake, and the snapshot has to SAY so rather than let the
+#     order read as fully in force — the silence behind issue #242.
+#   - `web-components` is declared with backslashes. A declaration is portable source
+#     text: the file a Windows laptop writes and the file a Linux runner reads are the
+#     same file, and they must select the same code.
+layers:
+  - name: web-routes
+    paths: ["src/app/**"]
+  - name: web-components
+    paths: ['src\components\**']
+  - name: web-hooks
+    paths: ["src/hooks/**"]
+  - name: web-lib
+    paths: ["src/lib/**"]
+  - name: web-legacy
+    paths: ["src/legacy/**"]

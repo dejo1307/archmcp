@@ -1,9 +1,9 @@
 package dartextractor
 
 import (
-	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -120,7 +120,7 @@ func attributeSymbolsToModules(all []facts.Fact) []facts.Fact {
 		if f.Kind != facts.KindSymbol || f.File == "" {
 			continue
 		}
-		dir := filepath.ToSlash(filepath.Dir(f.File))
+		dir := factpath.Dir(f.File)
 		rels := make([]facts.Relation, 0, len(f.Relations)+1)
 		rels = append(rels, facts.Relation{Kind: facts.RelDeclares, Target: dir})
 		rels = append(rels, f.Relations...)

@@ -1,9 +1,9 @@
 package scalaextractor
 
 import (
-	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	scala "github.com/tree-sitter/tree-sitter-scala/bindings/go"
@@ -36,7 +36,7 @@ func extractFileASTFull(src []byte, relFile string, packageIndex map[string]stri
 	w := &astWalker{
 		src:          src,
 		relFile:      relFile,
-		dir:          filepath.ToSlash(filepath.Dir(relFile)),
+		dir:          factpath.Dir(relFile),
 		packageIndex: packageIndex,
 		imports:      map[string]string{},
 		ownerStack:   []int{},

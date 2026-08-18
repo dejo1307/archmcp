@@ -24,15 +24,15 @@ type resolvedMap struct {
 }
 
 func newRefResolver(repoRoot, rootFile string, root map[string]any) *refResolver {
-	rootFile = filepath.Clean(rootFile)
+	rootFile = filepath.Clean(rootFile) //factpath:host
 	return &refResolver{
-		repoRoot: filepath.Clean(repoRoot),
+		repoRoot: filepath.Clean(repoRoot), //factpath:host
 		docs:     map[string]map[string]any{rootFile: root},
 	}
 }
 
 func (r *refResolver) resolve(raw any, baseFile string) resolvedMap {
-	current := resolvedMap{value: mapValue(raw), absFile: filepath.Clean(baseFile)}
+	current := resolvedMap{value: mapValue(raw), absFile: filepath.Clean(baseFile)} //factpath:host
 	seen := map[string]bool{}
 	for len(current.value) > 0 {
 		ref := stringValue(current.value["$ref"])
@@ -61,12 +61,12 @@ func (r *refResolver) follow(ref, baseFile string) (resolvedMap, bool) {
 		return resolvedMap{}, false
 	}
 	filePart, fragment, _ := strings.Cut(ref, "#")
-	targetFile := filepath.Clean(baseFile)
+	targetFile := filepath.Clean(baseFile) //factpath:host
 	if filePart != "" {
 		if filepath.IsAbs(filePart) {
 			return resolvedMap{}, false
 		}
-		targetFile = filepath.Clean(filepath.Join(filepath.Dir(baseFile), filepath.FromSlash(filePart)))
+		targetFile = filepath.Clean(filepath.Join(filepath.Dir(baseFile), filepath.FromSlash(filePart))) //factpath:host
 	}
 	if !withinRoot(r.repoRoot, targetFile) {
 		return resolvedMap{}, false
@@ -86,7 +86,7 @@ func (r *refResolver) follow(ref, baseFile string) (resolvedMap, bool) {
 }
 
 func (r *refResolver) load(path string) (map[string]any, error) {
-	path = filepath.Clean(path)
+	path = filepath.Clean(path) //factpath:host
 	if doc, ok := r.docs[path]; ok {
 		return doc, nil
 	}
@@ -125,6 +125,6 @@ func jsonPointer(root any, pointer string) (any, error) {
 }
 
 func withinRoot(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
+	rel, err := filepath.Rel(root, path) //factpath:host
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

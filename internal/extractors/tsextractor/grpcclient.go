@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -266,7 +267,7 @@ func extractGRPCClientFacts(src []byte, relFile string, idx *grpcStubIndex) []fa
 	if idx.empty() {
 		return nil
 	}
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 	text := string(src)
 
 	// varName -> *grpcService for locally bound clients.

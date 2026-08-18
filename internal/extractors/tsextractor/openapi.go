@@ -1,10 +1,10 @@
 package tsextractor
 
 import (
-	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -59,7 +59,7 @@ func extractOpenAPITypescriptFacts(src []byte, relFile string) []facts.Fact {
 	}
 
 	lines := strings.Split(string(src), "\n")
-	specDir := filepath.ToSlash(filepath.Dir(relFile))
+	specDir := factpath.Dir(relFile)
 
 	// Extract API name from the header comment block (first non-empty comment lines).
 	apiName := ""

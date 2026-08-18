@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -37,7 +38,7 @@ func (e *Extractor) Name() string { return "ansible" }
 // <area>/ansible/.
 func (e *Extractor) Detect(repoPath string) (bool, error) {
 	found := false
-	root := filepath.Clean(repoPath)
+	root := filepath.Clean(repoPath) //factpath:host
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || found {
 			return filepath.SkipAll
@@ -181,7 +182,7 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, _ []string) ([
 		if yaml.Unmarshal(data, &plays) != nil {
 			continue
 		}
-		dir := filepath.ToSlash(filepath.Dir(relFile))
+		dir := factpath.Dir(relFile)
 		prefix := dir + "."
 		if dir == "." {
 			prefix = ""
@@ -271,7 +272,7 @@ var ansibleSkipDirs = map[string]bool{
 // engine's walk excludes.
 func walkAnsibleFiles(repoPath string) []string {
 	var files []string
-	root := filepath.Clean(repoPath)
+	root := filepath.Clean(repoPath) //factpath:host
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -285,7 +286,7 @@ func walkAnsibleFiles(repoPath string) []string {
 		}
 		if isYAMLFile(path) || strings.HasSuffix(path, ".j2") {
 			if rel, relErr := filepath.Rel(root, path); relErr == nil {
-				files = append(files, filepath.ToSlash(rel))
+				files = append(files, factpath.Slash(rel))
 			}
 		}
 		return nil

@@ -861,10 +861,19 @@ func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips wal
 			return err
 		}
 
-		relPath, err := filepath.Rel(repoPath, path)
+		rawRel, err := filepath.Rel(repoPath, path)
 		if err != nil {
 			return err
 		}
+		// Repo-relative paths become forward-slash HERE, at the one boundary where
+		// the host filesystem enters the pipeline, and stay that way through every
+		// extractor, fact and finding. On Windows filepath.Rel yields
+		// `src\lib\site-blocks.ts`, and everything downstream — module resolution,
+		// layer classification, ignore globs, the declaration dialect — splits on
+		// "/". A backslash path is not a different spelling of the same fact to any
+		// of them; it is a fact that matches nothing. See ARCHITECTURE.md, "Fact
+		// paths are forward-slash on every host".
+		relPath := filepath.ToSlash(rawRel)
 
 		// Skip ignored paths
 		if pattern, ok := e.ignoreMatch(relPath); ok {
@@ -874,7 +883,7 @@ func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips wal
 				// first-ever snapshot and every one after it, for no signal.
 				if relPath != e.cfg.Output.Dir {
 					skips.dirCount++
-					skips.record(filepath.ToSlash(relPath)+"/", pattern)
+					skips.record(relPath+"/", pattern)
 				}
 				return filepath.SkipDir
 			}
@@ -885,7 +894,7 @@ func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips wal
 				testFiles = append(testFiles, relPath)
 			}
 			skips.count++
-			skips.record(filepath.ToSlash(relPath), pattern)
+			skips.record(relPath, pattern)
 			return nil
 		}
 

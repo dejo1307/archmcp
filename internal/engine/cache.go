@@ -1927,7 +1927,21 @@ import (
 // 21,689 members carrying it to 22,963 and drops those eight verdicts to zero.
 // Absence stops being ambiguous for this prop, which is what the rule form
 // needs: it cannot tell "measured, declares none" from "never looked".
-const cacheVersion = "v215"
+// v216: repo-relative fact paths are forward-slash on every host. They used to
+// carry the host separator, because the walker handed extractors what
+// filepath.Rel returned and the extractors built on it with path/filepath, whose
+// output is host-flavoured — so on Windows a module was named `src\lib` while the
+// import targets that had to match it, read out of source text, were
+// forward-slash. Nothing errored: module resolution simply stopped matching, and
+// a declared layer order reported itself in force at confidence 1.00 while
+// classifying zero modules (issue #242). Paths are now normalised at the walker,
+// built with internal/factpath, and backstopped in Store.Add.
+//
+// The bump matters on Windows and only there, which is exactly why it is easy to
+// forget: a Windows user upgrading into this build has a cache keyed by the old
+// version whose entries hold backslash paths, and reusing one would serve the bug
+// this release fixes from a binary that no longer contains it.
+const cacheVersion = "v216"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

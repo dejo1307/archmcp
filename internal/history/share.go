@@ -76,7 +76,34 @@ func initShare(dir string) error {
 		}
 		return nil
 	}
-	return os.WriteFile(markerPath, []byte(pkghistory.ShareFormatValue+"\n"), 0o644)
+	// Written through a temp file and renamed into place, because a shared store is
+	// by definition written by more than one machine and two of them may initialise
+	// it at once. os.WriteFile truncates before it writes, so a concurrent reader
+	// could observe the marker EMPTY — and an empty marker is not a missing one, it
+	// is an unknown format, which this package refuses to read rather than misread.
+	// The refusal was correct; the torn file it was reading was the bug.
+	tmp, err := os.CreateTemp(dir, pkghistory.ShareFormatFileName+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", markerPath, err)
+	}
+	// Cleanup is best-effort on every failure path: the temp file is named
+	// <marker>.tmp-*, so a leftover is inert — it is not the marker, and nothing
+	// reads it — and reporting the write error matters more than reporting a failure
+	// to tidy up after it.
+	cleanup := func() { _ = tmp.Close(); _ = os.Remove(tmp.Name()) }
+	if _, err := tmp.WriteString(pkghistory.ShareFormatValue + "\n"); err != nil {
+		cleanup()
+		return fmt.Errorf("writing %s: %w", markerPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("writing %s: %w", markerPath, err)
+	}
+	if err := os.Rename(tmp.Name(), markerPath); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("writing %s: %w", markerPath, err)
+	}
+	return nil
 }
 
 type PushOptions struct {

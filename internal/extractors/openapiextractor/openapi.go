@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"gopkg.in/yaml.v3"
 )
@@ -77,10 +78,11 @@ func (e *OpenAPIExtractor) Extract(ctx context.Context, repoPath string, _ []str
 			return nil
 		}
 
-		relFile, relErr := filepath.Rel(repoPath, path)
+		rawRel, relErr := filepath.Rel(repoPath, path)
 		if relErr != nil {
 			return nil
 		}
+		relFile := factpath.Slash(rawRel)
 
 		routeFacts, parseErr := parseOpenAPIFile(path, relFile)
 		if parseErr != nil {
@@ -157,7 +159,7 @@ func parseOpenAPIFile(absPath, relFile string) ([]facts.Fact, error) {
 		gatewayPrefix = strings.TrimRight(prefix, "/")
 	}
 
-	specDir := filepath.ToSlash(filepath.Dir(relFile))
+	specDir := factpath.Dir(relFile)
 	var result []facts.Fact
 
 	for path, pathItem := range spec.Paths {

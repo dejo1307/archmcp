@@ -9,6 +9,7 @@ import (
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/litfold"
 )
@@ -226,7 +227,7 @@ func buildEmberImportBindings(kinds *tsutil.KindTable, root *sitter.Node, src []
 		external: make(map[string]string),
 		modules:  make(map[string]string),
 	}
-	fileDir := filepath.Dir(relFile)
+	fileDir := factpath.Dir(relFile)
 	for i := range root.ChildCount() {
 		child := root.Child(i)
 		if kindOf(kinds, child) != "import_statement" {
@@ -238,7 +239,7 @@ func buildEmberImportBindings(kinds *tsutil.KindTable, root *sitter.Node, src []
 		}
 		importPath := strings.Trim(nodeText(source, src), `"'`)
 		resolved, isExternal := resolveImportPath(importPath, fileDir, aliases)
-		moduleDir := filepath.ToSlash(filepath.Dir(resolved))
+		moduleDir := factpath.Dir(resolved)
 
 		clause := findChildByKind(kinds, child, "import_clause")
 		if clause == nil {
@@ -850,7 +851,7 @@ const EmberDefaultExportProp = "ember_default_export"
 func emberEnrich(kinds *tsutil.KindTable, result []facts.Fact, root *sitter.Node, src []byte, relFile string,
 	aliases map[string]tsAlias, segments []emberTemplateSegment) []facts.Fact {
 
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 	base := strings.TrimSuffix(filepath.Base(relFile), filepath.Ext(relFile))
 	bindings := buildEmberImportBindings(kinds, root, src, relFile, aliases)
 	folds := emberBuildFoldMap(kinds, root, src)
@@ -1253,7 +1254,7 @@ var emberHbsKeywords = map[string]bool{
 // template-only component and synthesizes its component symbol here, since a
 // binder may never add facts.
 func (e *TSExtractor) extractEmberHbs(src []byte, relFile string, knownFiles map[string]bool) []facts.Fact {
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 	text := string(src)
 	invocations := mergeSorted(scanHbsInvocations(text), scanTypedLiteralInvocations(text, nil))
 
@@ -1269,7 +1270,7 @@ func (e *TSExtractor) extractEmberHbs(src []byte, relFile string, knownFiles map
 			slashed[:idx]+"app/components/"+strings.TrimSuffix(slashed[idx+len("app/templates/components/"):], filepath.Ext(slashed)))
 	}
 	if filepath.Base(slashed) == "template.hbs" {
-		ownerBases = append(ownerBases, filepath.ToSlash(filepath.Join(filepath.Dir(slashed), "component")))
+		ownerBases = append(ownerBases, factpath.Join(factpath.Dir(slashed), "component"))
 	}
 	for _, ob := range ownerBases {
 		for _, ext := range []string{".ts", ".js", ".gts", ".gjs"} {

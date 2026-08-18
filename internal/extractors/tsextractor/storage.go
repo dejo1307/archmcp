@@ -9,6 +9,7 @@ import (
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -219,12 +220,12 @@ func extractPrismaStorage(repoPath string) []facts.Fact {
 			if err != nil {
 				continue
 			}
-			relFile, err := filepath.Rel(repoPath, abs)
+			rawRel, err := filepath.Rel(repoPath, abs)
 			if err != nil {
 				continue
 			}
-			relFile = filepath.ToSlash(relFile)
-			dir := filepath.ToSlash(filepath.Dir(relFile))
+			relFile := factpath.Slash(rawRel)
+			dir := factpath.Dir(relFile)
 			src := string(data)
 			for _, m := range prismaModel.FindAllStringSubmatchIndex(src, -1) {
 				model := src[m[2]:m[3]]

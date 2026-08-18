@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -119,7 +120,7 @@ func (e *SwiftExtractor) Extract(ctx context.Context, repoPath string, files []s
 		if id, ok := resolver.moduleFor(relFile); ok {
 			return id
 		}
-		return filepath.Dir(relFile)
+		return factpath.Dir(relFile)
 	}
 
 	// The repo-wide default urlPrefixComponent (e.g. "v2") that endpoint types

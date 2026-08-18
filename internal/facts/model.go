@@ -76,6 +76,22 @@ const (
 	KindFileRef = "file_ref"
 )
 
+// pathShapedName names the kinds whose Name IS a repo-relative path, and which the
+// store therefore normalises to forward slashes on the way in (see Store.Add).
+//
+// The list is short on purpose. Most Names are not paths, and one language makes the
+// distinction load-bearing rather than pedantic: PHP separates namespace segments with
+// a BACKSLASH, so `App\Http\Controllers\UserController` is a correct symbol name and
+// `Illuminate\Support\Facades\Route` a correct dependency target. Normalising Name
+// wholesale — or normalising Relation.Target at all — would rewrite those into paths
+// that name nothing, breaking PHP resolution to fix Windows. Only kinds whose name
+// cannot be anything but a path belong here.
+var pathShapedName = map[string]bool{
+	KindModule:  true,
+	KindFileRef: true,
+	KindTestRef: true,
+}
+
 // Cross-repo dependency-fact "type" prop values. Both the linker that writes these
 // facts and every reader (explainers, renderers, the MCP server) key off them, so they
 // live here rather than being duplicated as literals on each side.

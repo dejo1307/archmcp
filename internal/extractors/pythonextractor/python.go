@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -147,7 +148,7 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 		}
 		allFacts = append(allFacts, r.ff...)
 		routerTopos = append(routerTopos, r.topo)
-		modules[filepath.Dir(pyFiles[i])] = true
+		modules[factpath.Dir(pyFiles[i])] = true
 	}
 
 	// The packages (dirs with __init__.py) let suffix matching tell a real

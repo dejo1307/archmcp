@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -55,7 +56,7 @@ var nonAPIExtensions = map[string]bool{
 // (no /api prefix); the cross-repo linker's suffix matching reconciles that
 // against the backend's full path.
 func extractURLSessionFacts(src []byte, relFile string) []facts.Fact {
-	return extractURLSessionFactsWithDir(src, relFile, filepath.ToSlash(filepath.Dir(relFile)))
+	return extractURLSessionFactsWithDir(src, relFile, factpath.Dir(relFile))
 }
 
 // extractURLSessionFactsWithDir is extractURLSessionFacts with an explicit module

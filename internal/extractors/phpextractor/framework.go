@@ -2,6 +2,7 @@ package phpextractor
 
 import (
 	"encoding/json"
+	"github.com/enola-labs/enola/internal/factpath"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,7 +81,7 @@ func fileExists(repoPath, rel string) bool {
 // definition files (routes/web.php, routes/api.php, routes/console.php,
 // routes/channels.php), where the Route::… DSL lives.
 func isLaravelRouteFile(relFile string) bool {
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 	if filepath.Base(dir) != "routes" {
 		return false
 	}

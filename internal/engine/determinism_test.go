@@ -17,8 +17,8 @@ func TestDeterminism(t *testing.T) {
 	for _, f := range fixtures {
 		f := f
 		t.Run(f.name, func(t *testing.T) {
-			first := snapshotFixture(t, f)
-			second := snapshotFixture(t, f)
+			first, _ := snapshotFixture(t, f)
+			second, _ := snapshotFixture(t, f)
 			if !bytes.Equal(first, second) {
 				t.Errorf("non-deterministic output for %s:\n%s", f.name, firstDiff(first, second))
 			}

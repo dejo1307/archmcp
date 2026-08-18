@@ -78,6 +78,7 @@ func LoadRecipesDir(repoPath string) ([]Recipe, []string, error) {
 			problems = append(problems, fmt.Sprintf("%s: not parseable as YAML: %v", relPath, err))
 			continue
 		}
+		rec.Normalize()
 		rec.Path = relPath
 		recipes = append(recipes, rec)
 	}

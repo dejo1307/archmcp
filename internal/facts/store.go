@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/enola-labs/enola/internal/factpath"
 )
 
 // Store provides in-memory storage and querying of facts with JSONL persistence.
@@ -80,11 +82,26 @@ func (s *Store) canonical(str string) string {
 // Interning changes only which backing array a string header points at. Equal strings
 // stay equal, the fields keep their types, and nothing downstream can observe the
 // difference — including WriteJSONL, whose output is unchanged byte for byte.
+//
+// File — and the Name of the kinds whose name IS a path (see pathShapedName) — is also
+// normalised to forward slashes here. That is the LAST line of defence rather than the
+// first: paths are normalised at the walker, where the host filesystem enters, and the
+// extractors build on them with internal/factpath. This catches whatever still slips
+// through, because the failure mode it guards against is silent — a backslash path
+// does not error anywhere, it simply stops being equal to the path everything else
+// derived, and a declared layer order quietly classifies nothing (issue #242).
+//
+// Relation.Target is deliberately NOT normalised, and neither is a symbol Name: PHP
+// namespaces are backslash-separated, so those fields carry real backslashes that mean
+// something other than a directory boundary.
 func (s *Store) Add(ff ...Fact) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, f := range ff {
-		f.File = s.canonical(f.File)
+		f.File = s.canonical(factpath.Slash(f.File))
+		if pathShapedName[f.Kind] {
+			f.Name = factpath.Slash(f.Name)
+		}
 		if len(f.Relations) > 0 {
 			// Rewrite in place: Relations is the caller's slice, but Add already
 			// takes ownership of the fact (it is stored, not copied), and the

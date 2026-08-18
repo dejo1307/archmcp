@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/enola-labs/enola/internal/factpath"
 	"path/filepath"
 	"strings"
 )
@@ -45,7 +46,7 @@ func messageInfoFor(raw any, baseFile string, resolver *refResolver) messageInfo
 	}
 	rel, err := filepath.Rel(resolver.repoRoot, payload.absFile)
 	if err == nil {
-		info.schemaName = filepath.ToSlash(rel) + "#/messages/" + info.name
+		info.schemaName = factpath.Slash(rel) + "#/messages/" + info.name
 	}
 	return info
 }

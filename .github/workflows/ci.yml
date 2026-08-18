@@ -37,6 +37,51 @@ jobs:
           name: coverage
           path: coverage.out
 
+  # The host-portability gate.
+  #
+  # Releases ship a windows-amd64 binary, and until this job existed nothing in CI
+  # ever ran on Windows. What that missed is a whole CLASS of defect rather than one
+  # bug: repo-relative paths came off the walker in the host's dialect, so on Windows
+  # a module was named `src\lib` while the import targets it had to match were
+  # forward-slash. Nothing errored. Module resolution simply stopped matching, and a
+  # declared layer order reported itself in force while classifying zero modules
+  # (issue #242).
+  #
+  # The goldens are the assertion. They embed fact paths, they are committed from a
+  # Unix run, and this job compares a Windows run against those same bytes — so any
+  # host separator that reaches a fact fails here, naming the fact. internal/facts'
+  # path contract catches the same class at author time on every host; this catches
+  # what a source scan cannot see.
+  #
+  # autocrlf is disabled at checkout: Git on Windows would otherwise rewrite the
+  # fixture repos' line endings, changing file hashes and every extracted line span,
+  # which would fail the goldens for a reason that has nothing to do with paths.
+  windows:
+    runs-on: windows-latest
+    steps:
+      # Before the checkout, so no fixture file is ever written converted.
+      - name: Disable line-ending conversion
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Path contract
+        run: go test -count=1 -run TestPathContract ./internal/facts/
+
+      - name: Golden + determinism
+        run: go test -count=1 -run "TestGolden|TestDeterminism" ./internal/engine/...
+
+      - name: Layer gate end to end
+        run: go test -count=1 -run TestLayerGate ./internal/engine/...
+
   # Guards Enola's core promise: snapshotting a fixture repo twice yields an
   # identical fact graph, and the committed goldens still match. Fast and
   # CGO-light, so it runs as its own gate independent of the full test matrix.

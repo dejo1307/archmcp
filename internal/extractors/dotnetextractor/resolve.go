@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -27,7 +28,7 @@ func buildProjectIndex(projFiles []string) []projectInfo {
 	for _, rel := range projFiles {
 		rel = filepath.ToSlash(rel)
 		out = append(out, projectInfo{
-			dir:  filepath.ToSlash(filepath.Dir(rel)),
+			dir:  factpath.Dir(rel),
 			name: strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel)),
 		})
 	}
@@ -331,7 +332,7 @@ func resolveCSharpTargets(allFacts []facts.Fact) {
 			bySimple[simple] = f.Name
 		}
 
-		dir := filepath.ToSlash(filepath.Dir(f.File))
+		dir := factpath.Dir(f.File)
 		typeDir[fqn] = dir
 		if ns, _ := f.Props["namespace"].(string); ns != "" {
 			if prev, ok := nsDir[ns]; ok && prev != dir {

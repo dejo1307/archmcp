@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -91,7 +92,7 @@ func (e *RustExtractor) Extract(ctx context.Context, repoPath string, files []st
 
 	moduleDirs := make(map[string]bool, len(rustFiles))
 	for _, relFile := range rustFiles {
-		moduleDirs[filepath.ToSlash(filepath.Dir(relFile))] = true
+		moduleDirs[factpath.Dir(relFile)] = true
 	}
 
 	perFileFacts := parallel.MapFiles(ctx, rustFiles, func(relFile string) fileResult {

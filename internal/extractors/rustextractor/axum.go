@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
@@ -371,7 +372,7 @@ func composeAxumPrefixes(allFacts []facts.Fact, builders []axumBuilder, crates [
 	sort.Strings(keys)
 	for _, k := range keys {
 		b := byKey[k]
-		crateDir := nearestCrateDir(filepath.ToSlash(filepath.Dir(b.relFile)), crates)
+		crateDir := nearestCrateDir(factpath.Dir(b.relFile), crates)
 		for _, nst := range b.nests {
 			callee := resolveAxumCallee(nst, b.relFile, crateDir, byFile, byName, crates)
 			if callee == "" {
@@ -480,7 +481,7 @@ func resolveAxumCallee(nst axumNest, fromFile, fromCrate string, byFile, byName 
 	if len(cands) > 1 {
 		var same []*axumBuilder
 		for _, b := range cands {
-			if nearestCrateDir(filepath.ToSlash(filepath.Dir(b.relFile)), crates) == fromCrate {
+			if nearestCrateDir(factpath.Dir(b.relFile), crates) == fromCrate {
 				same = append(same, b)
 			}
 		}

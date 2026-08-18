@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	swift "github.com/enola-labs/enola/internal/extractors/swiftextractor/grammar"
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
@@ -54,7 +55,7 @@ func parsePackageManifest(src []byte, manifestRel string, dirToFile map[string]s
 		return nil
 	}
 
-	pkgDir := filepath.ToSlash(filepath.Dir(manifestRel))
+	pkgDir := factpath.Dir(manifestRel)
 	pkgName := argString(args, "name", src)
 
 	// Collect targets and the set of internal target names → dir.
@@ -176,7 +177,7 @@ func manifestTargetRoots(src []byte, manifestRel string) map[string]string {
 		return nil
 	}
 
-	pkgDir := filepath.ToSlash(filepath.Dir(manifestRel))
+	pkgDir := factpath.Dir(manifestRel)
 	roots := map[string]string{}
 	if targetsArr := argValue(args, "targets", src); targetsArr != nil {
 		for _, elem := range arrayElements(targetsArr) {

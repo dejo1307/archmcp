@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -148,7 +149,7 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 
 	for i, fileFacts := range perFileFacts {
 		relFile := cppFiles[i]
-		dir := filepath.Dir(relFile)
+		dir := factpath.Dir(relFile)
 
 		for _, f := range fileFacts {
 			// The walker emits a KindModule fact only to host file-scope macro-call
@@ -520,7 +521,7 @@ func parsedLanguage(path string, hdrLang map[string]string) string {
 		return langCpp
 	}
 	if strings.ToLower(filepath.Ext(path)) == ".h" {
-		if l := hdrLang[filepath.Dir(path)]; l != "" {
+		if l := hdrLang[factpath.Dir(path)]; l != "" {
 			return l
 		}
 		return langC // default: bare .h with no nearby C++ sources is C
@@ -541,7 +542,7 @@ func buildHeaderLangIndex(files []string) map[string]string {
 	cppDirs := make(map[string]bool)
 	for _, f := range files {
 		if isUnambiguousCppExt(f) {
-			cppDirs[filepath.Dir(f)] = true
+			cppDirs[factpath.Dir(f)] = true
 		}
 	}
 	// A header's directory is C++ if it, or any ancestor directory, directly
@@ -551,16 +552,16 @@ func buildHeaderLangIndex(files []string) map[string]string {
 		if strings.ToLower(filepath.Ext(f)) != ".h" {
 			continue
 		}
-		dir := filepath.Dir(f)
+		dir := factpath.Dir(f)
 		if _, done := hdrLang[dir]; done {
 			continue
 		}
-		for d := dir; ; d = filepath.Dir(d) {
+		for d := dir; ; d = factpath.Dir(d) {
 			if cppDirs[d] {
 				hdrLang[dir] = langCpp
 				break
 			}
-			if d == "." || d == "/" || d == filepath.Dir(d) {
+			if d == "." || d == "/" || d == factpath.Dir(d) {
 				break
 			}
 		}

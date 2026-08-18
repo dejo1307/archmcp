@@ -35,7 +35,7 @@ func (e *Extractor) OwnsFactFile(relFile string) bool {
 // directory levels — wiki trees nest (wiki/<scope>/permanent/<area>/page.md).
 func (e *Extractor) Detect(repoPath string) (bool, error) {
 	found := false
-	root := filepath.Clean(repoPath)
+	root := filepath.Clean(repoPath) //factpath:host
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || found {
 			return filepath.SkipAll

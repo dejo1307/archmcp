@@ -23,12 +23,15 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 )
 
@@ -40,6 +43,18 @@ var update = flag.Bool("update", false, "regenerate golden files in testdata/gol
 type fixture struct {
 	name     string
 	subRepos []string
+
+	// goldenInsights additionally pins the FINDINGS this fixture produces, in
+	// <name>.insights.json beside the fact golden.
+	//
+	// Facts alone are not enough for a fixture that exists to pin what an explainer
+	// CONCLUDES. A declared layer order is the case that forced this: every fact
+	// behind it — the modules, the import edge, the compiled intent — can be
+	// perfectly correct while the finding says the order classifies nothing, which
+	// is exactly the shape issue #242 shipped in. Opt-in rather than universal
+	// because most fixtures pin extraction, and re-recording every finding on every
+	// heuristic tweak would make the goldens noise.
+	goldenInsights bool
 }
 
 var fixtures = []fixture{
@@ -213,14 +228,29 @@ var fixtures = []fixture{
 	// nobody, so it stays unresolved — the control that the linker is matching real
 	// paths rather than accepting anything.
 	{name: "ts_express_multirepo", subRepos: []string{"server", "consumer"}},
+	// A declared layer order, end to end — the fixture for issue #242. It pins the
+	// findings as well as the facts (goldenInsights), because every fact behind a
+	// layer order can be correct while the CONCLUSION drawn from them is that the
+	// order classifies nothing, which is the shape the bug shipped in.
+	//
+	// Three decisions are pinned at once, and two of them by their finding alone:
+	// `web-components` is declared with BACKSLASHES and must classify exactly as its
+	// forward-slash siblings do; `web-legacy` names a directory that does not exist
+	// and must raise the advisory rather than pass silently; and src/lib importing
+	// src/components — innermost reaching up into the layer above it — must be a
+	// violation at confidence 1.00, which is what makes `--fail-on=layers` bite.
+	{name: "ts_layers_sample", subRepos: []string{"."}, goldenInsights: true},
 }
 
 func TestGolden(t *testing.T) {
 	for _, f := range fixtures {
 		f := f
 		t.Run(f.name, func(t *testing.T) {
-			got := snapshotFixture(t, f)
+			got, insights := snapshotFixture(t, f)
 			assertGolden(t, f.name, got)
+			if f.goldenInsights {
+				assertInsightsGolden(t, f.name, insights)
+			}
 		})
 	}
 }
@@ -228,7 +258,7 @@ func TestGolden(t *testing.T) {
 // snapshotFixture copies the fixture repo into a temp dir, runs the full
 // pipeline (append mode for multi-repo fixtures), and returns the normalized,
 // deterministic JSONL of the resulting fact graph.
-func snapshotFixture(t *testing.T, f fixture) []byte {
+func snapshotFixture(t *testing.T, f fixture) ([]byte, []facts.Insight) {
 	t.Helper()
 
 	root := copyTree(t, filepath.Join("testdata", "repos", f.name), t.TempDir())
@@ -242,22 +272,91 @@ func snapshotFixture(t *testing.T, f fixture) []byte {
 		t.Fatalf("bootstrap.NewEngine: %v", err)
 	}
 
+	var insights []facts.Insight
 	for i, sub := range f.subRepos {
 		repoPath := root
 		if sub != "." {
 			repoPath = filepath.Join(root, sub)
 		}
 		appendMode := i > 0
-		if _, err := eng.GenerateSnapshot(context.Background(), repoPath, appendMode); err != nil {
+		snap, err := eng.GenerateSnapshot(context.Background(), repoPath, appendMode)
+		if err != nil {
 			t.Fatalf("GenerateSnapshot(%s, append=%v): %v", sub, appendMode, err)
 		}
+		// The last snapshot's findings are the union's findings: explainers run over
+		// the whole store each time, so the final pass has seen every repo.
+		insights = snap.Insights
 	}
 
 	var buf bytes.Buffer
 	if err := eng.Store().WriteJSONL(&buf); err != nil {
 		t.Fatalf("WriteJSONL: %v", err)
 	}
-	return normalize(buf.Bytes(), root)
+	return normalize(buf.Bytes(), root), insights
+}
+
+// assertInsightsGolden pins a fixture's findings.
+//
+// Only the fields a reader would review are captured — the title, which explainer
+// raised it, its confidence, whether it is descriptive, and its evidence. Free-text
+// descriptions and suggested actions are excluded on purpose: they are prose, they
+// get rewritten, and a golden that fails on a reworded sentence teaches people to
+// regenerate it without reading the diff.
+func assertInsightsGolden(t *testing.T, name string, insights []facts.Insight) {
+	t.Helper()
+
+	type evidence struct {
+		Fact   string `json:"fact,omitempty"`
+		File   string `json:"file,omitempty"`
+		Detail string `json:"detail,omitempty"`
+	}
+	type record struct {
+		Source        string     `json:"source"`
+		Title         string     `json:"title"`
+		Confidence    float64    `json:"confidence"`
+		Informational bool       `json:"informational,omitempty"`
+		Evidence      []evidence `json:"evidence,omitempty"`
+	}
+
+	records := make([]record, 0, len(insights))
+	for _, in := range insights {
+		r := record{Source: in.Source, Title: in.Title, Confidence: in.Confidence, Informational: in.Informational}
+		for _, e := range in.Evidence {
+			r.Evidence = append(r.Evidence, evidence{Fact: e.Fact, File: e.File, Detail: e.Detail})
+		}
+		records = append(records, r)
+	}
+	// Sorted here rather than trusted from the explainers: the golden's job is to
+	// pin WHAT was concluded, and a fixture failing because two explainers ran in a
+	// different order would be a false alarm about the wrong thing.
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].Source != records[j].Source {
+			return records[i].Source < records[j].Source
+		}
+		return records[i].Title < records[j].Title
+	})
+
+	got, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		t.Fatalf("marshalling insights: %v", err)
+	}
+	got = append(got, '\n')
+
+	path := filepath.Join("testdata", "golden", name+".insights.json")
+	if *update {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatalf("write insights golden: %v", err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read insights golden (run `go test ./internal/engine -run TestGolden -update` to create it): %v", err)
+	}
+	if !bytes.Equal(want, got) {
+		t.Errorf("insights golden mismatch for %s; run `go test ./internal/engine -run TestGolden -update` and review the diff.\n%s",
+			name, firstDiff(want, got))
+	}
 }
 
 // normalize defends against any absolute temp path leaking into a fact by

@@ -10,6 +10,7 @@ import (
 
 	"github.com/enola-labs/enola/internal/facts"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
@@ -211,7 +212,7 @@ func (e *TSExtractor) extractVueSFC(kinds *tsutil.KindTable, rawSrc []byte, relF
 		result = append(result, e.extractVueScriptBlock(kinds, block, relFile, isNuxt, aliases)...)
 	}
 
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 	componentName := fileSymbolName(relFile)
 	factName := dir + "." + componentName
 	fw := "vue"
@@ -290,7 +291,7 @@ func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueS
 	ctx := &extractCtx{
 		src:       block.Content,
 		relFile:   relFile,
-		dir:       filepath.Dir(relFile),
+		dir:       factpath.Dir(relFile),
 		isTSX:     isTSX,
 		isVue:     true,
 		isNuxt:    isNuxt,

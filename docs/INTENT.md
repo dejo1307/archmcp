@@ -70,6 +70,30 @@ several repos, so its entries name their owner and nest the order
 under `order:`. Getting it backwards is a validation error naming the
 missing field, never a silently ignored section.
 
+**What a `paths:` entry may say** is two forms and no more: an exact
+module path (`src/lib`), or a `prefix/**` subtree matching the prefix
+and everything under it (`src/lib/**`). There is deliberately no
+basename form — a layer is a *region* of the tree, and a rule about
+files named `*_controller.rb` wherever they live is a component, not a
+layer. Anything else is a validation error naming the two forms, at the
+moment you write it. It used to be accepted and then matched against
+nothing, which is a layer order that lints clean and governs zero
+modules.
+
+Paths are repo-relative and forward-slash **on every host**. A
+declaration written with backslashes is normalized rather than
+refused: the same file is read on the laptop that wrote it and on the
+runner that grades it, and it has to select the same code in both.
+
+Two ways to see what an order actually selects, before it is anything
+you rely on. `enola constraints lint` resolves each layer against the
+snapshot on disk and prints its member count beside the measured module
+paths, so a path that matches nothing is caught while you are editing
+it. And every snapshot raises an advisory when a declared order
+classifies no modules at all, or when one layer within it does —
+reported, never gating, because the run that first declares an order is
+exactly when a mistyped path shows up.
+
 Declaring a layer order buys more than documentation. The `layers`
 explainer verdicts a declared order at confidence `1.00` — declared,
 not recognised — where a pattern it inferred for itself caps at

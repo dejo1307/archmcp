@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/enola-labs/enola/internal/explainers/constraints"
+	"github.com/enola-labs/enola/internal/explainers/layers"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/intent"
 	"github.com/enola-labs/enola/pkg/bootstrap"
@@ -108,6 +109,7 @@ func (r *Runner) lintRepoDeclaration(clusterDecl *intent.Declaration, repoPath s
 		if yamlErr := yaml.Unmarshal(data, &d); yamlErr != nil {
 			fileProblems = append(fileProblems, fmt.Sprintf("not parseable as YAML: %v", yamlErr))
 		} else {
+			d.Normalize()
 			d.Source = intent.RepoFileName
 			fileDecl = &d
 		}
@@ -262,7 +264,20 @@ func (r *Runner) lintResolveComponents(eng *bootstrap.Engine, anchor string, dec
 		}
 		store.Add(f)
 	}
-	store.Add(declared.ByKind(facts.KindIntent)...)
+	// Declared facts are stamped with the snapshot's repo label before they join it.
+	// The engine does the same thing (SetRepoRange over the extraction window), and
+	// a declared layer is resolved against the modules of the repo that OWNS it — so
+	// unlabelled intent facts beside labelled module facts resolve to nothing at all,
+	// which is precisely the silent-empty answer this report exists to expose.
+	intentFacts := declared.ByKind(facts.KindIntent)
+	if label := snapshotLabel(snap); label != "" {
+		for i := range intentFacts {
+			if intentFacts[i].Repo == "" {
+				intentFacts[i].Repo = label
+			}
+		}
+	}
+	store.Add(intentFacts...)
 
 	unevaluableList := constraints.UnevaluableSelectors(store)
 	unevaluable := map[string]bool{}
@@ -303,7 +318,94 @@ func (r *Runner) lintResolveComponents(eng *bootstrap.Engine, anchor string, dec
 			fmt.Printf("  %s: %s\n", n.Rule, n.Exemplar)
 		}
 	}
+	reportLayerResolution(store)
 	return len(unevaluableList)
+}
+
+// reportLayerResolution prints what each declared layer selects, beside the
+// component counts above it.
+//
+// Layers are resolved here for the same reason components are: a declaration is
+// only worth what it selects, and the moment to learn that it selects nothing is
+// while it is being written, not three snapshots later when a gate that was never
+// going to fire keeps exiting 0. It is not counted as a lint PROBLEM — a layer
+// order matching nothing is a mistake but not an invalid declaration, and the
+// explainer already raises an advisory for it every snapshot.
+func reportLayerResolution(store *facts.Store) {
+	counts := layers.MemberCounts(store)
+	if len(counts) == 0 {
+		return
+	}
+	fmt.Printf("\nDeclared layer resolution (outermost first):\n")
+	empty := 0
+	lastRepo := ""
+	for _, c := range counts {
+		if c.Repo != lastRepo {
+			if c.Repo != "" {
+				fmt.Printf("  %s:\n", c.Repo)
+			}
+			lastRepo = c.Repo
+		}
+		note := ""
+		if c.Members == 0 {
+			note = "  <- matches nothing; no import can violate this layer"
+			empty++
+		}
+		fmt.Printf("  %-24s %d module(s)%s\n", c.Layer, c.Members, note)
+		fmt.Printf("  %-24s   %s\n", "", strings.Join(c.Paths, " "))
+	}
+	if empty == 0 {
+		return
+	}
+	// The measured module paths, once, at the end: a declared path and the path it
+	// was meant to match are nearly always one visible edit apart, and without this
+	// the author has to go query the fact store to see the second one.
+	for _, repo := range dedupeRepos(counts) {
+		names := layers.ModuleNames(store, repo)
+		if len(names) == 0 {
+			continue
+		}
+		if len(names) > 12 {
+			names = append(names[:12:12], fmt.Sprintf("... and %d more", len(layers.ModuleNames(store, repo))-12))
+		}
+		label := "module paths this snapshot measured"
+		if repo != "" {
+			label = repo + ": " + label
+		}
+		fmt.Printf("\n  %s:\n    %s\n", label, strings.Join(names, "\n    "))
+	}
+}
+
+// dedupeRepos lists the repos named by a layer-count set, in first-seen order.
+func dedupeRepos(counts []layers.LayerCount) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range counts {
+		if seen[c.Repo] {
+			continue
+		}
+		seen[c.Repo] = true
+		out = append(out, c.Repo)
+	}
+	return out
+}
+
+// snapshotLabel names the repo label the snapshot's facts carry. The recorded
+// label wins; snapshots written before RepoLabel existed fall back to the label
+// their own facts were tagged with, which is what those builds used.
+func snapshotLabel(snap *facts.Snapshot) string {
+	if snap == nil {
+		return ""
+	}
+	if snap.Meta.RepoLabel != "" {
+		return snap.Meta.RepoLabel
+	}
+	for _, f := range snap.Facts {
+		if f.Repo != "" {
+			return f.Repo
+		}
+	}
+	return ""
 }
 
 func exemptionCount(rules []intent.ConstraintRule) int {

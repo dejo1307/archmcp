@@ -2,6 +2,7 @@ package dartextractor
 
 import (
 	"bufio"
+	"github.com/enola-labs/enola/internal/factpath"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -68,7 +69,7 @@ func scanPubspecs(repoPath string) []string {
 		}
 		if d.Name() == "pubspec.yaml" {
 			if rel, rerr := filepath.Rel(repoPath, path); rerr == nil {
-				out = append(out, filepath.ToSlash(rel))
+				out = append(out, factpath.Slash(rel))
 			}
 		}
 		return nil
@@ -87,7 +88,7 @@ func buildPackageIndex(repoPath string, pubspecs []string) *packageIndex {
 		if p == nil || p.Name == "" {
 			continue
 		}
-		p.Dir = filepath.ToSlash(filepath.Dir(rel))
+		p.Dir = factpath.Dir(rel)
 		if p.Dir == "." {
 			p.Dir = ""
 		}
