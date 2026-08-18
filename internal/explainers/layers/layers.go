@@ -266,6 +266,20 @@ var patternDefs = []patternDef{
 	{name: "hexagonal", layers: hexagonalLayers, signatureLayers: []string{"application", "port", "adapter"}, minSignatureLayers: 2},
 }
 
+// TaxonomyNames returns the name of every architecture pattern this explainer can
+// recognise, sorted. It exists so the documentation can be checked against the
+// vocabulary rather than describing a count somebody typed: docs/EXPLAINERS.md and
+// ARCHITECTURE.md both state how many taxonomies `layers` matches against, and both
+// had drifted behind patternDefs before internal/docslint started asserting it.
+func TaxonomyNames() []string {
+	names := make([]string, 0, len(patternDefs))
+	for _, d := range patternDefs {
+		names = append(names, d.name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // specificity ranks how targeted a pattern's gating is. Higher wins ties: a
 // framework-specific pattern is preferred over a language-gated one, which is
 // preferred over a generic (signature-only) pattern.

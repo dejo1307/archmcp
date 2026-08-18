@@ -9,6 +9,18 @@ Fixtures: [`openapi_sample`](../../internal/engine/testdata/repos/openapi_sample
 [`go_grpc_multirepo`](../../internal/engine/testdata/repos/go_grpc_multirepo/) ·
 [`py_grpc_multirepo`](../../internal/engine/testdata/repos/py_grpc_multirepo/)
 
+## At a glance
+
+| You write | enola stores | Kind |
+|---|---|---|
+| an OpenAPI spec's path + method | a server route with `operationId`, `summary`, `tags` and `spec_file` | `route` |
+| the same spec inside a `client/` directory | the same route, stored with `role: client` | `route` |
+| `service Users { rpc CreateUser(...) }` | a server route at gRPC's wire path `/package.Service/Method` | `route` |
+| an rpc's streaming mode | `streaming`: `none` / client / server / bidi | props |
+| a call through a generated stub (Go, Python, TypeScript) | a client route at that same wire path | `route` |
+| both sides present in one snapshot | a cross-repo dependency at `confidence: verified`, not `probable` | `dependency` |
+| two call sites for one rpc | two facts — collapsing them would understate the blast radius | `route` |
+
 ## Why a contract is different from a URL string
 
 Most cross-repo linking compares a client's URL literal against a server's route literal.

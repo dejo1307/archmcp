@@ -27,7 +27,7 @@ Detected by a solution or project file of any .NET language (`.sln`, `.slnx`,
 
 Fixture: [`csharp_sample`](../../internal/engine/testdata/repos/csharp_sample/) ·
 Unit coverage in
-[`csharpextractor/`](../../internal/extractors/csharpextractor/) —
+[`dotnetextractor/`](../../internal/extractors/dotnetextractor/) —
 `csharp_test.go`, `msbuild_test.go`, `razor_test.go`, `xaml_test.go`,
 `vbnet_test.go`
 
@@ -971,7 +971,7 @@ The real paths are whatever the host application passes, so the group is marked
 **unknown** and its registrations emit nothing. Publishing the registration path
 alone would claim endpoints the library does not serve — and since the first
 registers at `""`, it would land on `/`, recreating the phantom-root collapse
-[conventional routing](#conventional-routing-produces-nothing) produced.
+[conventional routing](#conventional-routing-when-the-registration-can-be-read) once produced.
 
 This is the one place the C# extractor is stricter than the Go extractor, which
 keeps a bare path when a mount is unresolved. A bare Go path is still a

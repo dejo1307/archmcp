@@ -884,6 +884,38 @@ func oneLine(s string) string {
 }
 
 // registerTools adds MCP tools for snapshot generation and fact querying.
+// explainerHints annotates the explainer names whose purpose is not obvious from the
+// name alone. Names without an entry are rendered bare.
+var explainerHints = map[string]string{
+	"unused-routes":      "dead/uncalled HTTP routes",
+	"messaging-coverage": "undeclared messaging calls and AsyncAPI operations with no detected implementation",
+	"intent":             "declared architecture verdicted against the measured graph",
+	"constraints":        "declared component rules, and the edges that breach them",
+	"domain":             "what a framework's declarations say about its data and API",
+	"query-loops":        "a database query issued once per loop iteration",
+	"entry-points":       "the symbols a framework invokes directly",
+}
+
+// explainerFilterList renders the explainer= vocabulary for the query_insights tool
+// description, in the order the engine runs them.
+//
+// Derived from config.KnownExplainers rather than written out, because the written-out
+// version had gone stale: it named eleven explainers for as long as sixteen had shipped,
+// so five of them — intent, constraints, domain, query-loops and entry-points — were
+// invisible to any agent reading the tool description to decide what it could ask for.
+// The findings were there; nothing told the caller the filter would accept the name.
+func explainerFilterList() string {
+	parts := make([]string, 0, len(config.KnownExplainers))
+	for _, name := range config.KnownExplainers {
+		if hint := explainerHints[name]; hint != "" {
+			parts = append(parts, name+" ("+hint+")")
+			continue
+		}
+		parts = append(parts, name)
+	}
+	return strings.Join(parts, ", ")
+}
+
 func (s *Server) registerTools() {
 	// The timeline tools, in their own file: everything else here answers about the tree
 	// as it is now, and those answer about the past.
@@ -1816,7 +1848,7 @@ func (s *Server) registerTools() {
 		Name: "query_insights",
 		Description: "Return the architectural findings (insights) that explainers computed during generate_snapshot — the first-class answer to questions like \"which routes are unused?\", \"where are the dependency cycles?\", or \"which modules are god-classes?\". " +
 			"Each insight carries a title, the explainer that produced it, a description, a confidence (0-1; lower = candidate to verify, not a verdict), evidence (files/symbols/routes), and suggested actions. " +
-			"Filter by explainer= — one of: unused-routes (dead/uncalled HTTP routes), messaging-coverage (undeclared messaging calls and AsyncAPI operations with no detected implementation), cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers; repo= (in multi-repo snapshots, matches the repo-prefix path segment of each insight's evidence — e.g. \"golf\" matches golf/... but not golf-ui/...; single-repo snapshots fall back to a substring match); and min_confidence=. " +
+			"Filter by explainer= — one of: " + explainerFilterList() + "; repo= (in multi-repo snapshots, matches the repo-prefix path segment of each insight's evidence — e.g. \"golf\" matches golf/... but not golf-ui/...; single-repo snapshots fall back to a substring match); and min_confidence=. " +
 			"output_mode ladder: 'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, an evidence sample, and suggested actions) → 'full' (complete JSON incl. all evidence and actions). Pass max_tokens to hard-cap output. " +
 			"All explainers populate insights, but route/cross-repo findings (unused-routes, crossrepo, coverage) only appear for multi-repo (append-mode) snapshots of a backend plus its clients. " +
 			"Prefer this over hand-diffing query_facts results: e.g. query_insights(explainer=\"unused-routes\") returns the per-repo dead-route candidates directly.",
@@ -2146,7 +2178,7 @@ func (s *Server) currentRepoPath() string {
 }
 
 type queryInsightsArgs struct {
-	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: unused-routes, messaging-coverage, cycles, layers, crossrepo, coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers. Empty = all."`
+	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: cycles, layers, crossrepo, coverage, unused-routes, messaging-coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers, intent, constraints, domain, query-loops, entry-points. Empty = all."`
 	Repo          string  `json:"repo,omitempty" jsonschema:"Filter to insights about this repo label. In multi-repo snapshots this matches the repo-prefix path segment of each insight's evidence files (so 'golf' matches golf/... but not golf-ui/...); single-repo snapshots fall back to a substring match. Empty = all repos."`
 	MinConfidence float64 `json:"min_confidence,omitempty" jsonschema:"Only return insights with confidence >= this (0.0-1.0). Default 0 (all). Unused-routes is emitted at 0.6 as a review candidate."`
 	OutputMode    string  `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, evidence sample, actions) → 'full' (complete JSON)."`

@@ -35,6 +35,11 @@ layers:
     paths: ["cmd/**"]
   - name: surface
     paths:
+      # internal/docslint sits here because it reads what the surface PUBLISHES:
+      # the --list catalogue in pkg/cli, alongside the vocabularies below it. It
+      # checks the prose against those values, so it depends on the same things
+      # the help text does and belongs beside it rather than under the engine.
+      - "internal/docslint/**"
       - "pkg/command/**"
       - "pkg/cli/**"
       - "pkg/install/**"

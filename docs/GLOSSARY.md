@@ -28,8 +28,32 @@ extraction and before any analysis.
 
 ## What enola computes
 
-**Explainer** — an analysis that reads the fact graph and emits findings. There are fifteen.
-See [docs/EXPLAINERS.md](EXPLAINERS.md).
+**Explainer** — an analysis that reads the fact graph and emits findings. Each is named
+in `enola check --fail-on=` and in `query_insights(explainer=…)`, so the names below are
+vocabulary you type, not internals:
+
+| Name | What it claims |
+|---|---|
+| `cycles` | these modules can all reach each other — a dependency cycle, proven |
+| `layers` | this repository has this layer order, and these imports run the wrong way through it |
+| `constraints` | a declared component rule was breached by a measured edge |
+| `intent` | the declared architecture and the measured graph disagree here |
+| `crossrepo` | which repositories depend on which |
+| `coverage` | where enola failed to follow a call, as distinct from there being none |
+| `unused-routes` | no client in this snapshot calls this route |
+| `messaging-coverage` | a messaging contract and the code implementing it do not match |
+| `god-class` | this symbol is depended on by far more than the average |
+| `hotspots` | this symbol is a pinch point — high fan-in *and* high fan-out |
+| `dependency-depth` | this module sits at the end of an unusually long import chain |
+| `exported-surface` | this module is large and exports nearly all of it |
+| `complexity-outliers` | this function's cyclomatic complexity is an outlier for this repository |
+| `domain` | what a framework's declarations say about the data and the API |
+| `query-loops` | a database query issued once per iteration of a data-sized loop |
+| `entry-points` | a framework invokes this symbol directly, so reachability has a root here |
+
+Only the first four ever reach confidence `1.0`. The rest estimate — see
+[docs/EXPLAINERS.md](EXPLAINERS.md) for what each computes and why that distinction is
+the whole design.
 
 **Finding** (also **insight**) — one claim an explainer makes, carrying a title, a
 confidence, and **evidence**: the specific entities the claim is about. The evidence is

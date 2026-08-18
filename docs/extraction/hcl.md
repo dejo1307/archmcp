@@ -8,6 +8,18 @@ states.
 
 Fixture: [`hcl_sample`](../../internal/engine/testdata/repos/hcl_sample/)
 
+## At a glance
+
+| You write | enola stores | Kind |
+|---|---|---|
+| a directory holding `.tf` files | one module, `.` at the repository root | `module` |
+| `resource`, `data`, `module`, `variable`, `output`, `provider` | a symbol named by its Terraform address, carrying `hcl_block` | `symbol` |
+| each assignment inside `locals { }` | one symbol apiece, not just the first | `symbol` |
+| a block in a non-root module | the same, prefixed by its directory (`modules/dns.var.zone`) | `symbol` |
+| `var.region`, `aws_vpc.core` in an argument | `depends_on` to the block that declares that address | relation |
+| `module "dns" { source = "./modules/dns" }` | a dependency tagged `internal`, drawing the directory edge | `dependency` |
+| a reference to an address nothing declares | nothing — bare names resolve only against the declared set | — |
+
 ## Blocks become symbols, addressed as Terraform addresses them
 
 Detected by any `.tf`/`.hcl` file within three directory levels. Each block —

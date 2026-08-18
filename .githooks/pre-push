@@ -4,16 +4,20 @@
 #
 #     git config core.hooksPath .githooks
 #
-# It runs three checks:
+# It runs four checks:
 #   1. cacheVersion coverage guard (fast, no CGO): fails if a `// vN:` changelog
 #      entry in internal/engine/cache.go has no registered test in
 #      internal/cachecov/coverage_test.go — i.e. an extractor behavior was bumped
 #      without a covering test.
-#   2. golden + determinism: the extractor fact graph for the fixture repos is
+#   2. documentation conformance (fast, no CGO): fails if a count in the docs
+#      disagrees with the vocabulary it describes, if a page names a path or an
+#      anchor that no longer exists, or if an extraction page is missing a section
+#      its own index promises. Prose has no compiler; this is the closest thing.
+#   3. golden + determinism: the extractor fact graph for the fixture repos is
 #      byte-identical to the committed goldens and reproducible across runs.
-#   3. the agent-hook end-to-end test — ONLY when the push touches the installer.
+#   4. the agent-hook end-to-end test — ONLY when the push touches the installer.
 #
-# Why 3 lives here and not in CI: it needs a real Claude Code session, and CI runners
+# Why 4 lives here and not in CI: it needs a real Claude Code session, and CI runners
 # do not run agent sessions by design. That is not a gap that can be closed by moving
 # it — the hook config is a contract owned by another product, so the check has to run
 # somewhere an agent exists. A developer's machine is the only such place, which makes
@@ -23,16 +27,19 @@
 # An unconditional gate that expensive is one people turn off, and a guard nobody runs
 # protects nothing.
 #
-# To skip in an emergency: `git push --no-verify` (CI still enforces 1 and 2).
+# To skip in an emergency: `git push --no-verify` (CI still enforces 1, 2 and 3).
 set -e
 
 echo "pre-push: cacheVersion coverage guard…"
 go test -count=1 -run TestCacheVersionCoverage ./internal/cachecov/
 
+echo "pre-push: documentation conformance…"
+go test -count=1 ./internal/docslint/
+
 echo "pre-push: golden + determinism…"
 go test -count=1 -run 'TestGolden|TestDeterminism' ./internal/engine/...
 
-# ── 3. agent hooks, only when the installer moved ─────────────────────────────
+# ── 4. agent hooks, only when the installer moved ─────────────────────────────
 # git feeds pre-push one line per ref: <local ref> <local sha> <remote ref> <remote sha>
 zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
 changed=""
@@ -50,7 +57,7 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
 "
 done
 
-if printf '%s' "$changed" | grep -qE '^(pkg/install/|cmd/enola/hook\.go|cmd/enola/doctor\.go|internal/hookstate/)'; then
+if printf '%s' "$changed" | grep -qE '^(pkg/install/|pkg/command/hook\.go|pkg/command/doctor\.go|internal/hookstate/)'; then
 	if ! command -v claude >/dev/null 2>&1; then
 		echo "pre-push: installer changed, but 'claude' is not on PATH — SKIPPING the hook"
 		echo "          end-to-end test. Nothing else can catch a hook that never fires;"

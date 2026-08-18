@@ -8,6 +8,18 @@ does.
 
 Fixture: [`ansible_sample`](../../internal/engine/testdata/repos/ansible_sample/)
 
+## At a glance
+
+| You write | enola stores | Kind |
+|---|---|---|
+| a `roles/<name>/` directory | one module, keyed by that path | `module` |
+| a YAML list entry carrying `hosts:` | a symbol with `ansible_kind: play`, named from `name:` or its filename | `symbol` |
+| a role | a symbol with `ansible_kind: role` | `symbol` |
+| `roles:` — `- nginx` or `- role: app` | `depends_on` from the play to each role the repository declares | relation |
+| `import_role:` / `include_role:` with a literal `name:` | `depends_on` from one role to another | relation |
+| a file under a role's `templates/` | `template_count` on that role's symbol | props |
+| `{{ anything }}` | nothing — no template is ever rendered | — |
+
 ## Detection is the whole false-positive risk
 
 Arbitrary YAML must not read as Ansible, so detection demands an unambiguous
