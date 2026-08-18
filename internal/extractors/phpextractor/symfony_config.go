@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"gopkg.in/yaml.v3"
 )
@@ -61,7 +62,7 @@ func discoverSymfonyRouteConfigs(repoPath string) []string {
 		switch strings.ToLower(filepath.Ext(path)) {
 		case ".yaml", ".yml", ".xml":
 			if rel, err := filepath.Rel(repoPath, path); err == nil {
-				seen[filepath.ToSlash(rel)] = true
+				seen[factpath.Slash(rel)] = true
 			}
 		}
 		return nil
@@ -96,7 +97,7 @@ func parseSymfonyYAMLRoutes(data []byte, relFile string) []facts.Fact {
 	}
 	sort.Strings(names)
 
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 	var out []facts.Fact
 	for _, name := range names {
 		entry := doc[name]
@@ -127,7 +128,7 @@ func parseSymfonyXMLRoutes(data []byte, relFile string) []facts.Fact {
 	if err := xml.Unmarshal(data, &doc); err != nil {
 		return nil
 	}
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 	var out []facts.Fact
 	for _, r := range doc.Routes {
 		if r.Path == "" {

@@ -2,10 +2,10 @@ package dotnetextractor
 
 import (
 	"log"
-	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	csharp "github.com/tree-sitter/tree-sitter-c-sharp/bindings/go"
@@ -56,7 +56,7 @@ func extractFileASTFull(src []byte, relFile string) ([]facts.Fact, aspnetScaffol
 	w := &astWalker{
 		src:      src,
 		relFile:  relFile,
-		dir:      filepath.ToSlash(filepath.Dir(relFile)),
+		dir:      factpath.Dir(relFile),
 		aliases:  make(map[string]string),
 		fileRefI: -1,
 	}

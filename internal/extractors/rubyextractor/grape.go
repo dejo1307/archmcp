@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -136,7 +137,7 @@ func extractGrapeRoutes(ctx context.Context, repoPath string, classFacts []facts
 					"handler":   c.name,
 				},
 				Relations: []facts.Relation{
-					{Kind: facts.RelDeclares, Target: filepath.Dir(c.file)},
+					{Kind: facts.RelDeclares, Target: factpath.Dir(c.file)},
 					{Kind: facts.RelHandledBy, Target: c.name},
 				},
 			})

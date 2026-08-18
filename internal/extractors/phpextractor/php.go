@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -146,7 +147,7 @@ func (e *PHPExtractor) Extract(ctx context.Context, repoPath string, files []str
 	modules := make(map[string]bool)
 	for i, ff := range perFileFacts {
 		allFacts = append(allFacts, ff...)
-		modules[filepath.Dir(phpFiles[i])] = true
+		modules[factpath.Dir(phpFiles[i])] = true
 	}
 
 	// Symfony YAML/XML route config lives outside the PHP source tree and is

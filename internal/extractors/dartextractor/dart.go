@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -281,7 +282,7 @@ func (e *DartExtractor) Extract(ctx context.Context, repoPath string, files []st
 func moduleFacts(dartFiles []string, pkgs *packageIndex) []facts.Fact {
 	dirs := make(map[string]string, len(dartFiles))
 	for _, relFile := range dartFiles {
-		dir := filepath.ToSlash(filepath.Dir(relFile))
+		dir := factpath.Dir(relFile)
 		if _, seen := dirs[dir]; seen {
 			continue
 		}

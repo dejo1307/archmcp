@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/litfold"
 )
@@ -214,7 +215,7 @@ const objectScanCap = 4096
 // suffix); the cross-repo linker's normalization reconciles prefixes and format
 // suffixes.
 func extractHTTPClientFacts(src []byte, relFile string) []facts.Fact {
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 	api := tsAPIHint(relFile)
 	bases := fileBaseLiterals(src)
 

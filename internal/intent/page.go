@@ -146,6 +146,7 @@ func ParsePage(src []byte) (*PageIntent, error) {
 	if doc.Intent == nil {
 		return nil, nil
 	}
+	doc.Intent.Normalize()
 	if err := doc.Intent.Validate(); err != nil {
 		return nil, err
 	}
@@ -207,6 +208,7 @@ func (p *PageIntent) Validate() error {
 			if en.Name == "" || len(en.Paths) == 0 {
 				problems = append(problems, fmt.Sprintf("layers[%d].order[%d]: needs name and paths", i, j))
 			}
+			problems = append(problems, layerPathProblems(fmt.Sprintf("layers[%d].order[%d]", i, j), en)...)
 		}
 	}
 	for i, c := range p.Claims {

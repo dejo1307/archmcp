@@ -14,6 +14,7 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
@@ -214,7 +215,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			log.Printf("[ts-extractor] skipping minified/bundled file %s", relFile)
 			return tsFileResult{}
 		}
-		aliases := aliasesForDir(aliasRoots, filepath.Dir(relFile))
+		aliases := aliasesForDir(aliasRoots, factpath.Dir(relFile))
 		res := tsFileResult{
 			facts: e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, orms, aliases, knownFiles, grpcStubs),
 		}
@@ -243,7 +244,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			continue
 		}
 		allFacts = append(allFacts, res.facts...)
-		modules[filepath.Dir(tsFiles[i])] = true
+		modules[factpath.Dir(tsFiles[i])] = true
 	}
 
 	// Express sub-routers mounted from another file. The per-file pass holds their
@@ -252,7 +253,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	if mounted := composeRouterMounts(routerFiles); len(mounted) > 0 {
 		allFacts = append(allFacts, mounted...)
 		for _, f := range mounted {
-			modules[filepath.Dir(f.File)] = true
+			modules[factpath.Dir(f.File)] = true
 		}
 	}
 
@@ -408,7 +409,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	ctx := &extractCtx{
 		src:         src,
 		relFile:     relFile,
-		dir:         filepath.Dir(relFile),
+		dir:         factpath.Dir(relFile),
 		isTSX:       isTSX,
 		isNextJS:    isNextJS,
 		isVue:       isVue,
@@ -490,7 +491,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 
 func (e *TSExtractor) extractImports(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {
 	var result []facts.Fact
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 
 	for i := range root.ChildCount() {
 		child := root.Child(i)
@@ -1179,11 +1180,11 @@ func collectPackageNames(repoPath string) map[string]string {
 		if err := json.Unmarshal(data, &pkg); err != nil || pkg.Name == "" {
 			return nil
 		}
-		rel, err := filepath.Rel(repoPath, filepath.Dir(path))
+		rel, err := filepath.Rel(repoPath, filepath.Dir(path)) //factpath:host
 		if err != nil {
 			return nil
 		}
-		out[filepath.ToSlash(rel)] = pkg.Name
+		out[factpath.Slash(rel)] = pkg.Name
 		return nil
 	})
 	return out
@@ -1304,7 +1305,7 @@ func fileSymbolName(relFile string) string {
 	switch base {
 	case "index", "page", "route", "layout", "loading", "error", "not-found", "template", "default",
 		"+page", "+layout", "+error", "+server":
-		parent := filepath.Base(filepath.Dir(relFile))
+		parent := filepath.Base(factpath.Dir(relFile))
 		if parent != "" && parent != "." && parent != string(filepath.Separator) {
 			return toPascal(parent) + toPascal(base)
 		}
@@ -1591,7 +1592,7 @@ func walkTSAliasRoots(repoPath, dir string, depth, maxDepth int, out *[]tsAliasR
 		if err != nil || rel == "." {
 			rel = ""
 		}
-		rel = filepath.ToSlash(rel)
+		rel = factpath.Slash(rel)
 
 		// Concatenation, not filepath.Join, to preserve the trailing slash
 		// resolveImportPath's `replacement + rest` depends on.
@@ -1748,7 +1749,7 @@ func resolveImportPath(importPath, fileDir string, aliases map[string]tsAlias) (
 	// against prefixes by length — `@acme/common` (exact) and `@acme/` (prefix) both
 	// match `@acme/common`, and the exact one is the answer.
 	if a, ok := aliases[importPath]; ok && a.exact {
-		return filepath.ToSlash(filepath.Clean(a.replacement)), false
+		return factpath.Clean(a.replacement), false
 	}
 
 	bestPrefix, bestReplacement := "", ""
@@ -1762,12 +1763,12 @@ func resolveImportPath(importPath, fileDir string, aliases map[string]tsAlias) (
 	}
 	if bestPrefix != "" {
 		rest := strings.TrimPrefix(importPath, bestPrefix)
-		return filepath.ToSlash(filepath.Clean(bestReplacement + rest)), false
+		return factpath.Clean(bestReplacement + rest), false
 	}
 
 	// Relative imports
 	if strings.HasPrefix(importPath, ".") {
-		resolved := filepath.ToSlash(filepath.Clean(filepath.Join(fileDir, importPath)))
+		resolved := factpath.Clean(factpath.Join(fileDir, importPath))
 		return resolved, false
 	}
 
@@ -1791,7 +1792,7 @@ func resolveModuleFile(resolved string, knownFiles map[string]bool) (indexPath, 
 	resolved = filepath.ToSlash(resolved)
 	for _, ext := range tsModuleExts {
 		if knownFiles[resolved+ext] {
-			return resolved + ext, filepath.ToSlash(filepath.Dir(resolved)), true
+			return resolved + ext, factpath.Dir(resolved), true
 		}
 	}
 	for _, ext := range tsModuleExts {
@@ -1809,7 +1810,7 @@ func resolveModuleFile(resolved string, knownFiles map[string]bool) (indexPath, 
 // where moduleDir is the directory of the resolved module file — this matches the
 // common file-module case (e.g. import "./utils" → utils.ts → "<dir>.foo").
 func buildImportSymbols(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) map[string]string {
-	fileDir := filepath.Dir(relFile)
+	fileDir := factpath.Dir(relFile)
 	m := make(map[string]string)
 	for i := range root.ChildCount() {
 		child := root.Child(i)
@@ -1825,7 +1826,7 @@ func buildImportSymbols(kinds *tsutil.KindTable, root *sitter.Node, src []byte, 
 		if isExternal {
 			continue // external modules have no local declaration facts
 		}
-		moduleDir := filepath.Dir(resolved)
+		moduleDir := factpath.Dir(resolved)
 
 		clause := findChildByKind(kinds, child, "import_clause")
 		if clause == nil {
@@ -1878,7 +1879,7 @@ func buildImportSymbols(kinds *tsutil.KindTable, root *sitter.Node, src []byte, 
 // from a test is spelled exactly as the same reference from production code.
 func (e *TSExtractor) collectTSFileRefs(kinds *tsutil.KindTable, root *sitter.Node, ctx *extractCtx, aliases map[string]tsAlias, kind string) []facts.Fact {
 	src := ctx.src
-	fileDir := filepath.Dir(ctx.relFile)
+	fileDir := factpath.Dir(ctx.relFile)
 	internal := make(map[string]string)   // local name -> canonical target (internal modules only)
 	namespaces := make(map[string]string) // `import * as ns` local -> module dir
 	var reexports []string                // canonical targets re-exported via `export { x } from './y'`
@@ -1907,7 +1908,7 @@ func (e *TSExtractor) collectTSFileRefs(kinds *tsutil.KindTable, root *sitter.No
 		if idx, dir, found := resolveModuleFile(resolved, ctx.knownFiles); found {
 			return dir, idx, true
 		}
-		return filepath.Dir(resolved), "", true
+		return factpath.Dir(resolved), "", true
 	}
 
 	// Pass 1: parse the bindings — static imports, `export … from` re-exports, and
@@ -2208,7 +2209,7 @@ func (e *TSExtractor) ExtractTestRefs(ctx context.Context, repoPath string, file
 		if isMinifiedSource(src) {
 			return nil
 		}
-		return e.testRefsFromFile(src, relFile, aliasesForDir(aliasRoots, filepath.Dir(relFile)))
+		return e.testRefsFromFile(src, relFile, aliasesForDir(aliasRoots, factpath.Dir(relFile)))
 	})
 
 	var out []facts.Fact
@@ -2242,7 +2243,7 @@ func (e *TSExtractor) testRefsFromFile(src []byte, relFile string, aliases map[s
 	ctx := &extractCtx{
 		src:     src,
 		relFile: relFile,
-		dir:     filepath.Dir(relFile),
+		dir:     factpath.Dir(relFile),
 		isTSX:   isTSX,
 	}
 	return e.collectTSFileRefs(kinds, tree.RootNode(), ctx, aliases, facts.KindTestRef)

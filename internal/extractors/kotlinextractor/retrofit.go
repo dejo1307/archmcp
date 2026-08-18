@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -65,7 +66,7 @@ func kotlinIODirectFromAnnotations(annotations []string) bool {
 // that, so we emit the path as written.
 func extractRetrofitFacts(src []byte, relFile string) []facts.Fact {
 	var out []facts.Fact
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 	api := apiHint(relFile)
 
 	for i, line := range strings.Split(string(src), "\n") {

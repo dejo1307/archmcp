@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"gopkg.in/yaml.v3"
 )
@@ -129,7 +130,7 @@ type xcodeFile struct {
 // nil (no error) when the manifest is absent so callers can treat XcodeGen as an
 // optional, additive signal.
 func parseXcodeGenProject(repoPath, projectRel string) (*xcodeProject, error) {
-	projectDir := filepath.ToSlash(filepath.Dir(projectRel))
+	projectDir := factpath.Dir(projectRel)
 
 	root, err := readXcodeFile(filepath.Join(repoPath, projectRel))
 	if err != nil {

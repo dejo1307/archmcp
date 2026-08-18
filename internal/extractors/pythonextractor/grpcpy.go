@@ -2,11 +2,11 @@ package pythonextractor
 
 import (
 	"bytes"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -91,7 +91,7 @@ func extractPyGRPCClientFacts(src []byte, relFile string) []facts.Fact {
 	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].off < events[j].off })
 
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 	current := map[string]string{} // receiver var -> short service
 	seen := map[string]bool{}
 	var out []facts.Fact

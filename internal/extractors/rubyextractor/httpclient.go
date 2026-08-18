@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/litfold"
 )
@@ -124,7 +125,7 @@ func extractRubyHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 				"api":            api,
 				"target_hint":    hint,
 			},
-			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: filepath.ToSlash(filepath.Dir(relFile))}},
+			Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: factpath.Dir(relFile)}},
 		})
 		if derived != "" {
 			out[len(out)-1].Props["derived"] = derived
@@ -223,7 +224,7 @@ func extractWrapperMethodClientFacts(src, relFile, api, envHint string) []facts.
 						"target_hint":    envHint,
 						"derived":        "wrapper-method",
 					},
-					Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: filepath.ToSlash(filepath.Dir(relFile))}},
+					Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: factpath.Dir(relFile)}},
 				})
 			}
 			break

@@ -90,6 +90,47 @@ type Layer struct {
 	Paths []string `yaml:"paths"`
 }
 
+// ValidLayerPath reports whether a layer path is one of the two forms the
+// classifier implements: an exact module path (`src/lib`), or a `prefix/**`
+// subtree matching the prefix and everything under it.
+//
+// Until this existed, `layers:` paths were the one declaration field with NO
+// form validation at all. Anything at all was accepted, compiled into an intent
+// fact, matched against every module, and — when it matched none, which is what
+// every unsupported glob form does — left a layer order that validated clean and
+// governed nothing. Rejecting the form here is what turns that into a message
+// naming what is allowed, at the moment the author can still fix it.
+//
+// The dialect is deliberately narrower than the component `match` dialect: it
+// has no basename form. A layer is a REGION of the tree, and a rule about files
+// named `*_controller.rb` wherever they live is a component, not a layer.
+func ValidLayerPath(p string) bool {
+	if p == "" {
+		return false
+	}
+	prefix, isSubtree := strings.CutSuffix(p, "/**")
+	if isSubtree && prefix == "" {
+		return false
+	}
+	if !isSubtree {
+		prefix = p
+	}
+	return !strings.ContainsAny(prefix, "*?[]{}\\")
+}
+
+// layerPathProblems reports every malformed path in one layer entry. Shared by
+// the repo-file and page forms so the two cannot drift into accepting different
+// dialects for the same field.
+func layerPathProblems(loc string, l Layer) []string {
+	var problems []string
+	for i, p := range l.Paths {
+		if !ValidLayerPath(p) {
+			problems = append(problems, fmt.Sprintf("%s.paths[%d]: %q must be an exact path (src/lib) or a prefix/** subtree (src/lib/**) — a layer names a region of the tree, so no other glob form is read", loc, i, p))
+		}
+	}
+	return problems
+}
+
 // Validate checks a declaration's vocabulary and shape. Every reported
 // problem names what is allowed — a parse error a user can act on without
 // reading source.
@@ -126,6 +167,7 @@ func (d *Declaration) Problems() []string {
 		if len(l.Paths) == 0 {
 			problems = append(problems, fmt.Sprintf("layers[%d] (%s): no paths", i, l.Name))
 		}
+		problems = append(problems, layerPathProblems(fmt.Sprintf("layers[%d] (%s)", i, l.Name), l)...)
 	}
 	if !d.UseRecipe.IsZero() {
 		problems = append(problems, fmt.Sprintf("use_recipe is not inline vocabulary — instantiations live in %s/*.yaml files, beside the code each bounded context governs", ConstraintsDirName))
@@ -151,6 +193,7 @@ func Parse(data []byte) (*Declaration, error) {
 	if err := yaml.Unmarshal(data, &d); err != nil {
 		return nil, fmt.Errorf("parsing intent declaration: %w", err)
 	}
+	d.Normalize()
 	if err := d.Validate(); err != nil {
 		return nil, err
 	}
@@ -176,6 +219,7 @@ func LoadRepoFile(repoPath string) (*Declaration, error) {
 		if err := yaml.Unmarshal(data, &d); err != nil {
 			return nil, fmt.Errorf("%s: parsing intent declaration: %w", path, err)
 		}
+		d.Normalize()
 		// Repo-relative on purpose: an absolute path would embed the machine's
 		// checkout location in a fact and break cross-machine byte-identity.
 		d.Source = RepoFileName

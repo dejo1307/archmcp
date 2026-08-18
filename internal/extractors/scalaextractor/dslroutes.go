@@ -1,9 +1,9 @@
 package scalaextractor
 
 import (
-	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	scala "github.com/tree-sitter/tree-sitter-scala/bindings/go"
@@ -533,7 +533,7 @@ func extractDSLRoutes(src []byte, relFile string) []facts.Fact {
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
 	root := tree.RootNode()
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 
 	out := extractPekkoRoutes(root, src, relFile, dir)
 	out = append(out, extractHTTP4sRoutes(root, src, relFile, dir)...)

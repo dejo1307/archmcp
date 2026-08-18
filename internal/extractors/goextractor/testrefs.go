@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -86,7 +87,7 @@ func refsFromGoTest(src []byte, relFile, modulePath string) []facts.Fact {
 	}
 
 	base := resolveCtx{
-		pkgDir:     filepath.Dir(relFile),
+		pkgDir:     factpath.Dir(relFile),
 		modulePath: modulePath,
 		// pkgNames is deliberately nil. It exists to recover a declared package name
 		// that differs from its directory base ("go-auth" → package auth), which

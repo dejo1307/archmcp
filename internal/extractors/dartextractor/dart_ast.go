@@ -1,13 +1,13 @@
 package dartextractor
 
 import (
-	"path/filepath"
 	"strings"
 	"sync"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/enola-labs/enola/internal/extractors/dartextractor/grammar"
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -73,7 +73,7 @@ func extractFile(src []byte, relFile string, pkgs *packageIndex, inheritedImport
 		return fileResult{}
 	}
 
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 	w := &walker{
 		src:        src,
 		relFile:    relFile,
@@ -181,7 +181,7 @@ func (w *walker) classifyImport(uri string) (target, source string) {
 
 	case strings.HasPrefix(uri, "package:"):
 		if resolved, internal := w.pkgs.resolvePackageURI(uri); internal {
-			return filepath.ToSlash(filepath.Dir(resolved)), facts.DepSourceInternal
+			return factpath.Dir(resolved), facts.DepSourceInternal
 		}
 		// Third party: the dependency is the PACKAGE, not the file inside it. Two
 		// imports of different files from one package are one dependency, and
@@ -196,7 +196,7 @@ func (w *walker) classifyImport(uri string) (target, source string) {
 		return "", ""
 
 	default:
-		return filepath.ToSlash(filepath.Dir(w.resolveRelativeURI(uri))), facts.DepSourceInternal
+		return factpath.Dir(w.resolveRelativeURI(uri)), facts.DepSourceInternal
 	}
 }
 
@@ -208,7 +208,7 @@ func (w *walker) resolveRelativeURI(uri string) string {
 		}
 		return uri
 	}
-	return filepath.ToSlash(filepath.Clean(filepath.Join(w.dir, uri)))
+	return factpath.Clean(factpath.Join(w.dir, uri))
 }
 
 // uriOf pulls the string literal out of a directive, unquoted.

@@ -572,6 +572,7 @@ func Load(path string) (*Config, error) {
 		if decl == nil {
 			continue
 		}
+		decl.Normalize()
 		if err := decl.Validate(); err != nil {
 			return nil, fmt.Errorf("in config %s, intent entry %q: %w", path, label, err)
 		}

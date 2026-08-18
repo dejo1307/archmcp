@@ -1,10 +1,10 @@
 package rustextractor
 
 import (
-	"path/filepath"
 	"strings"
 	"unicode"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	rust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
@@ -36,7 +36,7 @@ func extractFileASTFull(src []byte, relFile string, crates []crateInfo, moduleDi
 	defer tree.Close()
 	root := tree.RootNode()
 
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 	w := &astWalker{
 		src:        src,
 		relFile:    relFile,

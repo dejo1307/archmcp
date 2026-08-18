@@ -1,11 +1,11 @@
 package swiftextractor
 
 import (
-	"path/filepath"
 	"strings"
 	"unicode"
 
 	swift "github.com/enola-labs/enola/internal/extractors/swiftextractor/grammar"
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
@@ -21,7 +21,7 @@ import (
 // and canonicalised to "<dir>.<Type>" by the post-pass in Extract, which has the
 // project-wide type index needed to resolve them.
 func extractFileAST(src []byte, relFile string, isiOS bool) []facts.Fact {
-	return extractFileASTWithDir(src, relFile, isiOS, filepath.Dir(relFile))
+	return extractFileASTWithDir(src, relFile, isiOS, factpath.Dir(relFile))
 }
 
 // extractFileASTWithDir is extractFileAST with an explicit module identity dir.

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -82,7 +83,7 @@ func (e *GRPCExtractor) Extract(ctx context.Context, repoPath string, files []st
 			continue
 		}
 		pf := scanProto(src)
-		dir := filepath.Dir(rel)
+		dir := factpath.Dir(rel)
 
 		if !seenModule[dir] {
 			seenModule[dir] = true

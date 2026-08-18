@@ -11,11 +11,11 @@ package tsextractor
 
 import (
 	"bytes"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -117,7 +117,7 @@ func extractServerRouteFacts(src []byte, relFile string) []facts.Fact {
 	if len(bindings) == 0 {
 		return nil
 	}
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 
 	var out []facts.Fact
 	seen := map[string]bool{}

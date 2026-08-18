@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -152,7 +153,7 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 	modules := make(map[string]bool)
 	for i, ff := range perFileFacts {
 		allFacts = append(allFacts, ff...)
-		modules[filepath.Dir(rbFiles[i])] = true
+		modules[factpath.Dir(rbFiles[i])] = true
 	}
 
 	// Emit module facts for directories not already covered by packwerk packages.

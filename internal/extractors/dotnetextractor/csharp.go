@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -65,10 +66,11 @@ func (e *CSharpExtractor) Detect(repoPath string) (bool, error) {
 		if err != nil || found {
 			return nil
 		}
-		rel, relErr := filepath.Rel(repoPath, path)
+		rawRel, relErr := filepath.Rel(repoPath, path)
 		if relErr != nil {
 			return nil
 		}
+		rel := factpath.Slash(rawRel)
 		if d.IsDir() {
 			// Never descend into build output: obj/ holds generated C# that would
 			// make any tree with a stale build directory look like a C# project.
@@ -164,7 +166,7 @@ func (e *CSharpExtractor) Extract(ctx context.Context, repoPath string, files []
 	// pattern detection.
 	modules := make(map[string]map[string]int)
 	noteModule := func(rel, lang string) {
-		dir := filepath.ToSlash(filepath.Dir(rel))
+		dir := factpath.Dir(rel)
 		if modules[dir] == nil {
 			modules[dir] = map[string]int{}
 		}

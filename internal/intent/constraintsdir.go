@@ -86,6 +86,7 @@ func LoadConstraintsDir(repoPath string) ([]ConstraintsFile, []string, error) {
 			problems = append(problems, fmt.Sprintf("%s: not parseable as YAML: %v", relPath, err))
 			continue
 		}
+		f.Normalize()
 		f.Path = relPath
 		for i := range f.Components {
 			f.Components[i].SourceFile = relPath

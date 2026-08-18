@@ -11,6 +11,7 @@ import (
 
 	"github.com/enola-labs/enola/internal/facts"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
@@ -329,7 +330,7 @@ func (e *TSExtractor) extractSvelteSFC(kinds *tsutil.KindTable, rawSrc []byte, r
 		result = append(result, *ref)
 	}
 
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 	componentName := fileSymbolName(relFile)
 	factName := dir + "." + componentName
 	fw := "svelte"
@@ -396,7 +397,7 @@ func (e *TSExtractor) extractSvelteScriptBlock(kinds *tsutil.KindTable, block *s
 	ctx := &extractCtx{
 		src:       block.Content,
 		relFile:   relFile,
-		dir:       filepath.Dir(relFile),
+		dir:       factpath.Dir(relFile),
 		isTSX:     isTSX,
 		importMap: buildImportSymbols(kinds, root, block.Content, relFile, aliases),
 		imports:   buildEmberImportBindings(kinds, root, block.Content, relFile, aliases),

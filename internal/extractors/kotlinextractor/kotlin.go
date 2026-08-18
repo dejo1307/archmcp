@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/extractors/jvmsrc"
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 )
@@ -104,7 +105,7 @@ func (e *KotlinExtractor) Extract(ctx context.Context, repoPath string, files []
 	modules := make(map[string]bool)
 	for i, ff := range perFileFacts {
 		allFacts = append(allFacts, ff...)
-		modules[filepath.Dir(kotlinFiles[i])] = true
+		modules[factpath.Dir(kotlinFiles[i])] = true
 	}
 
 	for dir := range modules {
@@ -419,7 +420,7 @@ func kotlinFileSourceRoot(repoPath, relFile string) (string, bool) {
 			continue
 		}
 		pkgPath := strings.ReplaceAll(m[1], ".", "/")
-		dir := filepath.ToSlash(filepath.Dir(relFile))
+		dir := factpath.Dir(relFile)
 		if strings.HasSuffix(dir, pkgPath) {
 			return strings.TrimSuffix(dir, pkgPath), true
 		}
@@ -481,7 +482,7 @@ func resolveKotlinImport(importPath string, packageIndex map[string]string, sour
 	}
 	if basePackage != "" && sourceRoot != "" && strings.HasPrefix(importPath, basePackage+".") {
 		asPath := strings.ReplaceAll(importPath, ".", "/")
-		return filepath.ToSlash(filepath.Clean(sourceRoot + asPath)), false
+		return factpath.Clean(sourceRoot + asPath), false
 	}
 	return importPath, true
 }

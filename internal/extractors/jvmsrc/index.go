@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -164,7 +165,7 @@ func BuildPackageIndex(repoPath string, files []string) map[string]string {
 		if !ok {
 			continue
 		}
-		dir := filepath.ToSlash(filepath.Dir(relFile))
+		dir := factpath.Dir(relFile)
 		if existing, seen := index[pkg]; !seen || preferDir(dir, existing) {
 			index[pkg] = dir
 		}

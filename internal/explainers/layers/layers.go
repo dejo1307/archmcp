@@ -427,6 +427,7 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 			Evidence:      evidence,
 			Actions:       []string{"Keep the declaration beside the code it governs"},
 		})
+		insights = append(insights, vacuousDeclarationInsights(dp, modules)...)
 		violations := e.detectViolations(scoped, dp)
 		for i := range violations {
 			violations[i].Confidence = 1.0

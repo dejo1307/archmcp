@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"gopkg.in/yaml.v3"
 )
@@ -125,7 +126,7 @@ func parsePackwerk(repoPath string) *packwerkInfo {
 				if err != nil {
 					continue
 				}
-				packageDirs = append(packageDirs, rel)
+				packageDirs = append(packageDirs, factpath.Slash(rel))
 			}
 		}
 	}

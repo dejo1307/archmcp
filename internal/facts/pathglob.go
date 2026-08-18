@@ -1,6 +1,7 @@
 package facts
 
 import (
+	"github.com/enola-labs/enola/internal/factpath"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -67,15 +68,15 @@ func MatchGlob(relPath string, patterns []string) (string, bool) {
 				return pattern, true
 			}
 		}
-		if m, err := filepath.Match(pattern, relPath); err == nil && m {
+		if m, err := factpath.Match(pattern, relPath); err == nil && m {
 			return pattern, true
 		}
 		if strings.HasPrefix(pattern, "**/") {
 			sub := strings.TrimPrefix(pattern, "**/")
-			if m, err := filepath.Match(sub, filepath.Base(relPath)); err == nil && m {
+			if m, err := factpath.Match(sub, filepath.Base(relPath)); err == nil && m {
 				return pattern, true
 			}
-			if m, err := filepath.Match(sub, relPath); err == nil && m {
+			if m, err := factpath.Match(sub, relPath); err == nil && m {
 				return pattern, true
 			}
 		}
@@ -92,7 +93,7 @@ func matchSegment(pattern, part string) bool {
 	if !strings.ContainsAny(pattern, "*?[") {
 		return pattern == part
 	}
-	m, err := filepath.Match(pattern, part)
+	m, err := factpath.Match(pattern, part)
 	return err == nil && m
 }
 
@@ -127,7 +128,7 @@ func matchDirScopedGlob(relPath, prefix, fileGlob string) bool {
 	}
 	dirSegs, base := segs[:len(segs)-1], segs[len(segs)-1]
 
-	if m, err := filepath.Match(fileGlob, base); err != nil || !m {
+	if m, err := factpath.Match(fileGlob, base); err != nil || !m {
 		return false
 	}
 	if seg, ok := strings.CutPrefix(prefix, "**/"); ok {

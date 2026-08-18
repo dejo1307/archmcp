@@ -1,10 +1,10 @@
 package phpextractor
 
 import (
-	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	php "github.com/tree-sitter/tree-sitter-php/bindings/go"
@@ -22,7 +22,7 @@ func extractSymfonyRoutes(src []byte, relFile string) []facts.Fact {
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
 
-	w := &symfonyRouteWalker{src: src, relFile: relFile, dir: filepath.Dir(relFile)}
+	w := &symfonyRouteWalker{src: src, relFile: relFile, dir: factpath.Dir(relFile)}
 	w.walk(tree.RootNode())
 	return w.out
 }

@@ -1,0 +1,64 @@
+[
+  {
+    "source": "layers",
+    "title": "Architecture pattern: declared (ts_layers_sample)",
+    "confidence": 1,
+    "informational": true,
+    "evidence": [
+      {
+        "fact": "src/app",
+        "detail": "module \"src/app\" maps to declared layer \"web-routes\""
+      },
+      {
+        "fact": "src/components/sites",
+        "detail": "module \"src/components/sites\" maps to declared layer \"web-components\""
+      },
+      {
+        "fact": "src/hooks",
+        "detail": "module \"src/hooks\" maps to declared layer \"web-hooks\""
+      },
+      {
+        "fact": "src/lib",
+        "detail": "module \"src/lib\" maps to declared layer \"web-lib\""
+      }
+    ]
+  },
+  {
+    "source": "layers",
+    "title": "Declared layer \"web-legacy\" classifies no modules",
+    "confidence": 0.4,
+    "evidence": [
+      {
+        "fact": "layer web-legacy",
+        "detail": "declared paths: src/legacy/**"
+      }
+    ]
+  },
+  {
+    "source": "layers",
+    "title": "Layer violation: web-lib -\u003e web-components",
+    "confidence": 1,
+    "evidence": [
+      {
+        "file": "src/lib/site-blocks.ts",
+        "detail": "import of src/components/sites"
+      },
+      {
+        "fact": "src/lib -\u003e src/components/sites/chabad-website",
+        "detail": "import edge"
+      },
+      {
+        "fact": "src/components/sites/chabad-website",
+        "detail": "import edge target"
+      },
+      {
+        "fact": "src/lib",
+        "detail": "importing module"
+      },
+      {
+        "fact": "src/components/sites",
+        "detail": "imported module"
+      }
+    ]
+  }
+]

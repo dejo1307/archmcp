@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"gopkg.in/yaml.v3"
 )
@@ -63,11 +64,12 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, _ []string) ([
 		if !isCandidate(path) || !hasAsyncAPIContent(path) {
 			return nil
 		}
-		rel, relErr := filepath.Rel(repoPath, path)
+		rawRel, relErr := filepath.Rel(repoPath, path)
 		if relErr != nil {
 			return nil
 		}
-		ff, parseErr := parseFile(path, filepath.ToSlash(rel), repoPath)
+		rel := factpath.Slash(rawRel)
+		ff, parseErr := parseFile(path, rel, repoPath)
 		if parseErr != nil {
 			log.Printf("[asyncapi-extractor] skipping %s: %v", rel, parseErr)
 			return nil
@@ -103,7 +105,7 @@ func parseFile(absPath, relFile, repoPath string) ([]facts.Fact, error) {
 		operations = operationsV2(channels, absPath, resolver)
 	}
 
-	specDir := filepath.ToSlash(filepath.Dir(relFile))
+	specDir := factpath.Dir(relFile)
 	seen := map[string]bool{}
 	result := make([]facts.Fact, 0, len(operations))
 	for _, op := range operations {

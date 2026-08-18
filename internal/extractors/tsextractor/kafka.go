@@ -1,11 +1,11 @@
 package tsextractor
 
 import (
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/extractors/tsutil"
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 )
@@ -17,7 +17,7 @@ func extractTSKafkaFacts(kinds *tsutil.KindTable, root *sitter.Node, src []byte,
 	if !importsTSKafka(kinds, root, src) {
 		return nil
 	}
-	dir := filepath.ToSlash(filepath.Dir(relFile))
+	dir := factpath.Dir(relFile)
 	seen := map[string]bool{}
 	var out []facts.Fact
 

@@ -1,10 +1,10 @@
 package kotlinextractor
 
 import (
-	"path/filepath"
 	"strings"
 	"unicode"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	kotlin "github.com/tree-sitter-grammars/tree-sitter-kotlin/bindings/go"
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -26,7 +26,7 @@ func extractFileAST(src []byte, relFile string, isAndroid bool, sourceRoot, base
 	defer tree.Close()
 
 	root := tree.RootNode()
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 
 	w := &astWalker{
 		src:          src,

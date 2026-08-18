@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	python "github.com/tree-sitter/tree-sitter-python/bindings/go"
@@ -29,7 +30,7 @@ func extractFileAST(src []byte, relFile string, isDjango, isFlask, isFastAPI boo
 	defer tree.Close()
 
 	module := strings.TrimSuffix(relFile, ".py")
-	dir := filepath.Dir(relFile)
+	dir := factpath.Dir(relFile)
 
 	w := &pyWalker{
 		src:       src,

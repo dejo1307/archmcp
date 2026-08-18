@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -89,7 +90,7 @@ func (e *GoExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		if !strings.HasSuffix(f, ".go") {
 			continue
 		}
-		pkgDir := filepath.Dir(f)
+		pkgDir := factpath.Dir(f)
 		pp := parsedPkgs[pkgDir]
 		if pp == nil {
 			pp = &parsedPkg{fileMap: make(map[string]*ast.File)}

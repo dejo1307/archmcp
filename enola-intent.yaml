@@ -72,6 +72,10 @@ layers:
   - name: core
     paths:
       - "internal/facts/**"
+      # internal/factpath is core, and depends on nothing: it is the fact-path
+      # dialect (forward slashes on every host) that internal/facts, every
+      # extractor and every explainer build their paths with.
+      - "internal/factpath/**"
       - "internal/version/**"
       - "internal/filelock/**"
       - "internal/parallel/**"

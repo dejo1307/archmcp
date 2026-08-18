@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -36,7 +37,7 @@ func buildCrateIndex(repoPath string, cargoFiles []string) []crateInfo {
 		if name == "" {
 			continue
 		}
-		dir := filepath.ToSlash(filepath.Dir(rel))
+		dir := factpath.Dir(rel)
 		crates = append(crates, crateInfo{name: strings.ReplaceAll(name, "-", "_"), dir: dir})
 	}
 	return crates
