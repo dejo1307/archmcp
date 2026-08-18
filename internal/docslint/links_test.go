@@ -44,6 +44,20 @@ func TestLinksResolve(t *testing.T) {
 			resolved := d.Path
 			if target != "" {
 				resolved = path.Clean(path.Join(dir, target))
+				// A link that climbs out of the repository is checked BEFORE it is
+				// resolved on disk, because on disk is exactly where it lies. A
+				// `../../../enola-enterprise/...` link resolved on the author's
+				// machine, where that repository is a sibling checkout, and failed in
+				// CI where only this one exists — which is the same thing every reader
+				// of a public repository experiences. Escaping the root is the defect;
+				// whether the target happens to be present locally is not evidence.
+				if resolved == ".." || strings.HasPrefix(resolved, "../") {
+					t.Errorf("%s:%d: links to %q, which climbs out of the repository. "+
+						"It can only resolve for someone who has the neighbouring checkout, "+
+						"so it is broken for every other reader — link to a public URL, or "+
+						"describe the thing instead of linking to it.", d.Path, l.Line, l.Target)
+					continue
+				}
 				if _, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(resolved))); err != nil {
 					t.Errorf("%s:%d: links to %q, which does not exist", d.Path, l.Line, l.Target)
 					continue
