@@ -4,11 +4,21 @@ AsyncAPI 2.x and 3.x YAML/JSON documents are detected by their top-level
 `asyncapi` key. The extractor walks these formats directly because repository
 configuration normally excludes YAML and JSON from the source walker.
 
-| Contract construct | Enola fact |
-|---|---|
-| AsyncAPI 2.x `publish` / 3.x `send` | `storage` topic with `messaging_role: producer` |
-| AsyncAPI 2.x `subscribe` / 3.x `receive` | `storage` topic with `messaging_role: consumer` |
-| Kafka server protocol | `messaging: kafka` or `kafka-secure`, eligible for Kafka cross-repo linking |
+Fixture: [`asyncapi_multirepo`](../../internal/engine/testdata/repos/asyncapi_multirepo/)
+
+## At a glance
+
+| You write | enola stores | Kind |
+|---|---|---|
+| a document with a top-level `asyncapi` key | walked directly, past the YAML/JSON ignore globs | — |
+| 2.x `publish` / 3.x `send` | a topic with `messaging_role: producer` | `storage` |
+| 2.x `subscribe` / 3.x `receive` | a topic with `messaging_role: consumer` | `storage` |
+| a Kafka server protocol | `messaging: kafka` or `kafka-secure`, eligible for cross-repo Kafka linking | props |
+| `operationId`, message name, content type, tags | carried on the topic, with `spec_file` and `asyncapi_version` | props |
+| `orders/{orderId}` | the parameterized address, intact | `storage` |
+| a local `$ref` to a channel, server, message or payload | resolved across YAML and JSON files, confined to the repository root | — |
+| a Go or TypeScript Kafka call site on the same topic | an `implemented_by` edge and `messaging_implementation_status` | relation |
+| a remote URL `$ref` | nothing — no document is ever fetched | — |
 
 Each operation carries its operation ID, action, message name, content type,
 summary, description, tags, specification path, and AsyncAPI version when those
@@ -84,6 +94,8 @@ implementation may use a wrapper, dynamic topic, unsupported client library, or
 live outside the loaded snapshot. Code facts also record a stable binding status
 (`bound`, `undeclared`, `ambiguous`, or `protocol_mismatch`) and compatible
 candidate count, so an absent binding remains explainable through `query_facts`.
+
+## What is deliberately not extracted
 
 Remote URL `$ref` documents and broker-specific binding interpretation are not
 expanded. Local references are confined to the repository root, and cycles or

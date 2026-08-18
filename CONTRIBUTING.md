@@ -104,7 +104,7 @@ If you're considering a larger change, please open an issue first so we can disc
 
 ### If you touch the agent hooks
 
-`pkg/install/`, `cmd/enola/hook.go`, `cmd/enola/doctor.go` and `internal/hookstate/`
+`pkg/install/`, `pkg/command/hook.go`, `pkg/command/doctor.go` and `internal/hookstate/`
 are covered by one test CI will never run for you:
 
 ```bash

@@ -114,7 +114,7 @@ Everything below is a prompt you type at your agent in plain English. enola pick
 
 > "Generate an architectural snapshot of /path/to/my/project"
 
-That's the whole setup. Snapshots are fast - seconds even on very large polyglot repos - and your agent now has all 16 tools (`enola --list`) plus a ready-to-read summary at `.enola/llm_context.md`.
+That's the whole setup. Snapshots are fast - seconds even on very large polyglot repos - and your agent now has all 19 tools (`enola --list`) plus a ready-to-read summary at `.enola/llm_context.md`.
 
 #### 2. Understand it
 
@@ -208,6 +208,40 @@ If you run a local LLM - Ollama, LM Studio, an on-prem endpoint, or a smaller ho
 ---
 
 ---
+
+## The nineteen tools
+
+`enola --list` prints this catalogue from the running binary; it is reproduced here so
+you can read it without one installed. You never call these by name — you ask in plain
+English and the agent picks — but knowing what exists is what lets you ask for the right
+thing.
+
+| Tool | The question it answers |
+|---|---|
+| `generate_snapshot` | Index a repository and extract its architecture as queryable facts. |
+| `explore` | What is in here, and what touches it? The one to reach for first. |
+| `query_facts` | Precision filter over the extracted facts. |
+| `show_symbol` | Show me the actual source of this named symbol. |
+| `traverse` | Walk the dependency or call graph outward from here. |
+| `find_path` | How does A reach B? |
+| `impact_analysis` | If I change this, what breaks? |
+| `endpoint_impact` | Who calls this HTTP endpoint, and which screens sit behind them? |
+| `governing_intent` | Which knowledge pages govern this code — and which code does a page govern? |
+| `constraints_for` | What am I about to break by editing this file? |
+| `plan_check` | What would this change do, before it exists? |
+| `coverage_report` | Which cross-repo edges were resolved, and which were missed? |
+| `query_insights` | What did the explainers find? |
+| `set_baseline` | Remember the architecture as it is now. |
+| `diff_snapshot` | What did my change actually do? |
+| `snapshot_receipt` | What was this graph generated over, and how complete was extraction? |
+| `compare_receipts` | Are these two snapshots comparable enough to trust a diff between them? |
+| `architecture_history` | How has the architecture changed over time? |
+| `architecture_blame` | When did this enter the architecture, and when did it leave? |
+
+The last two are the only ones that answer about the **past**. Everything above them
+describes the tree as it is now — `diff_snapshot` included, which compares two nows.
+
+Full parameter reference for each: **[ARCHITECTURE.md → The tools](../ARCHITECTURE.md#the-tools)**.
 
 ## Explain a repository at a glance
 

@@ -59,8 +59,8 @@ the entities the claim is about. There are sixteen, and they fall into six kinds
   are capped below 1.0, because each absence can be drift or an extraction miss.
   `constraints` is the third: it verdicts the declared components-and-rules vocabulary
   against the measured graph — a component resolves to the facts its match patterns
-  select, and a rule states one of twelve enforceable forms over components (`forbid`,
-  `forbid_reach`, `allow-only`, `protect`, `private`, and the rest). A breach is set
+  select, and a rule states one of thirteen enforceable forms over components (`forbid`,
+  `forbid_reach`, `allow`, `protect`, `private`, and the rest). A breach is set
   membership over measured edges, so it is proof-class; the one place it estimates is
   a `forbid_reach` membership too large to walk, which degrades to a single `0.4`
   advisory rather than guessing.
@@ -69,7 +69,7 @@ the entities the claim is about. There are sixteen, and they fall into six kinds
 - **Graph shape.** `dependency-depth` measures the longest transitive import chain;
   `exported-surface` flags large modules that export nearly everything.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
-  against eight known taxonomies, then flags imports that run the wrong way through it.
+  against ten known taxonomies, then flags imports that run the wrong way through it.
   A repo that DECLARES its layer order is verdicted against the declaration as well:
   that pattern is stated rather than guessed, so it and its violations are proof-class.
   It sits beside the recognised pattern, not in place of it — recognition scores itself
@@ -153,7 +153,7 @@ as **exactly one regression, and not one of the 1,395 pre-existing findings was 
 ([BENCHMARKS.md § 2](BENCHMARKS.md#2-delta-precision--the-ratchet)). Revert the change
 and it goes quiet again. The verdict is a function of the tree, not of history.
 
-That is the whole trick, and it is not a smarter explainer. It is the same fifteen
+That is the whole trick, and it is not a smarter explainer. It is the same sixteen
 explainers run twice, over two values that both still exist.
 
 ## Three answers, and the third is the interesting one

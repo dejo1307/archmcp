@@ -104,6 +104,29 @@ jobs:
           # a core package importing the CLI surface today except this file.
           fail-on: layers
 
+  # The prose gate. Documentation is the one artifact in this repository with no
+  # compiler, and it had drifted accordingly: four dead references, and five counts
+  # that disagreed with the code they described. internal/docslint resolves every
+  # counted claim against the value the binary uses, so a new explainer, tool or rule
+  # form fails here until the pages that enumerate them say so.
+  #
+  # Its own job rather than a line in `test`: it needs no CGO and finishes in under a
+  # second, so a docs-only PR gets its answer without waiting for the tree-sitter
+  # matrix — and a red build here names the sentence rather than a package.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Documentation conformance
+        run: go test -count=1 ./internal/docslint/
+
   # golangci-lint v2 (action @v9). The repo baseline is clean, so this gates the
   # whole tree — any new finding fails the build. Linter set in .golangci.yml.
   lint:
