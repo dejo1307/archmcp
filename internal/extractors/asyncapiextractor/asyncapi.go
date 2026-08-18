@@ -248,7 +248,7 @@ func makeOperation(channel, role, action string, raw map[string]any, servers []s
 	op := operation{channel: channel, role: role, action: action, id: stringValue(raw["operationId"]),
 		summary: stringValue(raw["summary"]), description: stringValue(raw["description"]),
 		tags: tagNames(raw["tags"]), serverNames: servers}
-	var messageRaw any = raw["message"]
+	var messageRaw = raw["message"]
 	if messageRaw == nil {
 		if messages := sliceValue(raw["messages"]); len(messages) > 0 {
 			messageRaw = messages[0]
@@ -314,13 +314,6 @@ func localRefName(ref, section string) string {
 		return ""
 	}
 	return strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(ref, prefix), "~1", "/"), "~0", "~")
-}
-
-func localRefTail(ref string) string {
-	if i := strings.LastIndex(ref, "/"); i >= 0 {
-		return ref[i+1:]
-	}
-	return ""
 }
 func mapValue(v any) map[string]any { m, _ := v.(map[string]any); return m }
 func sliceValue(v any) []any        { s, _ := v.([]any); return s }
