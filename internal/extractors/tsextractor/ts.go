@@ -398,6 +398,9 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	defer tree.Close()
 
 	root := tree.RootNode()
+	if !facts.IsTestPath(relFile) {
+		result = append(result, extractTSKafkaFacts(kinds, root, src, relFile)...)
+	}
 
 	// Extract from the tree
 	result = append(result, e.extractImports(kinds, root, src, relFile, aliases)...)

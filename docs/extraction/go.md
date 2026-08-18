@@ -235,6 +235,9 @@ storage  svc-orders.order_placed        svc-billing/consumer.go:10
          props: storage_kind=topic, messaging=kafka, source=config_default
 storage  analytics-sink.rows_exported   svc-billing/consumer.go:22
          props: storage_kind=topic, messaging=kafka, source=env_default
+storage  svc-orders.order_placed        svc-billing/consumer.go:30
+         props: messaging_operation=subscribe, messaging_role=consumer,
+                source=go-kafka-call, code_symbol=consumer.subscribe
 ```
 
 Topics are namespaced by the service that **owns** them, not the one that mentions
@@ -242,6 +245,13 @@ them, so a consumer reading `svc-orders.order_placed` produces a `depends_on` ed
 `svc-orders` even though the two share no import. `source` records where the topic name
 came from (a config default, an env default), because a topic assembled at runtime is a
 weaker claim than a constant.
+
+In files that import a Kafka client, literal or locally resolved publish/subscribe
+calls become directional topic-operation facts. The shared messaging contract lets
+an exact topic+operation pair bind to a unique AsyncAPI operation in the same repo;
+the AsyncAPI fact then carries an `implemented_by` relation to the enclosing Go
+symbol. Ambiguous contracts are left unbound. The import gate prevents an in-process
+event bus with methods named `Publish` or `Subscribe` from being mistaken for Kafka.
 
 ## What is deliberately not extracted
 

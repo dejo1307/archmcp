@@ -28,10 +28,12 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/hotspots"
 	"github.com/enola-labs/enola/internal/explainers/intentcheck"
 	"github.com/enola-labs/enola/internal/explainers/layers"
+	"github.com/enola-labs/enola/internal/explainers/messagingcoverage"
 	"github.com/enola-labs/enola/internal/explainers/queryloops"
 	"github.com/enola-labs/enola/internal/explainers/surface"
 	"github.com/enola-labs/enola/internal/explainers/unusedroutes"
 	"github.com/enola-labs/enola/internal/extractors/ansibleextractor"
+	"github.com/enola-labs/enola/internal/extractors/asyncapiextractor"
 	"github.com/enola-labs/enola/internal/extractors/cppextractor"
 	"github.com/enola-labs/enola/internal/extractors/dartextractor"
 	"github.com/enola-labs/enola/internal/extractors/dotnetextractor"
@@ -55,6 +57,7 @@ import (
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcclientfqn"
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcimpl"
 	"github.com/enola-labs/enola/internal/linkers/binders/httphandler"
+	"github.com/enola-labs/enola/internal/linkers/binders/messagingcontract"
 	"github.com/enola-labs/enola/internal/linkers/binders/stimulusresolver"
 	"github.com/enola-labs/enola/internal/linkers/binders/unmatchedroutes"
 	"github.com/enola-labs/enola/internal/linkers/binders/vendoredspecs"
@@ -410,6 +413,7 @@ func NewEngine(opts Options) (*Engine, *config.Config, error) {
 func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	// Register all OSS extractors
 	eng.RegisterExtractor(cppextractor.New())
+	eng.RegisterExtractor(asyncapiextractor.New())
 	eng.RegisterExtractor(dotnetextractor.New())
 	eng.RegisterExtractor(goextractor.New())
 	eng.RegisterExtractor(mdintent.New())
@@ -447,6 +451,7 @@ func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	eng.RegisterBinder(httphandler.New())
 	eng.RegisterBinder(stimulusresolver.New())
 	eng.RegisterBinder(vendoredspecs.New())
+	eng.RegisterBinder(messagingcontract.New())
 	eng.RegisterBinder(unmatchedroutes.New(linkVocab))
 
 	// Register all OSS cross-repo signals. Phase() decides when each runs, so the
@@ -466,6 +471,7 @@ func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	eng.RegisterExplainer(domain.New())
 	eng.RegisterExplainer(queryloops.New())
 	eng.RegisterExplainer(entrypoints.New())
+	eng.RegisterExplainer(messagingcoverage.New())
 	eng.RegisterExplainer(godclass.New())
 	eng.RegisterExplainer(hotspots.New())
 	eng.RegisterExplainer(depth.New())

@@ -94,15 +94,16 @@ const (
 
 // Relation kind constants.
 const (
-	RelDeclares     = "declares"
-	RelImports      = "imports"
-	RelCalls        = "calls"
-	RelImplements   = "implements"
-	RelDependsOn    = "depends_on"
-	RelInstantiates = "instantiates" // Source constructs an instance of target via a constructor call.
-	RelInjects      = "injects"      // Source declares target as a DI-injected constructor parameter.
-	RelHasMethod    = "has_method"   // Owner type (struct/interface/class) declares target as a method. Synthesized in NewGraph.
-	RelHandledBy    = "handled_by"   // A route/endpoint is served by target (e.g. a gRPC RPC route → its Go handler method). Added post-extraction.
+	RelDeclares      = "declares"
+	RelImports       = "imports"
+	RelCalls         = "calls"
+	RelImplements    = "implements"
+	RelDependsOn     = "depends_on"
+	RelInstantiates  = "instantiates"   // Source constructs an instance of target via a constructor call.
+	RelInjects       = "injects"        // Source declares target as a DI-injected constructor parameter.
+	RelHasMethod     = "has_method"     // Owner type (struct/interface/class) declares target as a method. Synthesized in NewGraph.
+	RelHandledBy     = "handled_by"     // A route/endpoint is served by target (e.g. a gRPC RPC route → its Go handler method). Added post-extraction.
+	RelImplementedBy = "implemented_by" // A declared contract operation is implemented by a code symbol. Added post-extraction.
 )
 
 // StorageKindTopic is the storage_kind prop value for a KindStorage fact that

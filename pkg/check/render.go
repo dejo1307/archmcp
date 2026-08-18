@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -239,14 +240,17 @@ func advisoryNote(ins []facts.Insight, p Policy) string {
 	// this run could fail the build" under a FAIL headline is the flattest contradiction
 	// the report is capable of.
 	if len(p.failExplainers()) == 0 {
+		// Counted from the same registry --fail-on validates against, so this can never
+		// name a stale total — see pkg/command/check.go's usage text for the sibling fix.
+		n := len(config.KnownExplainers)
 		if len(p.Thresholds) > 0 {
 			return "\nNo --fail-on policy is set, so no FINDING could fail this run — only the threshold\n" +
 				"above grades it. These are reported for you to judge; enforce the ones you want\n" +
-				"enforced: --fail-on=layers (`enola check --help` lists all eleven).\n"
+				fmt.Sprintf("enforced: --fail-on=layers (`enola check --help` lists all %d).\n", n)
 		}
 		return "\nNo --fail-on policy is set, so nothing in this run could fail the build. These are\n" +
 			"reported for you to judge. Enforce the ones you want enforced: --fail-on=layers\n" +
-			"(`enola check --help` lists all eleven).\n"
+			fmt.Sprintf("(`enola check --help` lists all %d).\n", n)
 	}
 	var belowFloor, metFloor bool
 	for _, in := range ins {

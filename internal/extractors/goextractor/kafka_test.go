@@ -91,10 +91,114 @@ func wire(bus EventBus) {
 	}
 }
 
+func TestExtractKafkaFacts_PublishSubscribeOperations(t *testing.T) {
+	src := `package app
+
+import "github.com/segmentio/kafka-go"
+
+const ordersTopic = "svc-orders.order_created"
+
+type Handler struct{}
+
+func (h *Handler) wire(bus *Client) {
+	bus.Publish(ordersTopic, payload)
+	bus.Subscribe("svc-orders.order_created", handle)
+	bus.WriteMessages(ctx, kafka.Message{Topic: "svc-orders.order_audited", Value: payload})
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "x.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var operations []facts.Fact
+	for _, fact := range extractKafkaFacts(fset, f, "app/events.go", "app") {
+		if fact.PropString(facts.PropSource) == facts.MessagingSourceGoKafkaCall {
+			operations = append(operations, fact)
+		}
+	}
+	if len(operations) != 3 {
+		t.Fatalf("expected 3 Kafka operations, got %d: %+v", len(operations), operations)
+	}
+	want := map[string]string{
+		"svc-orders.order_created\x00publish":   facts.MessagingRoleProducer,
+		"svc-orders.order_created\x00subscribe": facts.MessagingRoleConsumer,
+		"svc-orders.order_audited\x00publish":   facts.MessagingRoleProducer,
+	}
+	for _, fact := range operations {
+		key := fact.Name + "\x00" + fact.PropString(facts.PropMessagingOperation)
+		if fact.PropString(facts.PropMessagingRole) != want[key] {
+			t.Errorf("operation %+v does not match expected role %q", fact, want[key])
+		}
+		if fact.PropString("code_symbol") != "app.Handler.wire" {
+			t.Errorf("code_symbol = %q", fact.PropString("code_symbol"))
+		}
+		delete(want, key)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing operations: %v", want)
+	}
+}
+
+func TestExtractKafkaFacts_OperationRequiresKafkaImport(t *testing.T) {
+	src := `package app
+func wire(bus *EventBus) { bus.Publish("svc-orders.order_created", payload) }
+`
+	got := kafkaTopics(t, src)
+	if len(got) != 0 {
+		t.Fatalf("in-process publish without Kafka import emitted facts: %+v", got)
+	}
+}
+
+func TestExtractKafkaFacts_LocalTopicBindingsStayFunctionScoped(t *testing.T) {
+	src := `package app
+import "github.com/segmentio/kafka-go"
+func publishA(bus *Client) {
+	topic := "svc-orders.a"
+	bus.Publish(topic, payload)
+}
+func publishB(bus *Client) {
+	topic := "svc-orders.b"
+	bus.Publish(topic, payload)
+}
+var _ kafka.Message
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "x.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, fact := range extractKafkaFacts(fset, f, "events.go", ".") {
+		if fact.PropString(facts.PropSource) == facts.MessagingSourceGoKafkaCall {
+			got[fact.Name] = fact.PropString("code_symbol")
+		}
+	}
+	if got["svc-orders.a"] != "..publishA" || got["svc-orders.b"] != "..publishB" {
+		t.Fatalf("function-scoped bindings resolved incorrectly: %v", got)
+	}
+}
+
 func keys(m map[string]facts.Fact) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestKafkaReassignedTopicIsNotFolded(t *testing.T) {
+	src := `package events
+import "github.com/segmentio/kafka-go"
+func publish(w *kafka.Writer, x bool) {
+	topic := "orders.a"
+	if x { topic = "orders.b" }
+	w.WriteMessages(nil, kafka.Message{Topic: topic})
+}`
+	got := kafkaTopics(t, src)
+	for _, f := range got {
+		if f.PropString(facts.PropSource) == facts.MessagingSourceGoKafkaCall {
+			t.Fatalf("mutable topic produced fabricated call-site fact: %+v", f)
+		}
+	}
 }

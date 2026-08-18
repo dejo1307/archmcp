@@ -70,5 +70,5 @@ change is about storage*, and the edit in `telemetry/` is a package the descript
 not cover.
 
 Note what is **not** in any of these runs: a dependency cycle. There is no cycle in this
-module, and the gate never mentions one. Cycles are one of the eleven things enola
+module, and the gate never mentions one. Cycles are one of the twelve things enola
 measures, available to `--fail-on` like the rest — not a rule it arrives holding.

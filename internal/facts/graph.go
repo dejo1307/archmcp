@@ -1480,7 +1480,7 @@ func (g *Graph) isArchitecturalEdge(srcID uint32, relID uint16) bool {
 	// class or a call-graph hotspot. Exclude it from fan-in / centrality (and the
 	// outlier distribution). Traversal, impact_analysis, find_path and orphans read
 	// the unfiltered index and still see it.
-	if rk == RelInstantiates {
+	if rk == RelInstantiates || rk == RelImplementedBy {
 		return false
 	}
 	if idx, ok := g.factIndexForID(srcID, rk); ok && isReferenceOnlyKind(g.facts[idx].Kind) {
@@ -1514,15 +1514,16 @@ func (g *Graph) EdgeCount() int {
 // to arrive says which one was meant: only a service is the target of depends_on, only
 // a module of imports.
 var kindForRel = map[string]string{
-	RelDependsOn:    KindService,
-	RelImports:      KindModule,
-	RelCalls:        KindSymbol,
-	RelImplements:   KindSymbol,
-	RelHasMethod:    KindSymbol,
-	RelInstantiates: KindSymbol,
-	RelInjects:      KindSymbol,
-	RelDeclares:     KindSymbol,
-	RelHandledBy:    KindRoute,
+	RelDependsOn:     KindService,
+	RelImports:       KindModule,
+	RelCalls:         KindSymbol,
+	RelImplements:    KindSymbol,
+	RelHasMethod:     KindSymbol,
+	RelInstantiates:  KindSymbol,
+	RelInjects:       KindSymbol,
+	RelDeclares:      KindSymbol,
+	RelHandledBy:     KindRoute,
+	RelImplementedBy: KindSymbol,
 }
 
 // kindRank orders fact kinds for picking among same-named facts when there is no edge

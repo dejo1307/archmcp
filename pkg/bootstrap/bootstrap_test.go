@@ -91,7 +91,7 @@ func TestNewEngine_WiresPlugins(t *testing.T) {
 
 	wantExplainers := []string{
 		"cycles", "layers", "crossrepo", "coverage", "god-class",
-		"hotspots", "dependency-depth", "exported-surface", "complexity-outliers",
+		"hotspots", "messaging-coverage", "dependency-depth", "exported-surface", "complexity-outliers",
 	}
 	for _, name := range wantExplainers {
 		if !contains(snap.Meta.Explainers, name) {

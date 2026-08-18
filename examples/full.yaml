@@ -20,6 +20,7 @@
 #                 or a tool config — pytest.ini/mypy.ini/tox.ini/setup.cfg)
 #   - grpc       (detection: first-party .proto sources)
 #   - openapi    (detection: a YAML/JSON file whose content is an OpenAPI spec)
+#   - asyncapi   (detection: an AsyncAPI 2.x/3.x YAML or JSON spec)
 
 repo: "."
 ignore:

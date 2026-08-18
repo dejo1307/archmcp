@@ -1,0 +1,20 @@
+asyncapi: 3.0.0
+info:
+  title: Orders events
+  version: 1.0.0
+servers:
+  broker:
+    host: kafka:9092
+    protocol: kafka
+channels:
+  orderCreated:
+    address: svc-orders.order_created
+    servers:
+      - $ref: '#/servers/broker'
+operations:
+  publishOrderCreated:
+    action: send
+    channel:
+      $ref: '#/channels/orderCreated'
+    messages:
+      - $ref: '#/components/messages/OrderCreated'

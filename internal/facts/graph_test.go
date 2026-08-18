@@ -1342,6 +1342,17 @@ func TestArchitecturalForwardEdges_ExcludeOwnedMethods(t *testing.T) {
 	}
 }
 
+func TestArchitecturalReverse_ExcludesImplementedBy(t *testing.T) {
+	s := NewStore()
+	s.Add(Fact{Kind: KindSymbol, Name: "pkg.Publish"})
+	s.Add(Fact{Kind: KindStorage, Name: "orders.a", Relations: []Relation{{Kind: RelImplementedBy, Target: "pkg.Publish"}}})
+	s.Add(Fact{Kind: KindStorage, Name: "orders.b", Relations: []Relation{{Kind: RelImplementedBy, Target: "pkg.Publish"}}})
+	s.BuildGraph()
+	if got := s.Graph().ArchitecturalFanIn("pkg.Publish"); got != 0 {
+		t.Fatalf("implemented_by edges fabricated fan-in: got %d, want 0", got)
+	}
+}
+
 // --- name-collision disambiguation ---
 
 // buildCollisionGraph mirrors the real multi-repo shape that exposed the bug: a repo

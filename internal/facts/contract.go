@@ -1,5 +1,7 @@
 package facts
 
+import "strings"
+
 // This file is the SHARED VOCABULARY that crosses the extractor -> linker boundary.
 //
 // An extractor writes a prop value; a linker, binder or explainer in a different
@@ -36,6 +38,82 @@ const (
 	// PropRouteType sub-classifies a route beyond HTTP (RouteTypeGRPC,
 	// RouteTypeMiddleware). Absent means a plain HTTP route.
 	PropRouteType = "type"
+	// PropMessaging names the messaging protocol carried by a topic operation.
+	PropMessaging = "messaging"
+	// PropMessagingRole identifies which side of a topic operation this fact models.
+	PropMessagingRole = "messaging_role"
+	// PropMessagingOperation normalizes protocol/spec vocabulary to publish/subscribe.
+	PropMessagingOperation = "messaging_operation"
+)
+
+// Messaging operation values shared by contract and code extractors. AsyncAPI
+// v3 send/receive normalize to these values, as do language call sites.
+const (
+	MessagingOperationPublish   = "publish"
+	MessagingOperationSubscribe = "subscribe"
+)
+
+// Messaging fact sources that cross extractor/binder boundaries.
+const (
+	MessagingSourceAsyncAPI    = "asyncapi"
+	MessagingSourceGoKafkaCall = "go-kafka-call"
+	MessagingSourceTSKafkaCall = "typescript-kafka-call"
+)
+
+// IsMessagingCodeSource is the central registry of extractor sources that may
+// implement a messaging contract. New language integrations extend this one
+// boundary instead of teaching every binder and explainer their source names.
+func IsMessagingCodeSource(source string) bool {
+	switch source {
+	case MessagingSourceGoKafkaCall, MessagingSourceTSKafkaCall:
+		return true
+	default:
+		return false
+	}
+}
+
+// MessagingProtocolFamily normalizes protocol aliases shared by contract binding
+// and cross-repository signals. Security suffixes describe transport/authentication,
+// not a distinct broker technology.
+func MessagingProtocolFamily(protocol string) string {
+	switch normalized := strings.ToLower(strings.TrimSpace(protocol)); normalized {
+	case "kafka", "kafka-secure":
+		return "kafka"
+	default:
+		return normalized
+	}
+}
+
+func IsKafkaProtocol(protocol string) bool {
+	return MessagingProtocolFamily(protocol) == "kafka"
+}
+
+// Props written by the messaging contract binder.
+const (
+	PropMessagingContractBound        = "messaging_contract_bound"
+	PropMessagingContractOperationID  = "messaging_contract_operation_id"
+	PropMessagingContractFile         = "messaging_contract_file"
+	PropMessagingImplementationCount  = "messaging_implementation_count"
+	PropMessagingImplementedBy        = "messaging_implemented_by"
+	PropMessagingContractStatus       = "messaging_contract_status"
+	PropMessagingContractCandidates   = "messaging_contract_candidate_count"
+	PropMessagingImplementationStatus = "messaging_implementation_status"
+	// PropMessagingDuplicateOf lists files declaring a semantically conflicting
+	// version of this operation. Equivalent bundled copies are canonicalized.
+	PropMessagingDuplicateOf   = "messaging_duplicate_of"
+	PropMessagingCanonicalFile = "messaging_canonical_file"
+)
+
+// Messaging contract binding verdicts. These make a missing binding
+// explainable: absence, ambiguity and protocol incompatibility are different
+// architectural conditions and must not collapse into an absent boolean.
+const (
+	MessagingContractStatusBound            = "bound"
+	MessagingContractStatusUndeclared       = "undeclared"
+	MessagingContractStatusAmbiguous        = "ambiguous"
+	MessagingContractStatusProtocolMismatch = "protocol_mismatch"
+	MessagingImplementationImplemented      = "implemented"
+	MessagingImplementationUnimplemented    = "unimplemented"
 )
 
 // Via kinds — the `via` labels a cross-repo edge carries, naming HOW the edge

@@ -44,10 +44,10 @@ find*. It is **what happens to a finding after you have found it** — and that 
 entirely on the thing [SNAPSHOTS.md](SNAPSHOTS.md) describes: whether your graph is a
 value you can compare against another one, or a picture of right now.
 
-## Fifteen explainers: three proofs and twelve estimates
+## Sixteen explainers: three proofs and thirteen estimates
 
 An explainer reads the fact graph and emits **findings** — a claim, a confidence, and
-the entities the claim is about. There are fifteen, and they fall into six kinds:
+the entities the claim is about. There are sixteen, and they fall into six kinds:
 
 - **The proofs.** `cycles` runs Tarjan's SCC over the resolved import edges — a cycle
   either exists or it does not. `intent` diffs DECLARED architecture (a repo's
@@ -77,10 +77,10 @@ the entities the claim is about. There are fifteen, and they fall into six kinds
   as findings that merely NAME the architecture, marked informational and never graded:
   they are exact, and gating on them would fail the change that declared an order for
   saying so. Only the violations under them can fail a build.
-- **Reporters.** `crossrepo`, `coverage` and `unused-routes` compute nothing of their
+- **Reporters.** `crossrepo`, `coverage`, `unused-routes` and `messaging-coverage` compute nothing of their
   own; they summarise what the cross-repo linker already resolved — which repositories
   depend on which, where enola failed to follow a call, and which routes no loaded
-  client calls.
+  client calls, and where messaging contracts and detected Kafka call sites do not match.
 - **The declaration-shaped ones.** Every explainer above keys off symbols, modules and
   their dependency edges, which left the route, storage and association facts the
   extractors emit feeding nothing. `domain` asks the questions those facts answer —
@@ -98,8 +98,8 @@ the entities the claim is about. There are fifteen, and they fall into six kinds
 
 What each one computes, every threshold it uses and what it deliberately ignores is in
 [ARCHITECTURE.md → Insights](../ARCHITECTURE.md#insights-explainers). The distinction
-that matters here is smaller and blunter: **three of the fifteen prove something. The
-other twelve estimate.** A cycle is a fact about your import graph. A god class is an opinion
+that matters here is smaller and blunter: **three of the sixteen prove something. The
+other thirteen estimate.** A cycle is a fact about your import graph. A god class is an opinion
 about your repository, expressed as a number, and reasonable people can disagree with
 it.
 
@@ -168,7 +168,7 @@ Comparing findings across two snapshots gives three outcomes, not two:
 
 That third bucket is small, unglamorous, and the reason the gate stays switched on.
 
-Most of the fifteen explainers are relative to your repository. `mean + 2σ` moves when the
+Most of the sixteen explainers are relative to your repository. `mean + 2σ` moves when the
 population moves. A ranked top-N list has fixed membership size, so when a worse
 offender is deleted the next module rises into the window — and a finding "appears" for
 a module nobody edited. Both are real effects of statistics, not of your work.

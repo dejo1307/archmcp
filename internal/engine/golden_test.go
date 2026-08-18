@@ -148,6 +148,9 @@ var fixtures = []fixture{
 	{name: "php_laravel_sample", subRepos: []string{"."}},
 	{name: "php_symfony_sample", subRepos: []string{"."}},
 	{name: "openapi_sample", subRepos: []string{"."}},
+	// AsyncAPI producer and consumer contracts become directional messaging topic
+	// facts; the consumer contract links billing -> orders through Kafka.
+	{name: "asyncapi_multirepo", subRepos: []string{"svc-orders", "svc-billing"}},
 	{name: "multirepo", subRepos: []string{"repoA", "repoB"}},
 	{name: "php_multirepo", subRepos: []string{"provider", "consumer"}},
 	{name: "go_grpc_multirepo", subRepos: []string{"server", "client"}},
