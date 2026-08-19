@@ -6,38 +6,33 @@
   <title>{{.Title}} — dashboard</title>
   <style>
     :root {
-      --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --border: #e2e2e2;
-      --card: #f7f7f8; --accent: #2563eb; --ok: #16a34a; --off: #b91c1c;
-      --warn: #b45309; --th: #efeff1;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #16181d; --fg: #e6e6e6; --muted: #9aa0aa; --border: #2c2f36;
-        --card: #1e2127; --accent: #6ea8fe; --ok: #4ade80; --off: #f87171;
-        --warn: #fbbf24; --th: #242832;
-      }
+      --bg: #041031; --fg: #f5f3fb; --muted: #a9b1ce;
+      --border: rgba(139, 165, 255, .16); --card: #0b1432;
+      --accent: #6f8fff; --violet: #8b4fe0; --lilac: #b87bea;
+      --ok: #68c49a; --off: #e27a63; --warn: #e4b968; --th: #111b3b;
     }
     * { box-sizing: border-box; }
     body {
-      margin: 0; padding: 2rem 1.25rem; background: var(--bg); color: var(--fg);
-      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0; padding: 1.5rem 1.25rem 3rem; background: var(--bg); color: var(--fg);
+      font: 14px/1.55 "Instrument Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    .wrap { max-width: 960px; margin: 0 auto; }
+    .wrap { max-width: 1000px; margin: 0 auto; }
     header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem; margin-bottom: .25rem; }
+    h1, h2, h3 { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     h1 { font-size: 1.4rem; margin: 0; }
-    h2 { font-size: 1.05rem; margin: 2rem 0 .6rem; border-bottom: 1px solid var(--border); padding-bottom: .35rem; }
+    h2 { font-size: 1.05rem; letter-spacing: -.015em; margin: 1.75rem 0 .65rem; }
     .refresh { color: var(--muted); font-size: .85rem; margin-bottom: 1.25rem; }
     .badge { font-size: .8rem; font-weight: 600; padding: .1rem .5rem; border-radius: 999px; }
     .badge.on { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
     .badge.off { background: color-mix(in srgb, var(--off) 18%, transparent); color: var(--off); }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: .75rem .9rem; }
-    .card .k { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; }
-    .card .v { font-size: 1.15rem; font-weight: 600; margin-top: .15rem; word-break: break-word; }
+    .card { background: linear-gradient(180deg, #0b1432, #08112b); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; }
+    .card .k { color: #8fa0c5; font: 500 .64rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .08em; }
+    .card .v { font-size: 1.25rem; font-weight: 650; margin-top: .25rem; word-break: break-word; }
     .table-scroll { overflow-x: auto; }
     table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
     th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
-    th { background: var(--th); font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+    th { background: var(--th); font: 500 .68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .06em; color: #8fa0c5; }
     td.num, th.num { text-align: right; }
     tr.total td { font-weight: 700; border-top: 2px solid var(--border); }
     tr.self-row td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
@@ -45,8 +40,61 @@
     .note { color: var(--muted); font-style: italic; }
     .chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .2rem; }
     .chip { background: var(--th); border: 1px solid var(--border); border-radius: 6px; padding: .05rem .45rem; font-size: .8rem; }
-    footer { margin-top: 2.5rem; color: var(--muted); font-size: .8rem; }
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: #7784a4; font-size: .72rem; }
     code { background: var(--th); padding: .05rem .3rem; border-radius: 4px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
+    .brand { display: flex; align-items: center; font-size: 1.15rem; font-weight: 750; letter-spacing: -.04em; }
+    .brand h1 { font: inherit; margin: 0; }
+    .brand-dot { color: var(--violet); }
+    .nav { display: flex; flex-wrap: wrap; gap: .25rem; }
+    .nav a { color: var(--muted); text-decoration: none; padding: .35rem .6rem; border-radius: 7px; }
+    .nav a:hover { color: var(--fg); background: var(--card); }
+    .hero { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; padding: 1.35rem 1.5rem; background: radial-gradient(circle at 88% 8%, rgba(139,79,224,.13), transparent 32%), linear-gradient(135deg, #0b173b, #08112b); margin-bottom: 1.25rem; }
+    .hero h1 { font-size: clamp(1.55rem, 3vw, 2rem); line-height: 1.1; letter-spacing: -.035em; margin-bottom: .4rem; }
+    .hero p { color: var(--muted); max-width: 650px; margin: 0; font-size: .9rem; }
+    .hero-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin-top: 1rem; }
+    .primary-action { display: inline-flex; align-items: center; border: 0; border-radius: 8px; padding: .55rem .85rem; background: linear-gradient(135deg, #3e6fe0, var(--violet)); color: #fff; cursor: pointer; font: inherit; font-weight: 650; box-shadow: 0 12px 35px rgba(119,75,211,.25); }
+    .section-kicker { color: #9bb4f5; font: 500 .64rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .11em; margin-bottom: .45rem; }
+    .quality-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #08112b; }
+    .quality-item { min-width: 0; padding: .9rem 1rem; border-right: 1px solid var(--border); }
+    .quality-item:last-child { border-right: 0; }
+    .quality-item .k { display: block; color: #8fa0c5; font: 500 .62rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .07em; }
+    .quality-item .v { display: block; margin-top: .25rem; font-size: 1rem; font-weight: 650; }
+    .explorer-head { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin: 1.8rem 0 .7rem; }
+    .explorer-head h2 { margin: 0; }
+    .graph-search { width: min(260px, 45vw); border: 1px solid var(--border); border-radius: 8px; background: #08112b; color: var(--fg); padding: .5rem .65rem; font: inherit; outline: none; }
+    .graph-search:focus { border-color: #6f8fff; box-shadow: 0 0 0 2px rgba(111,143,255,.14); }
+    .explorer { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 500px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #07112d; }
+    .findings-pane { border-right: 1px solid var(--border); background: #08112b; padding: .75rem; overflow: auto; max-height: 620px; }
+    .findings-pane h3 { margin: .2rem .35rem .7rem; font-size: .82rem; }
+    .finding-group { border-top: 1px solid var(--border); }
+    .finding-group:first-of-type { border-top: 0; }
+    .finding-group > summary { display: flex; justify-content: space-between; gap: .5rem; cursor: pointer; padding: .65rem .35rem; color: #cbd3eb; font-size: .76rem; font-weight: 600; list-style: none; }
+    .finding-group > summary::-webkit-details-marker { display: none; }
+    .finding-count { color: #8294c8; font: .66rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .finding-button { width: 100%; border: 0; border-radius: 7px; background: transparent; color: #9faaca; padding: .5rem .55rem; text-align: left; cursor: pointer; font: inherit; font-size: .72rem; line-height: 1.4; }
+    .finding-button:hover, .finding-button.active { color: #fff; background: rgba(111,143,255,.1); }
+    .finding-meta { display: block; color: #7180aa; margin-top: .2rem; font: .6rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .graph-pane { position: relative; display: flex; flex-direction: column; min-width: 0; }
+    .graph-canvas { flex: 1; overflow: auto; padding: .5rem; background-image: radial-gradient(rgba(139,165,255,.13) .7px, transparent .7px); background-size: 18px 18px; }
+    .module-graph { display: block; min-width: 720px; width: 100%; height: auto; }
+    .module-edge { stroke: #33446f; stroke-width: 1; opacity: .38; transition: opacity .18s, stroke .18s; }
+    .module-node { cursor: pointer; transition: opacity .18s; }
+    .module-node rect { fill: #0d193b; stroke: #33456f; rx: 7; transition: fill .18s, stroke .18s; }
+    .module-node text { fill: #cbd3eb; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; }
+    .module-node:hover rect, .module-node.active rect { fill: #172657; stroke: #7d92e4; }
+    .module-node.dim, .module-edge.dim { opacity: .12; }
+    .module-edge.active { opacity: .9; stroke: #9b75e8; stroke-width: 1.8; }
+    .module-detail { display: none; border-top: 1px solid var(--border); padding: .8rem 1rem; background: #0a1432; }
+    .module-detail.open { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+    .module-detail b { display: block; font-size: .82rem; }
+    .module-detail span { color: #8f9bbb; font-size: .7rem; }
+    .module-stats { display: flex; gap: 1rem; white-space: nowrap; font: .65rem ui-monospace, SFMono-Regular, Menlo, monospace; color: #9bb4f5; }
+    .graph-note { padding: .55rem .8rem; border-top: 1px solid var(--border); color: #7180aa; font-size: .65rem; }
+    .quality-disclosure { margin-top: 1.5rem; border-top: 1px solid var(--border); }
+    .quality-disclosure > summary { cursor: pointer; padding: .9rem 0; color: #aeb8d4; font-size: .78rem; }
+    .quality-disclosure[open] > summary { color: #fff; }
+    @media (max-width: 760px) { body { padding: 1rem; } .topbar { align-items: flex-start; } .explorer { grid-template-columns: 1fr; } .findings-pane { border-right: 0; border-bottom: 1px solid var(--border); max-height: 230px; } .quality-row { grid-template-columns: repeat(2, 1fr); } }
     .count-link {
       background: none; border: 0; padding: 0; margin: 0; cursor: pointer;
       color: var(--accent); font: inherit; font-weight: 600; text-decoration: underline;
@@ -115,123 +163,80 @@
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>{{.Title}}</h1>
-    {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">not running</span>{{end}}
-  </header>
-  <div class="refresh">This page refreshes automatically every {{.RefreshSeconds}} seconds. Served on <code>http://127.0.0.1:{{.Port}}</code>{{if .FrontDoor}} and on the shared URL <code>{{.StableURL}}</code>{{end}}.</div>
-
-  <h2>This server</h2>
-  <p class="note">Everything on this page describes this one process and the graph it holds. Other servers are listed below.</p>
-  <div class="grid">
-    <div class="card"><div class="k">Process</div><div class="v">PID {{.PID}}</div></div>
-    {{if .Binary}}<div class="card"><div class="k">Binary</div><div class="v">{{.Binary}}</div></div>{{end}}
-    {{if .Uptime}}<div class="card"><div class="k">Uptime</div><div class="v">{{.Uptime}}</div></div>{{end}}
-    {{if .StartedAt}}<div class="card"><div class="k">Started</div><div class="v">{{.StartedAt}}</div></div>{{end}}
-    {{if .ReposLoaded}}<div class="card"><div class="k">Repos loaded</div><div class="v">{{.ReposLoaded}}</div></div>{{end}}
-    <div class="card"><div class="k">Calls served</div><div class="v">{{.SessionCalls}}</div></div>
-    <div class="card"><div class="k">Dashboard port</div><div class="v">{{.Port}}{{if .FrontDoor}} <span class="badge on">shared URL</span>{{end}}</div></div>
+  <div class="topbar">
+    <div class="brand"><h1>{{.Title}}<span class="brand-dot">.</span></h1></div>
   </div>
-  {{if .WorkDir}}<div class="card" style="margin-top:.75rem"><div class="k">Launched from</div><div class="v">{{.WorkDir}}{{if .ConfigPath}} <span class="note" style="font-size:.85rem;font-weight:400">(config: {{.ConfigPath}})</span>{{end}}</div></div>{{end}}
 
-  {{if .Instances}}
-  <h2>Servers running <span class="note">({{len .Instances}})</span></h2>
-  <p class="note">One enola server runs per agent session, each with its own graph. Follow a link to inspect another one.</p>
-  <div class="table-scroll"><table>
-    <thead><tr><th>PID</th><th>Binary</th><th>Repos</th><th class="num">Uptime</th><th class="num">Calls</th><th>Dashboard</th></tr></thead>
-    <tbody>
-      {{range .Instances}}<tr{{if .Self}} class="self-row"{{end}}>
-        <td>{{.PID}}{{if .Self}} <span class="badge on">this page</span>{{end}}</td>
-        <td>{{.Binary}}</td>
-        <td>{{.Repos}}</td>
-        <td class="num">{{.Uptime}}</td>
-        <td class="num">{{.Calls}}</td>
-        <td>{{if .URL}}<a href="{{.URL}}">{{.URL}}</a>{{if .FrontDoor}} <span class="chip">shared</span>{{end}}{{else}}<span class="note">none</span>{{end}}</td>
-      </tr>{{end}}
-    </tbody>
-  </table></div>
+  <section class="hero" id="overview">
+    <div class="section-kicker">Repository intelligence</div>
+    <h1>{{if .HasGraph}}Your architecture is mapped.{{else}}Ready to map this repository.{{end}}</h1>
+    <p>{{if .HasGraph}}See what Enola found and whether the analysis is complete enough to trust.{{else}}Generate a snapshot from your coding agent to reveal dependencies, hotspots, routes, and structural findings.{{end}}</p>
+    <div class="hero-meta">
+      {{if .HasReceipt}}{{with .Receipt}}<span class="chip">{{.FactCount}} facts</span><span class="chip">{{.InsightCount}} findings</span>{{end}}{{end}}
+      {{if .Insights}}<button type="button" class="primary-action" onclick="openModal('insights-modal')">Review findings</button>{{end}}
+    </div>
+  </section>
+
+  {{if .ModuleGraph}}
+  <div class="explorer-head">
+    <div><div class="section-kicker">Explore</div><h2>Architecture map</h2></div>
+    <input id="module-search" class="graph-search" type="search" placeholder="Find a module…" oninput="filterModules(this.value)" aria-label="Find a module">
+  </div>
+  <section class="explorer" aria-label="Architecture explorer">
+    <aside class="findings-pane">
+      <h3>Findings <span class="note">({{.InsightTotal}})</span></h3>
+      {{range .Insights}}
+      <details class="finding-group">
+        <summary><span>{{.Label}}</span><span class="finding-count">{{.Count}}</span></summary>
+        {{range .Items}}<button type="button" class="finding-button" data-evidence="{{.Evidence}}" onclick="selectFinding(this)">{{.Title}}<span class="finding-meta">{{.Confidence}}%{{if .Evidence}} · {{.Evidence}}{{end}}</span></button>{{end}}
+      </details>
+      {{end}}
+    </aside>
+    <div class="graph-pane">
+      <div class="graph-canvas">
+        {{$graph := .ModuleGraph}}
+        <svg class="module-graph" viewBox="0 0 {{$graph.Width}} {{$graph.Height}}" role="img" aria-label="Module dependency graph">
+          <defs><marker id="module-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#536a9f"/></marker></defs>
+          {{range $graph.Edges}}<line class="module-edge" data-source="{{.Source}}" data-target="{{.Target}}" x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" marker-end="url(#module-arrow)"/>{{end}}
+          {{range $graph.Nodes}}<g class="module-node" data-id="{{.ID}}" data-name="{{.Name}}" data-file="{{.File}}" data-in="{{.FanIn}}" data-out="{{.FanOut}}" onclick="selectModule(this)"><title>{{.Name}}</title><rect x="{{.X}}" y="{{.Y}}" width="154" height="36"/><text x="{{.X}}" y="{{.Y}}" dx="9" dy="22">{{.Display}}</text></g>{{end}}
+        </svg>
+      </div>
+      <div id="module-detail" class="module-detail"><div><b id="module-detail-name"></b><span id="module-detail-file"></span></div><div class="module-stats"><span id="module-detail-in"></span><span id="module-detail-out"></span></div></div>
+      {{if $graph.Limited}}<div class="graph-note">Focused on 36 of {{$graph.Total}} connected modules. Search filters this view.</div>{{end}}
+    </div>
+  </section>
   {{end}}
 
-  <h2>Tool usage</h2>
-  {{if .Tools}}
-  <div class="table-scroll"><table>
-    <thead><tr><th>Tool</th><th class="num">This server</th><th class="num">All servers, lifetime</th></tr></thead>
-    <tbody>
-      {{range .Tools}}<tr><td>{{.Name}}</td><td class="num">{{.Session}}</td><td class="num">{{.Total}}</td></tr>{{end}}
-    </tbody>
-  </table></div>
-  <p class="note">
-    "This server" counts only the calls this process has served{{if .TrackingSince}}; the lifetime column sums every repo on this machine since {{.TrackingSince}}{{end}}{{if .ReposTracked}} ({{.ReposTracked}} repo(s) tracked){{end}}.
-  </p>
-  {{else}}<p class="note">No tool calls recorded yet.</p>{{end}}
-
-  <h2>Value estimate <span class="note">(approximate)</span></h2>
-  {{if .Values}}
-  <div class="table-scroll"><table>
-    <thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">~Time saved</th><th class="num">~Tokens saved</th></tr></thead>
-    <tbody>
-      {{range .Values}}<tr><td>{{.Label}}</td><td class="num">{{.Calls}}</td><td class="num">{{.TimeSaved}}</td><td class="num">{{.TokensSaved}}</td></tr>{{end}}
-      <tr class="total"><td>{{.ValueTotal.Label}}</td><td class="num">{{.ValueTotal.Calls}}</td><td class="num">{{.ValueTotal.TimeSaved}}</td><td class="num">{{.ValueTotal.TokensSaved}}{{if .BeyondContext}}&#8224;{{end}}</td></tr>
-    </tbody>
-  </table></div>
-  {{if .BeyondContext}}<p class="note">&#8224; Some indexed corpus exceeds a single context window &mdash; that part is not reproducible by re-reading files at any budget, so the token figure understates it.</p>{{end}}
-  {{else}}<p class="note">No value recorded yet.</p>{{end}}
-
-  <h2>Current snapshot receipt</h2>
-  {{if .HasReceipt}}{{with .Receipt}}
+  {{if .HasGraph}}{{with .Graph}}{{if or (gt (len .Repos) 1) .ServiceCount .CrossRepoEdgeCount}}
+  <h2 id="architecture">Architecture</h2>
   <div class="grid">
-    <div class="card"><div class="k">Snapshot ID</div><div class="v">{{.SnapshotID}}</div></div>
-    <div class="card"><div class="k">enola version</div><div class="v">{{.EnolaVersion}}</div></div>
-    <div class="card"><div class="k">Generated at</div><div class="v">{{.GeneratedAt}}</div></div>
-    <div class="card"><div class="k">Duration</div><div class="v">{{.Duration}}</div></div>
-    <div class="card"><div class="k">Facts</div><div class="v">{{.FactCount}}</div></div>
-    <div class="card"><div class="k">Insights</div><div class="v">{{if $.Insights}}<button type="button" class="count-link" onclick="openModal('insights-modal')">{{$.InsightTotal}}</button>{{else}}{{.InsightCount}}{{end}}</div></div>
+    {{if gt (len .Repos) 1}}<div class="card"><div class="k">Repositories</div><div class="v">{{len .Repos}}</div></div>{{end}}
+    {{if .ServiceCount}}<div class="card"><div class="k">Services</div><div class="v">{{if $.Services}}<button type="button" class="count-link" onclick="openModal('services-modal')">{{.ServiceCount}}</button>{{else}}{{.ServiceCount}}{{end}}</div></div>{{end}}
+    {{if .CrossRepoEdgeCount}}<div class="card"><div class="k">Cross-repo edges</div><div class="v">{{if $.CrossRepoEdges}}<button type="button" class="count-link" onclick="openModal('edges-modal')">{{.CrossRepoEdgeCount}}</button>{{else}}{{.CrossRepoEdgeCount}}{{end}}</div></div>{{end}}
+  </div>
+  {{end}}{{end}}{{else}}<p class="note">{{.GraphNote}}</p>{{end}}
+  <div class="grid">
     {{/* extra-cards: extension slot — see pkg/dashboard.Options.Overlay */}}
     {{block "extra-cards" $}}{{end}}
-    {{if .Git}}<div class="card"><div class="k">Git</div><div class="v">{{.Git.Ref}}{{if .Git.Commit}} @ {{.Git.Commit}}{{end}}{{if .Git.Dirty}} (dirty){{end}}</div></div>{{end}}
   </div>
-  <div class="card" style="margin-top:.75rem"><div class="k">Repo path</div><div class="v">{{.RepoPath}}</div></div>
-  {{if .Extractors}}<div style="margin-top:.75rem"><div class="k">Extractors</div><div class="chips">{{range .Extractors}}<span class="chip">{{.}}</span>{{end}}</div></div>{{end}}
-  {{if .Explainers}}<div style="margin-top:.6rem"><div class="k">Explainers</div><div class="chips">{{range .Explainers}}<span class="chip">{{.}}</span>{{end}}</div></div>{{end}}
 
-  <h3 style="margin:1.25rem 0 .5rem;font-size:.95rem">Extraction quality</h3>
-  <div class="grid">
-    <div class="card"><div class="k">Files seen</div><div class="v">{{.Quality.FilesSeen}}</div></div>
-    <div class="card"><div class="k">Files parsed</div><div class="v">{{.Quality.FilesParsed}}</div></div>
-    <div class="card"><div class="k">Files skipped</div><div class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.Quality.FilesSkipped}}</button>{{else}}{{.Quality.FilesSkipped}}{{end}}</div></div>
-    <div class="card"><div class="k">Dirs skipped</div><div class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.Quality.DirsSkipped}}</button>{{else}}{{.Quality.DirsSkipped}}{{end}}</div></div>
-    <div class="card"><div class="k">Parse errors</div><div class="v">{{if $.ParseErrors}}<button type="button" class="count-link" onclick="openModal('parse-errors-modal')">{{.Quality.ParseErrors}}</button>{{else}}{{.Quality.ParseErrors}}{{end}}</div></div>
+  {{if .HasReceipt}}{{with .Receipt}}
+  <details class="quality-disclosure" id="quality">
+  <summary>{{if .Quality.ParseErrors}}Analysis quality needs attention · {{.Quality.ParseErrors}} parse error(s){{else}}Analysis complete · no parse errors{{end}}</summary>
+  <div class="quality-row">
+    <div class="quality-item"><span class="k">Files seen</span><span class="v">{{.Quality.FilesSeen}}</span></div>
+    <div class="quality-item"><span class="k">Files parsed</span><span class="v">{{.Quality.FilesParsed}}</span></div>
+    <div class="quality-item"><span class="k">Skipped</span><span class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.Quality.FilesSkipped}}</button>{{else}}{{.Quality.FilesSkipped}}{{end}}</span></div>
+    <div class="quality-item"><span class="k">Parse errors</span><span class="v">{{if $.ParseErrors}}<button type="button" class="count-link" onclick="openModal('parse-errors-modal')">{{.Quality.ParseErrors}}</button>{{else}}{{.Quality.ParseErrors}}{{end}}</span></div>
     {{if .Quality.Coverage}}{{with .Quality.Coverage}}
-    <div class="card"><div class="k">Services</div><div class="v">{{if $.Coverage}}<button type="button" class="count-link" onclick="openModal('coverage-modal')">{{.ServicesTotal}}</button>{{else}}{{.ServicesTotal}}{{end}}</div></div>
-    <div class="card"><div class="k">Coverage gaps</div><div class="v">{{if $.Coverage}}<button type="button" class="count-link" onclick="openModal('coverage-modal')">{{.CoverageGaps}}</button>{{else}}{{.CoverageGaps}}{{end}}</div></div>
-    <div class="card"><div class="k">Unresolved edges</div><div class="v">{{if $.UnresolvedRoutes}}<button type="button" class="count-link" onclick="openModal('coverage-unresolved-modal')">{{.UnresolvedEdges}}</button>{{else}}{{.UnresolvedEdges}}{{end}}</div></div>
+    <div class="quality-item"><span class="k">Coverage gaps</span><span class="v">{{if $.Coverage}}<button type="button" class="count-link" onclick="openModal('coverage-modal')">{{.CoverageGaps}}</button>{{else}}{{.CoverageGaps}}{{end}}</span></div>
+    <div class="quality-item"><span class="k">Unresolved edges</span><span class="v">{{if $.UnresolvedRoutes}}<button type="button" class="count-link" onclick="openModal('coverage-unresolved-modal')">{{.UnresolvedEdges}}</button>{{else}}{{.UnresolvedEdges}}{{end}}</span></div>
     {{end}}{{end}}
   </div>
+  </details>
   {{end}}{{else}}<p class="note">{{.ReceiptNote}}</p>{{end}}
 
-  <h2>Graph receipt <span class="note">(this server's graph)</span></h2>
-  {{if .HasGraph}}{{with .Graph}}
-  <div class="grid">
-    <div class="card"><div class="k">Snapshot ID</div><div class="v">{{.SnapshotID}}</div></div>
-    <div class="card"><div class="k">enola version</div><div class="v">{{.EnolaVersion}}</div></div>
-    <div class="card"><div class="k">Generated at</div><div class="v">{{.GeneratedAt}}</div></div>
-    <div class="card"><div class="k">Facts</div><div class="v">{{.FactCount}}</div></div>
-    <div class="card"><div class="k">Insights</div><div class="v">{{if $.Insights}}<button type="button" class="count-link" onclick="openModal('insights-modal')">{{$.InsightTotal}}</button>{{else}}{{.InsightCount}}{{end}}</div></div>
-    <div class="card"><div class="k">Services</div><div class="v">{{if $.Services}}<button type="button" class="count-link" onclick="openModal('services-modal')">{{.ServiceCount}}</button>{{else}}{{.ServiceCount}}{{end}}</div></div>
-    <div class="card"><div class="k">Cross-repo edges</div><div class="v">{{if $.CrossRepoEdges}}<button type="button" class="count-link" onclick="openModal('edges-modal')">{{.CrossRepoEdgeCount}}</button>{{else}}{{.CrossRepoEdgeCount}}{{end}}</div></div>
-  </div>
-  {{if .Repos}}
-  <h3 style="margin:1.25rem 0 .5rem;font-size:.95rem">Repos in graph</h3>
-  <div class="table-scroll"><table>
-    <thead><tr><th>Label</th><th>Path</th><th>Added</th><th>In graph for</th><th class="num">Facts</th></tr></thead>
-    <tbody>
-      {{range .Repos}}<tr><td>{{.Label}}</td><td>{{.Path}}</td><td>{{.AddedAt}}</td><td>{{.InGraphFor}}</td><td class="num">{{.FactCount}}</td></tr>{{end}}
-    </tbody>
-  </table></div>
-  {{end}}
-  {{end}}{{else}}<p class="note">{{.GraphNote}}</p>{{end}}
-
-  <footer>{{.Title}} dashboard · read-only · localhost only</footer>
+  <footer>{{.Title}} · read-only · updates every {{.RefreshSeconds}} seconds</footer>
 </div>
 
 {{if .Services}}
@@ -474,6 +479,65 @@
       if (toTable) toTable.hidden = showTable;
       if (toDiagram) toDiagram.hidden = !showTable;
     }
+  }
+  function graphNodes() { return Array.prototype.slice.call(document.querySelectorAll('.module-node')); }
+  function graphEdges() { return Array.prototype.slice.call(document.querySelectorAll('.module-edge')); }
+  function clearGraphFocus() {
+    graphNodes().forEach(function(n) { n.classList.remove('active', 'dim'); });
+    graphEdges().forEach(function(e) { e.classList.remove('active', 'dim'); });
+  }
+  function selectModule(node) {
+    clearGraphFocus();
+    var id = node.getAttribute('data-id');
+    var related = {};
+    related[id] = true;
+    graphEdges().forEach(function(e) {
+      var connected = e.getAttribute('data-source') === id || e.getAttribute('data-target') === id;
+      e.classList.toggle('active', connected);
+      e.classList.toggle('dim', !connected);
+      if (connected) { related[e.getAttribute('data-source')] = true; related[e.getAttribute('data-target')] = true; }
+    });
+    graphNodes().forEach(function(n) {
+      n.classList.toggle('active', n === node);
+      n.classList.toggle('dim', !related[n.getAttribute('data-id')]);
+    });
+    var detail = document.getElementById('module-detail');
+    if (detail) {
+      detail.classList.add('open');
+      document.getElementById('module-detail-name').textContent = node.getAttribute('data-name');
+      document.getElementById('module-detail-file').textContent = node.getAttribute('data-file') || '';
+      document.getElementById('module-detail-in').textContent = 'used by ' + node.getAttribute('data-in');
+      document.getElementById('module-detail-out').textContent = 'depends on ' + node.getAttribute('data-out');
+    }
+  }
+  function filterModules(query) {
+    clearGraphFocus();
+    query = (query || '').trim().toLowerCase();
+    graphNodes().forEach(function(n) {
+      var match = !query || (n.getAttribute('data-name') || '').toLowerCase().indexOf(query) !== -1 || (n.getAttribute('data-file') || '').toLowerCase().indexOf(query) !== -1;
+      n.classList.toggle('dim', !match);
+    });
+    if (query) graphEdges().forEach(function(e) { e.classList.add('dim'); });
+  }
+  function selectFinding(button) {
+    document.querySelectorAll('.finding-button').forEach(function(b) { b.classList.toggle('active', b === button); });
+    clearGraphFocus();
+    var evidence = (button.getAttribute('data-evidence') || '').toLowerCase();
+    if (!evidence) return;
+    var matches = {};
+    graphNodes().forEach(function(n) {
+      var name = (n.getAttribute('data-name') || '').toLowerCase();
+      var file = (n.getAttribute('data-file') || '').toLowerCase();
+      var match = (name && evidence.indexOf(name) !== -1) || (file && evidence.indexOf(file) !== -1) || (file && file.indexOf(evidence) !== -1);
+      n.classList.toggle('active', match);
+      n.classList.toggle('dim', !match);
+      if (match) matches[n.getAttribute('data-id')] = true;
+    });
+    graphEdges().forEach(function(e) {
+      var active = matches[e.getAttribute('data-source')] || matches[e.getAttribute('data-target')];
+      e.classList.toggle('active', !!active);
+      e.classList.toggle('dim', !active);
+    });
   }
   {{/* extra-scripts: extension slot — see pkg/dashboard.Options.Overlay */}}
   {{block "extra-scripts" $}}{{end}}

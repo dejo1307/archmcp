@@ -87,11 +87,10 @@ func TestHandlerDegradesGracefully(t *testing.T) {
 	}
 	body := rec.Body.String()
 	wantContains := []string{
-		"location.reload()",                // JS-driven auto-refresh mechanism
-		"refreshes automatically every 30", // stated on the page
-		"127.0.0.1:54321",                  // the dashboard port/URL
-		"No snapshot loaded yet",           // degraded current receipt
-		"No graph loaded in this server",   // degraded graph receipt
+		"location.reload()",              // JS-driven auto-refresh mechanism
+		"Ready to map this repository.",  // product-facing empty state
+		"No snapshot loaded yet",         // degraded current receipt
+		"No graph loaded in this server", // degraded graph receipt
 	}
 	for _, want := range wantContains {
 		if !strings.Contains(body, want) {
@@ -144,8 +143,8 @@ func TestHandlerRendersReceipts(t *testing.T) {
 
 	body := rec.Body.String()
 	for _, want := range []string{
-		"snap-abc123", "goextractor", "tsextractor", "4242", // current receipt
-		"graph-xyz", "backend", "/x/backend", // graph receipt + repos table
+		"4242",                         // fact summary
+		"Your architecture is mapped.", // product-facing populated state
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
@@ -720,7 +719,7 @@ func TestTitleDefaultsAndOverrides(t *testing.T) {
 	rec = httptest.NewRecorder()
 	newTestServer(1, fakeArtifacts{err: errors.New("none")}, Options{Title: "wrapper build"}).handleIndex(rec, req())
 	body := rec.Body.String()
-	for _, want := range []string{"<title>wrapper build — dashboard</title>", "<h1>wrapper build</h1>"} {
+	for _, want := range []string{"<title>wrapper build — dashboard</title>", `<h1>wrapper build<span class="brand-dot">.</span></h1>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
 		}

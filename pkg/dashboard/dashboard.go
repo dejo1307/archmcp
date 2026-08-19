@@ -409,6 +409,8 @@ type pageData struct {
 	// EdgeDiagram is the node-link layout of CrossRepoEdges for the diagram view of
 	// the edges modal; nil when there are no edges (the modal shows the table only).
 	EdgeDiagram *diagramView
+	// ModuleGraph is the bounded, interactive module-level architecture map.
+	ModuleGraph *moduleGraphView
 
 	// Insights (grouped by explainer) back the clickable Insights card; the
 	// structural/candidate split is shown in the modal header.
@@ -515,6 +517,7 @@ func (s *Server) buildPage() pageData {
 	// counters. Empty (store not loaded) → the cards render as plain numbers.
 	data.Services, data.CrossRepoEdges = graphDetails(s.eng.Store())
 	data.EdgeDiagram = buildEdgeDiagram(data.Services, data.CrossRepoEdges)
+	data.ModuleGraph = buildModuleGraph(s.eng.Store())
 
 	// Insight list (grouped by explainer) backing the clickable Insights counter.
 	// Empty → the counter renders as a plain number.
