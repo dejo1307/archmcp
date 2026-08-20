@@ -63,6 +63,7 @@ func extractFileASTFull(src []byte, relFile string, crates []crateInfo, moduleDi
 	}
 
 	w.out = append(w.out, extractAxumRoutes(root, src, relFile, dir)...)
+	w.out = append(w.out, extractUtoipaRoutes(root, src, relFile, dir)...)
 
 	return w.out, w.impls, collectAxumBuilders(root, src, relFile)
 }

@@ -2088,7 +2088,13 @@ import (
 // this release fixes from a binary that no longer contains it. Upstream shipped
 // this change as its v216 in 0.4.2; this channel had already spent v216 through
 // v222, so the same behaviour change takes the next free number here.
-const cacheVersion = "v223"
+// v224: Rust server routes declared by `#[utoipa::path(get, path = "/x")]`. The
+// utoipa_axum `routes!(handler)` macro registers a handler without repeating its
+// path, so an API declared that way has no `.route("/path", ...)` call to read and
+// its endpoints were absent from the graph entirely — one corpus application stored
+// 8 routes where it serves 74, and every call its own frontend made to them looked
+// like a call to nothing. The attribute is now the second Rust route source.
+const cacheVersion = "v224"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
