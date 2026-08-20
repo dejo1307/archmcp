@@ -538,7 +538,7 @@ The baseline is a pinned artifact rather than "whatever state the tool last held
 
 **A stale baseline warns; it never blocks.** Past three days it tells you exactly how stale and what that means (the delta now also contains whatever the repo itself changed in between) - then grades anyway, because a long-lived baseline is a legitimate way to measure a multi-day refactor and only you know which you meant.
 
-**Nothing fails by default.** A bare `enola check` runs all sixteen explainers, reports every finding the change introduced, and exits `0` - saying in its own output that no policy was in effect, because a gate that enforces nothing must never be mistaken for a gate that found nothing. What breaks the build is what you name:
+**Nothing fails by default.** A bare `enola check` runs all seventeen explainers, reports every finding the change introduced, and exits `0` - saying in its own output that no policy was in effect, because a gate that enforces nothing must never be mistaken for a gate that found nothing. What breaks the build is what you name:
 
 ```bash
 enola check --fail-on=layers                               # fail on a declared layer order
@@ -553,10 +553,10 @@ enola check --focus=internal/auth                          # narrow the delta to
 enola check --write                                        # also persist the snapshot (default: read-only)
 ```
 
-The sixteen names `--fail-on` accepts are `cycles`, `layers`, `intent`, `constraints`,
+The seventeen names `--fail-on` accepts are `cycles`, `layers`, `intent`, `constraints`,
 `crossrepo`, `coverage`, `unused-routes`, `messaging-coverage`, `god-class`, `hotspots`,
-`dependency-depth`, `exported-surface`, `complexity-outliers`, `domain`, `query-loops`
-and `entry-points`.
+`dependency-depth`, `exported-surface`, `complexity-outliers`, `domain`, `query-loops`,
+`entry-points` and `dead-methods`.
 
 **A name it does not recognise is refused, not ignored.** `--fail-on=cyles` exits `2`
 and names what it could not match, rather than exiting `0` while enforcing nothing —
@@ -739,6 +739,6 @@ repos:
 enola --generate ci/cluster.yaml
 ```
 
-Entries resolve **relative to the config file**, not to your working directory, so a cluster config can be checked in and means the same thing on a laptop and in CI. (`repo:` is unchanged: a single repository, relative to the working directory.) Order matters - the first entry resets the graph and the rest are added to it.
+Entries resolve **relative to the config file**, not to your working directory, so a cluster config can be checked in and means the same thing on a laptop and in CI. (`repo:` is unchanged: a single repository, relative to the working directory.) Order matters - the first entry resets the graph and the rest are added to it. Linking and the explainers run once, over the whole union, after the last entry; every repository's output dir then receives the complete linked graph (the same bytes, so a consumer reading any one of them reads the whole cluster). Configured fact providers run concurrently within each repository and merge in name order.
 
 ---

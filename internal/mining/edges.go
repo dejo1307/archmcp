@@ -125,6 +125,15 @@ func (s *scope) mineForbid(srcCluster, via string, group []minedEdge) []Candidat
 				Detail: via + " edge into " + tgtCluster,
 			})
 		}
+		var witnesses []Witness
+		for _, e := range group {
+			if len(witnesses) == maxWitnesses {
+				break
+			}
+			if e.tgtCluster != tgtCluster {
+				witnesses = append(witnesses, Witness{Name: e.source, File: e.sourceFile, Target: e.target})
+			}
+		}
 		if !s.admit(FamilyForbidEdge, total, len(exceptions)) {
 			continue
 		}
@@ -148,6 +157,7 @@ func (s *scope) mineForbid(srcCluster, via string, group []minedEdge) []Candidat
 			Denominator: total,
 			Confidence:  ratio(total-len(violations), total),
 			Exceptions:  exceptions,
+			Witnesses:   witnesses,
 			Components:  []intent.ConstraintComponent{source, target},
 			Rule:        rule,
 		})

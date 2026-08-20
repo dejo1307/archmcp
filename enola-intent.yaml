@@ -68,6 +68,7 @@ layers:
       - "internal/intent/**"
       - "internal/history/**"
       - "internal/mining/**"
+      - "internal/eslintscaffold/**"
       - "internal/providers/**"
   - name: core
     paths:

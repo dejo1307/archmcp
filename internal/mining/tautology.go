@@ -14,7 +14,7 @@ func constructionSatisfiedPattern(cluster, pattern string) bool {
 	if !isPrefix || strings.HasPrefix(literal, "*") {
 		return false
 	}
-	return strings.HasPrefix(cluster+"/", literal)
+	return strings.HasPrefix(cluster+"/", literal) || strings.HasPrefix(cluster+".", literal)
 }
 
 func tautologicalNaming(cluster, pattern string, memberCount int) bool {

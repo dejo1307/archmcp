@@ -80,6 +80,34 @@ func (s *silencing) byDeclarationChange(in facts.Insight) bool {
 	return witness != "" && current.Exempts(id, witness) && !base.Exempts(id, witness)
 }
 
+// byNewDeclaration is the mirror of byDeclarationChange for a breach absent at
+// baseline and present now: it appeared because the DECLARATION arrived rather
+// than the code. The rule is new to the graph, its form changed under a
+// preserved id, or an exemption that excused this witness was removed. Same
+// narrow tests as the mirror, for the same reason: bookkeeping is not law, and
+// a breach the change made on code it touched must not hide behind a rule it
+// also declared (the caller checks the witness against the touched set).
+func (s *silencing) byNewDeclaration(in facts.Insight) bool {
+	if in.Source != constraints.ExplainerName {
+		return false
+	}
+	id := constraints.RuleIDFromTitle(in.Title)
+	if id == "" {
+		return false
+	}
+	base, current := s.indexes()
+	now, declared := current.Declaration(id)
+	if !declared {
+		return false
+	}
+	was, wasDeclared := base.Declaration(id)
+	if !wasDeclared || was != now {
+		return true
+	}
+	witness := constraints.WitnessFromTitle(in.Title)
+	return witness != "" && base.Exempts(id, witness) && !current.Exempts(id, witness)
+}
+
 // byMembershipChange reports whether a constraint breach present at baseline
 // and absent now went quiet because its subject left the component. A subject
 // the current snapshot no longer measures at all is NOT this case: deleted code

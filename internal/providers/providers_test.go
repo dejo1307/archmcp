@@ -148,3 +148,24 @@ func TestValidate_NamesAndCommandsAreRequired(t *testing.T) {
 		t.Fatalf("a well-formed provider config must validate, got %v", err)
 	}
 }
+
+// Providers run concurrently; the merge is still in name order and the facts
+// still stamped per provider, however the processes happen to finish. A slow
+// "a" and an instant "b" must produce a's facts first, twice over.
+func TestRun_ConcurrentProvidersMergeInNameOrder(t *testing.T) {
+	slow := filepath.Join(t.TempDir(), "slow")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\nfor a in \"$@\"; do if [ \"$a\" = \"--version\" ]; then echo 1.0.0; exit 0; fi; done\nsleep 0.3\n"+
+		`echo '{"kind":"symbol","name":"from-a","file":"a.rb","props":{"resolution_level":"name-only"}}'`+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fast := writeProvider(t, "1.0.0", `{"kind":"symbol","name":"from-b","file":"b.rb","props":{"resolution_level":"name-only"}}`+"\n")
+	for round := 0; round < 2; round++ {
+		ff, records := Run(context.Background(), []Provider{{Name: "b", Command: []string{fast}}, {Name: "a", Command: []string{slow}}}, t.TempDir(), nil)
+		if len(ff) != 2 || ff[0].Name != "from-a" || ff[1].Name != "from-b" {
+			t.Fatalf("round %d: merged order must follow provider names, got %+v", round, ff)
+		}
+		if records[0].Name != "a" || records[1].Name != "b" || ff[0].Props[PropProvider] != "a" || ff[1].Props[PropProvider] != "b" {
+			t.Fatalf("round %d: census or stamps out of order: %+v / %+v", round, records, ff)
+		}
+	}
+}

@@ -251,19 +251,21 @@ func DecodeExemptions(encoded string) []ConstraintExemption {
 // AllowedComponentKinds is the closed fact-kind vocabulary a component selector
 // may narrow to — the measured kinds the constraints explainer resolves over,
 // plus the two reference kinds it resolves over ONLY when a declaration names
-// one. A component that omits `kind:` never acquires a test_ref or a file_ref:
-// those carry reference edges rather than architectural coupling, and the
-// explainers that count dependents exclude them for that reason. Naming the
-// kind is the opt-in, and it is what lets a rule speak about tests at all —
-// "a component test must not reach a fixture factory" has a test file at its
-// near end, and no component could select one.
+// one. A component that omits `kind:` never acquires a test_ref, a file_ref or
+// a lint fact: those carry reference edges (or, for lint, a linter's report)
+// rather than architectural coupling, and the explainers that count dependents
+// exclude them for that reason. Naming the kind is the opt-in, and it is what
+// lets a rule speak about tests at all — "a component test must not reach a
+// fixture factory" has a test file at its near end, and no component could
+// select one — and what lets a rule wrap a linter's rule: `kind: lint` with a
+// `where: lint_rule` and a `forbid_fact` form.
 var AllowedComponentKinds = map[string]bool{
 	"module": true, "symbol": true, "route": true, "storage": true,
-	"test_ref": true, "file_ref": true,
+	"test_ref": true, "file_ref": true, "lint": true,
 }
 
 func allowedComponentKinds() string {
-	return "file_ref, module, route, storage, symbol, test_ref"
+	return "file_ref, lint, module, route, storage, symbol, test_ref"
 }
 
 // AllowedRuleVias is the closed edge vocabulary a rule may forbid — relation

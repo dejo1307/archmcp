@@ -74,6 +74,15 @@ const (
 	// the dead-code detector, so top-level references mark a production symbol used
 	// without perturbing the coupling graph or any other explainer.
 	KindFileRef = "file_ref"
+
+	// KindLint is a finding an external linter reported, brought in through the
+	// provider seam: a rule id, a severity, a file and a line, and nothing the
+	// graph measured itself. Reference-only like KindTestRef: it carries no
+	// edges, nothing counts it as coupling, and a constraints component selects
+	// it only by naming the kind, so a declared rule can wrap a linter's rule
+	// with because-prose and a ratchet and the check's one comment covers
+	// both engines. Props: lint_engine, lint_rule, lint_severity, line, message.
+	KindLint = "lint"
 )
 
 // pathShapedName names the kinds whose Name IS a repo-relative path, and which the
@@ -120,6 +129,7 @@ const (
 	RelHasMethod     = "has_method"     // Owner type (struct/interface/class) declares target as a method. Synthesized in NewGraph.
 	RelHandledBy     = "handled_by"     // A route/endpoint is served by target (e.g. a gRPC RPC route → its Go handler method). Added post-extraction.
 	RelImplementedBy = "implemented_by" // A declared contract operation is implemented by a code symbol. Added post-extraction.
+	RelNames         = "names"          // Source names target by symbol literal without calling it: a method name passed as data (`perform_async(id, :on_done)`) for something else to dispatch. A reference, not a call; read by dead-code questions, ignored by call metrics.
 )
 
 // StorageKindTopic is the storage_kind prop value for a KindStorage fact that

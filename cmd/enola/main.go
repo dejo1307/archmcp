@@ -60,6 +60,7 @@ func main() {
 	cmds.Dispatch(ctx, args) // returns only when this was not a subcommand
 
 	generateMode := false
+	refreshMode := false
 	explainMode := false
 	statusMode := false
 	statusAll := false
@@ -110,6 +111,8 @@ func main() {
 			os.Exit(0)
 		case "--generate":
 			generateMode = true
+		case "--refresh":
+			refreshMode = true
 		case "--explain":
 			explainMode = true
 		case "--status":
@@ -170,7 +173,10 @@ func main() {
 	// cfg.Repo, so a server launched as `enola /path/to/repo` must serve that
 	// repo no matter which directory it was started from. Repos must be cleared
 	// too, or it would win in RepoPaths.
-	if repoArg != "" {
+	//
+	// --refresh is the exception: there the directory names WHICH member of the
+	// configured cluster to re-read, and the cluster must stay configured.
+	if repoArg != "" && !refreshMode {
 		abs, err := filepath.Abs(repoArg)
 		if err != nil {
 			log.Fatalf("failed to resolve repo path: %v", err)
@@ -182,6 +188,12 @@ func main() {
 		runExplain(ctx, eng, cfg)
 		// Explicit rather than deferred: this path exits, and a deferred Report
 		// would never run. Same at every os.Exit below.
+		memWatch.Report(os.Stderr, factCount(eng))
+		os.Exit(0)
+	}
+
+	if generateMode && refreshMode {
+		runRefresh(ctx, eng, cfg, repoArg)
 		memWatch.Report(os.Stderr, factCount(eng))
 		os.Exit(0)
 	}
@@ -201,13 +213,22 @@ func main() {
 		var snapshot *facts.Snapshot
 		for i, repoPath := range repoPaths {
 			// The first repository resets the store; the rest append to it, which is
-			// what makes one process produce one linked graph.
+			// what makes one process produce one linked graph. Linking and the
+			// explainers run once, on the last turn, over the whole union: they are
+			// recomputed from scratch on every append, so running them earlier only
+			// cost time (on a 22-repo cluster, twenty-one passes over a growing
+			// union, and twenty-one writes of it).
+			eng.SetDeferLinking(i < len(repoPaths)-1)
 			snapshot, err = eng.GenerateSnapshot(ctx, repoPath, i > 0)
 			if err != nil {
 				log.Fatalf("snapshot generation failed for %s: %v", repoPath, err)
 			}
-			// In multi-repo mode WriteArtifacts writes the whole store to each
-			// repo's output dir, matching what the MCP server does per generate.
+		}
+		// Every repository's output dir receives the complete linked union, written
+		// once, now that it exists. Before, each received the union as of its own
+		// turn and only the last was complete; a consumer reading any repo's own
+		// artifacts (the CI check, enola plan) now reads the same whole graph.
+		for _, repoPath := range repoPaths {
 			if err := eng.WriteArtifacts(repoPath); err != nil {
 				log.Fatalf("failed to write artifacts for %s: %v", repoPath, err)
 			}
@@ -403,6 +424,7 @@ func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config) 
 	eng.SetPersistCache(false)
 	for i, repoPath := range repoPaths {
 		fmt.Fprintf(os.Stderr, "Analyzing %s …\n", repoPath)
+		eng.SetDeferLinking(i < len(repoPaths)-1)
 		if _, err := eng.GenerateSnapshot(ctx, repoPath, i > 0); err != nil {
 			log.Fatalf("snapshot generation failed for %s: %v", repoPath, err)
 		}
@@ -410,4 +432,87 @@ func runExplain(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config) 
 
 	report := explain.Compute(eng)
 	fmt.Print(report.Render())
+}
+
+// runRefresh re-reads ONE member of a configured cluster into the union the last
+// generate produced, replacing that repository's slice and nothing else. A full
+// `--generate` walks every repository and hands each its turn's union, which for a
+// large cluster costs the same twenty-odd writes and explainer passes whether one
+// repository moved or all of them did. This is the shape for "only this one moved":
+// restore the union, re-extract the named repository into it (append mode replaces
+// a repository the union already holds), and write the result where the union
+// lives and where the repository's own readers look.
+func runRefresh(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, repoArg string) {
+	if repoArg == "" {
+		log.Fatalf("--refresh needs the repository to re-read: enola --generate --refresh <repo_path> [config]")
+	}
+	target, err := filepath.Abs(repoArg)
+	if err != nil {
+		log.Fatalf("failed to resolve repo path: %v", err)
+	}
+	repoPaths, err := cfg.RepoPaths()
+	if err != nil {
+		log.Fatalf("failed to resolve repo path: %v", err)
+	}
+	if len(repoPaths) < 2 {
+		log.Fatalf("--refresh re-reads one repository of a configured cluster; %s configures %d", cfg.SourcePath, len(repoPaths))
+	}
+	member := false
+	for _, p := range repoPaths {
+		if p == target {
+			member = true
+			break
+		}
+	}
+	if !member {
+		log.Fatalf("%s is not a repository of the cluster configured by %s; add it to repos: and run a full --generate", target, cfg.SourcePath)
+	}
+	if restored := bootstrap.AutoLoadSnapshot(eng, cfg); restored == nil {
+		log.Fatalf("no union to refresh into: nothing restored for this workspace. Run a full --generate once; refresh replaces one repository inside an existing union")
+	}
+	// Refuse rather than degrade. Append mode discards a union built by a
+	// different extractor version and starts a single-repo snapshot; for a
+	// refresh that would replace the union with one repository and call it a
+	// success, which is the exact accident this command exists to prevent.
+	if snap := eng.Snapshot(); snap == nil || snap.Meta.ExtractorVersion != engine.ExtractorVersion() {
+		got := "none"
+		if snap != nil {
+			got = snap.Meta.ExtractorVersion
+		}
+		log.Fatalf("the restored union was built by extractor version %s and this enola is %s; a refresh cannot mix them. Run a full --generate once with this build", got, engine.ExtractorVersion())
+	}
+	held := false
+	for _, p := range eng.RepoPaths() {
+		if p == target {
+			held = true
+			break
+		}
+	}
+	if !held {
+		log.Fatalf("the restored union does not hold %s; run a full --generate so every configured repository is in it", target)
+	}
+	snapshot, err := eng.GenerateSnapshot(ctx, target, true)
+	if err != nil {
+		log.Fatalf("refresh failed for %s: %v", target, err)
+	}
+	// The repository's own directory, for the readers that look there (plan, the
+	// CI check), and the union's home at the last configured repository.
+	last := repoPaths[len(repoPaths)-1]
+	if err := eng.WriteArtifacts(target); err != nil {
+		log.Fatalf("failed to write artifacts for %s: %v", target, err)
+	}
+	if last != target {
+		if err := eng.WriteArtifacts(last); err != nil {
+			log.Fatalf("failed to write artifacts for %s: %v", last, err)
+		}
+	}
+	if err := eng.WriteGlobalReceipt(); err != nil {
+		log.Printf("warning: failed to write global receipt: %v", err)
+	}
+	fmt.Fprintf(os.Stderr, "\nRefresh complete:\n")
+	fmt.Fprintf(os.Stderr, "  Repository:  %s (re-read into a union of %d)\n", target, len(repoPaths))
+	fmt.Fprintf(os.Stderr, "  Facts:       %d\n", snapshot.Meta.FactCount)
+	fmt.Fprintf(os.Stderr, "  Insights:    %d\n", snapshot.Meta.InsightCount)
+	fmt.Fprintf(os.Stderr, "  Duration:    %s\n", snapshot.Meta.Duration)
+	fmt.Fprintf(os.Stderr, "  Output:      %s\n", filepath.Join(last, cfg.Output.Dir))
 }

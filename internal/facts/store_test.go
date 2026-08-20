@@ -1027,3 +1027,22 @@ func TestUpdateRange_MutatesOnlyFromTheStartIndex(t *testing.T) {
 		t.Errorf("window facts not mutated: %+v, %+v", ff[1].Props, ff[2].Props)
 	}
 }
+
+// TagRange after SetRepoRange over the same range must not list a fact twice
+// under its repo: ByRepo returned every appended fact doubled, and CountByRepo
+// counted the doubles, for every repository but the first in a union.
+func TestTagRange_IndexesEachFactOnceUnderItsRepo(t *testing.T) {
+	s := NewStore()
+	s.Add(Fact{Kind: KindModule, Name: "m", File: "m.go"}, Fact{Kind: KindSymbol, Name: "m.F", File: "m.go"})
+	s.SetRepoRange(0, "svc")
+	s.TagRange(0, "svc", "svc/")
+	if got := s.CountByRepo("svc"); got != 2 {
+		t.Fatalf("CountByRepo = %d, want 2", got)
+	}
+	if got := len(s.ByRepo("svc")); got != 2 {
+		t.Fatalf("ByRepo returned %d facts, want 2", got)
+	}
+	if got := len(s.ByFile("svc/m.go")); got != 2 {
+		t.Fatalf("ByFile(svc/m.go) = %d, want 2", got)
+	}
+}

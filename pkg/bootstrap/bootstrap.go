@@ -21,6 +21,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/coverage"
 	crossrepoexp "github.com/enola-labs/enola/internal/explainers/crossrepo"
 	"github.com/enola-labs/enola/internal/explainers/cycles"
+	"github.com/enola-labs/enola/internal/explainers/deadmethods"
 	"github.com/enola-labs/enola/internal/explainers/depth"
 	"github.com/enola-labs/enola/internal/explainers/domain"
 	"github.com/enola-labs/enola/internal/explainers/entrypoints"
@@ -144,6 +145,10 @@ func (e *Engine) Config() *config.Config {
 }
 
 // GenerateSnapshot runs the full pipeline: walk -> extract -> explain -> render.
+// SetDeferLinking is engine.Engine.SetDeferLinking: a cluster walked repo by
+// repo sets it for every turn but the last.
+func (e *Engine) SetDeferLinking(defer_ bool) { e.eng.SetDeferLinking(defer_) }
+
 func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMode bool) (*facts.Snapshot, error) {
 	return e.eng.GenerateSnapshot(ctx, repoPath, appendMode)
 }
@@ -470,6 +475,7 @@ func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	eng.RegisterExplainer(unusedroutes.New())
 	eng.RegisterExplainer(domain.New())
 	eng.RegisterExplainer(queryloops.New())
+	eng.RegisterExplainer(deadmethods.New())
 	eng.RegisterExplainer(entrypoints.New())
 	eng.RegisterExplainer(messagingcoverage.New())
 	eng.RegisterExplainer(godclass.New())
@@ -491,6 +497,7 @@ func NewServer(eng *Engine, cfg *config.Config) (*Server, error) {
 		return nil, err
 	}
 	srv.SetPlanEngineFactory(PlanEngineFactory(cfg))
+	srv.SetReloader(func() map[string]int { return AutoLoadSnapshot(eng, cfg) })
 	// The one place the soft memory limit is worth announcing. ConfigureRuntime is
 	// silent (see its doc) because a working default is not news on every CLI
 	// invocation — but a server is long-lived, holds whole graphs in memory, and its

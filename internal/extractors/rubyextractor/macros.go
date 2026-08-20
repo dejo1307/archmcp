@@ -86,10 +86,10 @@ func eachCall(path string, visit func(method string, args *sitter.Node, src []by
 	walk = func(n *sitter.Node) {
 		for i := uint(0); i < n.ChildCount(); i++ {
 			c := n.Child(i)
-			if c.Kind() == "call" || c.Kind() == "method_call" {
+			if kindOf(c) == "call" || kindOf(c) == "method_call" {
 				visit(rubyText(c.ChildByFieldName("method"), src), c.ChildByFieldName("arguments"), src)
 			}
-			if c.Kind() == "identifier" && c.Parent() != nil && c.Parent().Kind() == "body_statement" {
+			if kindOf(c) == "identifier" && c.Parent() != nil && kindOf(c.Parent()) == "body_statement" {
 				visit(rubyText(c, src), nil, src)
 			}
 			walk(c)

@@ -44,7 +44,7 @@ find*. It is **what happens to a finding after you have found it** — and that 
 entirely on the thing [SNAPSHOTS.md](SNAPSHOTS.md) describes: whether your graph is a
 value you can compare against another one, or a picture of right now.
 
-## Sixteen explainers: three proofs and thirteen estimates
+## Seventeen explainers: three proofs and fourteen estimates
 
 An explainer reads the fact graph and emits **findings** — a claim, a confidence, and
 the entities the claim is about. There are sixteen, and they fall into six kinds:
@@ -95,11 +95,15 @@ the entities the claim is about. There are sixteen, and they fall into six kinds
   at all. It stops at marking them: reachability *from* them reports 86% of a
   monolith's symbols unreachable, which is the receiver-typing gap showing through
   rather than a finding about the monolith, so that verdict is not shipped.
+  `dead-methods` asks the narrower question that gap leaves open: it looks a Ruby
+  method's bare name up in every call edge the graph holds and reports the names
+  nothing uses, and the names only specs use. A name-based index under-reports, so
+  what it lists is a candidate to delete, never a verdict.
 
 What each one computes, every threshold it uses and what it deliberately ignores is in
 [ARCHITECTURE.md → Insights](../ARCHITECTURE.md#insights-explainers). The distinction
-that matters here is smaller and blunter: **three of the sixteen prove something. The
-other thirteen estimate.** A cycle is a fact about your import graph. A god class is an opinion
+that matters here is smaller and blunter: **three of the seventeen prove something. The
+other fourteen estimate.** A cycle is a fact about your import graph. A god class is an opinion
 about your repository, expressed as a number, and reasonable people can disagree with
 it.
 
@@ -168,7 +172,7 @@ Comparing findings across two snapshots gives three outcomes, not two:
 
 That third bucket is small, unglamorous, and the reason the gate stays switched on.
 
-Most of the sixteen explainers are relative to your repository. `mean + 2σ` moves when the
+Most of the seventeen explainers are relative to your repository. `mean + 2σ` moves when the
 population moves. A ranked top-N list has fixed membership size, so when a worse
 offender is deleted the next module rises into the window — and a finding "appears" for
 a module nobody edited. Both are real effects of statistics, not of your work.

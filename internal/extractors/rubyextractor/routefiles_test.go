@@ -152,6 +152,11 @@ func TestExtractAllRoutes_MountedEngineGetsMountPrefix(t *testing.T) {
 
 	byName := map[string]facts.Fact{}
 	for _, f := range got {
+		// extractAllRoutes also returns the route-macro coverage fact, which is an
+		// extraction fact and carries no method.
+		if f.Kind != facts.KindRoute {
+			continue
+		}
 		key := f.Props["method"].(string) + " " + f.Name
 		byName[key] = f
 	}
@@ -191,12 +196,18 @@ func TestExtractAllRoutes_UnmountedEngineStillContributes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := extractAllRoutes(repo, []string{"plugins/chat/config/routes.rb"})
-	if len(got) != 1 {
-		t.Fatalf("want 1 route, got %d: %+v", len(got), got)
+	var routes []facts.Fact
+	for _, f := range extractAllRoutes(repo, []string{"plugins/chat/config/routes.rb"}) {
+		// The route-macro coverage fact rides along and is not a route.
+		if f.Kind == facts.KindRoute {
+			routes = append(routes, f)
+		}
 	}
-	if got[0].Name != "/messages" {
-		t.Errorf("name = %q, want /messages", got[0].Name)
+	if len(routes) != 1 {
+		t.Fatalf("want 1 route, got %d: %+v", len(routes), routes)
+	}
+	if routes[0].Name != "/messages" {
+		t.Errorf("name = %q, want /messages", routes[0].Name)
 	}
 }
 

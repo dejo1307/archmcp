@@ -33,11 +33,14 @@ func isARBaseClass(superclass string) bool {
 }
 
 // isSerializerBase reports whether a superclass marks an ActiveModel::Serializer
-// subclass. By convention every serializer base ends in "Serializer"
-// (ApplicationSerializer, BasicPostSerializer, ActiveModel::Serializer, …), so the
-// suffix is a reliable, dependency-free signal.
+// subclass or a JSON:API resource. By convention every serializer base ends in
+// "Serializer" (ApplicationSerializer, BasicPostSerializer,
+// ActiveModel::Serializer, …) and every resource base in "Resource"
+// (JSONAPI::Resource, Api::V1::BaseResource), and both declare attributes and
+// relationships by symbol that same-named methods back, so the suffix is a
+// reliable, dependency-free signal for the DSL fold.
 func isSerializerBase(superclass string) bool {
-	return strings.HasSuffix(superclass, "Serializer")
+	return strings.HasSuffix(superclass, "Serializer") || strings.HasSuffix(superclass, "Resource")
 }
 
 // inferTableName derives the conventional Rails table name from a class name.

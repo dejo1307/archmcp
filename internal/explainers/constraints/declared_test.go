@@ -95,3 +95,42 @@ func TestExplain_RequireVerdictsOverTheTypedAnnotation(t *testing.T) {
 		t.Errorf("evidence = %+v", got.Evidence)
 	}
 }
+
+// A linter's rule, wrapped: a component selects lint facts by rule id and a
+// forbid_fact rule verdicts every one, with the because-prose and the mode the
+// declaration carries. The linter authors the rule; the graph gives it a
+// baseline and a place in the one report.
+func TestExplain_ForbidFactOverLintFactsWrapsALinterRule(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		facts.Fact{Kind: facts.KindIntent, Name: "component: mutating-args-warnings", File: "enola/constraints/eslint.yaml",
+			Props: map[string]any{"intent_kind": "component", "component": "mutating-args-warnings",
+				"match": "ember_app/**", "kind": "lint", "where": "lint_rule=tt/no-mutating-args", "source": "enola/constraints/eslint.yaml"}},
+		facts.Fact{Kind: facts.KindIntent, Name: "rule: no-mutating-args", File: "enola/constraints/eslint.yaml",
+			Props: map[string]any{"intent_kind": "rule", "rule": "no-mutating-args",
+				"forbid_fact": "mutating-args-warnings", "mode": "ratchet",
+				"because": "arguments are the caller's state", "source": "enola/constraints/eslint.yaml"}},
+		facts.Fact{Kind: facts.KindLint, Name: "eslint: tt/no-mutating-args ember_app/app/components/a.gjs", File: "ember_app/app/components/a.gjs", Line: 12,
+			Props: map[string]any{"lint_engine": "eslint", "lint_rule": "tt/no-mutating-args", "lint_severity": "warn", "resolution_level": "tool-reported"}},
+		facts.Fact{Kind: facts.KindLint, Name: "eslint: tt/ember-declare-type ember_app/app/b.ts", File: "ember_app/app/b.ts", Line: 3,
+			Props: map[string]any{"lint_engine": "eslint", "lint_rule": "tt/ember-declare-type", "lint_severity": "error", "resolution_level": "tool-reported"}},
+		facts.Fact{Kind: facts.KindLint, Name: "eslint: tt/no-mutating-args lib/other/x.js", File: "lib/other/x.js", Line: 1,
+			Props: map[string]any{"lint_engine": "eslint", "lint_rule": "tt/no-mutating-args", "lint_severity": "warn", "resolution_level": "tool-reported"}},
+	)
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var violations []facts.Insight
+	for _, in := range insights {
+		if strings.Contains(in.Title, "no-mutating-args violated") {
+			violations = append(violations, in)
+		}
+	}
+	if len(violations) != 1 {
+		t.Fatalf("violations = %+v, want exactly the one matching rule inside ember_app/", violations)
+	}
+	if violations[0].Evidence[0].File != "ember_app/app/components/a.gjs" {
+		t.Fatalf("evidence = %+v", violations[0].Evidence)
+	}
+}
