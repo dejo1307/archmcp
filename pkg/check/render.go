@@ -93,7 +93,7 @@ func (v Verdict) Render() string {
 			// anything a regression, which is not the same as having looked and found none.
 			fmt.Fprintf(&sb, "%s — %s reported, nothing enforced: no policy set.\n", pass,
 				plural(len(v.Advisories), "new finding", "new findings"))
-		case len(v.Advisories) > 0 || len(v.Suppressed) > 0 || len(v.Exempted) > 0 || len(v.Silenced) > 0 || len(v.Undeclared) > 0 || len(v.Unattributed) > 0 || v.EdgesAdded > 0 || v.FactsAdded > 0 || v.FactsRemoved > 0:
+		case len(v.Advisories) > 0 || len(v.Suppressed) > 0 || len(v.Exempted) > 0 || len(v.Silenced) > 0 || len(v.Undeclared) > 0 || len(v.Declared) > 0 || len(v.Unattributed) > 0 || v.EdgesAdded > 0 || v.FactsAdded > 0 || v.FactsRemoved > 0:
 			fmt.Fprintf(&sb, "%s — %s.\n", pass, graded)
 		case v.Status == StatusPartialClean:
 			fmt.Fprintf(&sb, "%s — no architectural change in the graded intersection.\n", pass)
@@ -192,6 +192,10 @@ func (v Verdict) Render() string {
 		writeFindings(&sb, v.Silenced)
 	}
 
+	if len(v.Declared) > 0 {
+		fmt.Fprintf(&sb, "\nNewly declared (%d) — a rule this change declares, re-forms or un-exempts\nreports these on code the change did not touch. The baseline the rule starts\nfrom, not regressions the change made:\n", len(v.Declared))
+		writeFindings(&sb, v.Declared)
+	}
 	if len(v.Undeclared) > 0 {
 		fmt.Fprintf(&sb, "\nNo longer declared (%d) — the rule that reported these was deleted, re-formed\nunder the same id, or carved out by an exemption. The breaching code is\nunchanged; the law stopped asking:\n", len(v.Undeclared))
 		writeFindings(&sb, v.Undeclared)

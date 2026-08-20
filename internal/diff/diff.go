@@ -248,6 +248,18 @@ type SnapshotDiff struct {
 	// answer to it.
 	FindingsUndeclared []facts.Insight `json:"findings_undeclared,omitempty"`
 
+	// FindingsDeclared are constraint breaches that started being reported
+	// because the DECLARATION arrived: the rule is new to the graph, its form
+	// changed under a preserved id, or an exemption that excused the witness was
+	// removed, and the code the breach names is untouched by the change. The
+	// mirror of FindingsUndeclared. A pull request that declares a convention
+	// over a codebase with 3,980 standing exceptions to it filed all 3,980 under
+	// "new findings introduced by this change" — the code had not moved, the law
+	// had. Held out of FindingsNew: they are the baseline the rule starts from,
+	// and a reader deciding whether the change regressed anything needs them
+	// apart from the breaches the change made on code it touched.
+	FindingsDeclared []facts.Insight `json:"findings_declared,omitempty"`
+
 	// FindingsUnattributed are constraint breaches this pair of snapshots cannot
 	// say anything about: the witness's repository left a union snapshot, or the
 	// baseline carried the finding without the declaration that produced it.
@@ -349,14 +361,18 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 	// added/removed/altered, including edge endpoints (so a finding that flips
 	// because a NEW caller changed a symbol's fan-in is still counted as real).
 	touched := d.touchedNames()
+	silenced := newSilencing(baseline, current)
 	for k, curGroup := range curFind {
 		baseGroup := baseFind[k]
 		for i, in := range curGroup {
 			if i >= len(baseGroup) {
 				// Genuinely new: the current side has more findings under this identity.
-				if findingHasStructuralCause(in, touched) {
+				switch {
+				case silenced.byNewDeclaration(in) && !witnessTouched(in, touched):
+					d.FindingsDeclared = append(d.FindingsDeclared, in)
+				case findingHasStructuralCause(in, touched):
 					d.FindingsNew = append(d.FindingsNew, in)
-				} else {
+				default:
 					d.FindingsNewIncidental = append(d.FindingsNewIncidental, in)
 				}
 				continue
@@ -369,7 +385,6 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 			}
 		}
 	}
-	silenced := newSilencing(baseline, current)
 	for k, baseGroup := range baseFind {
 		curGroup := curFind[k]
 		for i := len(curGroup); i < len(baseGroup); i++ {
@@ -719,13 +734,34 @@ func findingHasStructuralCause(in facts.Insight, touched map[string]struct{}) bo
 	return false
 }
 
+// witnessTouched reports whether a constraint breach cites, beyond the
+// declaration itself, an entity this change structurally touched. That is
+// what separates a breach the change MADE under a rule it also declares from
+// one the rule merely surfaced on code that did not move.
+func witnessTouched(in facts.Insight, touched map[string]struct{}) bool {
+	for _, ev := range in.Evidence {
+		if strings.HasPrefix(ev.Fact, "rule: ") || strings.HasPrefix(ev.Fact, "component: ") {
+			continue
+		}
+		for _, e := range []string{ev.Fact, ev.Symbol, ev.File} {
+			if e == "" {
+				continue
+			}
+			if _, ok := touched[e]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Empty reports whether the diff contains no changes of any kind.
 func (d *SnapshotDiff) Empty() bool {
 	return len(d.FactsAdded) == 0 && len(d.FactsRemoved) == 0 && len(d.FactsChanged) == 0 &&
 		len(d.EdgesAdded) == 0 && len(d.EdgesRemoved) == 0 &&
 		len(d.FindingsNew) == 0 && len(d.FindingsResolved) == 0 &&
 		len(d.FindingsNewIncidental) == 0 && len(d.FindingsResolvedIncidental) == 0 &&
-		len(d.FindingsSilenced) == 0 && len(d.FindingsUndeclared) == 0 &&
+		len(d.FindingsSilenced) == 0 && len(d.FindingsUndeclared) == 0 && len(d.FindingsDeclared) == 0 &&
 		len(d.FindingsUnattributed) == 0 && len(d.FindingsChanged) == 0
 }
 
@@ -793,6 +829,11 @@ func (d *SnapshotDiff) Focused(focus string) *SnapshotDiff {
 	for _, in := range d.FindingsUndeclared {
 		if insightMatches(in, focus) {
 			out.FindingsUndeclared = append(out.FindingsUndeclared, in)
+		}
+	}
+	for _, in := range d.FindingsDeclared {
+		if insightMatches(in, focus) {
+			out.FindingsDeclared = append(out.FindingsDeclared, in)
 		}
 	}
 	for _, in := range d.FindingsUnattributed {
@@ -1123,6 +1164,7 @@ func (d *SnapshotDiff) sortAll() {
 	sort.Slice(d.FindingsResolved, byFinding(d.FindingsResolved))
 	sort.Slice(d.FindingsSilenced, byFinding(d.FindingsSilenced))
 	sort.Slice(d.FindingsUndeclared, byFinding(d.FindingsUndeclared))
+	sort.Slice(d.FindingsDeclared, byFinding(d.FindingsDeclared))
 	sort.Slice(d.FindingsUnattributed, byFinding(d.FindingsUnattributed))
 	sort.Slice(d.FindingsNewIncidental, byFinding(d.FindingsNewIncidental))
 	sort.Slice(d.FindingsResolvedIncidental, byFinding(d.FindingsResolvedIncidental))

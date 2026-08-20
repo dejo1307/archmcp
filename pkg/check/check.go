@@ -310,6 +310,16 @@ type Verdict struct {
 	// question is not an answer to it. Not graded; editing a declaration is a
 	// legitimate act, and this section is what keeps it from reading as a fix.
 	Undeclared []facts.Insight `json:"undeclared,omitempty"`
+	// Declared are constraint breaches that started being reported because the
+	// declaration arrived — a rule new to the graph, re-formed under its id, or
+	// an exemption removed — on code the change did not touch. The mirror of
+	// Undeclared. They are the baseline a rule starts from, not regressions the
+	// change made, and a strict rule among them is graded by the strict pass
+	// below exactly as before: declaring a strict rule over standing breaches
+	// fails, declaring an advisory one reports. What this bucket changes is the
+	// sentence: "this change declares a rule that 3,980 places already break" is
+	// not "this change introduced 3,980 findings".
+	Declared []facts.Insight `json:"declared,omitempty"`
 	// Unattributed are constraint breaches this pair of snapshots has no standing
 	// to judge: the witness's repository left a union snapshot, or the baseline
 	// carried the finding without the declaration that produced it. Held out of
@@ -467,6 +477,20 @@ func EvaluateCurrent(d *diff.SnapshotDiff, p Policy, currentFindings []facts.Ins
 	v.Resolved = d.FindingsResolved
 	v.Silenced = d.FindingsSilenced
 	v.Undeclared = withoutExempted(d.FindingsUndeclared, v.Exempted)
+	for _, in := range d.FindingsDeclared {
+		if graded[in.Title] {
+			continue
+		}
+		graded[in.Title] = true
+		switch {
+		case exemptedFinding(in):
+			v.Exempted = append(v.Exempted, in)
+		case p.suppressed(in):
+			v.Suppressed = append(v.Suppressed, in)
+		default:
+			v.Declared = append(v.Declared, in)
+		}
+	}
 	v.Unattributed = withoutExempted(d.FindingsUnattributed, v.Exempted)
 	v.Incidental = append(append([]facts.Insight{}, d.FindingsNewIncidental...), d.FindingsResolvedIncidental...)
 	if len(v.Incidental) == 0 {

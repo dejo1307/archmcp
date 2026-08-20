@@ -873,6 +873,28 @@ func TestGoStdLayers_VisibilityIsNotLayering(t *testing.T) {
 	}
 }
 
+// An autoload root must be the repository's own top-level app/, not any
+// directory called "app" anywhere in the tree.
+//
+// A Rails monolith that also ships a front-end has ember_app/app/routes and
+// ember_app/app/components. Matching "app" at any depth pulled that layout into
+// the Rails taxonomy, inflating its coverage until it displaced the pattern
+// that was correctly winning — measured on a real monolith, where it replaced
+// 185 genuine Ember layer violations with a different set.
+func TestAutoloadedLayerOnlyClaimsTheTopLevelAppDirectory(t *testing.T) {
+	if name, ok := autoloadedLayer("app/tools/replan_week", "app"); !ok || name != "tools" {
+		t.Fatalf("a top-level app/ directory is an autoload root, got %q/%v", name, ok)
+	}
+	if name, ok := autoloadedLayer("app/models/coaching", "app"); !ok || name != "models" {
+		t.Fatalf("nested files belong to their root's layer, got %q/%v", name, ok)
+	}
+	for _, foreign := range []string{"ember_app/app/routes", "vendor/app/components", "app"} {
+		if name, ok := autoloadedLayer(foreign, "app"); ok {
+			t.Fatalf("%q must not be claimed as a Rails autoload root, got %q", foreign, name)
+		}
+	}
+}
+
 // TestEmberUtilLayerDoesNotClaimLib guards the single largest source of false layer
 // violations the corpus has produced.
 //
@@ -910,27 +932,5 @@ func TestEmberUtilLayerDoesNotClaimLib(t *testing.T) {
 	// The real Ember utility directory still does.
 	if !matchesLayer("frontend/discourse/app/utils", util.Patterns) {
 		t.Error("app/utils should still match the ember util layer")
-	}
-}
-
-// An autoload root must be the repository's own top-level app/, not any
-// directory called "app" anywhere in the tree.
-//
-// A Rails monolith that also ships a front-end has ember_app/app/routes and
-// ember_app/app/components. Matching "app" at any depth pulled that layout into
-// the Rails taxonomy, inflating its coverage until it displaced the pattern
-// that was correctly winning — measured on a real monolith, where it replaced
-// 185 genuine Ember layer violations with a different set.
-func TestAutoloadedLayerOnlyClaimsTheTopLevelAppDirectory(t *testing.T) {
-	if name, ok := autoloadedLayer("app/tools/replan_week", "app"); !ok || name != "tools" {
-		t.Fatalf("a top-level app/ directory is an autoload root, got %q/%v", name, ok)
-	}
-	if name, ok := autoloadedLayer("app/models/coaching", "app"); !ok || name != "models" {
-		t.Fatalf("nested files belong to their root's layer, got %q/%v", name, ok)
-	}
-	for _, foreign := range []string{"ember_app/app/routes", "vendor/app/components", "app"} {
-		if name, ok := autoloadedLayer(foreign, "app"); ok {
-			t.Fatalf("%q must not be claimed as a Rails autoload root, got %q", foreign, name)
-		}
 	}
 }

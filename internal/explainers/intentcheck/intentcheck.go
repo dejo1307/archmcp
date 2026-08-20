@@ -546,8 +546,8 @@ func fileBase(path string) string {
 // Scope and affects deliberately do NOT verdict against measured repo
 // labels. A page's scope speaks the wiki's own repo vocabulary, and the
 // wiki-to-cluster label mapping is the wiki's side of the boundary (a page
-// about "billing" may compile against a cluster labeled
-// "payments-service") — verdicting the raw names here fired on correct pages
+// about "ledger" may compile against a cluster labeled
+// "ledger-service") — verdicting the raw names here fired on correct pages
 // across a whole estate. Keeping the names checkable is the deriving
 // toolchain's job, where the mapping is known.
 

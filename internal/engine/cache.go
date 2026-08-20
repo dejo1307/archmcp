@@ -1927,7 +1927,152 @@ import (
 // 21,689 members carrying it to 22,963 and drops those eight verdicts to zero.
 // Absence stops being ambiguous for this prop, which is what the rule form
 // needs: it cannot tell "measured, declares none" from "never looked".
-// v216: repo-relative fact paths are forward-slash on every host. They used to
+// v216: the hash-rocket mount form whose key builds a Rack app inline names its
+// app again. `mount Flipper::UI.app(Flipper) => "/admin/flipper"` reaches its
+// constant through a call, which parseMount unwraps on the `at:` side and required
+// to be a bare constant on the key side — so the declaration produced no constant,
+// and a mount with no constant is dropped entirely, path and all. One route on the
+// monolith (/admin/flipper) vanished this way, which is how the shape was found:
+// the previous reader here took the pair's VALUE without inspecting its key, so
+// the upgrade to upstream's constant-aware reader lost a form it had covered.
+// Reading the receiver is the same rule the `at:` branch already applies, so no
+// new guess enters: a key that names nothing resolvable still mounts nothing.
+// v217: a Rails route names the controller Rails names, on the rules Rails
+// actually uses rather than one of them everywhere. `Resource#controller` is
+// `options[:controller] || @name`, so a plural `resources` takes its name VERBATIM;
+// `SingletonResource#controller` is `options[:controller] || plural`, so only the
+// singular pluralizes. Applying the singular rule to both turned every plural name
+// that is not the pluralization of its singular into a controller no application
+// has: the monolith declares `resources :meeting_self_schedule` and was reported as
+// served from `meeting_self_schedules`, while the file on disk is
+// `meeting_self_schedule_controller.rb`.
+//
+// The pluralization the singular rule needs is ActiveSupport's, which knows the
+// irregulars — `resource :person` is served by people — and this extractor's
+// inflector answers persons. So a singular resource that does not name its
+// controller now gets NO handler, which is the refusal this file has always made
+// here and the reason it never grew a pluralize-for-Rails rule. A verb inside such
+// a block declines with it rather than inheriting the enclosing resource's
+// controller, which serves different routes.
+//
+// A verb may also name its own controller, and that name wins over the enclosing
+// one: map_match reads `controller:` off the call and only then falls back with
+// `controller ||= @scope[:controller]`. Reading `action:` while leaving that option
+// unread is worse than reading neither, because the route then resolves to the
+// controller enclosing it — one that exists and does not serve it. The monolith
+// writes that shape 36 times in one route table.
+//
+// The namespace is composed where the ROUTE is created, not where the resource is
+// declared — `Mapping.build` captures `scope[:module]` at the route site and
+// `add_controller_module` joins it there — so a `scope module:` entered between a
+// `resources` declaration and a verb inside its block belongs to that verb. The
+// scope carries the bare controller and every route site composes for itself, which
+// puts the `controller ... do` block form on the same rule. add_controller_module
+// has one exception and it is now honoured: a controller written with a leading
+// slash is stripped of the slash and NOT composed.
+//
+// Measured on the monolith at f97ae49, against the binary this branch forked from:
+// routes with no handler 250 -> 210, routes whose handler names a controller file
+// that EXISTS 3,482 -> 3,531, routes whose handler names one that does NOT 6 -> 14.
+// No route moved from having no handler to having a wrong one, and none moved from
+// a controller that exists to one that does not; the 14 are the 5 that were already
+// there, plus 9 the upstream 0.3.18 reader newly reads inside `Avo::Engine.routes.draw`
+// and one of the original 6 now fixed. Upstream 0.3.18 alone puts that count at 57,
+// so what this changelog entry describes removes 43 of the 51 it added. Route
+// handlers naming an action that is not a known symbol: 1,762 before, 1,781 on the
+// align, 1,662 here — fewer than either.
+//
+// The bump is the PROVENANCE argument in the header, not the cache one. The cache
+// argument does not hold: buildIdentity mixes the executable's size and mtime into
+// every entry, so a cache written by a different binary is discarded whether or not
+// this constant moves, and an earlier draft of this entry claimed otherwise. What
+// does not happen without a bump is everything keyed on ExtractorVersion — `enola
+// check` compares it to decide whether a baseline is comparable, and every locally
+// built binary reports the same "dev" EnolaVersion, so this constant is the only
+// signal that 2,533 route->action edges appeared and 156 were withdrawn; and append
+// mode discards prior state on it, without which a multi-repo union carries repos
+// extracted under the old derivation and labels them current.
+//
+// benchmarks/rails-controller-derivation scores all of it, expanded through
+// ActionDispatch::Routing::RouteSet on actionpack 8.1.3 and 8.1.1, which agreed,
+// rather than written from memory. The route cases that existed before scored
+// filters and nesting only, so every one of these derivations could be wrong while
+// the suite read 149/149 — which is what happened.
+// v218: four more constructs Rails reads to answer the same question. `scope
+// controller:` is the one construct other than the `controller ... do` block that
+// writes the @scope[:controller] a verb falls back to (merge_controller_scope keeps
+// the child; map_match's `controller ||= @scope[:controller]` reads it), and leaving
+// it unread did not leave the routes inside without a controller — the search walked
+// outward to the enclosing resource and named one that exists and serves entirely
+// different routes. The leading-slash escape now applies to the controller Rails
+// splits out of a `to:` string as well as to a `controller:` option, because
+// add_controller_module is the same function on both paths; honouring it on one
+// spelling and not the other also joined the module onto a name still carrying its
+// slash. Options are matched in BOTH of Ruby's hash spellings: a hash-rocket key's
+// text carries a LEADING colon, so trimming a trailing one saw `controller: "x"` and
+// missed `:controller => "x"`, `:on => :collection`, `:via => [...]` and every other
+// option written that way. And get_to_from_path's shorthand is implemented: a
+// multi-segment String path that names no endpoint of its own IS the endpoint, and
+// the name it derives is handed on as the `to:`, so it outranks the enclosing
+// controller rather than deferring to it.
+//
+// Measured on the monolith at f97ae49, challenger against current: routes with no
+// handler 1,306 -> 1,306, routes whose handler names a controller file that EXISTS
+// 3,531 -> 3,536, routes whose handler names one that does NOT 30 -> 31. No route
+// moved from having no handler to having a wrong one. The one route that moved into
+// the third column is /companies/:company_id/integrations/widgets, declared
+// `get "/integrations/widgets", as: :integration_widgets` inside `namespace :app`:
+// RouteSet expands it to app/integrations#widgets, this repository contains no
+// app/controllers/app/integrations_controller.rb, and the answer it replaced named
+// an action with a slash in it that no controller defines. 27 routes over the four
+// `scope controller:` sites now name the controller Rails serves them from — 21 of
+// them previously named app/companies or app/api/companies, which exist and serve
+// other routes — and route handled_by edges resolving to a symbol the graph holds
+// go 2,289 -> 2,315.
+//
+// The bump is the PROVENANCE argument in the header, not the cache one, for the same
+// reason v217's was: buildIdentity already mixes the executable into every entry, so
+// a cache written by a different binary is discarded either way, while
+// WarnVersionMismatch and append mode's discard both key on ExtractorVersion — and
+// without a bump a baseline pinned by a v217 build grades this one's 47 moved route
+// facts as no architectural change at all.
+//
+// benchmarks/rails-controller-derivation scores each of the four, expanded through
+// ActionDispatch::Routing::RouteSet on actionpack 8.1.3 and again on 8.1.1, which
+// agreed line for line.
+// v219: two Ruby method facts for the query-loops reader, both measured after
+// a reviewer rejected two of the first sixteen findings on the monolith.
+// `preloads` names every association handed to includes / preload / eager_load
+// in the body (symbols, hash keys and values), so an association read on the
+// elements of a preloaded relation stops reading as a query per element
+// (CannedResponsesQuery#resolve). `unpersisted_locals` names the locals in
+// local_types whose typing call was `new`, so association reads on a record
+// that was never saved stop reading as queries while writes on it still do
+// (BlockLayoutsController#mock_company). Recorded, not resolved: the extractor
+// states what the method preloaded and how it typed a local, and the
+// explainer joins.
+// v220: the query-loops reader follows the relation to where it was built.
+// Block bindings carry the receiver chain with arguments dropped and locals
+// spliced (`user=Current.company.users.allowed_to_login.preload`), scope facts
+// carry `model` and the associations their lambda preloads, method facts carry
+// `params` and a `batch_loader` marker. The explainer resolves the chain back
+// to its association or constant, joins preloads stated by scopes on that model
+// and by same-class methods, reports name-only typing at half confidence, and
+// stays quiet inside BatchLoader bodies. Measured on the monolith and the
+// sibling branch that first rejected the reader's blind spots.
+// v221: a block binding is recorded for a constant or namespaced receiver too
+// (`Company.find_each do |company|`, `Billing::Invoice.in_batches`), so the
+// query-loops reader, which already types a chain from the model at its base,
+// hears the most Rails way to walk a table. A constant that is not a model
+// resolves to nothing and stays silent.
+// v222: two more references the Ruby extractor states. A symbol-to-proc block
+// argument (`each(&:destroy_with_publication!)`) records a call to the symbol's
+// method; the class-body DSL that names methods by symbol folds in beside the
+// callbacks: `field`, `helper_method`, `alias_method`'s old name,
+// `rescue_from ... with:`, and the `if:`/`unless:` symbol options of
+// callbacks and validations. Both closed false "dead" readings in the
+// dead-methods explainer's prototype on the monolith.
+// v223: repo-relative fact paths are forward-slash on every host. They used to
 // carry the host separator, because the walker handed extractors what
 // filepath.Rel returned and the extractors built on it with path/filepath, whose
 // output is host-flavoured — so on Windows a module was named `src\lib` while the
@@ -1940,8 +2085,10 @@ import (
 // The bump matters on Windows and only there, which is exactly why it is easy to
 // forget: a Windows user upgrading into this build has a cache keyed by the old
 // version whose entries hold backslash paths, and reusing one would serve the bug
-// this release fixes from a binary that no longer contains it.
-const cacheVersion = "v216"
+// this release fixes from a binary that no longer contains it. Upstream shipped
+// this change as its v216 in 0.4.2; this channel had already spent v216 through
+// v222, so the same behaviour change takes the next free number here.
+const cacheVersion = "v223"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

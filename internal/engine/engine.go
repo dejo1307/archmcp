@@ -34,6 +34,7 @@ import (
 	"github.com/enola-labs/enola/internal/providers"
 	"github.com/enola-labs/enola/internal/renderers"
 	"github.com/enola-labs/enola/internal/version"
+	pkghistory "github.com/enola-labs/enola/pkg/history"
 	"github.com/enola-labs/enola/pkg/plugin"
 )
 
@@ -53,6 +54,9 @@ type snapshotBundle struct {
 	// so a reader cannot observe a declaration that disagrees with the snapshot
 	// it is reading: both change in the same atomic swap, or neither does.
 	intent map[string]*intent.Declaration
+	// members holds each repository's own turn meta, keyed by absolute path, so a
+	// cluster's fan-out can write per-repo provenance beside the shared union.
+	members map[string]facts.SnapshotMeta
 }
 
 // Engine orchestrates the snapshot generation pipeline.
@@ -79,6 +83,18 @@ type Engine struct {
 	// disk after a snapshot. The read path is always active when caching is
 	// enabled; one-shot --explain sets this false so it never touches .enola.
 	persistCache bool
+	// deferLinking makes an append-mode GenerateSnapshot stop after extraction;
+	// see SetDeferLinking.
+	deferLinking bool
+	// lastFacts remembers the facts.jsonl this run last serialized, so the next
+	// output dir that receives the same bundle copies the bytes instead.
+	lastFacts lastFactsWrite
+	// historyRecorded remembers which snapshot id this run recorded into which
+	// history root, so a cluster that writes one union to many repo dirs sharing
+	// a history store appends the revision once.
+	historyRecorded map[string]string
+	// summaries remembers this run's previous/ deltas; see summarizeOnce.
+	summaries map[string]pkghistory.Summary
 }
 
 // New creates a new Engine with the given config.
@@ -109,6 +125,14 @@ func New(cfg *config.Config) (*Engine, error) {
 	e.current.Store(&snapshotBundle{store: st})
 	return e, nil
 }
+
+// SetDeferLinking tells the next GenerateSnapshot calls to stop after
+// extraction: no linking, no graph, no explainers, no renderers. For a cluster
+// walked repo by repo, only the last turn's linked and explained union is ever
+// read, so the caller sets this for every turn but the last (the first turn
+// included) and clears it before the last. Nothing else sets it; the server's
+// generate_snapshot and a single-repo --generate never see it.
+func (e *Engine) SetDeferLinking(defer_ bool) { e.deferLinking = defer_ }
 
 // SetPersistCache controls whether the per-extractor cache is written to disk
 // after a snapshot. One-shot --explain disables this so it leaves .enola
@@ -392,6 +416,17 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			work.Add(prev.store.All()...)
 		}
 
+		// A repository the union already holds is replaced, not doubled. Its
+		// prior slice goes before extraction, so what this turn adds is the only
+		// account of it; the linkers then rebuild every cross-repo edge into it
+		// from scratch, as they do on every append. This is what lets one repo
+		// be re-read into an existing union without re-reading the other twenty.
+		if _, present := prev.repoPaths[repoLabel]; present {
+			if dropped := work.RemoveWhere(func(f facts.Fact) bool { return f.Repo == repoLabel }); dropped > 0 {
+				log.Printf("[engine] replacing %q in the union: dropped its %d prior facts", repoLabel, dropped)
+			}
+		}
+
 		// Track repo label -> absolute path for multi-repo resolution.
 		workRepoPaths[repoLabel] = absRepo
 	}
@@ -515,6 +550,56 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		log.Printf("[engine] prefixed %d facts with repo label %q", newCount-preCount, repoLabel)
 	}
 
+	// A cluster's intermediate turns stop here. Linking, the graph and the
+	// explainers are recomputed from scratch on every append and only the last
+	// turn's result is kept, so running them after each of twenty-two
+	// repositories was twenty-one full passes over a growing union for nothing
+	// anyone read. The caller that walks a cluster sets deferLinking for every
+	// turn but the last; that turn runs the full pipeline once over the whole
+	// union. The bundle published here carries the store, the repo paths and
+	// the intent the next turn needs, and a meta that says what was extracted.
+	if e.deferLinking {
+		work.Freeze()
+		duration := time.Since(start)
+		deferredPrefix := ""
+		if appendMode {
+			deferredPrefix = repoLabel + "/"
+		}
+		snapshot := &facts.Snapshot{
+			Meta: facts.SnapshotMeta{
+				RepoPath:           absRepo,
+				GeneratedAt:        time.Now().UTC().Format(time.RFC3339),
+				Duration:           duration.String(),
+				Extractors:         usedExtractors,
+				Renderers:          []string{},
+				FileHashes:         fileHashesOf(absRepo, currentHashes),
+				FactCount:          e.store.Count(),
+				EnolaVersion:       version.Version,
+				ExtractorVersion:   cacheVersion,
+				Git:                git,
+				RepoLabel:          repoLabel,
+				Providers:          provRecords,
+				FilesSeen:          len(files),
+				FilesParsed:        e.store.CountFilesWithFacts(files, deferredPrefix),
+				SourceBytes:        e.store.SourceBytesWithFacts(files, deferredPrefix, absRepo),
+				FilesSkipped:       skips.count,
+				DirsSkipped:        skips.dirCount,
+				SkippedSample:      skips.sample,
+				ShadowedExtractors: shadowedExtractors,
+				ParseErrors:        len(parseErrs),
+				ParseErrorSample:   capParseErrors(parseErrs),
+				Census:             e.fileCensus(files, deferredPrefix, skips, usedExtractors, parseErrs),
+			},
+			Facts: e.store.FactsRef(),
+		}
+		e.current.Store(&snapshotBundle{store: work, snapshot: snapshot, repoPaths: workRepoPaths, intent: workIntent,
+			members: memberMetas(prev, appendMode, absRepo, snapshot.Meta)})
+		log.Printf("[engine] %s extracted into the union in %s (%d facts so far); linking and explaining deferred to the cluster's last turn",
+			repoLabel, duration.Round(time.Millisecond), e.store.Count())
+		log.Printf("[engine] timings: walk=%s hash=%s extract=%s", tWalk.Round(time.Millisecond), tHash.Round(time.Millisecond), tExtract.Round(time.Millisecond))
+		return snapshot, nil
+	}
+
 	// 3b. Link repos into a cross-repo "graph of graphs": derive service-level
 	// nodes and consumer→provider edges from HTTP route role matching and
 	// import/shared-lib references. Recomputed from scratch each run (prior
@@ -541,14 +626,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	log.Printf("[engine] produced %d insights using %d explainers", len(allInsights), len(usedExplainers))
 
 	// 5. Build file hashes for the snapshot meta
-	var fileHashes []facts.FileHash
-	for path, hash := range currentHashes {
-		fileHashes = append(fileHashes, facts.FileHash{
-			Path:    path,
-			Hash:    hash,
-			ModTime: fileModTime(filepath.Join(absRepo, path)),
-		})
-	}
+	fileHashes := fileHashesOf(absRepo, currentHashes)
 
 	// 6. Build snapshot.
 	//
@@ -647,7 +725,8 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 	// Publish atomically. This single Store() is the linearization point: before it
 	// readers see the prior bundle, after it the new one — never a half-built store.
-	e.current.Store(&snapshotBundle{store: work, snapshot: snapshot, repoPaths: workRepoPaths, intent: workIntent})
+	e.current.Store(&snapshotBundle{store: work, snapshot: snapshot, repoPaths: workRepoPaths, intent: workIntent,
+		members: memberMetas(prev, appendMode, absRepo, snapshot.Meta)})
 	log.Printf("[engine] snapshot generated in %s", duration)
 	log.Printf("[engine] timings: walk=%s hash=%s extract=%s link=%s graph=%s explain=%s render=%s",
 		tWalk.Round(time.Millisecond), tHash.Round(time.Millisecond), tExtract.Round(time.Millisecond),
@@ -1186,7 +1265,11 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 		return fmt.Errorf("no snapshot generated")
 	}
 
-	outDir := filepath.Join(repoPath, e.cfg.Output.Dir)
+	absRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		return fmt.Errorf("resolving repo path: %w", err)
+	}
+	outDir := filepath.Join(absRepo, e.cfg.Output.Dir)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
@@ -1217,13 +1300,31 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	// whole file in memory to write and then hash it. On a kernel-sized graph that
 	// buffer was 792 MiB, allocated at the end of a run and never released before the
 	// process went back to idle.
+	// A cluster writes the same published bundle to every repository's output
+	// dir. The first write serializes; the rest copy the bytes of that file,
+	// which is the same serialization by construction and a fraction of the
+	// time (a 1.5M-fact union serializes in seconds, copies in a fraction of
+	// one). The copy is keyed on the frozen store, which every generate replaces
+	// and the receipt republish below keeps, so a new generate never copies a
+	// stale file.
 	factsPath := filepath.Join(outDir, "facts.jsonl")
-	factsHash, err := writeFactsJSONL(b.store, factsPath)
-	if err != nil {
-		return err
+	var factsHash string
+	if e.lastFacts.store == b.store && e.lastFacts.path != factsPath && fileExists(e.lastFacts.path) {
+		if err := copyFile(e.lastFacts.path, factsPath); err != nil {
+			return fmt.Errorf("copying facts.jsonl: %w", err)
+		}
+		factsHash = e.lastFacts.digest
+		log.Printf("[engine] wrote %s (copied from this run's first write)", factsPath)
+	} else {
+		var err error
+		factsHash, err = writeFactsJSONL(b.store, factsPath)
+		if err != nil {
+			return err
+		}
+		e.lastFacts = lastFactsWrite{store: b.store, path: factsPath, digest: factsHash}
+		log.Printf("[engine] wrote %s", factsPath)
 	}
 	outputHashes["facts.jsonl"] = factsHash
-	log.Printf("[engine] wrote %s", factsPath)
 
 	// Write insights.json. A nil slice marshals to `null`, not `[]`, so a repository
 	// with no findings produced a document that breaks any consumer iterating the
@@ -1247,8 +1348,15 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	// Record the output hashes on a COPY of the meta rather than mutating the
 	// published (shared, immutable) snapshot in place. SnapshotMeta is a value type,
 	// so this copy shares its slices but overrides only OutputHashes.
-	meta := b.snapshot.Meta
-	meta.OutputHashes = outputHashes
+	// A cluster shares one union and its hashes across every repository dir; the
+	// repository's own provenance (path, git, extractors, walk and parse counts) is
+	// the turn that read it, not the turn that happened to be last.
+	unionMeta := b.snapshot.Meta
+	unionMeta.OutputHashes = outputHashes
+	meta := unionMeta
+	if turn, ok := b.members[absRepo]; ok {
+		meta = withMemberProvenance(unionMeta, turn)
+	}
 
 	// Write snapshot.meta.json (the internal superset, incl. per-file hashes)
 	metaJSON, err := json.MarshalIndent(meta, "", "  ")
@@ -1280,8 +1388,8 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	// just avoids clobbering a newer snapshot in any unexpected interleaving.
 	if e.current.Load() == b {
 		snapCopy := *b.snapshot
-		snapCopy.Meta = meta
-		e.current.CompareAndSwap(b, &snapshotBundle{store: b.store, snapshot: &snapCopy, repoPaths: b.repoPaths, intent: b.intent})
+		snapCopy.Meta = unionMeta
+		e.current.CompareAndSwap(b, &snapshotBundle{store: b.store, snapshot: &snapCopy, repoPaths: b.repoPaths, intent: b.intent, members: b.members})
 	}
 
 	// Record this revision in the architecture history. Last, and non-fatal: it reads
@@ -1298,6 +1406,17 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	e.recordHistory(repoPath, meta, b, factsPath)
 
 	return nil
+}
+
+type lastFactsWrite struct {
+	store  *facts.Store
+	path   string
+	digest string
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // writeFactsJSONL serializes the store straight to path, returning the
@@ -1391,4 +1510,16 @@ func fileModTime(path string) string {
 		return ""
 	}
 	return info.ModTime().UTC().Format(time.RFC3339)
+}
+
+func fileHashesOf(absRepo string, hashes map[string]string) []facts.FileHash {
+	out := make([]facts.FileHash, 0, len(hashes))
+	for path, hash := range hashes {
+		out = append(out, facts.FileHash{
+			Path:    path,
+			Hash:    hash,
+			ModTime: fileModTime(filepath.Join(absRepo, path)),
+		})
+	}
+	return out
 }

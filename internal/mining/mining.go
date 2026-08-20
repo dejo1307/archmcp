@@ -42,6 +42,18 @@ type Exception struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// Witness is one fact that conforms to a candidate's statement, kept so a
+// scaffold can show the rule what it is for before it shows what it forbids.
+// A naming witness carries the name and its file; an edge witness carries the
+// source name, its file and the edge's target.
+type Witness struct {
+	Name   string `json:"name"`
+	File   string `json:"file,omitempty"`
+	Target string `json:"target,omitempty"`
+}
+
+const maxWitnesses = 3
+
 type Candidate struct {
 	Family      string                       `json:"family"`
 	Kind        string                       `json:"kind,omitempty"`
@@ -52,6 +64,7 @@ type Candidate struct {
 	Denominator int                          `json:"denominator"`
 	Confidence  float64                      `json:"confidence"`
 	Exceptions  []Exception                  `json:"exceptions"`
+	Witnesses   []Witness                    `json:"witnesses,omitempty"`
 	Components  []intent.ConstraintComponent `json:"-"`
 	Rule        intent.ConstraintRule        `json:"-"`
 	YAML        string                       `json:"yaml"`

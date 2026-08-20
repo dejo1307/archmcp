@@ -109,6 +109,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 		},
 		Flags: []FlagDoc{
 			{Flag: "--generate", Desc: "Generate a snapshot and exit (do not start MCP server)"},
+			{Flag: "--refresh", Desc: "With --generate on a cluster config: re-read ONE configured repository\ninto the union the last full generate produced, replacing its slice,\nand write the result to that repository and to the union's home. The\nother repositories are not re-read. Needs a prior full --generate."},
 			{Flag: "--explain [path]", Desc: "Print a human-readable repository statistics report and exit.\nA directory is a repository; a file is a config, so a `repos:`\nconfig reports over the whole cluster."},
 			{Flag: "--list", Desc: "List the MCP tools this build can serve"},
 			{Flag: "--status", Desc: "Show MCP server status: uptime, tool usage and estimated value,\naggregated across every repo the server has served. While the server\nis running this also prints the dashboard URL."},
@@ -124,6 +125,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Comment: "Start MCP server with custom config", Command: bin.Name + " my-config.yaml"},
 			{Comment: "Generate a snapshot and exit", Command: bin.Name + " --generate"},
 			{Comment: "Index a whole cluster from one config (see CONFIG_PATH)", Command: bin.Name + " --generate cluster.yaml"},
+			{Comment: "Re-read one repository of that cluster into the existing union", Command: bin.Name + " --generate --refresh ../service-a cluster.yaml"},
 			{Comment: "Print a statistics report for a repository and exit", Command: bin.Name + " --explain /path/to/repo"},
 			{Comment: "Report over a whole cluster", Command: bin.Name + " --explain cluster.yaml"},
 			{Comment: "Generate snapshot with custom config", Command: bin.Name + " --generate my-config.yaml"},

@@ -26,7 +26,10 @@ func (s *scope) mineNaming() []Candidate {
 		kept := map[string][]string{}
 		for _, cluster := range sortedKeys(clusters) {
 			idx := clusters[cluster]
-			pattern, matched := bestNamePattern(ms, idx, s.cfg.MinConfidence)
+			pattern, matched, passedOverTautology := bestNamePattern(cluster, ms, idx, s.cfg.MinConfidence, s.cfg.IncludeTautologies)
+			if passedOverTautology {
+				s.suppressed[FamilyNaming].Tautological++
+			}
 			if pattern == "" {
 				continue
 			}
@@ -65,6 +68,7 @@ func (s *scope) mineNaming() []Candidate {
 				Denominator: len(idx),
 				Confidence:  confidence,
 				Exceptions:  exceptions,
+				Witnesses:   namingWitnesses(ms, idx, pattern),
 				Components:  []intent.ConstraintComponent{component},
 				Rule:        rule,
 			})
@@ -82,11 +86,29 @@ func coveredByAncestor(kept map[string][]string, cluster, pattern string) bool {
 	return false
 }
 
-func bestNamePattern(ms []member, idx []int, minConfidence float64) (string, int) {
+// bestNamePattern ranks the patterns the cluster's names suggest and keeps the
+// best one that clears the confidence floor. Unless tautologies are wanted,
+// patterns the cluster satisfies by construction (its own path, or a module
+// qualifier such as TypeScript's "src/services." in front of every symbol
+// declared there) are passed over rather than ranked, so the strongest real
+// regularity surfaces instead of losing to one that says nothing; the third
+// result reports that one was passed over, for the suppression count.
+func bestNamePattern(cluster string, ms []member, idx []int, minConfidence float64, includeTautologies bool) (string, int, bool) {
 	tally := map[string]int{}
+	tautological := map[string]int{}
 	for _, i := range idx {
 		for _, pattern := range namePatterns(ms[i].name) {
+			if !includeTautologies && constructionSatisfiedPattern(cluster, pattern) {
+				tautological[pattern]++
+				continue
+			}
 			tally[pattern]++
+		}
+	}
+	passedOver := false
+	for _, n := range tautological {
+		if ratio(n, len(idx)) >= minConfidence {
+			passedOver = true
 		}
 	}
 	patterns := sortedKeys(tally)
@@ -117,7 +139,7 @@ func bestNamePattern(ms []member, idx []int, minConfidence float64) (string, int
 			best, bestMatched = pattern, matched
 		}
 	}
-	return best, bestMatched
+	return best, bestMatched, passedOver
 }
 
 func namePatterns(name string) []string {
@@ -184,6 +206,19 @@ func namingExceptions(ms []member, idx []int, pattern string) []Exception {
 			continue
 		}
 		out = append(out, Exception{Name: ms[i].name, File: ms[i].file, Detail: "name outside " + pattern})
+	}
+	return out
+}
+
+func namingWitnesses(ms []member, idx []int, pattern string) []Witness {
+	var out []Witness
+	for _, i := range idx {
+		if len(out) == maxWitnesses {
+			break
+		}
+		if matchMinedName(ms[i].name, pattern) {
+			out = append(out, Witness{Name: ms[i].name, File: ms[i].file})
+		}
 	}
 	return out
 }

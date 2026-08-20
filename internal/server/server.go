@@ -106,6 +106,16 @@ type Server struct {
 	freshBanner string
 	freshAt     time.Time
 
+	// reload restores the workspace's graph from disk and returns its corpus, the
+	// same way startup does. Set by the bootstrap that knows how to restore; nil
+	// means this server never reloads. reloadTriedID is the receipt snapshot id the
+	// last reload attempted, so a receipt whose artifacts cannot be restored is
+	// tried once and not every freshTTL.
+	reload        func() map[string]int
+	reloadMu      sync.Mutex
+	reloadSeenMod time.Time
+	reloadTriedID string
+
 	planFactory plan.EngineFactory
 
 	// updateSaid is set once the "a newer enola exists" notice has been attached to a
@@ -387,6 +397,79 @@ func resultBytes(ctr *mcp.CallToolResult) int {
 	return n
 }
 
+// SetReloader installs the function that restores this workspace's graph from disk
+// (bootstrap.AutoLoadSnapshot behind the import boundary). With it set, the server
+// notices when a sibling process rewrote the artifacts under it, which is what a CLI
+// `--generate` or `--generate --refresh` does while a server is running: the receipt
+// on disk carries a snapshot id the served graph does not, and the served facts and
+// insights are the ones from before. Checked at the freshness cadence, so a rewrite
+// reaches the tools within freshTTL.
+func (s *Server) SetReloader(reload func() map[string]int) {
+	s.reload = reload
+}
+
+// reloadIfRewritten swaps in the on-disk graph when the workspace receipt names a
+// snapshot other than the one being served. It runs before every read tool, so a
+// rewrite is answered from on the very next call; the receipt is a small file and is
+// only re-read when its modification time moved. Skipped while a generate holds
+// genMu: that generate is about to publish a newer bundle and write the receipt
+// itself.
+func (s *Server) reloadIfRewritten() bool {
+	if s.reload == nil || s.cfg == nil {
+		return false
+	}
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	path, err := engine.WorkspaceReceiptPath(s.cfg.Repo)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.ModTime().Equal(s.reloadSeenMod) {
+		return false
+	}
+	s.reloadSeenMod = info.ModTime()
+	gr, err := engine.LoadWorkspaceReceipt(s.cfg.Repo)
+	if err != nil || gr.SnapshotID == "" || gr.SnapshotID == s.reloadTriedID {
+		return false
+	}
+	if snap := s.eng.Snapshot(); snap != nil && snap.Meta.SnapshotID == gr.SnapshotID {
+		return false
+	}
+	if !s.genMu.TryLock() {
+		s.reloadSeenMod = time.Time{}
+		return false
+	}
+	defer s.genMu.Unlock()
+	s.reloadTriedID = gr.SnapshotID
+	log.Printf("[server] artifacts on disk are snapshot %s, serving %s: reloading", shortID(gr.SnapshotID), shortID(s.loadedSnapshotID()))
+	corpus := s.reload()
+	if corpus != nil {
+		s.SeedCorpus(corpus)
+	}
+	s.freshMu.Lock()
+	s.freshAt = time.Time{}
+	s.freshMu.Unlock()
+	return true
+}
+
+func (s *Server) loadedSnapshotID() string {
+	if snap := s.eng.Snapshot(); snap != nil {
+		return snap.Meta.SnapshotID
+	}
+	return ""
+}
+
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	if id == "" {
+		return "(none)"
+	}
+	return id
+}
+
 // freshTTL bounds how often the freshness banner recomputes. The banner shells out
 // to git per repo, so caching it for a short window keeps that cost off the hot
 // path of back-to-back read tools without letting the warning go badly stale.
@@ -405,6 +488,11 @@ func bannerSuppressed(tool string) bool {
 // once, it also covers the enterprise tools that share this MCP server.
 func (s *Server) freshnessMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		if method == "tools/call" {
+			if params, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && !bannerSuppressed(params.Name) {
+				s.reloadIfRewritten()
+			}
+		}
 		result, err := next(ctx, method, req)
 		if err != nil || method != "tools/call" {
 			return result, err
@@ -469,6 +557,11 @@ func (s *Server) freshnessBanner() string {
 // adds no latency and no network call to a tool call. See internal/updatecheck.
 func (s *Server) updateMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		if method == "tools/call" {
+			if params, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && !bannerSuppressed(params.Name) {
+				s.reloadIfRewritten()
+			}
+		}
 		result, err := next(ctx, method, req)
 		if err != nil || method != "tools/call" {
 			return result, err
@@ -2178,7 +2271,7 @@ func (s *Server) currentRepoPath() string {
 }
 
 type queryInsightsArgs struct {
-	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: cycles, layers, crossrepo, coverage, unused-routes, messaging-coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers, intent, constraints, domain, query-loops, entry-points. Empty = all."`
+	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: cycles, layers, crossrepo, coverage, unused-routes, messaging-coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers, intent, constraints, domain, query-loops, entry-points, dead-methods. Empty = all."`
 	Repo          string  `json:"repo,omitempty" jsonschema:"Filter to insights about this repo label. In multi-repo snapshots this matches the repo-prefix path segment of each insight's evidence files (so 'golf' matches golf/... but not golf-ui/...); single-repo snapshots fall back to a substring match. Empty = all repos."`
 	MinConfidence float64 `json:"min_confidence,omitempty" jsonschema:"Only return insights with confidence >= this (0.0-1.0). Default 0 (all). Unused-routes is emitted at 0.6 as a review candidate."`
 	OutputMode    string  `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, evidence sample, actions) → 'full' (complete JSON)."`

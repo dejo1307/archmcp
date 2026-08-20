@@ -216,7 +216,7 @@ type OutputConfig struct {
 var KnownExplainers = []string{
 	"cycles", "layers", "crossrepo", "coverage", "unused-routes", "messaging-coverage",
 	"god-class", "hotspots", "dependency-depth", "exported-surface", "complexity-outliers",
-	"intent", "constraints", "domain", "query-loops", "entry-points",
+	"intent", "constraints", "domain", "query-loops", "entry-points", "dead-methods",
 }
 
 // Default returns a Config with sensible defaults.

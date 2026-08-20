@@ -674,6 +674,17 @@ func (s *Store) TagRange(startIdx int, repo, filePrefix string) {
 	defer s.mu.Unlock()
 	for i := startIdx; i < len(s.facts); i++ {
 		f := &s.facts[i]
+		// Index under the label once. SetRepoRange runs over the same range
+		// first and has already indexed every fact it labelled, so re-adding
+		// here listed each appended fact twice under its repo: ByRepo returned
+		// doubles and CountByRepo counted them, for every repo but the first in
+		// a union.
+		if f.Repo != repo {
+			if f.Repo != "" {
+				s.removeFromIndex(s.byRepo, f.Repo, i)
+			}
+			s.byRepo[repo] = append(s.byRepo[repo], i)
+		}
 		f.Repo = repo
 		if f.File != "" {
 			oldFile := f.File
@@ -682,7 +693,6 @@ func (s *Store) TagRange(startIdx int, repo, filePrefix string) {
 			s.removeFromIndex(s.byFile, oldFile, i)
 			s.byFile[f.File] = append(s.byFile[f.File], i)
 		}
-		s.byRepo[repo] = append(s.byRepo[repo], i)
 	}
 }
 

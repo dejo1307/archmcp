@@ -284,7 +284,7 @@ So enola states what it measured and stops there. The exception it makes for its
 | The default: report everything, fail nothing | `enola check` |
 | Fail on violations of a layer order you declared | `enola check --fail-on=layers` |
 | Also fail on a cross-repo seam nobody declared, a declared rule breached, and new cycles | `enola check --fail-on=layers,intent,cycles,constraints` |
-| Everything above, plus every explainer enola infers rather than proves | `enola check --fail-on=layers,intent,cycles,constraints,crossrepo,coverage,unused-routes,messaging-coverage,god-class,hotspots,dependency-depth,exported-surface,complexity-outliers,domain,query-loops,entry-points --min-confidence=0.8` |
+| Everything above, plus every explainer enola infers rather than proves | `enola check --fail-on=layers,intent,cycles,constraints,crossrepo,coverage,unused-routes,messaging-coverage,god-class,hotspots,dependency-depth,exported-surface,complexity-outliers,domain,query-loops,entry-points,dead-methods --min-confidence=0.8` |
 | Fail if the change spread outside the area you named | `enola check --target=internal/auth --max-spillover=0` |
 | Enforce a policy you set, but only warn this time | `enola check --fail-on=layers --warn-only` |
 
@@ -449,7 +449,7 @@ It is silent for builds from source, never runs when `CI` is set, and turns off 
 - **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** - reproducibility, delta precision, cross-repo coverage and scale, measured on 81 public repositories.
 - **[docs/SNAPSHOTS.md](docs/SNAPSHOTS.md)** - why enola computes a graph on demand and keeps it as an addressable snapshot, rather than maintaining one continuously-updated graph, and where the opposite choice is the right one.
 - **[docs/GLOSSARY.md](docs/GLOSSARY.md)** - the words enola uses in its own output - finding, baseline, receipt, coverage gap, incidental shift - defined in one place.
-- **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** - what the sixteen explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 9,131 findings about a corpus into the one that is about your change.
+- **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** - what the seventeen explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 9,131 findings about a corpus into the one that is about your change.
 - **[docs/extraction/](docs/extraction/)** - per language, what specific code produces which facts, from committed fixtures, and what each extractor deliberately does not resolve.
 - **[docs/EXTENDING.md](docs/EXTENDING.md)** - teaching enola a connection it does not know: binders, cross-repo signals, and the `linking:` vocabulary that fixes a wrong edge from config rather than a patch.
 - **[docs/INTENT.md](docs/INTENT.md)** - declared intent: the `enola-intent.yaml` / cluster / `enola_intent:` frontmatter carriers, the full vocabulary (via, relations, origin channels), what compiles, how verdicts behave, and the working rules for keeping declarations truthful.
@@ -473,7 +473,7 @@ Everything ships here:
 
 - **Every language** - Go, TypeScript/JavaScript/Vue/Svelte/Ember, Python, Java, Kotlin, Scala, Dart/Flutter, Ruby, PHP, Swift, Rust, C/C++, .NET (C#/VB.NET/F#/Razor/XAML), Terraform/HCL, Ansible, gRPC/Protobuf, OpenAPI, AsyncAPI, GraphQL
 - **All 19 MCP tools**, plus the cross-repo linker
-- **All sixteen explainers** - `cycles`, `layers`, `crossrepo`, `coverage`, `unused-routes`, `messaging-coverage`, `god-class`, `hotspots`, `dependency-depth`, `exported-surface`, `complexity-outliers`, `intent`, `constraints`, `domain`, `query-loops`, `entry-points`
+- **All seventeen explainers** - `cycles`, `layers`, `crossrepo`, `coverage`, `unused-routes`, `messaging-coverage`, `god-class`, `hotspots`, `dependency-depth`, `exported-surface`, `complexity-outliers`, `intent`, `constraints`, `domain`, `query-loops`, `entry-points`, `dead-methods`
 - Baselines, `diff_snapshot`, snapshot receipts, the `--explain` report, and the localhost dashboard
 
 ## Acknowledgements

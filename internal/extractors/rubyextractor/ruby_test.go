@@ -1010,7 +1010,7 @@ func TestRoutes_DrawPrefixSeeding(t *testing.T) {
   draw(:admin_routes)
 end
 `
-	_, res := parseRouteFile([]byte(main), "config/routes.rb", "")
+	_, res := parseRouteFile([]byte(main), "config/routes.rb", "", jsonapiContext{format: jsonapiRouteDasherized})
 	draws := res.draws
 	if draws["api_core_v3_routes"] != "/api/core/v3" {
 		t.Errorf("api_core_v3_routes prefix = %q, want /api/core/v3", draws["api_core_v3_routes"])
@@ -1030,7 +1030,7 @@ namespace :event do
   resources :posts, only: [:create]
 end
 `
-	ff, _ := parseRouteFile([]byte(sub), "config/routes/api_v2_routes.rb", draws["api_v2_routes"])
+	ff, _ := parseRouteFile([]byte(sub), "config/routes/api_v2_routes.rb", draws["api_v2_routes"], jsonapiContext{format: jsonapiRouteDasherized})
 	names := map[string]bool{}
 	for _, f := range ff {
 		names[f.Name] = true
@@ -2118,15 +2118,253 @@ end
 			names[f.Name] = f.Props["method"].(string)
 		}
 	}
+	// `on: :member` addresses the resource itself and takes :id; only a bare
+	// verb nests under the parent's :step_id. Verified against
+	// ActionDispatch::Routing::RouteSet on Rails 7.2, which serves
+	// GET /api/steps/:id/audit — this assertion previously read :step_id and
+	// was asserting an endpoint Rails does not serve.
 	for path, method := range map[string]string{
 		"/api/steps/:step_id/status":   "GET",
 		"/api/steps/:step_id/reset":    "POST",
-		"/api/steps/:step_id/audit":    "GET",
+		"/api/steps/:id/audit":         "GET",
 		"/api/steps/get_custom_fields": "GET",
 		"/api/steps/callback":          "POST",
 	} {
 		if names[path] != method {
 			t.Errorf("route %s %s missing or wrong method (got %v)", method, path, names)
+		}
+	}
+}
+
+// TestRoutes_JsonapiResourcesServeNoFormRoutes pins the served set against a
+// production Rails monolith's booted route table: JSONAPI::Resources is an API-only
+// gem, so /new and /edit — which exist in Rails only to render HTML forms — are
+// not served, and reusing the Rails expansion here would invent two routes per
+// declaration.
+func TestRoutes_JsonapiResourcesServeNoFormRoutes(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  namespace :v1 do
+    jsonapi_resources :answers
+    jsonapi_resources :career_sites, only: [:index]
+    jsonapi_resource :company
+  end
+end
+`
+	routes := routeMethods(parseRouteFileAST([]byte(src), "config/routes.rb"))
+
+	for _, m := range []string{"GET", "POST"} {
+		if !routes["/v1/answers"][m] {
+			t.Errorf("/v1/answers: missing %s among %v", m, routes["/v1/answers"])
+		}
+	}
+	for _, m := range []string{"GET", "PATCH", "PUT", "DELETE"} {
+		if !routes["/v1/answers/:id"][m] {
+			t.Errorf("/v1/answers/:id: missing %s among %v", m, routes["/v1/answers/:id"])
+		}
+	}
+	for _, path := range []string{"/v1/answers/new", "/v1/answers/:id/edit", "/v1/company/new", "/v1/company/edit"} {
+		if _, ok := routes[path]; ok {
+			t.Errorf("jsonapi declarations must not serve %s", path)
+		}
+	}
+
+	// The gem's default route formatter dasherizes the segment, so the served
+	// path is /v1/career-sites and /v1/career_sites is served by nothing.
+	if !routes["/v1/career-sites"]["GET"] {
+		t.Errorf("career_sites: want GET /v1/career-sites, got %v", routes["/v1/career-sites"])
+	}
+	if _, ok := routes["/v1/career_sites"]; ok {
+		t.Errorf("underscored segment /v1/career_sites is not served")
+	}
+
+	// A singular jsonapi_resource acts on the bare path: no index, no :id.
+	for _, m := range []string{"GET", "POST", "PATCH", "PUT", "DELETE"} {
+		if !routes["/v1/company"][m] {
+			t.Errorf("/v1/company: missing %s among %v", m, routes["/v1/company"])
+		}
+	}
+	if _, ok := routes["/v1/company/:id"]; ok {
+		t.Errorf("singular jsonapi_resource must not have an :id member path")
+	}
+}
+
+// TestRoutes_JsonapiUnknownRouteFormatIsCounted covers the repository that
+// installs its own route formatter: the URL segment is then decided by Ruby this
+// extractor cannot run, so the declaration is counted rather than expanded.
+func TestRoutes_JsonapiUnknownRouteFormatIsCounted(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  namespace :v1 do
+    jsonapi_resources :career_sites
+  end
+end
+`
+	ff, res := parseRouteFile([]byte(src), "config/routes.rb", "", jsonapiContext{format: jsonapiRouteUnknown})
+	unhandled := res.unresolved
+	if len(ff) != 0 {
+		t.Errorf("an unreadable route formatter must produce no routes, got %d", len(ff))
+	}
+	if unhandled["jsonapi_resources"] != 1 {
+		t.Errorf("the refusal must be counted, got %v", unhandled)
+	}
+}
+
+// TestRoutes_ImmutableResourceServesNoWrites covers the one thing config/routes.rb
+// cannot answer on its own: a resource class declaring `immutable` serves no
+// create, update or destroy, however unfiltered its declaration looks.
+func TestRoutes_ImmutableResourceServesNoWrites(t *testing.T) {
+	src := `Rails.application.routes.draw do
+  namespace :v1 do
+    jsonapi_resources :stage_types
+    jsonapi_resources :answers
+  end
+end
+`
+	resolver := &jsonapiResolver{
+		resourceFiles: map[string]string{"v1/stage_type": "app/resources/v1/stage_type_resource.rb"},
+		relCache: map[string]*jsonapiResourceClass{
+			"app/resources/v1/stage_type_resource.rb": {immutable: true},
+		},
+		declaredTypes: map[string]string{},
+		modelFiles:    map[string]string{},
+		modelCache:    map[string]map[string]string{},
+	}
+	ff, _ := parseRouteFile([]byte(src), "config/routes.rb", "", jsonapiContext{format: jsonapiRouteDasherized, resolver: resolver})
+	routes := routeMethods(ff)
+
+	for _, m := range []string{"POST", "PATCH", "PUT", "DELETE"} {
+		if routes["/v1/stage-types"][m] || routes["/v1/stage-types/:id"][m] {
+			t.Errorf("an immutable resource must not serve %s", m)
+		}
+	}
+	for _, path := range []string{"/v1/stage-types", "/v1/stage-types/:id"} {
+		if !routes[path]["GET"] {
+			t.Errorf("%s: an immutable resource still serves its reads", path)
+		}
+	}
+	// The marker applies to the resource that declares it and to nothing else.
+	if !routes["/v1/answers"]["POST"] {
+		t.Errorf("answers is not immutable and must keep its writes: %v", routes["/v1/answers"])
+	}
+}
+
+// TestJsonapiResolverModulePathDisambiguates pins the reason hop 1 reads the
+// route scope's module path: seven of the monolith's resource classes share a
+// basename across api/v1, api/partner/v1 and api/channel/v1, and a filename-only
+// lookup answers for the wrong one or refuses them all.
+func TestJsonapiResolverModulePathDisambiguates(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("app/resources/api/v1/company_resource.rb", "class CompanyResource\n  has_one :manager\nend\n")
+	write("app/resources/api/partner/v1/company_resource.rb", "class CompanyResource\n  immutable\nend\n")
+
+	files := []string{
+		"app/resources/api/v1/company_resource.rb",
+		"app/resources/api/partner/v1/company_resource.rb",
+	}
+	r := newJsonapiResolver(dir, files)
+
+	v1 := r.resourceClass("api/v1", "companies")
+	if v1 == nil || len(v1.relationships) != 1 || v1.immutable {
+		t.Errorf("api/v1 must resolve to its own class, got %+v", v1)
+	}
+	partner := r.resourceClass("api/partner/v1", "companies")
+	if partner == nil || !partner.immutable {
+		t.Errorf("api/partner/v1 must resolve to its own class, got %+v", partner)
+	}
+	if other := r.resourceClass("api/channel/v1", "companies"); other != nil {
+		t.Errorf("a namespace with no such class resolves to nothing, got %+v", other)
+	}
+}
+
+// TestJsonapiHandlerReadsTheModelAssociation covers hop 3 and hop 4 together: a
+// relationship named for its role rather than its class resolves only through
+// the model, and the controller is the name the target's own declaration used —
+// never a plural this extractor computed.
+func TestJsonapiHandlerReadsTheModelAssociation(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("app/resources/api/v1/company_resource.rb", "class CompanyResource\n  has_one :manager\n  has_one :owner\n  has_many :steps, through: :flows\nend\n")
+	write("app/models/company.rb", "class Company\n  belongs_to :manager, class_name: \"User\"\n  has_many :steps, through: :flows, source: :verdicts\nend\n")
+	r := newJsonapiResolver(dir, []string{
+		"app/resources/api/v1/company_resource.rb",
+		"app/models/company.rb",
+	})
+	r.declare("api/v1", "users")
+	r.declare("api/v1", "owners")
+	r.declare("api/v1", "verdicts")
+	owner := r.resourceClass("api/v1", "companies")
+
+	cases := []struct{ rel, want string }{
+		{"manager", "api/v1/users"},  // the model renames it
+		{"owner", "api/v1/owners"},   // nothing renames it, so the name stands
+		{"steps", "api/v1/verdicts"}, // through:, whose source: names the target
+	}
+	for _, c := range cases {
+		var found jsonapiRelationship
+		for _, rel := range owner.relationships {
+			if rel.name == c.rel {
+				found = rel
+			}
+		}
+		got := r.handlerFor("api/v1", found, owner, "company")
+		if got != c.want {
+			t.Errorf("%s: handler = %q, want %q", c.rel, got, c.want)
+		}
+	}
+
+	// A target nothing declared is a hop that ends in nothing, and the route is
+	// emitted without a handler rather than with a guessed one.
+	bare := newJsonapiResolver(dir, []string{"app/resources/api/v1/company_resource.rb", "app/models/company.rb"})
+	if got := bare.handlerFor("api/v1", jsonapiRelationship{name: "manager"}, owner, "company"); got != "" {
+		t.Errorf("an undeclared target must resolve to nothing, got %q", got)
+	}
+}
+
+// TestParseMount_HashRocketCallKey covers the mount shape the monolith writes and
+// upstream's reader drops: the hash-rocket form whose KEY builds a Rack app inline.
+//
+// `mount Flipper::UI.app(Flipper) => "/admin/flipper"` names its app through a call,
+// not a bare constant. parseMount unwraps exactly that call on the `at:` side already;
+// on the key side it required a constant, so the declaration yielded no constant, and
+// with no constant the whole mount — path included — was dropped. /admin/flipper
+// disappeared from the monolith's route table.
+func TestParseMount_HashRocketCallKey(t *testing.T) {
+	src := []byte(`Rails.application.routes.draw do
+  mount Flipper::UI.app(Flipper) => "/admin/flipper", :constraints => SuperadminConstraint.new
+  mount Sidekiq::Web => "/admin/sidekiq"
+  mount Coverband::Reporters::Web.new, at: "/coverage"
+end
+`)
+	ff, _ := parseRouteFile(src, "config/routes.rb", "", jsonapiContext{format: jsonapiRouteDasherized})
+	got := map[string]string{}
+	for _, f := range ff {
+		if f.Kind == facts.KindRoute && f.Props["method"] == "MOUNT" {
+			got[f.Name], _ = f.Props["mounts"].(string)
+		}
+	}
+	for path, want := range map[string]string{
+		"/admin/flipper/": "Flipper::UI",
+		"/admin/sidekiq/": "Sidekiq::Web",
+		"/coverage/":      "Coverband::Reporters::Web",
+	} {
+		if got[path] != want {
+			t.Errorf("mount at %s = %q, want %q (got %v)", path, got[path], want, got)
 		}
 	}
 }

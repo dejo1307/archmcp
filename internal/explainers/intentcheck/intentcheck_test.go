@@ -205,12 +205,12 @@ func TestIntentCheck_AnchorJoinsOrDangles(t *testing.T) {
 // and affects speak the wiki's own repo vocabulary, whose mapping to cluster
 // labels lives on the wiki's side — names the graph never measured must NOT
 // fire (a 60-repo regression showed them firing on correct pages, e.g. a
-// page scoped "billing" over a cluster labeled "payments-service").
+// page scoped "ledger" over a cluster labeled "ledger-service").
 func TestIntentCheck_ScopeNamesNeverVerdict(t *testing.T) {
 	page := facts.Fact{Kind: facts.KindIntent, Repo: "wiki", File: "wiki/adrs/x.md",
 		Name: "page: wiki/adrs/x.md",
 		Props: map[string]any{"intent_kind": "page", "page_type": "decision",
-			"scope":   []string{"backend", "billing"},
+			"scope":   []string{"backend", "ledger"},
 			"affects": []any{"mobile"},
 			"source":  "wiki/adrs/x.md"}}
 	got := explain(t, repoMarker("backend"), page)

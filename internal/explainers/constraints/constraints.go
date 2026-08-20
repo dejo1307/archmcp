@@ -139,7 +139,7 @@ var memberKinds = []string{facts.KindModule, facts.KindSymbol, facts.KindRoute, 
 // at all, reporting `matches nothing` with both ends of the forbidden edge
 // measured. Naming the kind is the whole opt-in: a declaration that omits
 // `kind:` ranges over memberKinds exactly as before.
-var referenceMemberKinds = []string{facts.KindTestRef, facts.KindFileRef}
+var referenceMemberKinds = []string{facts.KindTestRef, facts.KindFileRef, facts.KindLint}
 
 // reachVias are the edge kinds the private form walks — the same closed
 // vocabulary a rule's via may name, kept as a sorted slice here because the

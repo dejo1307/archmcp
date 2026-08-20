@@ -19,6 +19,31 @@
 //
 // It also needs no eager-load suppression, and that is a property of the shape
 // rather than a shortcut: `includes` cannot help a class-level `find_by`.
+//
+// The association-read shape does need two suppressions, both measured on the
+// same monolith after the first tranche of fixes was judged: a read on an
+// association the method has preloaded (`includes`, `preload`, `eager_load`)
+// is a cache hit per element, not a query, and a read on a local the method
+// typed with `new` is a record that was never saved, so its associations build
+// in memory. Both come from facts the extractor now states (`preloads`,
+// `unpersisted_locals`) rather than from anything inferred here.
+//
+// Rails states most preloads one hop away from the loop, so the block binding
+// carries the chain the iterated relation was built from
+// (`Current.company.users.allowed_to_login.preload`), and the walk back to the
+// association collects the preloads stated on the way: by a scope on the
+// element's model, by a same-class method the chain calls, by the method body
+// itself. A collection that is nothing but a method parameter is typed by its
+// name alone; that finding stays, at half the confidence and saying why. A
+// method that hands its reads to BatchLoader.for is batched by construction.
+//
+// A finding also says where the loop runs, read from the file's place in the
+// Rails layout: the request path, a background job, an admin action, shared
+// code, or a one-off task (rake, maintenance tasks, migrations, seeders,
+// development helpers). One-off tasks are informational, still reported and
+// never graded; loops in spec and test files are not findings at all, since
+// fixtures are iterated by design. Whether a loop is hot is still not
+// measured; the surface is what the path states.
 package queryloops
 
 import (
@@ -61,6 +86,209 @@ type finding struct {
 	// write marks a persistence call rather than a read: it cannot be
 	// eager-loaded away, so it needs a different fix and says so.
 	write bool
+	// weak marks an element typed by nothing but a parameter's name matching an
+	// association: whether the caller preloaded it is not visible here.
+	weak bool
+}
+
+// surface is where a file runs, read from the Rails layout. It decides how a
+// finding is graded, never whether it is one.
+type surface struct {
+	name     string
+	phrase   string
+	oneOff   bool
+	excluded bool
+}
+
+var surfaces = []struct {
+	prefix string
+	surface
+}{
+	{"spec/", surface{name: "test", excluded: true}},
+	{"test/", surface{name: "test", excluded: true}},
+	{"db/migrate/", surface{name: "task", phrase: "runs once, in a migration", oneOff: true}},
+	{"db/seeds", surface{name: "task", phrase: "runs once, as a seed", oneOff: true}},
+	{"lib/tasks/", surface{name: "task", phrase: "runs as a one-off task", oneOff: true}},
+	{"app/tasks/", surface{name: "task", phrase: "runs as a one-off maintenance task", oneOff: true}},
+	{"lib/development", surface{name: "task", phrase: "runs as a development helper", oneOff: true}},
+	{"app/services/development/", surface{name: "task", phrase: "runs as a development helper", oneOff: true}},
+	{"app/controllers/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/graphql/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/resources/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/serializers/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/presenters/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/channels/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/mcp_public_tools/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/policies/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/helpers/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/views/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/components/", surface{name: "request", phrase: "runs on the request path"}},
+	{"app/jobs/", surface{name: "job", phrase: "runs as a background job"}},
+	{"app/workers/", surface{name: "job", phrase: "runs as a background job"}},
+	{"app/mailers/", surface{name: "job", phrase: "runs as a background job"}},
+	{"app/importers/", surface{name: "job", phrase: "runs as an import job"}},
+	{"lib/imports/", surface{name: "job", phrase: "runs as an import job"}},
+	{"app/avo/", surface{name: "admin", phrase: "runs as an admin action"}},
+	{"app/admin/", surface{name: "admin", phrase: "runs as an admin action"}},
+}
+
+var sharedSurface = surface{name: "shared", phrase: "runs wherever it is called from"}
+
+// surfaceOf reads the surface from the file path. A union snapshot prefixes
+// paths with the repo label, so leading segments are dropped until the path
+// starts at a Rails root (app/, lib/, db/, spec/, test/); a path that never
+// does, or that matches no entry, is shared.
+func surfaceOf(file string) surface {
+	path := file
+	for !startsAtRoot(path) {
+		i := strings.Index(path, "/")
+		if i < 0 {
+			return sharedSurface
+		}
+		path = path[i+1:]
+	}
+	for _, s := range surfaces {
+		if strings.HasPrefix(path, s.prefix) {
+			return s.surface
+		}
+	}
+	return sharedSurface
+}
+
+func startsAtRoot(path string) bool {
+	for _, root := range []string{"app/", "lib/", "db/", "spec/", "test/"} {
+		if strings.HasPrefix(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
+// relationChain are the ActiveRecord relation methods a chain passes through
+// without changing what its elements are.
+var relationChain = map[string]bool{
+	"where": true, "not": true, "order": true, "reorder": true, "limit": true,
+	"offset": true, "includes": true, "preload": true, "eager_load": true,
+	"joins": true, "left_joins": true, "left_outer_joins": true, "distinct": true,
+	"group": true, "having": true, "select": true, "references": true,
+	"merge": true, "unscope": true, "unscoped": true, "readonly": true,
+	"lock": true, "none": true, "all": true, "reverse_order": true,
+	"rewhere": true, "or": true, "and": true, "extending": true, "strict_loading": true,
+	"in_batches": true, "find_each": true, "find_in_batches": true, "each": true,
+	"to_a": true, "load": true, "reload": true, "records": true,
+}
+
+// preloadIndex answers where a preload was stated other than in the loop's own
+// body: scopes by (model, name), and methods by their qualified name.
+type preloadIndex struct {
+	scopes  map[string]map[string][]string
+	methods map[string][]string
+}
+
+func buildPreloadIndex(store *facts.Store) preloadIndex {
+	idx := preloadIndex{scopes: map[string]map[string][]string{}, methods: map[string][]string{}}
+	for _, fact := range store.ByKind(facts.KindSymbol) {
+		if lang, _ := fact.Props["language"].(string); lang != "ruby" {
+			continue
+		}
+		preloads := propStrings(fact.Props["preloads"])
+		if isScope, _ := fact.Props["scope"].(bool); isScope {
+			model, _ := fact.Props["model"].(string)
+			name := strings.TrimPrefix(fact.Name, "scope:")
+			if model == "" || name == "" {
+				continue
+			}
+			if idx.scopes[model] == nil {
+				idx.scopes[model] = map[string][]string{}
+			}
+			idx.scopes[model][name] = preloads
+			continue
+		}
+		if len(preloads) > 0 {
+			idx.methods[fact.Name] = preloads
+		}
+	}
+	return idx
+}
+
+// resolution is what a block binding's chain says about the loop's elements.
+type resolution struct {
+	element   string
+	preloaded map[string]bool
+	weak      bool
+}
+
+// resolveChain walks a binding's chain from the iterator inward. Relation
+// methods are skipped; the first segment that names exactly one association
+// fixes the element type, and a scope on that model or a same-class method
+// passed on the way contributes the preloads it states. `owner` is the class of
+// the method the loop is in, so `users.each` joins `Owner#users` when the class
+// defines it. A collection that resolves only through a name that is one of the
+// method's own parameters is typed by that name alone, and says so.
+func resolveChain(collection, owner string, params, models map[string]bool, associations associationIndex, preloads preloadIndex) (resolution, bool) {
+	segments := strings.Split(collection, ".")
+	res := resolution{preloaded: map[string]bool{}}
+	base := -1
+	for i := len(segments) - 1; i >= 0; i-- {
+		seg := segments[i]
+		if relationChain[seg] {
+			continue
+		}
+		if elements := associations.targetsOf(seg); len(elements) == 1 {
+			res.element = elements[0]
+			base = i
+			break
+		}
+		if preloads.isScope(seg) {
+			continue
+		}
+		if i == 0 && (models[demodulize(seg)] || preloads.scopes[demodulize(seg)] != nil) {
+			res.element = demodulize(seg)
+			base = i
+			break
+		}
+		return resolution{}, false
+	}
+	if base < 0 {
+		return resolution{}, false
+	}
+	if base == 0 && len(segments) == 1 && params[segments[0]] {
+		res.weak = true
+	}
+	if base == 0 && owner != "" {
+		for _, sep := range []string{"#", "."} {
+			for _, p := range preloads.methods[owner+sep+segments[0]] {
+				res.preloaded[p] = true
+			}
+		}
+	}
+	for i := base + 1; i < len(segments); i++ {
+		if scoped, ok := preloads.scopes[res.element][segments[i]]; ok {
+			for _, p := range scoped {
+				res.preloaded[p] = true
+			}
+		}
+	}
+	return res, true
+}
+
+// isScope reports whether name is a scope on any model, which lets the walk
+// continue inward to the association or constant that types the elements; the
+// scope's preloads join only once that model is known.
+func (i preloadIndex) isScope(name string) bool {
+	for _, byName := range i.scopes {
+		if _, ok := byName[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func ownerOf(symbol string) string {
+	if i := strings.LastIndexAny(symbol, "#."); i >= 0 {
+		return symbol[:i]
+	}
+	return ""
 }
 
 // persistMethods write to the database on an instance. Kept apart from
@@ -97,6 +325,14 @@ func (i associationIndex) targetsOf(collection string) []string {
 	return out
 }
 
+func stringSet(values []string) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for _, v := range values {
+		out[v] = true
+	}
+	return out
+}
+
 func (i associationIndex) on(model, method string) string {
 	if byModel, ok := i.onType[model]; ok {
 		return byModel[method]
@@ -116,6 +352,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	if len(models) == 0 && len(associations.byName) == 0 {
 		return nil, nil
 	}
+	preloadsElsewhere := buildPreloadIndex(store)
 
 	var found []finding
 	for _, fact := range store.ByKind(facts.KindSymbol) {
@@ -129,6 +366,11 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 		// A local typed by assignment resolves the same way a block parameter
 		// does, and gives the same guarantee: the receiver's type is stated in
 		// the source rather than guessed from a name.
+		preloaded := stringSet(propStrings(fact.Props["preloads"]))
+		unpersisted := stringSet(propStrings(fact.Props["unpersisted_locals"]))
+		batched, _ := fact.Props["batch_loader"].(bool)
+		params := stringSet(propStrings(fact.Props["params"]))
+		owner := ownerOf(fact.Name)
 		for _, typed := range propStrings(fact.Props["local_types"]) {
 			name, class, ok := strings.Cut(typed, "=")
 			if !ok {
@@ -152,6 +394,11 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 					})
 					continue
 				}
+				// A record typed by `new` was never saved; reading its associations
+				// builds in memory. A preloaded association is a cache hit.
+				if unpersisted[name] || preloaded[method] || batched {
+					continue
+				}
 				if target := associations.on(demodulize(class), method); target != "" {
 					found = append(found, finding{
 						symbol: fact.Name, file: fact.File, repo: fact.Repo,
@@ -170,23 +417,24 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 			// more than one candidate type, and picking one would be the
 			// name-coincidence guess that produced seven false findings before.
 			// A missing edge beats a wrong one.
-			elements := associations.targetsOf(collection)
-			if len(elements) != 1 {
+			res, ok := resolveChain(collection, owner, params, models, associations, preloadsElsewhere)
+			if !ok || batched {
 				continue
 			}
-			for _, element := range elements {
-				for _, call := range propStrings(fact.Props["calls_in_loop"]) {
-					receiver, method, dotted := strings.Cut(call, ".")
-					if !dotted || receiver != param {
-						continue
-					}
-					if target := associations.on(element, method); target != "" {
-						found = append(found, finding{
-							symbol: fact.Name, file: fact.File, repo: fact.Repo,
-							call: call, depth: propInt(fact.Props["loop_depth"]),
-							element: element, target: target,
-						})
-					}
+			for _, call := range propStrings(fact.Props["calls_in_loop"]) {
+				receiver, method, dotted := strings.Cut(call, ".")
+				if !dotted || receiver != param {
+					continue
+				}
+				if preloaded[method] || res.preloaded[method] {
+					continue
+				}
+				if target := associations.on(res.element, method); target != "" {
+					found = append(found, finding{
+						symbol: fact.Name, file: fact.File, repo: fact.Repo,
+						call: call, depth: propInt(fact.Props["loop_depth"]),
+						element: res.element, target: target, weak: res.weak,
+					})
 				}
 			}
 		}
@@ -276,19 +524,41 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 				"confirm with a query-count test that fails against the current code",
 			}
 		}
-		out = append(out, facts.Insight{
-			Title:       fmt.Sprintf("%s issues %s once per iteration", f.symbol, f.call),
-			Description: description,
-			// Below 1.0 and deliberately so: the loop is measured, the receiver is
-			// measured, and whether the loop is hot is not. This is a candidate to
-			// verify against a query count, which is the one oracle available here.
-			Confidence: 0.8,
-			Evidence: []facts.Evidence{{
+		// Below 1.0 and deliberately so: the loop is measured, the receiver is
+		// measured, and whether the loop is hot is not. This is a candidate to
+		// verify against a query count, which is the one oracle available here.
+		where := surfaceOf(f.file)
+		if where.excluded {
+			continue
+		}
+		confidence := 0.8
+		evidence := []facts.Evidence{{
+			File:   f.file,
+			Symbol: f.symbol,
+			Detail: fmt.Sprintf("%s at loop depth %d", f.call, f.depth),
+		}, {
+			File:   f.file,
+			Symbol: f.symbol,
+			Detail: fmt.Sprintf("surface: %s, %s", where.name, where.phrase),
+		}}
+		if where.oneOff {
+			confidence = 0.5
+		}
+		if f.weak {
+			confidence = 0.5
+			evidence = append(evidence, facts.Evidence{
 				File:   f.file,
 				Symbol: f.symbol,
-				Detail: fmt.Sprintf("%s at loop depth %d", f.call, f.depth),
-			}},
-			Actions: actions,
+				Detail: fmt.Sprintf("the collection arrives as the parameter %q and is typed by that name alone; a preload on the caller's relation would make this silent", strings.SplitN(f.call, ".", 2)[0]),
+			})
+		}
+		out = append(out, facts.Insight{
+			Title:         fmt.Sprintf("%s issues %s once per iteration", f.symbol, f.call),
+			Description:   description,
+			Confidence:    confidence,
+			Evidence:      evidence,
+			Actions:       actions,
+			Informational: where.oneOff,
 		})
 	}
 	return out, nil

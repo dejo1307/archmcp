@@ -175,3 +175,47 @@ func TestCompute_ABaselineWithNoDeclarationCannotCreditAFix(t *testing.T) {
 		t.Fatalf("FindingsUnattributed = %+v, want the finding whose declaration the baseline never carried", d.FindingsUnattributed)
 	}
 }
+
+// The mirror of undeclared, on the new side. A pull request that declares a
+// convention over a codebase with standing exceptions to it filed every one of
+// them under "new findings introduced by this change": the code had not moved,
+// the law had. Those are the rule's starting baseline, held apart from breaches
+// the change made on code it touched, which stay regressions even under a rule
+// the same change declares.
+func TestCompute_ANewRuleSurfacesStandingBreachesAsDeclaredNotNew(t *testing.T) {
+	component := componentFact("errors", map[string]string{"superclass": "StandardError"})
+	form := map[string]any{"require_name": "errors", "pattern": "*Error"}
+	standing := constraintInsight("Constraint errors-are-recognisable violated: Failed does not match *Error", "Failed")
+	made := constraintInsight("Constraint errors-are-recognisable violated: Broken does not match *Error", "Broken")
+
+	base := snap([]facts.Fact{component, errorClass("Failed", "StandardError")}, nil)
+	cur := snap([]facts.Fact{component, ruleFact("errors-are-recognisable", form),
+		errorClass("Failed", "StandardError"), errorClass("Broken", "StandardError")},
+		[]facts.Insight{standing, made})
+
+	d := Compute(base, cur)
+	if len(d.FindingsDeclared) != 1 || d.FindingsDeclared[0].Title != standing.Title {
+		t.Fatalf("FindingsDeclared = %+v, want the standing breach the new rule surfaced", d.FindingsDeclared)
+	}
+	if len(d.FindingsNew) != 1 || d.FindingsNew[0].Title != made.Title {
+		t.Fatalf("FindingsNew = %+v, want the breach the change made on code it added", d.FindingsNew)
+	}
+}
+
+// Removing an exemption re-asks the question of that one witness; the code did
+// not move, so that is declared too. A rule whose form is unchanged and whose
+// witness was never exempt reports a genuine regression as before.
+func TestCompute_RemovingAnExemptionIsADeclarationArrivingForThatWitness(t *testing.T) {
+	component := componentFact("errors", map[string]string{"superclass": "StandardError"})
+	form := map[string]any{"require_name": "errors", "pattern": "*Error"}
+	reasked := constraintInsight("Constraint errors-are-recognisable violated: Failed does not match *Error", "Failed")
+
+	d := Compute(
+		snap([]facts.Fact{component, exemptedRule("errors-are-recognisable", form, "Failed does not match *Error"),
+			errorClass("Failed", "StandardError")}, nil),
+		snap([]facts.Fact{component, ruleFact("errors-are-recognisable", form),
+			errorClass("Failed", "StandardError")}, []facts.Insight{reasked}))
+	if len(d.FindingsDeclared) != 1 || len(d.FindingsNew) != 0 {
+		t.Fatalf("declared = %+v new = %+v, want the re-asked witness declared and nothing new", d.FindingsDeclared, d.FindingsNew)
+	}
+}

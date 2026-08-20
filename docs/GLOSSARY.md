@@ -50,6 +50,7 @@ vocabulary you type, not internals:
 | `domain` | what a framework's declarations say about the data and the API |
 | `query-loops` | a database query issued once per iteration of a data-sized loop |
 | `entry-points` | a framework invokes this symbol directly, so reachability has a root here |
+| `dead-methods` | a Ruby method whose name no call edge in the graph uses, or only spec files use |
 
 Only the first four ever reach confidence `1.0`. The rest estimate — see
 [docs/EXPLAINERS.md](EXPLAINERS.md) for what each computes and why that distinction is

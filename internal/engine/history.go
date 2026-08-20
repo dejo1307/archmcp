@@ -36,6 +36,15 @@ func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snap
 		log.Printf("[engine] warning: cannot locate history dir: %v", err)
 		return
 	}
+	// A cluster writes one union to every repository's output dir, and with a
+	// shared history store every one of those writes resolves to the same root
+	// with the same revision. Append refuses the duplicate, but only after the
+	// facts file has been read back and diffed against previous/, which on a
+	// 1.5M-fact union is seconds per dir. Remembering what this run recorded
+	// skips that work without changing what the store ends up holding.
+	if e.historyRecorded[root] == meta.SnapshotID {
+		return
+	}
 
 	// The published snapshot carries the meta WITHOUT output hashes; the copy passed in
 	// has them. Neither matters to the delta, but the entry should describe the
@@ -51,7 +60,7 @@ func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snap
 		Git:     meta.Git,
 		Parents: gitParents(repoPath),
 		Repos:   repoRefs(e, b),
-		Summary: summarize(&current, previousSideFor(repoPath, e.cfg.Output.Dir)),
+		Summary: e.summarizeOnce(&current, previousSideFor(repoPath, e.cfg.Output.Dir)),
 	}
 
 	opts := inthistory.Options{
@@ -65,6 +74,10 @@ func (e *Engine) recordHistory(repoPath string, meta facts.SnapshotMeta, b *snap
 		log.Printf("[engine] warning: could not record history: %v", err)
 		return
 	}
+	if e.historyRecorded == nil {
+		e.historyRecorded = map[string]string{}
+	}
+	e.historyRecorded[root] = meta.SnapshotID
 	if recorded {
 		log.Printf("[engine] recorded history revision %s (%s)", entry.Short(), entry.Summary.Headline())
 	}
@@ -167,6 +180,42 @@ func previousSideFor(repoPath, outputDir string) *previousSide {
 		}
 	}
 	return p
+}
+
+// summarizeOnce is summarize with one run's results remembered. A cluster writes
+// one union to many repository dirs whose previous/ sides are, on a rerun, the
+// same earlier union; the delta between the same two snapshots is the same
+// number wherever it is computed, and computing it streams the previous facts
+// file three times (on a 1.5M-fact union, 26 s per dir). The key is what the
+// two sides' receipts say the files hold: the previous meta's own output hashes
+// and the current meta's, so a previous/ without those hashes, or a differing
+// one, is summarized afresh.
+func (e *Engine) summarizeOnce(current *facts.Snapshot, previous *previousSide) pkghistory.Summary {
+	key := summaryKey(current.Meta, previous)
+	if key == "" {
+		return summarize(current, previous)
+	}
+	if s, ok := e.summaries[key]; ok {
+		return s
+	}
+	s := summarize(current, previous)
+	if e.summaries == nil {
+		e.summaries = map[string]pkghistory.Summary{}
+	}
+	e.summaries[key] = s
+	return s
+}
+
+func summaryKey(current facts.SnapshotMeta, previous *previousSide) string {
+	if previous == nil {
+		return ""
+	}
+	prevFacts, prevInsights := previous.meta.OutputHashes["facts.jsonl"], previous.meta.OutputHashes["insights.json"]
+	curFacts, curInsights := current.OutputHashes["facts.jsonl"], current.OutputHashes["insights.json"]
+	if prevFacts == "" || prevInsights == "" || curFacts == "" || curInsights == "" {
+		return ""
+	}
+	return strings.Join([]string{current.SnapshotID, curFacts, curInsights, prevFacts, prevInsights, previous.meta.SnapshotID}, "|")
 }
 
 // summarize reduces a snapshot pair to the counts a log line needs.

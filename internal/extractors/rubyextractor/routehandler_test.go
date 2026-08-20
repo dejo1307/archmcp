@@ -143,15 +143,35 @@ end
 	}
 }
 
-// A singular `resource` is served by a PLURAL controller in Rails.
-func TestRouteHandler_SingularResourceUsesPluralController(t *testing.T) {
+// Rails serves a singular `resource` from the controller named by
+// ActiveSupport's pluralize, which knows the irregulars this extractor's
+// inflector does not: `resource :person` is served by people, and the naive
+// rule answers persons. Every singular resource is decided by that inflector,
+// so none of them may be answered from it — with no explicit `controller:` the
+// declaration claims no handler at all. `controller:` states the answer
+// outright and is read whether or not the name inflects.
+func TestRouteHandler_SingularResourceDeclinesWithoutExplicitController(t *testing.T) {
 	idx := routeIndex(t, `
 Rails.application.routes.draw do
+  resource :person, only: [:show]
   resource :profile, only: [:show]
+  resource :session, only: [:show], controller: 'sessions'
 end
 `)
-	if f := idx["GET /profile"]; f.Props["handler"] != "profiles#show" {
-		t.Errorf("handler = %v, want profiles#show", f.Props["handler"])
+	for _, key := range []string{"GET /person", "GET /profile"} {
+		f, ok := idx[key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", key, routeKeys(idx))
+		}
+		if got, present := f.Props["handler"]; present {
+			t.Errorf("%s handler = %v, want none: the controller is decided by an inflector this extractor does not have", key, got)
+		}
+		if got := handledBy(f); got != "" {
+			t.Errorf("%s handled_by = %q, want none", key, got)
+		}
+	}
+	if f := idx["GET /session"]; f.Props["handler"] != "sessions#show" {
+		t.Errorf("explicit controller: ignored: %v", f.Props["handler"])
 	}
 }
 
@@ -365,5 +385,427 @@ end
 		if _, ok := idx[want]; !ok {
 			t.Errorf("missing %q; have:\n  %s", want, routeKeys(idx))
 		}
+	}
+}
+
+// A plural `resources` takes its name verbatim — Rails' `Resource` sets
+// `@controller = options[:controller] || @name` and does not inflect it. The
+// name that tells the rule apart is an irregular plural: `resources :people` is
+// served by people, and a channel that pluralizes here answers peoples. "posts"
+// cannot tell them apart, because it pluralizes to itself.
+func TestRouteHandler_PluralResourcesTakeTheNameVerbatim(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  resources :people, only: [:index]
+  resources :meeting_self_schedule, only: [:index]
+end
+`)
+	for _, tc := range []struct{ key, handler, symbol string }{
+		{"GET /people", "people#index", "PeopleController#index"},
+		{"GET /meeting_self_schedule", "meeting_self_schedule#index", ""},
+	} {
+		f, ok := idx[tc.key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", tc.key, routeKeys(idx))
+		}
+		if got := f.Props["handler"]; got != tc.handler {
+			t.Errorf("%s handler = %v, want %q", tc.key, got, tc.handler)
+		}
+		if tc.symbol != "" {
+			if got := handledBy(f); got != tc.symbol {
+				t.Errorf("%s handled_by = %q, want %q", tc.key, got, tc.symbol)
+			}
+		}
+	}
+}
+
+// Rails composes the controller namespace where the ROUTE is created, not where the
+// resource is declared, so a module scope opened in between belongs to the routes after
+// it. Snapshotting the namespace onto the resource loses it.
+func TestRouteHandler_ModuleComposesAtTheRouteSite(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  resources :reports, only: [] do
+    scope module: :audit do
+      get :history
+    end
+  end
+end
+`)
+	f, ok := idx["GET /reports/:report_id/history"]
+	if !ok {
+		t.Fatalf("missing nested route; have:\n  %s", routeKeys(idx))
+	}
+	if got := f.Props["handler"]; got != "audit/reports#history" {
+		t.Errorf("handler = %v, want audit/reports#history", got)
+	}
+}
+
+// The `controller ... do` block form follows the same rule, so the two spellings of one
+// route agree about who serves it. Composing at the block instead of at the route both
+// loses a module opened inside the block and repeats the one already applied.
+func TestRouteHandler_ControllerBlockComposesAtTheRouteSite(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  scope module: "ops" do
+    controller "audit/exports" do
+      get :daily
+    end
+
+    controller :reconciliations do
+      scope module: :nightly do
+        get :rollup
+      end
+    end
+  end
+end
+`)
+	for _, tc := range []struct{ key, handler string }{
+		{"GET /daily", "ops/audit/exports#daily"},
+		{"GET /rollup", "ops/nightly/reconciliations#rollup"},
+	} {
+		f, ok := idx[tc.key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", tc.key, routeKeys(idx))
+		}
+		if got := f.Props["handler"]; got != tc.handler {
+			t.Errorf("%s handler = %v, want %q", tc.key, got, tc.handler)
+		}
+	}
+}
+
+// `action:` is written both ways and the symbol form is the commoner one. Reading only
+// the string form leaves the route with NO handler whenever the path is not itself a
+// bare action name, which is exactly when the option is written.
+func TestRouteHandler_ActionOptionInEitherSpelling(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  resources :invoices, only: [] do
+    get "summary/:period", action: :summary, on: :collection
+    get "ledger/:period", action: "ledger", on: :collection
+  end
+end
+`)
+	for _, tc := range []struct{ key, handler string }{
+		{"GET /invoices/summary/:period", "invoices#summary"},
+		{"GET /invoices/ledger/:period", "invoices#ledger"},
+	} {
+		f, ok := idx[tc.key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", tc.key, routeKeys(idx))
+		}
+		if got := f.Props["handler"]; got != tc.handler {
+			t.Errorf("%s handler = %v, want %q", tc.key, got, tc.handler)
+		}
+	}
+}
+
+// A verb may name its own controller, and Rails reads that name off the call
+// before falling back to the scope: `map_match(..., controller: nil, ...)` then
+// `controller ||= @scope[:controller]`. Reading `action:` while leaving
+// `controller:` unread is worse than reading neither — the route resolves to
+// whichever controller encloses it, which exists and does not serve it.
+func TestRouteHandler_VerbLevelControllerOption(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  namespace :insights do
+    resources :groups, only: [] do
+      get :group_analytics, controller: "group_analytics/stage_types", action: :index, on: :collection
+      get :retention, controller: :retention_reports, action: :show, on: :collection
+    end
+  end
+end
+`)
+	for _, tc := range []struct{ key, handler string }{
+		{"GET /insights/groups/group_analytics", "insights/group_analytics/stage_types#index"},
+		{"GET /insights/groups/retention", "insights/retention_reports#show"},
+	} {
+		f, ok := idx[tc.key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", tc.key, routeKeys(idx))
+		}
+		if got := f.Props["handler"]; got != tc.handler {
+			t.Errorf("%s handler = %v, want %q", tc.key, got, tc.handler)
+		}
+	}
+}
+
+// add_controller_module's first branch: a controller written with a leading
+// slash is stripped of the slash and NOT composed with the module
+// (`if controller&.start_with?("/") then -controller[1..-1]`). Trimming the
+// slash where the option is read erases the marker, and the route is then
+// reported under a namespace Rails never applies.
+func TestRouteHandler_LeadingSlashEscapesTheModule(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  namespace :api do
+    resources :exports, only: [:index], controller: "/admin/exports"
+    get :audit, controller: "/admin/audits", action: :index
+    resources :jobs, only: [:index], controller: "admin/jobs"
+  end
+end
+`)
+	for _, tc := range []struct{ key, handler string }{
+		{"GET /api/exports", "admin/exports#index"},
+		{"GET /api/audit", "admin/audits#index"},
+		{"GET /api/jobs", "api/admin/jobs#index"},
+	} {
+		f, ok := idx[tc.key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", tc.key, routeKeys(idx))
+		}
+		if got := f.Props["handler"]; got != tc.handler {
+			t.Errorf("%s handler = %v, want %q", tc.key, got, tc.handler)
+		}
+	}
+}
+
+// A singular resource whose controller could not be named must stop the search
+// rather than let it walk outward to an enclosing resource. Rails serves
+// /companies/:company_id/profile/settings from profiles#settings; answering
+// companies#settings names a controller that exists and serves other routes,
+// which is the one error a consumer cannot detect.
+func TestRouteHandler_UndecidableControllerDoesNotInheritOuterResource(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  resources :companies, only: [] do
+    resource :profile, only: [] do
+      get :settings
+    end
+    resource :billing, only: [], controller: "billing_accounts" do
+      get :invoices
+    end
+  end
+end
+`)
+	f, ok := idx["GET /companies/:company_id/profile/settings"]
+	if !ok {
+		t.Fatalf("missing profile route; have:\n  %s", routeKeys(idx))
+	}
+	if got, present := f.Props["handler"]; present {
+		t.Errorf("handler = %v, want none: companies does not serve this route", got)
+	}
+	b, ok := idx["GET /companies/:company_id/billing/invoices"]
+	if !ok {
+		t.Fatalf("missing billing route; have:\n  %s", routeKeys(idx))
+	}
+	if got := b.Props["handler"]; got != "billing_accounts#invoices" {
+		t.Errorf("handler = %v, want billing_accounts#invoices", got)
+	}
+}
+
+// `scope controller:` writes the same @scope[:controller] the `controller ... do`
+// form does — merge_controller_scope keeps the child and discards the parent — and
+// mapper.rb's `controller ||= @scope[:controller]` reads it. Leaving it unread does
+// not leave the routes inside without a controller: the search walks outward to the
+// enclosing resource and names one that exists and serves entirely different routes,
+// which is the shape 26 of the monolith's routes were in.
+func TestRouteHandler_ScopeControllerOption(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  namespace :assistant do
+    scope controller: "copilot" do
+      post :chart_block
+    end
+    scope controller: :diagnostics do
+      get :ping
+    end
+    scope controller: "/toolbox" do
+      get :diagnose
+    end
+    scope controller: "reporting" do
+      scope module: "beta" do
+        get :usage
+      end
+      resources :things, only: [:index]
+      controller "innermost" do
+        get :nested
+      end
+    end
+  end
+end
+`)
+	for _, tc := range []struct{ key, handler string }{
+		{"POST /assistant/chart_block", "assistant/copilot#chart_block"},
+		{"GET /assistant/ping", "assistant/diagnostics#ping"},
+		{"GET /assistant/diagnose", "toolbox#diagnose"},
+		{"GET /assistant/usage", "assistant/beta/reporting#usage"},
+		{"GET /assistant/things", "assistant/things#index"},
+		{"GET /assistant/nested", "assistant/innermost#nested"},
+	} {
+		f, ok := idx[tc.key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", tc.key, routeKeys(idx))
+		}
+		if got := f.Props["handler"]; got != tc.handler {
+			t.Errorf("%s handler = %v, want %q", tc.key, got, tc.handler)
+		}
+	}
+}
+
+// A `scope controller:` written with a value this extractor cannot read stops the
+// search rather than falling through it. Rails serves /briefings/:briefing_id/digest
+// from whatever the local names; briefings is not a second-best answer to that
+// question but a different controller.
+func TestRouteHandler_UnreadableScopeControllerDeclines(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  chosen = "copilot"
+  resources :briefings, only: [] do
+    scope controller: chosen do
+      get :digest
+    end
+  end
+end
+`)
+	f, ok := idx["GET /briefings/:briefing_id/digest"]
+	if !ok {
+		t.Fatalf("missing digest route; have:\n  %s", routeKeys(idx))
+	}
+	if got, present := f.Props["handler"]; present {
+		t.Errorf("handler = %v, want none: briefings does not serve this route", got)
+	}
+}
+
+// add_controller_module's first branch applies to the controller Rails splits out of
+// a `to:` string exactly as it does to a `controller:` option: the slash is stripped
+// and the name returned UNCOMPOSED. Honouring the marker for one spelling and not the
+// other put every `to: "/x#y"` under a namespace Rails does not apply — and joined the
+// module onto a name still carrying its slash, which no application has.
+func TestRouteHandler_LeadingSlashEscapesTheModuleForTo(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  namespace :ledger do
+    get "exports_by_hand", to: "/admin/exports#index"
+    get "jobs_by_hand", to: "admin/jobs#index"
+    get "rocket_by_hand" => "/admin/rockets#index"
+    root to: "/admin/home#index"
+  end
+end
+`)
+	for _, tc := range []struct{ key, handler string }{
+		{"GET /ledger/exports_by_hand", "admin/exports#index"},
+		{"GET /ledger/jobs_by_hand", "ledger/admin/jobs#index"},
+		{"GET /ledger/rocket_by_hand", "admin/rockets#index"},
+		{"GET /ledger/", "admin/home#index"},
+	} {
+		f, ok := idx[tc.key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", tc.key, routeKeys(idx))
+		}
+		if got := f.Props["handler"]; got != tc.handler {
+			t.Errorf("%s handler = %v, want %q", tc.key, got, tc.handler)
+		}
+	}
+}
+
+// Ruby writes a hash key two ways and Rails reads both. The grammar gives a label key
+// text with a trailing colon and a hash-rocket key text with a LEADING one, so trimming
+// only the trailing colon matched `controller: "x"` and left `:controller => "x"`
+// invisible — along with `:on => :collection`, which decides the path the route is
+// served at, and every other option.
+func TestRouteHandler_HashRocketOptionSpelling(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  resources :widgets, :only => [] do
+    get :gadgets, :controller => "gizmos", :action => :list, :on => :collection
+    get :audit, :action => "review", :on => :member
+  end
+  resources :gauges, :only => [:index], :controller => "meters"
+  scope :module => "rocket" do
+    get :five, :to => "inner#five"
+  end
+end
+`)
+	for _, tc := range []struct{ key, handler string }{
+		{"GET /widgets/gadgets", "gizmos#list"},
+		{"GET /widgets/:id/audit", "widgets#review"},
+		{"GET /gauges", "meters#index"},
+		{"GET /five", "rocket/inner#five"},
+	} {
+		f, ok := idx[tc.key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", tc.key, routeKeys(idx))
+		}
+		if got := f.Props["handler"]; got != tc.handler {
+			t.Errorf("%s handler = %v, want %q", tc.key, got, tc.handler)
+		}
+	}
+}
+
+// get_to_from_path: a String path of two or more plain segments that names no endpoint
+// of its own IS the endpoint, and the name it derives is handed on as the `to:` — so it
+// outranks the enclosing controller rather than deferring to it. Rails serves
+// /shorthand/reports/monthly from reports#monthly; legacy serves neither that path nor
+// an action called reports/monthly.
+func TestRouteHandler_MatchShorthand(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  namespace :shorthand do
+    controller :legacy do
+      get "reports/monthly"
+      get "single"
+      get "audits/summary", action: :recap
+      get "exports/nightly", to: "batches#run"
+      get "with/param/:id", action: :fetch
+    end
+    get "my-billing/monthly-summary"
+    get "a/b/c/d"
+    get "fmt/seg(.:format)"
+    scope module: "inner" do
+      get "billing/invoices"
+    end
+  end
+  resources :books, only: [] do
+    get "chapters/list", on: :collection
+  end
+end
+`)
+	for _, tc := range []struct{ key, handler string }{
+		{"GET /shorthand/reports/monthly", "shorthand/reports#monthly"},
+		{"GET /shorthand/single", "shorthand/legacy#single"},
+		{"GET /shorthand/audits/summary", "shorthand/legacy#recap"},
+		{"GET /shorthand/exports/nightly", "shorthand/batches#run"},
+		{"GET /shorthand/my-billing/monthly-summary", "shorthand/my_billing#monthly_summary"},
+		{"GET /shorthand/a/b/c/d", "shorthand/a/b/c#d"},
+		{"GET /shorthand/with/param/:id", "shorthand/legacy#fetch"},
+		{"GET /shorthand/fmt/seg", "shorthand/fmt#seg"},
+		{"GET /shorthand/billing/invoices", "shorthand/inner/billing#invoices"},
+		{"GET /books/chapters/list", "chapters#list"},
+	} {
+		f, ok := idx[tc.key]
+		if !ok {
+			t.Fatalf("missing %q; have:\n  %s", tc.key, routeKeys(idx))
+		}
+		if got := f.Props["handler"]; got != tc.handler {
+			t.Errorf("%s handler = %v, want %q", tc.key, got, tc.handler)
+		}
+	}
+}
+
+// The shorthand fires on the paths Rails fires it on and no others. A path that
+// already names where it goes keeps that name, and a path Rails would refuse to
+// derive an action from gets no handler here rather than a guessed one.
+func TestRouteHandler_MatchShorthandDoesNotOverfire(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  get "widget/:name", to: redirect { |params, _req| "/w/#{params[:name]}" }
+  namespace :quiet do
+    get :plain
+    get "one"
+  end
+end
+`)
+	if f, ok := idx["GET /quiet/one"]; !ok {
+		t.Fatalf("missing single-segment route; have:\n  %s", routeKeys(idx))
+	} else if got, present := f.Props["handler"]; present {
+		t.Errorf("handler = %v, want none: one segment is not the shorthand", got)
+	}
+	f, ok := idx["GET /widget/:name"]
+	if !ok {
+		t.Fatalf("missing redirect route; have:\n  %s", routeKeys(idx))
+	}
+	if got, _ := f.Props["handler"].(string); strings.Contains(got, "#") {
+		t.Errorf("handler = %v, want no controller action: a to: was given and the path carries a parameter", got)
 	}
 }

@@ -16,11 +16,11 @@
 // skip in the census rather than an error: the machine not having a tool
 // installed must not fail the snapshot, it must be visible in the receipt.
 //
-// Determinism: providers run in name order, each provider's accepted facts are
-// sorted before merging, and every accepted fact is stamped with the provider's
-// name and reported version — so two runs over the same tree with the same
-// providers produce byte-identical fact sets, and a fact can always answer who
-// put it in the graph.
+// Determinism: providers run concurrently and are merged in name order, each
+// provider's accepted facts are sorted before merging, and every accepted fact
+// is stamped with the provider's name and reported version — so two runs over
+// the same tree with the same providers produce byte-identical fact sets, and a
+// fact can always answer who put it in the graph.
 package providers
 
 import (
@@ -36,6 +36,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -68,11 +69,15 @@ const (
 )
 
 const (
-	LevelConstantReceiver  = "constant-receiver"
-	LevelLexicalSelf       = "lexical-self"
-	LevelNameOnly          = "name-only"
-	LevelLiteralDeclared   = "literal-declared"
-	LevelMarkupDeclared    = "markup-declared"
+	LevelConstantReceiver = "constant-receiver"
+	LevelLexicalSelf      = "lexical-self"
+	LevelNameOnly         = "name-only"
+	LevelLiteralDeclared  = "literal-declared"
+	LevelMarkupDeclared   = "markup-declared"
+	// LevelToolReported is a lint provider's honesty declaration: the fact is
+	// what another tool reported, file and line and rule, and the provider
+	// resolved nothing about it.
+	LevelToolReported      = "tool-reported"
 	LevelConventionDerived = "convention-derived"
 	LevelRuntimeObserved   = "runtime-observed"
 	LevelDeclared          = "declared"
@@ -89,6 +94,7 @@ var allowedResolutionLevels = map[string]bool{
 	LevelConventionDerived: true,
 	LevelRuntimeObserved:   true,
 	LevelDeclared:          true,
+	LevelToolReported:      true,
 }
 
 // allowedFactKinds is the closed set a provider may emit: the measured kinds.
@@ -104,6 +110,7 @@ var allowedFactKinds = map[string]bool{
 	facts.KindAssociation: true,
 	facts.KindTestRef:     true,
 	facts.KindFileRef:     true,
+	facts.KindLint:        true,
 }
 
 // allowedRelationKinds is the closed relation vocabulary, mirroring the
@@ -151,10 +158,32 @@ func Run(ctx context.Context, providers []Provider, repoPath string, taken func(
 	sorted := append([]Provider(nil), providers...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
+	// Each provider is an independent process, so they run concurrently; what
+	// keeps the output deterministic is everything after: results are taken in
+	// name order, each provider's facts are already sorted by runOne, and the
+	// merge appends in that order. Wall-clock drops from the sum of the
+	// providers to the slowest one, which on a monolith with prism beside a
+	// lint reader is most of the difference.
+	type outcome struct {
+		accepted []facts.Fact
+		record   facts.ProviderRecord
+	}
+	outcomes := make([]outcome, len(sorted))
+	var wg sync.WaitGroup
+	for i, p := range sorted {
+		wg.Add(1)
+		go func(i int, p Provider) {
+			defer wg.Done()
+			accepted, record := runOne(ctx, p, repoPath)
+			outcomes[i] = outcome{accepted: accepted, record: record}
+		}(i, p)
+	}
+	wg.Wait()
+
 	var merged []facts.Fact
 	records := make([]facts.ProviderRecord, 0, len(sorted))
-	for _, p := range sorted {
-		accepted, record := runOne(ctx, p, repoPath)
+	for i, p := range sorted {
+		accepted, record := outcomes[i].accepted, outcomes[i].record
 		if record.Skipped {
 			log.Printf("[providers] %s skipped: %s", p.Name, record.Reason)
 			records = append(records, record)

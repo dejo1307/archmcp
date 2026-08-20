@@ -331,23 +331,76 @@ A component names the facts its selector matches:
 ```yaml
 components:
   - name: domain                 # lowercase token
-    match: ["app/domain/**"]     # exact path, or prefix/** subtree — nothing else
+    match: ["app/domain/**"]     # exact path, prefix/** subtree, or **/name
+                                 # basename glob — nothing else
     kind: module                 # optional: module, route, storage, symbol
-    name_pattern: Billing        # optional: exactly one fact, by exact name
+    name_pattern: "*Serializer"  # optional: a fact-name family — an exact
+                                 # name, one prefix*, or one *suffix
     service: billing             # optional: one repo of a multi-repo snapshot,
                                  # by exact repo label
     where: { framework: rails }  # optional: a predicate over measured fact props
 ```
 
-`match` speaks the same bounded glob dialect declared layers use: an
-exact repo-relative path, or a `prefix/**` subtree. Any other glob
-form is rejected at parse time, so a selector the evaluator would
-silently fail to match is an error the author sees instead. Membership
-is exact — path equality or declared subtree over a fact's file, an
-optional kind narrowing, an optional exact fact name — and a fact with
-no file matches nothing. A component whose selector matches nothing
-surfaces as a standing 0.4 advisory, so vacuous compliance never reads
-as compliance.
+`match` speaks a bounded glob dialect of three forms: an exact
+repo-relative path, a `prefix/**` subtree, and a `**/name` basename
+glob. Any other glob form is rejected at parse time, so a selector the
+evaluator would silently fail to match is an error the author sees
+instead. Membership is exact — path equality, declared subtree, or
+final-segment name over a fact's file, an optional kind narrowing, an
+optional fact-name narrowing — and a fact with no file matches
+nothing. A component whose selector matches nothing surfaces as a
+standing 0.4 advisory, so vacuous compliance never reads as
+compliance.
+
+The basename form exists because some conventions live in a filename
+rather than a directory, and the files obeying one are routinely
+spread across trees that share no prefix. Stimulus is the case that
+asked for it: a Rails monolith keeps controllers in
+`app/javascript/controllers/**` and beside their view components in
+`app/components/**`, so `**/*_controller.js` is the only spelling of
+"every Stimulus controller" — no prefix reaches both, and the whole
+repository reaches far too much.
+
+`**/` means "at any depth", including the repository root, and what
+follows it is one path segment carrying at most one `*` around a
+non-empty literal: `**/*_controller.js`, `**/Gemfile`, `**/schema.*`.
+The `*` never crosses a `/`, and it is matched against the file's
+final segment only — a directory named `x_controller.js` does not put
+the files under it in the component. Everything else stays out
+deliberately: no `?`, no character class, no brace set, no escape, no
+`**` between segments, and no second `*`. `**/*` is malformed rather
+than a spelling of "everything", for the same reason `name_pattern: *`
+is. A malformed pattern is a named error at declaration time; a
+well-formed one that matches nothing is the dead-selector advisory,
+which is a different report and reads differently.
+
+Declared layers keep the first two forms and not the third: a layer is
+a place, and a filename that appears in several places is not one.
+
+`name_pattern` narrows membership to a family of fact names, and it
+speaks the bounded name dialect `require_name`'s `pattern` and
+`require`'s `when_edge_to` speak: an exact name, one trailing `*`
+matching a prefix, or one leading `*` matching a suffix. Nothing else
+— no second star, no `?`, no character class — for the reason the
+`match` dialect is bounded too, and screened by the same
+`ValidNamePattern` the evaluator's `MatchBoundedName` implements, so a
+family a declaration may write is a family the evaluator recognizes. A
+pattern with no star is plain string equality, which is what
+`name_pattern` always was. It narrows and never selects on its own: a
+component carrying one still needs a `match`, a `service` or a
+`where`. The screen costs something and the cost is deliberate — an
+exact name carrying a glob metacharacter, Ruby's `Config#[]`, is not
+declarable, because admitting it would mean admitting a pattern the
+matcher has a second reading of.
+
+Because it is a name narrowing rather than a `where:` predicate, a
+name-patterned component is legal in every rule role, edge forms
+included: `forbid: constructors, to: fetchers, via: calls` is a
+declaration this dialect makes writable. What such a component does
+not gain is grounding by file. A path-granular edge target resolves to
+a file, and a file cannot show which of the facts measured in it the
+edge landed on, so a name-narrowed component is joined to no path
+target — exactly as it was when the narrowing could only be one name.
 
 `service` scopes the selector to one repository of a multi-repo
 (append-mode) snapshot, by the exact repo label every appended fact
@@ -654,6 +707,14 @@ rules:
     must_prop_contain: {prop: fk_constraints, value: company_id->companies}
     because: "tenant isolation rides the company FK; a bare company_id column is a leak"
 
+  - id: promise-getters-cached   # require + when_edge_to: an edge selects, a prop is demanded
+    require: component-getters
+    when_prop_contains: {prop: symbol_kind, value: getter}
+    when_edge_to: ["*.reactiveUnwrap", "*.getPromiseState"]  # literals, never components
+    via: calls                   # which edge kind the antecedent reads
+    must_prop_contain: {prop: decorators, value: cached}
+    because: "a getter that unwraps a promise recomputes on every read unless it memoizes"
+
   - id: jobs-perform             # require_defines: class members must define a method
     require_defines: jobs
     method: perform
@@ -753,6 +814,56 @@ census props the company-FK example reads (`columns`,
 keeps — `db/structure.sql` or `db/schema.rb`, the SQL one winning where
 both exist — in the same shape either way.
 
+`when_edge_to` is the form's second antecedent, for the conventions
+whose criterion is a call rather than a property: "a getter that works
+with promises carries the caching decorator" is selected by the calls
+themselves, and no extractor prop should have to be invented to name
+one organisation's helpers. Each entry is a **literal** matched against
+the edge target in the bounded dialect `require_name` speaks —
+`prefix*`, `*suffix`, or an exact name, with `ValidNamePattern` and
+`MatchBoundedName` shared between the validator and the evaluator so
+what may be declared and what is matched cannot drift. A target carries
+no whitespace of any kind — the compiled rule holds the set as one
+whitespace-separated prop, and the screen is the same `unicode.IsSpace`
+the split that reads it back uses, so a target cannot validate as one
+name and evaluate as two. The suffix form
+is what fits a real graph: `*.reactiveUnwrap` matches
+`ember_app/app/utils.reactiveUnwrap` without the declaration having to
+know where the helper lives. `via:` says which edge kind is read and is
+**required** — every form whose verdict turns on one kind of edge names
+it, and only `forbid_reach`, which is deliberately about any path,
+omits one. A rule may declare both antecedents; they narrow together,
+exactly as every other field of a selector does, so a member must
+satisfy each declared clause to be in the rule's scope.
+
+Nothing in the edge antecedent resolves a second component. The near
+end is the member fact, the far end is the string the declaration
+wrote, and only relations riding the member fact itself are read —
+dependency carriers, whose edges belong to a *file*, are deliberately
+not folded in, because attributing a file's edges to each member of
+that file is precisely the ownership claim this form must not make.
+That restraint has one honest cost, and the form pays it out loud: when
+the antecedent selects **no** member of the component, the rule emits
+one `0.4` advisory — `require rule <id> skipped: no member of
+<component> makes a calls edge the antecedent selects` — instead of a
+clean report. Two readings reach that state and the advisory names
+both, because the facts cannot tell them apart: nobody makes the call,
+or the selector and the edges live on different facts (a Ruby class's
+calls ride its `Owner#method` facts, and the class fact carries only
+what its class body called — an `include`, an `attr_reader`, a
+`validates`). Either way the rule looked and found nothing, and a rule
+that holds because it looked at nothing must never read as compliance.
+The advisory is read off the antecedent's own answers, on the same
+representative fact per member the verdict is evidenced from, so a
+relation on some other fact cannot certify a component the antecedent
+never asked.
+
+The boundary is all-or-nothing, deliberately: a component where some
+members answer the antecedent and others are blind to it gets no
+advisory, because telling a blind member from one that simply makes no
+such call needs a notion of which fact owns which edge that these facts
+do not carry.
+
 A breach is a decided-rule finding at confidence `1.0` — the rule is
 declared and each membership is either an exact fact name or a target
 grounded on the measured file it names, and the verdict says which —
@@ -789,6 +900,28 @@ rules:
       the rule is advisory and judged-cheap getters are absorbed by
       witness-named exemptions, never by silencing the rule."
 ```
+
+Where the expense boundary IS a call the convention names, say so with
+`when_edge_to` and let the graph decide who is in scope:
+
+```yaml
+rules:
+  - id: promise-getters-are-cached
+    require: component-getters
+    when_prop_contains: {prop: symbol_kind, value: getter}
+    when_edge_to: ["*.reactiveUnwrap", "*.getPromiseState"]
+    via: calls
+    must_prop_contain: {prop: decorators, value: cached}
+    because: "a getter that unwraps a promise recomputes on every read unless it
+      memoizes; measured 2026-08-13 over a large Ember app: 478 of 6883 component
+      getters call one of the two helpers and 463 of them carry no @cached"
+```
+
+The antecedent is the criterion itself rather than a proxy for it, and
+it needs no new extractor prop: the call relation is already measured,
+so a convention about *those two helper names* stays in the
+declaration that cares about them instead of entering a general tool's
+vocabulary.
 
 Two honesty boundaries the form imposes. The expense boundary itself
 is not expressible as a gate — `getter_calls` is a count and
@@ -1473,6 +1606,28 @@ propose `advisory`; graduation to `ratchet` or `strict` is a
 decision), reconcile its components with ones already declared, and
 commit it for review like any other law. Exit `0` when a report was
 produced (even an empty one), `2` when there is no snapshot to mine.
+
+**Rules that belong in the linter start there.** Some regularities
+need the graph (a call edge the linker resolved, a prop implication,
+a method's presence across a cluster) and some are file-local
+syntax: a naming regularity over the classes, functions and
+top-level bindings declared in JavaScript or TypeScript files under
+a directory, or a forbidden `import` from one directory into
+another. `--scaffold-eslint DIR` writes the second kind as ESLint
+rule scaffolds under `DIR`: a rule module per candidate, a
+RuleTester test whose valid cases are the candidate's conforming
+witnesses and whose invalid cases are its named exceptions, and an
+`index.js` registering them, so the directory loads as a plugin and
+each file moves into the repository's own plugin unchanged. The
+TypeScript extractor qualifies a symbol with its module path
+(`src/services.ApiError`) and names members through their class
+(`src/commands/repo.RepoClone.description`); the scaffold cuts both
+down to the declaration the rule can see, and a pattern that is only
+the module path is a tautology the miner no longer ranks. Every
+candidate the scaffolder leaves is listed with the reason it stays
+a constraint proposal. Nothing is written to the repository's plugin
+and no ESLint configuration is touched: the scaffold is a starting
+point the operator reviews, like the would-be declaration.
 
 ### `plan` / `plan_check` — the pre-edit contract
 
