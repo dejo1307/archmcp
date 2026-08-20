@@ -4,8 +4,9 @@ Parsed with tree-sitter. Detected by a `Cargo.toml`, at the root or up to three 
 deep, so a workspace with member crates in subdirectories is picked up.
 
 Fixture: [`rust_sample`](../../internal/engine/testdata/repos/rust_sample/) ·
-Axum route behaviour is covered by
-[`rustextractor/axum_test.go`](../../internal/extractors/rustextractor/axum_test.go)
+Route behaviour is covered by
+[`rustextractor/axum_test.go`](../../internal/extractors/rustextractor/axum_test.go) and
+[`rustextractor/utoipa_test.go`](../../internal/extractors/rustextractor/utoipa_test.go)
 
 > **Check your `mcp-arch.yaml` before you conclude Rust is unsupported.** A config file's
 > `extractors:` list *replaces* the built-in default rather than merging with it, so a
@@ -24,6 +25,7 @@ Axum route behaviour is covered by
 | a constructor call | an `instantiates` relation | relation |
 | `.route("/x", get(h))` (Axum) | a server route **at its composed mount path** | `route` |
 | `.nest("/p", other::router())` | folds `/p` onto every route the nested router declares | — |
+| `#[utoipa::path(get, path = "/x")]` on a handler | a server route, one per declared verb | `route` |
 
 ## Symbols
 
@@ -124,13 +126,48 @@ A visible route at the wrong path is still findable and still shows up as an unr
 client edge; a dropped route is invisible. The same rule covers `.route(path, svc)` with
 a non-literal path — it emits nothing rather than guessing.
 
+## Routes — the `#[utoipa::path]` attribute
+
+`utoipa_axum` registers a handler with `routes!(find_team)`, which repeats the handler
+but **not** its path. The path is written once, in the attribute on the handler itself:
+
+```rust
+#[utoipa::path(
+    get,
+    path = "/api/v1/teams/{team}",
+    params(("team" = String, Path, description = "…")),
+)]
+pub async fn find_team(state: AppState) -> AppResult<Json<TeamResponse>> { … }
+```
+
+```
+route  /api/v1/teams/{team}  src/controllers/team.rs:18  props: method=GET, framework=utoipa, handler=find_team
+```
+
+An API registered this way has no `.route("/path", …)` call to read, so before this was
+extracted its endpoints were absent from the graph entirely — crates.io stored 8 routes
+where it serves 59, and every call its Svelte frontend made to them resolved to nothing.
+
+- `method(get, head)` emits **one fact per verb**.
+- `context_path = "/api"` is folded onto the path.
+- A non-literal path — a `const`, a `concat!` — emits **nothing** rather than a guess,
+  per the degradation rule above.
+- The attribute is read wherever it appears, including on a method in an `impl`; a
+  handler inside a `#[cfg(test)]` module is not a served route and is skipped.
+
+`utoipa_axum::OpenApiRouter::nest()` would make the attribute path relative to a mount
+prefix. It is not composed yet: the attribute path is stored as written. The model for
+closing that is the Axum `.nest()` fixpoint above, and it needs a repository that
+actually uses it to be worth building.
+
 ## What is deliberately not extracted
 
 - **Macro-generated routes and items.** Anything produced by a proc macro is not
-  expanded. This is the largest real-world gap, not a corner case: a production service
-  that declares its API through a router macro exposes almost none of it to enola, and
-  the resulting route count looks like a bug rather than a boundary. Check how your
-  routes are declared before reading a low number as one.
+  expanded. The one router macro this no longer costs you is `utoipa_axum`'s
+  `routes!()`, because the path it registers is readable from the handler's attribute
+  without expanding anything — see above. Any other macro that declares an API still
+  exposes almost none of it, and the resulting route count looks like a bug rather than
+  a boundary. Check how your routes are declared before reading a low number as one.
 - **`.route(path, handler_value)`** — a handler passed as a value rather than through a
   verb builder. There is no method to infer, and a guessed one could false-match
   another repository's endpoint, so the route is skipped rather than invented.
