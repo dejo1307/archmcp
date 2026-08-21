@@ -9,7 +9,9 @@
 
 Your agent reads the same graph over **MCP** - the protocol Claude Code, Cursor and Copilot use to plug in tools - so it knows what depends on what *before* it edits, and gets the verdict *after*, in time to fix its own regression.
 
-Go · TypeScript/JavaScript · Python · Java · Kotlin · Scala · Swift · Ruby · Rust · C/C++ · .NET · PHP · Dart · Vue · Svelte · Ember · Terraform · Ansible · gRPC · OpenAPI · GraphQL - [full list](#supported-languages)
+**You never tell enola what your repository is.** It detects every language in the tree and indexes all of them into one graph, one baseline, one verdict - and the boundary worth grading is usually the one *between* them. On Discourse that is 66,497 Ruby facts beside 69,562 TypeScript/Ember ones, where the fifth-largest god class in the whole repository is the frontend's `ajax` module - 553 dependents, and its entire job is calling Rails. A Rails-only checker grades half that system and calls it the architecture.
+
+[23 languages and formats](#supported-languages), detected rather than configured.
 
 Your agent adds a helper to `storage`, and the innermost layer of your app now reaches out to the outermost one to send an email. You run `enola check --fail-on=layers`:
 
@@ -404,6 +406,8 @@ That reports, per service, how many outbound calls it found, how many it matched
 [`examples/cross-repo/`](examples/cross-repo/) is a two-service demo you can run in one command. It contains one deliberately unresolvable call, so you can see what a miss looks like before you go looking for them in your own code.
 
 ## Supported languages
+
+Nothing here is a setting. enola looks for the markers below and runs whatever it finds, so a repository that is two languages is indexed as two languages without being told - and a language you don't see listed is a gap worth [reporting](https://github.com/enola-labs/enola/issues), not a verdict on whether enola is for you.
 
 | Language   | Detected by |
 |------------|-------------|
