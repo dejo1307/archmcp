@@ -9,7 +9,7 @@
 
 Your agent reads the same graph over **MCP** - the protocol Claude Code, Cursor and Copilot use to plug in tools - so it knows what depends on what *before* it edits, and gets the verdict *after*, in time to fix its own regression.
 
-**You never tell enola what your repository is.** It detects every language in the tree and indexes all of them into one graph, one baseline, one verdict - and the boundary worth grading is usually the one *between* them. On Discourse that is 66,497 Ruby facts beside 69,562 TypeScript/Ember ones, where the fifth-largest god class in the whole repository is the frontend's `ajax` module - 553 dependents, and its entire job is calling Rails. A Rails-only checker grades half that system and calls it the architecture.
+**You never tell enola what your repository is.** It detects every language in the tree and indexes all of them into one graph, one baseline, one verdict - and the boundary worth grading is usually the one *between* them. On [Discourse](https://github.com/discourse/discourse) that is 66,497 Ruby facts beside 69,562 TypeScript/Ember ones, where the fifth-largest god class in the whole repository is the frontend's `ajax` module - 553 dependents, and its entire job is calling Rails. A Rails-only checker grades half that system and calls it the architecture.
 
 [23 languages and formats](#supported-languages), detected rather than configured.
 
