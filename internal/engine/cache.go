@@ -2104,7 +2104,17 @@ import (
 // is 21,418 injection sites which previously formed no edge at all. Everything is
 // gated on an @angular/core dependency, so a decorator of the same name in another
 // repository still models nothing.
-const cacheVersion = "v225"
+// v226: Angular's routes. A route array declares a path fragment; the prefix it
+// hangs under is decided by a parent's children:, by the entry whose loadChildren
+// lazily loads the module the array belongs to, or by nothing at all — so the paths
+// are composed by a repo-wide walk outward from the application roots (forRoot and
+// provideRouter), the shape the Express, gorilla/mux and Axum passes already share.
+// A lazy module names no array, so one is found by an exact export name, by the
+// target file's single forChild array, or by the single one among that file's own
+// imports; anything ambiguous is counted rather than guessed, and an array no root
+// reaches emits nothing rather than a fragment. Every fact carries type=page, so an
+// application's navigation can never surface as an unserved HTTP endpoint.
+const cacheVersion = "v226"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

@@ -46,6 +46,10 @@ type tsFileResult struct {
 	facts   []facts.Fact
 	routers *routerFile
 	angular angularCounts
+	// angularRouter is the route arrays and router calls this file declares, held
+	// for the repo-wide walk: a lazy loadChildren has its path in one file and its
+	// routes in another.
+	angularRouter *angularRouterFile
 }
 
 // --- what one file contributes ---

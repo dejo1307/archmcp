@@ -237,6 +237,7 @@ const (
 	// Scala. The Play routes file is a DSL of its own rather than Scala source, and
 	// declares a whole application's HTTP surface in one place; the other two are
 	// route trees written in Scala. sttp is the hand-written client call site.
+	RouteSourceAngularRouter   = "angular-router"    // Angular Routes array, composed through forRoot/forChild/loadChildren
 	RouteSourcePlayRoutes      = "play-routes"       // Play conf/routes and its included *.routes
 	RouteSourcePekkoHTTP       = "pekko-http"        // Pekko/Akka HTTP routing directives
 	RouteSourceHTTP4s          = "http4s"            // http4s HttpRoutes.of pattern match
@@ -281,6 +282,7 @@ var HandWrittenClientSources = map[string]bool{
 	RouteSourcePythonGRPCClient:  true,
 	RouteSourceScalaHTTPClient:   true,
 	RouteSourceDartHTTPClient:    true,
+	RouteSourceAngularRouter:     true,
 }
 
 // NativeAppClientSources is the set of RouteSource values only a native application
