@@ -2094,7 +2094,17 @@ import (
 // its endpoints were absent from the graph entirely — one corpus application stored
 // 8 routes where it serves 74, and every call its own frontend made to them looked
 // like a call to nothing. The attribute is now the second Rust route source.
-const cacheVersion = "v224"
+// v225: Angular's decorator-declared classes and its dependency injection. A
+// class carrying @Component/@Directive/@Pipe/@Injectable/@NgModule now records the
+// role the container gives it, its selector or pipe name, where its template lives,
+// and framework_registered — without which a container-instantiated class reads as
+// code nothing names. Constructor parameters and inject() initializers become
+// injects edges, resolved through the file's own import table or a class the file
+// declares and COUNTED as unresolved otherwise; across a ten-repository corpus that
+// is 21,418 injection sites which previously formed no edge at all. Everything is
+// gated on an @angular/core dependency, so a decorator of the same name in another
+// repository still models nothing.
+const cacheVersion = "v225"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

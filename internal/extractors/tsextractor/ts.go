@@ -3,6 +3,7 @@ package tsextractor
 import (
 	"context"
 	"encoding/json"
+	"github.com/enola-labs/enola/internal/extractors/extcoverage"
 	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"io/fs"
 	"log"
@@ -169,6 +170,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	isSvelteKit := detectSvelteKit(repoPath)
 	isEmber := detectEmber(repoPath)
 	isReactNav := detectReactNavigation(repoPath)
+	isAngular := detectAngular(repoPath)
 	// ORM detection is gated on the package.json dependency, exactly as Vue/Nuxt are, so
 	// a class coincidentally decorated @Entity models nothing in a repo without TypeORM.
 	isTypeORM, isDrizzle, isPrisma := detectORMs(repoPath)
@@ -216,9 +218,8 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			return tsFileResult{}
 		}
 		aliases := aliasesForDir(aliasRoots, factpath.Dir(relFile))
-		res := tsFileResult{
-			facts: e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, orms, aliases, knownFiles, grpcStubs),
-		}
+		var res tsFileResult
+		res.facts, res.angular = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, orms, aliases, knownFiles, grpcStubs)
 		// Routers, mounts and held-back routes for the repo-wide mount pass below.
 		// Collected here because resolving an import needs this file's path aliases,
 		// which are in scope only during the per-file walk. Same test-path gate as
@@ -236,10 +237,12 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// scripts dir) stays out of the graph rather than surfacing as an empty module.
 	modules := make(map[string]bool)
 	routerFiles := make([]*routerFile, 0, len(perFile))
+	var angular angularCounts
 	for i, res := range perFile {
 		if res.routers != nil {
 			routerFiles = append(routerFiles, res.routers)
 		}
+		angular.merge(res.angular)
 		if len(res.facts) == 0 {
 			continue
 		}
@@ -266,6 +269,23 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// mount in the repo is visible; a per-file pass cannot see both sides.
 	if isEmber {
 		composeEngineMounts(allFacts)
+	}
+
+	// Every injects edge is made to name a symbol this snapshot holds, now that the
+	// whole repository is assembled; see reconcileAngularInjects.
+	if isAngular {
+		angular.merge(reconcileAngularInjects(allFacts))
+	}
+
+	// What the injection pass could name, and what it could not, by cause. Emitted
+	// only when there were injection sites at all — a zero from an extractor that
+	// never looked reads the same as a zero from one that did, which is the whole
+	// failure this fact exists to prevent.
+	if angular.total() > 0 {
+		if f, ok := extcoverage.Fact(repoPath, "typescript:angular-di", "angular_inject",
+			angular.resolved, angular.unresolved); ok {
+			allFacts = append(allFacts, f)
+		}
 	}
 
 	// Prisma models live in schema.prisma — a separate DSL, so tree-sitter never sees it.
@@ -316,7 +336,7 @@ type extractCtx struct {
 	knownFiles  map[string]bool     // repo-relative (slash) paths of all indexed TS/JS files
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts) {
 	// The grammar is chosen here, so the kind table is too: TypeScript and TSX assign
 	// different meanings to the same symbol ids, and everything below reads node kinds
 	// through this table. See kinds.go.
@@ -324,24 +344,24 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	kinds := tsKindsFor(isTSX)
 
 	if isVueFile(relFile) {
-		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases)
+		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases), angularCounts{}
 	}
 	if isSvelteFile(relFile) {
-		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases)
+		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases), angularCounts{}
 	}
 	if isGraphQLDocFile(relFile) {
 		if facts.IsTestPath(relFile) {
-			return nil
+			return nil, angularCounts{}
 		}
-		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation)
+		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation), angularCounts{}
 	}
 	if isHbsFile(relFile) {
 		// Handlebars is only modeled where Ember's resolver gives the names
 		// deterministic meaning; a lone .hbs in a non-Ember repo stays out.
 		if !isEmber {
-			return nil
+			return nil, angularCounts{}
 		}
-		return e.extractEmberHbs(src, relFile, knownFiles)
+		return e.extractEmberHbs(src, relFile, knownFiles), angularCounts{}
 	}
 	// A Glimmer template-tag file is TypeScript/JavaScript with embedded
 	// <template> blocks: blank the blocks in place (newlines preserved, so every
@@ -392,7 +412,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
-		return result
+		return result, angularCounts{}
 	}
 
 	tree := parser.Parse(src, nil)
@@ -471,6 +491,15 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		}
 	}
 
+	// Angular: classify the decorator-declared classes and attach the edges their
+	// dependency injection declares. A post-pass over the declaration facts, as
+	// emberEnrich is, because the decorator that decides a class's role sits above
+	// the node the declaration walk stopped at.
+	var angular angularCounts
+	if isAngular {
+		result, angular = angularEnrich(kinds, result, root, ctx, aliases)
+	}
+
 	// Detect Vue Router configuration files
 	if (isVue || isNuxt) && containsCreateRouterCall(kinds, root, src) {
 		result = append(result, facts.Fact{
@@ -486,7 +515,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		})
 	}
 
-	return result
+	return result, angular
 }
 
 func (e *TSExtractor) extractImports(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {

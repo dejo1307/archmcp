@@ -45,6 +45,7 @@ import (
 type tsFileResult struct {
 	facts   []facts.Fact
 	routers *routerFile
+	angular angularCounts
 }
 
 // --- what one file contributes ---
