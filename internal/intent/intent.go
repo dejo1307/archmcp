@@ -233,6 +233,7 @@ func LoadRepoFile(repoPath string) (*Declaration, error) {
 	if err != nil {
 		return nil, err
 	}
+	recipes, _ = MergeBuiltinRecipes(recipes)
 	recipeProblems, _ := RecipeProblems(recipes)
 	problems := append(append(fileProblems, recipeFileProblems...), recipeProblems...)
 	merged := MergeConstraintsFiles(fromFile, files)

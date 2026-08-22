@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"sort"
+
+	"github.com/enola-labs/enola/internal/facts"
 )
 
 // Drift reports how a repository's files have moved since its snapshot was taken:
@@ -111,9 +113,15 @@ func (e *Engine) Drift(repoPath string) (Drift, error) {
 	if b.snapshot == nil {
 		return Drift{Unknown: true}, nil
 	}
+	return e.DriftFromMeta(repoPath, b.snapshot.Meta)
+}
 
-	recorded := make(map[string]string, len(b.snapshot.Meta.FileHashes))
-	for _, fh := range b.snapshot.Meta.FileHashes {
+// DriftFromMeta is Drift against a meta read from disk rather than the published
+// snapshot: a cluster's pin asks every member's own snapshot.meta.json whether the
+// tree it describes is the tree on disk, without loading any member's facts.
+func (e *Engine) DriftFromMeta(repoPath string, meta facts.SnapshotMeta) (Drift, error) {
+	recorded := make(map[string]string, len(meta.FileHashes))
+	for _, fh := range meta.FileHashes {
 		recorded[fh.Path] = fh.Hash
 	}
 	if len(recorded) == 0 {

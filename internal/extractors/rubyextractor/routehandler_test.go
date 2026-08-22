@@ -1,6 +1,8 @@
 package rubyextractor
 
 import (
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -807,5 +809,42 @@ end
 	}
 	if got, _ := f.Props["handler"].(string); strings.Contains(got, "#") {
 		t.Errorf("handler = %v, want no controller action: a to: was given and the path carries a parameter", got)
+	}
+}
+
+// `resources :widgets, module: :dashboards` is served by dashboards/widgets: Rails
+// lifts the option into a scope around the declaration, so it reaches the
+// resource's own routes and everything declared inside its block. Dropping it
+// left 664 of a measured application's 1,435 resolvable handlers naming controllers
+// that do not exist.
+func TestRouteHandler_ResourceModuleOption(t *testing.T) {
+	idx := routeIndex(t, `
+Rails.application.routes.draw do
+  namespace :admin do
+    resource :dashboard, only: :show do
+      resources :widgets, only: [:show], module: :dashboards do
+        post :refresh, on: :member
+      end
+    end
+    resources :employees, only: [:index] do
+      resources :notes, only: [:create], module: "employees"
+    end
+  end
+end
+`)
+	for path, want := range map[string]string{
+		"GET /admin/dashboard/widgets/:id":          "admin/dashboards/widgets#show",
+		"POST /admin/dashboard/widgets/:id/refresh": "admin/dashboards/widgets#refresh",
+		"POST /admin/employees/:employee_id/notes":  "admin/employees/notes#create",
+		"GET /admin/employees":                      "admin/employees#index",
+	} {
+		f, ok := idx[path]
+		if !ok {
+			t.Errorf("%s not emitted; have %v", path, slices.Sorted(maps.Keys(idx)))
+			continue
+		}
+		if f.Props["handler"] != want {
+			t.Errorf("%s handler = %v, want %s", path, f.Props["handler"], want)
+		}
 	}
 }

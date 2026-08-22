@@ -74,7 +74,7 @@ func TestZeitwerkProvider_GoldenThroughTheSeam(t *testing.T) {
 		Name:            "zeitwerk",
 		Command:         []string{"ruby", zeitwerkScript(t)},
 		ExpectedVersion: "0.1.0",
-	}}, repo, nil)
+	}}, repo, nil, nil)
 	if len(records) != 1 || records[0].Skipped {
 		t.Fatalf("census = %+v, want a clean run", records)
 	}
@@ -134,7 +134,7 @@ func TestZeitwerkProvider_LibNeedsAMarker(t *testing.T) {
 		Name:            "zeitwerk",
 		Command:         []string{"ruby", zeitwerkScript(t)},
 		ExpectedVersion: "0.1.0",
-	}}, repo, nil)
+	}}, repo, nil, nil)
 	if len(records) != 1 || records[0].Skipped {
 		t.Fatalf("census = %+v, want a clean run", records)
 	}

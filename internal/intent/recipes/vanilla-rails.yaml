@@ -1,0 +1,35 @@
+recipe: vanilla-rails
+roles:
+  - name: models
+  - name: controllers
+  - name: services
+  - name: forms
+  - name: policies
+  - name: decorators
+  - name: presenters
+rules:
+  - id: no-service-objects
+    forbid_fact: services
+    because: "Behaviour belongs on models, not on service objects; the directory exists only until it is empty."
+
+  - id: no-form-objects
+    forbid_fact: forms
+    because: "Strong parameters and model validations are the form; a form object is a second model nobody persists."
+
+  - id: no-policy-objects
+    forbid_fact: policies
+    because: "Authorization is a predicate method on the model that knows the answer."
+
+  - id: no-decorators
+    forbid_fact: decorators
+    because: "Helpers and partials are the view layer Rails gives you; a decorator is a third."
+
+  - id: no-presenters
+    forbid_fact: presenters
+    because: "A presentation object is a plain Ruby object in app/models; a separate directory is a layer the arrangement does not have."
+
+  - id: models-do-not-render
+    forbid: models
+    to: controllers
+    via: calls
+    because: "A model that knows the request cannot be used off the request."

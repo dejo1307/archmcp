@@ -8,13 +8,16 @@ import (
 
 // Fact represents a language-agnostic architectural fact extracted from source code.
 type Fact struct {
-	Kind      string         `json:"kind"`                // e.g. "module", "symbol", "route", "storage", "dependency"
-	Name      string         `json:"name"`                // Canonical name
-	File      string         `json:"file,omitempty"`      // Source file (relative to repo root, or repo-prefixed in multi-repo mode)
-	Line      int            `json:"line,omitempty"`      // Line number in file
-	Repo      string         `json:"repo,omitempty"`      // Repository label (set in multi-repo/append mode)
-	Props     map[string]any `json:"props,omitempty"`     // Kind-specific properties
-	Relations []Relation     `json:"relations,omitempty"` // Edges to other facts
+	Kind      string         `json:"kind"`                 // e.g. "module", "symbol", "route", "storage", "dependency"
+	Name      string         `json:"name"`                 // Canonical name
+	File      string         `json:"file,omitempty"`       // Source file (relative to repo root, or repo-prefixed in multi-repo mode)
+	Line      int            `json:"line,omitempty"`       // 1-based start line in file
+	EndLine   int            `json:"end_line,omitempty"`   // 1-based end line, when the extractor measured a span
+	Column    int            `json:"column,omitempty"`     // 1-based start column, when measured
+	EndColumn int            `json:"end_column,omitempty"` // 1-based column one past the span's end, when measured
+	Repo      string         `json:"repo,omitempty"`       // Repository label (set in multi-repo/append mode)
+	Props     map[string]any `json:"props,omitempty"`      // Kind-specific properties
+	Relations []Relation     `json:"relations,omitempty"`  // Edges to other facts
 }
 
 // Relation represents a directed edge between two facts.
@@ -189,6 +192,10 @@ const (
 	CouplingAssociation = "association" // ActiveRecord has_many/belongs_to/...
 	CouplingRequire     = "require"     // require / require_relative
 	CouplingPackwerk    = "packwerk"    // explicit package.yml dependency
+	// CouplingSymbolRollup is a module edge derived from resolved symbol edges
+	// rather than read from an import statement, for the languages that have
+	// none. It carries the count of symbol edges behind it.
+	CouplingSymbolRollup = "symbol-rollup"
 )
 
 // Module role property values classify a module fact as production code vs.
@@ -272,6 +279,29 @@ type Evidence struct {
 	Symbol string `json:"symbol,omitempty"`
 	Fact   string `json:"fact,omitempty"`
 	Detail string `json:"detail,omitempty"`
+	// Line and the span fields carry the position of the fact this evidence
+	// cites, when its extractor measured one. They are never derived from a
+	// name: a reader that prints a frame must show the line the extractor saw,
+	// or none.
+	Line      int `json:"line,omitempty"`
+	EndLine   int `json:"end_line,omitempty"`
+	Column    int `json:"column,omitempty"`
+	EndColumn int `json:"end_column,omitempty"`
+}
+
+// EvidenceHere cites this fact at the position its extractor measured. Every
+// explainer that points at a fact should build evidence this way, so a span
+// reaches the reader without each explainer copying four fields.
+func (f Fact) EvidenceHere(detail string) Evidence {
+	return Evidence{
+		File:      f.File,
+		Symbol:    f.Name,
+		Detail:    detail,
+		Line:      f.Line,
+		EndLine:   f.EndLine,
+		Column:    f.Column,
+		EndColumn: f.EndColumn,
+	}
 }
 
 // Artifact represents a generated output file.
@@ -374,12 +404,18 @@ type SnapshotMeta struct {
 // tool installed" must be readable from the receipt, not inferred from missing
 // facts.
 type ProviderRecord struct {
-	Name      string          `json:"name"`
-	Version   string          `json:"version,omitempty"`
-	FactCount int             `json:"fact_count"`
-	Skipped   bool            `json:"skipped,omitempty"`
-	Reason    string          `json:"reason,omitempty"`
-	Census    *ProviderCensus `json:"census,omitempty"`
+	Name      string `json:"name"`
+	Version   string `json:"version,omitempty"`
+	FactCount int    `json:"fact_count"`
+	Skipped   bool   `json:"skipped,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	// ExcludedByIgnore counts facts dropped because they described a file the
+	// repository's ignore globs exclude. A provider walks the tree itself and
+	// cannot know the configuration, so the seam enforces it; the count is
+	// recorded rather than silent, since a large number means a provider is
+	// reading a vendored tree nobody asked it to read.
+	ExcludedByIgnore int             `json:"excluded_by_ignore,omitempty"`
+	Census           *ProviderCensus `json:"census,omitempty"`
 }
 
 type ProviderCensus struct {

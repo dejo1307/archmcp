@@ -411,7 +411,7 @@ func (r *Runner) gradeQuietly(ctx context.Context, repoDir string) (check.Verdic
 	// FactsRef, not All: diff.Compute reads its inputs and the published bundle is
 	// immutable. The hook runs on every agent edit, so a full fact-set copy here is
 	// the one place the cost would be paid over and over.
-	current := &facts.Snapshot{Meta: snap.Meta, Facts: eng.Store().FactsRef(), Insights: snap.Insights}
+	current := &facts.Snapshot{Meta: eng.MetaFor(repoDir), Facts: eng.Store().FactsRef(), Insights: snap.Insights}
 
 	// The same ledger and strict semantics as `enola check`, so the two surfaces
 	// cannot reach different verdicts from the same tree. The one divergence is

@@ -216,13 +216,19 @@ func (e *Engine) CurrentMeta(repoPath string) *facts.SnapshotMeta {
 			used = append(used, ext.Name())
 		}
 	}
+	git := gitInfo(absRepo, e.cfg.Output.Dir)
+	var remote string
+	if git != nil {
+		remote = git.Remote
+	}
 	return &facts.SnapshotMeta{
 		RepoPath:         absRepo,
+		RepoLabel:        repoLabelFor(absRepo, remote),
 		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
 		Extractors:       used,
 		EnolaVersion:     version.Version,
 		ExtractorVersion: cacheVersion,
-		Git:              gitInfo(absRepo, e.cfg.Output.Dir),
+		Git:              git,
 		ConfigHash:       computeConfigHash(e.cfg),
 		IgnoreGlobHash:   computeIgnoreGlobHash(e.cfg),
 	}

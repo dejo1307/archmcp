@@ -55,10 +55,13 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/linkers/binders/clientseam"
 	"github.com/enola-labs/enola/internal/linkers/binders/emberresolver"
+	"github.com/enola-labs/enola/internal/linkers/binders/frameworkroots"
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcclientfqn"
 	"github.com/enola-labs/enola/internal/linkers/binders/grpcimpl"
 	"github.com/enola-labs/enola/internal/linkers/binders/httphandler"
 	"github.com/enola-labs/enola/internal/linkers/binders/messagingcontract"
+	"github.com/enola-labs/enola/internal/linkers/binders/mixinowner"
+	"github.com/enola-labs/enola/internal/linkers/binders/moduleedges"
 	"github.com/enola-labs/enola/internal/linkers/binders/stimulusresolver"
 	"github.com/enola-labs/enola/internal/linkers/binders/unmatchedroutes"
 	"github.com/enola-labs/enola/internal/linkers/binders/vendoredspecs"
@@ -102,6 +105,14 @@ type Drift = engine.Drift
 // deliberate decision point (a diff, a validation) rather than on a hot read path.
 func (e *Engine) Drift(repoPath string) (Drift, error) {
 	return e.eng.Drift(repoPath)
+}
+
+func (e *Engine) DriftFromMeta(repoPath string, meta facts.SnapshotMeta) (Drift, error) {
+	return e.eng.DriftFromMeta(repoPath, meta)
+}
+
+func (e *Engine) MetaFor(repoPath string) facts.SnapshotMeta {
+	return e.eng.MetaFor(repoPath)
 }
 
 // ActiveRepo returns the absolute repo path of the currently loaded snapshot,
@@ -454,6 +465,9 @@ func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	eng.RegisterBinder(emberresolver.New())
 	eng.RegisterBinder(grpcimpl.New())
 	eng.RegisterBinder(httphandler.New())
+	eng.RegisterBinder(mixinowner.New())
+	eng.RegisterBinder(frameworkroots.New())
+	eng.RegisterBinder(moduleedges.New())
 	eng.RegisterBinder(stimulusresolver.New())
 	eng.RegisterBinder(vendoredspecs.New())
 	eng.RegisterBinder(messagingcontract.New())

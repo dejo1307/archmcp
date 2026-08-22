@@ -292,15 +292,27 @@ func TestLoadRepoFile_BindingUndeclaredRoleFails(t *testing.T) {
 }
 
 func TestLoadRepoFile_UnknownRecipeFails(t *testing.T) {
+	// The instantiation names a recipe that neither this repository nor the
+	// binary declares. `event-driven` would resolve, because it ships, so the
+	// name here has to be one nothing answers to.
+	instantiation := strings.Replace(ordersInstantiation, "recipe: event-driven", "recipe: no-such-arrangement", 1)
 	dir := writeRecipeRepo(t, "",
-		map[string]string{"orders.yaml": ordersInstantiation},
+		map[string]string{"orders.yaml": instantiation},
 		map[string]string{"pipeline.yaml": strings.Replace(eventDrivenRecipe, "recipe: event-driven", "recipe: pipeline", 1)})
 	_, err := LoadRepoFile(dir)
 	if err == nil {
 		t.Fatal("instantiating a recipe nothing declares must be an error")
 	}
-	if !strings.Contains(err.Error(), `recipe "event-driven" names no loaded recipe (loaded: pipeline)`) {
+	// The loaded set names what the repository authored beside what ships with
+	// the binary, because both are instantiable and a reader looking for the
+	// name they mistyped needs to see all of it.
+	if !strings.Contains(err.Error(), `recipe "no-such-arrangement" names no loaded recipe (loaded: `) {
 		t.Fatalf("the error must name the missing recipe and the loaded set, got: %v", err)
+	}
+	for _, loaded := range []string{"pipeline", "layered", "rails-conventions"} {
+		if !strings.Contains(err.Error(), loaded) {
+			t.Fatalf("the loaded set must name both what ships and what the repository authored, missing %q: %v", loaded, err)
+		}
 	}
 }
 

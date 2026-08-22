@@ -90,6 +90,22 @@ func CompileFacts(d *Declaration) []facts.Fact {
 		if where := EncodeWhere(c.Predicate()); where != "" {
 			extra["where"] = where
 		}
+		// Only a declared ownership fingerprints. An undeclared one is not the
+		// same statement as an explicit nothing — the edge-role screen refuses
+		// the first and admits the second — so compiling a default here would
+		// erase the distinction the declaration turns on.
+		if c.Owns != "" {
+			extra["owns"] = c.Owns
+		}
+		if c.Ancestor != "" {
+			extra["ancestor"] = c.Ancestor
+		}
+		if len(c.Public) > 0 {
+			public := append([]string(nil), c.Public...)
+			sort.Strings(public)
+			extra["public"] = strings.Join(public, " ")
+		}
+		graphComponentProps(c, extra)
 		if c.Recipe != "" {
 			extra["recipe"] = c.Recipe
 			extra["instance"] = c.Instance
@@ -120,97 +136,12 @@ func CompileFacts(d *Declaration) []facts.Fact {
 			"mode":    mode,
 			"because": r.Because,
 		}
-		switch {
-		case r.Forbid != "":
-			extra["forbid"] = r.Forbid
-			extra["via"] = r.Via
-			if len(r.ToName) > 0 {
-				targets := append([]string(nil), r.ToName...)
-				sort.Strings(targets)
-				extra["to_name"] = strings.Join(targets, " ")
-			} else {
-				extra["to"] = r.To
-			}
-		case r.ForbidReach != "":
-			extra["forbid_reach"] = r.ForbidReach
-			extra["to"] = r.To
-			// An absent via is the whole rule-via vocabulary at verdict time, so
-			// only a declared narrowing fingerprints.
-			if r.Via != "" {
-				extra["via"] = r.Via
-			}
-		case r.Allow != "":
-			// Sorted for the same reason a component's match patterns are: the
-			// compiled fact is a function of the declared SET.
-			only := append([]string(nil), r.Only...)
-			sort.Strings(only)
-			extra["allow"] = r.Allow
-			extra["only"] = strings.Join(only, " ")
-			extra["via"] = r.Via
-		case r.Protect != "":
-			owners := append([]string(nil), r.Owners...)
-			sort.Strings(owners)
-			extra["protect"] = r.Protect
-			extra["owners"] = strings.Join(owners, " ")
-			extra["via"] = r.Via
-		case r.Private != "":
-			extra["private"] = r.Private
-			if len(r.Except) > 0 {
-				except := append([]string(nil), r.Except...)
-				sort.Strings(except)
-				extra["except"] = strings.Join(except, " ")
-			}
-		case r.ForbidFact != "":
-			extra["forbid_fact"] = r.ForbidFact
-		case r.Cap != "":
-			extra["cap"] = r.Cap
-			extra["max_members"] = r.MaxMembers
-		case r.RequireEdge != "":
-			extra["require_edge"] = r.RequireEdge
-			extra["direction"] = r.Direction
-			extra["via"] = r.Via
-			if r.To != "" {
-				extra["to"] = r.To
-			}
-			if len(r.WhenEdgeTo) > 0 {
-				targets := append([]string(nil), r.WhenEdgeTo...)
-				sort.Strings(targets)
-				extra["when_edge_to"] = strings.Join(targets, " ")
-				extra["when_via"] = r.WhenVia
-			}
-		case r.Protocol != "":
-			extra["protocol"] = r.Protocol
-			extra["steps"] = strings.Join(r.Steps, " ")
-			extra["via"] = r.Via
-			extra["verification"] = "structural"
-		case r.RequireDefines != "":
-			extra["require_defines"] = r.RequireDefines
-			extra["method"] = r.Method
-		case r.RequireName != "":
-			extra["require_name"] = r.RequireName
-			extra["pattern"] = r.Pattern
-		case r.Guide != "":
-			extra["guide"] = r.Guide
-			extra["message"] = r.Message
-			if len(r.Exemplars) > 0 {
-				exemplars := append([]string(nil), r.Exemplars...)
-				sort.Strings(exemplars)
-				extra["exemplars"] = strings.Join(exemplars, " ")
-			}
-		case r.Require != "":
-			extra["require"] = r.Require
-			extra["must_prop"] = r.MustPropContain.Prop
-			extra["must_value"] = r.MustPropContain.Value
-			if r.WhenPropContains != nil {
-				extra["when_prop"] = r.WhenPropContains.Prop
-				extra["when_value"] = r.WhenPropContains.Value
-			}
-			if len(r.WhenEdgeTo) > 0 {
-				targets := append([]string(nil), r.WhenEdgeTo...)
-				sort.Strings(targets)
-				extra["when_edge_to"] = strings.Join(targets, " ")
-				extra["via"] = r.Via
-			}
+		edgeFormProps(r, extra)
+		memberFormProps(r, extra)
+		namingAndGuidanceProps(r, extra)
+		graphFormProps(r, extra)
+		if owns := EncodeOwnership(r.Owns); owns != "" {
+			extra["owns"] = owns
 		}
 		if len(r.Exempt) > 0 {
 			extra["exempt"] = EncodeExemptions(r.Exempt)
@@ -381,4 +312,132 @@ func CompilePageFacts(p *PageIntent, pageFile string) []facts.Fact {
 		out = append(out, facts.Fact{Kind: facts.KindIntent, Name: name, File: pageFile, Props: props})
 	}
 	return out
+}
+
+// edgeFormProps writes the props of the forms whose verdict is a claim about edges; one form selects per rule, so at most one case fires.
+func edgeFormProps(r ConstraintRule, extra map[string]any) {
+	switch {
+	case r.Forbid != "":
+		extra["forbid"] = r.Forbid
+		extra["via"] = r.Via
+		if len(r.ToName) > 0 {
+			targets := append([]string(nil), r.ToName...)
+			sort.Strings(targets)
+			extra["to_name"] = strings.Join(targets, " ")
+			if r.Receiver != "" {
+				extra["receiver"] = r.Receiver
+			}
+		} else {
+			extra["to"] = r.To
+		}
+	case r.ForbidReach != "":
+		extra["forbid_reach"] = r.ForbidReach
+		extra["to"] = r.To
+		// An absent via is the whole rule-via vocabulary at verdict time, so
+		// only a declared narrowing fingerprints.
+		if r.Via != "" {
+			extra["via"] = r.Via
+		}
+	case r.Allow != "":
+		// Sorted for the same reason a component's match patterns are: the
+		// compiled fact is a function of the declared SET.
+		only := append([]string(nil), r.Only...)
+		sort.Strings(only)
+		extra["allow"] = r.Allow
+		extra["only"] = strings.Join(only, " ")
+		extra["via"] = r.Via
+	case r.Protect != "":
+		owners := append([]string(nil), r.Owners...)
+		sort.Strings(owners)
+		extra["protect"] = r.Protect
+		extra["owners"] = strings.Join(owners, " ")
+		extra["via"] = r.Via
+	case r.Private != "":
+		extra["private"] = r.Private
+		if len(r.Except) > 0 {
+			except := append([]string(nil), r.Except...)
+			sort.Strings(except)
+			extra["except"] = strings.Join(except, " ")
+		}
+	case r.RequireEdge != "":
+		extra["require_edge"] = r.RequireEdge
+		extra["direction"] = r.Direction
+		extra["via"] = r.Via
+		if r.To != "" {
+			extra["to"] = r.To
+		}
+		if len(r.WhenEdgeTo) > 0 {
+			targets := append([]string(nil), r.WhenEdgeTo...)
+			sort.Strings(targets)
+			extra["when_edge_to"] = strings.Join(targets, " ")
+			extra["when_via"] = r.WhenVia
+		}
+	case r.Protocol != "":
+		extra["protocol"] = r.Protocol
+		extra["steps"] = strings.Join(r.Steps, " ")
+		extra["via"] = r.Via
+		extra["verification"] = "structural"
+	}
+}
+
+// memberFormProps writes the props of the forms that read a member's own facts: emptiness, caps, defined methods, cycles among parts, includer independence and the property form.
+func memberFormProps(r ConstraintRule, extra map[string]any) {
+	switch {
+	case r.ForbidFact != "":
+		extra["forbid_fact"] = r.ForbidFact
+	case r.Cap != "":
+		extra["cap"] = r.Cap
+		extra["max_members"] = r.MaxMembers
+	case r.RequireDefines != "":
+		extra["require_defines"] = r.RequireDefines
+		extra["method"] = r.Method
+		if len(r.AnyOf) > 0 {
+			extra["any_of"] = strings.Join(r.AnyOf, " ")
+		}
+	case r.ForbidCycles != "":
+		extra["forbid_cycles"] = r.ForbidCycles
+		extra["among"] = strings.Join(r.Among, " ")
+	case r.Independent != "":
+		extra["independent"] = r.Independent
+	case r.Require != "":
+		extra["require"] = r.Require
+		extra["must_prop"] = r.MustPropContain.Prop
+		extra["must_value"] = r.MustPropContain.Value
+		if r.WhenPropContains != nil {
+			extra["when_prop"] = r.WhenPropContains.Prop
+			extra["when_value"] = r.WhenPropContains.Value
+		}
+		if len(r.WhenEdgeTo) > 0 {
+			targets := append([]string(nil), r.WhenEdgeTo...)
+			sort.Strings(targets)
+			extra["when_edge_to"] = strings.Join(targets, " ")
+			extra["via"] = r.Via
+		}
+	}
+}
+
+// namingAndGuidanceProps writes the props of the naming forms and the guidance form.
+func namingAndGuidanceProps(r ConstraintRule, extra map[string]any) {
+	switch {
+	case r.RequireName != "":
+		extra["require_name"] = r.RequireName
+		extra["pattern"] = r.Pattern
+		if r.Requires != "" {
+			extra["requires"] = r.Requires
+		}
+	case r.ForbidName != "":
+		extra["forbid_name"] = r.ForbidName
+		extra["pattern"] = r.Pattern
+		if r.Surface != "" {
+			extra["surface"] = r.Surface
+		}
+	case r.Guide != "":
+		extra["guide"] = r.Guide
+		extra["message"] = r.Message
+		if len(r.Exemplars) > 0 {
+			exemplars := append([]string(nil), r.Exemplars...)
+			sort.Strings(exemplars)
+			extra["exemplars"] = strings.Join(exemplars, " ")
+		}
+	}
 }

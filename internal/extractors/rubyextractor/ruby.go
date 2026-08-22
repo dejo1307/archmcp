@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"github.com/enola-labs/enola/internal/extractors/extcoverage"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
@@ -133,6 +135,9 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 
 	// pkgInfo is read-only here, so per-file parsing is independent. Parse in
 	// parallel and merge in file order for deterministic output.
+	var clientMu sync.Mutex
+	clientDerived := 0
+	clientMisses := map[string]int{}
 	perFileFacts := parallel.MapFiles(ctx, rbFiles, func(relFile string) []facts.Fact {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
 		if err != nil {
@@ -144,7 +149,12 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 		// and ActiveRecord storage/associations in a single AST pass;
 		// extractRubyHTTPClientFacts adds outbound HTTP-client routes.
 		ff := extractFileAST(src, relFile, isRails, exported)
-		ff = append(ff, extractRubyHTTPClientFacts(src, relFile)...)
+		clientFacts, derived, misses := extractRubyHTTPClientFactsCounted(src, relFile)
+		clientMu.Lock()
+		clientDerived += derived
+		mergeCounts(clientMisses, misses)
+		clientMu.Unlock()
+		ff = append(ff, clientFacts...)
 		ff = append(ff, extractGraphQLRubyRoutes(src, relFile)...)
 		return append(ff, extractGraphQLRubyClientOps(src, relFile)...)
 	})
@@ -216,6 +226,9 @@ func (e *RubyExtractor) Extract(ctx context.Context, repoPath string, files []st
 
 	resolvedCalls, unresolvedCalls := countResolvedCalls(allFacts)
 	if fact, ok := callCoverageFact(repoPath, resolvedCalls, unresolvedCalls); ok {
+		allFacts = append(allFacts, fact)
+	}
+	if fact, ok := extcoverage.Fact(repoPath, "ruby:http-client", "ruby_client_path_parameter", clientDerived, clientMisses); ok {
 		allFacts = append(allFacts, fact)
 	}
 
