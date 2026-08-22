@@ -80,7 +80,7 @@ func TestBuildModuleGraphFocusesOnImmediateNeighborhood(t *testing.T) {
 	if roles["core"] != "consumer" || roles["api"] != "selected" || roles["storage"] != "dependency" {
 		t.Fatalf("focused roles = %+v", roles)
 	}
-	if !(positions["core"] < positions["api"] && positions["api"] < positions["storage"]) {
+	if positions["core"] >= positions["api"] || positions["api"] >= positions["storage"] {
 		t.Fatalf("focused x positions = %+v, want consumer < selected < dependency", positions)
 	}
 	if view.Edges[0].Kind != facts.RelImports || view.Edges[0].SourceName == "" || view.Edges[0].TargetName == "" {
@@ -125,7 +125,7 @@ func TestBuildModuleGraphLayersConsumersBeforeDependencies(t *testing.T) {
 	for _, node := range view.Nodes {
 		positions[node.Name] = node.X
 	}
-	if !(positions["web"] < positions["service"] && positions["service"] < positions["storage"]) {
+	if positions["web"] >= positions["service"] || positions["service"] >= positions["storage"] {
 		t.Fatalf("layer positions = %+v, want web < service < storage", positions)
 	}
 }
