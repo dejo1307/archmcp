@@ -832,3 +832,34 @@ func TestCompareMeta_SameRepoDifferentLabelIsBlocking(t *testing.T) {
 		t.Errorf("a pre-label baseline whose directory matched must still compare: %v", c.Warnings)
 	}
 }
+
+// With the changed files known, a newly declared rule's breach is new only
+// when its witness sits in one of them, whatever facts happened to differ
+// between the snapshots; and each bucketed finding says why.
+func TestCompute_ChangedFilesDecideWhatANewRuleTouched(t *testing.T) {
+	component := componentFact("errors", map[string]string{"superclass": "StandardError"})
+	form := map[string]any{"require_name": "errors", "pattern": "*Error"}
+	standing := constraintInsight("Constraint errors-are-recognisable violated: Failed does not match *Error", "Failed")
+	standing.Evidence[0].File = "lib/failed.rb"
+	made := constraintInsight("Constraint errors-are-recognisable violated: Broken does not match *Error", "Broken")
+	made.Evidence[0].File = "lib/broken.rb"
+	base := snap([]facts.Fact{component, errorClass("Failed", "StandardError")}, nil)
+	cur := snap([]facts.Fact{component, ruleFact("errors-are-recognisable", form),
+		errorClass("Failed", "StandardError"), errorClass("Broken", "StandardError")},
+		[]facts.Insight{standing, made})
+	d := ComputeChanged(base, cur, []string{"lib/broken.rb", "enola/constraints/errors.yaml"})
+	if len(d.FindingsDeclared) != 1 || d.FindingsDeclared[0].Title != standing.Title {
+		t.Fatalf("FindingsDeclared = %+v, want the breach in a file the change left alone", d.FindingsDeclared)
+	}
+	if len(d.FindingsNew) != 1 || d.FindingsNew[0].Title != made.Title {
+		t.Fatalf("FindingsNew = %+v, want the breach in a changed file", d.FindingsNew)
+	}
+	last := d.FindingsNew[0].Evidence[len(d.FindingsNew[0].Evidence)-1]
+	if last.Fact != "classified: new" || last.Detail != "the rule is newly declared and the witness was touched by the changed file lib/broken.rb" {
+		t.Fatalf("the bucketing reason must be on the finding, got %+v", last)
+	}
+	d = ComputeChanged(base, cur, []string{"enola/constraints/errors.yaml"})
+	if len(d.FindingsDeclared) != 2 || len(d.FindingsNew) != 0 {
+		t.Fatalf("with only the declaration changed every breach is declared, got declared=%d new=%d", len(d.FindingsDeclared), len(d.FindingsNew))
+	}
+}

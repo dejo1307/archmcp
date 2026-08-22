@@ -56,7 +56,7 @@ func gemWith(t *testing.T, files map[string]string) []byte {
 // the platform's file name, and nothing else in the gem is read.
 func TestExtractLibrary_ReadsTheEngineOutOfTheGem(t *testing.T) {
 	gem := gemWith(t, map[string]string{
-		"lib/rubydex.rb":                  "ruby",
+		"lib/rubydex.rb":                   "ruby",
 		"lib/rubydex/" + libraryFileName(): "ELF-or-Mach-O",
 	})
 	got, err := extractLibrary(gem)

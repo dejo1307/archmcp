@@ -138,7 +138,7 @@ func TestRubySurface_EveryDeclarationKeyHasAWayIn(t *testing.T) {
 		if derived[key] {
 			continue
 		}
-		field := strings.ReplaceAll(strings.Title(strings.ReplaceAll(key, "_", " ")), " ", "")
+		field := fieldNameOf(key)
 		if !strings.Contains(surface, "rule."+field) && !strings.Contains(surface, `"`+key+`"`) {
 			missing = append(missing, key)
 		}
@@ -147,4 +147,15 @@ func TestRubySurface_EveryDeclarationKeyHasAWayIn(t *testing.T) {
 	if len(missing) != 0 {
 		t.Fatalf("these declaration keys cannot be said in the surface: %v", missing)
 	}
+}
+
+func fieldNameOf(key string) string {
+	var b strings.Builder
+	for _, word := range strings.Split(key, "_") {
+		if word == "" {
+			continue
+		}
+		b.WriteString(strings.ToUpper(word[:1]) + word[1:])
+	}
+	return b.String()
 }

@@ -68,13 +68,13 @@ func TestCollect_EmitsTheReferenceScriptsFacts(t *testing.T) {
 		t.Errorf("census = %+v, want the five workspace files seen", result.Census)
 	}
 	want := map[string]struct{ relation, target, level string }{
-		"rubydex-ancestor: Invoice -> Auditable":        {"implements", "Auditable", "resolved"},
-		"rubydex-ancestor: Invoice -> Base":             {"implements", "Base", "resolved"},
-		"rubydex-call: Ledger#record -> Invoice.count":  {"calls", "Invoice.count", "constant-receiver"},
-		"rubydex-ref: Invoice -> Auditable":             {"depends_on", "Auditable", "resolved"},
-		"rubydex-ref: Invoice -> Base":                  {"depends_on", "Base", "resolved"},
-		"rubydex-ref: Ledger#record -> Invoice":         {"depends_on", "Invoice", "resolved"},
-		"rubydex-ref: app/models/named.rb -> Base":      {"depends_on", "Base", "resolved"},
+		"rubydex-ancestor: Invoice -> Auditable":       {"implements", "Auditable", "resolved"},
+		"rubydex-ancestor: Invoice -> Base":            {"implements", "Base", "resolved"},
+		"rubydex-call: Ledger#record -> Invoice.count": {"calls", "Invoice.count", "constant-receiver"},
+		"rubydex-ref: Invoice -> Auditable":            {"depends_on", "Auditable", "resolved"},
+		"rubydex-ref: Invoice -> Base":                 {"depends_on", "Base", "resolved"},
+		"rubydex-ref: Ledger#record -> Invoice":        {"depends_on", "Invoice", "resolved"},
+		"rubydex-ref: app/models/named.rb -> Base":     {"depends_on", "Base", "resolved"},
 	}
 	got := map[string]struct{ relation, target, level string }{}
 	for _, f := range result.Facts {

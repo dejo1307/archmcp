@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -251,7 +252,7 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	}
 	policy.Suppressions = suppressions
 
-	d := diff.Compute(base, current)
+	d := diff.ComputeChanged(base, current, changedFilesBetween(anchor, base.Meta.Git, current.Meta.Git))
 	if *focus != "" {
 		d = d.Focused(*focus)
 	}
@@ -540,4 +541,32 @@ func (r *Runner) revisionAt(repoPath, historyDir string) check.RevisionAt {
 		}
 		return snap, chosen.At[:10], first, true
 	}
+}
+
+// changedFilesBetween asks git which files the change touched between the
+// two snapshots' commits, plus the working tree's own changes when the
+// current snapshot was taken dirty. Nil when either side has no commit or
+// git cannot answer, which hands the diff its fact-based fallback.
+func changedFilesBetween(repoPath string, base, current *facts.GitInfo) []string {
+	if base == nil || current == nil || base.Commit == "" || current.Commit == "" {
+		return nil
+	}
+	args := []string{"-C", repoPath, "diff", "--name-only", base.Commit, current.Commit}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return nil
+	}
+	files := strings.Fields(string(out))
+	if current.Dirty {
+		if dirty, err := exec.Command("git", "-C", repoPath, "diff", "--name-only", "HEAD").Output(); err == nil {
+			files = append(files, strings.Fields(string(dirty))...)
+		}
+		if untracked, err := exec.Command("git", "-C", repoPath, "ls-files", "--others", "--exclude-standard").Output(); err == nil {
+			files = append(files, strings.Fields(string(untracked))...)
+		}
+	}
+	if files == nil {
+		files = []string{}
+	}
+	return files
 }
