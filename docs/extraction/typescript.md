@@ -29,6 +29,14 @@ Fixtures: [`ts_sample`](../../internal/engine/testdata/repos/ts_sample/) ·
 | a `.gts`/`.gjs` Glimmer component | a component symbol with its template's references | `symbol` |
 | `this.route('book', { path: '/:book_id' })` (Ember) | a page route at the composed path | `route` |
 | an ember-data `Model` subclass | a model with its dasherized name | `storage` |
+| `@Component`/`@Directive`/`@Pipe`/`@Injectable`/`@NgModule` | a symbol with its container role and selector | `symbol` |
+| `constructor(private users: UserService)`, `inject(X)` | an `injects` edge to the class that declares it | `symbol` |
+| `RouterModule.forRoot([…])`, `provideRouter(routes)` | page routes at their **composed** paths | `route` |
+| `loadChildren: () => import('./admin')` | the mounted module's routes, prefixed | `route` |
+| `{{ total }}`, `(click)="save()"`, `<app-card>` | the component's edges to its own members and children | `symbol` |
+| `@NgModule({declarations, imports, providers})` | `depends_on` edges to what it composes | `symbol` |
+| `this.http.get('api/v1/x')` (Angular) | a client route with `role: client` | `route` |
+| an Nx `project.json` / `angular.json` project | the `workspace_project` a module belongs to | `module` |
 | top-level statements | a `file_ref` carrying the call edges | `file_ref` |
 | `*.test.ts`, `*.spec.tsx` | a reference-only `test_ref` | `test_ref` |
 | `constructor(…)` | a symbol like any other member | `symbol` |
@@ -280,6 +288,161 @@ reserved `application` base is the app-wide fallback and names none). Container
 lookups with a literal `service:` key — `owner.lookup('service:current')` —
 merge into the same injection pipeline as `@service` fields.
 
+## Angular — decorators, templates, the router and the composition graph
+
+Detected by an `@angular/core` dependency in a `package.json`, searched two levels
+down as well as at the TypeScript root — one corpus application is an Angular
+frontend inside a Rails monolith, another sits in `apps/<app>/` of an Nx workspace,
+and a root-only check reads both as not-Angular.
+
+Everything below is gated on that. A class decorated `@Component` in a repository
+with no Angular dependency models nothing, the same rule `@Entity` is held to.
+
+### The class model
+
+```ts
+// src/app/user-card.component.ts
+@Component({ selector: 'app-user-card', templateUrl: './user-card.component.html' })
+export class UserCardComponent {
+  constructor(private readonly users: UserService) {}
+  private readonly layout = inject(LayoutService);
+}
+```
+
+```
+symbol  src/app.UserCardComponent   src/app/user-card.component.ts:2
+        props: symbol_kind=class, web_component=component, framework=angular,
+               angular_selector=app-user-card,
+               angular_template_url=src/app/user-card.component.html
+        relations: injects -> src/app/services.UserService
+                   injects -> src/app/core.LayoutService
+```
+
+`web_component` is one of `component`, `directive`, `pipe`, `service`, `ng_module`.
+Both injection dialects are read — a constructor parameter property and an
+`inject()` field — because a real codebase uses both, often in the same class, and
+an `@Inject(TOKEN)` parameter names its token rather than the type beside it.
+
+**An `injects` edge is derived, never guessed.** The target resolves through the
+file's own import table or a class the file declares; a type from a package resolves
+to nothing and is COUNTED, in `typescript:angular-di`, under a cause read off the
+import statement rather than inferred from the identifier. Across ten public
+repositories that is 14,947 injection sites, 53% of which name a class in their own
+repository and resolve to it.
+
+Only `ng_module` carries `framework_registered`. The prop means *this class's use is
+not derivable from the graph*, and after the passes below a component is named by a
+template tag, a route or a `declarations:` array, a pipe by its name in an
+expression, and a service by an injection site. Flagging those too would suppress the
+dead code those edges make findable.
+
+### Routes
+
+A route array states a path fragment; the prefix it hangs under is decided somewhere
+else — by a parent's `children:`, by the entry whose `loadChildren` lazily loads the
+module the array belongs to, or by nothing at all. Paths are therefore composed by a
+repo-wide walk outward from the application roots (`RouterModule.forRoot` and
+`provideRouter`), the shape the Express, gorilla/mux and Axum passes already share:
+
+```
+route  /admin/users        src/app/admin/admin-routing.module.ts:6   type=page,
+                                                                     mount_composed=true
+       handled_by -> src/app/admin.UsersComponent
+       depends_on -> src/app.AuthGuard        (canActivate)
+```
+
+Every fact carries `type=page`, so an application's navigation is excluded from
+cross-repo HTTP matching and can never surface as an unused route — the same
+contract Ember's router map and Nuxt's pages have.
+
+A lazy `loadChildren` names a MODULE, not an array, so the array is found by an exact
+export name, by the target file's single `forChild` array, or by the single one among
+that file's own imports — one candidate required, and anything ambiguous is counted.
+An array no root reaches emits **nothing**: a component library whose only router
+call is `forChild` contributes no routes, which is the correct reading of a library.
+
+Two path forms are read beyond the literal: `[…] as Routes` behind a default export,
+and a factory-wrapped route object (`route({path: …, loadComponent: …})`). A path
+that names a constant is folded to the literal through an enum or an `as const` map,
+in this file or the one it was imported from; one that resolves to nothing is refused
+rather than written out as an identifier.
+
+### Templates
+
+In Angular a component member is very often referenced ONLY from its template, and so
+is a child component, which appears as a tag and nowhere else in the class:
+
+```html
+<h1>{{ total }}</h1>
+<button (click)="save()">save</button>
+@if (loading) { <app-spinner/> } @else { <app-card [item]="row"/> }
+```
+
+```
+src/app.PageComponent  calls -> src/app.PageComponent.total
+                       calls -> src/app.PageComponent.save
+                       calls -> src/app.PageComponent.loading
+                       calls -> src/app.SpinnerComponent
+                       calls -> src/app.CardComponent
+```
+
+Both dialects are read — `*ngIf`/`{{ }}` and Angular 17 `@if`/`@for`/`@switch`/
+`@defer` blocks — because both are live in real repositories and frequently in the
+same file. Inline `template:` strings are scanned exactly as external ones.
+
+Three resolution regimes, in decreasing order of certainty:
+
+- **a binding identifier is an edge only when it names a member the component
+  declares.** `{{ title }}` where the class has no `title` is indistinguishable from a
+  local, an `@Input` alias or a global, and produces nothing.
+- **a tag resolves against a DECLARED selector, matched whole.**
+  `tui-data-list-wrapper[labels]` selects that element carrying that attribute, and
+  matching either half alone attaches the component to templates that never render
+  it. `selector: 'app-icon:not([badge])'` is an ordinary element selector with an
+  exclusion attached, and is indexed as one.
+- **everything else is counted, never guessed** — an unknown custom-element tag, a
+  selector two classes claim, a pipe name nothing declares. Angular's own
+  `ng-template`/`ng-container`/`ng-content`/`router-outlet` are neither.
+
+Measured over four repositories, 200 of 200 sampled template edges were justified by
+the template they came from.
+
+### Composition and the workspace
+
+An Angular application's dependency structure is not in its import statements: a
+component can render another only because some `@NgModule` declared the first and
+imported the module exporting the second, or because the component's own `imports:`
+array names it. Both become `depends_on` edges, with the names recorded per array
+(`angular_declarations`, `angular_module_imports`, `angular_module_exports`,
+`angular_providers`). A `SharedModule.forRoot()` entry names its RECEIVER — the call
+configures the module, it does not name something else — and a provider literal
+`{provide: TOKEN, useClass: Impl}` names both halves.
+
+Module facts additionally carry `workspace_project`, read from an Nx `project.json`
+or an `angular.json` `projects` map. In a monorepo the unit of ownership is the
+project, not the directory.
+
+### Requests
+
+The general client pass requires a `/`-rooted literal, which is what keeps
+`map.get("key")` out of the graph. A class that injects `HttpClient` has a member
+whose declared type already says what the call is, so two further shapes are read:
+
+```ts
+this.http.post<T>('api/v1/appdeployment', spec)             // no leading slash
+this.authHttp.get<T>(VideoService.BASE_URL + '/' + id + '/stats')
+```
+
+```
+route  /api/v1/appdeployment          role=client, api=angular-httpclient
+route  /api/v1/videos/{}/stats        role=client, api=angular-httpclient
+```
+
+A class-static base is folded repo-wide, because it belongs to the service that owns
+the resource and is named by every service that touches it. An unresolved LEADING
+operand means the prefix is unknown and the call contributes nothing; anywhere else
+an unresolved operand is a path parameter.
+
 ## Storage — three ORMs, one shape
 
 ```
@@ -317,10 +480,17 @@ production messaging operations.
 - **Prefetch and refetch helpers** are separated from real request boundaries, so a
   query-cache warm-up does not double-count as an outbound call.
 - **Paths without a leading `/`.** A bare `"users"` string is too ambiguous to treat as a
-  request path.
+  request path — *unless* the receiver's declared type is Angular's `HttpClient`, which
+  settles what the call is before the argument is read.
 - **Runtime-registered routes** — an Express router assembled in a loop over a config
   array is not unrolled, and a mount whose prefix is a variable rather than a literal
   is not resolved.
+- **Angular's dynamic surface.** A component rendered through
+  `ViewContainerRef.createComponent` or a runtime registry (`[component]="i | pick"`)
+  has no static reference to find; a route table supplied through a `ROUTES` provider
+  factory is not written down to read, and is reported as `runtime_route_provider`
+  rather than as an empty application. A string or `InjectionToken` DI token resolves
+  to a class only when the token itself is a declaration in the repository.
 - **Ember names the default resolver cannot map.** Addon components (they resolve
   into `node_modules`), pods layout, custom resolvers, and engine mount points
   produce no edge; the misses are recorded in `ember_unresolved`, not guessed at.

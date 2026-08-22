@@ -418,6 +418,7 @@ Nothing here is a setting. enola looks for the markers below and runs whatever i
 | Vue        | `package.json` with `vue` dependency (Nuxt / Vue Router / Composition API aware) |
 | Svelte     | `package.json` with `svelte` dependency (SvelteKit routing / `$lib` alias aware) |
 | Ember      | `package.json` with `ember-source` dependency (`.gts`/`.gjs` template tags, `.hbs` templates, router map, ember-data) |
+| Angular    | `package.json` with `@angular/core`, or an `angular.json` (component/directive/pipe/service/module roles; constructor and `inject()` DI; `.html` and inline templates in both the `*ngIf` and the `@if` dialect; router paths composed across lazy `loadChildren`; NgModule and standalone composition; `HttpClient` call sites; Nx/`angular.json` project boundaries) |
 | Python     | `pyproject.toml`, `requirements.txt`, `setup.py`, … (FastAPI / Django / SQLAlchemy aware) |
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
@@ -475,7 +476,7 @@ Apache License 2.0 - see [`LICENSE`](LICENSE).
 
 Everything ships here:
 
-- **Every language** - Go, TypeScript/JavaScript/Vue/Svelte/Ember, Python, Java, Kotlin, Scala, Dart/Flutter, Ruby, PHP, Swift, Rust, C/C++, .NET (C#/VB.NET/F#/Razor/XAML), Terraform/HCL, Ansible, gRPC/Protobuf, OpenAPI, AsyncAPI, GraphQL
+- **Every language** - Go, TypeScript/JavaScript/Vue/Svelte/Ember/Angular, Python, Java, Kotlin, Scala, Dart/Flutter, Ruby, PHP, Swift, Rust, C/C++, .NET (C#/VB.NET/F#/Razor/XAML), Terraform/HCL, Ansible, gRPC/Protobuf, OpenAPI, AsyncAPI, GraphQL
 - **All 19 MCP tools**, plus the cross-repo linker
 - **All seventeen explainers** - `cycles`, `layers`, `crossrepo`, `coverage`, `unused-routes`, `messaging-coverage`, `god-class`, `hotspots`, `dependency-depth`, `exported-surface`, `complexity-outliers`, `intent`, `constraints`, `domain`, `query-loops`, `entry-points`, `dead-methods`
 - Baselines, `diff_snapshot`, snapshot receipts, the `--explain` report, and the localhost dashboard
