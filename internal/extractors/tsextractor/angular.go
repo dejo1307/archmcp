@@ -153,6 +153,24 @@ func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, 
 			inline[f.Name] = tpl
 		}
 
+		// What the class's own decorator composes: an NgModule's declarations,
+		// imports, exports and providers, and a standalone component's imports. This
+		// is the application's composition, and none of it is visible in the file's
+		// import statements alone — those say which files were loaded, not which
+		// declarations were assembled.
+		if role == "ng_module" || role == "component" || role == "directive" {
+			modRels, modProps, c := angularModuleEdges(kinds, args, ctx, imports, local)
+			counts.merge(c)
+			for k, v := range modProps {
+				f.Props[k] = v
+			}
+			for _, r := range modRels {
+				if !f.HasRelation(r.Kind, r.Target) {
+					f.Relations = append(f.Relations, r)
+				}
+			}
+		}
+
 		body := findChildByKind(kinds, class, "class_body")
 		rels, c := angularInjects(kinds, body, ctx, imports, external, local)
 		counts.merge(c)
@@ -484,6 +502,17 @@ func buildAngularImports(kinds *tsutil.KindTable, root *sitter.Node, ctx *extrac
 // and counted. A dangling edge is worse than a missing one: it is invisible in
 // coverage and it is followed by impact analysis exactly as a real edge would be.
 func reconcileAngularInjects(all []facts.Fact) angularCounts {
+	return reconcileAngularEdges(all, facts.RelInjects, facts.RelDependsOn)
+}
+
+// reconcileAngularEdges is the general form: it holds for every edge this dialect
+// resolves through an import table, which is the injects edges and the NgModule
+// composition edges alike.
+func reconcileAngularEdges(all []facts.Fact, kinds ...string) angularCounts {
+	wanted := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		wanted[k] = true
+	}
 	var counts angularCounts
 	names := make(map[string]bool)
 	byShort := make(map[string][]string)
@@ -497,10 +526,15 @@ func reconcileAngularInjects(all []facts.Fact) angularCounts {
 	}
 
 	for i := range all {
+		if all[i].PropString(facts.PropFramework) != AngularFramework {
+			// depends_on is written by other passes too, and this reconciliation is
+			// only sound for edges resolved through an Angular import table.
+			continue
+		}
 		rels := all[i].Relations
 		kept := rels[:0]
 		for _, r := range rels {
-			if r.Kind != facts.RelInjects || names[r.Target] {
+			if !wanted[r.Kind] || names[r.Target] {
 				kept = append(kept, r)
 				continue
 			}

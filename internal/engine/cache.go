@@ -2135,7 +2135,17 @@ import (
 // needs both of its halves; anything else is counted by cause, never guessed. The
 // extractor now also owns .html for cache-invalidation purposes, since a template
 // edit changes what it emits.
-const cacheVersion = "v228"
+// v229: the Angular composition graph and the workspace shape. An application's
+// dependency structure is in its @NgModule declarations/imports/exports/providers
+// arrays and a standalone component's own imports — not in its import statements,
+// which say which files were loaded rather than which declarations were assembled.
+// Those arrays are now edges, resolved through the same import table as the
+// injection edges and reconciled the same way, so none of them names a node that
+// does not exist. Module facts additionally carry the workspace project that owns
+// their directory, read from an Nx project.json or an angular.json projects map:
+// in a monorepo the unit of ownership is the project, and every reading that groups
+// by unit was inferring that boundary from the path.
+const cacheVersion = "v229"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

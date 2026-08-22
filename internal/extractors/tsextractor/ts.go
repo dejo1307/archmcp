@@ -360,6 +360,13 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 
 	// Emit module facts for each directory
 	pkgNames := collectPackageNames(repoPath)
+	// The workspace project each directory belongs to, where the repository states
+	// one. A monorepo's unit of ownership is its project, not its directory, and
+	// every reading that groups by unit was inferring the boundary from the path.
+	var projects map[string]string
+	if isAngular {
+		projects = angularProjectNames(repoPath)
+	}
 	for dir := range modules {
 		props := map[string]any{
 			"language": "typescript",
@@ -370,6 +377,9 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		// that happens to be labeled like the scope.
 		if name := nearestPackageName(pkgNames, dir); name != "" {
 			props["package_name"] = name
+		}
+		if name := nearestProjectName(projects, dir); name != "" {
+			props["workspace_project"] = name
 		}
 		allFacts = append(allFacts, facts.Fact{
 			Kind:  facts.KindModule,
