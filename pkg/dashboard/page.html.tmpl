@@ -92,6 +92,8 @@
     .explorer-head h2 { margin: 0; }
     .graph-search { width: min(260px, 45vw); border: 1px solid var(--border); border-radius: 8px; background: #08112b; color: var(--fg); padding: .5rem .65rem; font: inherit; outline: none; }
     .graph-search:focus { border-color: #6f8fff; box-shadow: 0 0 0 2px rgba(111,143,255,.14); }
+    .graph-search-form { display: flex; gap: .4rem; }
+    .secondary-action { border: 1px solid var(--border); border-radius: 8px; padding: .5rem .7rem; background: var(--card); color: var(--fg); cursor: pointer; font: inherit; font-weight: 600; }
     .explorer { display: flex; flex-direction: column; min-height: 500px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #07112d; }
     .findings-pane { border-top: 1px solid var(--border); background: #08112b; padding: .85rem 1rem; }
     .findings-pane h3 { margin: .2rem .35rem .7rem; font-size: .82rem; }
@@ -219,6 +221,25 @@
     </div>
   </section>
 
+  <div class="data-section">
+    <div class="section-kicker">Development feedback</div><h2>What changed?</h2>
+    {{if .Changes.Available}}
+      {{if .Changes.Incomparable}}
+      <div class="snapshot-alert"><b>Comparison unavailable.</b> The current and previous snapshots used different extraction inputs, so their raw deltas would describe rebuild noise rather than a trustworthy code change.</div>
+      {{else if .Changes.Initial}}
+      <p class="note">This is the first recorded architecture snapshot. The next snapshot will provide a change comparison.</p>
+      {{else}}
+      <p class="note">Compared with the {{.Changes.ComparedTo}} · {{.Changes.Headline}}</p>
+      <div class="grid">
+        <div class="card"><div class="k">New findings</div><div class="v">{{.Changes.FindingsNew}}</div></div>
+        <div class="card"><div class="k">Resolved findings</div><div class="v">{{.Changes.FindingsResolved}}</div></div>
+        <div class="card"><div class="k">Facts added / removed</div><div class="v">+{{.Changes.FactsAdded}} / −{{.Changes.FactsRemoved}}</div></div>
+        <div class="card"><div class="k">Dependencies added / removed</div><div class="v">+{{.Changes.EdgesAdded}} / −{{.Changes.EdgesRemoved}}</div></div>
+      </div>
+      {{end}}
+    {{else}}<p class="note">No earlier architecture snapshot is available yet. Generate another snapshot after a change to start tracking deltas.</p>{{end}}
+  </div>
+
   <div class="grid">
     {{if .HasReceipt}}{{with .Receipt}}
     <div class="card"><div class="k">Current facts</div><div class="v">{{.FactCount}}</div></div>
@@ -240,15 +261,19 @@
   {{if .ModuleGraph}}
   <div class="explorer-head">
     <div><h2>Architecture map</h2></div>
-    <input id="module-search" class="graph-search" type="search" placeholder="Filter visible modules…" oninput="filterModules(this.value)" aria-label="Filter visible modules">
+    <form class="graph-search-form" action="/#architecture" method="get">
+      <input id="module-search" class="graph-search" name="module" type="search" list="all-modules" value="{{.ModuleGraph.FocusName}}" placeholder="Search every module…" aria-label="Search every module">
+      <datalist id="all-modules">{{range .ModuleGraph.AllModules}}<option value="{{.}}">{{end}}</datalist>
+      <button class="secondary-action" type="submit">Explore</button>
+    </form>
   </div>
   {{$graph := .ModuleGraph}}
   <div class="graph-summary">
-    <span class="chip">Showing {{len $graph.Nodes}} of {{$graph.Total}} connected modules</span>
+    {{if $graph.Focused}}<span class="chip">Neighborhood of {{$graph.FocusName}}</span>{{else}}<span class="chip">Showing {{len $graph.Nodes}} of {{$graph.Total}} connected modules</span>{{end}}
     <span class="chip">{{len $graph.Edges}} visible dependencies</span>
-    <span class="chip">Ranked by connectedness</span>
+    {{if not $graph.Focused}}<span class="chip">Ranked by connectedness</span>{{end}}
   </div>
-  <p class="note">Select a node or table row to highlight its immediate dependency neighborhood; the full edge set stays faint until focused.</p>
+  <p class="note">Search covers all {{$graph.Total}} connected modules. {{if $graph.Focused}}This view contains the selected module and its immediate incoming and outgoing dependencies. <a href="/#architecture">Clear focus</a>.{{else}}Choose a module to replace this overview with its immediate dependency neighborhood.{{end}}</p>
   <section class="explorer" aria-label="Architecture explorer">
     <div class="graph-pane">
       <div class="graph-canvas">

@@ -42,11 +42,37 @@ func TestModuleGraphPageExplainsScopeAndProvidesModuleTable(t *testing.T) {
 	for _, want := range []string{
 		"Showing 2 of 2 connected modules", "1 visible dependencies",
 		"Most-connected modules in this view", "Used by", "Depends on",
-		`onclick="focusModule('`, "Filter visible modules",
+		`onclick="focusModule('`, "Search every module",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("module graph page missing %q", want)
 		}
+	}
+}
+
+func TestBuildModuleGraphFocusesOnImmediateNeighborhood(t *testing.T) {
+	st := facts.NewStore()
+	st.Add(
+		facts.Fact{Kind: facts.KindModule, Name: "core", Relations: []facts.Relation{{Kind: facts.RelImports, Target: "api"}}},
+		facts.Fact{Kind: facts.KindModule, Name: "api", Relations: []facts.Relation{{Kind: facts.RelImports, Target: "storage"}}},
+		facts.Fact{Kind: facts.KindModule, Name: "storage"},
+		facts.Fact{Kind: facts.KindModule, Name: "unrelated", Relations: []facts.Relation{{Kind: facts.RelImports, Target: "other"}}},
+		facts.Fact{Kind: facts.KindModule, Name: "other"},
+	)
+	view := buildModuleGraphFocused(st, "api")
+	if view == nil || !view.Focused || view.FocusName != "api" || len(view.Nodes) != 3 {
+		t.Fatalf("focused view = %+v, want api plus core/storage", view)
+	}
+	if len(view.Edges) != 2 {
+		t.Fatalf("focused edges = %+v, want only edges incident to api", view.Edges)
+	}
+	for _, node := range view.Nodes {
+		if node.Name == "unrelated" || node.Name == "other" {
+			t.Fatalf("focused view contains unrelated node %+v", node)
+		}
+	}
+	if len(view.AllModules) != 5 {
+		t.Fatalf("search index = %d modules, want all 5", len(view.AllModules))
 	}
 }
 

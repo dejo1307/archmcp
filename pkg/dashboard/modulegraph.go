@@ -26,14 +26,21 @@ type moduleGraphView struct {
 	Width, Height int
 	Nodes         []moduleNode
 	Edges         []moduleEdge
+	AllModules    []string
 	Total         int
 	Limited       bool
+	Focused       bool
+	FocusName     string
 }
 
 // buildModuleGraph produces a deliberately bounded architecture map. It ranks
 // production modules by connectedness, keeps the most structurally relevant
 // ones, and renders only imports whose endpoints are both visible.
 func buildModuleGraph(store *facts.Store) *moduleGraphView {
+	return buildModuleGraphFocused(store, "")
+}
+
+func buildModuleGraphFocused(store *facts.Store, focus string) *moduleGraphView {
 	if store == nil {
 		return nil
 	}
@@ -101,13 +108,37 @@ func buildModuleGraph(store *facts.Store) *moduleGraphView {
 		return nil
 	}
 	total := len(ranked)
+	allModules := make([]string, 0, len(ranked))
+	for _, r := range ranked {
+		allModules = append(allModules, r.name)
+	}
+	focused := false
+	if center := byName[focus]; focus != "" && center != nil {
+		neighborhood := map[string]bool{focus: true}
+		for target := range center.out {
+			neighborhood[target] = true
+		}
+		for _, r := range ranked {
+			if r.out[focus] {
+				neighborhood[r.name] = true
+			}
+		}
+		selected := []*raw{center}
+		for _, r := range ranked {
+			if r.name != focus && neighborhood[r.name] {
+				selected = append(selected, r)
+			}
+		}
+		ranked = selected
+		focused = true
+	}
 	if len(ranked) > moduleGraphLimit {
 		ranked = ranked[:moduleGraphLimit]
 	}
 
 	const cols, nodeW, nodeH, gapX, gapY, margin = 4, 154, 36, 34, 34, 28
 	rows := (len(ranked) + cols - 1) / cols
-	view := &moduleGraphView{Width: margin*2 + cols*nodeW + (cols-1)*gapX, Height: margin*2 + rows*nodeH + (rows-1)*gapY, Total: total, Limited: total > len(ranked)}
+	view := &moduleGraphView{Width: margin*2 + cols*nodeW + (cols-1)*gapX, Height: margin*2 + rows*nodeH + (rows-1)*gapY, AllModules: allModules, Total: total, Limited: total > len(ranked), Focused: focused, FocusName: focus}
 	index := make(map[string]int, len(ranked))
 	for i, r := range ranked {
 		x := margin + (i%cols)*(nodeW+gapX)
@@ -117,6 +148,9 @@ func buildModuleGraph(store *facts.Store) *moduleGraphView {
 	}
 	for i, r := range ranked {
 		for target := range r.out {
+			if focused && r.name != focus && target != focus {
+				continue
+			}
 			j, ok := index[target]
 			if !ok {
 				continue

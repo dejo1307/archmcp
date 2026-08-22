@@ -32,6 +32,7 @@ import (
 
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/facts"
+	"github.com/enola-labs/enola/pkg/history"
 	"github.com/enola-labs/enola/pkg/status"
 )
 
@@ -271,7 +272,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := s.buildPage()
+	data := s.buildPageForModule(r.URL.Query().Get("module"))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, data); err != nil {
 		log.Printf("dashboard: render failed: %v", err)
@@ -381,6 +382,14 @@ type qualityAssessment struct {
 	InactiveShare                string
 }
 
+type changeSummary struct {
+	Available, Incomparable, Initial bool
+	Headline, ComparedTo             string
+	FactsAdded, FactsRemoved         int
+	EdgesAdded, EdgesRemoved         int
+	FindingsNew, FindingsResolved    int
+}
+
 // pageData is the full template model.
 type pageData struct {
 	RefreshSeconds int
@@ -451,6 +460,7 @@ type pageData struct {
 	SkippedSample    []string
 	ParseErrors      []facts.ParseError
 	Quality          qualityAssessment
+	Changes          changeSummary
 
 	// Extra is whatever Options.Extra returned for this request — the data the
 	// overlay blocks render. Nil in a plain engine dashboard, and nil whenever a
@@ -462,6 +472,10 @@ type pageData struct {
 // buildPage collects the status, current-snapshot receipt and graph-wide receipt
 // into the template model. Every source degrades gracefully to a note on error.
 func (s *Server) buildPage() pageData {
+	return s.buildPageForModule("")
+}
+
+func (s *Server) buildPageForModule(module string) pageData {
 	data := pageData{
 		RefreshSeconds: refreshSeconds,
 		Title:          s.title,
@@ -544,7 +558,8 @@ func (s *Server) buildPage() pageData {
 	// counters. Empty (store not loaded) → the cards render as plain numbers.
 	data.Services, data.CrossRepoEdges = graphDetails(s.eng.Store())
 	data.EdgeDiagram = buildEdgeDiagram(data.Services, data.CrossRepoEdges)
-	data.ModuleGraph = buildModuleGraph(s.eng.Store())
+	data.ModuleGraph = buildModuleGraphFocused(s.eng.Store(), module)
+	data.Changes = readChangeSummary(s.eng.ActiveRepo())
 
 	// Insight list (grouped by explainer) backing the clickable Insights counter.
 	// Empty → the counter renders as a plain number.
@@ -562,6 +577,29 @@ func (s *Server) buildPage() pageData {
 	}
 
 	return data
+}
+
+func readChangeSummary(repoPath string) changeSummary {
+	if repoPath == "" {
+		return changeSummary{}
+	}
+	root, err := history.Root(repoPath, "")
+	if err != nil {
+		return changeSummary{}
+	}
+	entries, err := history.Read(root)
+	if err != nil || len(entries) == 0 {
+		return changeSummary{}
+	}
+	entry := entries[len(entries)-1]
+	s := entry.Summary
+	return changeSummary{
+		Available: true, Incomparable: s.Incomparable, Initial: s.Initial,
+		Headline: s.Headline(), ComparedTo: "previous recorded snapshot",
+		FactsAdded: s.FactsAdded, FactsRemoved: s.FactsRemoved,
+		EdgesAdded: s.EdgesAdded, EdgesRemoved: s.EdgesRemoved,
+		FindingsNew: s.FindingsNew, FindingsResolved: s.FindingsResolved,
+	}
 }
 
 var reviewableFileKinds = map[string]string{
