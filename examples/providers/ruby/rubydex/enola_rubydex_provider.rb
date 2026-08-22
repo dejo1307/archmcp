@@ -65,6 +65,7 @@ class RubydexFacts
     @unresolved = 0
     @enclosing_receivers = 0
     @untyped_receivers = 0
+    @aliased_declarations = 0
   end
 
   def collect
@@ -140,10 +141,14 @@ class RubydexFacts
     declaration = definition.declaration
     return if declaration.nil?
 
-    chain = declaration.ancestors.to_a
+    unless declaration.respond_to?(:ancestors)
+      @aliased_declarations += 1
+      return
+    end
+
+    chain = declaration.ancestors.to_a.take_while { |ancestor| !built_in?(ancestor) }
     chain.each_with_index do |ancestor, distance|
       next if distance.zero? || ancestor.name == declaration.name
-      next if built_in?(ancestor)
 
       @facts << fact("rubydex-ancestor: #{declaration.name} -> #{ancestor.name}", definition.location, "resolved",
         { "kind" => "implements", "target" => ancestor.name },
@@ -202,6 +207,7 @@ class RubydexFacts
     causes << { "cause" => "unresolved constant reference", "count" => @unresolved } if @unresolved.positive?
     causes << { "cause" => "receiver is the lexical enclosing class", "count" => @enclosing_receivers } if @enclosing_receivers.positive?
     causes << { "cause" => "receiver resolves to no constant", "count" => @untyped_receivers } if @untyped_receivers.positive?
+    causes << { "cause" => "declaration is a constant alias, not a class", "count" => @aliased_declarations } if @aliased_declarations.positive?
     causes << { "cause" => "rubydex diagnostic", "count" => diagnostics } if diagnostics.positive?
     skipped = causes.sum { |cause| cause["count"] }
     warn "enola-provider-census: " + JSON.generate(

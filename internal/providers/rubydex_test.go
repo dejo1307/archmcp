@@ -46,6 +46,7 @@ func writeRubydexFixture(t *testing.T) string {
 		"Gemfile":                 "source \"https://rubygems.org\"\n",
 		"app/models/base.rb":      "class Base\nend\n",
 		"app/models/auditable.rb": "module Auditable\n  def audit; end\nend\n",
+		"app/models/named.rb":     "Named = Base\nclass Named\n  def go; end\nend\n",
 		"app/models/invoice.rb": "class Invoice < Base\n" +
 			"  include Auditable\n" +
 			"  def total\n" +
@@ -85,8 +86,17 @@ func TestRubydexProvider_GoldenThroughTheSeam(t *testing.T) {
 	if records[0].Version != "0.1.0" {
 		t.Errorf("reported version = %q", records[0].Version)
 	}
-	if records[0].Census == nil || records[0].Census.FilesSeen != 4 {
-		t.Errorf("census = %+v, want the four workspace files seen", records[0].Census)
+	if records[0].Census == nil || records[0].Census.FilesSeen != 5 {
+		t.Errorf("census = %+v, want the five workspace files seen", records[0].Census)
+	}
+	var aliasSkips int
+	for _, cause := range records[0].Census.SkipCauses {
+		if cause.Cause == "declaration is a constant alias, not a class" {
+			aliasSkips = cause.Count
+		}
+	}
+	if aliasSkips != 1 {
+		t.Errorf("census = %+v, want the reopened alias counted as one named skip", records[0].Census)
 	}
 
 	byName := map[string]int{}
