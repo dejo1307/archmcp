@@ -38,7 +38,7 @@ func TestESLintProvider_TurnsResultsIntoLintFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ff, records := Run(context.Background(), []Provider{{Name: "eslint", Command: []string{"node", script}, ExpectedVersion: "0.1.0"}}, repo, nil)
+	ff, records := Run(context.Background(), []Provider{{Name: "eslint", Command: []string{"node", script}, ExpectedVersion: "0.1.0"}}, repo, nil, nil)
 	if len(records) != 1 || records[0].Skipped {
 		t.Fatalf("census = %+v", records)
 	}
@@ -66,7 +66,7 @@ func TestESLintProvider_NoResultsIsNothingNotAnError(t *testing.T) {
 		t.Skip("node is not installed")
 	}
 	script, _ := filepath.Abs(filepath.Join("..", "..", "examples", "providers", "js", "eslint", "enola_eslint_provider.mjs"))
-	ff, records := Run(context.Background(), []Provider{{Name: "eslint", Command: []string{"node", script}, ExpectedVersion: "0.1.0"}}, t.TempDir(), nil)
+	ff, records := Run(context.Background(), []Provider{{Name: "eslint", Command: []string{"node", script}, ExpectedVersion: "0.1.0"}}, t.TempDir(), nil, nil)
 	if len(ff) != 0 || len(records) != 1 || records[0].Skipped || records[0].FactCount != 0 {
 		t.Fatalf("facts = %d, census = %+v", len(ff), records)
 	}

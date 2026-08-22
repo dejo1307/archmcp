@@ -75,7 +75,7 @@ func TestPrismProvider_GoldenThroughTheSeam(t *testing.T) {
 		Name:            "prism",
 		Command:         []string{"ruby", prismScript(t)},
 		ExpectedVersion: "0.1.0",
-	}}, repo, nil)
+	}}, repo, nil, nil)
 	if len(records) != 1 || records[0].Skipped {
 		t.Fatalf("census = %+v, want a clean run", records)
 	}
@@ -129,5 +129,58 @@ func TestPrismProvider_OutputIsSortedAndDeterministic(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(first)), "\n")
 	if !sort.StringsAreSorted(lines) {
 		t.Errorf("output lines are not sorted:\n%s", first)
+	}
+}
+
+// A `new` on a literal constant is an instantiation, not a call, and when its
+// result is immediately the receiver of another call the ceremony is named on
+// the fact. A `new` on anything the parser cannot name stays a call.
+func TestPrismProvider_EmitsInstantiations(t *testing.T) {
+	requirePrism(t)
+	repo := t.TempDir()
+	src := "class Checkout\n" +
+		"  def run(order)\n" +
+		"    Payments::Charge.new(order).call\n" +
+		"    receipt = Receipt.new(order)\n" +
+		"    receipt.deliver\n" +
+		"    klass.new(order).call\n" +
+		"  end\n" +
+		"end\n"
+	if err := os.MkdirAll(filepath.Join(repo, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app", "checkout.rb"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd := exec.CommandContext(context.Background(), "ruby", prismScript(t), repo)
+	cmd.Stdout = &out
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	var news []string
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if strings.Contains(line, "prism-new:") {
+			news = append(news, line)
+		}
+	}
+	sort.Strings(news)
+	if len(news) != 2 {
+		t.Fatalf("want two instantiations (the two literal constants), got %d: %v", len(news), news)
+	}
+	joined := strings.Join(news, "\n")
+	for _, want := range []string{
+		`"name":"prism-new: Checkout#run -> Payments::Charge"`,
+		`"one_shot_call":"call"`,
+		`"name":"prism-new: Checkout#run -> Receipt"`,
+		`"kind":"instantiates"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %s in:\n%s", want, joined)
+		}
+	}
+	if strings.Count(joined, "one_shot_call") != 1 {
+		t.Errorf("only the chained instantiation carries the ceremony:\n%s", joined)
 	}
 }

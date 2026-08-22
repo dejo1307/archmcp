@@ -1,0 +1,120 @@
+package moduleedges
+
+import (
+	"context"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/enola-labs/enola/internal/facts"
+)
+
+func module(name string) facts.Fact {
+	return facts.Fact{Kind: facts.KindModule, Name: name, File: name, Repo: "app",
+		Props: map[string]any{"language": "ruby"}}
+}
+
+func symbol(name, file string, relations ...facts.Relation) facts.Fact {
+	return facts.Fact{Kind: facts.KindSymbol, Name: name, File: file, Repo: "app",
+		Props: map[string]any{"language": "ruby", "symbol_kind": "method"}, Relations: relations}
+}
+
+func calls(targets ...string) []facts.Relation {
+	out := make([]facts.Relation, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, facts.Relation{Kind: facts.RelCalls, Target: t})
+	}
+	return out
+}
+
+func derivedEdges(store *facts.Store) map[string]int {
+	out := map[string]int{}
+	for _, f := range store.ByKind(facts.KindDependency) {
+		if f.PropString(DerivedProp) != derivedFromSymbols {
+			continue
+		}
+		for _, r := range f.Relations {
+			if r.Kind == facts.RelImports {
+				weight, _ := f.Props[WeightProp].(int)
+				out[strings.TrimPrefix(f.Name, "module-edge: ")] = weight
+				_ = r
+			}
+		}
+	}
+	return out
+}
+
+// A call whose target resolves to a symbol in another directory is a module
+// edge, weighted by how many symbol edges stand behind it. A call inside one
+// directory is not an edge, a call naming no known symbol derives nothing,
+// and a test directory contributes none.
+func TestBind_ResolvedSymbolEdgesBecomeWeightedModuleEdges(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		module("app/services"), module("app/models"), module("app/jobs"), module("spec/services"),
+		symbol("Reports::Build#call", "app/services/reports/build.rb", calls("Order#total", "Order#lines", "Reports::Build#collect", "vanished_helper")...),
+		symbol("Reports::Build#collect", "app/services/reports/build.rb"),
+		symbol("Order#total", "app/models/order.rb", calls("ImportJob#perform")...),
+		symbol("Order#lines", "app/models/order.rb"),
+		symbol("ImportJob#perform", "app/jobs/import_job.rb"),
+		symbol("Reports::BuildSpec#test", "spec/services/reports/build_spec.rb", calls("Reports::Build#call")...),
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	got := derivedEdges(store)
+	if got["app/services -> app/models"] != 2 {
+		t.Errorf("two calls into app/models are one edge of weight two: %v", got)
+	}
+	if got["app/models -> app/jobs"] != 1 {
+		t.Errorf("single call edge missing: %v", got)
+	}
+	names := make([]string, 0, len(got))
+	for name := range got {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) != 2 {
+		t.Fatalf("a same-directory call, an unresolved name and a spec directory derive nothing: %v", names)
+	}
+}
+
+// A pair an extractor already connected keeps the extractor's edge: this
+// fills the gap where nobody emitted one, it does not restate what was read.
+func TestBind_PairsAnExtractorConnectedAreLeftAlone(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		module("src/api"), module("src/core"),
+		facts.Fact{Kind: facts.KindDependency, Name: "src/api/client.ts", File: "src/api/client.ts", Repo: "app",
+			Props:     map[string]any{"language": "typescript"},
+			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "src/core"}}},
+		symbol("ApiClient.fetch", "src/api/client.ts", calls("CoreThing.read")...),
+		symbol("CoreThing.read", "src/core/thing.ts"),
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	if got := derivedEdges(store); len(got) != 0 {
+		t.Fatalf("the extractor already connected this pair: %v", got)
+	}
+}
+
+// A directory name is repo-relative and names collide across repositories, so
+// a call whose target sits in another repository derives nothing: that seam is
+// the cross-repo linker's, measured rather than inferred from a shared name.
+func TestBind_CallsIntoAnotherRepositoryDeriveNothing(t *testing.T) {
+	store := facts.NewStore()
+	other := func(f facts.Fact) facts.Fact { f.Repo = "sibling"; return f }
+	store.Add(
+		module("app/services"),
+		other(module("app/models")),
+		symbol("Reports::Build#call", "app/services/reports/build.rb", calls("Order#total")...),
+		other(symbol("Order#total", "app/models/order.rb")),
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	if got := derivedEdges(store); len(got) != 0 {
+		t.Fatalf("a cross-repository call must derive no module edge: %v", got)
+	}
+}

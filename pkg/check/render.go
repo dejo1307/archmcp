@@ -3,6 +3,8 @@ package check
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -740,10 +742,79 @@ func writeFindings(sb *strings.Builder, ins []facts.Insight) {
 		for _, ev := range in.Evidence {
 			if d := strings.TrimSpace(ev.Detail); d != "" {
 				fmt.Fprintf(sb, "      %s\n", oneLine(d))
+				writeFrame(sb, ev)
 				break
 			}
 		}
 	}
+}
+
+// frameRoot is where a located finding's source is read from. It is the
+// process's working directory, which is the repository a check runs in; a
+// frame is a courtesy for the reader in front of the code, so a file that
+// cannot be read prints nothing rather than an error.
+var frameRoot = "."
+
+// writeFrame prints the line a finding is about with its span underlined.
+// Nothing is printed when the extractor measured no position, when the file
+// is unreadable, or when the recorded line is past the file's end: an invented
+// frame would be worse than none, since a reader trusts what it points at.
+func writeFrame(sb *strings.Builder, ev facts.Evidence) {
+	if ev.Line <= 0 || ev.File == "" {
+		return
+	}
+	src, err := os.ReadFile(filepath.Join(frameRoot, filepath.FromSlash(repoRelative(ev.File)))) //factpath:host
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(src), "\n")
+	if ev.Line > len(lines) {
+		return
+	}
+	text := strings.TrimRight(lines[ev.Line-1], "\r")
+	fmt.Fprintf(sb, "      %s:%d\n", ev.File, ev.Line)
+	fmt.Fprintf(sb, "      %s\n", text)
+	if marks := underline(text, ev); marks != "" {
+		fmt.Fprintf(sb, "      %s\n", marks)
+	}
+}
+
+// underline marks the span's columns under the source line, tabs kept as tabs
+// so the marks line up in the reader's terminal. A span that ends on a later
+// line is underlined to the end of this one, which is what a reader looking at
+// the first line of a multi-line definition wants.
+func underline(text string, ev facts.Evidence) string {
+	if ev.Column <= 0 || ev.Column > len(text)+1 {
+		return ""
+	}
+	end := ev.EndColumn
+	if ev.EndLine > ev.Line || end <= ev.Column {
+		end = len(text) + 1
+	}
+	if end > len(text)+1 {
+		end = len(text) + 1
+	}
+	var b strings.Builder
+	for i := 0; i < ev.Column-1; i++ {
+		if i < len(text) && text[i] == '\t' {
+			b.WriteByte('\t')
+			continue
+		}
+		b.WriteByte(' ')
+	}
+	b.WriteString(strings.Repeat("^", end-ev.Column))
+	return b.String()
+}
+
+// repoRelative drops the repository label a union snapshot prefixes onto a
+// fact's file, so a path resolves inside the repository the check runs in.
+func repoRelative(file string) string {
+	if _, rest, ok := strings.Cut(file, "/"); ok {
+		if _, err := os.Stat(filepath.Join(frameRoot, filepath.FromSlash(file))); err != nil { //factpath:host
+			return rest
+		}
+	}
+	return file
 }
 
 // Detail returns the full delta report from internal/diff, for callers that want the

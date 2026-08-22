@@ -105,7 +105,7 @@ func (r *Runner) name() string {
 // `upgrade` is deliberately absent. It is OSS-only — a wrapper ships through its own
 // release path — so cmd/enola dispatches it itself, before calling Dispatch.
 func Subcommands() []string {
-	return []string{"check", "constraints", "plan", "coverage", "endpoint", "doctor", "baseline", "log", "show", "diff", "blame", "gc", "history", "install", "uninstall", "hook"}
+	return []string{"check", "constraints", "plan", "coverage", "endpoint", "doctor", "providers", "baseline", "log", "show", "diff", "blame", "gc", "history", "install", "uninstall", "hook"}
 }
 
 // Dispatch runs the subcommand named by args[0], if it is one of Subcommands().
@@ -150,6 +150,9 @@ func (r *Runner) Dispatch(ctx context.Context, args []string) bool {
 		os.Exit(0)
 	case "doctor":
 		r.Doctor(args[1:])
+		os.Exit(0)
+	case "providers":
+		r.Providers(ctx, args[1:])
 		os.Exit(0)
 	case "baseline":
 		r.Baseline(args[1:])

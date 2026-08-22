@@ -265,3 +265,91 @@ end
 		t.Fatal("wrapper-method route not derived")
 	}
 }
+
+// A path that reaches the client through a method parameter is derived from
+// the literals the method's callers pass, one hop, same file: each literal
+// becomes a client fact marked derived, a non-literal argument is counted,
+// and the parameter position is read from the def, not assumed first.
+func TestRubyHTTPClient_ParameterPath(t *testing.T) {
+	src := `
+class Insights
+  def visitors_report
+    fetch_report("/reports/visitors")
+  end
+
+  def referrers_report(sources:)
+    fetch_report("/reports/referrers", sources:)
+  end
+
+  def custom_report(name)
+    fetch_report(name)
+  end
+
+  def raw(kind, path)
+    fetch_typed(kind, path)
+  end
+
+  def typed_devices
+    fetch_typed(:json, "/reports/devices")
+  end
+
+  def fetch_report(path, params = {})
+    response = connection.get(build_url(path), params)
+    JSON.parse(response.body)
+  end
+
+  def fetch_typed(kind, path)
+    connection.get(build_url(path))
+  end
+
+  def build_url(path)
+    "#{ENV["INSIGHTS_HOST_URL"]}#{path}"
+  end
+end
+`
+	got, derived, misses := extractRubyHTTPClientFactsCounted([]byte(src), "app/services/insights.rb")
+	paths := map[string]string{}
+	for _, f := range clientRoutes(got) {
+		paths[f.Name] = f.Props["derived"].(string) + ":" + f.Props["via_method"].(string)
+	}
+	want := map[string]string{
+		"/reports/visitors":  "parameter:fetch_report",
+		"/reports/referrers": "parameter:fetch_report",
+		"/reports/devices":   "parameter:fetch_typed",
+	}
+	for p, w := range want {
+		if paths[p] != w {
+			t.Errorf("%s = %q, want %q (all: %v)", p, paths[p], w, paths)
+		}
+	}
+	if len(paths) != 3 || derived != 3 {
+		t.Fatalf("want exactly 3 derived paths, got %v (%d)", paths, derived)
+	}
+	if misses[parameterNonLiteral] != 2 {
+		t.Fatalf("custom_report(name) and raw(kind, path) pass non-literals and must be counted: %v", misses)
+	}
+}
+
+// A method defined twice in the file is ambiguous: nothing is derived and
+// the method is counted once.
+func TestRubyHTTPClient_ParameterPathAmbiguousMethod(t *testing.T) {
+	src := `
+class A
+  def call
+    fetch("/a")
+  end
+  def fetch(path)
+    connection.get(path)
+  end
+end
+class B
+  def fetch(path)
+    connection.post(path)
+  end
+end
+`
+	got, derived, misses := extractRubyHTTPClientFactsCounted([]byte(src), "app/services/a.rb")
+	if len(clientRoutes(got)) != 0 || derived != 0 || misses[parameterAmbiguousMethod] != 1 {
+		t.Fatalf("ambiguous wrapper must derive nothing: %v %d %v", clientRoutes(got), derived, misses)
+	}
+}

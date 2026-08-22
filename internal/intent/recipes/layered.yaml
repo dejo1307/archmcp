@@ -1,0 +1,36 @@
+recipe: layered
+roles:
+  - name: presentation
+  - name: application
+  - name: domain
+  - name: infrastructure
+rules:
+  - id: presentation-reaches-application-only
+    allow: presentation
+    only: [application]
+    via: calls
+    because: "The layer a request arrives in delegates and renders. A presentation that reaches past the application layer puts request handling and business decisions in one place, which is what layering exists to separate."
+
+  - id: application-does-not-reach-presentation
+    forbid: application
+    to: presentation
+    via: calls
+    because: "A layer that calls back into the one above it cannot be used by anything else that sits above it, which is the whole return on arranging code in layers."
+
+  - id: domain-knows-no-infrastructure
+    forbid: domain
+    to: infrastructure
+    via: depends_on
+    because: "The domain is the part that outlives the database, the queue and the HTTP client it happens to use today. A domain that names one cannot be reasoned about, tested or ported without it."
+
+  - id: domain-knows-no-presentation
+    forbid: domain
+    to: presentation
+    via: depends_on
+    because: "A domain that knows how it is displayed can only be used where that display exists."
+
+  - id: infrastructure-does-not-drive-the-domain
+    forbid: infrastructure
+    to: application
+    via: calls
+    because: "Adapters are driven; they do not drive. An adapter that calls the application layer inverts the direction the layering declares and makes the flow of control unreadable from the structure."

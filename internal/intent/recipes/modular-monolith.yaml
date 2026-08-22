@@ -1,0 +1,21 @@
+recipe: modular-monolith
+roles:
+  - name: module-public
+  - name: module-internal
+  - name: other-modules
+rules:
+  - id: internals-stay-inside
+    private: module-internal
+    because: "A module is only a module if its internals are its own. Anything reaching past the public surface makes the module's shape a fiction and its next change everybody's problem."
+
+  - id: other-modules-enter-through-the-front-door
+    protect: module-public
+    owners: [other-modules]
+    via: calls
+    because: "Naming who may call the module's public surface is what makes the surface a contract rather than a convention, and it is the line a monolith has to hold to stay divisible."
+
+  - id: modules-do-not-share-internals
+    forbid: other-modules
+    to: module-internal
+    via: depends_on
+    because: "A dependency on another module's internals is the coupling that turns a modular monolith back into a monolith, and it is invisible in a file tree that looks correctly divided."

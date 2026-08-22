@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/enola-labs/enola/internal/config"
 	"github.com/enola-labs/enola/internal/conformance"
@@ -18,6 +20,7 @@ import (
 	"github.com/enola-labs/enola/internal/updatecheck"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/check"
+	pkghistory "github.com/enola-labs/enola/pkg/history"
 )
 
 // target is the repository the gate operates on, plus how it was resolved — reported to
@@ -27,6 +30,7 @@ type target struct {
 	repoPaths  []string
 	configNote string
 	cfgPath    string
+	historyDir string
 }
 
 // resolveTarget turns the single positional argument into an engine pointed at the right
@@ -90,7 +94,7 @@ func (r *Runner) resolveTarget(arg string) target {
 	if err != nil {
 		r.checkFatal("failed to resolve repo path: %v", err)
 	}
-	return target{engine: eng, repoPaths: repoPaths, configNote: note, cfgPath: cfgPath}
+	return target{engine: eng, repoPaths: repoPaths, configNote: note, cfgPath: cfgPath, historyDir: cfg.History.Dir}
 }
 
 // parseFailOn splits a --fail-on spec into the explainer names that exist and the ones
@@ -228,11 +232,11 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	// rather than only the last repo indexed — the same construction diff_snapshot uses,
 	// FactsRef included: diff.Compute reads its inputs and the published bundle is
 	// immutable, so copying the fact set here would buy nothing.
-	current := &facts.Snapshot{Meta: snap.Meta, Facts: eng.Store().FactsRef(), Insights: snap.Insights}
-
 	// The baseline is anchored on the FIRST repo: that is the one whose snapshot reset
-	// the graph, and it is where `enola baseline pin` writes.
+	// the graph, and it is where `enola baseline pin` writes. Its meta carries that
+	// member's provenance, so the current side is read for the same member.
 	anchor := repoPaths[0]
+	current := &facts.Snapshot{Meta: eng.MetaFor(anchor), Facts: eng.Store().FactsRef(), Insights: snap.Insights}
 	baseDir := engine.ResolveBaselineDir(eng.OutputDir(anchor), *baseline)
 	base, err := bootstrap.LoadSnapshotDir(baseDir)
 	if err != nil {
@@ -248,7 +252,7 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	}
 	policy.Suppressions = suppressions
 
-	d := diff.Compute(base, current)
+	d := diff.ComputeChanged(base, current, changedFilesBetween(anchor, base.Meta.Git, current.Meta.Git))
 	if *focus != "" {
 		d = d.Focused(*focus)
 	}
@@ -280,6 +284,7 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	// against the CURRENT snapshot, baselined or not — the one deliberate
 	// exception to delta scoping.
 	verdict := check.EvaluateCurrent(d, policy, current.Insights, measurements...)
+	verdict = check.ApplyTime(verdict, base, r.revisionAt(anchor, tgt.historyDir))
 	verdict = check.RegradeIntersection(verdict, base, current, policy,
 		check.OwnershipFromExtractors(eng.Extractors()), current.Insights, *focus, measurements...)
 	verdict = check.AttachGuidance(verdict, eng.Store())
@@ -409,20 +414,29 @@ func (r *Runner) Baseline(args []string) {
 		// two-command ritual whose failure mode ("no snapshot to pin") explained the
 		// mechanism rather than the goal.
 		//
-		// Always regenerating is also the safer semantic: pinning whatever happened to be
-		// on disk could freeze a snapshot from days ago as "the state before my change",
-		// which is precisely the staleness the diff then warns about. Snapshots are
-		// deterministic, so for an unchanged tree this costs a cached re-index and
-		// produces byte-identical facts.
+		// Pinning whatever happened to be on disk could freeze a snapshot from days ago
+		// as "the state before my change", so the reuse below is gated on the on-disk
+		// snapshot proving it describes today's tree under today's build and config.
 		fmt.Fprintf(os.Stderr, r.name()+" baseline: %s\n", tgt.configNote)
-		for i, repoPath := range tgt.repoPaths {
-			if _, err := eng.GenerateSnapshot(context.Background(), repoPath, i > 0); err != nil {
-				r.checkFatal("snapshot generation failed for %s: %v", repoPath, err)
+		// A snapshot that already describes every working tree under this build and
+		// config is the snapshot a regenerate would produce, byte for byte, so it is
+		// pinned as it stands. Anything less (a moved file, another extractor version,
+		// another config, a member with no snapshot) regenerates, with linking and the
+		// explainers deferred to the cluster's last turn the way --generate defers them.
+		if generatedAt, stale := snapshotIsCurrent(eng, tgt.repoPaths); stale == "" {
+			fmt.Fprintf(os.Stderr, r.name()+" baseline: the snapshot written %s matches every working tree under this build and config; pinned without regenerating\n", generatedAt)
+		} else {
+			fmt.Fprintf(os.Stderr, r.name()+" baseline: regenerating, %s\n", stale)
+			for i, repoPath := range tgt.repoPaths {
+				eng.SetDeferLinking(i < len(tgt.repoPaths)-1)
+				if _, err := eng.GenerateSnapshot(context.Background(), repoPath, i > 0); err != nil {
+					r.checkFatal("snapshot generation failed for %s: %v", repoPath, err)
+				}
 			}
-		}
-		for _, repoPath := range tgt.repoPaths {
-			if err := eng.WriteArtifacts(repoPath); err != nil {
-				r.checkFatal("failed to write artifacts for %s: %v", repoPath, err)
+			for _, repoPath := range tgt.repoPaths {
+				if err := eng.WriteArtifacts(repoPath); err != nil {
+					r.checkFatal("failed to write artifacts for %s: %v", repoPath, err)
+				}
 			}
 		}
 		if err := eng.SetBaseline(anchor); err != nil {
@@ -488,4 +502,71 @@ func shortCommit(s string) string {
 		return s[:12]
 	}
 	return orUnknown(s)
+}
+
+// revisionAt reads the architecture history for a dated rule: the newest
+// revision at or before the date, reconstructed from its blob, and the first
+// revision's date for a rule that predates the record.
+func (r *Runner) revisionAt(repoPath, historyDir string) check.RevisionAt {
+	return func(date time.Time) (*facts.Snapshot, string, string, bool) {
+		root, err := pkghistory.Root(repoPath, historyDir)
+		if err != nil {
+			return nil, "", "", false
+		}
+		entries, err := pkghistory.Read(root)
+		if err != nil || len(entries) == 0 {
+			return nil, "", "", false
+		}
+		first := ""
+		var chosen *pkghistory.Entry
+		for i := range entries {
+			e := entries[i]
+			at, err := time.Parse(time.RFC3339, e.At)
+			if err != nil || e.Blob == nil {
+				continue
+			}
+			if first == "" || at.Format("2006-01-02") < first {
+				first = at.Format("2006-01-02")
+			}
+			if !at.After(date.Add(24*time.Hour-time.Nanosecond)) && (chosen == nil || e.At > chosen.At) {
+				chosen = &entries[i]
+			}
+		}
+		if chosen == nil {
+			return nil, "", first, false
+		}
+		snap, err := pkghistory.Load(root, *chosen)
+		if err != nil {
+			return nil, "", first, false
+		}
+		return snap, chosen.At[:10], first, true
+	}
+}
+
+// changedFilesBetween asks git which files the change touched between the
+// two snapshots' commits, plus the working tree's own changes when the
+// current snapshot was taken dirty. Nil when either side has no commit or
+// git cannot answer, which hands the diff its fact-based fallback.
+func changedFilesBetween(repoPath string, base, current *facts.GitInfo) []string {
+	if base == nil || current == nil || base.Commit == "" || current.Commit == "" {
+		return nil
+	}
+	args := []string{"-C", repoPath, "diff", "--name-only", base.Commit, current.Commit}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return nil
+	}
+	files := strings.Fields(string(out))
+	if current.Dirty {
+		if dirty, err := exec.Command("git", "-C", repoPath, "diff", "--name-only", "HEAD").Output(); err == nil {
+			files = append(files, strings.Fields(string(dirty))...)
+		}
+		if untracked, err := exec.Command("git", "-C", repoPath, "ls-files", "--others", "--exclude-standard").Output(); err == nil {
+			files = append(files, strings.Fields(string(untracked))...)
+		}
+	}
+	if files == nil {
+		files = []string{}
+	}
+	return files
 }

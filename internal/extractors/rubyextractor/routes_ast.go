@@ -402,6 +402,16 @@ func (rw *routeWalker) handleCall(call *sitter.Node, stack []routeScope) {
 		default:
 			controllerName = ""
 		}
+		// `resources :widgets, module: :dashboards` is served by dashboards/widgets:
+		// Rails lifts a module: option off a resource declaration into a scope
+		// wrapping it, so it composes into this resource's own handlers and into
+		// every route declared inside its block. It is pushed only now, after the
+		// parent's member param has been read off the top of the stack.
+		if resourceModule := pairSymbol(args, "module", rw.src); resourceModule != "" {
+			stack = append(stack, routeScope{module: resourceModule})
+		} else if resourceModule := pairString(args, "module", rw.src); resourceModule != "" {
+			stack = append(stack, routeScope{module: resourceModule})
+		}
 		mod := buildModule(stack)
 		// The module composes here for this declaration's own RESTful routes, and
 		// again at every route site inside the block — which is why childScope carries

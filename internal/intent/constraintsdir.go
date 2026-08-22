@@ -67,7 +67,14 @@ func LoadConstraintsDir(repoPath string) ([]ConstraintsFile, []string, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+		if entry.IsDir() {
+			continue
+		}
+		// Two spellings of one declaration: YAML, and the Ruby surface that
+		// compiles to the same shape. They merge in one sorted order, so a
+		// repository can hold one of each while a team moves and the resolved
+		// sets stay a function of what the files declare.
+		if !strings.HasSuffix(entry.Name(), ".yaml") && !strings.HasSuffix(entry.Name(), ".rb") {
 			continue
 		}
 		names = append(names, entry.Name())
@@ -82,7 +89,14 @@ func LoadConstraintsDir(repoPath string) ([]ConstraintsFile, []string, error) {
 			return nil, nil, fmt.Errorf("reading %s: %w", filepath.Join(dir, name), err)
 		}
 		var f ConstraintsFile
-		if err := yaml.Unmarshal(data, &f); err != nil {
+		if strings.HasSuffix(name, ".rb") {
+			parsed, surfaceProblems := ParseRubySurface(data, relPath)
+			if len(surfaceProblems) > 0 {
+				problems = append(problems, surfaceProblems...)
+				continue
+			}
+			f = parsed
+		} else if err := yaml.Unmarshal(data, &f); err != nil {
 			problems = append(problems, fmt.Sprintf("%s: not parseable as YAML: %v", relPath, err))
 			continue
 		}

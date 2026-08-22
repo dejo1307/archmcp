@@ -339,6 +339,9 @@ components:
     service: billing             # optional: one repo of a multi-repo snapshot,
                                  # by exact repo label
     where: { framework: rails }  # optional: a predicate over measured fact props
+    owns: methods                # optional: a concept's members' methods are
+                                 # theirs — the one field that widens, and the
+                                 # one a rule may override for its own reach
 ```
 
 `match` speaks a bounded glob dialect of three forms: an exact
@@ -416,10 +419,11 @@ closed.
 
 `where` selects members by what the measured facts **carry** instead of
 by where their files sit, so a rule can name an enforceable concept
-rather than a directory. It is a **membership** selector and only that:
-the forms that read a member's own props take it, the forms that walk
-edges refuse it at declaration time — see *`where` is membership-only*
-below for why, and for the two things that would change it.
+rather than a directory. It is a **membership** selector and only that.
+The forms that read a member's own props take it as it stands; the forms
+that walk edges take it once the component declares what it OWNS — see
+*A concept in an edge role* below for the declaration, the precedence,
+and the two pairings that stay refused.
 
 ```yaml
 components:
@@ -487,6 +491,29 @@ production Rails+Ember monolith (153,252 facts, 2026-08-13):
   inherit from. Both are the same fact about `superclass` — it is source
   text, and no reading of it is transitive or namespace-aware without a
   resolution pass the extractor did not make.
+- **`ancestor:` is the transitive spelling, and it is a separate key.**
+  A component declaring `ancestor: ApplicationRecord` holds every class
+  from which a chain of *resolved* `implements` edges reaches that name:
+  the grandchild that spelled its parent as `Base` inside a module, the
+  class that got there through a mixin, all of them with names already
+  qualified. The root itself is not a member, the same as `superclass:`.
+  The chain comes from a resolving provider (the Rubydex provider emits
+  it), so when the snapshot holds no resolved ancestry at all the
+  component is **unevaluable** with a named cause, every rule naming it
+  stays silent, and a 0.4 finding says which provider would settle it.
+  It is a new key rather than a new reading of `superclass:` because the
+  same declaration must not select 269 classes on one machine and 357 on
+  another depending on which gem is installed; the two keys are two
+  claims, and a declaration may carry both.
+
+  ```yaml
+  components:
+    - name: records
+      ancestor: ApplicationRecord
+    - name: view-components
+      match: ["app/components/**"]
+      ancestor: "ViewComponent::Base"
+  ```
 - **Values match one whole member at a time**, the same containment the
   `require` form's `when_prop_contains` reads set props with. For the
   space-joined set props (`columns`, `fk_constraints`, `decorators`)
@@ -527,8 +554,8 @@ production Rails+Ember monolith (153,252 facts, 2026-08-13):
   compiles to a predicate different from what it says — in either
   direction.
 - **`where` ANDs with `match`, `service`, `kind` and `name_pattern`**,
-  for the same reason every field on a component narrows and none
-  widens: a component carrying both a path scope and a predicate is
+  for the same reason every SELECTOR on a component narrows: a
+  component carrying both a path scope and a predicate is
   their intersection, which is how a path scope you trust gets
   sharpened rather than replaced. A `where` alone needs no `match`: the
   predicate is the selector.
@@ -595,60 +622,121 @@ production Rails+Ember monolith (153,252 facts, 2026-08-13):
   and fixing witness Y in one change credits Y to the change that fixed
   it.
 
-#### `where` is membership-only: no edge form takes a predicate
+#### A concept in an edge role: `owns`, and the basis a verdict states
 
 A predicate selects the facts that CARRY a property, and every property
 this vocabulary can test — `superclass`, `symbol_kind`, `storage_kind`,
 `framework`, `cyclomatic`, `decorators` — is measured on the **class**.
 The call graph connects **methods**. In Ruby a class's calls ride its
-`Owner#method` facts, which carry none of those props and therefore
-cannot be members of the component; on the monolith all 39,601 `imports`
-edges ride dependency facts, which carry none of them either, and whose
-targets are paths rather than fact names. So a rule that resolves a
-predicate component against a measured edge resolves it against nothing
-— on the source side because the edge sits on a fact the predicate
-cannot select, and on the target side because the edge names a path.
+`Owner#method` and `Owner.method` facts, which carry none of those props
+and therefore cannot be members of the component. Whether those methods'
+edges count as *the class's* edges is a statement about what a component
+MEANS, and no selector makes it. Five rounds encoded an answer in code
+while the verdict printed a different one — worst case 269 breaches at
+full confidence against every member of a 269-member component.
 
-**Therefore a component carrying a `where:` may not be party to an edge
-form at all.** It is refused at declaration time — a validation problem
-naming the component, the rule, the role and what to use instead, which
-`constraints lint` reports (exit 1) and which every config-load path
-rejects, so no such rule ever compiles into a fact:
+**So ownership is declared.** A component says what it owns, and a rule
+may override that for its own reach:
 
-| refused | accepted |
-| --- | --- |
-| the subject of `forbid`, `forbid_reach`, `allow`, `protect`, `private`, `require_edge`, `protocol` | the subject of `forbid_fact`, `cap`, `require`, `require_defines`, `require_name`, `guide` |
-| a `to:`, `owners:`, `only:`, `except:` or `steps:` value of any rule | |
+```yaml
+components:
+  - name: exceptions
+    where: { superclass: StandardError }
+    owns: methods           # its members' methods are the member's
+rules:
+  - id: exceptions-avoid-the-database
+    forbid: exceptions
+    to: models
+    via: calls
+    because: an exception carries a message, never a query
+    owns:                   # optional: this rule's reach only
+      - component: exceptions
+        owns: nothing
+```
 
-The accepted column is the whole of what reads a member's own props, and
-those forms are exactly where a concept earns its keep: cap the surface,
-require a column, require a method, require a name, guide an editor. The
-refused column is the whole of what reads an edge. The two are
-enumerated from the schema's own form table, so a form added later
-without a decision about it fails a test rather than defaulting into
-either column.
+`owns` takes `methods` or `nothing`, and **absent is not `nothing`**:
+an absent ownership is a component whose meaning at an edge is unstated,
+and an edge role over it is refused. An explicit `nothing` is a
+declaration — a member's own facts and nothing else — which compiles.
 
-**Why a refusal rather than a narrower rule.** Four earlier rounds tried
-to make the edge forms honest position by position — refuse the
-file-level carrier, then the target join, then the roles whose empty
-resolution manufactures breaches — and each round left the roles nobody
-had thought of silently wrong, because "resolved to nothing" and
-"resolved to nothing that breaches" are rendered identically by every
-surface. Refusing at authoring time is total instead of nearly total: a
-declaration that cannot be right does not load.
+**`methods` reaches the member's methods, and nothing else.** What it
+adds is exactly the facts the graph's `has_method` edges reach, which the
+graph wires for `method`, `function` and `getter` symbols. It does not
+reach the rest of a member's body: a **constant**, a **nested class** or
+an `attr_accessor` variable written inside a member carries no
+`has_method` edge and is **not owned**. So an edge landing on
+`TimeoutError::CODE` lands *outside* a concept owning `methods`, and a
+rule forbidding that landing reports a true breach — the component never
+claimed the constant. Lexical enclosure is a larger semantic than this
+vocabulary states, and stating it would need its own measurement.
 
-**What would make the edge forms honest** is two things this vocabulary
-does not have, and both are real work rather than a patch. `Graph.methodOwner`
-has to learn the `#` separator so a method fact can be attributed to the
-class that owns it (PR #92, not merged). And there has to be a DECLARED
-notion of member ownership — that a class's methods' edges count as the
-class's edges — because that is a semantic choice about what a component
-means, not an implementation detail. Until both land, an edge-walking
-rule over a concept is a question the snapshot cannot answer, and the
-honest answer to a question you cannot answer is to refuse it.
+**The precedence is stated once**: the rule's override wins over the
+component's declaration, and a component neither declares is undeclared.
+Two overrides for one component in one rule have no precedence between
+them and are a named error rather than a last-one-wins. A test pins the
+precedence in both directions, permissive and strict, so a later change
+cannot quietly invert it.
 
-Edge reach and the `inherits:` closure are held out (PR #94, not
-merged) with those two blockers named.
+`owns` is the **one component field that widens**, and it is not a
+selector: membership is exactly what the selectors chose, so `cap`
+counts the same set and `constraints lint` prints the same numbers. What
+it widens is what a rule may WALK. That distinction is what keeps the
+exception from reading as licence to widen a selector — a field that
+changed membership would have to narrow, and this one cannot change
+membership at all.
+
+**A verdict states the basis it reached each end on**, in one three-state
+vocabulary used at both: *exact* (the fact is a member), *owned* (it is a
+member's method and the declaration says that is the member's), or
+*grounded* (it names no fact and joins through the measured file). Every
+edge form words both ends, so no sentence can state one end and leave the
+other to be read as exactly measured.
+
+**Edge forms re-open only where the basis can be stated.** Two refusals
+survive the ownership declaration, both statements about what the
+vocabulary can say rather than about any snapshot:
+
+| role resolves | over | refused because |
+| --- | --- | --- |
+| the SOURCE of the edge (`forbid`, `forbid_reach`, `allow`, `protocol`, an outbound `require_edge`, `owners:`, `except:`, an inbound `require_edge`'s `to:`) | `imports` | every imports edge rides a dependency fact, which carries none of the props a predicate tests, and no ownership reaches a file's dependency facts |
+| the TARGET of the edge (`protect`, `private`, an inbound `require_edge`, `to:`, `only:`, `steps:`) | `imports` | an imports target names a path, so it reaches a component only through the measured file grounding joins to `match` globs — which needs globs and refuses a `name_pattern` |
+
+Both are refused at declaration time, so no such rule compiles into a
+fact. Note that `private` and a `via`-less `forbid_reach` walk every
+rule-via kind, `imports` among them, so a concept in either is refused
+whichever role it fills.
+
+**And what the declaration cannot see, the snapshot answers.** A concept
+may declare an ownership honestly and still reach nothing — an estate
+that measures no methods for its members, members carrying no edge of
+the kind the rule walks. The reach question is asked **per role and on
+one side**: a source-side role asks only whether the component's edge
+sources carry such an edge, a target-side role only whether such an edge
+resolves onto it. The previous machinery ORed three arms belonging to
+different directions, so deleting an unrelated INBOUND edge flipped an
+`owners:` rule from a false breach to a correct refusal. A role that
+resolves nothing silences its rule with a 1.0 finding naming the role,
+the side and the edge kind; a role whose empty resolution is no verdict,
+unreachable on some but not all of a multi-kind rule's edges, gets a 0.4
+note instead — refusing there would delete enforcement that worked.
+
+Two roles are deliberately not asked: `require_edge` and `protocol`
+decide their subject's measurability from the extraction census, and for
+the existential form an empty target resolution IS the breach it exists
+to report. Asking the reach question there silences exactly the total
+violation, which is how a round shipped reporting zero breaches against a
+total one.
+
+Every combination above is covered by a matrix over every rule form and
+every role, run through the real extractors over an edge kind riding
+member facts (`calls`) and one riding dependency facts (`imports`), and
+driven from the schema's own form table so a form added later fails the
+matrix rather than defaulting into a column.
+
+The file-hosting carrier and the `inherits:` closure remain held out
+(PR #94, not merged): the first because its guard is blind to symbol
+kinds outside a small set, the second because its lookup is keyed on
+written parent text while the walk keys on fact names.
 
 The pre-edit contract answers for a raw path when the snapshot carries
 a member in it — the arm `plan --paths` needs, since a `where`-only
@@ -656,7 +744,7 @@ component has no match patterns for a path to join. A file nobody has
 written yet is still refused: nothing has been measured about it, and
 that is exactly what a predicate cannot answer for.
 
-### The thirteen rule forms
+### The 21 rule forms
 
 Every rule has a lowercase-token `id`, unique per declaration, and a
 mandatory `because:` — the rationale every resulting finding surfaces,
@@ -725,6 +813,12 @@ rules:
     pattern: "*Job"              # prefix*, *suffix, or an exact name — nothing else
     because: "the scheduler discovers jobs by their suffix"
 
+  - id: no-getter-prefixes       # forbid_name: member names must not match a pattern
+    forbid_name: models
+    pattern: "get_*"             # the same dialect require_name speaks
+    surface: exported            # optional: judge exported members only
+    because: "a reader is a noun; get_ says the class is a bag of fields"
+
   - id: every-event-consumed     # require_edge: every member must have an edge
     require_edge: events
     to: handlers                 # optional: omit to accept the edge from anywhere
@@ -759,6 +853,15 @@ match the declared pattern. The dialect is deliberately bounded —
 regex — for the same reason `match` patterns are: a convention the
 evaluator would silently mis-apply must be impossible to declare.
 Every member is in scope; a name always exists.
+
+`forbid_name` is its negative: every member fact's name must *not* match
+the declared pattern, in the same bounded dialect and through the same
+matcher, so a pattern means one thing whichever way it is read; for a
+method the pattern is also tried against the bare method name after its
+owner, so `get_*` reaches `Order#get_total`. With
+`surface: exported` only members whose measured `exported` prop is true
+are judged, because a private helper is not the surface a naming
+convention governs; without it every member is.
 
 `private` verdicts visibility: members of the component whose measured
 `exported` prop is `false` may be reached only from inside the
@@ -1013,6 +1116,108 @@ gate's delta scoping, and `constraints_for`/plan's obligation
 statements (`members of events must have an inbound calls edge from
 handlers`) all apply exactly as they do to every other law form.
 
+### Parts that may not depend on each other in a circle: `forbid_cycles`
+
+A rule names a set of parts and holds when no dependency cycle runs among
+them. `forbid_cycles` names the first part and `among` the rest, every one
+a declared component:
+
+```yaml
+rules:
+  - id: parts-never-cycle
+    forbid_cycles: jobs
+    among: [models, mailers]
+    because: "parts that reach each other in a circle cannot be taken apart"
+```
+
+The reading contracts the module graph to one node per part, admits the
+reference and rollup edges (between declared parts a constant reference
+is a dependency, and on Ruby it is the only kind there is; associations
+stay out, as everywhere), drops self-edges, and reports every strongly
+connected component of two or more parts as one finding naming the parts
+in the circle and the module edges that close it. A cycle inside one
+part is not what the rule states. The repository-wide `cycles` explainer
+is unchanged: it excludes those edge kinds because estate-wide they merge
+everything, and a declared set is small and named. On the Ruby surface
+the law reads `jobs.must_not_cycle_with :models, :mailers`.
+
+A `to_name` literal naming a bare method matches the method of a chained
+or receiver-qualified call target as well: `update_all` is the call
+whether the extractor recorded it as `update_all`, `where.update_all` or
+`Order.update_all`, which is how a law about the mutating persistence
+methods holds against a query that reaches them through a relation
+chain. A literal carrying a receiver (`Order.update_all`) stays exact.
+
+### Five small spellings
+
+**A naming pair.** `require_name` takes `requires`, a template with one
+`*`: a member matching the pattern must have a sibling in the same
+component named by the template with the captured base substituted, so
+`pattern: "with_*"` with `requires: "without_*"` asks `Room#with_guests`
+for `Room#without_guests`. The base is read on the member's own part of
+the name, so a method on another class never satisfies it. On the Ruby
+surface: `chat.names_must_match "with_*", requires: "without_*"`.
+
+**A public surface by path.** A component takes `public`, a list of
+bounded globs naming the files that are its visible surface. The
+`private` form then decides visibility by path: inside those files a
+member is the surface, outside them it is internal, whatever the
+language's own keyword says. Ruby marks every method exported, so this
+is how a Ruby component states a surface at all. On the Ruby surface:
+`part :billing, files: "app/billing/**", public: "app/billing/public/**"`.
+
+**A receiver-qualified literal.** A `forbid` with `to_name` takes
+`receiver: none` to match only call targets with no receiver part, so
+`params` alone is named and `request.params` is not; the default, `any`,
+matches bare, chained and receiver-qualified forms alike. On the Ruby
+surface: `models.must_not_call "params", receiver: :none`.
+
+**Why a file belongs where it belongs.** `enola constraints explain
+<path>` names the components whose selectors admit a fact in the file,
+the selector that did it, and the edges the file's facts make, read off
+the same membership the evaluator verdicts on, so the sentence and the
+verdict cannot disagree. `--json` prints the same as data.
+
+**A strict Rails arrangement.** `rails-strict` ships as a recipe: the
+Rails laws, the request API kept out of models and services with
+`receiver: none`, no circle among the parts, and concerns that stay
+independent of their includers over an optional `concerns` role.
+
+### A module never reaches the classes that include it: `independent`
+
+```yaml
+rules:
+  - id: mixins-stay-independent
+    independent: concerns
+    because: "a mixin that knows its includer is half a class in hiding"
+```
+
+For each member module, the includers are the classes whose **resolved**
+ancestry includes it, read off the ancestry a provider emitted (the
+Rubydex provider does). The member's own edges, the edges of the methods
+it encloses and the edges its files carry are walked over every rule-via
+kind; one landing on an includer or on an includer's member is one
+finding. When the snapshot holds no resolved ancestry the rule emits one
+0.4 finding saying which provider would settle it and no verdict, the
+same refusal the `ancestor:` key makes. It takes no `via`. On the Ruby
+surface: `concerns.must_not_reach_includers`.
+
+### A protocol satisfied by one of several methods: `any_of`
+
+`require_defines` takes `any_of` beside `method`, exclusive with it: a
+class member satisfies the rule by defining at least one of the named
+methods, and the finding names the whole list.
+
+```yaml
+rules:
+  - id: entry-point
+    require_defines: services
+    any_of: [call, run]
+    because: "a service answers to one of two doors"
+```
+
+On the Ruby surface: `services.must_define_one_of :call, :run`.
+
 ### Protocol ordering — structural conformance, never runtime order
 
 `protocol` closes the last gap in the rule vocabulary's expressiveness
@@ -1070,6 +1275,74 @@ protocols family graduates from partial to **covered-structural**: the
 structural half of ordered-interaction sequences is expressible and
 verdictable, the runtime half remains future provider work, and the
 parity re-measure belongs to the next harness run.
+
+### Laws only a graph can state
+
+Five forms and two component keys read what only the fact graph holds:
+storage facts, the routes behind code, the seams between repositories,
+the pages compiled from a knowledge base, and the history of every
+snapshot. Each refuses by name when the snapshot cannot answer, so silence
+never reads as compliance.
+
+- `storage_stays_home: <component>` holds when every storage fact a
+  member reaches (`calls` or `depends_on` to a model a storage fact names)
+  is itself a member. The breach names the table and the model, and the
+  first suggested action is the owning part's public member that already
+  reaches the same table. Ruby: `billing.storage_must_stay_home`.
+- `handles: [POST, PUT, PATCH, DELETE]` on a symbol component admits the
+  members a route with one of those methods reaches through `handled_by`,
+  so `require_edge` states "a mutating action reaches a policy" with
+  nothing new. Ruby: `part :mutating_actions, files: "app/controllers/**",
+  handles: [:post, :put, :patch, :delete]`.
+- `cap_runtime: <component>` with `metric: queries` and `max: N` reads the
+  `runtime-queries:` frames a runtime capture measured for files inside
+  the component and names every frame over the budget. A snapshot with no
+  capture makes the rule unevaluable with the cause `no_runtime_capture`.
+  Ruby: `billing.must_keep_budget metric: :queries, max: 20`.
+- `require_consumer: <route component>` breaches for every member route
+  no loaded client calls, read from the cross-repository route match; a
+  single-repository snapshot refuses with `no_counterparty`. Ruby:
+  `api.must_have_consumer`.
+- `unique_across: <component>` with `by: table` (or `name`) breaches when
+  members in two different repositories share the value, naming both
+  owners; members from one repository refuse with `no_counterparty`. Ruby:
+  `tables.must_be_unique_across by: :table`.
+- `governed_by: <page path or glob>` on a component admits the measured
+  facts in files the selected pages anchor; `status:superseded` after the
+  glob keeps the pages with that status, `supersedes:<page>` the pages
+  that supersede it, so "the code of the superseded decision" and "the
+  code of the superseding one" are two components and `forbid` states the
+  law between them. Ruby: `part :old_way, governed_by: "wiki/shop/adrs/*.md
+  status:superseded"`.
+- `require_governed: <component>` breaches for every member file no
+  compiled page anchors; a snapshot with no pages refuses with
+  `no_compiled_pages`. Ruby: `old_way.must_be_governed`.
+
+Two spellings add time. `since: YYYY-MM-DD` on any rule dates it: the
+explainer verdicts as usual and stamps the date, and `check` reads the
+architecture history's newest revision at or before the date, reports a
+breach that revision already carried and grades one it did not; a date
+before the first revision keeps every breach graded and adds a descriptive
+finding naming the first revision's date. `growth: N` on `cap` lets the
+count exceed the baseline's count by N before the cap fails; without a
+baseline the cap alone applies. Ruby: `since "2026-08-01"` and `growth 2`
+inside a law.
+
+Every edge breach (`forbid`, `protect`, `private`) and every cycle breach
+now leads its suggested actions with the smallest cut the graph can see:
+the far part's public member with the same bare name, else its public
+surface, else the part the offender's other edges mostly reach; for a
+cycle, the lightest edge of the circle by module edges. When the facts
+support none, the action says so rather than offering a generic sentence.
+
+Recipe roles may carry selector defaults (`match`, `kind`, `name_pattern`,
+`where`): a binding that gives none inherits the role's, key by key, and a
+defaulted role is never required of the binding. A team's own recipe under
+`enola/recipes/` can therefore carry its conventions with their selectors,
+so the binding in `enola/constraints/` is the recipe's name and the mode
+alone, and every path is overridable where a tree differs. The shipped
+recipes stay framework-general; house conventions belong in the
+repository's recipe, where the team that owns them reviews them.
 
 ### Recipes — named patterns as instantiable bundles
 
@@ -1425,7 +1698,11 @@ The `resolution_level` vocabulary is closed, for the same reason the
 kind and relation vocabularies are — a level nothing knows how to
 weigh is a claim nothing can act on: `constant-receiver`,
 `lexical-self`, `name-only`, `literal-declared`, `markup-declared`,
-`convention-derived`, `runtime-observed`, and `declared`.
+`convention-derived`, `runtime-observed`, `declared`, and `resolved`.
+`resolved` states that the provider resolved a name through the
+language's own lookup rules (nesting, inheritance, the locked gems) to
+one declaration: neither a receiver typing, nor a signature-file claim,
+nor a path convention, which is why it is its own word.
 `runtime-observed` is its own level, not a stronger static one: it
 states that a **booted application** reported the fact, and a fact
 carrying it must also carry an **`observed_via`** prop naming the
@@ -1445,6 +1722,40 @@ declarations parsed, constructs skipped with named causes — which the
 seam validates as strictly as the facts and carries into the
 receipt's provider census, the same honesty discipline the engine's
 file census applies to its own walk.
+
+### The Rubydex provider
+
+Rubydex, the shared Ruby analysis engine, is a provider the binary
+carries itself. A `providers:` entry named `rubydex` with no `command`
+runs it in-process: the engine's C-ABI library, which every platform gem
+ships prebuilt, is loaded at run time (no cgo, no Ruby interpreter, no
+gem in the measured repository's bundle) from enola's cache, where
+`enola providers fetch rubydex` puts it after downloading the pinned
+gem version from rubygems.org and verifying its published digest. A
+configured provider whose library is absent is a named skip in the
+census that says which command installs it; `doctor` reports the same.
+Fetching is the only network access a provider makes, never at snapshot
+time. Dependency gem paths come from the repository's own bundle
+(`bundle list --paths`) when `bundle` is on PATH; without it the
+workspace alone is indexed and the census says so. A reference
+implementation in Ruby stays at `examples/providers/ruby/rubydex/` for
+an installation that prefers an external process; both emit the same
+facts.
+
+The provider indexes the workspace, resolves it, and emits the three
+things enola's own Ruby extractor and the Prism provider do not: constant
+references resolved through Ruby's nesting and inheritance rules
+(`rubydex-ref:`, a `depends_on` edge at `resolved`), method calls whose
+receiver resolves to a constant other than the lexical enclosing class
+(`rubydex-call:`, a `calls` edge at `constant-receiver`; the enclosing
+class is the extractor's to say), and each class's linearised ancestor
+chain with mixins in resolution order (`rubydex-ancestor:`, one
+`implements` edge per ancestor at `resolved`, carrying the ancestor's
+distance and whether the workspace declares it). Only facts located in
+the workspace are emitted; built-in ancestors are omitted because every
+class reaches them; unresolved references and Rubydex's own diagnostics
+are counted in the census rather than guessed around. The ancestry edges
+are what the `ancestor:` component key reads.
 
 ### The runtime provider
 
@@ -1524,6 +1835,270 @@ made the claim. A declaration is a claim about the implementation,
 not proof of it: the provider records what the signature file says,
 the level says who said it, and nothing presents the claim as
 inferred or verified.
+
+### Laws written in Ruby
+
+A repository whose team writes Ruby may write its laws in Ruby. Files
+ending in `.rb` in `enola/constraints/` are read beside the YAML ones,
+parsed with the Ruby grammar the extractors already carry and **never
+executed**, and compiled to the same declaration the YAML loader
+produces: the same merge order, the same per-file provenance stamp, and
+the same evaluator, lint surface and pre-edit contract. A repository may
+hold one of each while a team moves.
+
+A declaration has two levels. `part` names a piece of the application in
+the team's own words; `rails` declares the conventional parts of a Rails
+application from the directories Rails puts them in, so a team writes
+only what is theirs. A `law` is a sentence, its reason, and optionally
+its mode and its carve-outs.
+
+```ruby
+Enola.architecture "storefront" do
+  rails
+  part :service_objects, files: "app/services/**", kind: :symbol,
+                         where: { symbol_kind: "class" }, owns: :methods
+
+  law "background jobs never invoke controller code" do
+    jobs.must_not_call controllers
+    why "rendering from a job goes through ApplicationController.renderer"
+    seen_in "2,552 of 2,557 call edges"
+  end
+end
+```
+
+Nineteen verbs cover the 21 rule forms, and a test walks the form
+table and fails if any form cannot be reached from a verb, so a form
+added later without a way to say it breaks the build rather than
+quietly having no surface.
+
+| Sentence | Form it compiles to |
+|---|---|
+| `a.must_not_call b` | `forbid` / `to`, via `calls` unless another `via` is named |
+| `a.must_not_reach b` | `forbid_reach` / `to` |
+| `a.may_only_call b, c` | `allow` / `only` |
+| `a.is_reached_only_by b` | `protect` / `owners` |
+| `a.must_be_reached_by b` | `require_edge` / `to`, inbound |
+| `a.must_reach b` | `require_edge` / `to`, outbound |
+| `a.stays_inside except: b` | `private` / `except` |
+| `a.must_follow b, c` | `protocol` / `steps` |
+| `a.must_define :call` | `require_defines` / `method` |
+| `a.names_must_match "*Job"` | `require_name` / `pattern` |
+| `a.names_must_not_match "get_*"` | `forbid_name` / `pattern` |
+| `a.must_be_empty` | `forbid_fact` |
+| `a.at_most 12` | `cap` / `max_members` |
+| `a.must_carry prop: "framework", value: "rails"` | `require` / `must_prop_contain` |
+| `a.advises "prefer a slot"` | `guide` / `message` |
+
+A part is written in snake_case because that is what a Ruby file reads
+like, and a component name is a lowercase token, so the underscore
+becomes a dash on the way through: `part :service_objects` is the
+component `service-objects`.
+
+#### A Rails and Ruby catalogue
+
+Laws a Rails codebase can state today, each compiling to a form above.
+They are written to be read and adapted rather than copied: the parts
+they name come from `rails`, and the reasons are the ones a team would
+actually give.
+
+```ruby
+Enola.architecture "storefront" do
+  rails
+  part :service_objects, files: "app/services/**", kind: :symbol,
+                         where: { symbol_kind: "class" }, owns: :methods
+  part :queries,         files: "app/queries/**"
+  part :maintenance,     files: "app/tasks/**"
+  part :public_api,      files: "app/controllers/api/**"
+  part :legacy,          files: "app/legacy/**"
+
+  # Layering: what may reach what.
+  law "background jobs never invoke controller code" do
+    jobs.must_not_call controllers
+    why "a job that renders goes through ApplicationController.renderer"
+  end
+
+  law "models never reach controllers, however indirectly" do
+    models.must_not_reach controllers
+    why "a model that knows the request cannot be used off the request"
+  end
+
+  law "controllers reach the database through queries and services only" do
+    controllers.may_only_call queries, service_objects
+    why "a controller that builds its own scope cannot be reused or tested apart from the request"
+  end
+
+  law "the public API is reached only by controllers" do
+    public_api.is_reached_only_by controllers
+    why "an internal caller taking the API path skips authorization written at the controller"
+  end
+
+  # Shape: what a member must be.
+  law "a service object has exactly one door" do
+    service_objects.must_define :call
+    why "callers never reach a second public method, so the object can change behind it"
+  end
+
+  law "every mailer action is delivered, never called" do
+    mailers.must_be_reached_by jobs
+    why "mail sent inline in a request makes the request wait on SMTP"
+    mode :advisory
+  end
+
+  # Naming: the conventions a reviewer repeats.
+  law "jobs are named for the queue that runs them" do
+    jobs.names_must_match "*Job"
+    why "the scheduler discovers jobs by their suffix"
+  end
+
+  law "policies are named for the model they authorize" do
+    policies.names_must_match "*Policy"
+    why "Pundit resolves the policy class from the record's class name"
+  end
+
+  law "maintenance tasks live in the Maintenance namespace" do
+    maintenance.names_must_match "Maintenance::*"
+    why "the gem resolves task constants from it; a task outside never appears in the runner"
+  end
+
+  law "no get_ prefixes on a model's public surface" do
+    models.names_must_not_match "get_*", surface: :exported
+    why "a reader is a noun; get_ says the class is a bag of fields"
+  end
+
+  # Size and drift.
+  law "the public API surface stays reviewable" do
+    public_api.at_most 40
+    why "an API that grows without a decision is an API nobody decided"
+    mode :advisory
+  end
+
+  law "app/legacy is frozen" do
+    legacy.must_be_empty
+    why "new code lands in app/domain; the directory exists only until it is empty"
+  end
+end
+```
+
+Each law carries its reason because every finding surfaces it: a
+violation says why the rule exists rather than only that it was broken.
+`seen_in` appends the measurement a law was mined from, which is what
+separates a law the estate actually keeps from one somebody wished for.
+
+A part may also be selected by ancestry: `part :records, ancestor:
+"ApplicationRecord"` holds every class whose resolved chain reaches that
+name, and a `bind` takes `ancestor:` the same way.
+
+Beside the verbs, a law may carry `id` (when a finding's token must stay
+stable across a rewording), `why` and `seen_in` (its reason and the
+measurement behind it), `mode`, `via`, `direction`, `exemplar` (prior art
+for a guidance law), `when_carrying prop:, value:` and `when_calling
+"literal", via:` (the antecedents that narrow a demand to the members it
+is about), and `exempt "witness", because:, owner:, since:` (a carve-out
+that says who owns it and when it was taken). A far end written as a bare
+name is a part this declaration selected; written as a string it is a
+literal the graph recorded, which is the difference between naming
+something we declared and something we merely measured.
+
+A repository adopts a convention set it did not author by instantiating a
+recipe, binding each role the recipe declares to its own parts:
+
+```ruby
+use_recipe :ember_conventions, as: :app, mode: :advisory do
+  bind :components, files: "app/components/**"
+  bind :fetchers, files: "app/services/**", kind: :symbol, where: { symbol_kind: "class" }
+end
+```
+
+Nothing in the surface is Rails-specific except the `rails` line, which is
+sugar for parts a Rails layout already names. Every other construct takes
+globs, predicates and services, so a Go service, an Ember application and
+a Python worker declare their laws the same way.
+### Recipes that ship with enola
+
+A convention set nobody can adopt in one line is a convention nobody
+adopts, so some ship with the binary. `rails-conventions` is the first:
+seven laws about where a Rails application's parts may reach, each
+carrying its reason, bound to the repository's own directories at the
+instantiation site.
+
+```yaml
+use_recipe:
+  - recipe: rails-conventions
+    as: app
+    bind:
+      controllers: { match: ["app/controllers/**"] }
+      jobs:        { match: ["app/jobs/**"] }
+      models:      { match: ["app/models/**"] }
+      mailers:     { match: ["app/mailers/**"] }
+      policies:    { match: ["app/policies/**"] }
+      serializers: { match: ["app/serializers/**"] }
+      view-components: { match: ["app/components/**"] }
+```
+
+A shipped recipe is a recipe like any other: it declares roles, its rules
+carry `because:`, it is verdicted through the same evaluator, and its
+findings cite `enola:recipes` as the file they came from rather than a
+path that exists in no repository.
+
+The rest describe arrangements rather than frameworks, so they apply to
+any language the extractors read. `layered` names presentation,
+application, domain and infrastructure, and holds the direction of the
+calls between them. `ports-and-adapters` keeps a core that names ports and
+never the adapters implementing them. `modular-monolith` holds a module's
+internals private to it while letting its public surface be called.
+`event-driven` separates publishers from handlers and asks that every
+event declared has somewhere to land.
+
+```yaml
+use_recipe:
+  - recipe: ports-and-adapters
+    as: billing
+    bind:
+      core:     { match: ["lib/billing/**"] }
+      ports:    { match: ["lib/billing/ports/**"] }
+      adapters: { match: ["lib/billing/adapters/**"] }
+```
+
+Each one is three or four roles and three to six laws, so adopting an
+arrangement is a paragraph of binding rather than a file of hand-written
+rules, and the laws arrive already carrying the reason they exist.
+
+Four more ship beside them. `vanilla-rails` is plain Rails: the extra
+directories (services, forms, policies, decorators, presenters) must stay
+empty, each with a stated reason, and models never reach controllers.
+`clean` is four rings (frameworks, interface adapters, use cases,
+entities) with every outward reach forbidden. `cqrs` splits commands,
+queries and read models, and adds the one law the split exists for: a
+query never calls a mutating persistence method, stated as a `to_name`
+literal list over calls. `ruby-conventions` bans the `get_`, `set_` and
+`is_` prefixes over whatever part the repository binds as its code.
+
+A recipe may mark a role **optional**. A binding may leave it out, the
+rules that reference it are expanded away for that instantiation, and
+the lint surface names each law the binding did not take, so a recipe
+can grow a role without breaking every repository that already binds it.
+`rails-conventions` grew `helpers` and `services` this way: services and
+models never reach helpers, services never reach controllers, and the
+request API (`render`, `redirect_to`, `params`, `session`, `cookies`,
+`flash`) stays out of models and services, all advisory, all in force
+only where the two roles are bound.
+
+**A first declaration in one command.** `enola constraints init [repo]`
+reads the shipped recipes, binds every role whose conventional directory
+the repository has, and writes one `use_recipe` per recipe whose required
+roles all resolved to `enola/constraints/recipes.yaml`, refusing to
+overwrite. A recipe missing a required directory is not bound and the
+output says which; nothing is guessed. `--dry-run` prints instead of
+writing and `--recipe NAME` limits the binding to one recipe.
+
+**A repository still authors its own**, under `enola/recipes/`, and a
+local recipe of the same name replaces the shipped one entirely. What a
+team wrote about its own codebase beats what arrived in a binary, and the
+replacement is reported rather than silent, so nobody has to wonder which
+one ran. The two laws in `rails-conventions` that report on a
+crossing rather than a breach (jobs and models reaching a controller,
+where `ApplicationController.renderer` is the sanctioned path) ship as
+advisory for that reason.
 
 ### `constraints lint`
 

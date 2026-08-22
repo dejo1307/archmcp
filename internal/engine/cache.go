@@ -2088,13 +2088,92 @@ import (
 // this release fixes from a binary that no longer contains it. Upstream shipped
 // this change as its v216 in 0.4.2; this channel had already spent v216 through
 // v222, so the same behaviour change takes the next free number here.
-// v224: Rust server routes declared by `#[utoipa::path(get, path = "/x")]`. The
-// utoipa_axum `routes!(handler)` macro registers a handler without repeating its
-// path, so an API declared that way has no `.route("/path", ...)` call to read and
-// its endpoints were absent from the graph entirely — one corpus application stored
-// 8 routes where it serves 74, and every call its own frontend made to them looked
-// like a call to nothing. The attribute is now the second Rust route source.
-// v225: Angular's decorator-declared classes and its dependency injection. A
+// v224: a class owns the members it mixed in. The mixin-owner binder follows
+// each literal include, extend or prepend to the module fact of the same name
+// and writes has_method relations from the includer to the module's members,
+// recording each projected member and its mixin kind on the includer. Ownership
+// moves findings (dead-methods surfaces, god-class fan-in through has_method,
+// constraint member sets), so the version moves with it.
+// v225: where a framework enters the code is a fact. The framework-roots
+// binder sets root on Rails routes and the actions they resolve to, and on the
+// methods a framework invokes on a class the store ties to it (job perform,
+// mailer actions, channel hooks, migration steps, methods a class body names
+// as callbacks), then walks calls from every root and sets reached_from on
+// what it reaches. Entry points and dead-methods read the props.
+// v226: every markdown file in scope is a source. mdintent detects any
+// markdown tree and, for a file declaring no intent, emits a document symbol,
+// a section symbol per heading and a names relation per link that resolves on
+// disk, counting the links that do not on its extraction fact.
+// v227: a client path that reaches the call through a method parameter is
+// derived from the literals the method's callers pass (one hop, same file),
+// marked derived=parameter, with the non-literal and ambiguous cases counted
+// on the ruby:http-client extraction fact.
+// v228: forbid_name, the negative of require_name: a component's members must
+// not match a bounded pattern, optionally judged on exported members only.
+// A new rule form compiles into a new intent fact shape.
+// v229: Ruby records what it constructs. `new` on a literal constant emits an
+// instantiates relation from the calling member to the class, and a
+// construction immediately sent a message names the ceremony under
+// one_shot_call, from the tree-sitter extractor and the Prism provider alike.
+// v230: a fact carries the span its extractor measured (end line, start and
+// end column beside the start line), evidence carries the span of the fact it
+// names, and check prints the offending line with the span underlined.
+// v231: a provider's facts pass the repository's ignore globs. A provider
+// walks the tree itself and cannot know the configuration, so a vendored tree
+// the extractors never read was entering the graph through the seam; the drop
+// is counted on the provider's census.
+// v232: the module layer has the edges its symbols imply. A post-link binder
+// rolls every resolved call, dependency and instantiation up to the modules
+// declaring the two symbols and emits a weighted dependency fact for the
+// pairs no extractor connected, so the readings that walk modules answer on
+// languages without import statements.
+// v233: a repository may write its laws in Ruby. The constraints directory
+// reads .rb files through a surface that parses (never executes) them and
+// compiles to the same declaration YAML produces, so both spellings merge,
+// stamp and evaluate identically.
+// v234: a part declared identically in two files is the same part, so a
+// repository may keep one file per convention without renaming the pieces of
+// the application each one speaks about. A name reused for a different
+// selector is still the error.
+// v235: the Ruby surface says everything the declaration vocabulary says.
+// Explicit ids, literal far ends, the require form's antecedents, direction,
+// guidance exemplars and recipe instantiation all have sentences, and a test
+// walks the schema so a key added later without one fails the build.
+// v236: convention sets ship with the binary. A repository instantiates
+// rails-conventions without authoring it, and a local recipe of the same name
+// replaces the shipped one with the replacement reported.
+// v237: Rust server routes declared by `#[utoipa::path(get, path = "/x")]`,
+// upstream's v224 in 0.4.3, taking the next free number here because this
+// channel had already spent v224 through v236. The utoipa_axum
+// `routes!(handler)` macro registers a handler without repeating its path, so
+// an API declared that way has no `.route("/path", ...)` call to read and its
+// endpoints were absent from the graph entirely: one corpus application stored
+// 8 routes where it serves 74, and every call its own frontend made to them
+// looked like a call to nothing. The attribute is now the second Rust route
+// source.
+// v238: a component may select by ancestry. `ancestor:` names a class every
+// member descends from, read transitively over the resolved implements edges a
+// provider emits, and refused with a named advisory when the store holds no
+// resolved ancestry at all. The selector changes which facts are members, so
+// every constraint verdict can move with it, and the version moves too.
+// v239: three forms join the constraint vocabulary. forbid_cycles/among
+// contracts the module graph to one node per declared part, with the rollup
+// edges admitted, and reports every circle; independent states that a module
+// never reaches a class whose resolved ancestry includes it; require_defines
+// takes any_of beside method. Verdicts move with the forms.
+// v240: five small spellings. require_name takes requires, a template that
+// pairs a name with a sibling through the captured base; a component takes
+// public, the files that are its visible surface, which private reads beside
+// the measured exported prop; a forbid with to_name takes receiver: none to
+// match only receiver-less calls; and constraints explain reads membership
+// per file. Verdicts move with the first three.
+// v241: laws only a graph can state. Component keys handles (the code behind
+// routes by method) and governed_by (the files a compiled page anchors); forms
+// storage_stays_home, cap_runtime, require_consumer, unique_across and
+// require_governed; since and growth on rules; recipe roles carry selector
+// defaults, so a repository's own recipe binds in one line; every edge and
+// cycle verdict names its smallest cut.
+// v242: Angular's decorator-declared classes and its dependency injection. A
 // class carrying @Component/@Directive/@Pipe/@Injectable/@NgModule now records the
 // role the container gives it, its selector or pipe name, where its template lives,
 // and framework_registered — without which a container-instantiated class reads as
@@ -2104,7 +2183,7 @@ import (
 // is 21,418 injection sites which previously formed no edge at all. Everything is
 // gated on an @angular/core dependency, so a decorator of the same name in another
 // repository still models nothing.
-// v226: Angular's routes. A route array declares a path fragment; the prefix it
+// v243: Angular's routes. A route array declares a path fragment; the prefix it
 // hangs under is decided by a parent's children:, by the entry whose loadChildren
 // lazily loads the module the array belongs to, or by nothing at all — so the paths
 // are composed by a repo-wide walk outward from the application roots (forRoot and
@@ -2114,7 +2193,7 @@ import (
 // imports; anything ambiguous is counted rather than guessed, and an array no root
 // reaches emits nothing rather than a fragment. Every fact carries type=page, so an
 // application's navigation can never surface as an unserved HTTP endpoint.
-// v227: three resolution fixes in the TypeScript path resolver and the Angular
+// v244: three resolution fixes in the TypeScript path resolver and the Angular
 // router, each found by running the router against real workspaces.
 // resolveModuleFile now accepts a path that already names a file, because a
 // tsconfig EXACT alias maps a bare specifier onto its entry point with the
@@ -2124,7 +2203,7 @@ import (
 // through an enum or an `as const` map in this file or the one it was imported
 // from. The first two are TypeScript-wide and affect every repository with a
 // workspace-style tsconfig, not only Angular ones.
-// v228: Angular templates. A component member is very often referenced ONLY from
+// v245: Angular templates. A component member is very often referenced ONLY from
 // its template — `(click)="save()"`, `{{ total }}` — and so is a child component,
 // which appears as a tag and nowhere else in the class; 4,251 external templates and
 // 10,844 inline ones were previously walked past, so every such symbol read as code
@@ -2135,7 +2214,7 @@ import (
 // needs both of its halves; anything else is counted by cause, never guessed. The
 // extractor now also owns .html for cache-invalidation purposes, since a template
 // edit changes what it emits.
-// v229: the Angular composition graph and the workspace shape. An application's
+// v246: the Angular composition graph and the workspace shape. An application's
 // dependency structure is in its @NgModule declarations/imports/exports/providers
 // arrays and a standalone component's own imports — not in its import statements,
 // which say which files were loaded rather than which declarations were assembled.
@@ -2145,7 +2224,7 @@ import (
 // their directory, read from an Nx project.json or an angular.json projects map:
 // in a monorepo the unit of ownership is the project, and every reading that groups
 // by unit was inferring that boundary from the path.
-// v230: Angular requests made through an injected HttpClient. The general client
+// v247: Angular requests made through an injected HttpClient. The general client
 // pass requires a "/"-rooted literal, which is right when the receiver is anonymous
 // — it is what keeps map.get("key") out of the graph — and wrong here: a class that
 // injects HttpClient has a member whose declared type says so, and this.<that
@@ -2155,7 +2234,7 @@ import (
 // tail, folded repo-wide because the base belongs to the service that owns the
 // resource and is named by every service that touches it. An unresolved LEADING
 // operand means the prefix is unknown and the call contributes nothing.
-// v231: three corrections found by auditing what the explainers now report on
+// v248: three corrections found by auditing what the explainers now report on
 // Angular repositories. A tsconfig `paths` target is resolved against `baseUrl`,
 // which TypeScript does and this did not — in one workspace that meant every
 // aliased import resolved to nothing, and with it every module composition edge
@@ -2165,7 +2244,7 @@ import (
 // after the template, composition and injection passes a component, directive, pipe
 // or service is named by edges the graph holds, and flagging them as
 // framework-invoked would suppress the dead code those edges make findable.
-const cacheVersion = "v231"
+const cacheVersion = "v248"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

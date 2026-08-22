@@ -278,7 +278,25 @@ type SnapshotDiff struct {
 // Compute returns the delta from baseline to current. A nil snapshot is treated
 // as empty (so the first diff against no baseline reports everything as added).
 func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
+	return ComputeChanged(baseline, current, nil)
+}
+
+// ComputeChanged is Compute with the files the change actually touched, as
+// the version control system reports them between the two snapshots'
+// commits. When given, a newly declared rule's breach is new only when its
+// witness sits in one of those files; without it the diff falls back to the
+// facts that differ between the snapshots, which also move for reasons no
+// change of the author's made (a provider that resolved differently, a
+// repository label), so the fallback over-reports.
+func ComputeChanged(baseline, current *facts.Snapshot, changedFiles []string) *SnapshotDiff {
 	d := &SnapshotDiff{}
+	var changed map[string]struct{}
+	if changedFiles != nil {
+		changed = make(map[string]struct{}, len(changedFiles))
+		for _, f := range changedFiles {
+			changed[f] = struct{}{}
+		}
+	}
 	if baseline != nil {
 		d.BaselineRepo = baseline.Meta.RepoPath
 		d.BaselineGeneratedAt = baseline.Meta.GeneratedAt
@@ -368,8 +386,12 @@ func Compute(baseline, current *facts.Snapshot) *SnapshotDiff {
 			if i >= len(baseGroup) {
 				// Genuinely new: the current side has more findings under this identity.
 				switch {
-				case silenced.byNewDeclaration(in) && !witnessTouched(in, touched):
-					d.FindingsDeclared = append(d.FindingsDeclared, in)
+				case silenced.byNewDeclaration(in):
+					if by, hit := witnessTouchedBy(in, touched, changed); hit {
+						d.FindingsNew = append(d.FindingsNew, bucketed(in, "new", "the rule is newly declared and the witness was touched by "+by))
+					} else {
+						d.FindingsDeclared = append(d.FindingsDeclared, bucketed(in, "declared", "the rule is newly declared and the witness was not touched by the change"))
+					}
 				case findingHasStructuralCause(in, touched):
 					d.FindingsNew = append(d.FindingsNew, in)
 				default:
@@ -738,22 +760,6 @@ func findingHasStructuralCause(in facts.Insight, touched map[string]struct{}) bo
 // declaration itself, an entity this change structurally touched. That is
 // what separates a breach the change MADE under a rule it also declares from
 // one the rule merely surfaced on code that did not move.
-func witnessTouched(in facts.Insight, touched map[string]struct{}) bool {
-	for _, ev := range in.Evidence {
-		if strings.HasPrefix(ev.Fact, "rule: ") || strings.HasPrefix(ev.Fact, "component: ") {
-			continue
-		}
-		for _, e := range []string{ev.Fact, ev.Symbol, ev.File} {
-			if e == "" {
-				continue
-			}
-			if _, ok := touched[e]; ok {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 // Empty reports whether the diff contains no changes of any kind.
 func (d *SnapshotDiff) Empty() bool {
@@ -1187,4 +1193,47 @@ func KindCounts(ff []facts.Fact) map[string]int {
 		m[f.Kind]++
 	}
 	return m
+}
+
+// witnessTouchedBy says whether and how the change touched a finding's
+// witness: by a changed file when the version control system told us which
+// files changed, else by a fact that differs between the snapshots.
+func witnessTouchedBy(in facts.Insight, touched map[string]struct{}, changed map[string]struct{}) (string, bool) {
+	if changed != nil {
+		for _, ev := range in.Evidence {
+			if ev.File == "" {
+				continue
+			}
+			if _, ok := changed[ev.File]; ok {
+				return "the changed file " + ev.File, true
+			}
+			if i := strings.IndexByte(ev.File, '/'); i > 0 {
+				if _, ok := changed[ev.File[i+1:]]; ok {
+					return "the changed file " + ev.File[i+1:], true
+				}
+			}
+		}
+		return "", false
+	}
+	for _, ev := range in.Evidence {
+		if strings.HasPrefix(ev.Fact, "rule: ") || strings.HasPrefix(ev.Fact, "component: ") {
+			continue
+		}
+		for _, e := range []string{ev.Fact, ev.Symbol, ev.File} {
+			if e == "" {
+				continue
+			}
+			if _, ok := touched[e]; ok {
+				return "a changed fact, " + e, true
+			}
+		}
+	}
+	return "", false
+}
+
+// bucketed records on the finding why the diff put it where it did, so a
+// reader of the verdict never has to re-derive the classification.
+func bucketed(in facts.Insight, bucket, reason string) facts.Insight {
+	in.Evidence = append(append([]facts.Evidence(nil), in.Evidence...), facts.Evidence{Fact: "classified: " + bucket, Detail: reason})
+	return in
 }

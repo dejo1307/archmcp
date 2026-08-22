@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/extcoverage"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/intent"
 	"github.com/enola-labs/enola/pkg/plugin"
@@ -31,8 +32,10 @@ func (e *Extractor) OwnsFactFile(relFile string) bool {
 	return strings.HasSuffix(relFile, ".md")
 }
 
-// Detect probes for a markdown file carrying the enola_intent key, up to five
-// directory levels — wiki trees nest (wiki/<scope>/permanent/<area>/page.md).
+// Detect probes for any markdown file up to five directory levels (wiki trees
+// nest: wiki/<scope>/permanent/<area>/page.md). A page carrying the
+// enola_intent key compiles as intent; every other markdown file is a
+// document, so a repository with a README is in scope.
 func (e *Extractor) Detect(repoPath string) (bool, error) {
 	found := false
 	root := filepath.Clean(repoPath) //factpath:host
@@ -52,11 +55,8 @@ func (e *Extractor) Detect(repoPath string) (bool, error) {
 			return nil
 		}
 		if strings.HasSuffix(path, ".md") {
-			if src, rerr := os.ReadFile(path); rerr == nil &&
-				strings.Contains(string(src[:min(len(src), 4096)]), intent.PageIntentKey+":") {
-				found = true
-				return filepath.SkipAll
-			}
+			found = true
+			return filepath.SkipAll
 		}
 		return nil
 	})
@@ -68,11 +68,16 @@ var mdSkipDirs = map[string]bool{
 	"build": true, "tmp": true, "_archive": true, "_views": true,
 }
 
-// Extract parses every markdown page's frontmatter and compiles enola_intent
-// blocks into intent facts. An invalid block fails the snapshot — a
-// declaration that cannot be trusted is worse than none.
+// Extract runs in two modes per file. A page carrying enola_intent compiles
+// its block into intent facts; an invalid block fails the snapshot, since a
+// declaration that cannot be trusted is worse than none. Every other markdown
+// file yields a document symbol, a section symbol per heading and a names
+// relation per link that resolves on disk, with the links that do not
+// counted on the extraction fact.
 func (e *Extractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
 	var out []facts.Fact
+	var links linkCount
+	documents, sections := 0, 0
 	for _, relFile := range files {
 		slashed := filepath.ToSlash(relFile)
 		if !strings.HasSuffix(slashed, ".md") ||
@@ -93,6 +98,10 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, files []string
 			return nil, plugin.Fatalf("%s: %w", relFile, err)
 		}
 		if page == nil {
+			docs := documentFacts(repoPath, relFile, src, &links)
+			out = append(out, docs...)
+			documents++
+			sections += len(docs) - 1
 			continue
 		}
 		out = append(out, intent.CompilePageFacts(page, slashed)...)
@@ -103,12 +112,15 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, files []string
 		log.Printf("[mdintent] %s: page=%t %d relation(s), %d seam(s), %d layer set(s), %d claim(s)",
 			relFile, page.Page != nil, rels, len(page.Consumes), len(page.Layers), len(page.Claims))
 	}
-	return out, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
+	if documents > 0 {
+		unresolved := 0
+		for _, n := range links.unresolved {
+			unresolved += n
+		}
+		log.Printf("[mdintent] %d document(s), %d section(s), %d link(s) resolved on disk, %d not", documents, sections, links.resolved, unresolved)
 	}
-	return b
+	if coverage, ok := extcoverage.Fact(repoPath, linksFactName, linksEdgeType, links.resolved, links.unresolved); ok {
+		out = append(out, coverage)
+	}
+	return out, nil
 }

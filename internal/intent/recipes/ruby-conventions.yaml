@@ -1,0 +1,18 @@
+recipe: ruby-conventions
+roles:
+  - name: code
+rules:
+  - id: no-get-prefix
+    forbid_name: code
+    pattern: "get_*"
+    because: "A reader is a noun; get_ says the class is a bag of fields. Use attr_reader or a plain name."
+
+  - id: no-set-prefix
+    forbid_name: code
+    pattern: "set_*"
+    because: "A writer is attr_writer or a plain assignment; set_ is another language's habit."
+
+  - id: no-is-prefix
+    forbid_name: code
+    pattern: "is_*"
+    because: "A predicate ends in a question mark and carries no is_ prefix; has_ is fine, since it names a possession rather than an identity."

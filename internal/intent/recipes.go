@@ -14,6 +14,23 @@ const RecipesDirName = "enola/recipes"
 
 type RecipeRole struct {
 	Name string `yaml:"name"`
+	// Optional marks a role an instantiation may leave unbound: the rules
+	// that reference it are expanded away for that instantiation and the
+	// lint surface says so, rather than the load failing. A recipe grows a
+	// role this way without breaking every repository that already binds it.
+	Optional bool `yaml:"optional"`
+	// Selector defaults a binding inherits key by key when it gives none of
+	// its own: a role whose members are known by what they carry rather than
+	// by where they sit declares it once here, and a binding that gives only
+	// paths (or nothing, when the default match suffices) still selects them.
+	Match       []string       `yaml:"match"`
+	Kind        string         `yaml:"kind"`
+	NamePattern string         `yaml:"name_pattern"`
+	Where       map[string]any `yaml:"where"`
+}
+
+func (role RecipeRole) defaulted() bool {
+	return len(role.Match) > 0 || role.Kind != "" || role.NamePattern != "" || len(role.Where) > 0
 }
 
 type Recipe struct {
@@ -30,6 +47,9 @@ type RecipeBinding struct {
 	Kind        string         `yaml:"kind"`
 	NamePattern string         `yaml:"name_pattern"`
 	Where       map[string]any `yaml:"where"`
+	Owns        string         `yaml:"owns"`
+	Ancestor    string         `yaml:"ancestor"`
+	Public      []string       `yaml:"public"`
 }
 
 type InstanceExemption struct {
@@ -146,12 +166,13 @@ func ruleRoleReferences(r ConstraintRule) []string {
 	refs := []string{
 		r.Forbid, r.ForbidReach, r.To, r.Allow, r.Protect, r.Private,
 		r.ForbidFact, r.Cap, r.Require, r.RequireEdge, r.RequireDefines,
-		r.RequireName, r.Protocol, r.Guide,
+		r.RequireName, r.ForbidName, r.ForbidCycles, r.Independent, r.Protocol, r.Guide,
 	}
 	refs = append(refs, r.Only...)
 	refs = append(refs, r.Owners...)
 	refs = append(refs, r.Except...)
 	refs = append(refs, r.Steps...)
+	refs = append(refs, r.Among...)
 	out := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		if ref != "" {
@@ -243,8 +264,14 @@ func ExpandInstantiations(files []ConstraintsFile, recipes []Recipe) ([]Constrai
 					ok = false
 				}
 			}
+			optional := map[string]bool{}
+			for _, role := range rec.Roles {
+				if role.Optional || role.defaulted() {
+					optional[role.Name] = true
+				}
+			}
 			for _, role := range recipeReferencedRoles(rec) {
-				if _, bound := inst.Bind[role]; !bound {
+				if _, bound := inst.Bind[role]; !bound && !optional[role] {
 					problems = append(problems, fmt.Sprintf("%s: recipe %s's rules reference role %q and the instantiation binds no paths to it", loc, rec.Name, role))
 					ok = false
 				}
@@ -280,8 +307,20 @@ func expandBindings(rec Recipe, inst RecipeInstantiation, sourceFile string) []C
 	var out []ConstraintComponent
 	for _, role := range rec.Roles {
 		b, bound := inst.Bind[role.Name]
-		if !bound {
+		if !bound && !role.defaulted() {
 			continue
+		}
+		if len(b.Match) == 0 {
+			b.Match = append([]string(nil), role.Match...)
+		}
+		if b.Kind == "" {
+			b.Kind = role.Kind
+		}
+		if b.NamePattern == "" {
+			b.NamePattern = role.NamePattern
+		}
+		if b.Where == nil {
+			b.Where = role.Where
 		}
 		out = append(out, ConstraintComponent{
 			Name:        inst.As + "/" + role.Name,
@@ -290,6 +329,9 @@ func expandBindings(rec Recipe, inst RecipeInstantiation, sourceFile string) []C
 			Kind:        b.Kind,
 			NamePattern: b.NamePattern,
 			Where:       b.Where,
+			Owns:        b.Owns,
+			Ancestor:    b.Ancestor,
+			Public:      append([]string(nil), b.Public...),
 			SourceFile:  sourceFile,
 			Recipe:      rec.Name,
 			Instance:    inst.As,
@@ -318,6 +360,9 @@ func expandRules(rec Recipe, inst RecipeInstantiation, exemptByRule map[string][
 	}
 	out := make([]ConstraintRule, 0, len(rec.Rules))
 	for _, rr := range rec.Rules {
+		if unbound := unboundOptionalRole(rec, inst, rr); unbound != "" {
+			continue
+		}
 		n := rr
 		n.ID = inst.As + "/" + rr.ID
 		n.Forbid = bind(rr.Forbid)
@@ -335,10 +380,18 @@ func expandRules(rec Recipe, inst RecipeInstantiation, exemptByRule map[string][
 		n.RequireEdge = bind(rr.RequireEdge)
 		n.RequireDefines = bind(rr.RequireDefines)
 		n.RequireName = bind(rr.RequireName)
+		n.ForbidName = bind(rr.ForbidName)
+		n.ForbidCycles = bind(rr.ForbidCycles)
+		n.Among = bindAll(rr.Among)
+		n.Independent = bind(rr.Independent)
 		n.Protocol = bind(rr.Protocol)
 		n.Steps = bindAll(rr.Steps)
 		n.Guide = bind(rr.Guide)
 		n.Exemplars = append([]string(nil), rr.Exemplars...)
+		n.Owns = nil
+		for _, o := range rr.Owns {
+			n.Owns = append(n.Owns, ComponentOwnership{Component: bind(o.Component), Owns: o.Owns})
+		}
 		if rr.WhenPropContains != nil {
 			when := *rr.WhenPropContains
 			n.WhenPropContains = &when
@@ -373,4 +426,69 @@ func loadedRecipeList(loaded []string) string {
 		return "none — " + RecipesDirName + "/ declares nothing"
 	}
 	return strings.Join(loaded, ", ")
+}
+
+// unboundOptionalRole names the optional role a rule references that the
+// instantiation left unbound, or "" when every role the rule needs is bound.
+func unboundOptionalRole(rec Recipe, inst RecipeInstantiation, r ConstraintRule) string {
+	optional := map[string]bool{}
+	for _, role := range rec.Roles {
+		if role.Optional {
+			optional[role.Name] = true
+		}
+		if role.defaulted() {
+			delete(optional, role.Name)
+		}
+	}
+	for _, role := range ruleRoleReferences(r) {
+		if _, bound := inst.Bind[role]; !bound && optional[role] {
+			return role
+		}
+	}
+	return ""
+}
+
+// UnboundOptionalRules lists, per instantiation, the recipe rules expanded
+// away because an optional role was left unbound, so the lint surface can say
+// which laws a binding did not take.
+func UnboundOptionalRules(recipes []Recipe, files []ConstraintsFile) []string {
+	byName := map[string]Recipe{}
+	for _, r := range recipes {
+		byName[r.Name] = r
+	}
+	var out []string
+	for _, f := range files {
+		for _, inst := range f.UseRecipe {
+			rec, ok := byName[inst.Recipe]
+			if !ok {
+				continue
+			}
+			for _, rr := range rec.Rules {
+				if role := unboundOptionalRole(rec, inst, rr); role != "" {
+					out = append(out, fmt.Sprintf("%s: use_recipe %s leaves optional role %q unbound, so rule %s is not in force", f.Path, inst.As, role, rr.ID))
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RequiredRoles lists the roles a recipe's rules reference that an
+// instantiation must bind: every referenced role that is not optional.
+func RequiredRoles(rec Recipe) []string {
+	optional := map[string]bool{}
+	for _, role := range rec.Roles {
+		if role.Optional || role.defaulted() {
+			optional[role.Name] = true
+		}
+	}
+	var out []string
+	for _, role := range recipeReferencedRoles(rec) {
+		if !optional[role] {
+			out = append(out, role)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

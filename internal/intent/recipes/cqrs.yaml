@@ -1,0 +1,29 @@
+recipe: cqrs
+roles:
+  - name: commands
+  - name: queries
+  - name: read-models
+rules:
+  - id: commands-do-not-use-queries
+    forbid: commands
+    to: queries
+    via: calls
+    because: "A command that reads through the query side couples the write path to a projection that may lag; it reads its own aggregate."
+
+  - id: queries-do-not-use-commands
+    forbid: queries
+    to: commands
+    via: calls
+    because: "A query that issues a command writes, and a read that writes is the one thing the split forbids."
+
+  - id: queries-never-write
+    forbid: queries
+    to_name: [create, create!, delete, delete_all, destroy, destroy!, insert, insert!, insert_all, save, save!, update, update!, update_all, update_attribute, update_attributes, update_columns, upsert, upsert!, upsert_all, touch, increment!, decrement!]
+    via: calls
+    because: "A query answers; one that calls a persistence method has a side effect nobody asked for, and every caller that reads twice writes twice."
+
+  - id: read-models-do-not-use-commands
+    forbid: read-models
+    to: commands
+    via: calls
+    because: "A read model is a projection of what commands did; one that issues commands is a feedback loop."

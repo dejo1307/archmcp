@@ -36,6 +36,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/binders/frameworkroots"
 )
 
 const ExplainerName = "dead-methods"
@@ -180,7 +181,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 		if surface == "" {
 			continue
 		}
-		if routed[fact.Name] {
+		if routed[fact.Name] || fact.PropString(frameworkroots.RootProp) != "" {
 			continue
 		}
 		if reflected[demodulize(className(fact.Name))] {

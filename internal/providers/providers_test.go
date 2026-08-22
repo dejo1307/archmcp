@@ -33,7 +33,7 @@ func TestRun_StampsSortsAndReportsCensus(t *testing.T) {
 	script := writeProvider(t, "1.2.3",
 		`{"kind":"symbol","name":"zz","file":"z.rb","props":{"resolution_level":"name-only"}}`+"\n"+
 			validCallFact+"\n")
-	ff, records := Run(context.Background(), []Provider{{Name: "fake", Command: []string{script}}}, t.TempDir(), nil)
+	ff, records := Run(context.Background(), []Provider{{Name: "fake", Command: []string{script}}}, t.TempDir(), nil, nil)
 	if len(ff) != 2 {
 		t.Fatalf("facts = %+v, want 2", ff)
 	}
@@ -53,7 +53,7 @@ func TestRun_StampsSortsAndReportsCensus(t *testing.T) {
 
 func TestRun_MissingCommandIsANamedSkipNeverAnError(t *testing.T) {
 	ff, records := Run(context.Background(),
-		[]Provider{{Name: "ghost", Command: []string{"/no/such/enola-provider"}}}, t.TempDir(), nil)
+		[]Provider{{Name: "ghost", Command: []string{"/no/such/enola-provider"}}}, t.TempDir(), nil, nil)
 	if len(ff) != 0 {
 		t.Fatalf("a skipped provider must contribute nothing, got %+v", ff)
 	}
@@ -65,7 +65,7 @@ func TestRun_MissingCommandIsANamedSkipNeverAnError(t *testing.T) {
 func TestRun_VersionMismatchIsASkip(t *testing.T) {
 	script := writeProvider(t, "1.2.3", validCallFact+"\n")
 	ff, records := Run(context.Background(),
-		[]Provider{{Name: "fake", Command: []string{script}, ExpectedVersion: "2.0.0"}}, t.TempDir(), nil)
+		[]Provider{{Name: "fake", Command: []string{script}, ExpectedVersion: "2.0.0"}}, t.TempDir(), nil, nil)
 	if len(ff) != 0 || !records[0].Skipped ||
 		!strings.Contains(records[0].Reason, "reported 1.2.3, expected 2.0.0") {
 		t.Fatalf("facts = %+v, census = %+v", ff, records)
@@ -91,7 +91,7 @@ func TestRun_InvalidLineRejectsTheWholeOutput(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			script := writeProvider(t, "1.2.3", validCallFact+"\n"+badLine+"\n")
 			ff, records := Run(context.Background(),
-				[]Provider{{Name: "fake", Command: []string{script}}}, t.TempDir(), nil)
+				[]Provider{{Name: "fake", Command: []string{script}}}, t.TempDir(), nil, nil)
 			if len(ff) != 0 {
 				t.Fatalf("one invalid line must reject the whole output, got %+v", ff)
 			}
@@ -108,7 +108,7 @@ func TestRun_ExtractorIdentityIsNeverOverwritten(t *testing.T) {
 			`{"kind":"symbol","name":"Taken","file":"a.rb","props":{"resolution_level":"name-only"}}`+"\n")
 	taken := func(kind, name string) bool { return kind == facts.KindSymbol && name == "Taken" }
 	ff, records := Run(context.Background(),
-		[]Provider{{Name: "fake", Command: []string{script}}}, t.TempDir(), taken)
+		[]Provider{{Name: "fake", Command: []string{script}}}, t.TempDir(), taken, nil)
 	if len(ff) != 1 || ff[0].Name != "prism-call: A#m -> B#n" {
 		t.Fatalf("facts = %+v, want only the non-colliding one", ff)
 	}
@@ -123,7 +123,7 @@ func TestRun_ProvidersRunInNameOrder(t *testing.T) {
 	ff, records := Run(context.Background(), []Provider{
 		{Name: "beta", Command: []string{beta}},
 		{Name: "alpha", Command: []string{alpha}},
-	}, t.TempDir(), nil)
+	}, t.TempDir(), nil, nil)
 	if len(records) != 2 || records[0].Name != "alpha" || records[1].Name != "beta" {
 		t.Fatalf("census order = %+v, want name order regardless of config order", records)
 	}
@@ -160,12 +160,30 @@ func TestRun_ConcurrentProvidersMergeInNameOrder(t *testing.T) {
 	}
 	fast := writeProvider(t, "1.0.0", `{"kind":"symbol","name":"from-b","file":"b.rb","props":{"resolution_level":"name-only"}}`+"\n")
 	for round := 0; round < 2; round++ {
-		ff, records := Run(context.Background(), []Provider{{Name: "b", Command: []string{fast}}, {Name: "a", Command: []string{slow}}}, t.TempDir(), nil)
+		ff, records := Run(context.Background(), []Provider{{Name: "b", Command: []string{fast}}, {Name: "a", Command: []string{slow}}}, t.TempDir(), nil, nil)
 		if len(ff) != 2 || ff[0].Name != "from-a" || ff[1].Name != "from-b" {
 			t.Fatalf("round %d: merged order must follow provider names, got %+v", round, ff)
 		}
 		if records[0].Name != "a" || records[1].Name != "b" || ff[0].Props[PropProvider] != "a" || ff[1].Props[PropProvider] != "b" {
 			t.Fatalf("round %d: census or stamps out of order: %+v / %+v", round, records, ff)
 		}
+	}
+}
+
+// A provider walks the tree itself, so it cannot know what the repository's
+// ignore globs exclude. The seam drops its facts about excluded files and
+// counts them, rather than letting a vendored tree enter the graph through a
+// door the extractors are closed to.
+func TestRun_IgnoredFilesAreDroppedAtTheSeam(t *testing.T) {
+	script := writeProvider(t, "1.0.0",
+		`{"kind":"dependency","name":"prism-call: A#m -> B#n","file":"app/a.rb","props":{"resolution_level":"name-only"},"relations":[{"kind":"calls","target":"B#n"}]}`+"\n"+
+			`{"kind":"dependency","name":"prism-call: C#m -> D#n","file":"sources/reference-apps/fizzy/app/models/access.rb","props":{"resolution_level":"name-only"},"relations":[{"kind":"calls","target":"D#n"}]}`+"\n")
+	ff, records := Run(context.Background(), []Provider{{Name: "fake", Command: []string{script}}}, t.TempDir(), nil,
+		func(file string) bool { return strings.Contains(file, "/reference-apps/") })
+	if len(ff) != 1 || ff[0].File != "app/a.rb" {
+		t.Fatalf("only the fact about a measured file survives: %+v", ff)
+	}
+	if len(records) != 1 || records[0].ExcludedByIgnore != 1 || records[0].FactCount != 1 {
+		t.Fatalf("the drop must be counted on the census: %+v", records)
 	}
 }

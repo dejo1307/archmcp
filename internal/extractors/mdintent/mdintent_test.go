@@ -87,14 +87,67 @@ func TestMDIntent_InvalidBlockFailsExtraction(t *testing.T) {
 	}
 }
 
-func TestMDIntent_PlainPagesAreIgnored(t *testing.T) {
+// A page without the key is a document: a symbol named by its path, a symbol
+// per heading named the way a fragment names it, and a names relation per
+// link that resolves on disk from the section that carries it. Fenced code
+// is not prose, a URL is external, a fragment is nothing, and a link to a
+// file that is not there is counted rather than followed.
+func TestMDIntent_PlainPagesAreDocuments(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("---\ntitle: x\n---\nprose enola_intent: in body only\n"), 0o644); err != nil {
+	for _, p := range []string{"app/models/order.rb", "docs/guide.md", "lib/util.rb"} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notes := "---\ntitle: x\n---\n# Orders\n\nSee [the model](../app/models/order.rb) and `lib/util.rb`.\n\n## How it works\n\nRead [the guide](guide.md#intro), [upstream](https://example.com/x.md), [top](#orders) and [gone](missing.md).\n\n```ruby\n# not a heading\n[link](../app/models/order.rb)\n```\n\n## How it works\n\nA path that escapes the tree: [out](../../etc/passwd).\n"
+	if err := os.WriteFile(filepath.Join(dir, "docs", "notes.md"), []byte(notes), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ff, err := New().Extract(context.Background(), dir, []string{"notes.md"})
-	if err != nil || len(ff) != 0 {
-		t.Fatalf("a page without the frontmatter key must compile nothing: %v %v", ff, err)
+	if ok, _ := New().Detect(dir); !ok {
+		t.Fatal("a tree with markdown must detect")
+	}
+	ff, err := New().Extract(context.Background(), dir, []string{"docs/notes.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]facts.Fact{}
+	for _, f := range ff {
+		byName[f.Name] = f
+	}
+	doc := byName["docs/notes.md"]
+	if doc.Kind != facts.KindSymbol || doc.Props["symbol_kind"] != SymbolDocument || doc.Props["title"] != "Orders" {
+		t.Fatalf("document fact: %+v", doc)
+	}
+	names := func(f facts.Fact, kind string) []string {
+		var out []string
+		for _, r := range f.Relations {
+			if r.Kind == kind {
+				out = append(out, r.Target)
+			}
+		}
+		return out
+	}
+	if got := names(doc, facts.RelDeclares); strings.Join(got, ",") != "docs,docs/notes.md#orders,docs/notes.md#how-it-works,docs/notes.md#how-it-works-1" {
+		t.Fatalf("document declares %v", got)
+	}
+	if got := names(byName["docs/notes.md#orders"], facts.RelNames); strings.Join(got, ",") != "app/models/order.rb,lib/util.rb" {
+		t.Fatalf("section links %v", got)
+	}
+	if got := names(byName["docs/notes.md#how-it-works"], facts.RelNames); strings.Join(got, ",") != "docs/guide.md" {
+		t.Fatalf("second section links %v (fenced, external, fragment and missing must not resolve)", got)
+	}
+	if sec := byName["docs/notes.md#how-it-works-1"]; sec.Props["level"] != 2 || sec.Line != 17 {
+		t.Fatalf("section fact: %+v", sec)
+	}
+	coverage := byName["mdintent:links"]
+	if coverage.Kind != facts.KindExtraction || coverage.Props["unresolved_macros"] != "external=1,missing=1,outside-repo=1" {
+		t.Fatalf("link coverage: %+v", coverage)
+	}
+	if entries := coverage.Props["edge_coverage"].([]map[string]any); entries[0]["resolved"] != 3 {
+		t.Fatalf("resolved links: %v", entries)
 	}
 }
 

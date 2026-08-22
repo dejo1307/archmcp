@@ -297,39 +297,6 @@ func groundSkipInsight(r rule, targets map[string]bool) facts.Insight {
 // are there to make it checkable.
 const groundSkipSample = 8
 
-// membershipBasis words how a verdict's target membership was reached, so the
-// sentence a violation carries states its own basis. An exact target names the
-// member fact itself; a grounded one names the file, and the member is joined
-// through it. Both are decided-rule breaches — the join is measured either way —
-// but a verdict that called a grounded membership exact would claim a precision
-// it did not have, and finding 0010's fix already made that claim reachable.
-func membershipBasis(exact bool) string {
-	if exact {
-		return "both memberships are exact"
-	}
-	return "the source membership is exact and the target grounds on the measured file its edge names"
-}
-
-// targetBasis words how an allow-only verdict resolved the target it found
-// outside every allowed component. The exact form names a measured fact; the
-// grounded form names only a file, and the components it was tested against were
-// joined through that file — a weaker resolution the sentence has to state, for
-// the same reason membershipBasis exists.
-func targetBasis(exact bool) string {
-	if exact {
-		return "the target names a measured fact"
-	}
-	return "the target names no measured fact and grounds on the measured file it names"
-}
-
-// privateBasis words what a private verdict's target is and how the rule reached
-// it. An exact target names the non-exported member itself. A grounded one is a
-// path, and what the rule measured about it is a property of the FILE — that
-// every member of the private component measured there is non-exported — so a
-// verdict calling that path a member would name something no fact carries.
-func privateBasis(exact bool) (subject, basis string) {
-	if exact {
-		return "is a non-exported member of", "membership is exact"
-	}
-	return "is a measured file of", "the target names no member and grounds on that file, whose every measured fact is non-exported"
-}
+// How a verdict words the basis it reached each end of an edge on lives in
+// basis.go: one three-state vocabulary — exact, owned, grounded — used at both
+// ends, replacing the three boolean helpers that stood here.

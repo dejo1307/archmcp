@@ -75,7 +75,7 @@ func TestRun_InvalidCensusSkipsTheWholeOutput(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ff, records := Run(context.Background(), []Provider{{Name: "broken-census", Command: []string{script}}}, t.TempDir(), nil)
+	ff, records := Run(context.Background(), []Provider{{Name: "broken-census", Command: []string{script}}}, t.TempDir(), nil, nil)
 	if len(ff) != 0 || len(records) != 1 || !records[0].Skipped || !strings.Contains(records[0].Reason, "invalid census") {
 		t.Fatalf("facts = %+v, census = %+v, want a named census rejection", ff, records)
 	}
@@ -245,7 +245,7 @@ func TestRbsProvider_GoldenThroughTheSeam(t *testing.T) {
 		Name:            "rbs",
 		Command:         []string{"ruby", rbsScript(t)},
 		ExpectedVersion: "0.1.0",
-	}}, repo, nil)
+	}}, repo, nil, nil)
 	if len(records) != 1 || records[0].Skipped {
 		t.Fatalf("census = %+v, want a clean run", records)
 	}
@@ -346,7 +346,7 @@ func TestRbsProvider_EmptyRepositoryIsAnEmptyContribution(t *testing.T) {
 	ff, records := Run(context.Background(), []Provider{{
 		Name:    "rbs",
 		Command: []string{"ruby", rbsScript(t)},
-	}}, repo, nil)
+	}}, repo, nil, nil)
 	if len(ff) != 0 || len(records) != 1 || records[0].Skipped || records[0].FactCount != 0 {
 		t.Fatalf("facts = %+v, census = %+v, want a clean zero-fact run", ff, records)
 	}
@@ -368,7 +368,7 @@ func TestRbsProvider_UnbalancedSignatureFileIsDiscardedWhole(t *testing.T) {
 	ff, records := Run(context.Background(), []Provider{{
 		Name:    "rbs",
 		Command: []string{"ruby", rbsScript(t)},
-	}}, repo, nil)
+	}}, repo, nil, nil)
 	if len(ff) != 0 {
 		t.Fatalf("facts = %+v, want none: a structurally broken signature file must not become partial truth", ff)
 	}

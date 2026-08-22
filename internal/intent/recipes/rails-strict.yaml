@@ -1,0 +1,92 @@
+recipe: rails-strict
+roles:
+  - name: controllers
+  - name: jobs
+  - name: models
+  - name: mailers
+  - name: policies
+  - name: serializers
+  - name: view-components
+  - name: helpers
+    optional: true
+  - name: services
+    optional: true
+  - name: concerns
+    optional: true
+rules:
+  - id: jobs-do-not-render
+    forbid: jobs
+    to: controllers
+    via: calls
+    because: "A job runs without a request, so controller code reached from one has no session, no params and no rendering context."
+
+  - id: models-do-not-render
+    forbid: models
+    to: controllers
+    via: calls
+    because: "A model that knows the request cannot be used off the request."
+
+  - id: policies-only-answer
+    forbid: policies
+    to: jobs
+    via: calls
+    because: "Authorization is asked many times per request and sometimes speculatively, so a policy that enqueues work makes what happens depend on how often it was asked."
+
+  - id: mailers-do-not-enqueue
+    forbid: mailers
+    to: jobs
+    via: calls
+    because: "A mailer already runs inside the job that delivers it."
+
+  - id: serializers-do-not-render
+    forbid: serializers
+    to: controllers
+    via: calls
+    because: "Serializers render the same payload for the API, for a job and for a test."
+
+  - id: view-components-do-not-enqueue
+    forbid: view-components
+    to: jobs
+    via: calls
+    because: "A component renders once per view and often many times per page."
+
+  - id: view-components-do-not-render-controllers
+    forbid: view-components
+    to: controllers
+    via: calls
+    because: "A component that reads controller state cannot be rendered from a job, a mailer or a preview."
+
+  - id: services-do-not-reach-helpers
+    forbid: services
+    to: helpers
+    via: calls
+    because: "A helper exists for a view; a service that calls one cannot run where no view is being drawn."
+
+  - id: models-do-not-reach-helpers
+    forbid: models
+    to: helpers
+    via: calls
+    because: "A model that calls a view helper has presentation in its data layer."
+
+  - id: request-api-stays-in-controllers
+    forbid: models
+    to_name: [render, redirect_to, params, session, cookies, flash]
+    via: calls
+    receiver: none
+    because: "Without a receiver these are the request's surface; a model has no request to read them from outside a controller."
+
+  - id: request-api-stays-out-of-services
+    forbid: services
+    to_name: [render, redirect_to, params, session, cookies, flash]
+    via: calls
+    receiver: none
+    because: "A service handed the request has been handed the controller; the caller passes what the service needs."
+
+  - id: parts-never-cycle
+    forbid_cycles: controllers
+    among: [jobs, models, mailers, policies, serializers, view-components]
+    because: "Parts that reach each other in a circle cannot be taken apart, and the strict arrangement is the one that keeps them apart."
+
+  - id: concerns-stay-independent
+    independent: concerns
+    because: "A concern that reaches the class including it is half of that class hiding in a module."

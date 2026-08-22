@@ -2021,7 +2021,7 @@ func (s *Server) registerTools() {
 		// which is immutable once swapped in — exactly FactsRef's contract. All would
 		// copy the entire fact set, plus every relation slice, for a read: on a
 		// kernel-sized graph that is gigabytes of transient garbage on a query path.
-		current := &facts.Snapshot{Meta: snap.Meta, Facts: s.eng.Store().FactsRef(), Insights: snap.Insights}
+		current := &facts.Snapshot{Meta: s.eng.MetaFor(repoPath), Facts: s.eng.Store().FactsRef(), Insights: snap.Insights}
 
 		// Resolve the baseline directory from the selector.
 		sel := strings.TrimSpace(args.Baseline)
@@ -2137,7 +2137,7 @@ func (s *Server) registerTools() {
 				return errorResult(fmt.Sprintf("could not load baseline from %q: %v", args.Baseline, err)), nil, nil
 			}
 		}
-		rc := diff.CompareReceipts(baseline.Meta, snap.Meta)
+		rc := diff.CompareReceipts(baseline.Meta, s.eng.MetaFor(s.currentRepoPath()))
 		if resolveOutputMode(args.OutputMode, modeSummary) == modeFull {
 			return jsonResultCapped(rc, args.MaxTokens)
 		}
