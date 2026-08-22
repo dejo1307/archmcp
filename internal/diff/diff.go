@@ -760,22 +760,6 @@ func findingHasStructuralCause(in facts.Insight, touched map[string]struct{}) bo
 // declaration itself, an entity this change structurally touched. That is
 // what separates a breach the change MADE under a rule it also declares from
 // one the rule merely surfaced on code that did not move.
-func witnessTouched(in facts.Insight, touched map[string]struct{}) bool {
-	for _, ev := range in.Evidence {
-		if strings.HasPrefix(ev.Fact, "rule: ") || strings.HasPrefix(ev.Fact, "component: ") {
-			continue
-		}
-		for _, e := range []string{ev.Fact, ev.Symbol, ev.File} {
-			if e == "" {
-				continue
-			}
-			if _, ok := touched[e]; ok {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 // Empty reports whether the diff contains no changes of any kind.
 func (d *SnapshotDiff) Empty() bool {
