@@ -72,12 +72,16 @@ var mdSkipDirs = map[string]bool{
 // its block into intent facts; an invalid block fails the snapshot, since a
 // declaration that cannot be trusted is worse than none. Every other markdown
 // file yields a document symbol, a section symbol per heading and a names
-// relation per link that resolves on disk, with the links that do not
-// counted on the extraction fact.
+// relation per link that resolves against the walked file set, with the links
+// that do not counted on the extraction fact.
 func (e *Extractor) Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error) {
 	var out []facts.Fact
 	var links linkCount
 	documents, sections := 0, 0
+	// What a link may name: the files the walker kept, and their directories. See
+	// inScope — resolving against the filesystem instead made the snapshot depend on
+	// whether a previous snapshot existed.
+	scope := newInScope(files)
 	for _, relFile := range files {
 		slashed := filepath.ToSlash(relFile)
 		if !strings.HasSuffix(slashed, ".md") ||
@@ -98,7 +102,7 @@ func (e *Extractor) Extract(ctx context.Context, repoPath string, files []string
 			return nil, plugin.Fatalf("%s: %w", relFile, err)
 		}
 		if page == nil {
-			docs := documentFacts(repoPath, relFile, src, &links)
+			docs := documentFacts(scope, relFile, src, &links)
 			out = append(out, docs...)
 			documents++
 			sections += len(docs) - 1

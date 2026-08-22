@@ -2253,7 +2253,15 @@ import (
 // server from 68 to 97. Every reading that walks the module graph moves with it,
 // by value rather than by count: no explainer reports a different NUMBER of
 // findings on the corpus, while one storefront's deepest chain becomes 78 not 77.
-const cacheVersion = "v249"
+// v250: a markdown link resolves against the walked files, not the filesystem.
+// mdintent stat'd each link target on disk, so a repository whose documentation
+// names paths under its own output directory produced a different fact stream on
+// every run: this one's docs cite `.enola/extractor_cache.json`, absent on a cold
+// run and present on the next, and `.enola/previous`, which the run after that
+// creates. Three passes, three hashes, on the one corpus row whose docs describe
+// enola — the property the whole reproducibility claim rests on, broken by reading
+// the disk instead of the file list the walker had already filtered.
+const cacheVersion = "v250"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

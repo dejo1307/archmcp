@@ -109,7 +109,12 @@ func TestMDIntent_PlainPagesAreDocuments(t *testing.T) {
 	if ok, _ := New().Detect(dir); !ok {
 		t.Fatal("a tree with markdown must detect")
 	}
-	ff, err := New().Extract(context.Background(), dir, []string{"docs/notes.md"})
+	// The engine hands every extractor the WHOLE walked file list, and a link now
+	// resolves against that rather than against the filesystem — so the fixture
+	// passes what the engine would. Resolving on disk made a snapshot depend on
+	// whether a previous snapshot existed; see inScope.
+	ff, err := New().Extract(context.Background(), dir,
+		[]string{"app/models/order.rb", "docs/guide.md", "docs/notes.md", "lib/util.rb"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,5 +279,56 @@ func TestMDIntent_AnchorsCompileToOwnedFacts(t *testing.T) {
 	_, err = New().Extract(context.Background(), dir, []string{"b.md"})
 	if err == nil || !strings.Contains(err.Error(), "repo-relative") {
 		t.Fatalf("an absolute anchor path must fail as not repo-relative, got %v", err)
+	}
+}
+
+// A snapshot must not depend on whether a previous snapshot exists. This
+// repository's own documentation names paths under its output directory, and
+// resolving links on disk made those links miss on a cold run and hit on the next
+// — three runs, three different fact streams, on the one repository in the corpus
+// whose docs describe enola.
+func TestMDIntent_LinksResolveAgainstTheWalkedFilesNotTheDisk(t *testing.T) {
+	dir := t.TempDir()
+	for _, p := range []string{"internal/thing/thing.go", ".enola/extractor_cache.json", "docs/page.md"} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page := "# Cache\n\nThe cache lives in [.enola/extractor_cache.json](.enola/extractor_cache.json), " +
+		"written by [internal/thing](internal/thing).\n"
+	if err := os.WriteFile(filepath.Join(dir, "docs", "page.md"), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// What the walker keeps: the output directory is ignored, so it is absent even
+	// though it is right there on disk.
+	ff, err := New().Extract(context.Background(), dir,
+		[]string{"docs/page.md", "internal/thing/thing.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var targets []string
+	for _, f := range ff {
+		if f.Name != "docs/page.md#cache" {
+			continue
+		}
+		for _, r := range f.Relations {
+			if r.Kind == facts.RelNames {
+				targets = append(targets, r.Target)
+			}
+		}
+	}
+	for _, got := range targets {
+		if strings.HasPrefix(got, ".enola/") {
+			t.Errorf("resolved a link into the output directory: %q", got)
+		}
+	}
+	// The directory of a walked file is in scope, so a link naming one still lands.
+	if strings.Join(targets, ",") != "internal/thing" {
+		t.Errorf("section links = %v, want only internal/thing", targets)
 	}
 }
