@@ -622,6 +622,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	if err != nil {
 		return nil, fmt.Errorf("explanation: %w", err)
 	}
+	positionInsights(allInsights, e.store)
 	tExplain = time.Since(tStage)
 	log.Printf("[engine] produced %d insights using %d explainers", len(allInsights), len(usedExplainers))
 
@@ -765,6 +766,8 @@ func (e *Engine) runProviders(ctx context.Context, absRepo string, preCount int)
 	}
 	provFacts, records := providers.Run(ctx, e.cfg.Providers, absRepo, func(kind, name string) bool {
 		return owned[kind+"\x00"+name]
+	}, func(file string) bool {
+		return e.isIgnored(file, false)
 	})
 	e.store.Add(provFacts...)
 	if annotated := providers.LinkRuntimeObservations(e.store, preCount); annotated > 0 {

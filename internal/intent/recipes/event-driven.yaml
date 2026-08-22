@@ -1,0 +1,25 @@
+recipe: event-driven
+roles:
+  - name: publishers
+  - name: events
+  - name: handlers
+rules:
+  - id: every-event-is-handled
+    require_edge: events
+    to: handlers
+    via: calls
+    direction: inbound
+    because: "An event nobody handles is a message written into the dark: the publisher believes something happens and nothing does, and no test fails."
+
+  - id: publishers-do-not-call-handlers
+    forbid: publishers
+    to: handlers
+    via: calls
+    because: "A publisher that calls a handler directly has made a function call wearing an event's name, so the indirection everyone is paying for buys nothing."
+
+  - id: handlers-do-not-publish-back
+    forbid: handlers
+    to: publishers
+    via: calls
+    mode: advisory
+    because: "A handler calling back into a publisher is how event loops are born. Advisory because a deliberate saga step looks identical from the structure alone."

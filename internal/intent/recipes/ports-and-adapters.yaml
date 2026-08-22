@@ -1,0 +1,31 @@
+recipe: ports-and-adapters
+roles:
+  - name: core
+  - name: ports
+  - name: adapters
+rules:
+  - id: core-depends-on-ports-only
+    allow: core
+    only: [ports]
+    via: depends_on
+    because: "The core names the interfaces it needs and nothing that implements them. That is the whole arrangement: an adapter can be replaced without the core noticing, and the core can be exercised without any adapter present."
+
+  - id: core-names-no-adapter
+    forbid: core
+    to: adapters
+    via: calls
+    because: "A core that calls an adapter directly has a hidden dependency on one implementation, and every test of the core has to bring that adapter with it."
+
+  - id: adapters-implement-ports
+    require_edge: adapters
+    to: ports
+    via: implements
+    direction: outbound
+    because: "An adapter that implements no port is not an adapter: it is code the core cannot reach through the arrangement, so nothing tells a reader how it is meant to be used."
+
+  - id: adapters-do-not-call-each-other
+    forbid: adapters
+    to: adapters
+    via: calls
+    mode: advisory
+    because: "One adapter calling another couples two replaceable things to each other, so neither can be replaced alone. Advisory because a legitimate composite adapter looks the same from the outside."

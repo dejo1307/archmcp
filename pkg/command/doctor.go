@@ -12,6 +12,7 @@ import (
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/hookstate"
 	"github.com/enola-labs/enola/internal/updatecheck"
+	"github.com/enola-labs/enola/internal/providers"
 	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/check"
@@ -96,6 +97,12 @@ func (r *Runner) Doctor(args []string) {
 	fmt.Println("Runtime")
 	fmt.Printf("  %s\n", bootstrap.MemoryLimitLine())
 	fmt.Printf("  enola %s (extractors %s)\n", version.Version, engine.ExtractorVersion())
+	fmt.Println()
+
+	fmt.Println("Providers carried by this binary")
+	for _, name := range providers.BuiltInNames() {
+		fmt.Printf("  %s: %s\n", name, builtInStatus(name))
+	}
 	fmt.Println()
 
 	// Reported unconditionally, unlike the one-line notice the other commands print:

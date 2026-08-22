@@ -41,9 +41,11 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 )
 
-// Provider is one configured external fact source: the census name its facts
-// are stamped with, the command (argv) the seam runs, and the version the
-// operator expects the installed build to report. A reported version that
+// Provider is one configured fact source: the census name its facts are
+// stamped with, the command (argv) the seam runs, and the version the
+// operator expects the installed build to report. An entry with no command
+// names a provider the binary carries itself (see builtin.go), run
+// in-process under the same validation and census. A reported version that
 // disagrees with the expected one is a skip, not a merge — facts from a build
 // the config did not pin would drift the graph for reasons no code change made.
 type Provider struct {
@@ -81,6 +83,11 @@ const (
 	LevelConventionDerived = "convention-derived"
 	LevelRuntimeObserved   = "runtime-observed"
 	LevelDeclared          = "declared"
+	// LevelResolved states that the provider resolved the name through the
+	// language's own lookup rules (nesting, inheritance, the locked gems) to
+	// one declaration. It is neither a receiver typing nor a signature-file
+	// claim nor a path convention, which is why it is its own word.
+	LevelResolved = "resolved"
 )
 
 const CensusPrefix = "enola-provider-census: "
@@ -95,6 +102,7 @@ var allowedResolutionLevels = map[string]bool{
 	LevelRuntimeObserved:   true,
 	LevelDeclared:          true,
 	LevelToolReported:      true,
+	LevelResolved:          true,
 }
 
 // allowedFactKinds is the closed set a provider may emit: the measured kinds.
@@ -140,7 +148,13 @@ func Validate(providers []Provider) error {
 			return fmt.Errorf("providers[%d]: name %q is declared twice", i, p.Name)
 		}
 		seen[p.Name] = true
-		if len(p.Command) == 0 || strings.TrimSpace(p.Command[0]) == "" {
+		if len(p.Command) == 0 {
+			if _, builtIn := builtIns[p.Name]; !builtIn {
+				return fmt.Errorf("providers[%d] (%s): missing command, and no built-in provider has that name (built-ins: %s)", i, p.Name, strings.Join(BuiltInNames(), ", "))
+			}
+			continue
+		}
+		if strings.TrimSpace(p.Command[0]) == "" {
 			return fmt.Errorf("providers[%d] (%s): missing command", i, p.Name)
 		}
 	}
@@ -152,9 +166,13 @@ func Validate(providers []Provider) error {
 // receipt's account of who contributed what, including the providers that
 // contributed nothing and why. taken reports whether an extractor already owns
 // a kind+name identity; colliding provider facts are skipped, never merged.
-// Run never fails the snapshot: every per-provider failure mode is a named
-// skip in the census.
-func Run(ctx context.Context, providers []Provider, repoPath string, taken func(kind, name string) bool) ([]facts.Fact, []facts.ProviderRecord) {
+// ignored reports whether a repo-relative file is excluded by the repository's
+// ignore globs, and a fact about such a file is dropped: a provider walks the
+// tree itself, so it cannot know what the configuration excludes, and a
+// vendored dependency the extractors never read must not enter the graph
+// through the seam instead. Run never fails the snapshot: every per-provider
+// failure mode is a named skip in the census.
+func Run(ctx context.Context, providers []Provider, repoPath string, taken func(kind, name string) bool, ignored func(file string) bool) ([]facts.Fact, []facts.ProviderRecord) {
 	sorted := append([]Provider(nil), providers...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
@@ -190,8 +208,12 @@ func Run(ctx context.Context, providers []Provider, repoPath string, taken func(
 			continue
 		}
 		kept := accepted[:0]
-		collided := 0
+		collided, excluded := 0, 0
 		for _, f := range accepted {
+			if ignored != nil && f.File != "" && ignored(f.File) {
+				excluded++
+				continue
+			}
 			if taken != nil && taken(f.Kind, f.Name) {
 				collided++
 				continue
@@ -201,6 +223,10 @@ func Run(ctx context.Context, providers []Provider, repoPath string, taken func(
 		if collided > 0 {
 			log.Printf("[providers] %s: skipped %d fact(s) whose name+kind identity an extractor already owns", p.Name, collided)
 		}
+		if excluded > 0 {
+			log.Printf("[providers] %s: dropped %d fact(s) about files this repository's ignore globs exclude", p.Name, excluded)
+		}
+		record.ExcludedByIgnore = excluded
 		record.FactCount = len(kept)
 		records = append(records, record)
 		merged = append(merged, kept...)
@@ -217,6 +243,10 @@ func runOne(ctx context.Context, p Provider, repoPath string) ([]facts.Fact, fac
 		record.Skipped = true
 		record.Reason = fmt.Sprintf(format, args...)
 		return nil, record
+	}
+
+	if len(p.Command) == 0 {
+		return runBuiltIn(ctx, p, repoPath)
 	}
 
 	versionOut, err := exec.CommandContext(ctx, p.Command[0], append(p.Command[1:], "--version")...).Output()
@@ -309,42 +339,52 @@ func parseFactLine(line string) (facts.Fact, error) {
 	if err := dec.Decode(&trailing); err != io.EOF {
 		return facts.Fact{}, fmt.Errorf("trailing data after the fact object on the same line")
 	}
+	if err := validateFact(f); err != nil {
+		return facts.Fact{}, err
+	}
+	return f, nil
+}
+
+// validateFact is the schema check every provider fact passes, external or
+// built-in: a known kind, known relations with targets, a resolution level
+// from the vocabulary, and nothing the engine or the seam assigns.
+func validateFact(f facts.Fact) error {
 	if !allowedFactKinds[f.Kind] {
-		return facts.Fact{}, fmt.Errorf("kind %q is not a provider-emittable fact kind (allowed: %s)", f.Kind, joinSorted(allowedFactKinds))
+		return fmt.Errorf("kind %q is not a provider-emittable fact kind (allowed: %s)", f.Kind, joinSorted(allowedFactKinds))
 	}
 	if f.Name == "" {
-		return facts.Fact{}, fmt.Errorf("fact has no name")
+		return fmt.Errorf("fact has no name")
 	}
 	if f.Repo != "" {
-		return facts.Fact{}, fmt.Errorf("repo is engine-assigned; a provider must not set it")
+		return fmt.Errorf("repo is engine-assigned; a provider must not set it")
 	}
 	for _, rel := range f.Relations {
 		if !allowedRelationKinds[rel.Kind] {
-			return facts.Fact{}, fmt.Errorf("relation kind %q is not in the vocabulary (allowed: %s)", rel.Kind, joinSorted(allowedRelationKinds))
+			return fmt.Errorf("relation kind %q is not in the vocabulary (allowed: %s)", rel.Kind, joinSorted(allowedRelationKinds))
 		}
 		if rel.Target == "" {
-			return facts.Fact{}, fmt.Errorf("relation %q has no target", rel.Kind)
+			return fmt.Errorf("relation %q has no target", rel.Kind)
 		}
 	}
 	level, _ := f.Props[PropResolutionLevel].(string)
 	if level == "" {
-		return facts.Fact{}, fmt.Errorf("fact %q carries no %s prop — a provider must say how it resolved what it emitted", f.Name, PropResolutionLevel)
+		return fmt.Errorf("fact %q carries no %s prop — a provider must say how it resolved what it emitted", f.Name, PropResolutionLevel)
 	}
 	if !allowedResolutionLevels[level] {
-		return facts.Fact{}, fmt.Errorf("fact %q carries %s %q, which is not in the vocabulary (allowed: %s)", f.Name, PropResolutionLevel, level, joinSorted(allowedResolutionLevels))
+		return fmt.Errorf("fact %q carries %s %q, which is not in the vocabulary (allowed: %s)", f.Name, PropResolutionLevel, level, joinSorted(allowedResolutionLevels))
 	}
 	if via, _ := f.Props[PropObservedVia].(string); level == LevelRuntimeObserved && via == "" {
-		return facts.Fact{}, fmt.Errorf("fact %q is %s but carries no %s prop — a runtime fact must name its observation channel", f.Name, LevelRuntimeObserved, PropObservedVia)
+		return fmt.Errorf("fact %q is %s but carries no %s prop — a runtime fact must name its observation channel", f.Name, LevelRuntimeObserved, PropObservedVia)
 	}
 	if in, _ := f.Props[PropDeclaredIn].(string); level == LevelDeclared && in == "" {
-		return facts.Fact{}, fmt.Errorf("fact %q is %s but carries no %s prop — a declared fact must name the signature file that claims it", f.Name, LevelDeclared, PropDeclaredIn)
+		return fmt.Errorf("fact %q is %s but carries no %s prop — a declared fact must name the signature file that claims it", f.Name, LevelDeclared, PropDeclaredIn)
 	}
 	for _, reserved := range []string{PropProvider, PropProviderVersion} {
 		if _, claimed := f.Props[reserved]; claimed {
-			return facts.Fact{}, fmt.Errorf("prop %q is stamped by the seam; a provider must not set it", reserved)
+			return fmt.Errorf("prop %q is stamped by the seam; a provider must not set it", reserved)
 		}
 	}
-	return f, nil
+	return nil
 }
 
 func parseCensus(stderr []byte) (*facts.ProviderCensus, error) {

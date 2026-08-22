@@ -6,14 +6,13 @@
 // Neither is a queue draining a job, a mailer delivering, or a rake task
 // running. Without roots, every one of them looks unreachable.
 //
-// It stops at marking the roots. Reachability from them was measured before
-// this shipped and reports 86% of the monolith's symbols unreachable, which is
-// not a finding about the monolith — it is the receiver-typing gap showing
-// through: 53% of the Ruby extractor's call targets are bare method names, and
-// a cross-object call cannot be followed until the receiver has a type. The
-// roots are useful now, since they answer which entry points reach a symbol;
-// the verdict they would support is not, and emitting it would flag five-sixths
-// of a working codebase as dead.
+// The roots and the walk from them are the framework-roots binder's; this
+// explainer reports them per mechanism and carries the reached share as the
+// ceiling on what the graph can see. Reachability was measured before roots
+// existed and reported 86% of the monolith's symbols unreachable, which is not
+// a finding about the monolith: 53% of the Ruby extractor's call targets are
+// bare method names, and a cross-object call cannot be followed until the
+// receiver has a type. No dead-code verdict is derived here.
 package entrypoints
 
 import (
@@ -22,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
+	"github.com/enola-labs/enola/internal/linkers/binders/frameworkroots"
 )
 
 type Explainer struct{}
@@ -30,51 +30,60 @@ func New() *Explainer { return &Explainer{} }
 
 func (e *Explainer) Name() string { return "entry-points" }
 
-// frameworkEntrySuffixes are methods a framework calls rather than the
-// application: a Sidekiq job's perform, a service object's call, a mailer's
-// deliver, a migration's change.
-var frameworkEntrySuffixes = []string{
-	"#perform", "#call", "#deliver", "#change", "#up", "#down", "#execute",
-}
-
 func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
 	symbols := map[string]bool{}
+	perMechanism := map[string]int{}
+	methods, reached, unreached := 0, 0, 0
 	for _, fact := range store.ByKind(facts.KindSymbol) {
 		symbols[fact.Name] = true
+		if mechanism := fact.PropString(frameworkroots.RootProp); mechanism != "" {
+			perMechanism[mechanism]++
+			continue
+		}
+		if fact.PropString("language") != "ruby" || fact.PropString("symbol_kind") != facts.SymbolMethod {
+			continue
+		}
+		methods++
+		if fact.PropString(frameworkroots.ReachedFromProp) != "" {
+			reached++
+		} else {
+			unreached++
+		}
 	}
 	if len(symbols) == 0 {
 		return nil, nil
 	}
 
-	routed, unmatched := routeRoots(store, symbols)
-	framework := 0
-	for name := range symbols {
-		for _, suffix := range frameworkEntrySuffixes {
-			if strings.HasSuffix(name, suffix) {
-				framework++
-				break
-			}
-		}
+	_, unmatched := routeRoots(store, symbols)
+	total := 0
+	for _, n := range perMechanism {
+		total += n
 	}
-	if routed == 0 && framework == 0 {
+	if total == 0 {
 		return nil, nil
 	}
 
+	evidence := []facts.Evidence{{
+		Detail: fmt.Sprintf("%d route handlers name a controller action that is not a known symbol", unmatched),
+	}}
+	if methods > 0 {
+		evidence = append(evidence, facts.Evidence{
+			Detail: fmt.Sprintf("%d of %d non-root methods (%.1f%%) are reached from a root; the rest sit behind calls the graph cannot follow (untyped receivers, dynamic dispatch), not behind an absent caller",
+				reached, methods, 100*float64(reached)/float64(methods)),
+		})
+	}
 	return []facts.Insight{{
-		Title: fmt.Sprintf("%d entry points: %d routed actions, %d framework-invoked",
-			routed+framework, routed, framework),
+		Title: fmt.Sprintf("%d entry points: %d routed actions, %d jobs, %d mailer actions, %d hooks, %d tasks, %d callbacks",
+			total, perMechanism[frameworkroots.MechanismRoute], perMechanism[frameworkroots.MechanismJob], perMechanism[frameworkroots.MechanismMailer],
+			perMechanism[frameworkroots.MechanismHook], perMechanism[frameworkroots.MechanismTask], perMechanism[frameworkroots.MechanismCallback]),
 		Description: "These symbols are invoked by a framework rather than by a call, so " +
-			"they are the roots any reachability question has to start from. A dead-code " +
-			"verdict is deliberately not derived from them: cross-object calls cannot be " +
-			"followed until receivers have types, so traversal from these roots currently " +
-			"reports most of a working codebase as unreachable.",
-		// Measured rather than inferred: every root is a route handler the graph
-		// already names, or a method whose name the framework dispatches on.
+			"they are the roots any reachability question has to start from; each carries " +
+			"the mechanism as its root prop, and every symbol a walk from them reaches carries " +
+			"reached_from. A dead-code verdict is deliberately not derived from them: a " +
+			"cross-object call cannot be followed until its receiver has a type, so the " +
+			"unreached share is a ceiling on what the graph can see, not a count of dead code.",
 		Confidence: 1.0,
-		Evidence: []facts.Evidence{{
-			Detail: fmt.Sprintf("%d route handlers name a controller action that is not a known symbol",
-				unmatched),
-		}},
+		Evidence:   evidence,
 	}}, nil
 }
 

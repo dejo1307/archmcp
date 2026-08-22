@@ -173,6 +173,15 @@ func TestDeclarationValidate_ConstraintVocabulary(t *testing.T) {
 		"via rejected on the private form": {
 			[]ConstraintComponent{good, adapters},
 			[]ConstraintRule{{ID: "r", Private: "domain", Via: "calls", Because: "x"}}, "edge forms"},
+		"forbid_name with a bad pattern rejected": {
+			[]ConstraintComponent{good, adapters},
+			[]ConstraintRule{{ID: "r", ForbidName: "domain", Pattern: "get_*_total", Because: "x"}}, "forbid_name needs a pattern"},
+		"forbid_name surface other than exported rejected": {
+			[]ConstraintComponent{good, adapters},
+			[]ConstraintRule{{ID: "r", ForbidName: "domain", Pattern: "get_*", Surface: "public", Because: "x"}}, "surface must be exported"},
+		"surface rejected off the forbid_name form": {
+			[]ConstraintComponent{good, adapters},
+			[]ConstraintRule{{ID: "r", RequireName: "domain", Pattern: "*Job", Surface: "exported", Because: "x"}}, "surface belongs"},
 		"require_defines without method rejected": {
 			[]ConstraintComponent{good, adapters},
 			[]ConstraintRule{{ID: "r", RequireDefines: "domain", Because: "x"}}, "needs a method"},
@@ -754,5 +763,22 @@ func TestClaimNames_OmitAbsentPrefixes(t *testing.T) {
 				t.Fatalf("name = %q, want %q", ff[0].Name, tc.want)
 			}
 		})
+	}
+}
+
+// A well-formed forbid_name validates and compiles with its pattern and
+// surface, the way require_name does.
+func TestForbidName_ValidationMirrorsRequireName(t *testing.T) {
+	decl := constraintDecl(
+		[]ConstraintComponent{{Name: "domain", Match: []string{"app/domain/**"}, Kind: "symbol"}},
+		[]ConstraintRule{{ID: "no-getters", ForbidName: "domain", Pattern: "get_*", Surface: "exported", Because: "a reader is a noun"}},
+	)
+	if err := decl.Validate(); err != nil {
+		t.Fatalf("a well-formed forbid_name rule must validate, got: %v", err)
+	}
+	ff := CompileFacts(decl)
+	rule := ff[len(ff)-1]
+	if rule.PropString("forbid_name") != "domain" || rule.PropString("pattern") != "get_*" || rule.PropString("surface") != "exported" {
+		t.Fatalf("compiled rule lost its fields: %v", rule.Props)
 	}
 }

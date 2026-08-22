@@ -22,6 +22,7 @@ require (
 )
 
 require (
+	github.com/ebitengine/purego v0.10.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/mattn/go-pointer v0.0.1 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect

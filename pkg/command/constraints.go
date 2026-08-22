@@ -38,16 +38,28 @@ func (r *Runner) Constraints(args []string) {
 		r.ConstraintsMine(args[1:])
 		return
 	}
+	if len(args) > 0 && args[0] == "init" {
+		r.ConstraintsInit(args[1:])
+		return
+	}
+	if len(args) > 0 && args[0] == "explain" {
+		r.ConstraintsExplain(args[1:])
+		return
+	}
 	fs := flag.NewFlagSet("constraints", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" constraints <lint|mine> [repo_path|config_path]\n\n"+
+		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" constraints <lint|mine|init|explain> [repo_path|config_path]\n\n"+
 			"lint validates the declared constraint vocabulary — inline in enola-intent.yaml\n"+
 			"and per-domain files under enola/constraints/ — and resolves each component\n"+
 			"against the current snapshot, if one exists (else validation only).\n\n"+
 			"mine searches the current snapshot's fact store for near-invariants and\n"+
 			"reports them as candidate constraint declarations — proposals for operator\n"+
-			"review, never self-adopting law. Run `"+r.name()+" constraints mine --help`.\n\n"+
+			"review, never self-adopting law. Run `"+r.name()+" constraints mine --help`.\n"+
+			"init writes a first declaration binding every shipped recipe whose roles\n"+
+			"resolve to directories the repository has. Run `"+r.name()+" constraints init --help`.\n"+
+			"explain names the components a file's facts belong to, the selector that\n"+
+			"admitted each, and the edges the file makes. Run `"+r.name()+" constraints explain --help`.\n\n"+
 			"Exit codes (lint):\n"+
 			"  0  every declaration is valid\n"+
 			"  1  validation problems were reported\n"+
@@ -123,7 +135,13 @@ func (r *Runner) lintRepoDeclaration(clusterDecl *intent.Declaration, repoPath s
 	if err != nil {
 		r.constraintsFatal("%v", err)
 	}
+	recipes, builtinNotes := intent.MergeBuiltinRecipes(recipes)
 	recipeProblems, recipeWarnings := intent.RecipeProblems(recipes)
+	// A repository authoring a recipe the binary also ships is exercising the
+	// override, not making a mistake, so the lint surface says which one ran
+	// and nothing fails.
+	recipeWarnings = append(recipeWarnings, builtinNotes...)
+	recipeWarnings = append(recipeWarnings, intent.UnboundOptionalRules(recipes, dirFiles)...)
 
 	hasFile := fileDecl != nil || len(fileProblems) > 0
 	hasDir := len(dirFiles) > 0 || len(dirProblems) > 0
@@ -310,6 +328,17 @@ func (r *Runner) lintResolveComponents(eng *bootstrap.Engine, anchor string, dec
 				suggestion = fmt.Sprintf(" (measured properties with similar names: %s)", strings.Join(u.NearMiss, ", "))
 			}
 			fmt.Printf("  %s: %s%s — declared in %s\n", u.Component, u.Problem(), suggestion, u.Source)
+		}
+	}
+	unreachable := constraints.UnreachableRoles(store)
+	if len(unreachable) > 0 {
+		fmt.Printf("\nRoles this snapshot resolves against nothing:\n")
+		for _, u := range unreachable {
+			verdict := "the rule emits no verdict"
+			if u.Partial {
+				verdict = "the rule's other edge kinds still verdict"
+			}
+			fmt.Printf("  %s: %s — %s\n", u.Rule, u.Problem(), verdict)
 		}
 	}
 	if absent := constraints.AbsentExemplars(store); len(absent) > 0 {

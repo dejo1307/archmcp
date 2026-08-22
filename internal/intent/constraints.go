@@ -32,11 +32,23 @@ import (
 // conjunction of property tests over the props the extractors measured, so a
 // component can name "the view components" or "the storage models" without a
 // directory appearing anywhere. It ANDs with every other narrowing for the
-// same reason service does — every field on this struct narrows, none widens —
-// so a component carrying both a match and a where is the path scope
-// intersected with the predicate, which is how a trusted path scope gets
-// sharpened without being replaced. A where alone is legal and needs no match:
-// the predicate IS the selector.
+// same reason service does — every SELECTOR field on this struct narrows — so a
+// component carrying both a match and a where is the path scope intersected
+// with the predicate, which is how a trusted path scope gets sharpened without
+// being replaced. A where alone is legal and needs no match: the predicate IS
+// the selector.
+//
+// Owns is the one field that WIDENS, and it is not a selector — which is why
+// the narrowing rule above is stated of the selectors rather than of the
+// struct. Every other field answers "which facts are members"; Owns answers a
+// different question the selectors cannot: whether facts that are NOT members,
+// because they are a member's methods, count as the member's when a rule walks
+// an edge. Membership is untouched by it — a component's members are exactly what
+// its selectors chose, and `constraints lint`, cap, require and require_name
+// all read the same set they always did. The distinction is what keeps the
+// exception from being licence to widen a selector: a field that changed
+// membership would have to narrow, and this one cannot change membership at
+// all.
 type ConstraintComponent struct {
 	Name        string         `yaml:"name"`
 	Service     string         `yaml:"service"`
@@ -44,6 +56,25 @@ type ConstraintComponent struct {
 	Kind        string         `yaml:"kind"`
 	NamePattern string         `yaml:"name_pattern"`
 	Where       map[string]any `yaml:"where"`
+	Owns        string         `yaml:"owns"`
+	// Ancestor names a class every member descends from, read transitively
+	// over resolved ancestry a provider emitted rather than over the one-level
+	// superclass text the extractor records. It is a separate key from a
+	// `where: {superclass:}` pair because the two are different claims.
+	Ancestor string `yaml:"ancestor"`
+	// Public names the files that are the component's public surface, as
+	// bounded globs. The private form treats members in those files as
+	// visible beside the measured exported prop, so a language without a
+	// visibility keyword can still state a surface by where it keeps it.
+	Public []string `yaml:"public"`
+	// Handles narrows a symbol component to the members a route reaches
+	// through handled_by when the route's method is one of these, so a law
+	// can speak about the code behind mutating routes without naming it.
+	Handles []string `yaml:"handles"`
+	// GovernedBy narrows a component to the measured facts whose files a
+	// compiled page anchors, the page named by path or glob; `status:` and
+	// `supersedes:` suffixes walk the page relations.
+	GovernedBy string `yaml:"governed_by"`
 
 	// SourceFile is the repo-relative enola/constraints file that declared
 	// this component, stamped at load time; empty means declared inline. It
@@ -57,7 +88,7 @@ type ConstraintComponent struct {
 }
 
 // ConstraintRule declares one enforcement statement about components. Exactly
-// one of thirteen forms selects what the rule says: Forbid/To (this component must
+// one of fourteen forms selects what the rule says: Forbid/To (this component must
 // not reach that one), ForbidReach/To (this component must not reach that one
 // through ANY measured path — the transitive form, walked breadth-first under
 // a hard depth cap; Via narrows the walked edge kinds and defaults to every
@@ -179,11 +210,57 @@ type ConstraintRule struct {
 
 	MustPropContain *PropMatch `yaml:"must_prop_contain"`
 
-	RequireDefines string `yaml:"require_defines"`
-	Method         string `yaml:"method"`
+	RequireDefines string   `yaml:"require_defines"`
+	Method         string   `yaml:"method"`
+	AnyOf          []string `yaml:"any_of"`
+	// StorageStaysHome holds when every storage fact a member reaches is
+	// itself a member: a part keeps to the tables it owns.
+	StorageStaysHome string `yaml:"storage_stays_home"`
+	// CapRuntime bounds a runtime-observed metric per member frame; Metric
+	// names the observation (queries) and Max the budget.
+	CapRuntime string `yaml:"cap_runtime"`
+	Metric     string `yaml:"metric"`
+	Max        int    `yaml:"max"`
+	// RequireConsumer holds when every member route has a client in the
+	// snapshot, read from the cross-repository route match.
+	RequireConsumer string `yaml:"require_consumer"`
+	// UniqueAcross holds when no two members in different repositories share
+	// the property By (table for storage).
+	UniqueAcross string `yaml:"unique_across"`
+	By           string `yaml:"by"`
+	// RequireGoverned holds when every member file carries an anchor from a
+	// compiled page.
+	RequireGoverned string `yaml:"require_governed"`
+	// Since dates the rule: a breach present in the history revision at or
+	// before the date ratchets, one introduced after it grades. Growth lets
+	// a cap's count exceed the baseline's by this much before it fails.
+	Since  string `yaml:"since"`
+	Growth int    `yaml:"growth"`
+
+	// ForbidCycles names the first of a set of parts that may not depend on
+	// each other in a circle; Among names the rest. The reading contracts the
+	// module graph to one node per part and reports every strongly connected
+	// component of two or more.
+	ForbidCycles string   `yaml:"forbid_cycles"`
+	Among        []string `yaml:"among"`
+
+	// Independent names a component of modules none of which may reach a
+	// class whose resolved ancestry includes it: a mixin stays independent of
+	// its includers. Read over resolved ancestry only.
+	Independent string `yaml:"independent"`
 
 	RequireName string `yaml:"require_name"`
+	ForbidName  string `yaml:"forbid_name"`
 	Pattern     string `yaml:"pattern"`
+	Surface     string `yaml:"surface"`
+	// Requires pairs names: a member matching Pattern must have a sibling in
+	// the same component named by this template, the one * in Pattern
+	// captured and substituted for the one * here. with_* requires without_*.
+	Requires string `yaml:"requires"`
+	// Receiver narrows a to_name literal: none matches only call targets
+	// with no receiver part, any (the default) matches bare, chained and
+	// receiver-qualified forms alike.
+	Receiver string `yaml:"receiver"`
 
 	RequireEdge string `yaml:"require_edge"`
 	Direction   string `yaml:"direction"`
@@ -194,6 +271,12 @@ type ConstraintRule struct {
 	Guide     string   `yaml:"guide"`
 	Message   string   `yaml:"message"`
 	Exemplars []string `yaml:"exemplars"`
+
+	// Owns overrides, for this rule's reach only, what a component it names
+	// owns. The component carries the concept's default; this is where one law
+	// is stricter or more permissive than another over the same concept. The
+	// precedence is stated once, in OwnershipPrecedence.
+	Owns []ComponentOwnership `yaml:"owns"`
 
 	Via     string `yaml:"via"`
 	Mode    string `yaml:"mode"`
@@ -274,12 +357,18 @@ func allowedComponentKinds() string {
 // include/extend/prepend edges the Ruby extractor emits as dependency
 // carriers), which is what makes concern rules — who may include what, and
 // what a concern may reach — compose from the existing edge forms.
-var AllowedRuleVias = map[string]bool{
-	"depends_on": true, "imports": true, "calls": true, "implements": true,
+var AllowedRuleVias = viaSet(AllRuleVias)
+
+func viaSet(vias []string) map[string]bool {
+	out := make(map[string]bool, len(vias))
+	for _, via := range vias {
+		out[via] = true
+	}
+	return out
 }
 
 func allowedRuleVias() string {
-	return "calls, depends_on, implements, imports"
+	return strings.Join(AllRuleVias, ", ")
 }
 
 // AllowedRuleModes is the closed enforcement-mode vocabulary. Ratchet (the
@@ -346,19 +435,16 @@ func constraintProblems(components []ConstraintComponent, rules []ConstraintRule
 		return sourceFile
 	}
 	componentNames := map[string]bool{}
+	componentSelector := map[string]string{}
 	componentSource := map[string]string{}
-	// Which components carry a predicate, read the same way the evaluator reads
-	// it: the COMPILED predicate, so a where declaring only the reserved kind key
-	// — which compiles to no property test — is not one, exactly as
-	// component.predicated() in the explainer is not.
-	predicated := map[string]bool{}
-	symbolGranular := map[string]bool{}
+	// The components indexed by name, read the same way the evaluator reads them
+	// — through the COMPILED predicate, so a where declaring only the reserved
+	// kind key, which compiles to no property test, is not a predicate component
+	// here either, exactly as component.predicated() in the explainer is not.
+	declaredComponents := map[string]ConstraintComponent{}
 	for _, c := range components {
-		if len(c.Predicate()) > 0 {
-			predicated[c.Name] = true
-		}
-		if c.Kind == "symbol" {
-			symbolGranular[c.Name] = true
+		if _, seen := declaredComponents[c.Name]; !seen {
+			declaredComponents[c.Name] = c
 		}
 	}
 	for _, c := range components {
@@ -388,15 +474,34 @@ func constraintProblems(components []ConstraintComponent, rules []ConstraintRule
 		if c.NamePattern != "" && !ValidNamePattern(c.NamePattern) {
 			problems = append(problems, fmt.Sprintf("%s (%s): name_pattern %q must be an exact name, a prefix*, or a *suffix (no other pattern forms)", loc, c.Name, c.NamePattern))
 		}
+		problems = append(problems, ancestorProblems(loc, c)...)
+		problems = append(problems, graphComponentProblems(loc, c)...)
+		for j, m := range c.Public {
+			if !validConstraintMatch(m) {
+				problems = append(problems, fmt.Sprintf("%s.public[%d]: %q must be an exact path, a prefix/** subtree, or a **/name basename glob", loc, j, m))
+			}
+		}
 		problems = append(problems, whereProblems(loc, c)...)
-		// A name collision is flagged whenever a constraints file is involved,
-		// naming both declaring files: a merged set with two definitions of
-		// one component has no single answer for what the name selects.
-		if componentNames[c.Name] && (c.SourceFile != "" || componentSource[c.Name] != "") {
-			problems = append(problems, fmt.Sprintf("%s: component %q is already declared by %s", loc, c.Name, declaredIn(componentSource[c.Name])))
+		problems = append(problems, componentOwnershipProblems(loc, c)...)
+		// A name collision is a named error wherever the two declarations sit,
+		// naming both declaring files: a merged set with two definitions of one
+		// component has no single answer for what the name selects, and which
+		// of them a reader gets must never depend on which half of the
+		// vocabulary is asking. A repeat that selects EXACTLY what the first
+		// one selects is not that case: it is the same component said twice,
+		// which is what a repository gets when it keeps one file per convention
+		// and two conventions speak about the same part of the application.
+		// Both readings agree there, so there is nothing to resolve.
+		if componentNames[c.Name] && componentSelector[c.Name] != selectorOf(c) {
+			if c.SourceFile == "" && componentSource[c.Name] == "" {
+				problems = append(problems, fmt.Sprintf("%s: component %q is declared twice in this declaration with a different selector", loc, c.Name))
+			} else {
+				problems = append(problems, fmt.Sprintf("%s: component %q is already declared by %s with a different selector", loc, c.Name, declaredIn(componentSource[c.Name])))
+			}
 		}
 		if !componentNames[c.Name] {
 			componentSource[c.Name] = c.SourceFile
+			componentSelector[c.Name] = selectorOf(c)
 		}
 		componentNames[c.Name] = true
 	}
@@ -423,7 +528,9 @@ func constraintProblems(components []ConstraintComponent, rules []ConstraintRule
 		}
 		ruleIDs[r.ID] = true
 		problems = append(problems, ruleFormProblems(loc, r, componentNames, "component")...)
-		problems = append(problems, predicateRoleProblems(loc, r, predicated, symbolGranular, "component")...)
+		problems = append(problems, graphRuleProblems(loc, r)...)
+		problems = append(problems, ownershipProblems(loc, r, componentNames, "component")...)
+		problems = append(problems, edgeRoleProblems(loc, r, declaredComponents, "component")...)
 		if r.Guide != "" && len(r.Exempt) > 0 {
 			problems = append(problems, fmt.Sprintf("%s (%s): exempt belongs to the law forms — guidance emits no violations to exempt", loc, r.ID))
 		}
@@ -494,12 +601,45 @@ func ruleFormProblems(loc string, r ConstraintRule, names map[string]bool, noun 
 		}
 		component("to", r.To)
 	case r.RequireDefines != "":
-		if r.Method == "" || strings.ContainsAny(r.Method, " \t") {
-			problems = append(problems, fmt.Sprintf("%s (%s): require_defines needs a method — one whitespace-free method name the class members must define", loc, r.ID))
+		switch {
+		case r.Method != "" && len(r.AnyOf) > 0:
+			problems = append(problems, fmt.Sprintf("%s (%s): method and any_of both name what the class members must define; declare exactly one", loc, r.ID))
+		case len(r.AnyOf) == 1:
+			problems = append(problems, fmt.Sprintf("%s (%s): any_of with one name is method; use method", loc, r.ID))
+		case len(r.AnyOf) > 1:
+			for _, m := range r.AnyOf {
+				if m == "" || strings.ContainsAny(m, " \t") {
+					problems = append(problems, fmt.Sprintf("%s (%s): any_of names must be whitespace-free method names", loc, r.ID))
+					break
+				}
+			}
+		case r.Method == "" || strings.ContainsAny(r.Method, " \t"):
+			problems = append(problems, fmt.Sprintf("%s (%s): require_defines needs a method — one whitespace-free method name the class members must define — or an any_of list", loc, r.ID))
+		}
+	case r.ForbidCycles != "":
+		if len(r.Among) == 0 {
+			problems = append(problems, fmt.Sprintf("%s (%s): forbid_cycles needs among — the other parts that may not depend on %s in a circle", loc, r.ID, r.ForbidCycles))
+		}
+		for _, name := range r.Among {
+			component("among", name)
+			if name == r.ForbidCycles {
+				problems = append(problems, fmt.Sprintf("%s (%s): among repeats the subject %s", loc, r.ID, name))
+			}
+		}
+	case r.Independent != "":
+		if r.Via != "" {
+			problems = append(problems, fmt.Sprintf("%s (%s): independent walks every rule-via edge kind, so it takes no via", loc, r.ID))
 		}
 	case r.RequireName != "":
 		if !ValidNamePattern(r.Pattern) {
 			problems = append(problems, fmt.Sprintf("%s (%s): require_name needs a pattern that is an exact name, a prefix*, or a *suffix (no other pattern forms)", loc, r.ID))
+		}
+	case r.ForbidName != "":
+		if !ValidNamePattern(r.Pattern) {
+			problems = append(problems, fmt.Sprintf("%s (%s): forbid_name needs a pattern that is an exact name, a prefix*, or a *suffix (no other pattern forms)", loc, r.ID))
+		}
+		if r.Surface != "" && r.Surface != "exported" {
+			problems = append(problems, fmt.Sprintf("%s (%s): surface must be exported or absent (absent means every member)", loc, r.ID))
 		}
 	case r.Protocol != "":
 		if !AllowedRuleVias[r.Via] {
@@ -626,11 +766,33 @@ func ruleFormProblems(loc string, r ConstraintRule, names map[string]bool, noun 
 	if r.RequireEdge != "" && len(r.WhenEdgeTo) > 0 && r.WhenVia == "" {
 		problems = append(problems, fmt.Sprintf("%s (%s): when_edge_to on the require_edge form needs a when_via (allowed: %s) — via already names the edge this rule demands, so the kind the antecedent reads is never defaulted from it", loc, r.ID, allowedRuleVias()))
 	}
-	if r.RequireDefines == "" && r.Method != "" {
-		problems = append(problems, fmt.Sprintf("%s (%s): method belongs to the require_defines form", loc, r.ID))
+	if r.RequireDefines == "" && (r.Method != "" || len(r.AnyOf) > 0) {
+		problems = append(problems, fmt.Sprintf("%s (%s): method belongs to the require_defines form, as does any_of", loc, r.ID))
 	}
-	if r.RequireName == "" && r.Pattern != "" {
-		problems = append(problems, fmt.Sprintf("%s (%s): pattern belongs to the require_name form", loc, r.ID))
+	if r.ForbidCycles == "" && len(r.Among) > 0 {
+		problems = append(problems, fmt.Sprintf("%s (%s): among belongs to the forbid_cycles form", loc, r.ID))
+	}
+	if r.RequireName == "" && r.ForbidName == "" && r.Pattern != "" {
+		problems = append(problems, fmt.Sprintf("%s (%s): pattern belongs to the require_name and forbid_name forms", loc, r.ID))
+	}
+	if r.Requires != "" {
+		switch {
+		case r.RequireName == "":
+			problems = append(problems, fmt.Sprintf("%s (%s): requires belongs to the require_name form", loc, r.ID))
+		case strings.Count(r.Pattern, "*") != 1 || strings.Count(r.Requires, "*") != 1:
+			problems = append(problems, fmt.Sprintf("%s (%s): requires pairs names through one * in pattern and one * in requires (with_* requires without_*)", loc, r.ID))
+		}
+	}
+	if r.Receiver != "" {
+		switch {
+		case r.Forbid == "" || len(r.ToName) == 0:
+			problems = append(problems, fmt.Sprintf("%s (%s): receiver belongs to the forbid form with a to_name literal", loc, r.ID))
+		case r.Receiver != "none" && r.Receiver != "any":
+			problems = append(problems, fmt.Sprintf("%s (%s): receiver is none or any, not %q", loc, r.ID, r.Receiver))
+		}
+	}
+	if r.ForbidName == "" && r.Surface != "" {
+		problems = append(problems, fmt.Sprintf("%s (%s): surface belongs to the forbid_name form", loc, r.ID))
 	}
 	if r.Guide == "" && (r.Message != "" || len(r.Exemplars) > 0) {
 		problems = append(problems, fmt.Sprintf("%s (%s): message/exemplars belong to the guide form", loc, r.ID))
@@ -752,4 +914,51 @@ func ValidBasenameGlob(glob string) bool {
 		return false
 	}
 	return !strings.ContainsAny(literal, `*?[]{}\`)
+}
+
+// selectorOf renders everything a component selects with, so two declarations
+// of one name are compared as the selectors they are rather than as the text
+// somebody typed.
+func selectorOf(c ConstraintComponent) string {
+	match := append([]string(nil), c.Match...)
+	sort.Strings(match)
+	where := make([]string, 0, len(c.Where))
+	for k, v := range c.Where {
+		where = append(where, fmt.Sprintf("%s=%v", k, v))
+	}
+	sort.Strings(where)
+	return strings.Join([]string{c.Service, c.Kind, c.NamePattern,
+		strings.Join(match, ","), strings.Join(where, ","), string(c.Owns), c.Ancestor, strings.Join(c.Public, ",")}, "\x00")
+}
+
+// ancestorProblems validates the ancestry selector at declaration time: the
+// name must read as a constant path, and it must not be spelled twice through
+// the where clause, whose superclass pair is the one-level literal and not the
+// same claim.
+func ancestorProblems(loc string, c ConstraintComponent) []string {
+	if c.Ancestor == "" {
+		return nil
+	}
+	var problems []string
+	if !validConstantPath(c.Ancestor) {
+		problems = append(problems, fmt.Sprintf("%s (%s): ancestor %q must be a constant path such as ApplicationRecord or ViewComponent::Base", loc, c.Name, c.Ancestor))
+	}
+	if c.Kind != "" && c.Kind != "symbol" {
+		problems = append(problems, fmt.Sprintf("%s (%s): ancestor selects classes, so kind must be symbol or absent, not %q", loc, c.Name, c.Kind))
+	}
+	return problems
+}
+
+func validConstantPath(name string) bool {
+	for _, segment := range strings.Split(name, "::") {
+		if segment == "" || segment[0] < 'A' || segment[0] > 'Z' {
+			return false
+		}
+		for _, r := range segment {
+			if !(r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+				return false
+			}
+		}
+	}
+	return true
 }

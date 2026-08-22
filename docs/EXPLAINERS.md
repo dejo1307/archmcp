@@ -59,7 +59,7 @@ the entities the claim is about. There are sixteen, and they fall into six kinds
   are capped below 1.0, because each absence can be drift or an extraction miss.
   `constraints` is the third: it verdicts the declared components-and-rules vocabulary
   against the measured graph — a component resolves to the facts its match patterns
-  select, and a rule states one of thirteen enforceable forms over components (`forbid`,
+  select, and a rule states one of 21 enforceable forms over components (`forbid`,
   `forbid_reach`, `allow`, `protect`, `private`, and the rest). A breach is set
   membership over measured edges, so it is proof-class; the one place it estimates is
   a `forbid_reach` membership too large to walk, which degrades to a single `0.4`
@@ -157,7 +157,7 @@ as **exactly one regression, and not one of the 1,395 pre-existing findings was 
 ([BENCHMARKS.md § 2](BENCHMARKS.md#2-delta-precision--the-ratchet)). Revert the change
 and it goes quiet again. The verdict is a function of the tree, not of history.
 
-That is the whole trick, and it is not a smarter explainer. It is the same sixteen
+That is the whole trick, and it is not a smarter explainer. It is the same twenty-one
 explainers run twice, over two values that both still exist.
 
 ## Three answers, and the third is the interesting one

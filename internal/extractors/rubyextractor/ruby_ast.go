@@ -797,6 +797,9 @@ func (w *rubyWalker) handleModule(node *sitter.Node) {
 		Name:      qual,
 		File:      w.relFile,
 		Line:      line(node),
+		EndLine:   endLine(node),
+		Column:    column(node),
+		EndColumn: endColumn(node),
 		Props:     props,
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
@@ -856,6 +859,9 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 		Name:      qual,
 		File:      w.relFile,
 		Line:      line(node),
+		EndLine:   endLine(node),
+		Column:    column(node),
+		EndColumn: endColumn(node),
 		Props:     props,
 		Relations: rels,
 	})
@@ -882,10 +888,13 @@ func (w *rubyWalker) handleClass(node *sitter.Node) {
 			}
 		}
 		w.out = append(w.out, facts.Fact{
-			Kind: facts.KindStorage,
-			Name: qual,
-			File: w.relFile,
-			Line: line(node),
+			Kind:      facts.KindStorage,
+			Name:      qual,
+			File:      w.relFile,
+			Line:      line(node),
+			EndLine:   endLine(node),
+			Column:    column(node),
+			EndColumn: endColumn(node),
 			Props: map[string]any{
 				"storage_kind": "model",
 				"table":        table,
@@ -978,6 +987,9 @@ func (w *rubyWalker) handleMethod(node *sitter.Node, isClassMethod bool) {
 		Name:      fullName,
 		File:      w.relFile,
 		Line:      line(node),
+		EndLine:   endLine(node),
+		Column:    column(node),
+		EndColumn: endColumn(node),
 		Props:     props,
 		Relations: []facts.Relation{{Kind: facts.RelDeclares, Target: w.dir}},
 	})
@@ -1256,6 +1268,12 @@ func (w *rubyWalker) walkForCalls(node *sitter.Node, ownerIdx int, seen, locals 
 				// `obj.try(:foo)` dispatches to a DIFFERENT object; only a
 				// receiverless/self dispatch (`send(:foo)`, `self.try(:foo)`) can recurse.
 				w.recordSelfAwareMetrics(nm, recv)
+			}
+		}
+		if method != nil && recv != nil && rubyText(method, w.src) == "new" {
+			switch kindOf(recv) {
+			case "constant", "scope_resolution":
+				w.addInstantiation(ownerIdx, stripLeadingColons(rubyText(recv, w.src)), oneShotCallOn(node, w.src))
 			}
 		}
 		if target := w.callTarget(node); target != "" {
@@ -1682,6 +1700,66 @@ func (w *rubyWalker) walkTestRefs(node *sitter.Node, add func(string)) {
 	}
 }
 
+// addInstantiation records that the owner constructs the named class. `new` on
+// a literal constant is the one call whose result has a knowable type, and the
+// relation is what a question about who builds a class reads. When the
+// construction is immediately the receiver of another call the ceremony
+// `Foo.new(...).bar` is named under OneShotCallProp, which is what a rule
+// about one-shot objects selects on; the provider records the same two things
+// with better receiver resolution.
+func (w *rubyWalker) addInstantiation(ownerIdx int, class, oneShot string) {
+	if class == "" || rubyBuiltinConsts[class] {
+		return
+	}
+	for _, r := range w.out[ownerIdx].Relations {
+		if r.Kind == facts.RelInstantiates && r.Target == class {
+			return
+		}
+	}
+	w.out[ownerIdx].Relations = append(w.out[ownerIdx].Relations,
+		facts.Relation{Kind: facts.RelInstantiates, Target: class})
+	if oneShot == "" {
+		return
+	}
+	if w.out[ownerIdx].Props == nil {
+		w.out[ownerIdx].Props = map[string]any{}
+	}
+	existing, _ := w.out[ownerIdx].Props[OneShotCallProp].(string)
+	entry := class + "." + oneShot
+	for _, seen := range strings.Fields(existing) {
+		if seen == entry {
+			return
+		}
+	}
+	if existing == "" {
+		w.out[ownerIdx].Props[OneShotCallProp] = entry
+	} else {
+		w.out[ownerIdx].Props[OneShotCallProp] = existing + " " + entry
+	}
+}
+
+// OneShotCallProp lists, space separated, each `Class.method` a member built
+// and called in one expression.
+const OneShotCallProp = "one_shot_call"
+
+// oneShotCallOn returns the method a `new` call's result is immediately sent,
+// or "" when the constructed object is bound to something first.
+func oneShotCallOn(newCall *sitter.Node, src []byte) string {
+	parent := newCall.Parent()
+	if parent == nil || kindOf(parent) != "call" {
+		return ""
+	}
+	receiver := parent.ChildByFieldName("receiver")
+	if receiver == nil || receiver.StartByte() != newCall.StartByte() || receiver.EndByte() != newCall.EndByte() {
+		return ""
+	}
+	method := parent.ChildByFieldName("method")
+	if method == nil {
+		return ""
+	}
+	return rubyText(method, src)
+}
+
 // addCall appends a deduplicated RelCalls edge to the owner fact.
 func (w *rubyWalker) addCall(ownerIdx int, seen map[string]bool, target string) {
 	if target == "" || seen[target] {
@@ -2025,10 +2103,13 @@ func (w *rubyWalker) handleAssignment(node *sitter.Node) {
 			fullName = w.dir + "." + constName
 		}
 		w.out = append(w.out, facts.Fact{
-			Kind: facts.KindSymbol,
-			Name: fullName,
-			File: w.relFile,
-			Line: line(node),
+			Kind:      facts.KindSymbol,
+			Name:      fullName,
+			File:      w.relFile,
+			Line:      line(node),
+			EndLine:   endLine(node),
+			Column:    column(node),
+			EndColumn: endColumn(node),
 			Props: map[string]any{
 				"symbol_kind": facts.SymbolConstant,
 				"exported":    w.exported(),
@@ -2158,6 +2239,9 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 			Name:      w.dir + " -> " + path,
 			File:      w.relFile,
 			Line:      line(node),
+			EndLine:   endLine(node),
+			Column:    column(node),
+			EndColumn: endColumn(node),
 			Props:     props,
 			Relations: []facts.Relation{{Kind: facts.RelImports, Target: path}},
 		})
@@ -2186,10 +2270,13 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 			scope = w.dir
 		}
 		w.out = append(w.out, facts.Fact{
-			Kind: facts.KindDependency,
-			Name: scope + " -> " + mixin,
-			File: w.relFile,
-			Line: line(node),
+			Kind:      facts.KindDependency,
+			Name:      scope + " -> " + mixin,
+			File:      w.relFile,
+			Line:      line(node),
+			EndLine:   endLine(node),
+			Column:    column(node),
+			EndColumn: endColumn(node),
 			Props: map[string]any{
 				"language":   "ruby",
 				"mixin_kind": method,
@@ -2205,10 +2292,13 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 		}
 		for _, attr := range symbolArgs(args, w.src) {
 			w.out = append(w.out, facts.Fact{
-				Kind: facts.KindSymbol,
-				Name: scope + "#" + attr,
-				File: w.relFile,
-				Line: line(node),
+				Kind:      facts.KindSymbol,
+				Name:      scope + "#" + attr,
+				File:      w.relFile,
+				Line:      line(node),
+				EndLine:   endLine(node),
+				Column:    column(node),
+				EndColumn: endColumn(node),
 				Props: map[string]any{
 					"symbol_kind": facts.SymbolVariable,
 					"exported":    w.exported(),
@@ -2229,10 +2319,13 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 			scope = w.dir
 		}
 		w.out = append(w.out, facts.Fact{
-			Kind: facts.KindDependency,
-			Name: scope + " -> " + spec,
-			File: w.relFile,
-			Line: line(node),
+			Kind:      facts.KindDependency,
+			Name:      scope + " -> " + spec,
+			File:      w.relFile,
+			Line:      line(node),
+			EndLine:   endLine(node),
+			Column:    column(node),
+			EndColumn: endColumn(node),
 			Props: map[string]any{
 				"language":  "ruby",
 				"type":      "openapi_spec",
@@ -2255,10 +2348,13 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 		}
 		target = snakeToCamel(target)
 		w.out = append(w.out, facts.Fact{
-			Kind: facts.KindDependency,
-			Name: w.relFile + ":" + method + " :" + assoc,
-			File: w.relFile,
-			Line: line(node),
+			Kind:      facts.KindDependency,
+			Name:      w.relFile + ":" + method + " :" + assoc,
+			File:      w.relFile,
+			Line:      line(node),
+			EndLine:   endLine(node),
+			Column:    column(node),
+			EndColumn: endColumn(node),
 			Props: map[string]any{
 				"language":         "ruby",
 				"association_kind": method,
@@ -2288,11 +2384,14 @@ func (w *rubyWalker) handleBodyCall(node *sitter.Node) {
 			props["preloads"] = preloads
 		}
 		w.out = append(w.out, facts.Fact{
-			Kind:  facts.KindSymbol,
-			Name:  "scope:" + name,
-			File:  w.relFile,
-			Line:  line(node),
-			Props: props,
+			Kind:      facts.KindSymbol,
+			Name:      "scope:" + name,
+			File:      w.relFile,
+			Line:      line(node),
+			EndLine:   endLine(node),
+			Column:    column(node),
+			EndColumn: endColumn(node),
+			Props:     props,
 		})
 	}
 }
@@ -2496,6 +2595,21 @@ func isAllCaps(s string) bool {
 // line returns the 1-based start line of a node.
 func line(node *sitter.Node) int {
 	return int(node.StartPosition().Row) + 1
+}
+
+// endLine, column and endColumn complete the span the parser already holds.
+// A fact carries them so a reader can underline what the extractor saw
+// instead of guessing at a name's position.
+func endLine(node *sitter.Node) int {
+	return int(node.EndPosition().Row) + 1
+}
+
+func column(node *sitter.Node) int {
+	return int(node.StartPosition().Column) + 1
+}
+
+func endColumn(node *sitter.Node) int {
+	return int(node.EndPosition().Column) + 1
 }
 
 // rubyText returns the source text covered by a node (nil-safe).

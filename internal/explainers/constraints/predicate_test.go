@@ -390,6 +390,10 @@ func TestWhere_EveryRuleFormVerdictsOverAPredicateComponent(t *testing.T) {
 			rule: formRuleIntent("presentation-is-suffixed", map[string]any{"require_name": "presentation", "pattern": "*Component"}),
 			want: "Constraint presentation-is-suffixed violated: Jobs::Card does not match *Component",
 		},
+		"forbid_name": {
+			rule: formRuleIntent("presentation-avoids-card-names", map[string]any{"forbid_name": "presentation", "pattern": "*Card"}),
+			want: "Constraint presentation-avoids-card-names violated: Jobs::Card matches the forbidden *Card",
+		},
 		"require_edge": {
 			rule: formRuleIntent("presentation-is-rendered", map[string]any{
 				"require_edge": "presentation", "via": "implements", "direction": "inbound"}),

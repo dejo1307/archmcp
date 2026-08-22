@@ -73,10 +73,20 @@ var rubyPathKwarg = regexp.MustCompile(`([a-z_][\w]*):\s*"(/[^"]*)"`)
 // them. Paths are emitted as written; the linker's suffix matching reconciles
 // base-path/prefix differences.
 func extractRubyHTTPClientFacts(src []byte, relFile string) []facts.Fact {
+	out, _, _ := extractRubyHTTPClientFactsCounted(src, relFile)
+	return out
+}
+
+// extractRubyHTTPClientFactsCounted also reports how many client paths were
+// derived through a parameter and the derivations that could not be made,
+// so the repository's extraction fact carries them.
+func extractRubyHTTPClientFactsCounted(src []byte, relFile string) ([]facts.Fact, int, map[string]int) {
 	api := rubyAPIHint(relFile)
 	envHint := envVarHint(string(src)) // file-level fallback
 
 	out := extractWrapperMethodClientFacts(string(src), relFile, api, envHint)
+	derivedFacts, derivedCount, misses := extractParameterClientFacts(strings.Split(string(src), "\n"), relFile, api, envHint)
+	out = append(out, derivedFacts...)
 	for i, line := range strings.Split(string(src), "\n") {
 		derived := ""
 		m := rubyClientCall.FindStringSubmatch(line)
@@ -131,7 +141,7 @@ func extractRubyHTTPClientFacts(src []byte, relFile string) []facts.Fact {
 			out[len(out)-1].Props["derived"] = derived
 		}
 	}
-	return out
+	return out, derivedCount, misses
 }
 
 // extractWrapperMethodClientFacts derives client facts through a request-wrapper

@@ -64,7 +64,14 @@ func (e *CycleExplainer) Explain(ctx context.Context, store *facts.Store) ([]fac
 	// the whole graph from them, and anything asking what couples to what still
 	// gets the same answer. What narrows is only the graph the gated finding is
 	// derived from.
-	graph := common.BuildModuleGraphExcluding(store, facts.CouplingAssociation, facts.CouplingReference)
+	// Rolled-up call edges are excluded for the same reason associations are:
+	// they are real coupling and a poor cycle oracle. A directory pair joined
+	// because one method somewhere called another is not a load-order defect,
+	// and admitting them merged this estate's small, nameable cycles into one
+	// 508-module blob (46 cycles and 3 clusters became 40 and 4). The edges
+	// stay in the store for the readings that want coupling rather than
+	// cycles: the metrics suite, impact, and the layer rules.
+	graph := common.BuildModuleGraphExcluding(store, facts.CouplingAssociation, facts.CouplingReference, facts.CouplingSymbolRollup)
 
 	// Which build unit each module compiles into, where the language models one.
 	// See facts.CompilationUnitProps: a cycle confined to a single unit is not a

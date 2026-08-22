@@ -4,7 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+
+	"github.com/enola-labs/enola/internal/facts"
 )
 
 // An association declared in a concern belongs to every class that includes it.
@@ -68,4 +72,40 @@ end
 		}
 	}
 	t.Fatalf("Candidate#taggings was not emitted; the includer got none of the concern's associations")
+}
+
+// `new` on a literal constant is an instantiation, and one whose result is
+// immediately called is the one-shot ceremony, named on the calling member.
+// A `new` on a variable receiver names no class and records nothing.
+func TestRubyAST_InstantiationsAndOneShotCeremony(t *testing.T) {
+	src := `
+class Checkout
+  def run(order)
+    Payments::Charge.new(order).call
+    receipt = Receipt.new(order)
+    receipt.deliver
+    klass.new(order).call
+  end
+end
+`
+	ff := extractFileAST([]byte(src), "app/services/checkout.rb", true, true)
+	var run facts.Fact
+	for _, f := range ff {
+		if f.Name == "Checkout#run" {
+			run = f
+		}
+	}
+	var built []string
+	for _, r := range run.Relations {
+		if r.Kind == facts.RelInstantiates {
+			built = append(built, r.Target)
+		}
+	}
+	sort.Strings(built)
+	if strings.Join(built, ",") != "Payments::Charge,Receipt" {
+		t.Fatalf("instantiations = %v", built)
+	}
+	if got, _ := run.Props[OneShotCallProp].(string); got != "Payments::Charge.call" {
+		t.Fatalf("one-shot ceremony = %q, want only the chained construction", got)
+	}
 }

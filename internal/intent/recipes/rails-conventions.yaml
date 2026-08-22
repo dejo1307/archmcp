@@ -1,0 +1,92 @@
+recipe: rails-conventions
+roles:
+  - name: controllers
+  - name: jobs
+  - name: models
+  - name: mailers
+  - name: policies
+  - name: serializers
+  - name: view-components
+  - name: helpers
+    optional: true
+  - name: services
+    optional: true
+rules:
+  - id: jobs-do-not-render
+    forbid: jobs
+    to: controllers
+    via: calls
+    mode: advisory
+    because: "A job runs without a request, so controller code reached from one has no session, no params and no rendering context. A job that has to render goes through ApplicationController.renderer, which is why this reports rather than blocks: that path reads as a crossing."
+
+  - id: models-do-not-render
+    forbid: models
+    to: controllers
+    via: calls
+    mode: advisory
+    because: "A model that knows the request cannot be used off the request, and most model code runs in jobs, tasks and the console."
+
+  - id: policies-only-answer
+    forbid: policies
+    to: jobs
+    via: calls
+    because: "Authorization is asked many times per request and sometimes speculatively, so a policy that enqueues work makes what happens depend on how often it was asked."
+
+  - id: mailers-do-not-enqueue
+    forbid: mailers
+    to: jobs
+    via: calls
+    because: "A mailer already runs inside the job that delivers it, so work enqueued while composing runs at a point nobody chose and reruns on every delivery retry."
+
+  - id: serializers-do-not-render
+    forbid: serializers
+    to: controllers
+    via: calls
+    because: "Serializers render the same payload for the API, for a job and for a test, so one that reads controller state only works in the first."
+
+  - id: view-components-do-not-enqueue
+    forbid: view-components
+    to: jobs
+    via: calls
+    because: "A component renders once per view and often many times per page, so work enqueued from one fires a number of times nobody can read off the template."
+
+  - id: view-components-do-not-render-controllers
+    forbid: view-components
+    to: controllers
+    via: calls
+    because: "A component that reads controller state cannot be rendered from a job, a mailer or a preview, which is most of why the component exists."
+
+  - id: services-do-not-reach-helpers
+    forbid: services
+    to: helpers
+    via: calls
+    mode: advisory
+    because: "A helper exists for a view; a service that calls one has taken a dependency on rendering it never needed, and it cannot run where no view is being drawn."
+
+  - id: models-do-not-reach-helpers
+    forbid: models
+    to: helpers
+    via: calls
+    mode: advisory
+    because: "A model that calls a view helper has presentation in its data layer, and every job, task and console session that loads the model pays for it."
+
+  - id: services-do-not-reach-controllers
+    forbid: services
+    to: controllers
+    via: calls
+    mode: advisory
+    because: "A service that reaches back into a controller can only run inside a request, which is the one place a service exists to be free of."
+
+  - id: request-api-stays-in-controllers
+    forbid: models
+    to_name: [render, redirect_to, params, session, cookies, flash]
+    via: calls
+    mode: advisory
+    because: "render, redirect_to, params, session, cookies and flash are the request's surface; a model calling one has no request to read it from outside a controller, and the call only works by accident of who invoked it."
+
+  - id: request-api-stays-out-of-services
+    forbid: services
+    to_name: [render, redirect_to, params, session, cookies, flash]
+    via: calls
+    mode: advisory
+    because: "A service handed params or session has been handed the request; the caller should pass what the service needs, so the service runs the same from a job, a task or a test."

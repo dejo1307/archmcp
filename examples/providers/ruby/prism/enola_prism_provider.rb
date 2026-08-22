@@ -53,6 +53,7 @@ class CallCollector < Prism::Visitor
     @scopes = []
     @methods = []
     @facts = []
+    @chained = []
     super()
   end
 
@@ -79,7 +80,11 @@ class CallCollector < Prism::Visitor
 
   def visit_call_node(node)
     record(node)
+    receiver = node.receiver
+    chained = receiver.is_a?(Prism::CallNode) && receiver.name.to_s == "new" ? node.name.to_s : nil
+    @chained.push(chained)
     super
+    @chained.pop
   end
 
   private
@@ -120,6 +125,8 @@ class CallCollector < Prism::Visitor
   def record(node)
     method = node.name.to_s
     receiver = node.receiver
+    return record_instantiation(node, receiver) if method == "new" && receiver && constant_name(receiver)
+
     callee, level =
       if receiver && (const = constant_name(receiver))
         ["#{const}##{method}", "constant-receiver"]
@@ -135,6 +142,25 @@ class CallCollector < Prism::Visitor
       "line" => node.location.start_line,
       "props" => { "resolution_level" => level },
       "relations" => [{ "kind" => "calls", "target" => callee }]
+    }
+  end
+
+  # A `new` on a literal constant is the one call whose result has a knowable
+  # type, so it is recorded as an instantiation rather than a call. When the
+  # instantiation is itself the receiver of a further call the ceremony
+  # `Foo.new(...).bar` is named on the fact, which is what a rule about
+  # one-shot objects reads.
+  def record_instantiation(node, receiver)
+    const = constant_name(receiver)
+    props = { "resolution_level" => "constant-receiver" }
+    props["one_shot_call"] = @chained.last unless @chained.empty? || @chained.last.nil?
+    @facts << {
+      "kind" => "dependency",
+      "name" => "prism-new: #{caller_name} -> #{const}",
+      "file" => @file,
+      "line" => node.location.start_line,
+      "props" => props,
+      "relations" => [{ "kind" => "instantiates", "target" => const }]
     }
   end
 end

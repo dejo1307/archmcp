@@ -46,6 +46,12 @@ const (
 	CauseUnmeasuredProp      = "unmeasured_property"
 	CauseNonNumericThreshold = "non_numeric_threshold"
 	CauseUndecodable         = "undecodable_predicate"
+	// CauseNoResolvedAncestry: the component selects by ancestor, and no
+	// provider contributed resolved ancestry to this snapshot, so the chain
+	// the selector walks does not exist here. Read as unevaluable rather than
+	// as empty: a hierarchy rule that holds because nobody resolved the
+	// hierarchy is the asked-versus-agreed confusion this surface refuses.
+	CauseNoResolvedAncestry = "no_resolved_ancestry"
 )
 
 // UnevaluableSelector is one component predicate this snapshot cannot answer —
@@ -65,6 +71,8 @@ type UnevaluableSelector struct {
 // declaration differently.
 func (u UnevaluableSelector) Problem() string {
 	switch u.Cause {
+	case CauseNoResolvedAncestry:
+		return fmt.Sprintf("ancestor %s needs resolved ancestry, and no provider contributed any to this snapshot — configure a resolving provider such as rubydex, or select another way", u.Value)
 	case CauseNonNumericThreshold:
 		return fmt.Sprintf("where compares %s against the threshold %q, and no measured fact carries %s as a number — the comparison can never hold", u.Prop, u.Value, u.Prop)
 	case CauseUndecodable:
@@ -210,6 +218,7 @@ func measureProps(store *facts.Store, service string) propCensus {
 // claim this snapshot has no standing to make.
 func unevaluableSelectors(store *facts.Store, components map[string]component, unasked map[string]bool) []UnevaluableSelector {
 	names := make([]string, 0, len(components))
+	var byAncestor []string
 	for name, c := range components {
 		if unasked[name] {
 			continue
@@ -217,11 +226,22 @@ func unevaluableSelectors(store *facts.Store, components map[string]component, u
 		if len(c.where) > 0 {
 			names = append(names, name)
 		}
+		if c.ancestor != "" {
+			byAncestor = append(byAncestor, name)
+		}
 	}
-	if len(names) == 0 || !storeMeasured(store) {
+	if (len(names) == 0 && len(byAncestor) == 0) || !storeMeasured(store) {
 		return nil
 	}
 	sort.Strings(names)
+	sort.Strings(byAncestor)
+	var out []UnevaluableSelector
+	if len(byAncestor) > 0 && !newResolvedAncestry(store).any() {
+		for _, name := range byAncestor {
+			c := components[name]
+			out = append(out, UnevaluableSelector{Component: name, Prop: "ancestor", Value: c.ancestor, Cause: CauseNoResolvedAncestry, Source: c.source})
+		}
+	}
 	censuses := map[string]propCensus{}
 	censusFor := func(service string) propCensus {
 		if census, cached := censuses[service]; cached {
@@ -232,7 +252,6 @@ func unevaluableSelectors(store *facts.Store, components map[string]component, u
 		return census
 	}
 
-	var out []UnevaluableSelector
 	for _, name := range names {
 		c := components[name]
 		census := censusFor(c.service)
@@ -342,6 +361,8 @@ func editDistance(a, b string) int {
 // and the property and nothing that moves between runs.
 func unevaluableSelectorTitle(u UnevaluableSelector) string {
 	switch u.Cause {
+	case CauseNoResolvedAncestry:
+		return fmt.Sprintf("Constraint component %s selects by ancestor %s without resolved ancestry", u.Component, u.Value)
 	case CauseNonNumericThreshold:
 		return fmt.Sprintf("Constraint component %s compares non-numeric property %s against a threshold", u.Component, u.Prop)
 	case CauseUndecodable:
@@ -390,6 +411,9 @@ func selectorSummary(c component) string {
 	}
 	if c.namePattern != "" {
 		parts = append(parts, "name "+c.namePattern)
+	}
+	if c.ancestor != "" {
+		parts = append(parts, "ancestor "+c.ancestor)
 	}
 	for _, pair := range c.where {
 		if pair.Unsatisfiable {
@@ -459,5 +483,66 @@ func (a *ancestry) outsideChildren(members map[string]bool) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// resolvedAncestry indexes the ancestry a provider resolved: every dependency
+// fact carrying an implements edge at resolution level resolved, keyed by the
+// parent the edge names, so a walk from an ancestor reaches each class whose
+// chain includes it. It is separate from the one-level ancestry index because
+// it is a different measurement: that one reads superclass text as the source
+// wrote it, this one reads a chain a resolver linearised, with mixins in
+// resolution order and names already qualified.
+type resolvedAncestry struct {
+	childrenOf map[string][]string
+}
+
+func newResolvedAncestry(store *facts.Store) *resolvedAncestry {
+	a := &resolvedAncestry{childrenOf: map[string][]string{}}
+	for _, f := range store.ByKind(facts.KindDependency) {
+		if f.PropString("resolution_level") != "resolved" {
+			continue
+		}
+		for _, rel := range f.Relations {
+			if rel.Kind != facts.RelImplements {
+				continue
+			}
+			source, ok := strings.CutSuffix(f.Name, " -> "+rel.Target)
+			if !ok {
+				continue
+			}
+			if i := strings.LastIndex(source, ": "); i >= 0 {
+				source = source[i+2:]
+			}
+			a.childrenOf[rel.Target] = append(a.childrenOf[rel.Target], source)
+		}
+	}
+	for parent := range a.childrenOf {
+		sort.Strings(a.childrenOf[parent])
+	}
+	return a
+}
+
+func (a *resolvedAncestry) any() bool { return len(a.childrenOf) > 0 }
+
+// descendantsOf walks the resolved chains from the named ancestor. The
+// provider emits the whole linearised chain per class, so one hop already
+// reaches every class whose ancestry includes the name; the walk continues
+// anyway, which costs nothing on a complete chain and keeps the reading
+// correct for a provider that emitted only direct parents.
+func (a *resolvedAncestry) descendantsOf(ancestor string) map[string]bool {
+	out := map[string]bool{}
+	queue := []string{ancestor}
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		for _, child := range a.childrenOf[parent] {
+			if out[child] {
+				continue
+			}
+			out[child] = true
+			queue = append(queue, child)
+		}
+	}
 	return out
 }

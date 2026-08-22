@@ -1,0 +1,43 @@
+recipe: clean
+roles:
+  - name: frameworks
+  - name: interface-adapters
+  - name: use-cases
+  - name: entities
+rules:
+  - id: entities-depend-on-nothing
+    forbid: entities
+    to: use-cases
+    via: calls
+    because: "Entities are the innermost ring; an entity that reaches a use case has inverted the one direction the arrangement promises."
+
+  - id: entities-know-no-adapters
+    forbid: entities
+    to: interface-adapters
+    via: calls
+    because: "An entity that knows its adapter can only exist where that adapter does."
+
+  - id: entities-know-no-frameworks
+    forbid: entities
+    to: frameworks
+    via: calls
+    because: "The framework is the outermost ring and the one that changes most; an entity that names it changes with it."
+
+  - id: use-cases-know-no-adapters
+    forbid: use-cases
+    to: interface-adapters
+    via: calls
+    because: "A use case names what it needs as a boundary; the adapter implements the boundary and is never named from inside."
+
+  - id: use-cases-know-no-frameworks
+    forbid: use-cases
+    to: frameworks
+    via: calls
+    because: "A use case that reaches the framework cannot be exercised without it."
+
+  - id: adapters-know-no-frameworks
+    forbid: interface-adapters
+    to: frameworks
+    via: calls
+    mode: advisory
+    because: "An adapter translates between rings; one that reaches the framework directly has folded two rings into one. Advisory because a framework-provided base class looks the same from the structure alone."
