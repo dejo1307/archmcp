@@ -110,9 +110,10 @@ func (c angularCounts) total() int {
 // their injection edges. It runs as a post-pass over the declaration facts, the way
 // emberEnrich does, because a class's role and its members are decided by the same
 // decorator the declaration walk has already moved past.
-func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, ctx *extractCtx, aliases map[string]tsAlias) ([]facts.Fact, angularCounts, map[string]*angularTemplate) {
+func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, ctx *extractCtx, aliases map[string]tsAlias) ([]facts.Fact, angularCounts, map[string]*angularTemplate, *angularHTTPFile) {
 	var counts angularCounts
 	inline := map[string]*angularTemplate{}
+	http := &angularHTTPFile{relFile: ctx.relFile, dir: ctx.dir, constants: map[string]string{}}
 
 	imports, external := buildAngularImports(kinds, root, ctx, aliases)
 	byName := make(map[string]int, len(in))
@@ -172,6 +173,16 @@ func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, 
 		}
 
 		body := findChildByKind(kinds, class, "class_body")
+
+		// Requests made through an injected HttpClient, and the constants a request
+		// path may name. Held for the repo-wide pass: a base URL is routinely a
+		// static of the service that owns the resource, named by every other service
+		// that touches it. Test files are excluded for the reason every other route
+		// pass excludes them — a spec's traffic is not the application's.
+		if !facts.IsTestPath(ctx.relFile) {
+			angularHTTPRoutes(kinds, body, ctx, className, http)
+		}
+
 		rels, c := angularInjects(kinds, body, ctx, imports, external, local)
 		counts.merge(c)
 		for _, r := range rels {
@@ -180,7 +191,10 @@ func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, 
 			}
 		}
 	}
-	return in, counts, inline
+	if len(http.constants) == 0 && len(http.pending) == 0 {
+		http = nil
+	}
+	return in, counts, inline, http
 }
 
 // angularClassNodes returns every class declaration at file scope, reaching

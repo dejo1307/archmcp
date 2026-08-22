@@ -227,7 +227,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 		aliases := aliasesForDir(aliasRoots, factpath.Dir(relFile))
 		var res tsFileResult
-		res.facts, res.angular, res.angularRouter, res.angularInline = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, orms, aliases, knownFiles, grpcStubs)
+		res.facts, res.angular, res.angularRouter, res.angularInline, res.angularHTTP = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, orms, aliases, knownFiles, grpcStubs)
 		// Routers, mounts and held-back routes for the repo-wide mount pass below.
 		// Collected here because resolving an import needs this file's path aliases,
 		// which are in scope only during the per-file walk. Same test-path gate as
@@ -267,7 +267,8 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	routerFiles := make([]*routerFile, 0, len(perFile))
 	var angular angularCounts
 	var angularRouters []*angularRouterFile
-	var angularRoutes angularCounts
+	var angularHTTPFiles []*angularHTTPFile
+	var angularRoutes, angularRequests angularCounts
 	inlineTemplates := map[string]*angularTemplate{}
 	for i, res := range perFile {
 		if res.routers != nil {
@@ -279,6 +280,9 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 		if res.angularRouter != nil {
 			angularRouters = append(angularRouters, res.angularRouter)
+		}
+		if res.angularHTTP != nil {
+			angularHTTPFiles = append(angularHTTPFiles, res.angularHTTP)
 		}
 		if len(res.facts) == 0 {
 			continue
@@ -323,6 +327,17 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// every class and the selector every component declared are both in hand.
 	angularTemplateCounts := attachAngularTemplates(allFacts, templates, inlineTemplates)
 
+	// Requests through an injected HttpClient are composed here: a base URL is a
+	// static of one service and named by many, so the constants are only all in hand
+	// once the repository is read. See angularhttp.go.
+	if reqs, c := composeAngularRequests(angularHTTPFiles); len(reqs) > 0 || c.total() > 0 {
+		allFacts = append(allFacts, reqs...)
+		for _, f := range reqs {
+			modules[factpath.Dir(f.File)] = true
+		}
+		angularRequests.merge(c)
+	}
+
 	// Every injects edge is made to name a symbol this snapshot holds, now that the
 	// whole repository is assembled; see reconcileAngularInjects.
 	if isAngular {
@@ -342,6 +357,12 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	if angularTemplateCounts.total() > 0 {
 		if f, ok := extcoverage.Fact(repoPath, "typescript:angular-templates", "angular_template_ref",
 			angularTemplateCounts.resolved, angularTemplateCounts.unresolved); ok {
+			allFacts = append(allFacts, f)
+		}
+	}
+	if angularRequests.total() > 0 {
+		if f, ok := extcoverage.Fact(repoPath, "typescript:angular-requests", "angular_http_call",
+			angularRequests.resolved, angularRequests.unresolved); ok {
 			allFacts = append(allFacts, f)
 		}
 	}
@@ -411,7 +432,7 @@ type extractCtx struct {
 	aliases     map[string]tsAlias  // this directory's tsconfig path aliases, for resolving an import written as a bare specifier
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate) {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate, *angularHTTPFile) {
 	// The grammar is chosen here, so the kind table is too: TypeScript and TSX assign
 	// different meanings to the same symbol ids, and everything below reads node kinds
 	// through this table. See kinds.go.
@@ -419,24 +440,24 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	kinds := tsKindsFor(isTSX)
 
 	if isVueFile(relFile) {
-		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases), angularCounts{}, nil, nil
+		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases), angularCounts{}, nil, nil, nil
 	}
 	if isSvelteFile(relFile) {
-		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases), angularCounts{}, nil, nil
+		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases), angularCounts{}, nil, nil, nil
 	}
 	if isGraphQLDocFile(relFile) {
 		if facts.IsTestPath(relFile) {
-			return nil, angularCounts{}, nil, nil
+			return nil, angularCounts{}, nil, nil, nil
 		}
-		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation), angularCounts{}, nil, nil
+		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation), angularCounts{}, nil, nil, nil
 	}
 	if isHbsFile(relFile) {
 		// Handlebars is only modeled where Ember's resolver gives the names
 		// deterministic meaning; a lone .hbs in a non-Ember repo stays out.
 		if !isEmber {
-			return nil, angularCounts{}, nil, nil
+			return nil, angularCounts{}, nil, nil, nil
 		}
-		return e.extractEmberHbs(src, relFile, knownFiles), angularCounts{}, nil, nil
+		return e.extractEmberHbs(src, relFile, knownFiles), angularCounts{}, nil, nil, nil
 	}
 	// A Glimmer template-tag file is TypeScript/JavaScript with embedded
 	// <template> blocks: blank the blocks in place (newlines preserved, so every
@@ -487,7 +508,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
-		return result, angularCounts{}, nil, nil
+		return result, angularCounts{}, nil, nil, nil
 	}
 
 	tree := parser.Parse(src, nil)
@@ -574,8 +595,9 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	var angular angularCounts
 	var router *angularRouterFile
 	var inlineTemplates map[string]*angularTemplate
+	var httpFile *angularHTTPFile
 	if isAngular {
-		result, angular, inlineTemplates = angularEnrich(kinds, result, root, ctx, aliases)
+		result, angular, inlineTemplates, httpFile = angularEnrich(kinds, result, root, ctx, aliases)
 		// The route arrays and router calls this file declares, for the repo-wide
 		// walk in composeAngularRoutes. A test file's router configures a fixture,
 		// not the application, the same gate the server-route passes apply.
@@ -599,7 +621,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		})
 	}
 
-	return result, angular, router, inlineTemplates
+	return result, angular, router, inlineTemplates, httpFile
 }
 
 func (e *TSExtractor) extractImports(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {

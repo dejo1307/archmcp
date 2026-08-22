@@ -53,6 +53,9 @@ type tsFileResult struct {
 	// angularInline holds the inline templates this file's components declare,
 	// keyed by component symbol name, for the repo-wide template join.
 	angularInline map[string]*angularTemplate
+	// angularHTTP is the requests and path constants this file declares, held for
+	// the repo-wide pass that joins them.
+	angularHTTP *angularHTTPFile
 }
 
 // --- what one file contributes ---

@@ -2145,7 +2145,17 @@ import (
 // their directory, read from an Nx project.json or an angular.json projects map:
 // in a monorepo the unit of ownership is the project, and every reading that groups
 // by unit was inferring that boundary from the path.
-const cacheVersion = "v229"
+// v230: Angular requests made through an injected HttpClient. The general client
+// pass requires a "/"-rooted literal, which is right when the receiver is anonymous
+// — it is what keeps map.get("key") out of the graph — and wrong here: a class that
+// injects HttpClient has a member whose declared type says so, and this.<that
+// member>.get(…) is a request whatever its argument looks like. Two shapes that rule
+// was rejecting are now read: a path with no leading slash (one client's whole
+// module contributed nothing) and a class-static base concatenated with a literal
+// tail, folded repo-wide because the base belongs to the service that owns the
+// resource and is named by every service that touches it. An unresolved LEADING
+// operand means the prefix is unknown and the call contributes nothing.
+const cacheVersion = "v230"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
