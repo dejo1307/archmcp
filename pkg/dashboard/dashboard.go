@@ -559,7 +559,11 @@ func (s *Server) buildPageForModule(module string) pageData {
 	data.Services, data.CrossRepoEdges = graphDetails(s.eng.Store())
 	data.EdgeDiagram = buildEdgeDiagram(data.Services, data.CrossRepoEdges)
 	data.ModuleGraph = buildModuleGraphFocused(s.eng.Store(), module)
-	data.Changes = readChangeSummary(s.eng.ActiveRepo())
+	currentSnapshotID := ""
+	if data.Receipt != nil {
+		currentSnapshotID = data.Receipt.SnapshotID
+	}
+	data.Changes = readChangeSummary(s.eng.ActiveRepo(), currentSnapshotID)
 
 	// Insight list (grouped by explainer) backing the clickable Insights counter.
 	// Empty → the counter renders as a plain number.
@@ -579,8 +583,8 @@ func (s *Server) buildPageForModule(module string) pageData {
 	return data
 }
 
-func readChangeSummary(repoPath string) changeSummary {
-	if repoPath == "" {
+func readChangeSummary(repoPath, snapshotID string) changeSummary {
+	if repoPath == "" || snapshotID == "" {
 		return changeSummary{}
 	}
 	root, err := history.Root(repoPath, "")
@@ -591,7 +595,18 @@ func readChangeSummary(repoPath string) changeSummary {
 	if err != nil || len(entries) == 0 {
 		return changeSummary{}
 	}
-	entry := entries[len(entries)-1]
+	var entry history.Entry
+	found := false
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].ID == snapshotID {
+			entry = entries[i]
+			found = true
+			break
+		}
+	}
+	if !found {
+		return changeSummary{}
+	}
 	s := entry.Summary
 	return changeSummary{
 		Available: true, Incomparable: s.Incomparable, Initial: s.Initial,

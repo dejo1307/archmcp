@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/enola-labs/enola/pkg/facts"
+	"github.com/enola-labs/enola/pkg/history"
 )
 
 func TestSummarizeSnapshotExplainsFreshnessAndDirtyCapture(t *testing.T) {
@@ -74,6 +75,41 @@ func TestAssessQualityEscalatesOnlyMaterialExtractorGaps(t *testing.T) {
 				t.Fatalf("status = %q, want %q (%+v)", got.Status, tt.want, got)
 			}
 		})
+	}
+}
+
+func TestReadChangeSummaryMatchesLoadedSnapshot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	root, err := history.Root(repo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries := []history.Entry{
+		{ID: "sha256:loaded", Summary: history.Summary{FactsAdded: 2, EdgesAdded: 7}},
+		{ID: "sha256:newer", Summary: history.Summary{FactsRemoved: 99}},
+	}
+	var lines []byte
+	for _, entry := range entries {
+		line, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, append(line, '\n')...)
+	}
+	if err := os.WriteFile(filepath.Join(root, history.LogFileName), lines, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readChangeSummary(repo, "sha256:loaded")
+	if !got.Available || got.FactsAdded != 2 || got.EdgesAdded != 7 || got.FactsRemoved != 0 {
+		t.Fatalf("summary = %+v, want loaded snapshot rather than newest history entry", got)
+	}
+	if got := readChangeSummary(repo, "sha256:missing"); got.Available {
+		t.Fatalf("missing snapshot unexpectedly returned %+v", got)
 	}
 }
 
