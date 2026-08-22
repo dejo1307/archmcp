@@ -487,6 +487,29 @@ production Rails+Ember monolith (153,252 facts, 2026-08-13):
   inherit from. Both are the same fact about `superclass` — it is source
   text, and no reading of it is transitive or namespace-aware without a
   resolution pass the extractor did not make.
+- **`ancestor:` is the transitive spelling, and it is a separate key.**
+  A component declaring `ancestor: ApplicationRecord` holds every class
+  from which a chain of *resolved* `implements` edges reaches that name:
+  the grandchild that spelled its parent as `Base` inside a module, the
+  class that got there through a mixin, all of them with names already
+  qualified. The root itself is not a member, the same as `superclass:`.
+  The chain comes from a resolving provider (the Rubydex provider emits
+  it), so when the snapshot holds no resolved ancestry at all the
+  component is **unevaluable** with a named cause, every rule naming it
+  stays silent, and a 0.4 finding says which provider would settle it.
+  It is a new key rather than a new reading of `superclass:` because the
+  same declaration must not select a different set of classes depending
+  on which gem is installed; the two keys are two claims, and a
+  declaration may carry both.
+
+  ```yaml
+  components:
+    - name: records
+      ancestor: ApplicationRecord
+    - name: view-components
+      match: ["app/components/**"]
+      ancestor: "ViewComponent::Base"
+  ```
 - **Values match one whole member at a time**, the same containment the
   `require` form's `when_prop_contains` reads set props with. For the
   space-joined set props (`columns`, `fk_constraints`, `decorators`)

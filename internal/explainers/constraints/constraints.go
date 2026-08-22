@@ -165,6 +165,7 @@ type component struct {
 	kind        string
 	namePattern string
 	where       []intent.WherePair
+	ancestor    string
 	source      string
 	recipe      string
 	instance    string
@@ -175,7 +176,7 @@ type component struct {
 // than only by where they sit. It is the switch on every reading that differs
 // between the two: a path component's file patterns are a claim about a whole
 // file, and a predicate is a claim about one measured fact.
-func (c component) predicated() bool { return len(c.where) > 0 }
+func (c component) predicated() bool { return len(c.where) > 0 || c.ancestor != "" }
 
 type rule struct {
 	id, because, source, mode string
@@ -251,6 +252,7 @@ func declarations(store *facts.Store) (map[string]component, []rule) {
 				kind:        f.PropString("kind"),
 				namePattern: f.PropString("name_pattern"),
 				where:       intent.DecodeWhere(f.PropString("where")),
+				ancestor:    f.PropString("ancestor"),
 				source:      f.PropString("source"),
 				recipe:      f.PropString("recipe"),
 				instance:    f.PropString("instance"),
@@ -1872,6 +1874,10 @@ func componentRecipeProvenance(c component) string {
 func resolveMembership(store *facts.Store, c component) (map[string]bool, []facts.Fact) {
 	names := map[string]bool{}
 	var members []facts.Fact
+	var descendants map[string]bool
+	if c.ancestor != "" {
+		descendants = newResolvedAncestry(store).descendantsOf(c.ancestor)
+	}
 	for _, kind := range membershipKinds(c) {
 		for _, f := range store.ByKind(kind) {
 			if c.service != "" && f.Repo != c.service {
@@ -1884,6 +1890,9 @@ func resolveMembership(store *facts.Store, c component) (map[string]bool, []fact
 				continue
 			}
 			if !matchesWhere(f, c.where) {
+				continue
+			}
+			if descendants != nil && !descendants[f.Name] {
 				continue
 			}
 			names[f.Name] = true
@@ -1907,6 +1916,9 @@ func resolveMembership(store *facts.Store, c component) (map[string]bool, []fact
 // so a whole-service component must contain it for cross-repo rules to see
 // them. The node's empty file keeps it out of any path-narrowed component.
 func membershipKinds(c component) []string {
+	if c.ancestor != "" {
+		return []string{facts.KindSymbol}
+	}
 	for _, kind := range referenceMemberKinds {
 		if c.kind == kind {
 			return []string{kind}

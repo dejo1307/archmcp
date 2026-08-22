@@ -441,7 +441,7 @@ func whereProblems(loc string, c ConstraintComponent) []string {
 // at all — and a component the evaluator sees as unselectable must be the same
 // component the validator refused.
 func (c ConstraintComponent) Selects() bool {
-	return len(c.Match) > 0 || c.Service != "" || len(c.Predicate()) > 0
+	return len(c.Match) > 0 || c.Service != "" || len(c.Predicate()) > 0 || c.Ancestor != ""
 }
 
 // validPropName is the character set a where key may use. It is deliberately

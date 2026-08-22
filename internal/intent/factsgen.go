@@ -90,6 +90,9 @@ func CompileFacts(d *Declaration) []facts.Fact {
 		if where := EncodeWhere(c.Predicate()); where != "" {
 			extra["where"] = where
 		}
+		if c.Ancestor != "" {
+			extra["ancestor"] = c.Ancestor
+		}
 		if c.Recipe != "" {
 			extra["recipe"] = c.Recipe
 			extra["instance"] = c.Instance

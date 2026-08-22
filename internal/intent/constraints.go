@@ -44,6 +44,11 @@ type ConstraintComponent struct {
 	Kind        string         `yaml:"kind"`
 	NamePattern string         `yaml:"name_pattern"`
 	Where       map[string]any `yaml:"where"`
+	// Ancestor names a class every member descends from, read transitively
+	// over resolved ancestry a provider emitted rather than over the one-level
+	// superclass text the extractor records. It is a separate key from a
+	// `where: {superclass:}` pair because the two are different claims.
+	Ancestor string `yaml:"ancestor"`
 
 	// SourceFile is the repo-relative enola/constraints file that declared
 	// this component, stamped at load time; empty means declared inline. It
@@ -388,6 +393,7 @@ func constraintProblems(components []ConstraintComponent, rules []ConstraintRule
 		if c.NamePattern != "" && !ValidNamePattern(c.NamePattern) {
 			problems = append(problems, fmt.Sprintf("%s (%s): name_pattern %q must be an exact name, a prefix*, or a *suffix (no other pattern forms)", loc, c.Name, c.NamePattern))
 		}
+		problems = append(problems, ancestorProblems(loc, c)...)
 		problems = append(problems, whereProblems(loc, c)...)
 		// A name collision is flagged whenever a constraints file is involved,
 		// naming both declaring files: a merged set with two definitions of
@@ -752,4 +758,36 @@ func ValidBasenameGlob(glob string) bool {
 		return false
 	}
 	return !strings.ContainsAny(literal, `*?[]{}\`)
+}
+
+// ancestorProblems validates the ancestry selector at declaration time: the
+// name must read as a constant path, and it must not be spelled twice through
+// the where clause, whose superclass pair is the one-level literal and not the
+// same claim.
+func ancestorProblems(loc string, c ConstraintComponent) []string {
+	if c.Ancestor == "" {
+		return nil
+	}
+	var problems []string
+	if !validConstantPath(c.Ancestor) {
+		problems = append(problems, fmt.Sprintf("%s (%s): ancestor %q must be a constant path such as ApplicationRecord or ViewComponent::Base", loc, c.Name, c.Ancestor))
+	}
+	if c.Kind != "" && c.Kind != "symbol" {
+		problems = append(problems, fmt.Sprintf("%s (%s): ancestor selects classes, so kind must be symbol or absent, not %q", loc, c.Name, c.Kind))
+	}
+	return problems
+}
+
+func validConstantPath(name string) bool {
+	for _, segment := range strings.Split(name, "::") {
+		if segment == "" || segment[0] < 'A' || segment[0] > 'Z' {
+			return false
+		}
+		for _, r := range segment {
+			if !(r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+				return false
+			}
+		}
+	}
+	return true
 }
