@@ -41,7 +41,10 @@
     .note { color: var(--muted); font-style: italic; }
     .chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .2rem; }
     .chip { background: var(--th); border: 1px solid var(--border); border-radius: 6px; padding: .05rem .45rem; font-size: .8rem; }
-    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: #7784a4; font-size: .72rem; }
+    footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: #7784a4; font-size: .72rem; }
+    .project-link { display: inline-flex; align-items: center; gap: .35rem; color: #8996b8; text-decoration: none; }
+    .project-link:hover { color: var(--fg); }
+    .project-link svg { width: 13px; height: 13px; fill: currentColor; }
     code { background: var(--th); padding: .05rem .3rem; border-radius: 4px; }
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
     .brand { display: flex; align-items: center; font-size: 1.15rem; font-weight: 750; letter-spacing: -.04em; }
@@ -442,7 +445,13 @@
   </section>
   </main>
 
-  <footer>{{.Title}} · read-only · updates every {{.RefreshSeconds}} seconds</footer>
+  <footer>
+    <span>{{.Title}} · read-only · updates every {{.RefreshSeconds}} seconds</span>
+    <a class="project-link" href="https://github.com/enola-labs/enola" target="_blank" rel="noopener noreferrer" aria-label="Star Enola on GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2l2.05 4.15 4.58.67-3.31 3.22.78 4.56L8 11.65 3.9 13.8l.78-4.56L1.37 6.02l4.58-.67L8 1.2z"/></svg>
+      Open source on GitHub · Star Enola
+    </a>
+  </footer>
 </div>
 
 {{if .Services}}

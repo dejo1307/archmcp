@@ -110,6 +110,10 @@ func TestPageWithoutTrackerStillRenders(t *testing.T) {
 			t.Errorf("body missing %q tab or panel", tab)
 		}
 	}
+	if body := rec.Body.String(); !strings.Contains(body, `href="https://github.com/enola-labs/enola"`) ||
+		!strings.Contains(body, "Open source on GitHub · Star Enola") {
+		t.Error("body missing the subtle open-source project link")
+	}
 }
 
 func TestResolveStablePort(t *testing.T) {
