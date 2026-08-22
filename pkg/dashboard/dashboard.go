@@ -141,6 +141,10 @@ type Server struct {
 	changeCacheID string
 	changeCache   changeSummary
 
+	graphMu       sync.Mutex
+	graphCacheKey string
+	graphCache    *moduleGraphView
+
 	// frontDoor is set once this server claims the stable port. Read from every
 	// request handler and written by the claim goroutine, hence atomic.
 	frontDoor atomic.Bool
@@ -481,12 +485,9 @@ type pageData struct {
 	Extra any
 }
 
-// buildPage collects the status, current-snapshot receipt and graph-wide receipt
-// into the template model. Every source degrades gracefully to a note on error.
-func (s *Server) buildPage() pageData {
-	return s.buildPageForModule("")
-}
-
+// buildPageForModule collects the status, current-snapshot receipt and
+// graph-wide receipt into the template model, focusing the architecture map on
+// module if non-empty. Every source degrades gracefully to a note on error.
 func (s *Server) buildPageForModule(module string) pageData {
 	data := pageData{
 		RefreshSeconds: refreshSeconds,
@@ -570,11 +571,11 @@ func (s *Server) buildPageForModule(module string) pageData {
 	// counters. Empty (store not loaded) → the cards render as plain numbers.
 	data.Services, data.CrossRepoEdges = graphDetails(s.eng.Store())
 	data.EdgeDiagram = buildEdgeDiagram(data.Services, data.CrossRepoEdges)
-	data.ModuleGraph = buildModuleGraphFocused(s.eng.Store(), module)
 	currentSnapshotID := ""
 	if data.Receipt != nil {
 		currentSnapshotID = data.Receipt.SnapshotID
 	}
+	data.ModuleGraph = s.readModuleGraph(currentSnapshotID, module)
 	data.Changes = s.readChangeSummary(s.eng.ActiveRepo(), currentSnapshotID)
 
 	// Insight list (grouped by explainer) backing the clickable Insights counter.
@@ -593,6 +594,18 @@ func (s *Server) buildPageForModule(module string) pageData {
 	}
 
 	return data
+}
+
+func (s *Server) readModuleGraph(snapshotID, focus string) *moduleGraphView {
+	key := snapshotID + "\x00" + focus
+	s.graphMu.Lock()
+	defer s.graphMu.Unlock()
+	if snapshotID != "" && key == s.graphCacheKey {
+		return s.graphCache
+	}
+	result := buildModuleGraphFocused(s.eng.Store(), focus)
+	s.graphCacheKey, s.graphCache = key, result
+	return result
 }
 
 func (s *Server) readChangeSummary(repoPath, snapshotID string) changeSummary {

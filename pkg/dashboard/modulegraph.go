@@ -7,30 +7,47 @@ import (
 	"github.com/enola-labs/enola/pkg/facts"
 )
 
-const moduleGraphLimit = 36
+const (
+	moduleGraphLimit         = 36
+	moduleGraphOverviewLimit = 18
+	moduleGraphOverviewEdges = 30
+	moduleSearchLimit        = 500
+)
 
 type moduleNode struct {
 	ID                        int
 	Name, Display, File, Repo string
+	Role                      string
 	X, Y                      int
 	FanIn, FanOut             int
 	Degree                    int
 }
 
 type moduleEdge struct {
-	Source, Target int
-	X1, Y1, X2, Y2 int
+	Source, Target         int
+	X1, Y1, X2, Y2         int
+	SourceName, TargetName string
+	SourceFile, TargetFile string
+	Kind                   string
 }
 
 type moduleGraphView struct {
-	Width, Height int
-	Nodes         []moduleNode
-	Edges         []moduleEdge
-	AllModules    []string
-	Total         int
-	Limited       bool
-	Focused       bool
-	FocusName     string
+	Width, Height       int
+	Nodes               []moduleNode
+	Edges               []moduleEdge
+	AllModules          []string
+	AllModulesTruncated bool
+	Total               int
+	Limited             bool
+	Focused             bool
+	FocusName           string
+	OmittedEdges        int
+}
+
+type moduleRaw struct {
+	name, file, repo string
+	out              map[string]bool
+	in               int
 }
 
 // buildModuleGraph produces a deliberately bounded architecture map. It ranks
@@ -49,18 +66,13 @@ func buildModuleGraphFocused(store *facts.Store, focus string) *moduleGraphView 
 		return nil
 	}
 
-	type raw struct {
-		name, file, repo string
-		out              map[string]bool
-		in               int
-	}
-	byName := make(map[string]*raw, len(mods))
+	byName := make(map[string]*moduleRaw, len(mods))
 	for _, m := range mods {
 		if role, _ := m.Props[facts.PropModuleRole].(string); role == facts.ModuleRoleTest {
 			continue
 		}
 		if _, exists := byName[m.Name]; !exists {
-			byName[m.Name] = &raw{name: m.Name, file: m.File, repo: m.Repo, out: map[string]bool{}}
+			byName[m.Name] = &moduleRaw{name: m.Name, file: m.File, repo: m.Repo, out: map[string]bool{}}
 		}
 	}
 	for _, m := range mods {
@@ -91,7 +103,7 @@ func buildModuleGraphFocused(store *facts.Store, focus string) *moduleGraphView 
 		}
 	}
 
-	ranked := make([]*raw, 0, len(byName))
+	ranked := make([]*moduleRaw, 0, len(byName))
 	for _, r := range byName {
 		if r.in+len(r.out) > 0 {
 			ranked = append(ranked, r)
@@ -108,8 +120,14 @@ func buildModuleGraphFocused(store *facts.Store, focus string) *moduleGraphView 
 		return nil
 	}
 	total := len(ranked)
-	allModules := make([]string, 0, len(ranked))
-	for _, r := range ranked {
+	searchable := ranked
+	truncated := false
+	if len(searchable) > moduleSearchLimit {
+		searchable = searchable[:moduleSearchLimit]
+		truncated = true
+	}
+	allModules := make([]string, 0, len(searchable))
+	for _, r := range searchable {
 		allModules = append(allModules, r.name)
 	}
 	focused := false
@@ -123,7 +141,7 @@ func buildModuleGraphFocused(store *facts.Store, focus string) *moduleGraphView 
 				neighborhood[r.name] = true
 			}
 		}
-		selected := []*raw{center}
+		selected := []*moduleRaw{center}
 		for _, r := range ranked {
 			if r.name != focus && neighborhood[r.name] {
 				selected = append(selected, r)
@@ -132,40 +150,140 @@ func buildModuleGraphFocused(store *facts.Store, focus string) *moduleGraphView 
 		ranked = selected
 		focused = true
 	}
-	if len(ranked) > moduleGraphLimit {
-		ranked = ranked[:moduleGraphLimit]
+	limit := moduleGraphOverviewLimit
+	if focused {
+		limit = moduleGraphLimit
+	}
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
 	}
 
-	const cols, nodeW, nodeH, gapX, gapY, margin = 4, 154, 36, 34, 34, 28
-	rows := (len(ranked) + cols - 1) / cols
-	view := &moduleGraphView{Width: margin*2 + cols*nodeW + (cols-1)*gapX, Height: margin*2 + rows*nodeH + (rows-1)*gapY, AllModules: allModules, Total: total, Limited: total > len(ranked), Focused: focused, FocusName: focus}
-	index := make(map[string]int, len(ranked))
-	for i, r := range ranked {
-		x := margin + (i%cols)*(nodeW+gapX)
-		y := margin + (i/cols)*(nodeH+gapY)
-		view.Nodes = append(view.Nodes, moduleNode{ID: i, Name: r.name, Display: moduleLabel(r.name), File: r.file, Repo: r.repo, X: x, Y: y, FanIn: r.in, FanOut: len(r.out), Degree: r.in + len(r.out)})
-		index[r.name] = i
-	}
-	for i, r := range ranked {
-		for target := range r.out {
-			if focused && r.name != focus && target != focus {
-				continue
+	const nodeW, nodeH, gapX, gapY, margin = 154, 36, 72, 34, 28
+	layers := make(map[string]int, len(ranked))
+	roles := make(map[string]string, len(ranked))
+	if focused {
+		for _, r := range ranked {
+			switch {
+			case r.name == focus:
+				layers[r.name], roles[r.name] = 1, "selected"
+			case r.out[focus]:
+				layers[r.name], roles[r.name] = 0, "consumer"
+			default:
+				layers[r.name], roles[r.name] = 2, "dependency"
 			}
+		}
+	} else {
+		layers = dependencyLayers(ranked)
+		for _, r := range ranked {
+			roles[r.name] = "module"
+		}
+	}
+	byLayer := map[int][]*moduleRaw{}
+	maxLayer, maxRows := 0, 0
+	for _, r := range ranked {
+		layer := layers[r.name]
+		byLayer[layer] = append(byLayer[layer], r)
+		if layer > maxLayer {
+			maxLayer = layer
+		}
+	}
+	for _, rs := range byLayer {
+		if len(rs) > maxRows {
+			maxRows = len(rs)
+		}
+	}
+	view := &moduleGraphView{Width: margin*2 + (maxLayer+1)*nodeW + maxLayer*gapX, Height: margin*2 + maxRows*nodeH + (maxRows-1)*gapY, AllModules: allModules, AllModulesTruncated: truncated, Total: total, Limited: total > len(ranked), Focused: focused, FocusName: focus}
+	index := make(map[string]int, len(ranked))
+	for layer := 0; layer <= maxLayer; layer++ {
+		for row, r := range byLayer[layer] {
+			i := len(view.Nodes)
+			x := margin + layer*(nodeW+gapX)
+			y := margin + row*(nodeH+gapY)
+			view.Nodes = append(view.Nodes, moduleNode{ID: i, Name: r.name, Display: moduleLabel(r.name), File: r.file, Repo: r.repo, Role: roles[r.name], X: x, Y: y, FanIn: r.in, FanOut: len(r.out), Degree: r.in + len(r.out)})
+			index[r.name] = i
+		}
+	}
+	for _, r := range ranked {
+		for target := range r.out {
 			j, ok := index[target]
 			if !ok {
 				continue
 			}
+			i := index[r.name]
 			a, b := view.Nodes[i], view.Nodes[j]
-			view.Edges = append(view.Edges, moduleEdge{Source: i, Target: j, X1: a.X + nodeW/2, Y1: a.Y + nodeH/2, X2: b.X + nodeW/2, Y2: b.Y + nodeH/2})
+			view.Edges = append(view.Edges, moduleEdge{Source: i, Target: j, X1: a.X + nodeW, Y1: a.Y + nodeH/2, X2: b.X, Y2: b.Y + nodeH/2, SourceName: a.Name, TargetName: b.Name, SourceFile: a.File, TargetFile: b.File, Kind: facts.RelImports})
 		}
 	}
-	sort.Slice(view.Edges, func(i, j int) bool {
-		if view.Edges[i].Source != view.Edges[j].Source {
-			return view.Edges[i].Source < view.Edges[j].Source
-		}
-		return view.Edges[i].Target < view.Edges[j].Target
-	})
+	sortEdgesByEndpoints(view.Edges)
+	if !focused && len(view.Edges) > moduleGraphOverviewEdges {
+		view.OmittedEdges = len(view.Edges) - moduleGraphOverviewEdges
+		// Keep the edges between the most-connected endpoints rather than an
+		// arbitrary source/target-ordered prefix, so the truncated overview still
+		// shows the structurally significant dependency backbone.
+		sort.SliceStable(view.Edges, func(i, j int) bool {
+			di := view.Nodes[view.Edges[i].Source].Degree + view.Nodes[view.Edges[i].Target].Degree
+			dj := view.Nodes[view.Edges[j].Source].Degree + view.Nodes[view.Edges[j].Target].Degree
+			return di > dj
+		})
+		view.Edges = view.Edges[:moduleGraphOverviewEdges]
+		sortEdgesByEndpoints(view.Edges)
+	}
 	return view
+}
+
+func sortEdgesByEndpoints(edges []moduleEdge) {
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].Source != edges[j].Source {
+			return edges[i].Source < edges[j].Source
+		}
+		return edges[i].Target < edges[j].Target
+	})
+}
+
+// dependencyLayers places consumers before the modules they depend on. Kahn's
+// algorithm gives acyclic regions stable layers; cycle members remain together
+// in the first layer, which truthfully exposes that no ordering exists for them.
+func dependencyLayers(ranked []*moduleRaw) map[string]int {
+	layers := make(map[string]int, len(ranked))
+	indegree := make(map[string]int, len(ranked))
+	visible := make(map[string]bool, len(ranked))
+	for _, r := range ranked {
+		visible[r.name] = true
+	}
+	for _, r := range ranked {
+		for target := range r.out {
+			if visible[target] {
+				indegree[target]++
+			}
+		}
+	}
+	queue := make([]string, 0, len(ranked))
+	for _, r := range ranked {
+		if indegree[r.name] == 0 {
+			queue = append(queue, r.name)
+		}
+	}
+	byName := make(map[string]*moduleRaw, len(ranked))
+	for _, r := range ranked {
+		byName[r.name] = r
+	}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		for target := range byName[name].out {
+			if !visible[target] {
+				continue
+			}
+			if layers[target] < layers[name]+1 {
+				layers[target] = layers[name] + 1
+			}
+			indegree[target]--
+			if indegree[target] == 0 {
+				queue = append(queue, target)
+			}
+		}
+	}
+	return layers
 }
 
 func moduleLabel(name string) string {

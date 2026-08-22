@@ -42,7 +42,8 @@ func TestModuleGraphPageExplainsScopeAndProvidesModuleTable(t *testing.T) {
 	for _, want := range []string{
 		"Showing 2 of 2 connected modules", "1 visible dependencies",
 		"Most-connected modules in this view", "Used by", "Depends on",
-		`onclick="focusModule('`, "Search every module",
+		`onclick="focusModule('`, "Search every module", "Layered by dependency direction",
+		"selectDependency(this)", "module-level evidence", "window.location.assign('/?module='",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("module graph page missing %q", want)
@@ -66,13 +67,64 @@ func TestBuildModuleGraphFocusesOnImmediateNeighborhood(t *testing.T) {
 	if len(view.Edges) != 2 {
 		t.Fatalf("focused edges = %+v, want only edges incident to api", view.Edges)
 	}
+	roles := map[string]string{}
+	positions := map[string]int{}
 	for _, node := range view.Nodes {
 		if node.Name == "unrelated" || node.Name == "other" {
 			t.Fatalf("focused view contains unrelated node %+v", node)
 		}
+		roles[node.Name], positions[node.Name] = node.Role, node.X
+	}
+	if roles["core"] != "consumer" || roles["api"] != "selected" || roles["storage"] != "dependency" {
+		t.Fatalf("focused roles = %+v", roles)
+	}
+	if !(positions["core"] < positions["api"] && positions["api"] < positions["storage"]) {
+		t.Fatalf("focused x positions = %+v, want consumer < selected < dependency", positions)
+	}
+	if view.Edges[0].Kind != facts.RelImports || view.Edges[0].SourceName == "" || view.Edges[0].TargetName == "" {
+		t.Fatalf("edge lacks inspectable evidence: %+v", view.Edges[0])
 	}
 	if len(view.AllModules) != 5 {
 		t.Fatalf("search index = %d modules, want all 5", len(view.AllModules))
+	}
+}
+
+func TestBuildModuleGraphFocusedIncludesNeighborhoodEdges(t *testing.T) {
+	st := facts.NewStore()
+	st.Add(
+		facts.Fact{Kind: facts.KindModule, Name: "core", Relations: []facts.Relation{{Kind: facts.RelImports, Target: "api"}, {Kind: facts.RelImports, Target: "storage"}}},
+		facts.Fact{Kind: facts.KindModule, Name: "api", Relations: []facts.Relation{{Kind: facts.RelImports, Target: "storage"}}},
+		facts.Fact{Kind: facts.KindModule, Name: "storage"},
+	)
+	view := buildModuleGraphFocused(st, "api")
+	if view == nil || len(view.Edges) != 3 {
+		t.Fatalf("focused edges = %+v, want core->api, api->storage, and core->storage (both endpoints in the neighborhood)", view.Edges)
+	}
+	found := false
+	for _, e := range view.Edges {
+		if e.SourceName == "core" && e.TargetName == "storage" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("focused edges = %+v, want core->storage even though neither endpoint is the focus module", view.Edges)
+	}
+}
+
+func TestBuildModuleGraphLayersConsumersBeforeDependencies(t *testing.T) {
+	st := facts.NewStore()
+	st.Add(
+		facts.Fact{Kind: facts.KindModule, Name: "web", Relations: []facts.Relation{{Kind: facts.RelImports, Target: "service"}}},
+		facts.Fact{Kind: facts.KindModule, Name: "service", Relations: []facts.Relation{{Kind: facts.RelImports, Target: "storage"}}},
+		facts.Fact{Kind: facts.KindModule, Name: "storage"},
+	)
+	view := buildModuleGraph(st)
+	positions := map[string]int{}
+	for _, node := range view.Nodes {
+		positions[node.Name] = node.X
+	}
+	if !(positions["web"] < positions["service"] && positions["service"] < positions["storage"]) {
+		t.Fatalf("layer positions = %+v, want web < service < storage", positions)
 	}
 }
 
@@ -84,7 +136,24 @@ func TestBuildModuleGraphCapsLargeRepositories(t *testing.T) {
 		st.Add(facts.Fact{Kind: facts.KindModule, Name: name, Relations: []facts.Relation{{Kind: facts.RelImports, Target: target}}})
 	}
 	view := buildModuleGraph(st)
-	if view == nil || len(view.Nodes) != moduleGraphLimit || !view.Limited || view.Total != moduleGraphLimit+10 {
-		t.Fatalf("view = %+v, want %d of %d modules", view, moduleGraphLimit, moduleGraphLimit+10)
+	if view == nil || len(view.Nodes) != moduleGraphOverviewLimit || !view.Limited || view.Total != moduleGraphLimit+10 {
+		t.Fatalf("view = %+v, want %d of %d modules", view, moduleGraphOverviewLimit, moduleGraphLimit+10)
+	}
+}
+
+func TestBuildModuleGraphCapsOverviewEdges(t *testing.T) {
+	st := facts.NewStore()
+	for i := 0; i < moduleGraphOverviewLimit; i++ {
+		relations := make([]facts.Relation, 0, moduleGraphOverviewLimit-1)
+		for j := 0; j < moduleGraphOverviewLimit; j++ {
+			if i != j {
+				relations = append(relations, facts.Relation{Kind: facts.RelImports, Target: fmt.Sprintf("m%02d", j)})
+			}
+		}
+		st.Add(facts.Fact{Kind: facts.KindModule, Name: fmt.Sprintf("m%02d", i), Relations: relations})
+	}
+	view := buildModuleGraph(st)
+	if len(view.Edges) != moduleGraphOverviewEdges || view.OmittedEdges == 0 {
+		t.Fatalf("overview edges = %d, omitted = %d", len(view.Edges), view.OmittedEdges)
 	}
 }
