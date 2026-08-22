@@ -86,7 +86,8 @@ func Collect(ctx context.Context, lib *Library, root string) Result {
 }
 
 // workspacePaths mirrors the gem's own listing: the workspace's top-level
-// directories and Ruby files, then every gem path the bundle reports. Without
+// directories and Ruby files, then the lib and app directories of every gem the
+// bundle reports, so Rails engines resolve like plain gems do. Without
 // a bundle on PATH the workspace alone is indexed and the census says so.
 func workspacePaths(ctx context.Context, root string) (paths []string, dependencyPaths int, bundleAbsent bool) {
 	entries, _ := os.ReadDir(root)
@@ -113,7 +114,7 @@ func workspacePaths(ctx context.Context, root string) (paths []string, dependenc
 			continue
 		}
 		seen[line] = true
-		for _, sub := range []string{"lib"} {
+		for _, sub := range []string{"lib", "app"} {
 			if info, err := os.Stat(filepath.Join(line, sub)); err == nil && info.IsDir() {
 				paths = append(paths, filepath.Join(line, sub))
 				dependencyPaths++
