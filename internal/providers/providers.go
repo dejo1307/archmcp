@@ -81,6 +81,11 @@ const (
 	LevelConventionDerived = "convention-derived"
 	LevelRuntimeObserved   = "runtime-observed"
 	LevelDeclared          = "declared"
+	// LevelResolved states that the provider resolved the name through the
+	// language's own lookup rules (nesting, inheritance, the locked gems) to
+	// one declaration. It is neither a receiver typing nor a signature-file
+	// claim nor a path convention, which is why it is its own word.
+	LevelResolved = "resolved"
 )
 
 const CensusPrefix = "enola-provider-census: "
@@ -95,6 +100,7 @@ var allowedResolutionLevels = map[string]bool{
 	LevelRuntimeObserved:   true,
 	LevelDeclared:          true,
 	LevelToolReported:      true,
+	LevelResolved:          true,
 }
 
 // allowedFactKinds is the closed set a provider may emit: the measured kinds.

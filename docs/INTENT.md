@@ -1425,7 +1425,11 @@ The `resolution_level` vocabulary is closed, for the same reason the
 kind and relation vocabularies are — a level nothing knows how to
 weigh is a claim nothing can act on: `constant-receiver`,
 `lexical-self`, `name-only`, `literal-declared`, `markup-declared`,
-`convention-derived`, `runtime-observed`, and `declared`.
+`convention-derived`, `runtime-observed`, `declared`, and `resolved`.
+`resolved` states that the provider resolved a name through the
+language's own lookup rules (nesting, inheritance, the locked gems) to
+one declaration: neither a receiver typing, nor a signature-file claim,
+nor a path convention, which is why it is its own word.
 `runtime-observed` is its own level, not a stronger static one: it
 states that a **booted application** reported the fact, and a fact
 carrying it must also carry an **`observed_via`** prop naming the
@@ -1445,6 +1449,23 @@ declarations parsed, constructs skipped with named causes — which the
 seam validates as strictly as the facts and carries into the
 receipt's provider census, the same honesty discipline the engine's
 file census applies to its own walk.
+
+### The Rubydex provider
+
+The reference provider at `examples/providers/ruby/rubydex/` requires
+the Rubydex gem, indexes the workspace, resolves it, and emits the three
+things enola's own Ruby extractor and the Prism provider do not: constant
+references resolved through Ruby's nesting and inheritance rules
+(`rubydex-ref:`, a `depends_on` edge at `resolved`), method calls whose
+receiver resolves to a constant other than the lexical enclosing class
+(`rubydex-call:`, a `calls` edge at `constant-receiver`; the enclosing
+class is the extractor's to say), and each class's linearised ancestor
+chain with mixins in resolution order (`rubydex-ancestor:`, one
+`implements` edge per ancestor at `resolved`, carrying the ancestor's
+distance and whether the workspace declares it). Only facts located in
+the workspace are emitted; built-in ancestors are omitted because every
+class reaches them; unresolved references and Rubydex's own diagnostics
+are counted in the census rather than guessed around.
 
 ### The runtime provider
 
