@@ -15,8 +15,8 @@ import (
 	"github.com/enola-labs/enola/pkg/status"
 )
 
-// TestPageDescribesItsOwnServer guards the simplified product surface: runtime
-// identity is still collected for --status, but no longer crowds repository results.
+// TestPageDescribesItsOwnServer guards the Activity tab: runtime identity comes
+// from the tracker for this process, never from a sibling server.
 func TestPageDescribesItsOwnServer(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -43,15 +43,15 @@ func TestPageDescribesItsOwnServer(t *testing.T) {
 	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	body := rec.Body.String()
 
-	for _, operational := range []string{"enola-enterprise 4.2.0", "/tmp/my-workspace", "my-repo"} {
-		if strings.Contains(body, operational) {
-			t.Errorf("body contains operational detail %q — the product dashboard should stay focused on repository results", operational)
+	for _, operational := range []string{"panel-activity", "enola-enterprise 4.2.0", "/tmp/my-workspace", "my-repo"} {
+		if !strings.Contains(body, operational) {
+			t.Errorf("Activity tab missing this server's operational detail %q", operational)
 		}
 	}
 }
 
-// TestPageListsLiveInstances confirms sibling-server bookkeeping stays out of the
-// product dashboard. It remains available through --status.
+// TestPageListsLiveInstances confirms the Activity tab provides the original
+// server switcher alongside the product-focused Overview and Architecture tabs.
 func TestPageListsLiveInstances(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -82,8 +82,8 @@ func TestPageListsLiveInstances(t *testing.T) {
 	body := rec.Body.String()
 
 	for _, operational := range []string{"Servers running", "http://127.0.0.1:54545", "other-repo", "this page"} {
-		if strings.Contains(body, operational) {
-			t.Errorf("body contains server-switcher detail %q", operational)
+		if !strings.Contains(body, operational) {
+			t.Errorf("Activity tab missing server-switcher detail %q", operational)
 		}
 	}
 }
@@ -103,6 +103,12 @@ func TestPageWithoutTrackerStillRenders(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Your architecture is mapped.") {
 		t.Error("body missing the populated architecture state")
+	}
+	for _, tab := range []string{"overview", "architecture", "snapshots", "activity", "quality"} {
+		if !strings.Contains(rec.Body.String(), `id="tab-`+tab+`"`) ||
+			!strings.Contains(rec.Body.String(), `id="panel-`+tab+`"`) {
+			t.Errorf("body missing %q tab or panel", tab)
+		}
 	}
 }
 

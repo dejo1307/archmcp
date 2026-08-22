@@ -33,6 +33,8 @@ type (
 	SnapshotMeta    = internal.SnapshotMeta
 	Receipt         = internal.Receipt
 	ReceiptQuality  = internal.ReceiptQuality
+	FileCensus      = internal.FileCensus
+	CensusCause     = internal.CensusCause
 	GraphReceipt    = internal.GraphReceipt
 	GraphRepoEntry  = internal.GraphRepoEntry
 	CoverageSummary = internal.CoverageSummary

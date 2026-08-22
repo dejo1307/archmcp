@@ -10,9 +10,72 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/enola-labs/enola/pkg/facts"
 )
+
+func TestSummarizeSnapshotExplainsFreshnessAndDirtyCapture(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	r := &facts.Receipt{
+		SnapshotID:  "sha256:b3640f5cdab13ea7",
+		GeneratedAt: "2026-08-22T09:55:00Z",
+		RepoPath:    "/work/dbt-core",
+		Git:         &facts.GitInfo{Commit: "f5a3aa5b1d5b0f7d", Dirty: true},
+	}
+	got := summarizeSnapshot(r, now)
+	if got.RepoName != "dbt-core" || got.Age != "5m 0s ago" || got.ShortID != "b3640f5cdab1" || got.ShortCommit != "f5a3aa5b" {
+		t.Fatalf("summary = %+v", got)
+	}
+	if got.Status != "Captured with local changes" || got.StatusClass != "warn" {
+		t.Fatalf("status = %q/%q, want dirty warning", got.Status, got.StatusClass)
+	}
+}
+
+func TestAssessQualityPrioritizesActionableBlindSpots(t *testing.T) {
+	r := &facts.Receipt{Quality: facts.ReceiptQuality{Census: &facts.FileCensus{
+		FilesWalked:   1000,
+		ExcludedKinds: map[string]int{".sql": 40, ".png": 10, ".toml": 5},
+		TopSkipCauses: []facts.CensusCause{
+			{Cause: "claimed by cpp, which did not run this snapshot", Count: 2},
+			{Cause: "claimed by rust, no facts emitted", Count: 3},
+		},
+	}}}
+	got := assessQuality(r)
+	if got.Status != "Coverage worth reviewing" || got.StatusClass != "warn" || got.CoverageLabel != "limited coverage" {
+		t.Fatalf("status = %q/%q", got.Status, got.StatusClass)
+	}
+	if len(got.Potential) != 2 || got.Potential[0].Kind != ".sql" || got.Potential[1].Kind != ".toml" {
+		t.Fatalf("potential = %+v, want SQL then TOML", got.Potential)
+	}
+	if got.ExpectedFiles != 10 || got.ExpectedKinds != 1 || len(got.Inactive) != 1 || len(got.NoFacts) != 1 || got.InactiveShare != "0.2%" {
+		t.Fatalf("assessment buckets = %+v", got)
+	}
+}
+
+func TestAssessQualityEscalatesOnlyMaterialExtractorGaps(t *testing.T) {
+	for _, tt := range []struct {
+		name, want string
+		files      int
+		walked     int
+	}{
+		{name: "small nested population", files: 2, walked: 2987, want: "Coverage worth reviewing"},
+		{name: "five percent of corpus", files: 50, walked: 1000, want: "Material extractor coverage gap"},
+		{name: "large absolute population", files: 100, walked: 10000, want: "Material extractor coverage gap"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &facts.Receipt{Quality: facts.ReceiptQuality{Census: &facts.FileCensus{
+				FilesWalked: tt.walked,
+				TopSkipCauses: []facts.CensusCause{{
+					Cause: "claimed by cpp, which did not run this snapshot", Count: tt.files,
+				}},
+			}}}
+			if got := assessQuality(r); got.Status != tt.want {
+				t.Fatalf("status = %q, want %q (%+v)", got.Status, tt.want, got)
+			}
+		})
+	}
+}
 
 // fakeArtifacts is a stub engineView for handler tests. activeRepo/outputDir
 // drive the on-disk receipt fallback (empty by default → no fallback). store is
@@ -413,6 +476,25 @@ func TestInsightDetailsFiltersUnknownSources(t *testing.T) {
 	}
 }
 
+func TestInsightDetailsAdmitsEveryCurrentBuiltInSource(t *testing.T) {
+	sources := []string{
+		"hotspots", "god-class", "exported-surface", "complexity-outliers",
+		"dependency-depth", "cycles", "layers", "crossrepo", "coverage",
+		"unused-routes", "domain", "query-loops", "entry-points",
+		"messaging-coverage", "intent", "constraints",
+	}
+	ins := make([]facts.Insight, 0, len(sources))
+	for _, source := range sources {
+		ins = append(ins, facts.Insight{Source: source, Title: source, Confidence: 1})
+	}
+
+	groups, structural, candidate := insightDetails(ins, mergedLabels(nil))
+	if len(groups) != len(sources) || structural != len(sources) || candidate != 0 {
+		t.Fatalf("built-in insights = %d groups, %d/%d split; want %d groups, %d/0 split",
+			len(groups), structural, candidate, len(sources), len(sources))
+	}
+}
+
 // mergedLabels must copy, so one dashboard's wrapper labels never bleed into the
 // package map (and thus into another dashboard in the same process).
 func TestMergedLabelsDoesNotMutatePackageMap(t *testing.T) {
@@ -524,12 +606,23 @@ func TestHandlerRendersQualityModals(t *testing.T) {
 	receipt := facts.Receipt{
 		SnapshotID: "snap-q",
 		Quality: facts.ReceiptQuality{
+			FilesSeen:        80,
+			FilesParsed:      60,
 			FilesSkipped:     0,
 			DirsSkipped:      1,
 			SkippedSample:    []string{".git/ (glob: .git/**)"},
 			ParseErrors:      1,
 			ParseErrorSample: []facts.ParseError{{Extractor: "goextractor", File: "bad.go", Msg: "syntax error near EOF"}},
 			Coverage:         &facts.CoverageSummary{ServicesTotal: 1, UnresolvedEdges: 1},
+			Census: &facts.FileCensus{
+				FilesWalked:      100,
+				Parsed:           60,
+				ExcludedByIgnore: 10,
+				ExcludedByKind:   25,
+				ExcludedKinds:    map[string]int{".sql": 25},
+				SkippedWithCause: 5,
+				TopSkipCauses:    []facts.CensusCause{{Cause: "claimed by go, no facts emitted", Count: 5}},
+			},
 		},
 	}
 	rb, err := json.Marshal(receipt)
@@ -551,6 +644,8 @@ func TestHandlerRendersQualityModals(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`id="coverage-modal"`, `id="coverage-unresolved-modal"`, `id="skipped-modal"`, `id="parse-errors-modal"`,
+		`Files walked`, `Intentionally ignored`, `Non-source / unsupported`, `No facts emitted`,
+		`Ignored and non-source files are not parse failures`, `.sql`, `claimed by go, no facts emitted`,
 		`onclick="openModal('coverage-modal')"`,
 		`onclick="openModal('coverage-unresolved-modal')"`,
 		`onclick="openModal('skipped-modal')"`,

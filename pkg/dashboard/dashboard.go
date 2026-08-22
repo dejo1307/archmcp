@@ -358,6 +358,29 @@ type valueRow struct {
 	TokensSaved string
 }
 
+// snapshotSummary turns receipt provenance into the user-facing state shown at
+// the top of the Snapshots tab. The full receipt remains available below it.
+type snapshotSummary struct {
+	RepoName, Age, Generated, ShortID, ShortCommit, Status, StatusClass string
+}
+
+type qualityBlindSpot struct {
+	Kind, Reason string
+	Count        int
+}
+
+type qualityAssessment struct {
+	Status, StatusClass, Summary string
+	CoverageLabel                string
+	Potential                    []qualityBlindSpot
+	Expected                     []qualityBlindSpot
+	Inactive                     []facts.CensusCause
+	NoFacts                      []facts.CensusCause
+	ExpectedFiles, ExpectedKinds int
+	InactiveFiles, FilesWalked   int
+	InactiveShare                string
+}
+
 // pageData is the full template model.
 type pageData struct {
 	RefreshSeconds int
@@ -396,6 +419,7 @@ type pageData struct {
 
 	HasReceipt  bool
 	Receipt     *facts.Receipt
+	Snapshot    snapshotSummary
 	ReceiptNote string
 
 	HasGraph  bool
@@ -426,6 +450,7 @@ type pageData struct {
 	UnresolvedRoutes []routeRow
 	SkippedSample    []string
 	ParseErrors      []facts.ParseError
+	Quality          qualityAssessment
 
 	// Extra is whatever Options.Extra returned for this request — the data the
 	// overlay blocks render. Nil in a plain engine dashboard, and nil whenever a
@@ -495,9 +520,11 @@ func (s *Server) buildPage() pageData {
 	if rv := s.currentReceipt(); rv != nil {
 		data.HasReceipt = true
 		data.Receipt = rv
+		data.Snapshot = summarizeSnapshot(rv, now)
 		// Capped skip/parse-error samples back the clickable Extraction-quality cards.
 		data.SkippedSample = rv.Quality.SkippedSample
 		data.ParseErrors = rv.Quality.ParseErrorSample
+		data.Quality = assessQuality(rv)
 	} else {
 		data.ReceiptNote = "No snapshot loaded yet — run generate_snapshot to populate this."
 	}
@@ -535,6 +562,130 @@ func (s *Server) buildPage() pageData {
 	}
 
 	return data
+}
+
+var reviewableFileKinds = map[string]string{
+	".sql":   "Queries and transformations may encode data architecture.",
+	".toml":  "Project and dependency configuration may affect architecture.",
+	".html":  "Templates may contain routes, calls, or application structure.",
+	".j2":    "Templates may contain generated configuration or queries.",
+	".jinja": "Templates may contain generated configuration or queries.",
+	".pyi":   "Python type declarations may describe public interfaces.",
+	".sh":    "Scripts may describe build and operational dependencies.",
+	".ps1":   "Scripts may describe build and operational dependencies.",
+}
+
+func assessQuality(r *facts.Receipt) qualityAssessment {
+	q := qualityAssessment{Status: "Analysis complete", StatusClass: "on", Summary: "No parse failures or obvious extractor gaps were recorded."}
+	if census := r.Quality.Census; census != nil {
+		for kind, count := range census.ExcludedKinds {
+			if reason, review := reviewableFileKinds[kind]; review {
+				q.Potential = append(q.Potential, qualityBlindSpot{Kind: kind, Count: count, Reason: reason})
+			} else {
+				q.ExpectedFiles += count
+				q.ExpectedKinds++
+				q.Expected = append(q.Expected, qualityBlindSpot{Kind: kind, Count: count})
+			}
+		}
+		sort.Slice(q.Potential, func(i, j int) bool {
+			if q.Potential[i].Count != q.Potential[j].Count {
+				return q.Potential[i].Count > q.Potential[j].Count
+			}
+			return q.Potential[i].Kind < q.Potential[j].Kind
+		})
+		sort.Slice(q.Expected, func(i, j int) bool {
+			if q.Expected[i].Count != q.Expected[j].Count {
+				return q.Expected[i].Count > q.Expected[j].Count
+			}
+			return q.Expected[i].Kind < q.Expected[j].Kind
+		})
+		for _, cause := range census.TopSkipCauses {
+			if strings.Contains(cause.Cause, "did not run") {
+				q.Inactive = append(q.Inactive, cause)
+				q.InactiveFiles += cause.Count
+			} else {
+				q.NoFacts = append(q.NoFacts, cause)
+			}
+		}
+		q.FilesWalked = census.FilesWalked
+		q.InactiveShare = formatShare(q.InactiveFiles, census.FilesWalked)
+	}
+	if r.Quality.ParseErrors > 0 {
+		q.Status = "Analysis needs attention"
+		q.StatusClass = "off"
+		q.Summary = fmt.Sprintf("%d parse error(s) may leave gaps in the architecture map.", r.Quality.ParseErrors)
+	} else if q.InactiveFiles > 0 && materialCoverageGap(q.InactiveFiles, q.FilesWalked) {
+		q.Status = "Material extractor coverage gap"
+		q.StatusClass = "off"
+		q.CoverageLabel = "material gap"
+		q.Summary = fmt.Sprintf("%d of %d walked files (%s) belonged to an extractor that did not run.", q.InactiveFiles, q.FilesWalked, q.InactiveShare)
+	} else if q.InactiveFiles > 0 {
+		q.Status = "Coverage worth reviewing"
+		q.StatusClass = "warn"
+		q.CoverageLabel = "limited coverage"
+		q.Summary = fmt.Sprintf("Analysis completed without parse errors. %d of %d walked files (%s) belonged to an extractor that did not activate.", q.InactiveFiles, q.FilesWalked, q.InactiveShare)
+	} else if len(q.Potential) > 0 {
+		q.Status = "Coverage worth reviewing"
+		q.StatusClass = "warn"
+		q.Summary = "Analysis succeeded, but potentially architectural file types are outside the current graph."
+	}
+	return q
+}
+
+// materialCoverageGap deliberately requires meaningful corpus impact before the
+// dashboard uses red/error language. A handful of nested examples in a large
+// monorepo is transparent but not alarming; a missing language population is.
+func materialCoverageGap(files, walked int) bool {
+	if files <= 0 {
+		return false
+	}
+	return files >= 100 || walked > 0 && float64(files)/float64(walked) >= 0.05
+}
+
+func formatShare(part, total int) string {
+	if part <= 0 || total <= 0 {
+		return "unknown share"
+	}
+	pct := float64(part) / float64(total) * 100
+	if pct < 0.1 {
+		return "<0.1%"
+	}
+	return fmt.Sprintf("%.1f%%", pct)
+}
+
+func summarizeSnapshot(r *facts.Receipt, now time.Time) snapshotSummary {
+	s := snapshotSummary{
+		RepoName:    filepath.Base(r.RepoPath),
+		ShortID:     shortDigest(r.SnapshotID, 12),
+		Status:      "Snapshot ready",
+		StatusClass: "on",
+	}
+	if generated, err := time.Parse(time.RFC3339, r.GeneratedAt); err == nil {
+		s.Age = formatDuration(now.Sub(generated)) + " ago"
+		s.Generated = generated.Local().Format("2006-01-02 15:04:05 MST")
+	} else {
+		s.Generated = r.GeneratedAt
+	}
+	if r.Git != nil {
+		s.ShortCommit = shortDigest(r.Git.Commit, 8)
+		if r.Git.Dirty {
+			s.Status = "Captured with local changes"
+			s.StatusClass = "warn"
+		}
+	}
+	if r.Quality.ParseErrors > 0 {
+		s.Status = "Analysis needs attention"
+		s.StatusClass = "off"
+	}
+	return s
+}
+
+func shortDigest(value string, n int) string {
+	value = strings.TrimPrefix(value, "sha256:")
+	if len(value) > n {
+		return value[:n]
+	}
+	return value
 }
 
 // currentReceipt returns the receipt to display for the current snapshot, or nil
