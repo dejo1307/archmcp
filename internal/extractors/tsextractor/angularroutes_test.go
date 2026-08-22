@@ -506,3 +506,120 @@ func assertRouteCause(t *testing.T, fs []facts.Fact, want string) {
 	}
 	t.Error("no typescript:angular-routes coverage fact")
 }
+
+// A tsconfig exact alias names a FILE, extension and all. Appending another
+// extension to it matched nothing, and every lazily-mounted feature module in one
+// workspace resolved to nothing because of it.
+func TestAngularExactAliasToAFileResolves(t *testing.T) {
+	dir := t.TempDir()
+	writeAngularWorkspace(t, dir, `{"compilerOptions":{"paths":{"@acme/admin":["./packages/admin/src/index.ts"]}}}`, map[string]string{
+		"packages/admin/src/index.ts": `export * from './admin.module';`,
+		"packages/admin/src/admin.module.ts": `import { NgModule } from '@angular/core';
+import { RouterModule, Routes } from '@angular/router';
+import { UsersComponent } from './users.component';
+
+const routes: Routes = [{ path: 'users', component: UsersComponent }];
+
+@NgModule({ imports: [RouterModule.forChild(routes)] })
+export class AdminModule {}
+`,
+		"packages/admin/src/users.component.ts": `import { Component } from '@angular/core';
+@Component({ selector: 'app-users' })
+export class UsersComponent {}
+`,
+		"apps/web/src/app.routes.ts": `import { Routes } from '@angular/router';
+
+export const routes: Routes = [
+  { path: 'admin', loadChildren: () => import('@acme/admin').then(m => m.AdminModule) },
+];
+`,
+		"apps/web/src/app.config.ts": `import { provideRouter } from '@angular/router';
+import { routes } from './app.routes';
+
+export const appConfig = { providers: [provideRouter(routes)] };
+`,
+	})
+	fs := extractDir(t, dir)
+
+	if _, ok := findRoute(fs, "/admin/users"); !ok {
+		t.Errorf("a mount behind an exact alias did not resolve; got %v", routePaths(fs))
+	}
+}
+
+// `"@acme/ui/*": ["./packages/ui/*/src/index.ts"]` — a wildcard whose target does
+// not end at the `*`. Truncating at the wildcard dropped the tail and resolved one
+// directory short of the file.
+func TestAngularWildcardAliasKeepsItsTail(t *testing.T) {
+	aliases := map[string]tsAlias{
+		"@acme/ui/": {replacement: "packages/ui/", suffix: "/src/index.ts"},
+	}
+	got, external := resolveImportPath("@acme/ui/forms", "apps/web/src", aliases)
+	if external {
+		t.Fatal("classified an aliased import as external")
+	}
+	if want := "packages/ui/forms/src/index.ts"; got != want {
+		t.Errorf("resolved to %q, want %q", got, want)
+	}
+}
+
+// A route path written as a constant member is folded to the literal it names —
+// derivation from a single-assignment declaration, not inference. One application
+// writes all 210 of its paths this way.
+func TestAngularConstantRoutePathsAreFolded(t *testing.T) {
+	fs := extractAngular(t, map[string]string{
+		"src/app/demo-routes.ts": `export const DemoRoute = {
+  GettingStarted: '/getting-started',
+  Ssr: '/ssr',
+} as const;
+`,
+		"src/app/getting-started.component.ts": `import { Component } from '@angular/core';
+@Component({ selector: 'app-gs' })
+export class GettingStartedComponent {}
+`,
+		"src/app/app.routes.ts": `import { Routes } from '@angular/router';
+import { DemoRoute } from './demo-routes';
+import { GettingStartedComponent } from './getting-started.component';
+
+export const routes: Routes = [
+  { path: DemoRoute.GettingStarted, component: GettingStartedComponent },
+];
+`,
+		"src/app/app.config.ts": `import { provideRouter } from '@angular/router';
+import { routes } from './app.routes';
+
+export const appConfig = { providers: [provideRouter(routes)] };
+`,
+	}, true)
+
+	if _, ok := findRoute(fs, "/getting-started"); !ok {
+		t.Errorf("constant path not folded; got %v", routePaths(fs))
+	}
+}
+
+// A constant that resolves to nothing is still refused rather than written out.
+func TestAngularUnresolvableConstantPathIsRefused(t *testing.T) {
+	fs := extractAngular(t, map[string]string{
+		"src/app/thing.component.ts": `import { Component } from '@angular/core';
+@Component({ selector: 'app-thing' })
+export class ThingComponent {}
+`,
+		"src/app/app.routes.ts": `import { Routes } from '@angular/router';
+import { ThingComponent } from './thing.component';
+import { ExternalRoute } from '@acme/routes';
+
+export const routes: Routes = [
+  { path: ExternalRoute.Thing, component: ThingComponent },
+];
+`,
+		"src/app/app.config.ts": `import { provideRouter } from '@angular/router';
+import { routes } from './app.routes';
+
+export const appConfig = { providers: [provideRouter(routes)] };
+`,
+	}, true)
+
+	if got := routePaths(fs); len(got) != 0 {
+		t.Errorf("emitted %v for a path naming a constant from another package", got)
+	}
+	assertRouteCause(t, fs, "non_literal_path=1")
+}

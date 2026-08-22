@@ -2114,7 +2114,17 @@ import (
 // imports; anything ambiguous is counted rather than guessed, and an array no root
 // reaches emits nothing rather than a fragment. Every fact carries type=page, so an
 // application's navigation can never surface as an unserved HTTP endpoint.
-const cacheVersion = "v226"
+// v227: three resolution fixes in the TypeScript path resolver and the Angular
+// router, each found by running the router against real workspaces.
+// resolveModuleFile now accepts a path that already names a file, because a
+// tsconfig EXACT alias maps a bare specifier onto its entry point with the
+// extension included and appending another matched nothing; a wildcard alias keeps
+// whatever follows the `*` in its target, instead of resolving one directory short;
+// and a route path written as a constant member is folded to the literal it names,
+// through an enum or an `as const` map in this file or the one it was imported
+// from. The first two are TypeScript-wide and affect every repository with a
+// workspace-style tsconfig, not only Angular ones.
+const cacheVersion = "v227"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

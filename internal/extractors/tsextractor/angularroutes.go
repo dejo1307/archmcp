@@ -71,10 +71,18 @@ type angularRouteEntry struct {
 	// resolve. Without it such an entry is indistinguishable from a redirect, and one
 	// workspace's 64 unreadable mounts were being reported as configuration.
 	declaresLazy bool
-	// nonLiteralPath marks a path this pass refuses to read: `path: DemoRoute.Admin`
-	// names a constant, and writing the constant's own text as a URL would be a fact
-	// about nothing.
+	// nonLiteralPath marks a path this pass refuses to read: an expression whose text
+	// is not a URL and which no constant in the repository resolves.
 	nonLiteralPath bool
+	// pathRef is a path written as `SomeConst.Member`. The literal lives in another
+	// declaration, so it is resolved during the repo-wide walk rather than here.
+	pathRef *angularConstRef
+}
+
+// angularConstRef is a qualified constant reference: `DemoRoute.GettingStarted`.
+type angularConstRef struct {
+	qualifier string
+	member    string
 }
 
 // angularRouterFile is what one file contributes to the repo-wide walk.
@@ -100,6 +108,15 @@ type angularRouterFile struct {
 	// declares no routes of its own, because it is what a lazy loadChildren names:
 	// the routing it mounts is routinely one import away, in a sibling routing module.
 	isModule bool
+	// modules names the @NgModule classes this file declares, so a lazy mount that
+	// resolves to a package barrel can be followed to the file that actually
+	// declares the module the barrel re-exports.
+	modules []string
+	// constants holds string-valued members of the enums and `as const` objects this
+	// file declares, so a path written `DemoRoute.GettingStarted` can be folded to the
+	// literal it names. Derivation, not inference: the value is read off a
+	// single-assignment declaration, and a member with a computed value is absent.
+	constants map[string]map[string]string
 }
 
 // angularRoutingTokens gate the router walk. A route array is declared with the
@@ -113,6 +130,11 @@ var angularRoutingTokens = [][]byte{
 	// pass only as the thing a lazy loadChildren names, one import away from the
 	// routing module that holds the array.
 	[]byte("NgModule"),
+	// A file that declares nothing but a constants map is in this pass for one
+	// reason: it holds the literals the route paths name. Both forms it can take
+	// are spelled with one of these.
+	[]byte("as const"),
+	[]byte("enum "),
 }
 
 // declaresAngularRouting reports whether a file mentions the router at all.
@@ -129,10 +151,11 @@ func declaresAngularRouting(src []byte) bool {
 // Returns nil when the file declares nothing the router pass could use.
 func collectAngularRouterFile(kinds *tsutil.KindTable, root *sitter.Node, ctx *extractCtx, aliases map[string]tsAlias) *angularRouterFile {
 	f := &angularRouterFile{
-		relFile: ctx.relFile,
-		dir:     ctx.dir,
-		arrays:  map[string][]angularRouteEntry{},
-		imports: map[string]angularLazyRef{},
+		relFile:   ctx.relFile,
+		dir:       ctx.dir,
+		arrays:    map[string][]angularRouteEntry{},
+		imports:   map[string]angularLazyRef{},
+		constants: map[string]map[string]string{},
 	}
 	collectAngularImportFiles(kinds, root, ctx, aliases, f)
 
@@ -156,17 +179,38 @@ func collectAngularRouterFile(kinds *tsutil.KindTable, root *sitter.Node, ctx *e
 			} else if id := findChildByKind(kinds, n, "identifier"); id != nil {
 				defaultAlias = nodeText(id, ctx.src)
 			}
+		case "enum_declaration":
+			if name := findChildByKind(kinds, n, "identifier"); name != nil {
+				if members := angularEnumMembers(kinds, n, ctx.src); len(members) > 0 {
+					f.constants[nodeText(name, ctx.src)] = members
+				}
+			}
 		case "variable_declarator":
 			// `const routes: Routes = [ … ]`. The type annotation is not required:
 			// an array of objects carrying `path:` is a route array whatever it was
 			// annotated, and plenty are annotated nothing at all.
 			name := n.ChildByFieldName("name")
-			if arr := angularArrayValue(kinds, n.ChildByFieldName("value")); name != nil && arr != nil && looksLikeRouteArray(kinds, arr, ctx.src) {
+			if name == nil {
+				break
+			}
+			value := n.ChildByFieldName("value")
+			if arr := angularArrayValue(kinds, value); arr != nil && looksLikeRouteArray(kinds, arr, ctx.src) {
 				f.arrays[nodeText(name, ctx.src)] = angularRouteEntries(kinds, arr, ctx, f)
+				break
+			}
+			// `const DemoRoute = {GettingStarted: '/getting-started', …} as const`,
+			// which is how one application spells every one of its route paths.
+			if obj := angularConstObject(kinds, value); obj != nil {
+				if members := angularStringMembers(kinds, obj, ctx.src); len(members) > 0 {
+					f.constants[nodeText(name, ctx.src)] = members
+				}
 			}
 		case "decorator":
 			if name, _ := decoratorNameArgs(kinds, n, ctx.src); name == "NgModule" {
 				f.isModule = true
+				if cls := angularDecoratedClassName(kinds, n, ctx.src); cls != "" {
+					f.modules = append(f.modules, cls)
+				}
 			}
 		case "call_expression":
 			kind, arg := angularRouterCall(kinds, n, ctx.src)
@@ -198,7 +242,7 @@ func collectAngularRouterFile(kinds *tsutil.KindTable, root *sitter.Node, ctx *e
 		}
 	}
 
-	if len(f.arrays) == 0 && len(f.roots) == 0 && !f.isModule {
+	if len(f.arrays) == 0 && len(f.roots) == 0 && len(f.constants) == 0 && !f.isModule {
 		return nil
 	}
 	return f
@@ -312,6 +356,130 @@ func angularArrayArg(kinds *tsutil.KindTable, arg *sitter.Node, ctx *extractCtx,
 // lazy import with no `.then(m => m.X)` has something to resolve to.
 const angularDefaultExport = "#default"
 
+// angularEnumMembers reads the string-valued members of a TypeScript enum.
+func angularEnumMembers(kinds *tsutil.KindTable, enum *sitter.Node, src []byte) map[string]string {
+	body := findChildByKind(kinds, enum, "enum_body")
+	if body == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for i := range body.ChildCount() {
+		member := body.Child(i)
+		if kindOf(kinds, member) != "enum_assignment" {
+			continue
+		}
+		name := member.ChildByFieldName("name")
+		value := member.ChildByFieldName("value")
+		if name == nil || value == nil {
+			continue
+		}
+		if k := kindOf(kinds, value); k != "string" && k != "template_string" {
+			continue
+		}
+		out[strings.Trim(nodeText(name, src), `"'`)] = strings.Trim(nodeText(value, src), "\"'`")
+	}
+	return out
+}
+
+// angularConstObject finds an object literal behind an `as const` or a plain
+// assignment, for a constants map written as an object rather than an enum.
+func angularConstObject(kinds *tsutil.KindTable, n *sitter.Node) *sitter.Node {
+	for depth := 0; n != nil && depth < 4; depth++ {
+		switch kindOf(kinds, n) {
+		case "object":
+			return n
+		case "as_expression", "satisfies_expression", "parenthesized_expression":
+			var next *sitter.Node
+			for i := range n.ChildCount() {
+				switch c := n.Child(i); kindOf(kinds, c) {
+				case "object", "as_expression", "satisfies_expression", "parenthesized_expression":
+					next = c
+				}
+			}
+			if next == nil {
+				return nil
+			}
+			n = next
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// angularStringMembers reads the string-valued properties of an object literal.
+func angularStringMembers(kinds *tsutil.KindTable, obj *sitter.Node, src []byte) map[string]string {
+	out := map[string]string{}
+	for i := range obj.ChildCount() {
+		pair := obj.Child(i)
+		if kindOf(kinds, pair) != "pair" {
+			continue
+		}
+		k := pair.ChildByFieldName("key")
+		v := pair.ChildByFieldName("value")
+		if k == nil || v == nil {
+			continue
+		}
+		if kv := kindOf(kinds, v); kv != "string" && kv != "template_string" {
+			continue
+		}
+		text := strings.Trim(nodeText(v, src), "\"'`")
+		if strings.Contains(text, "${") {
+			continue
+		}
+		out[strings.Trim(nodeText(k, src), `"'`)] = text
+	}
+	return out
+}
+
+// angularResolveConstPath folds a `Const.Member` path to the literal it names,
+// through this file's own declarations or the file it imported the constant from.
+func angularResolveConstPath(byFile map[string]*angularRouterFile, f *angularRouterFile, ref *angularConstRef) (string, bool) {
+	if members, ok := f.constants[ref.qualifier]; ok {
+		if v, ok := members[ref.member]; ok {
+			return v, true
+		}
+	}
+	imp, ok := f.imports[ref.qualifier]
+	if !ok {
+		return "", false
+	}
+	owner := byFile[imp.file]
+	if owner == nil {
+		return "", false
+	}
+	name := imp.export
+	if name == angularDefaultExport {
+		name = ref.qualifier
+	}
+	if members, ok := owner.constants[name]; ok {
+		if v, ok := members[ref.member]; ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// angularDecoratedClassName returns the name of the class a decorator annotates.
+// The decorator is a sibling of the class inside an export statement, or a sibling
+// of the class declaration itself.
+func angularDecoratedClassName(kinds *tsutil.KindTable, dec *sitter.Node, src []byte) string {
+	parent := dec.Parent()
+	if parent == nil {
+		return ""
+	}
+	for i := range parent.ChildCount() {
+		c := parent.Child(i)
+		switch kindOf(kinds, c) {
+		case "class_declaration", "abstract_class_declaration", "class":
+			if name := findChildByKind(kinds, c, "type_identifier"); name != nil {
+				return nodeText(name, src)
+			}
+		}
+	}
+	return ""
+}
+
 // angularArrayValue finds the array literal a node stands for, descending through
 // the wrappers TypeScript allows around one: `[…] as Routes`, `[…] satisfies
 // Routes`, and parentheses. Without this an `export default [ … ] as Routes` — the
@@ -414,8 +582,18 @@ func angularRouteEntries(kinds *tsutil.KindTable, arr *sitter.Node, ctx *extract
 			if strings.Contains(e.path, "${") {
 				e.nonLiteralPath = true
 			}
+		case "member_expression":
+			// `path: DemoRoute.GettingStarted`. The literal is a declaration away;
+			// the walk resolves it, and refuses the entry if it cannot.
+			obj := pathNode.ChildByFieldName("object")
+			prop := pathNode.ChildByFieldName("property")
+			if obj != nil && prop != nil && kindOf(kinds, obj) == "identifier" {
+				e.pathRef = &angularConstRef{qualifier: nodeText(obj, ctx.src), member: nodeText(prop, ctx.src)}
+			} else {
+				e.nonLiteralPath = true
+			}
 		default:
-			// A constant, an enum member or an expression. Its text is not a URL.
+			// An expression whose text is not a URL.
 			e.nonLiteralPath = true
 		}
 		if v := objectPropValue(kinds, el, ctx.src, "component"); v != nil && kindOf(kinds, v) == "identifier" {
@@ -570,6 +748,13 @@ func composeAngularRoutes(files []*angularRouterFile) ([]facts.Fact, angularCoun
 
 	walkEntries = func(f *angularRouterFile, entries []angularRouteEntry, prefix string, composed bool) {
 		for _, e := range entries {
+			if e.pathRef != nil {
+				if lit, ok := angularResolveConstPath(byFile, f, e.pathRef); ok {
+					e.path = lit
+				} else {
+					e.nonLiteralPath = true
+				}
+			}
 			full := facts.JoinRoutePath(prefix, e.path)
 			emitAngularRoute(&out, f, e, full, composed, &counts, seen)
 			if e.nonLiteralPath {
@@ -610,7 +795,9 @@ func composeAngularRoutes(files []*angularRouterFile) ([]facts.Fact, angularCoun
 func resolveAngularLazyArray(byFile map[string]*angularRouterFile, ref *angularLazyRef) (angularRouteRef, bool) {
 	target := byFile[ref.file]
 	if target == nil {
-		return angularRouteRef{}, false
+		// The mount resolved to a file this pass kept nothing for — a package barrel
+		// that only re-exports. Its export name is still a lead worth following.
+		return angularModuleByName(byFile, ref.export)
 	}
 	want := ref.export
 	if want == "" {
@@ -627,8 +814,46 @@ func resolveAngularLazyArray(byFile map[string]*angularRouterFile, ref *angularL
 	if len(target.forChild) > 1 {
 		return angularRouteRef{}, false
 	}
+	if ref, ok := angularForChildAmongImports(byFile, target); ok {
+		return ref, true
+	}
+	return angularModuleByName(byFile, ref.export)
+}
+
+// angularModuleByName follows a lazily-mounted module's NAME to the file that
+// declares it, for the case the import resolved to a package barrel that only
+// re-exports the module — `import('@acme/admin').then(m => m.AdminModule)`. One
+// candidate required, as everywhere else in this pass.
+func angularModuleByName(byFile map[string]*angularRouterFile, export string) (angularRouteRef, bool) {
+	if export == "" {
+		return angularRouteRef{}, false
+	}
+	var declaring []*angularRouterFile
+	for _, name := range sortedRouterFiles(byFile) {
+		f := byFile[name]
+		for _, m := range f.modules {
+			if m == export {
+				declaring = append(declaring, f)
+				break
+			}
+		}
+	}
+	if len(declaring) != 1 {
+		return angularRouteRef{}, false
+	}
+	owner := declaring[0]
+	if len(owner.forChild) == 1 {
+		return angularRouteRef{file: owner.relFile, name: owner.forChild[0]}, true
+	}
+	return angularForChildAmongImports(byFile, owner)
+}
+
+// angularForChildAmongImports finds the single forChild array among the files a
+// module imports — the shape of a module that delegates its routing to a sibling
+// routing module.
+func angularForChildAmongImports(byFile map[string]*angularRouterFile, from *angularRouterFile) (angularRouteRef, bool) {
 	var found []angularRouteRef
-	for _, imported := range target.importedFiles {
+	for _, imported := range from.importedFiles {
 		sib := byFile[imported]
 		if sib == nil || len(sib.forChild) != 1 {
 			continue
@@ -639,6 +864,17 @@ func resolveAngularLazyArray(byFile map[string]*angularRouterFile, ref *angularL
 		return found[0], true
 	}
 	return angularRouteRef{}, false
+}
+
+// sortedRouterFiles returns the router files' names in a fixed order, so a search
+// across them cannot depend on map iteration.
+func sortedRouterFiles(byFile map[string]*angularRouterFile) []string {
+	names := make([]string, 0, len(byFile))
+	for name := range byFile {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // emitAngularRoute writes one page route, with an edge to whatever serves it.

@@ -1625,7 +1625,12 @@ func nodeText(node *sitter.Node, src []byte) string {
 // specifier and nothing else.
 type tsAlias struct {
 	replacement string
-	exact       bool
+	// suffix is what follows the `*` in the target, for a mapping whose replacement
+	// does not end at the wildcard: `"@acme/ui/*": ["./packages/ui/*/src/index.ts"]`
+	// resolves `@acme/ui/forms` to `packages/ui/forms/src/index.ts`, not to
+	// `packages/ui/forms`. Empty for the ordinary `["./src/*"]` shape.
+	suffix string
+	exact  bool
 }
 
 type tsAliasRoot struct {
@@ -1761,10 +1766,13 @@ func tryParseTSConfigAliases(tsconfigPath string) (map[string]tsAlias, bool) {
 		}
 		switch {
 		// "@/*": ["./src/*"] → prefix "@/" maps to replacement "src/"
-		case strings.HasSuffix(pattern, "*") && strings.HasSuffix(targets[0], "*"):
+		case strings.HasSuffix(pattern, "*") && strings.Contains(targets[0], "*"):
 			prefix := strings.TrimSuffix(pattern, "*")
-			replacement := strings.TrimSuffix(targets[0], "*")
-			aliases[prefix] = tsAlias{replacement: strings.TrimPrefix(replacement, "./")}
+			head, tail, _ := strings.Cut(targets[0], "*")
+			aliases[prefix] = tsAlias{
+				replacement: strings.TrimPrefix(head, "./"),
+				suffix:      tail,
+			}
 
 		// "@acme/common": ["./packages/common/src/index.ts"] — the bare package
 		// specifier, and the dominant way a monorepo names a sibling package. Dropping
@@ -1812,18 +1820,18 @@ func resolveImportPath(importPath, fileDir string, aliases map[string]tsAlias) (
 		return factpath.Clean(a.replacement), false
 	}
 
-	bestPrefix, bestReplacement := "", ""
+	bestPrefix, bestAlias := "", tsAlias{}
 	for prefix, a := range aliases {
 		if a.exact || !strings.HasPrefix(importPath, prefix) {
 			continue
 		}
 		if len(prefix) > len(bestPrefix) || (len(prefix) == len(bestPrefix) && prefix < bestPrefix) {
-			bestPrefix, bestReplacement = prefix, a.replacement
+			bestPrefix, bestAlias = prefix, a
 		}
 	}
 	if bestPrefix != "" {
 		rest := strings.TrimPrefix(importPath, bestPrefix)
-		return factpath.Clean(bestReplacement + rest), false
+		return factpath.Clean(bestAlias.replacement + rest + bestAlias.suffix), false
 	}
 
 	// Relative imports
@@ -1850,6 +1858,14 @@ var tsModuleExts = []string{".ts", ".tsx", ".js", ".jsx", ".mjs", ".vue", ".svel
 // name (fileSymbolName → "<Folder>Index") is otherwise unmatchable.
 func resolveModuleFile(resolved string, knownFiles map[string]bool) (indexPath, dir string, ok bool) {
 	resolved = filepath.ToSlash(resolved)
+	// The path may already name a file. A tsconfig exact alias maps a bare package
+	// specifier straight onto its entry point — `"@acme/ui": ["./packages/ui/src/
+	// index.ts"]` — so the resolved path carries its extension, and appending another
+	// one matched nothing. Every caller then read the import as unresolvable: in one
+	// workspace that was every lazily-loaded feature module in the application.
+	if knownFiles[resolved] {
+		return resolved, factpath.Dir(resolved), true
+	}
 	for _, ext := range tsModuleExts {
 		if knownFiles[resolved+ext] {
 			return resolved + ext, factpath.Dir(resolved), true

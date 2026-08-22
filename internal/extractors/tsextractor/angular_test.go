@@ -42,6 +42,54 @@ func setupAngularProject(t *testing.T, files map[string]string, angular bool) st
 	return dir
 }
 
+// writeAngularWorkspace writes a workspace whose root tsconfig carries the given
+// compilerOptions, for the alias cases a single-package fixture cannot express.
+func writeAngularWorkspace(t *testing.T, dir, tsconfig string, files map[string]string) {
+	t.Helper()
+	for name, content := range map[string]string{
+		"package.json":  `{"dependencies": {"@angular/core": "^19.0.0"}}`,
+		"tsconfig.json": tsconfig,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for relPath, content := range files {
+		absPath := filepath.Join(dir, relPath)
+		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// extractDir runs the extractor over every TypeScript file under dir.
+func extractDir(t *testing.T, dir string) []facts.Fact {
+	t.Helper()
+	var rel []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		r, rerr := filepath.Rel(dir, path)
+		if rerr == nil && isTypeScriptFile(r) {
+			rel = append(rel, filepath.ToSlash(r))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(rel)
+	out, err := New().Extract(context.Background(), dir, rel)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	return out
+}
+
 func extractAngular(t *testing.T, files map[string]string, angular bool) []facts.Fact {
 	t.Helper()
 	dir := setupAngularProject(t, files, angular)
