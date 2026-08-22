@@ -231,7 +231,7 @@
       {{else}}
       <p class="note">Compared with the {{.Changes.ComparedTo}} · {{.Changes.Headline}}</p>
       <div class="grid">
-        <div class="card"><div class="k">New findings</div><div class="v">{{.Changes.FindingsNew}}</div></div>
+        <div class="card"><div class="k">New findings</div><div class="v">{{if .Changes.NewFindingDetails}}<button type="button" class="count-link" onclick="openModal('new-findings-modal')">{{.Changes.FindingsNew}}</button>{{else}}{{.Changes.FindingsNew}}{{end}}</div></div>
         <div class="card"><div class="k">Resolved findings</div><div class="v">{{.Changes.FindingsResolved}}</div></div>
         <div class="card"><div class="k">Facts added / removed</div><div class="v">+{{.Changes.FactsAdded}} / −{{.Changes.FactsRemoved}}</div></div>
         <div class="card"><div class="k">Dependencies added / removed</div><div class="v">+{{.Changes.EdgesAdded}} / −{{.Changes.EdgesRemoved}}</div></div>
@@ -570,6 +570,22 @@
       </table></div>
     </details>
     {{end}}
+  </div>
+</div>
+{{end}}
+
+{{if .Changes.NewFindingDetails}}
+<div class="modal" id="new-findings-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="New findings since previous snapshot">
+    <div class="modal-head">
+      <h3>New findings <span class="note">({{len .Changes.NewFindingDetails}})</span></h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+    </div>
+    <div class="insight-summary">Structurally introduced since the previous recorded snapshot.</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Category</th><th>Finding</th><th class="num">Confidence</th><th>Evidence</th></tr></thead>
+      <tbody>{{range .Changes.NewFindingDetails}}<tr><td>{{.Label}}</td><td class="title">{{.Title}}</td><td class="num">{{.Confidence}}%</td><td>{{.Evidence}}</td></tr>{{end}}</tbody>
+    </table></div>
   </div>
 </div>
 {{end}}

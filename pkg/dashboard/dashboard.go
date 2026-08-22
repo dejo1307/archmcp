@@ -27,10 +27,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/enola-labs/enola/pkg/bootstrap"
+	"github.com/enola-labs/enola/pkg/diff"
 	"github.com/enola-labs/enola/pkg/facts"
 	"github.com/enola-labs/enola/pkg/history"
 	"github.com/enola-labs/enola/pkg/status"
@@ -134,6 +136,10 @@ type Server struct {
 	labels map[string]string // insight-source allowlist + display labels
 	title  string            // product name in the page title/heading/footer
 	mux    *http.ServeMux
+
+	changeMu      sync.Mutex
+	changeCacheID string
+	changeCache   changeSummary
 
 	// frontDoor is set once this server claims the stable port. Read from every
 	// request handler and written by the claim goroutine, hence atomic.
@@ -388,6 +394,12 @@ type changeSummary struct {
 	FactsAdded, FactsRemoved         int
 	EdgesAdded, EdgesRemoved         int
 	FindingsNew, FindingsResolved    int
+	NewFindingDetails                []changeFinding
+}
+
+type changeFinding struct {
+	Source, Label, Title, Evidence string
+	Confidence                     int
 }
 
 // pageData is the full template model.
@@ -563,7 +575,7 @@ func (s *Server) buildPageForModule(module string) pageData {
 	if data.Receipt != nil {
 		currentSnapshotID = data.Receipt.SnapshotID
 	}
-	data.Changes = readChangeSummary(s.eng.ActiveRepo(), currentSnapshotID)
+	data.Changes = s.readChangeSummary(s.eng.ActiveRepo(), currentSnapshotID)
 
 	// Insight list (grouped by explainer) backing the clickable Insights counter.
 	// Empty → the counter renders as a plain number.
@@ -583,7 +595,18 @@ func (s *Server) buildPageForModule(module string) pageData {
 	return data
 }
 
-func readChangeSummary(repoPath, snapshotID string) changeSummary {
+func (s *Server) readChangeSummary(repoPath, snapshotID string) changeSummary {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
+	if snapshotID != "" && snapshotID == s.changeCacheID {
+		return s.changeCache
+	}
+	result := readChangeSummary(repoPath, snapshotID, s.labels)
+	s.changeCacheID, s.changeCache = snapshotID, result
+	return result
+}
+
+func readChangeSummary(repoPath, snapshotID string, labels map[string]string) changeSummary {
 	if repoPath == "" || snapshotID == "" {
 		return changeSummary{}
 	}
@@ -596,10 +619,12 @@ func readChangeSummary(repoPath, snapshotID string) changeSummary {
 		return changeSummary{}
 	}
 	var entry history.Entry
+	entryIndex := -1
 	found := false
 	for i := len(entries) - 1; i >= 0; i-- {
 		if entries[i].ID == snapshotID {
 			entry = entries[i]
+			entryIndex = i
 			found = true
 			break
 		}
@@ -608,13 +633,31 @@ func readChangeSummary(repoPath, snapshotID string) changeSummary {
 		return changeSummary{}
 	}
 	s := entry.Summary
-	return changeSummary{
+	result := changeSummary{
 		Available: true, Incomparable: s.Incomparable, Initial: s.Initial,
 		Headline: s.Headline(), ComparedTo: "previous recorded snapshot",
 		FactsAdded: s.FactsAdded, FactsRemoved: s.FactsRemoved,
 		EdgesAdded: s.EdgesAdded, EdgesRemoved: s.EdgesRemoved,
 		FindingsNew: s.FindingsNew, FindingsResolved: s.FindingsResolved,
 	}
+	if !s.Incomparable && !s.Initial && entryIndex > 0 && entry.Blob != nil && entries[entryIndex-1].Blob != nil {
+		previous, previousErr := history.Load(root, entries[entryIndex-1])
+		current, currentErr := history.Load(root, entry)
+		if previousErr == nil && currentErr == nil {
+			delta := diff.Compute(previous, current)
+			for _, finding := range delta.FindingsNew {
+				label := labels[finding.Source]
+				if label == "" {
+					label = finding.Source
+				}
+				result.NewFindingDetails = append(result.NewFindingDetails, changeFinding{
+					Source: finding.Source, Label: label, Title: finding.Title,
+					Confidence: int(finding.Confidence*100 + 0.5), Evidence: firstEvidence(finding.Evidence),
+				})
+			}
+		}
+	}
+	return result
 }
 
 var reviewableFileKinds = map[string]string{

@@ -104,12 +104,42 @@ func TestReadChangeSummaryMatchesLoadedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := readChangeSummary(repo, "sha256:loaded")
+	got := readChangeSummary(repo, "sha256:loaded", mergedLabels(nil))
 	if !got.Available || got.FactsAdded != 2 || got.EdgesAdded != 7 || got.FactsRemoved != 0 {
 		t.Fatalf("summary = %+v, want loaded snapshot rather than newest history entry", got)
 	}
-	if got := readChangeSummary(repo, "sha256:missing"); got.Available {
+	if got := readChangeSummary(repo, "sha256:missing", mergedLabels(nil)); got.Available {
 		t.Fatalf("missing snapshot unexpectedly returned %+v", got)
+	}
+}
+
+func TestNewFindingsCardLinksToDrillDown(t *testing.T) {
+	tmpl, err := buildTemplate("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body strings.Builder
+	err = tmpl.Execute(&body, pageData{
+		Title: "enola",
+		Changes: changeSummary{
+			Available:   true,
+			FindingsNew: 1,
+			NewFindingDetails: []changeFinding{{
+				Label: "Dependency cycles", Title: "Cyclic dependency detected",
+				Confidence: 100, Evidence: "src/core",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`onclick="openModal('new-findings-modal')"`, `id="new-findings-modal"`,
+		"Cyclic dependency detected", "src/core",
+	} {
+		if !strings.Contains(body.String(), want) {
+			t.Errorf("page missing new-finding drill-down content %q", want)
+		}
 	}
 }
 
