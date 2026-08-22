@@ -110,8 +110,9 @@ func (c angularCounts) total() int {
 // their injection edges. It runs as a post-pass over the declaration facts, the way
 // emberEnrich does, because a class's role and its members are decided by the same
 // decorator the declaration walk has already moved past.
-func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, ctx *extractCtx, aliases map[string]tsAlias) ([]facts.Fact, angularCounts) {
+func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, ctx *extractCtx, aliases map[string]tsAlias) ([]facts.Fact, angularCounts, map[string]*angularTemplate) {
 	var counts angularCounts
+	inline := map[string]*angularTemplate{}
 
 	imports, external := buildAngularImports(kinds, root, ctx, aliases)
 	byName := make(map[string]int, len(in))
@@ -148,7 +149,9 @@ func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, 
 		// and orphan readings see a class nothing in the repository names — which
 		// is true, and not what it means.
 		f.Props["framework_registered"] = true
-		angularDecoratorProps(kinds, args, ctx, role, f.Props)
+		if tpl := angularDecoratorProps(kinds, args, ctx, role, f.Props); tpl != nil {
+			inline[f.Name] = tpl
+		}
 
 		body := findChildByKind(kinds, class, "class_body")
 		rels, c := angularInjects(kinds, body, ctx, imports, external, local)
@@ -159,7 +162,7 @@ func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, 
 			}
 		}
 	}
-	return in, counts
+	return in, counts, inline
 }
 
 // angularClassNodes returns every class declaration at file scope, reaching
@@ -209,10 +212,12 @@ func angularRole(kinds *tsutil.KindTable, class *sitter.Node, src []byte) (strin
 // `standalone` is recorded only when the source states it. Angular's default
 // flipped with v19, so absence means "this repository's Angular version decides",
 // and writing either value would be a guess about a version this pass does not read.
-func angularDecoratorProps(kinds *tsutil.KindTable, args *sitter.Node, ctx *extractCtx, role string, props map[string]any) {
+// angularDecoratorProps records what the decorator's own object literal states, and
+// returns the scan of an inline template if it carries one.
+func angularDecoratorProps(kinds *tsutil.KindTable, args *sitter.Node, ctx *extractCtx, role string, props map[string]any) *angularTemplate {
 	obj := firstObjectArg(kinds, args)
 	if obj == nil {
-		return
+		return nil
 	}
 	switch role {
 	case "component", "directive":
@@ -232,9 +237,13 @@ func angularDecoratorProps(kinds *tsutil.KindTable, args *sitter.Node, ctx *extr
 		// because that is the only form the template pass can look a file up by.
 		props["angular_template_url"] = path.Clean(factpath.Join(ctx.dir, url))
 	}
-	if hasObjectProp(kinds, obj, ctx.src, "template") {
+	if v := objectPropValue(kinds, obj, ctx.src, "template"); v != nil {
 		props["angular_inline_template"] = true
+		// An inline template is markup like any other; only its delimiters differ.
+		body := strings.Trim(nodeText(v, ctx.src), "`\"'")
+		return scanAngularTemplate([]byte(body), ctx.relFile)
 	}
+	return nil
 }
 
 // angularInjects returns the injects relations a class body declares, by both
@@ -561,12 +570,6 @@ func objectBoolProp(kinds *tsutil.KindTable, obj *sitter.Node, src []byte, key s
 		return false, true
 	}
 	return false, false
-}
-
-// hasObjectProp reports whether an object literal states a property at all,
-// whatever its value.
-func hasObjectProp(kinds *tsutil.KindTable, obj *sitter.Node, src []byte, key string) bool {
-	return objectPropValue(kinds, obj, src, key) != nil
 }
 
 // objectPropValue returns the value node of a named property of an object literal.

@@ -188,12 +188,20 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// framework flags and path aliases above are read-only, and extractFile is a
 	// pure function of (src, relFile, …), so per-file work is independent. Results
 	// are merged in file order for deterministic output.
-	var tsFiles []string
+	var tsFiles, htmlFiles []string
 	knownFiles := make(map[string]bool)
 	for _, relFile := range files {
 		if isTypeScriptFile(relFile) {
 			tsFiles = append(tsFiles, relFile)
 			knownFiles[filepath.ToSlash(relFile)] = true
+			continue
+		}
+		// An Angular component's template is a separate .html file, and the members
+		// and child components it names are frequently referenced nowhere else. It is
+		// read only in an Angular repository: everywhere else a .html file is a page,
+		// a fixture or documentation, and scanning it would model nothing.
+		if isAngular && isAngularTemplateFile(relFile) && !facts.IsTestPath(relFile) {
+			htmlFiles = append(htmlFiles, relFile)
 		}
 	}
 
@@ -219,7 +227,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 		aliases := aliasesForDir(aliasRoots, factpath.Dir(relFile))
 		var res tsFileResult
-		res.facts, res.angular, res.angularRouter = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, orms, aliases, knownFiles, grpcStubs)
+		res.facts, res.angular, res.angularRouter, res.angularInline = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, orms, aliases, knownFiles, grpcStubs)
 		// Routers, mounts and held-back routes for the repo-wide mount pass below.
 		// Collected here because resolving an import needs this file's path aliases,
 		// which are in scope only during the per-file walk. Same test-path gate as
@@ -231,6 +239,26 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		return res
 	})
 
+	// Templates are scanned in parallel with no parser: an Angular template is not
+	// HTML once its @if/@for blocks are in it, and both dialects are live in the
+	// same repositories.
+	templates := make(map[string]*angularTemplate, len(htmlFiles))
+	if len(htmlFiles) > 0 {
+		scans := parallel.MapFiles(ctx, htmlFiles, func(relFile string) *angularTemplate {
+			src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+			if err != nil {
+				log.Printf("[ts-extractor] error reading %s: %v", relFile, err)
+				return nil
+			}
+			return scanAngularTemplate(src, relFile)
+		})
+		for i, t := range scans {
+			if t != nil {
+				templates[htmlFiles[i]] = t
+			}
+		}
+	}
+
 	// Group files by directory for module detection. Files that produced no
 	// facts (unreadable, or skipped as minified/bundled) do not register a
 	// module, so a directory containing only skipped bundles (e.g. a vendored
@@ -240,11 +268,15 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	var angular angularCounts
 	var angularRouters []*angularRouterFile
 	var angularRoutes angularCounts
+	inlineTemplates := map[string]*angularTemplate{}
 	for i, res := range perFile {
 		if res.routers != nil {
 			routerFiles = append(routerFiles, res.routers)
 		}
 		angular.merge(res.angular)
+		for name, t := range res.angularInline {
+			inlineTemplates[name] = t
+		}
 		if res.angularRouter != nil {
 			angularRouters = append(angularRouters, res.angularRouter)
 		}
@@ -287,6 +319,10 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		angularRoutes.merge(c)
 	}
 
+	// Templates are joined to the components that own them here, where the members of
+	// every class and the selector every component declared are both in hand.
+	angularTemplateCounts := attachAngularTemplates(allFacts, templates, inlineTemplates)
+
 	// Every injects edge is made to name a symbol this snapshot holds, now that the
 	// whole repository is assembled; see reconcileAngularInjects.
 	if isAngular {
@@ -300,6 +336,12 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	if angular.total() > 0 {
 		if f, ok := extcoverage.Fact(repoPath, "typescript:angular-di", "angular_inject",
 			angular.resolved, angular.unresolved); ok {
+			allFacts = append(allFacts, f)
+		}
+	}
+	if angularTemplateCounts.total() > 0 {
+		if f, ok := extcoverage.Fact(repoPath, "typescript:angular-templates", "angular_template_ref",
+			angularTemplateCounts.resolved, angularTemplateCounts.unresolved); ok {
 			allFacts = append(allFacts, f)
 		}
 	}
@@ -359,7 +401,7 @@ type extractCtx struct {
 	aliases     map[string]tsAlias  // this directory's tsconfig path aliases, for resolving an import written as a bare specifier
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile) {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate) {
 	// The grammar is chosen here, so the kind table is too: TypeScript and TSX assign
 	// different meanings to the same symbol ids, and everything below reads node kinds
 	// through this table. See kinds.go.
@@ -367,24 +409,24 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	kinds := tsKindsFor(isTSX)
 
 	if isVueFile(relFile) {
-		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases), angularCounts{}, nil
+		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases), angularCounts{}, nil, nil
 	}
 	if isSvelteFile(relFile) {
-		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases), angularCounts{}, nil
+		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases), angularCounts{}, nil, nil
 	}
 	if isGraphQLDocFile(relFile) {
 		if facts.IsTestPath(relFile) {
-			return nil, angularCounts{}, nil
+			return nil, angularCounts{}, nil, nil
 		}
-		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation), angularCounts{}, nil
+		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation), angularCounts{}, nil, nil
 	}
 	if isHbsFile(relFile) {
 		// Handlebars is only modeled where Ember's resolver gives the names
 		// deterministic meaning; a lone .hbs in a non-Ember repo stays out.
 		if !isEmber {
-			return nil, angularCounts{}, nil
+			return nil, angularCounts{}, nil, nil
 		}
-		return e.extractEmberHbs(src, relFile, knownFiles), angularCounts{}, nil
+		return e.extractEmberHbs(src, relFile, knownFiles), angularCounts{}, nil, nil
 	}
 	// A Glimmer template-tag file is TypeScript/JavaScript with embedded
 	// <template> blocks: blank the blocks in place (newlines preserved, so every
@@ -435,7 +477,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
-		return result, angularCounts{}, nil
+		return result, angularCounts{}, nil, nil
 	}
 
 	tree := parser.Parse(src, nil)
@@ -521,8 +563,9 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// the node the declaration walk stopped at.
 	var angular angularCounts
 	var router *angularRouterFile
+	var inlineTemplates map[string]*angularTemplate
 	if isAngular {
-		result, angular = angularEnrich(kinds, result, root, ctx, aliases)
+		result, angular, inlineTemplates = angularEnrich(kinds, result, root, ctx, aliases)
 		// The route arrays and router calls this file declares, for the repo-wide
 		// walk in composeAngularRoutes. A test file's router configures a fixture,
 		// not the application, the same gate the server-route passes apply.
@@ -546,7 +589,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		})
 	}
 
-	return result, angular, router
+	return result, angular, router, inlineTemplates
 }
 
 func (e *TSExtractor) extractImports(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {
@@ -1332,7 +1375,20 @@ func isMinifiedSource(content []byte) bool {
 }
 
 // OwnsFile implements plugin.FileOwner for incremental caching.
-func (e *TSExtractor) OwnsFile(relFile string) bool { return isTypeScriptFile(relFile) }
+// OwnsFile includes .html, because an Angular component's references live in its
+// template and a template edit must re-run this extractor. The contract permits a
+// superset — over-inclusion only reduces cache reuse — and a .html file in a
+// non-Angular repository is read by nothing, so the only cost is a cache key that
+// notices a page changing.
+func (e *TSExtractor) OwnsFile(relFile string) bool {
+	return isTypeScriptFile(relFile) || isAngularTemplateFile(relFile)
+}
+
+// isAngularTemplateFile reports whether a path is a candidate component template.
+func isAngularTemplateFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".html" || ext == ".htm"
+}
 
 // hasChildKind reports whether node has a direct child of the given kind.
 func hasChildKind(kinds *tsutil.KindTable, node *sitter.Node, kind string) bool {

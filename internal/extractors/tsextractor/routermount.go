@@ -50,6 +50,9 @@ type tsFileResult struct {
 	// for the repo-wide walk: a lazy loadChildren has its path in one file and its
 	// routes in another.
 	angularRouter *angularRouterFile
+	// angularInline holds the inline templates this file's components declare,
+	// keyed by component symbol name, for the repo-wide template join.
+	angularInline map[string]*angularTemplate
 }
 
 // --- what one file contributes ---

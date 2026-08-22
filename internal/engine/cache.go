@@ -2124,7 +2124,18 @@ import (
 // through an enum or an `as const` map in this file or the one it was imported
 // from. The first two are TypeScript-wide and affect every repository with a
 // workspace-style tsconfig, not only Angular ones.
-const cacheVersion = "v227"
+// v228: Angular templates. A component member is very often referenced ONLY from
+// its template — `(click)="save()"`, `{{ total }}` — and so is a child component,
+// which appears as a tag and nowhere else in the class; 4,251 external templates and
+// 10,844 inline ones were previously walked past, so every such symbol read as code
+// nothing calls. Templates are now scanned (both the older `*ngIf` dialect and
+// Angular 17 `@if`/`@for`/`@defer` blocks) and joined to the component that owns
+// them. A binding is an edge only when it names a member that component declares; a
+// tag resolves against a DECLARED selector, matched whole so a compound selector
+// needs both of its halves; anything else is counted by cause, never guessed. The
+// extractor now also owns .html for cache-invalidation purposes, since a template
+// edit changes what it emits.
+const cacheVersion = "v228"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
