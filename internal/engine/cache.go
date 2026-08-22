@@ -2155,7 +2155,17 @@ import (
 // tail, folded repo-wide because the base belongs to the service that owns the
 // resource and is named by every service that touches it. An unresolved LEADING
 // operand means the prefix is unknown and the call contributes nothing.
-const cacheVersion = "v230"
+// v231: three corrections found by auditing what the explainers now report on
+// Angular repositories. A tsconfig `paths` target is resolved against `baseUrl`,
+// which TypeScript does and this did not — in one workspace that meant every
+// aliased import resolved to nothing, and with it every module composition edge
+// those imports carry. `loadComponent: () => import('./page')` binds to the class
+// that file declares, so a page reachable only through a lazy route is no longer a
+// component nothing renders. And framework_registered is now set ONLY on NgModules:
+// after the template, composition and injection passes a component, directive, pipe
+// or service is named by edges the graph holds, and flagging them as
+// framework-invoked would suppress the dead code those edges make findable.
+const cacheVersion = "v231"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

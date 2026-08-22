@@ -145,7 +145,6 @@ export class UserCardComponent {
 	for key, want := range map[string]any{
 		facts.PropFramework:    AngularFramework,
 		"web_component":        "component",
-		"framework_registered": true,
 		"angular_selector":     "app-user-card",
 		"angular_standalone":   true,
 		"angular_template_url": "src/app/user-card.component.html",
@@ -187,8 +186,15 @@ export class ThingModule {}
 		if got := f.Props["web_component"]; got != want {
 			t.Errorf("%s: web_component = %v, want %q", name, got, want)
 		}
-		if f.Props["framework_registered"] != true {
-			t.Errorf("%s: not marked framework_registered", name)
+	}
+	// Only a module's use is undecidable from the graph. Flagging the rest would
+	// suppress the dead code the template, composition and injection edges find.
+	if symbolNamed(t, fs, "src/app.ThingModule").Props["framework_registered"] != true {
+		t.Error("an NgModule must be marked framework_registered")
+	}
+	for _, name := range []string{"src/app.HighlightDirective", "src/app.TruncatePipe", "src/app.ThingService"} {
+		if _, ok := symbolNamed(t, fs, name).Props["framework_registered"]; ok {
+			t.Errorf("%s: framework_registered would hide an unreferenced declaration the graph can see", name)
 		}
 	}
 	if got := symbolNamed(t, fs, "src/app.HighlightDirective").Props["angular_selector"]; got != "[appHighlight]" {

@@ -927,6 +927,13 @@ func emitAngularRoute(out *[]facts.Fact, f *angularRouterFile, e angularRouteEnt
 	if target, ok := angularRouteTarget(f, e); ok {
 		props["handler"] = target
 		rels = append(rels, facts.Relation{Kind: facts.RelHandledBy, Target: target})
+	} else if e.lazyComponent != nil {
+		// `loadComponent: () => import('./page')` names the file's DEFAULT export,
+		// which the import statement does not spell. The file is recorded here and
+		// the class it declares is resolved once every symbol is in hand — without
+		// it, a page component reachable only through a lazy route has no inbound
+		// edge at all and reads as code nothing renders.
+		props["angular_lazy_component_file"] = e.lazyComponent.file
 	}
 	for _, g := range e.guards {
 		if target, ok := angularSymbolRef(f, g); ok {

@@ -146,10 +146,19 @@ func angularEnrich(kinds *tsutil.KindTable, in []facts.Fact, root *sitter.Node, 
 		f := &in[idx]
 		f.Props[facts.PropFramework] = AngularFramework
 		f.Props["web_component"] = role
-		// The container constructs every one of these. Without this the dead-code
-		// and orphan readings see a class nothing in the repository names — which
-		// is true, and not what it means.
-		f.Props["framework_registered"] = true
+		// framework_registered marks a class whose use is NOT derivable from the
+		// graph, and after the template, composition and injection passes that is
+		// only the modules: a root module is named by a bootstrap call and a lazy one
+		// by an import this pass may not resolve, while a component is named by a
+		// template tag, a route or a declarations array, a pipe by its name in an
+		// expression, and a service by an injection site — all of which are edges
+		// now. Flagging those too would hide the dead code the edges make findable:
+		// on one application the unreferenced count went from 10 to 0 across
+		// components, directives, pipes and services, and every one of those zeros
+		// is a reading the flag would have suppressed either way.
+		if role == "ng_module" {
+			f.Props["framework_registered"] = true
+		}
 		if tpl := angularDecoratorProps(kinds, args, ctx, role, f.Props); tpl != nil {
 			inline[f.Name] = tpl
 		}
@@ -517,6 +526,41 @@ func buildAngularImports(kinds *tsutil.KindTable, root *sitter.Node, ctx *extrac
 // coverage and it is followed by impact analysis exactly as a real edge would be.
 func reconcileAngularInjects(all []facts.Fact) angularCounts {
 	return reconcileAngularEdges(all, facts.RelInjects, facts.RelDependsOn)
+}
+
+// resolveAngularLazyComponents binds a route whose component is a file's default
+// export to the class that file declares. One candidate required: a file declaring
+// two Angular classes names neither unambiguously.
+func resolveAngularLazyComponents(all []facts.Fact) angularCounts {
+	var counts angularCounts
+	byFile := map[string][]string{}
+	for _, f := range all {
+		if f.Kind != facts.KindSymbol || f.PropString(facts.PropFramework) != AngularFramework {
+			continue
+		}
+		if f.PropString("web_component") == "component" {
+			byFile[f.File] = append(byFile[f.File], f.Name)
+		}
+	}
+	for i := range all {
+		f := &all[i]
+		file := f.PropString("angular_lazy_component_file")
+		if f.Kind != facts.KindRoute || file == "" {
+			continue
+		}
+		delete(f.Props, "angular_lazy_component_file")
+		cand := byFile[file]
+		if len(cand) != 1 {
+			counts.miss("ambiguous_lazy_component")
+			continue
+		}
+		counts.resolved++
+		f.Props["handler"] = cand[0]
+		if !f.HasRelation(facts.RelHandledBy, cand[0]) {
+			f.Relations = append(f.Relations, facts.Relation{Kind: facts.RelHandledBy, Target: cand[0]})
+		}
+	}
+	return counts
 }
 
 // reconcileAngularEdges is the general form: it holds for every edge this dialect

@@ -342,6 +342,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// whole repository is assembled; see reconcileAngularInjects.
 	if isAngular {
 		angular.merge(reconcileAngularInjects(allFacts))
+		angularRoutes.merge(resolveAngularLazyComponents(allFacts))
 	}
 
 	// What the injection pass could name, and what it could not, by cause. Emitted
@@ -1832,6 +1833,22 @@ func withSvelteKitLibDefault(roots []tsAliasRoot) []tsAliasRoot {
 // tryParseTSConfigAliases reads path alias mappings from a tsconfig.json,
 // e.g. "@/*": ["./src/*"] maps prefix "@/" to replacement "src/". ok is
 // false if the file is missing/invalid or declares no usable paths.
+// tsAliasTarget resolves one `paths` target against the tsconfig's baseUrl.
+//
+// A target that already starts with "./" is relative to the tsconfig's own
+// directory and is left alone; anything else is relative to baseUrl, which is what
+// TypeScript does and what a workspace that sets `"baseUrl": "./src"` relies on.
+func tsAliasTarget(base, target string) string {
+	target = strings.TrimSpace(target)
+	if strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../") {
+		return strings.TrimPrefix(target, "./")
+	}
+	if base == "" {
+		return target
+	}
+	return base + "/" + target
+}
+
 func tryParseTSConfigAliases(tsconfigPath string) (map[string]tsAlias, bool) {
 	data, err := os.ReadFile(tsconfigPath)
 	if err != nil {
@@ -1840,13 +1857,24 @@ func tryParseTSConfigAliases(tsconfigPath string) (map[string]tsAlias, bool) {
 
 	var config struct {
 		CompilerOptions struct {
-			Paths map[string][]string `json:"paths"`
+			// BaseUrl is what a non-relative `paths` target is resolved against.
+			// TypeScript resolves `"@common/*": ["common/*"]` under a `baseUrl` of
+			// "./src" to src/common/*, and ignoring it resolved one directory too
+			// high — which in one workspace meant every aliased import in the
+			// application resolved to nothing, and with it every module composition
+			// edge those imports carry.
+			BaseURL string              `json:"baseUrl"`
+			Paths   map[string][]string `json:"paths"`
 		} `json:"compilerOptions"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, false
 	}
 
+	base := strings.Trim(strings.TrimPrefix(strings.TrimSpace(config.CompilerOptions.BaseURL), "./"), "/")
+	if base == "." {
+		base = ""
+	}
 	aliases := make(map[string]tsAlias)
 	for pattern, targets := range config.CompilerOptions.Paths {
 		if len(targets) == 0 {
@@ -1858,7 +1886,7 @@ func tryParseTSConfigAliases(tsconfigPath string) (map[string]tsAlias, bool) {
 			prefix := strings.TrimSuffix(pattern, "*")
 			head, tail, _ := strings.Cut(targets[0], "*")
 			aliases[prefix] = tsAlias{
-				replacement: strings.TrimPrefix(head, "./"),
+				replacement: tsAliasTarget(base, head),
 				suffix:      tail,
 			}
 
@@ -1872,7 +1900,7 @@ func tryParseTSConfigAliases(tsconfigPath string) (map[string]tsAlias, bool) {
 		// is exactly why it went unnoticed.
 		case !strings.HasSuffix(pattern, "*") && !strings.HasSuffix(targets[0], "*"):
 			aliases[pattern] = tsAlias{
-				replacement: strings.TrimPrefix(targets[0], "./"),
+				replacement: tsAliasTarget(base, targets[0]),
 				exact:       true,
 			}
 		}

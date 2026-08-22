@@ -198,3 +198,60 @@ func TestAngularWorkspaceProjectIsGated(t *testing.T) {
 		}
 	}
 }
+
+// TypeScript resolves a non-relative `paths` target against `baseUrl`. Ignoring it
+// resolved one directory too high, and in one workspace every aliased import — and
+// so every composition edge those imports carry — resolved to nothing.
+func TestAngularBaseURLAliasResolves(t *testing.T) {
+	dir := t.TempDir()
+	writeAngularWorkspace(t, dir, `{"compilerOptions":{"baseUrl":"./src","paths":{"@common/*":["common/*"]}}}`, map[string]string{
+		"src/common/dialogs/module.ts": `import { NgModule } from '@angular/core';
+
+@NgModule({})
+export class DialogsModule {}
+`,
+		"src/core.module.ts": `import { NgModule } from '@angular/core';
+import { DialogsModule } from '@common/dialogs/module';
+
+@NgModule({ imports: [DialogsModule] })
+export class CoreModule {}
+`,
+	})
+	fs := extractDir(t, dir)
+
+	if f := symbolNamed(t, fs, "src.CoreModule"); !hasRelation(f, facts.RelDependsOn, "src/common/dialogs.DialogsModule") {
+		t.Errorf("baseUrl-relative alias did not resolve; relations: %+v", f.Relations)
+	}
+}
+
+// `loadComponent: () => import('./page')` names the file's default export, which the
+// import statement does not spell. Without binding it, a page reachable only through
+// a lazy route reads as a component nothing renders.
+func TestAngularLazyDefaultComponentBinds(t *testing.T) {
+	fs := extractAngular(t, map[string]string{
+		"src/app/file/index.ts": `import { Component } from '@angular/core';
+
+@Component({ template: '<i></i>' })
+export default class FilePage {}
+`,
+		"src/app/app.routes.ts": `import { Routes } from '@angular/router';
+
+export const routes: Routes = [
+  { path: 'file', loadComponent: async () => import('./file') },
+];
+`,
+		"src/app/app.config.ts": `import { provideRouter } from '@angular/router';
+import { routes } from './app.routes';
+
+export const appConfig = { providers: [provideRouter(routes)] };
+`,
+	}, true)
+
+	f := routeNamed(t, fs, "/file")
+	if f.PropString("handler") == "" {
+		t.Errorf("a default-export lazy component was not bound; props: %v", f.Props)
+	}
+	if f.PropString("angular_lazy_component_file") != "" {
+		t.Error("the unresolved marker prop survived into the snapshot")
+	}
+}

@@ -69,7 +69,7 @@ the entities the claim is about. There are sixteen, and they fall into six kinds
 - **Graph shape.** `dependency-depth` measures the longest transitive import chain;
   `exported-surface` flags large modules that export nearly everything.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
-  against ten known taxonomies, then flags imports that run the wrong way through it.
+  against eleven known taxonomies, then flags imports that run the wrong way through it.
   A repo that DECLARES its layer order is verdicted against the declaration as well:
   that pattern is stated rather than guessed, so it and its violations are proof-class.
   It sits beside the recognised pattern, not in place of it — recognition scores itself
