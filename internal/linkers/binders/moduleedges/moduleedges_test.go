@@ -118,3 +118,62 @@ func TestBind_CallsIntoAnotherRepositoryDeriveNothing(t *testing.T) {
 		t.Fatalf("a cross-repository call must derive no module edge: %v", got)
 	}
 }
+
+func injects(targets ...string) []facts.Relation {
+	out := make([]facts.Relation, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, facts.Relation{Kind: facts.RelInjects, Target: t})
+	}
+	return out
+}
+
+// A constructor-injected collaborator is how a dependency is declared under a DI
+// container, and there is frequently no call or import edge beside it: the
+// container does the constructing. The pair must reach the module layer, under the
+// same guards as every other relation — a target naming no known symbol derives
+// nothing, and one inside the same directory is not an edge.
+func TestBind_InjectedCollaboratorsBecomeModuleEdges(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		module("app/controllers"), module("app/services"), module("app/models"),
+		symbol("UsersController", "app/controllers/users_controller.rb",
+			injects("UserService", "AuditService", "UsersController#helper", "ContainerRegisteredThing")...),
+		symbol("UsersController#helper", "app/controllers/users_controller.rb"),
+		symbol("UserService", "app/services/user_service.rb"),
+		symbol("AuditService", "app/services/audit_service.rb"),
+		symbol("Order", "app/models/order.rb"),
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	edges := derivedEdges(store)
+	if got, ok := edges["app/controllers -> app/services"]; !ok || got != 2 {
+		t.Errorf("injection edges = %v, want app/controllers -> app/services weighted 2", edges)
+	}
+	if _, ok := edges["app/controllers -> app/controllers"]; ok {
+		t.Error("an injection inside one directory is not a module edge")
+	}
+	if _, ok := edges["app/controllers -> app/models"]; ok {
+		t.Error("derived an edge for an injected name no symbol declares")
+	}
+}
+
+// The pair an extractor already stated stays the extractor's. An injection that
+// merely restates an import must not appear twice in the module graph.
+func TestBind_InjectionDoesNotRestateAnExtractorEdge(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		module("app/controllers"), module("app/services"),
+		facts.Fact{Kind: facts.KindDependency, Name: "app/controllers/users_controller.rb", File: "app/controllers/users_controller.rb", Repo: "app",
+			Relations: []facts.Relation{{Kind: facts.RelImports, Target: "app/services"}}},
+		symbol("UsersController", "app/controllers/users_controller.rb", injects("UserService")...),
+		symbol("UserService", "app/services/user_service.rb"),
+	)
+	if err := New().Bind(context.Background(), store); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if edges := derivedEdges(store); len(edges) != 0 {
+		t.Errorf("restated an edge the extractor already carries: %v", edges)
+	}
+}

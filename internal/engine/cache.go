@@ -2244,7 +2244,16 @@ import (
 // after the template, composition and injection passes a component, directive, pipe
 // or service is named by edges the graph holds, and flagging them as
 // framework-invoked would suppress the dead code those edges make findable.
-const cacheVersion = "v248"
+// v249: dependency injection reaches the module layer. The module-edges binder
+// rolled up calls, dependencies and instantiations but not injections — and a
+// constructor parameter IS how a dependency is declared under a DI container, with
+// frequently no call, instantiation or import edge beside it to carry the pair.
+// Adding the relation takes an Angular storefront library from 3,895 derived module
+// edges to 6,128, a Java monolith from 1,407 to 1,700 and an ASP.NET Core media
+// server from 68 to 97. Every reading that walks the module graph moves with it,
+// by value rather than by count: no explainer reports a different NUMBER of
+// findings on the corpus, while one storefront's deepest chain becomes 78 not 77.
+const cacheVersion = "v249"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
