@@ -216,7 +216,7 @@ func TestHandlerDegradesGracefully(t *testing.T) {
 	}
 	body := rec.Body.String()
 	wantContains := []string{
-		"location.reload()",              // JS-driven auto-refresh mechanism
+		"Refresh data",                   // explicit refresh; investigations are never interrupted
 		"Ready to map this repository.",  // product-facing empty state
 		"No snapshot loaded yet",         // degraded current receipt
 		"No graph loaded in this server", // degraded graph receipt
@@ -225,6 +225,9 @@ func TestHandlerDegradesGracefully(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
 		}
+	}
+	if strings.Contains(body, "setTimeout(function () { location.reload()") || strings.Contains(body, "updates every") {
+		t.Error("dashboard still contains automatic refresh behavior")
 	}
 }
 

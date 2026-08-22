@@ -1,6 +1,6 @@
 // Package dashboard serves a read-only localhost HTTP dashboard alongside the
-// enola MCP server. It binds a free ephemeral port on 127.0.0.1 and renders —
-// refreshing every 30 seconds — the same activity data as --status plus the
+// enola MCP server. It binds a free ephemeral port on 127.0.0.1 and renders the
+// same activity data as --status plus the
 // contents of the current-snapshot and graph-wide receipt.json files, so a user
 // can visually inspect what the snapshot captured.
 //
@@ -37,9 +37,6 @@ import (
 	"github.com/enola-labs/enola/pkg/history"
 	"github.com/enola-labs/enola/pkg/status"
 )
-
-// refreshSeconds is the client-side auto-refresh interval, stated on the page.
-const refreshSeconds = 30
 
 //go:embed page.html.tmpl
 var pageTemplate string
@@ -408,8 +405,7 @@ type changeFinding struct {
 
 // pageData is the full template model.
 type pageData struct {
-	RefreshSeconds int
-	Title          string
+	Title string
 
 	// This server's own identity. Never sourced from the cross-process aggregate:
 	// with several agent terminals open, that would name a sibling process.
@@ -490,9 +486,8 @@ type pageData struct {
 // module if non-empty. Every source degrades gracefully to a note on error.
 func (s *Server) buildPageForModule(module string) pageData {
 	data := pageData{
-		RefreshSeconds: refreshSeconds,
-		Title:          s.title,
-		Port:           s.port,
+		Title: s.title,
+		Port:  s.port,
 	}
 
 	now := time.Now()

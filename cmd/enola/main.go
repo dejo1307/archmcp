@@ -310,7 +310,7 @@ func main() {
 			log.Printf("dashboard: not started: %v (continuing without it)", err)
 		} else {
 			tracker.SetDashboardPort(dash.Port())
-			fmt.Fprintf(os.Stderr, "Dashboard: %s (auto-refreshes every 30s)\n", dash.URL())
+			fmt.Fprintf(os.Stderr, "Dashboard: %s (refresh data explicitly)\n", dash.URL())
 			if opts.StablePort > 0 {
 				fmt.Fprintf(os.Stderr, "Shared URL: http://127.0.0.1:%d (whichever server holds it lists all the others)\n", opts.StablePort)
 			}

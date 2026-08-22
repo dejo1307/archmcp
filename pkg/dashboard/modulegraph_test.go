@@ -40,10 +40,12 @@ func TestModuleGraphPageExplainsScopeAndProvidesModuleTable(t *testing.T) {
 	body := rec.Body.String()
 
 	for _, want := range []string{
-		"Showing 2 of 2 connected modules", "1 visible dependencies",
-		"Most-connected modules in this view", "Used by", "Depends on",
+		"Showing 2 of 2 connected modules", "1 visible module dependencies",
+		"Most-connected modules in this view", "Consumer modules", "Dependency modules",
 		`onclick="focusModule('`, "Search every module", "Layered by dependency direction",
 		"selectDependency(this)", "module-level evidence", "window.location.assign('/?module='",
+		"Architecture inspector", "Nothing selected", "Fit view", "toggleGraphFit(this)",
+		"Map shows module imports", "symbol-level finding", "enola-selected-finding",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("module graph page missing %q", want)

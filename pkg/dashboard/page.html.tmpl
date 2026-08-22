@@ -16,7 +16,7 @@
       margin: 0; padding: 1.5rem 1.25rem 3rem; background: var(--bg); color: var(--fg);
       font: 14px/1.55 "Instrument Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    .wrap { max-width: 1000px; margin: 0 auto; }
+    .wrap { max-width: 1180px; margin: 0 auto; }
     header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem; margin-bottom: .25rem; }
     h1, h2, h3 { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     h1 { font-size: 1.4rem; margin: 0; }
@@ -47,6 +47,7 @@
     .project-link svg { width: 13px; height: 13px; fill: currentColor; }
     code { background: var(--th); padding: .05rem .3rem; border-radius: 4px; }
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
+    .top-actions { display: flex; align-items: center; gap: .55rem; }
     .brand { display: flex; align-items: center; font-size: 1.15rem; font-weight: 750; letter-spacing: -.04em; }
     .brand h1 { font: inherit; margin: 0; }
     .brand-dot { color: var(--violet); }
@@ -94,10 +95,15 @@
     .graph-search:focus { border-color: #6f8fff; box-shadow: 0 0 0 2px rgba(111,143,255,.14); }
     .graph-search-form { display: flex; gap: .4rem; }
     .secondary-action { border: 1px solid var(--border); border-radius: 8px; padding: .5rem .7rem; background: var(--card); color: var(--fg); cursor: pointer; font: inherit; font-weight: 600; }
-    .explorer { display: flex; flex-direction: column; min-height: 500px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #07112d; }
-    .findings-pane { border-top: 1px solid var(--border); background: #08112b; padding: .85rem 1rem; }
+    .explorer { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 500px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #07112d; }
+    .inspector-pane { min-width: 0; border-left: 1px solid var(--border); background: #08112b; }
+    .inspector-head { padding: .85rem 1rem; border-bottom: 1px solid var(--border); }
+    .inspector-head h3 { margin: 0; font-size: .88rem; }
+    .inspector-head p { margin: .2rem 0 0; color: #7180aa; font-size: .68rem; }
+    .inspector-empty { padding: .9rem 1rem; color: var(--muted); font-size: .75rem; }
+    .findings-pane { border-top: 1px solid var(--border); padding: .85rem 1rem; }
     .findings-pane h3 { margin: .2rem .35rem .7rem; font-size: .82rem; }
-    .findings-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0 .9rem; max-height: 230px; overflow: auto; }
+    .findings-groups { max-height: 390px; overflow: auto; }
     .finding-group { border-top: 1px solid var(--border); }
     .finding-group:first-of-type { border-top: 0; }
     .finding-group > summary { display: flex; justify-content: space-between; gap: .5rem; cursor: pointer; padding: .65rem .35rem; color: #cbd3eb; font-size: .76rem; font-weight: 600; list-style: none; }
@@ -109,6 +115,7 @@
     .graph-pane { position: relative; display: flex; flex-direction: column; min-width: 0; }
     .graph-canvas { flex: 1; min-height: 420px; overflow: auto; padding: .5rem; background-image: radial-gradient(rgba(139,165,255,.13) .7px, transparent .7px); background-size: 18px 18px; }
     .module-graph { display: block; width: auto; min-width: 100%; height: auto; }
+    .graph-canvas.fit .module-graph { width: 100%; min-width: 100%; }
     .module-edge { stroke: #536a9f; stroke-width: 1.2; opacity: .34; transition: opacity .18s, stroke .18s; pointer-events: none; }
     .module-edge-hit { stroke: transparent; stroke-width: 12; cursor: pointer; }
     .module-edge-hit:hover + .module-edge { opacity: 1; stroke: #9b75e8; stroke-width: 2; }
@@ -119,11 +126,11 @@
     .module-node[data-role="selected"] rect { fill: #23336b; stroke: #9b75e8; stroke-width: 2; }
     .module-node.dim, .module-edge.dim { opacity: .12; }
     .module-edge.active { opacity: .9; stroke: #9b75e8; stroke-width: 1.8; }
-    .module-detail { display: none; border-top: 1px solid var(--border); padding: .8rem 1rem; background: #0a1432; }
-    .module-detail.open { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+    .module-detail { display: none; padding: .9rem 1rem; background: #0a1432; }
+    .module-detail.open { display: block; }
     .module-detail b { display: block; font-size: .82rem; }
     .module-detail span { color: #8f9bbb; font-size: .7rem; }
-    .module-stats { display: flex; gap: 1rem; white-space: nowrap; font: .65rem ui-monospace, SFMono-Regular, Menlo, monospace; color: #9bb4f5; }
+    .module-stats { display: flex; flex-wrap: wrap; gap: .35rem .8rem; margin-top: .65rem; font: .65rem ui-monospace, SFMono-Regular, Menlo, monospace; color: #9bb4f5; }
     .graph-columns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 72px; padding: .55rem 28px 0; color: #8294c8; font: .62rem ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .08em; }
     .graph-columns span:nth-child(2) { text-align: center; }
     .graph-columns span:last-child { text-align: right; }
@@ -133,7 +140,7 @@
     .quality-disclosure { margin-top: 1.5rem; border-top: 1px solid var(--border); }
     .quality-disclosure > summary { cursor: pointer; padding: .9rem 0; color: #aeb8d4; font-size: .78rem; }
     .quality-disclosure[open] > summary { color: #fff; }
-    @media (max-width: 760px) { body { padding: 1rem; } .topbar { align-items: flex-start; } .graph-canvas { min-height: 300px; } .findings-groups { max-height: 180px; } .quality-row { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 860px) { body { padding: 1rem; } .topbar { align-items: flex-start; } .explorer { grid-template-columns: 1fr; } .inspector-pane { border-left: 0; border-top: 1px solid var(--border); } .graph-canvas { min-height: 300px; } .findings-groups { max-height: 220px; } .quality-row { grid-template-columns: repeat(2, 1fr); } }
     .count-link {
       background: none; border: 0; padding: 0; margin: 0; cursor: pointer;
       color: var(--accent); font: inherit; font-weight: 600; text-decoration: underline;
@@ -204,7 +211,10 @@
 <div class="wrap">
   <div class="topbar">
     <div class="brand"><h1>{{.Title}}<span class="brand-dot">.</span></h1></div>
-    {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">not running</span>{{end}}
+    <div class="top-actions">
+      {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">not running</span>{{end}}
+      <button class="secondary-action" type="button" onclick="location.reload()" title="Reload the dashboard from the currently loaded snapshot">Refresh data</button>
+    </div>
   </div>
 
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
@@ -271,12 +281,14 @@
       <input id="module-search" class="graph-search" name="module" type="search" list="all-modules" value="{{.ModuleGraph.FocusName}}" placeholder="Search every module…" aria-label="Search every module">
       <datalist id="all-modules">{{range .ModuleGraph.AllModules}}<option value="{{.}}">{{end}}</datalist>
       <button class="secondary-action" type="submit">Explore</button>
+      <button class="secondary-action" type="button" id="graph-fit" aria-pressed="false" onclick="toggleGraphFit(this)">Fit view</button>
     </form>
   </div>
   {{$graph := .ModuleGraph}}
   <div class="graph-summary">
+    <span class="chip">Module graph</span>
     {{if $graph.Focused}}<span class="chip">Neighborhood of {{$graph.FocusName}}</span>{{else}}<span class="chip">Showing {{len $graph.Nodes}} of {{$graph.Total}} connected modules</span>{{end}}
-    <span class="chip">{{len $graph.Edges}} visible dependencies{{if $graph.OmittedEdges}} · {{$graph.OmittedEdges}} hidden for clarity{{end}}</span>
+    <span class="chip">{{len $graph.Edges}} visible module dependencies{{if $graph.OmittedEdges}} · {{$graph.OmittedEdges}} hidden for clarity{{end}}</span>
     {{if not $graph.Focused}}<span class="chip">Layered by dependency direction</span>{{end}}
   </div>
   <p class="note">Search covers {{if $graph.AllModulesTruncated}}the {{len $graph.AllModules}} most-connected of {{$graph.Total}}{{else}}all {{$graph.Total}}{{end}} connected modules. {{if $graph.Focused}}This view contains the selected module, its immediate incoming and outgoing dependencies, and the dependencies between them. <a href="/#architecture">Clear focus</a>.{{else}}Choose a module to replace this overview with its immediate dependency neighborhood.{{end}}</p>
@@ -290,24 +302,28 @@
           {{range $graph.Nodes}}<g class="module-node" data-id="{{.ID}}" data-role="{{.Role}}" data-name="{{.Name}}" data-file="{{.File}}" data-in="{{.FanIn}}" data-out="{{.FanOut}}" onclick="selectModule(this)"><title>{{.Name}}</title><rect x="{{.X}}" y="{{.Y}}" width="154" height="36"/><text x="{{.X}}" y="{{.Y}}" dx="9" dy="22">{{.Display}}</text></g>{{end}}
         </svg>
       </div>
-      <div id="module-detail" class="module-detail"><div><b id="module-detail-name"></b><span id="module-detail-file"></span></div><div class="module-stats"><span id="module-detail-in"></span><span id="module-detail-out"></span></div></div>
       {{if $graph.Limited}}<div class="graph-note">{{if $graph.Focused}}This neighborhood is bounded to keep individual relationships inspectable.{{else}}This overview shows the most-connected modules and a representative dependency backbone. Search for any module to inspect its complete immediate neighborhood.{{end}}</div>{{end}}
     </div>
-    {{if .Insights}}<aside class="findings-pane">
+    <aside class="inspector-pane" aria-label="Architecture inspector">
+      <div class="inspector-head"><h3>Inspector</h3><p>Select a module, dependency, or finding to inspect it.</p></div>
+      <div id="inspector-empty" class="inspector-empty">Nothing selected. Choose a node or edge on the map.</div>
+      <div id="module-detail" class="module-detail"><div><b id="module-detail-name"></b><span id="module-detail-file"></span></div><div class="module-stats"><span id="module-detail-in"></span><span id="module-detail-out"></span></div></div>
+      {{if .Insights}}<div class="findings-pane">
       <h3>Findings <span class="note">({{.InsightTotal}})</span> <button type="button" class="count-link" onclick="openModal('insights-modal')">review all</button></h3>
       <div class="findings-groups">{{range .Insights}}
       <details class="finding-group">
         <summary><span>{{.Label}}</span><span class="finding-count">{{.Count}}</span></summary>
-        {{range .Items}}<button type="button" class="finding-button" data-evidence="{{.Evidence}}" onclick="selectFinding(this)">{{.Title}}<span class="finding-meta">{{.Confidence}}%{{if .Evidence}} · {{.Evidence}}{{end}}</span></button>{{end}}
+        {{range .Items}}<button type="button" class="finding-button" data-title="{{.Title}}" data-confidence="{{.Confidence}}" data-evidence="{{.Evidence}}" onclick="selectFinding(this)">{{.Title}}<span class="finding-meta">{{.Confidence}}%{{if .Evidence}} · {{.Evidence}}{{end}}</span></button>{{end}}
       </details>
       {{end}}</div>
-    </aside>{{end}}
+      </div>{{end}}
+    </aside>
   </section>
 
   <div class="data-section"><h2>Most-connected modules in this view</h2>
-  <p class="note">Select a row to isolate its incoming and outgoing dependencies on the map.</p>
+  <p class="note">These counts describe module imports. Symbol-level finding counts may be larger because many call sites can live inside one module.</p>
   <div class="table-scroll"><table class="module-table">
-    <thead><tr><th>Module</th><th>File</th><th class="num">Used by</th><th class="num">Depends on</th><th class="num">Connections</th></tr></thead>
+    <thead><tr><th>Module</th><th>File</th><th class="num">Consumer modules</th><th class="num">Dependency modules</th><th class="num">Connections</th></tr></thead>
     <tbody>{{range $graph.Nodes}}<tr><td><button type="button" class="count-link" onclick="focusModule('{{.ID}}')">{{.Name}}</button></td><td>{{.File}}</td><td class="num">{{.FanIn}}</td><td class="num">{{.FanOut}}</td><td class="num">{{.Degree}}</td></tr>{{end}}</tbody>
   </table></div></div>
   {{else}}<p class="note">No module dependencies loaded yet.</p>{{end}}
@@ -478,7 +494,7 @@
   </main>
 
   <footer>
-    <span>{{.Title}} · read-only · updates every {{.RefreshSeconds}} seconds</span>
+    <span>Read-only dashboard</span>
     <a class="project-link" href="https://github.com/enola-labs/enola" target="_blank" rel="noopener noreferrer" aria-label="Star Enola on GitHub">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2l2.05 4.15 4.58.67-3.31 3.22.78 4.56L8 11.65 3.9 13.8l.78-4.56L1.37 6.02l4.58-.67L8 1.2z"/></svg>
       Open source on GitHub · Star Enola
@@ -689,16 +705,9 @@
     selectTab(name, false);
   }
 
-  // JS-driven auto-refresh (replaces the old <meta refresh>) so it can be paused
-  // while a modal is open — otherwise a reload would close the modal mid-read.
-  var refreshMs = {{.RefreshSeconds}} * 1000;
-  var reloadTimer = null;
-  function startRefresh() { stopRefresh(); reloadTimer = setTimeout(function () { location.reload(); }, refreshMs); }
-  function stopRefresh() { if (reloadTimer !== null) { clearTimeout(reloadTimer); reloadTimer = null; } }
   function openModal(id) {
     var m = document.getElementById(id);
     if (!m) return;
-    stopRefresh();
     m.classList.add('open');
     if (id === 'insights-modal') {
       var sel = document.getElementById('insight-band');
@@ -772,6 +781,20 @@
     graphNodes().forEach(function(n) { n.classList.remove('active', 'dim'); });
     graphEdges().forEach(function(e) { e.classList.remove('active', 'dim'); });
   }
+  function openInspector() {
+    var empty = document.getElementById('inspector-empty');
+    var detail = document.getElementById('module-detail');
+    if (empty) empty.hidden = true;
+    if (detail) detail.classList.add('open');
+    return detail;
+  }
+  function toggleGraphFit(button) {
+    var canvas = document.querySelector('.graph-canvas');
+    if (!canvas) return;
+    var fit = canvas.classList.toggle('fit');
+    button.setAttribute('aria-pressed', fit ? 'true' : 'false');
+    button.textContent = fit ? 'Readable size' : 'Fit view';
+  }
   function selectModule(node) {
     clearGraphFocus();
     var id = node.getAttribute('data-id');
@@ -787,13 +810,12 @@
       n.classList.toggle('active', n === node);
       n.classList.toggle('dim', !related[n.getAttribute('data-id')]);
     });
-    var detail = document.getElementById('module-detail');
+    var detail = openInspector();
     if (detail) {
-      detail.classList.add('open');
       document.getElementById('module-detail-name').textContent = node.getAttribute('data-name');
       document.getElementById('module-detail-file').textContent = node.getAttribute('data-file') || '';
-      document.getElementById('module-detail-in').textContent = 'used by ' + node.getAttribute('data-in');
-      document.getElementById('module-detail-out').textContent = 'depends on ' + node.getAttribute('data-out');
+      document.getElementById('module-detail-in').textContent = node.getAttribute('data-in') + ' consumer modules';
+      document.getElementById('module-detail-out').textContent = node.getAttribute('data-out') + ' dependency modules';
     }
   }
   function selectDependency(hit) {
@@ -810,9 +832,8 @@
       e.classList.toggle('active', selected);
       e.classList.toggle('dim', !selected);
     });
-    var detail = document.getElementById('module-detail');
+    var detail = openInspector();
     if (!detail) return;
-    detail.classList.add('open');
     document.getElementById('module-detail-name').textContent = hit.getAttribute('data-source-name') + ' → ' + hit.getAttribute('data-target-name');
     var sourceFile = hit.getAttribute('data-source-file') || 'source file unavailable';
     var targetFile = hit.getAttribute('data-target-file') || 'target file unavailable';
@@ -840,6 +861,7 @@
     document.querySelectorAll('.finding-button').forEach(function(b) { b.classList.toggle('active', b === button); });
     clearGraphFocus();
     var evidence = (button.getAttribute('data-evidence') || '').toLowerCase();
+	showFindingInspector(button);
     if (!evidence) return;
     var matches = {};
     graphNodes().forEach(function(n) {
@@ -859,6 +881,13 @@
 	    if (belongsToModule && moduleName.length > bestModule.length) bestModule = option.value;
 	  });
 	  if (bestModule) {
+	    try {
+	      sessionStorage.setItem('enola-selected-finding', JSON.stringify({
+	        title: button.getAttribute('data-title') || '',
+	        confidence: button.getAttribute('data-confidence') || '',
+	        evidence: button.getAttribute('data-evidence') || ''
+	      }));
+	    } catch (_) {}
 	    window.location.assign('/?module=' + encodeURIComponent(bestModule) + '#architecture');
 	    return;
 	  }
@@ -869,12 +898,35 @@
       e.classList.toggle('dim', !active);
     });
   }
+  function showFindingInspector(button) {
+    showFindingDetails({
+      title: button.getAttribute('data-title') || button.textContent.trim(),
+      confidence: button.getAttribute('data-confidence') || '',
+      evidence: button.getAttribute('data-evidence') || ''
+    });
+  }
+  function showFindingDetails(finding) {
+    var detail = openInspector();
+    if (!detail) return;
+    var symbolLevel = (finding.title || '').toLowerCase().indexOf('symbol') !== -1;
+    document.getElementById('module-detail-name').textContent = finding.title || 'Selected finding';
+    document.getElementById('module-detail-file').textContent = finding.evidence || 'No file evidence';
+    document.getElementById('module-detail-in').textContent = (finding.confidence ? finding.confidence + '% · ' : '') + (symbolLevel ? 'symbol-level finding' : 'finding');
+    document.getElementById('module-detail-out').textContent = 'Map shows module imports';
+  }
+  function restoreFindingInspector() {
+    try {
+      var raw = sessionStorage.getItem('enola-selected-finding');
+      if (!raw) return;
+      sessionStorage.removeItem('enola-selected-finding');
+      showFindingDetails(JSON.parse(raw));
+    } catch (_) {}
+  }
   {{/* extra-scripts: extension slot — see pkg/dashboard.Options.Overlay */}}
   {{block "extra-scripts" $}}{{end}}
   function closeModal(el) {
     var m = el && el.closest ? el.closest('.modal') : el;
     if (m && m.classList) m.classList.remove('open');
-    startRefresh();
   }
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
@@ -891,7 +943,7 @@
   });
   window.addEventListener('hashchange', initialTab);
   initialTab();
-  startRefresh();
+  restoreFindingInspector();
 </script>
 </body>
 </html>
