@@ -178,3 +178,28 @@ func TestRubydexProvider_MissingGemIsANamedSkip(t *testing.T) {
 		t.Fatalf("census = %+v, want a named skip", records)
 	}
 }
+
+// A repository without a Gemfile is not a workspace Rubydex can index. The
+// provider says so in its census and contributes nothing, rather than failing
+// the run on every non-Ruby member of a cluster.
+func TestRubydexProvider_NoGemfileIsARefusalNotAFailure(t *testing.T) {
+	requireRubydex(t)
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte("module.exports = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ff, records := Run(context.Background(), []Provider{{
+		Name:            "rubydex",
+		Command:         []string{"ruby", rubydexScript(t)},
+		ExpectedVersion: "0.1.0",
+	}}, repo, nil)
+	if len(ff) != 0 {
+		t.Fatalf("nothing to index must emit nothing, got %d facts", len(ff))
+	}
+	if len(records) != 1 || records[0].Skipped {
+		t.Fatalf("census = %+v, want a clean run that contributed nothing", records)
+	}
+	if records[0].Census == nil || len(records[0].Census.SkipCauses) != 1 || !strings.Contains(records[0].Census.SkipCauses[0].Cause, "no Gemfile") {
+		t.Fatalf("the census must name the refusal: %+v", records[0].Census)
+	}
+}

@@ -68,6 +68,10 @@ class RubydexFacts
   end
 
   def collect
+    unless File.exist?(File.join(@root, "Gemfile"))
+      census(0, 0, "no Gemfile: not a workspace Rubydex can index")
+      return @facts
+    end
     graph = Dir.chdir(@root) do
       built = Rubydex::Graph.new
       built.index_workspace
@@ -192,8 +196,9 @@ class RubydexFacts
     declaration.definitions.any? { |definition| in_workspace?(definition.location.uri) }
   end
 
-  def census(files_seen, diagnostics)
+  def census(files_seen, diagnostics, refusal = nil)
     causes = []
+    causes << { "cause" => refusal, "count" => 1 } if refusal
     causes << { "cause" => "unresolved constant reference", "count" => @unresolved } if @unresolved.positive?
     causes << { "cause" => "receiver is the lexical enclosing class", "count" => @enclosing_receivers } if @enclosing_receivers.positive?
     causes << { "cause" => "receiver resolves to no constant", "count" => @untyped_receivers } if @untyped_receivers.positive?
