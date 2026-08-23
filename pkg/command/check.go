@@ -137,7 +137,10 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		failOn        = fs.String("fail-on", "", "comma-separated explainer names whose new findings fail (default: none — the run reports and exits 0)")
 		minConfidence = fs.Float64("min-confidence", 0, "confidence floor within --fail-on explainers (default: 1.00)")
 		warnOnly      = fs.Bool("warn-only", false, "downgrade a --fail-on / --max-spillover policy to warnings (blocking/usage errors still apply)")
-		asJSON        = fs.Bool("json", false, "emit the verdict as JSON instead of text")
+		asJSON        = fs.Bool("json", false, "emit the verdict as JSON instead of text (an alias of -format json)")
+		format        = fs.String("format", "text", "how to write the verdict: text, json, sarif, or annotations")
+		host          = fs.String("host", "", "with -format annotations, the CI that shows them: buildkite or github")
+		link          = fs.String("link", "", "with -host buildkite, the pull request's files view to link each line into")
 		focus         = fs.String("focus", "", "narrow the delta to entries referencing this module/file/symbol")
 		detail        = fs.Bool("detail", false, "print the full delta (changed edges and facts) under the verdict")
 		write         = fs.Bool("write", false, "persist snapshot artifacts to .enola/ (default: read-only, nothing is written)")
@@ -162,6 +165,20 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	}
 	if err := fs.Parse(args); err != nil {
 		os.Exit(check.StatusUsageError.ExitCode())
+	}
+	if *asJSON {
+		*format = string(check.FormatJSON)
+	}
+	outFormat, err := check.ParseFormat(*format)
+	if err != nil {
+		r.checkFatal("%v", err)
+	}
+	outHost, err := check.ParseHost(*host)
+	if err != nil {
+		r.checkFatal("%v", err)
+	}
+	if outFormat == check.FormatAnnotations && outHost == check.HostNone {
+		r.checkFatal("-format annotations needs -host buildkite or -host github: the host is named, never detected")
 	}
 
 	var arg string
@@ -284,18 +301,18 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	// against the CURRENT snapshot, baselined or not — the one deliberate
 	// exception to delta scoping.
 	verdict := check.EvaluateCurrent(d, policy, current.Insights, measurements...)
-	verdict = check.ApplyTime(verdict, base, r.revisionAt(anchor, tgt.historyDir))
+	blame := check.NewBlameReader(anchor, eng.OutputDir(anchor))
+	verdict = check.ApplyTime(verdict, base, r.revisionAt(anchor, tgt.historyDir), blame.Age)
+	if err := blame.Save(); err != nil {
+		fmt.Fprintf(os.Stderr, "enola: blame cache not written: %v\n", err)
+	}
 	verdict = check.RegradeIntersection(verdict, base, current, policy,
 		check.OwnershipFromExtractors(eng.Extractors()), current.Insights, *focus, measurements...)
 	verdict = check.AttachGuidance(verdict, eng.Store())
+	verdict = check.AttachCensus(verdict, current.Meta, policy, current.Insights)
 
-	if *asJSON {
-		out, err := verdict.JSON()
-		if err != nil {
-			r.checkFatal("failed to encode verdict: %v", err)
-		}
-		fmt.Println(string(out))
-	} else {
+	switch outFormat {
+	case check.FormatText:
 		if conf != nil {
 			fmt.Print(conf.Render())
 		}
@@ -303,6 +320,12 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		if *detail {
 			fmt.Printf("\n%s\n", verdict.Detail())
 		}
+	default:
+		out, err := verdict.Write(outFormat, outHost, *link)
+		if err != nil {
+			r.checkFatal("failed to encode verdict: %v", err)
+		}
+		fmt.Println(strings.TrimRight(string(out), "\n"))
 	}
 	// After the verdict and on STDERR, in both output modes. Stderr because `--json`
 	// promises stdout is a verdict document and nothing else, and after because a

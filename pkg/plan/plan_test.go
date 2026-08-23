@@ -332,3 +332,22 @@ func TestRender_ExemplarPresenceIsTriState(t *testing.T) {
 		t.Errorf("JSON exemplars = %+v, want the same tri-state the text renders", exemplars)
 	}
 }
+
+// A path target carries the verdicts that would change if the file left every
+// part: the model's breach vanishes with it, and the radius is absent when
+// skipped or when a patch supplies the counterfactual instead.
+func TestCompute_PathRadiusNamesVanishingVerdicts(t *testing.T) {
+	deps := Deps{RepoLabel: "shop", Store: declaredStore(t, testDeclaration, measuredFixture()...)}
+	report := computeOrFail(t, Request{Paths: []string{"app/models/user.rb"}}, deps)
+	radius := report.Targets[0].Radius
+	if radius == nil || len(radius.Vanish) != 1 || radius.Vanish[0].Rule != "models-never-bill" || len(radius.Appear) != 0 {
+		t.Fatalf("radius = %+v", radius)
+	}
+	if !strings.Contains(report.Render(), "would stop being checked:") {
+		t.Fatal("the rendered report carries the radius section")
+	}
+	deps.SkipRadius = true
+	if computeOrFail(t, Request{Paths: []string{"app/models/user.rb"}}, deps).Targets[0].Radius != nil {
+		t.Fatal("--no-radius leaves the section out")
+	}
+}

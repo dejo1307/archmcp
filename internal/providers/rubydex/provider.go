@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -14,6 +15,12 @@ import (
 const builtInURI = "rubydex:built-in"
 
 var indexableExtensions = map[string]bool{".rb": true, ".rake": true, ".rbs": true, ".ru": true}
+
+// Indexable reports whether the engine indexes a file of this name, which is
+// what decides whether its content belongs in the index cache key.
+func Indexable(path string) bool {
+	return indexableExtensions[filepath.Ext(path)]
+}
 
 // Result is what one run of the provider produced: the facts, the census the
 // seam records, and a refusal when the workspace could not be read at all.
@@ -29,6 +36,8 @@ type collector struct {
 	workspace           string
 	facts               []facts.Fact
 	unresolved          int
+	aliasedReferences   int
+	undefinedTargets    int
 	enclosingReceivers  int
 	untypedReceivers    int
 	aliasedDeclarations int
@@ -78,9 +87,7 @@ func Collect(ctx context.Context, lib *Library, root string) Result {
 			c.emitCall(doc, reference)
 		}
 	}
-	for _, reference := range c.g.constantReferences() {
-		c.emitReference(reference)
-	}
+	c.emitReferences(c.g.constantReferences())
 	sort.Slice(c.facts, func(i, j int) bool { return c.facts[i].Name < c.facts[j].Name })
 	return Result{Facts: c.facts, Census: c.census(len(documents), c.g.diagnosticCount())}
 }
@@ -194,32 +201,166 @@ func (c *collector) emitCall(doc uint64, reference cMethodReference) {
 		facts.Relation{Kind: "calls", Target: callee}, nil))
 }
 
-func (c *collector) emitReference(reference cConstantReference) {
-	location, ok := c.g.constantReferenceLocation(reference.id)
-	if !ok || !c.inWorkspace(location.URI) {
-		return
+// A constant reference the engine reports, held with what decides its fate:
+// where it sits, whether it is an inner segment of a qualified path, and what
+// it resolved to.
+type constantReference struct {
+	id       uint64
+	doc      uint64
+	location Location
+	inner    bool
+	resolved bool
+	target   cDeclaration
+}
+
+// emitReferences turns the workspace's constant references into dependency
+// facts, one per qualified path. The engine reports a reference per segment,
+// so `Foo::VERSION` arrives as `Foo` and as `VERSION`, adjacent on one line
+// with the separator between them; the leaf is the dependency and the
+// segments before it are its path, because a read of `Foo::VERSION` depends
+// on `VERSION` and only names `Foo` on the way. A prefix emitted as its own
+// dependency landed on whichever reopening of `Foo` a consumer took first.
+func (c *collector) emitReferences(ids []cConstantReference) {
+	byLine := map[string][]*constantReference{}
+	var refs []*constantReference
+	for _, id := range ids {
+		location, ok := c.g.constantReferenceLocation(id.id)
+		if !ok || !c.inWorkspace(location.URI) {
+			continue
+		}
+		ref := &constantReference{id: id.id, location: location}
+		ref.doc, _ = c.g.constantReferenceDocument(id.id)
+		ref.target, ref.resolved = c.g.resolvedConstantReference(id.id)
+		key := location.URI + "\x00" + strconv.Itoa(location.StartLine)
+		byLine[key] = append(byLine[key], ref)
+		refs = append(refs, ref)
 	}
-	target, ok := c.g.resolvedConstantReference(reference.id)
-	if !ok {
+	for _, line := range byLine {
+		for _, prefix := range line {
+			for _, next := range line {
+				if prefix != next && prefix.location.EndColumn+len("::") == next.location.StartColumn {
+					prefix.inner = true
+				}
+			}
+		}
+	}
+	for _, ref := range refs {
+		if ref.inner {
+			continue
+		}
+		c.emitReference(ref, c.pathPrefixes(byLine, ref))
+	}
+}
+
+// pathPrefixes walks back from a leaf over the adjacent segments on its line
+// and returns their written names, outermost first.
+func (c *collector) pathPrefixes(byLine map[string][]*constantReference, leaf *constantReference) []string {
+	line := byLine[leaf.location.URI+"\x00"+strconv.Itoa(leaf.location.StartLine)]
+	var prefixes []string
+	current := leaf
+	for {
+		var previous *constantReference
+		for _, candidate := range line {
+			if candidate.location.EndColumn+len("::") == current.location.StartColumn {
+				previous = candidate
+			}
+		}
+		if previous == nil {
+			break
+		}
+		prefixes = append([]string{c.writtenName(previous)}, prefixes...)
+		current = previous
+	}
+	return prefixes
+}
+
+func (c *collector) writtenName(ref *constantReference) string {
+	if ref.resolved {
+		return plainName(c.g.declarationName(ref.target.id))
+	}
+	return c.g.constantReferenceName(ref.id)
+}
+
+func (c *collector) emitReference(ref *constantReference, prefixes []string) {
+	referrer := ""
+	if ref.doc != 0 {
+		referrer = c.enclosingName(ref.doc, ref.location)
+	}
+	if referrer == "" {
+		referrer = c.relative(ref.location.URI)
+	}
+	written := strings.Join(append(append([]string{}, prefixes...), c.writtenName(ref)), "::")
+	if !ref.resolved {
 		c.unresolved++
+		c.facts = append(c.facts, c.missFact("rubydex-ref: "+referrer+" -> "+written, ref.location, "unresolved", prefixes))
 		return
 	}
-	targetFull := c.g.declarationName(target.id)
+	targetFull := c.g.declarationName(ref.target.id)
 	if singleton(targetFull) {
 		return
 	}
-	doc, ok := c.g.constantReferenceDocument(reference.id)
-	referrer := ""
-	if ok {
-		referrer = c.enclosingName(doc, location)
-	}
-	if referrer == "" {
-		referrer = c.relative(location.URI)
+	if ref.target.kind == declarationAlias {
+		c.aliasedReferences++
+		c.facts = append(c.facts, c.missFact("rubydex-ref: "+referrer+" -> "+written, ref.location, "alias", prefixes))
+		return
 	}
 	targetName := plainName(targetFull)
-	c.facts = append(c.facts, c.fact("rubydex-ref: "+referrer+" -> "+targetName, location, "resolved",
-		facts.Relation{Kind: "depends_on", Target: targetName},
-		map[string]any{"declared_in_workspace": c.declaredInWorkspace(target.id)}))
+	props := map[string]any{"declared_in_workspace": c.declaredInWorkspace(ref.target.id)}
+	if len(prefixes) > 0 {
+		props["path_prefixes"] = prefixes
+	}
+	files, located := c.definingFiles(ref.target.id)
+	switch {
+	case !located:
+		c.undefinedTargets++
+		props["resolution_cause"] = "no_definition"
+	case len(files) == 1:
+		props["target_file"] = files[0]
+	}
+	c.facts = append(c.facts, c.fact("rubydex-ref: "+referrer+" -> "+targetName, ref.location, "resolved",
+		facts.Relation{Kind: "depends_on", Target: targetName}, props))
+}
+
+// definingFiles lists the workspace files a declaration is defined in, so a
+// consumer can tell which of a reopened name's files a dependency lands on.
+// The second result is false when the engine reports no location at all.
+func (c *collector) definingFiles(declaration uint64) ([]string, bool) {
+	seen := map[string]bool{}
+	var files []string
+	located := false
+	for _, definition := range c.g.declarationDefinitions(declaration) {
+		loc, ok := c.g.definitionLocation(definition.id)
+		if !ok {
+			continue
+		}
+		located = true
+		if !c.inWorkspace(loc.URI) {
+			continue
+		}
+		if rel := c.relative(loc.URI); !seen[rel] {
+			seen[rel] = true
+			files = append(files, rel)
+		}
+	}
+	sort.Strings(files)
+	return files, located
+}
+
+// missFact is a reference that resolved to nothing a rule can walk to. It is
+// a dependency fact with no relation, so the miss is counted where it
+// happened and named by its cause rather than dropped.
+func (c *collector) missFact(name string, location Location, cause string, prefixes []string) facts.Fact {
+	props := map[string]any{"resolution_level": "name-only", "resolution_cause": cause}
+	if len(prefixes) > 0 {
+		props["path_prefixes"] = prefixes
+	}
+	return facts.Fact{
+		Kind:  facts.KindDependency,
+		Name:  name,
+		File:  c.relative(location.URI),
+		Line:  location.StartLine,
+		Props: props,
+	}
 }
 
 func (c *collector) fact(name string, location Location, level string, relation facts.Relation, extra map[string]any) facts.Fact {
@@ -300,6 +441,8 @@ func (c *collector) census(filesSeen, diagnostics int) facts.ProviderCensus {
 		}
 	}
 	add("unresolved constant reference", c.unresolved)
+	add("reference resolves to a constant alias", c.aliasedReferences)
+	add("resolved declaration has no definition location", c.undefinedTargets)
 	add("receiver is the lexical enclosing class", c.enclosingReceivers)
 	add("receiver resolves to no constant", c.untypedReceivers)
 	add("declaration is a constant alias, not a class", c.aliasedDeclarations)

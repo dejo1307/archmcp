@@ -138,7 +138,8 @@ func (r *Runner) Dispatch(ctx context.Context, args []string) bool {
 	case "check":
 		r.Check(ctx, args[1:]) // exits with the verdict's code
 	case "constraints":
-		r.Constraints(args[1:]) // exits 0 valid, 1 problems, 2 could not run
+		r.Constraints(args[1:]) // lint and explain exit with their own codes
+		os.Exit(0)
 	case "plan":
 		r.Plan(ctx, args[1:])
 		os.Exit(0)

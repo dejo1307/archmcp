@@ -27,10 +27,14 @@ type RecipeRole struct {
 	Kind        string         `yaml:"kind"`
 	NamePattern string         `yaml:"name_pattern"`
 	Where       map[string]any `yaml:"where"`
+	Public      []string       `yaml:"public"`
+	Handles     []string       `yaml:"handles"`
+	GovernedBy  string         `yaml:"governed_by"`
 }
 
 func (role RecipeRole) defaulted() bool {
-	return len(role.Match) > 0 || role.Kind != "" || role.NamePattern != "" || len(role.Where) > 0
+	return len(role.Match) > 0 || role.Kind != "" || role.NamePattern != "" || len(role.Where) > 0 ||
+		len(role.Public) > 0 || len(role.Handles) > 0 || role.GovernedBy != ""
 }
 
 type Recipe struct {
@@ -50,6 +54,8 @@ type RecipeBinding struct {
 	Owns        string         `yaml:"owns"`
 	Ancestor    string         `yaml:"ancestor"`
 	Public      []string       `yaml:"public"`
+	Handles     []string       `yaml:"handles"`
+	GovernedBy  string         `yaml:"governed_by"`
 }
 
 type InstanceExemption struct {
@@ -162,17 +168,21 @@ func RecipeProblems(recipes []Recipe) ([]string, []string) {
 	return problems, warnings
 }
 
+// ruleRoleReferences lists every component a rule names, read off the form
+// and counterpart tables so a form the tables know is never left out of the
+// role walk; the two keys those tables do not carry (among, owns) follow.
 func ruleRoleReferences(r ConstraintRule) []string {
-	refs := []string{
-		r.Forbid, r.ForbidReach, r.To, r.Allow, r.Protect, r.Private,
-		r.ForbidFact, r.Cap, r.Require, r.RequireEdge, r.RequireDefines,
-		r.RequireName, r.ForbidName, r.ForbidCycles, r.Independent, r.Protocol, r.Guide,
+	var refs []string
+	for _, form := range RuleForms {
+		refs = append(refs, form.Subject(r))
 	}
-	refs = append(refs, r.Only...)
-	refs = append(refs, r.Owners...)
-	refs = append(refs, r.Except...)
-	refs = append(refs, r.Steps...)
+	for _, counterpart := range CounterpartRoles {
+		refs = append(refs, counterpart.Names(r)...)
+	}
 	refs = append(refs, r.Among...)
+	for _, o := range r.Owns {
+		refs = append(refs, o.Component)
+	}
 	out := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		if ref != "" {
@@ -322,6 +332,15 @@ func expandBindings(rec Recipe, inst RecipeInstantiation, sourceFile string) []C
 		if b.Where == nil {
 			b.Where = role.Where
 		}
+		if len(b.Public) == 0 {
+			b.Public = append([]string(nil), role.Public...)
+		}
+		if len(b.Handles) == 0 {
+			b.Handles = append([]string(nil), role.Handles...)
+		}
+		if b.GovernedBy == "" {
+			b.GovernedBy = role.GovernedBy
+		}
 		out = append(out, ConstraintComponent{
 			Name:        inst.As + "/" + role.Name,
 			Service:     b.Service,
@@ -332,6 +351,8 @@ func expandBindings(rec Recipe, inst RecipeInstantiation, sourceFile string) []C
 			Owns:        b.Owns,
 			Ancestor:    b.Ancestor,
 			Public:      append([]string(nil), b.Public...),
+			Handles:     append([]string(nil), b.Handles...),
+			GovernedBy:  b.GovernedBy,
 			SourceFile:  sourceFile,
 			Recipe:      rec.Name,
 			Instance:    inst.As,
@@ -365,28 +386,13 @@ func expandRules(rec Recipe, inst RecipeInstantiation, exemptByRule map[string][
 		}
 		n := rr
 		n.ID = inst.As + "/" + rr.ID
-		n.Forbid = bind(rr.Forbid)
-		n.ForbidReach = bind(rr.ForbidReach)
-		n.To = bind(rr.To)
-		n.Allow = bind(rr.Allow)
-		n.Only = bindAll(rr.Only)
-		n.Protect = bind(rr.Protect)
-		n.Owners = bindAll(rr.Owners)
-		n.Private = bind(rr.Private)
-		n.Except = bindAll(rr.Except)
-		n.ForbidFact = bind(rr.ForbidFact)
-		n.Cap = bind(rr.Cap)
-		n.Require = bind(rr.Require)
-		n.RequireEdge = bind(rr.RequireEdge)
-		n.RequireDefines = bind(rr.RequireDefines)
-		n.RequireName = bind(rr.RequireName)
-		n.ForbidName = bind(rr.ForbidName)
-		n.ForbidCycles = bind(rr.ForbidCycles)
+		for _, form := range RuleForms {
+			form.Set(&n, bind(form.Subject(rr)))
+		}
+		for _, counterpart := range CounterpartRoles {
+			counterpart.Set(&n, bindAll(counterpart.Names(rr)))
+		}
 		n.Among = bindAll(rr.Among)
-		n.Independent = bind(rr.Independent)
-		n.Protocol = bind(rr.Protocol)
-		n.Steps = bindAll(rr.Steps)
-		n.Guide = bind(rr.Guide)
 		n.Exemplars = append([]string(nil), rr.Exemplars...)
 		n.Owns = nil
 		for _, o := range rr.Owns {

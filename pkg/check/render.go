@@ -125,6 +125,13 @@ func (v Verdict) Render() string {
 		sb.WriteString("This is NOT a statement about your change. The delta below would describe how the two\nsnapshots were produced, not what you edited.\n")
 	}
 
+	// What the run could not see, on every outcome, PASS included: a PASS over a
+	// graph that skipped the files the change touched must not read like one
+	// that resolved them.
+	if v.Census != nil {
+		sb.WriteString(v.Census.Line() + "\n")
+	}
+
 	v.writeIntersection(&sb)
 	v.writeComparability(&sb)
 	v.writeBreaches(&sb)

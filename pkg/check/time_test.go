@@ -26,7 +26,7 @@ func TestApplyTime_SinceRatchetsWhatTheRevisionCarried(t *testing.T) {
 		}
 		return &facts.Snapshot{Insights: []facts.Insight{{Title: old.Title}}}, "2026-07-31", "2026-07-15", true
 	}
-	out := ApplyTime(v, nil, history)
+	out := ApplyTime(v, nil, history, nil)
 	if len(out.Failures) != 2 || out.Failures[0].Title != fresh.Title || out.Failures[1].Title != early.Title {
 		t.Fatalf("failures = %+v", out.Failures)
 	}
@@ -45,11 +45,11 @@ func TestApplyTime_GrowthAllowsTheBaselinePlusAllowance(t *testing.T) {
 	within := facts.Insight{Title: "Constraint api-stays-small violated: public-api has 12 members over a cap of 10", Source: "constraints", Evidence: []facts.Evidence{{Fact: "count: 12"}, {Fact: "growth: 2"}}}
 	past := facts.Insight{Title: "Constraint api-stays-small violated: public-api has 14 members over a cap of 10", Source: "constraints", Evidence: []facts.Evidence{{Fact: "count: 14"}, {Fact: "growth: 2"}}}
 	base := &facts.Snapshot{Insights: []facts.Insight{{Title: "Constraint api-stays-small violated: public-api has 11 members over a cap of 10", Source: "constraints"}}}
-	out := ApplyTime(Verdict{Status: StatusRegression, Failures: []facts.Insight{within}}, base, nil)
+	out := ApplyTime(Verdict{Status: StatusRegression, Failures: []facts.Insight{within}}, base, nil, nil)
 	if len(out.Failures) != 0 || len(out.Advisories) != 1 || out.Status != StatusClean {
 		t.Fatalf("within the allowance is reported, got %+v", out)
 	}
-	out = ApplyTime(Verdict{Status: StatusRegression, Failures: []facts.Insight{past}}, base, nil)
+	out = ApplyTime(Verdict{Status: StatusRegression, Failures: []facts.Insight{past}}, base, nil, nil)
 	if len(out.Failures) != 1 || out.Status != StatusRegression {
 		t.Fatalf("past the allowance fails, got %+v", out)
 	}

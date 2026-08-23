@@ -27,10 +27,13 @@
 # cross-class receiver.
 #
 # Fact names carry the rubydex- prefix so they cannot collide with the
-# identities the extractor or any other provider emits. Nothing is guessed: an
-# unresolved reference emits nothing and is counted in the census, as are
-# Rubydex's own diagnostics, which are its refusals to guess (a dynamic mixin
-# argument, a parse warning).
+# identities the extractor or any other provider emits. Nothing is guessed: a
+# qualified read is one dependency on its leaf, carrying the file that defines
+# it, with the segments before it as its path; a reference that resolves to
+# nothing, or to a constant alias, is a fact with no relation and the cause
+# named in resolution_cause, counted in the census beside Rubydex's own
+# diagnostics, which are its refusals to guess (a dynamic mixin argument, a
+# parse warning).
 #
 # Determinism: facts are built in document order, output lines are sorted
 # before printing, and nothing time- or environment-dependent is emitted.
@@ -63,6 +66,8 @@ class RubydexFacts
     @workspace = "file://#{@root}/"
     @facts = []
     @unresolved = 0
+    @aliased_references = 0
+    @undefined_targets = 0
     @enclosing_receivers = 0
     @untyped_receivers = 0
     @aliased_declarations = 0
@@ -84,7 +89,7 @@ class RubydexFacts
       doc.definitions.each { |definition| emit_ancestry(definition) }
       doc.method_references.each { |reference| emit_call(reference) }
     end
-    graph.constant_references.each { |reference| emit_reference(reference) }
+    emit_references(graph.constant_references)
     diagnostics = graph.diagnostics.count { |diagnostic| in_workspace?(diagnostic.location.uri) }
     census(documents.size, diagnostics)
     @facts
@@ -100,20 +105,102 @@ class RubydexFacts
     uri.to_s.delete_prefix(@workspace)
   end
 
-  def emit_reference(reference)
-    return unless in_workspace?(reference.location.uri)
+  # The engine reports one reference per segment of a qualified path, so
+  # `Foo::VERSION` arrives as `Foo` and as `VERSION`, adjacent on one line with
+  # the separator between them. The leaf is the dependency and the segments
+  # before it are its path: a read of `Foo::VERSION` depends on VERSION and only
+  # names Foo on the way, and a prefix emitted as a dependency of its own landed
+  # on whichever reopening of Foo a consumer took first.
+  def emit_references(references)
+    kept = references.select { |reference| in_workspace?(reference.location.uri) }
+    by_line = kept.group_by { |reference| [reference.location.uri.to_s, reference.location.start_line] }
+    inner = {}
+    by_line.each_value do |line|
+      line.each do |prefix|
+        line.each do |following|
+          inner[prefix] = true if !prefix.equal?(following) && prefix.location.end_column + "::".length == following.location.start_column
+        end
+      end
+    end
+    kept.each do |reference|
+      next if inner[reference]
 
-    unless reference.is_a?(Rubydex::ResolvedConstantReference)
+      emit_reference(reference, path_prefixes(by_line, reference))
+    end
+  end
+
+  def path_prefixes(by_line, leaf)
+    line = by_line[[leaf.location.uri.to_s, leaf.location.start_line]]
+    prefixes = []
+    current = leaf
+    loop do
+      previous = line.find { |candidate| candidate.location.end_column + "::".length == current.location.start_column }
+      break unless previous
+
+      prefixes.unshift(written_name(previous))
+      current = previous
+    end
+    prefixes
+  end
+
+  def written_name(reference)
+    return plain_name(reference.declaration.name) if reference.is_a?(Rubydex::ResolvedConstantReference) && reference.declaration
+
+    reference.name
+  end
+
+  def emit_reference(reference, prefixes)
+    referrer = enclosing_name(reference.document, reference.location) || relative(reference.location.uri)
+    written = (prefixes + [written_name(reference)]).join("::")
+    unless reference.is_a?(Rubydex::ResolvedConstantReference) && reference.declaration
       @unresolved += 1
+      @facts << miss_fact("rubydex-ref: #{referrer} -> #{written}", reference.location, "unresolved", prefixes)
       return
     end
     target = reference.declaration
-    return if target.nil? || singleton?(target.name)
+    return if singleton?(target.name)
 
-    referrer = enclosing_name(reference.document, reference.location) || relative(reference.location.uri)
+    if target.is_a?(Rubydex::ConstantAlias)
+      @aliased_references += 1
+      @facts << miss_fact("rubydex-ref: #{referrer} -> #{written}", reference.location, "alias", prefixes)
+      return
+    end
+    props = { "declared_in_workspace" => declared_in_workspace?(target) }
+    props["path_prefixes"] = prefixes unless prefixes.empty?
+    files, located = defining_files(target)
+    if !located
+      @undefined_targets += 1
+      props["resolution_cause"] = "no_definition"
+    elsif files.size == 1
+      props["target_file"] = files.first
+    end
     @facts << fact("rubydex-ref: #{referrer} -> #{plain_name(target.name)}", reference.location, "resolved",
-      { "kind" => "depends_on", "target" => plain_name(target.name) },
-      "declared_in_workspace" => declared_in_workspace?(target))
+      { "kind" => "depends_on", "target" => plain_name(target.name) }, props)
+  end
+
+  # The workspace files a declaration is defined in, and whether the engine
+  # reports any location at all; a name defined in several files carries none,
+  # because picking one would be the bug restated.
+  def defining_files(declaration)
+    located = false
+    files = declaration.definitions.filter_map do |definition|
+      located = true
+      relative(definition.location.uri) if in_workspace?(definition.location.uri)
+    end
+    [files.uniq.sort, located]
+  end
+
+  def miss_fact(name, location, cause, prefixes)
+    props = { "resolution_level" => "name-only", "resolution_cause" => cause }
+    props["path_prefixes"] = prefixes unless prefixes.empty?
+    {
+      "kind" => "dependency",
+      "name" => name,
+      "file" => relative(location.uri),
+      "line" => location.to_display.start_line,
+      "props" => props,
+      "relations" => []
+    }
   end
 
   def emit_call(reference)
@@ -205,6 +292,8 @@ class RubydexFacts
     causes = []
     causes << { "cause" => refusal, "count" => 1 } if refusal
     causes << { "cause" => "unresolved constant reference", "count" => @unresolved } if @unresolved.positive?
+    causes << { "cause" => "reference resolves to a constant alias", "count" => @aliased_references } if @aliased_references.positive?
+    causes << { "cause" => "resolved declaration has no definition location", "count" => @undefined_targets } if @undefined_targets.positive?
     causes << { "cause" => "receiver is the lexical enclosing class", "count" => @enclosing_receivers } if @enclosing_receivers.positive?
     causes << { "cause" => "receiver resolves to no constant", "count" => @untyped_receivers } if @untyped_receivers.positive?
     causes << { "cause" => "declaration is a constant alias, not a class", "count" => @aliased_declarations } if @aliased_declarations.positive?

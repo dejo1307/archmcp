@@ -311,53 +311,53 @@ func decodeComponent(f facts.Fact) component {
 // verdicts.
 func decodeRule(f facts.Fact) rule {
 	r := rule{
-		id:             f.PropString("rule"),
-		mode:           f.PropString("mode"),
-		recipe:         f.PropString("recipe"),
-		instance:       f.PropString("instance"),
-		because:        f.PropString("because"),
-		source:         f.PropString("source"),
-		forbid:         f.PropString("forbid"),
-		forbidReach:    f.PropString("forbid_reach"),
-		to:             f.PropString("to"),
-		allow:          f.PropString("allow"),
-		only:           strings.Fields(f.PropString("only")),
-		protect:        f.PropString("protect"),
-		owners:         strings.Fields(f.PropString("owners")),
-		private:        f.PropString("private"),
-		except:         strings.Fields(f.PropString("except")),
-		forbidFact:     f.PropString("forbid_fact"),
-		cap:            f.PropString("cap"),
-		require:        f.PropString("require"),
-		whenProp:       f.PropString("when_prop"),
-		whenValue:      f.PropString("when_value"),
-		whenEdgeTo:     strings.Fields(f.PropString("when_edge_to")),
-		mustProp:       f.PropString("must_prop"),
-		mustValue:      f.PropString("must_value"),
-		requireDefines: f.PropString("require_defines"),
-		anyOf:          strings.Fields(f.PropString("any_of")),
-		forbidCycles:   f.PropString("forbid_cycles"),
-		among:          strings.Fields(f.PropString("among")),
-		independent:    f.PropString("independent"),
-		method:         f.PropString("method"),
-		requireName:    f.PropString("require_name"),
-		forbidName:     f.PropString("forbid_name"),
-		surface:        f.PropString("surface"),
-		pattern:        f.PropString("pattern"),
-		requireEdge:    f.PropString("require_edge"),
-		direction:      f.PropString("direction"),
-		whenVia:        f.PropString("when_via"),
-		toName:         strings.Fields(f.PropString("to_name")),
-		receiver:       f.PropString("receiver"),
-		requires:       f.PropString("requires"),
-		protocol:       f.PropString("protocol"),
-		steps:          strings.Fields(f.PropString("steps")),
-		guide:          f.PropString("guide"),
-		message:        f.PropString("message"),
-		exemplars:      strings.Fields(f.PropString("exemplars")),
-		via:            f.PropString("via"),
-		owns:           intent.DecodeOwnership(f.PropString("owns")),
-		exempt:         intent.DecodeExemptions(f.PropString("exempt")),
+		id:               f.PropString("rule"),
+		mode:             f.PropString("mode"),
+		recipe:           f.PropString("recipe"),
+		instance:         f.PropString("instance"),
+		because:          f.PropString("because"),
+		source:           f.PropString("source"),
+		forbid:           f.PropString("forbid"),
+		forbidReach:      f.PropString("forbid_reach"),
+		to:               f.PropString("to"),
+		allow:            f.PropString("allow"),
+		only:             strings.Fields(f.PropString("only")),
+		protect:          f.PropString("protect"),
+		owners:           strings.Fields(f.PropString("owners")),
+		private:          f.PropString("private"),
+		except:           strings.Fields(f.PropString("except")),
+		forbidFact:       f.PropString("forbid_fact"),
+		cap:              f.PropString("cap"),
+		require:          f.PropString("require"),
+		whenProp:         f.PropString("when_prop"),
+		whenValue:        f.PropString("when_value"),
+		whenEdgeTo:       strings.Fields(f.PropString("when_edge_to")),
+		mustProp:         f.PropString("must_prop"),
+		mustValue:        f.PropString("must_value"),
+		requireDefines:   f.PropString("require_defines"),
+		anyOf:            strings.Fields(f.PropString("any_of")),
+		forbidCycles:     f.PropString("forbid_cycles"),
+		among:            strings.Fields(f.PropString("among")),
+		independent:      f.PropString("independent"),
+		method:           f.PropString("method"),
+		requireName:      f.PropString("require_name"),
+		forbidName:       f.PropString("forbid_name"),
+		surface:          f.PropString("surface"),
+		pattern:          f.PropString("pattern"),
+		requireEdge:      f.PropString("require_edge"),
+		direction:        f.PropString("direction"),
+		whenVia:          f.PropString("when_via"),
+		toName:           strings.Fields(f.PropString("to_name")),
+		receiver:         f.PropString("receiver"),
+		requires:         f.PropString("requires"),
+		protocol:         f.PropString("protocol"),
+		steps:            strings.Fields(f.PropString("steps")),
+		guide:            f.PropString("guide"),
+		message:          f.PropString("message"),
+		exemplars:        strings.Fields(f.PropString("exemplars")),
+		via:              f.PropString("via"),
+		owns:             intent.DecodeOwnership(f.PropString("owns")),
+		exempt:           intent.DecodeExemptions(f.PropString("exempt")),
 		storageStaysHome: f.PropString("storage_stays_home"),
 		capRuntime:       f.PropString("cap_runtime"),
 		metric:           f.PropString("metric"),
@@ -383,9 +383,34 @@ func decodeRule(f facts.Fact) rule {
 // proof-class violation per rule breach, plus one advisory per component whose
 // selector matched nothing.
 func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error) {
+	ev := e.evaluate(store, evaluation{})
+	return ev.insights, nil
+}
+
+// evaluation is one pass of the constraints explainer over a store, with two
+// knobs the verdict pass never uses: a membership exclusion, so a radius can
+// ask what the rules say once a file's facts belong to no part, and a guard
+// that turns a rule's panic into a named "not computed" entry instead of a
+// crash, so a comparison can never read a rule that did not run as unaffected.
+type evaluation struct {
+	exclude func(facts.Fact) bool
+	guard   bool
+}
+
+// evaluated is what one pass produced: every insight, the rule verdicts keyed
+// by rule id, and the rules that could not be computed.
+type evaluated struct {
+	insights    []facts.Insight
+	byRule      map[string][]facts.Insight
+	rules       []rule
+	notComputed []NotComputed
+}
+
+func (e *Explainer) evaluate(store *facts.Store, opts evaluation) evaluated {
 	components, rules := declarations(store)
+	out := evaluated{byRule: map[string][]facts.Insight{}, rules: rules}
 	if len(components) == 0 {
-		return nil, nil
+		return out
 	}
 
 	names := make([]string, 0, len(components))
@@ -425,6 +450,9 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	memberFacts := map[string][]facts.Fact{}
 	for _, name := range names {
 		members[name], memberFacts[name] = resolveMembership(store, components[name])
+		if opts.exclude != nil {
+			members[name], memberFacts[name] = withoutExcluded(members[name], memberFacts[name], opts.exclude)
+		}
 	}
 
 	// Imports edges do not ride the member facts: extractors carry them on
@@ -438,7 +466,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	for _, name := range names {
 		c := components[name]
 		for _, f := range store.ByKind(facts.KindDependency) {
-			if carrierFor(f, c) {
+			if carrierFor(f, c) && (opts.exclude == nil || !opts.exclude(f)) {
 				carriers[name] = append(carriers[name], f)
 			}
 		}
@@ -593,50 +621,12 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 		if refused[r.id] {
 			continue
 		}
-		var verdicts []facts.Insight
-		switch {
-		case r.forbid != "":
-			verdicts = e.verdictForbid(r, resolve, ground)
-		case r.forbidReach != "":
-			verdicts = e.verdictForbidReach(r, graphWalk, resolve, members)
-		case r.allow != "":
-			verdicts = e.verdictAllowOnly(r, resolve, resolvable, ground)
-		case r.protect != "":
-			verdicts = e.verdictProtect(r, graphWalk, resolve)
-		case r.private != "":
-			verdicts = e.verdictPrivate(r, graphWalk, resolve, memberFacts, exportedFiles)
-		case r.forbidFact != "":
-			verdicts = e.verdictForbidFact(r, memberFacts, members)
-		case r.cap != "":
-			verdicts = e.verdictCap(r, memberFacts, members)
-		case r.require != "":
-			verdicts = e.verdictRequire(r, memberFacts, members)
-		case r.requireDefines != "":
-			verdicts = e.verdictRequireDefines(r, memberFacts, members, definedNames, composed)
-		case r.forbidCycles != "":
-			verdicts = e.verdictForbidCycles(r, store, memberFacts)
-		case r.independent != "":
-			verdicts = e.verdictIndependent(r, store, memberFacts, carried)
-		case r.requireName != "":
-			verdicts = e.verdictRequireName(r, memberFacts, members)
-		case r.forbidName != "":
-			verdicts = e.verdictForbidName(r, memberFacts, members)
-		case r.requireEdge != "":
-			verdicts = e.verdictRequireEdge(r, graphWalk, memberFacts, carriers, members, census, resolve, ground)
-		case r.protocol != "":
-			verdicts = e.verdictProtocol(r, memberFacts, carriers, members, census, resolve)
-		case r.guide != "":
-			verdicts = e.verdictGuide(r)
-		case r.storageStaysHome != "":
-			verdicts = e.verdictStorageStaysHome(r, store, memberFacts, members, resolve)
-		case r.capRuntime != "":
-			verdicts = e.verdictCapRuntime(r, store, members)
-		case r.requireConsumer != "":
-			verdicts = e.verdictRequireConsumer(r, store, memberFacts)
-		case r.uniqueAcross != "":
-			verdicts = e.verdictUniqueAcross(r, memberFacts)
-		case r.requireGoverned != "":
-			verdicts = e.verdictRequireGoverned(r, store, memberFacts)
+		verdicts, cause := e.verdictsFor(r, opts.guard, func() []facts.Insight {
+			return e.verdictsOf(r, store, graphWalk, resolve, ground, resolvable, members, memberFacts, carriers, carried, exportedFiles, definedNames, composed, census)
+		})
+		if cause != "" {
+			out.notComputed = append(out.notComputed, NotComputed{Rule: r.id, Cause: cause})
+			continue
 		}
 		if r.since != "" {
 			verdicts = stampSince(r, verdicts)
@@ -647,6 +637,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 				decided[i].Description += fmt.Sprintf(" This verdict traces to rule %s (recipe %s, instantiated in %s).", r.id, r.recipe, r.source)
 			}
 		}
+		out.byRule[r.id] = append(out.byRule[r.id], decided...)
 		insights = append(insights, decided...)
 	}
 
@@ -690,7 +681,102 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	}
 
 	sort.Slice(insights, func(i, j int) bool { return insights[i].Title < insights[j].Title })
-	return insights, nil
+	out.insights = insights
+	return out
+}
+
+// verdictsFor runs one rule's verdicts. Under a guard a panic becomes the
+// rule's cause and no verdict, so the caller lists the rule as not computed
+// rather than silently unaffected; without a guard the panic propagates as it
+// always has, because a verdict pass that crashes must not read as clean.
+func (e *Explainer) verdictsFor(r rule, guard bool, run func() []facts.Insight) (verdicts []facts.Insight, cause string) {
+	if !guard {
+		return run(), ""
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			verdicts, cause = nil, fmt.Sprint(recovered)
+		}
+	}()
+	return run(), ""
+}
+
+// verdictSeam runs before a rule's verdicts when set; it exists so a test can
+// make one rule fail and prove the radius names it instead of staying silent.
+var verdictSeam func(r rule)
+
+func (e *Explainer) verdictsOf(r rule, store *facts.Store, graphWalk []facts.Fact, resolve *resolver, ground *grounding, resolvable map[string]bool, members map[string]map[string]bool, memberFacts, carriers, carried map[string][]facts.Fact, exportedFiles, definedNames, composed map[string]bool, census map[string]map[string]bool) []facts.Insight {
+	if verdictSeam != nil {
+		verdictSeam(r)
+	}
+	var verdicts []facts.Insight
+	switch {
+	case r.forbid != "":
+		verdicts = e.verdictForbid(r, resolve, ground)
+	case r.forbidReach != "":
+		verdicts = e.verdictForbidReach(r, graphWalk, resolve, members)
+	case r.allow != "":
+		verdicts = e.verdictAllowOnly(r, resolve, resolvable, ground)
+	case r.protect != "":
+		verdicts = e.verdictProtect(r, graphWalk, resolve)
+	case r.private != "":
+		verdicts = e.verdictPrivate(r, graphWalk, resolve, memberFacts, exportedFiles)
+	case r.forbidFact != "":
+		verdicts = e.verdictForbidFact(r, memberFacts, members)
+	case r.cap != "":
+		verdicts = e.verdictCap(r, memberFacts, members)
+	case r.require != "":
+		verdicts = e.verdictRequire(r, memberFacts, members)
+	case r.requireDefines != "":
+		verdicts = e.verdictRequireDefines(r, memberFacts, members, definedNames, composed)
+	case r.forbidCycles != "":
+		verdicts = e.verdictForbidCycles(r, store, memberFacts)
+	case r.independent != "":
+		verdicts = e.verdictIndependent(r, store, memberFacts, carried)
+	case r.requireName != "":
+		verdicts = e.verdictRequireName(r, memberFacts, members)
+	case r.forbidName != "":
+		verdicts = e.verdictForbidName(r, memberFacts, members)
+	case r.requireEdge != "":
+		verdicts = e.verdictRequireEdge(r, graphWalk, memberFacts, carriers, members, census, resolve, ground)
+	case r.protocol != "":
+		verdicts = e.verdictProtocol(r, memberFacts, carriers, members, census, resolve)
+	case r.guide != "":
+		verdicts = e.verdictGuide(r)
+	case r.storageStaysHome != "":
+		verdicts = e.verdictStorageStaysHome(r, store, memberFacts, members, resolve)
+	case r.capRuntime != "":
+		verdicts = e.verdictCapRuntime(r, store, members)
+	case r.requireConsumer != "":
+		verdicts = e.verdictRequireConsumer(r, store, memberFacts)
+	case r.uniqueAcross != "":
+		verdicts = e.verdictUniqueAcross(r, memberFacts)
+	case r.requireGoverned != "":
+		verdicts = e.verdictRequireGoverned(r, store, memberFacts)
+	}
+
+	return verdicts
+}
+
+// withoutExcluded drops the members the exclusion names, by file, from one
+// component's resolved membership: the selector still admitted them, the
+// radius asks what the rules say once they are gone.
+func withoutExcluded(names map[string]bool, members []facts.Fact, exclude func(facts.Fact) bool) (map[string]bool, []facts.Fact) {
+	kept := make([]facts.Fact, 0, len(members))
+	keptNames := map[string]bool{}
+	for _, m := range members {
+		if exclude(m) {
+			continue
+		}
+		kept = append(kept, m)
+		keptNames[m.Name] = true
+	}
+	for name := range names {
+		if !keptNames[name] {
+			delete(names, name)
+		}
+	}
+	return names, kept
 }
 
 // dedupVerdicts folds insights with identical titles into one, merging their

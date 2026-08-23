@@ -2287,7 +2287,27 @@ import (
 // across a 20-repository polyglot corpus this recovered 13,496 of 13,828 files that
 // an extractor claimed and no extractor read. The remaining 332 are .html and loose
 // .js that OwnsFile over-claims and detection correctly declines.
-const cacheVersion = "v253"
+// v254: the Rubydex provider emits one dependency per qualified read, for the
+// leaf, carrying the file that defines it as target_file; the segments before
+// the leaf are its path, not dependencies. A read that resolves to nothing, or
+// to a constant alias, is a dependency fact with no relation and a named
+// resolution_cause. A consumer resolving a target by name prefers the carried
+// file when the name is defined in several, so a read of a reopened module's
+// member no longer lands on a reopening. Verdicts move with the edges.
+// v255: provider facts enter this cache. A per-file provider (files: per-file in
+// its config entry) keeps one entry per file keyed by its name, reported version
+// and the file's content digest, and runs only over the files with no entry; the
+// built-in Rubydex provider keeps one whole-index entry keyed by the engine
+// library version, the Ruby file set with content digests and Gemfile.lock, with
+// its census beside it. The receipt's provider block says what was reused.
+// v256: the provider seam spells receivers once and pairs what two producers
+// read identically. A singleton notation is unified by a table the seam owns;
+// a call relation two producers emitted at the same file, line and callee is
+// kept once under the first producer in name order, in the scope-bearing
+// spelling, stamped resolution_agreement; differing receivers stay as emitted
+// and are counted by shape in the receipt. The merged fact set changes for
+// every Ruby repository with both providers on.
+const cacheVersion = "v256"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
@@ -2563,6 +2583,36 @@ func (c *extractorCache) get(key string) ([]facts.Fact, bool) {
 // into an internal buffer before writing a byte). A whole extractor's output is
 // 800 MB on a kernel-sized repository; a single fact is a few hundred bytes, and
 // becomes garbage as soon as it is written.
+// peek decodes an entry without carrying it forward or dropping it, for a caller
+// that is about to replace the entry under the same key: carrying it forward and
+// then writing the replacement would put the key in the spool twice.
+func (c *extractorCache) peek(key string) ([]facts.Fact, bool) {
+	raw, ok := c.prev[key]
+	if !ok {
+		return nil, false
+	}
+	var ff []facts.Fact
+	if err := json.Unmarshal(raw, &ff); err != nil {
+		return nil, false
+	}
+	return ff, true
+}
+
+// providerCache is the view of the extractor cache the provider seam receives:
+// the same spool, the same version and build stamps, keys scoped under a
+// provider namespace so a provider entry can never collide with an extractor's.
+type providerCache struct{ c *extractorCache }
+
+func (p providerCache) key(key string) string {
+	return cacheVersion + "\x00provider\x00" + key
+}
+
+func (p providerCache) Get(key string) ([]facts.Fact, bool) { return p.c.get(p.key(key)) }
+func (p providerCache) Peek(key string) ([]facts.Fact, bool) {
+	return p.c.peek(p.key(key))
+}
+func (p providerCache) Put(key string, ff []facts.Fact) { p.c.put(p.key(key), ff) }
+
 func (c *extractorCache) put(key string, ff []facts.Fact) {
 	if c.noPersist || c.closed {
 		return

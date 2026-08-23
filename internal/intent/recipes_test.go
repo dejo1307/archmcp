@@ -536,3 +536,72 @@ func TestLoadRepoFile_RecipeExpansionIsDeterministic(t *testing.T) {
 		t.Fatalf("two expansions of one repo differ:\nfirst:  %s\nsecond: %s", firstCompiled, secondCompiled)
 	}
 }
+
+// Every form the table knows survives expansion with its roles bound to the
+// instance, and every counterpart role with them. The fixtures are the
+// enumeration's own, so a form added to the schema without a fixture fails
+// there first and a form whose roles the expansion forgets fails here: the
+// five graph-law forms expanded to the bare role name, which no declared
+// component carries, until this walk read the table instead of a hand list.
+func TestExpandRules_EveryFormRebindsItsRoles(t *testing.T) {
+	for _, form := range RuleForms {
+		fixture, ok := formFixtures[form.Key]
+		if !ok {
+			t.Fatalf("form %q has no fixture", form.Key)
+		}
+		rule := fixture.build(func(role string) string { return role })
+		rule.ID = form.Key
+		var roles []RecipeRole
+		for _, role := range fixture.roles {
+			roles = append(roles, RecipeRole{Name: role})
+		}
+		rec := Recipe{Name: "r", Roles: roles, Rules: []ConstraintRule{rule}}
+		inst := RecipeInstantiation{Recipe: "r", As: "inst", Bind: map[string]RecipeBinding{}}
+		for _, role := range fixture.roles {
+			inst.Bind[role] = RecipeBinding{Match: []string{"app/" + role + "/**"}}
+		}
+		expanded := expandRules(rec, inst, nil, "enola/constraints/x.yaml")
+		if len(expanded) != 1 {
+			t.Fatalf("%s: expanded %d rules, want 1", form.Key, len(expanded))
+		}
+		got := ruleRoleReferences(expanded[0])
+		want := ruleRoleReferences(rule)
+		if len(got) != len(want) {
+			t.Fatalf("%s: expansion changed the role count: %v -> %v", form.Key, want, got)
+		}
+		for _, ref := range got {
+			if !strings.HasPrefix(ref, "inst/") && ref != secondStep {
+				t.Fatalf("%s: role %q left unbound after expansion (%v)", form.Key, ref, got)
+			}
+		}
+		if form.Subject(expanded[0]) != "inst/"+fixture.roles[0] {
+			t.Fatalf("%s: subject = %q, want inst/%s", form.Key, form.Subject(expanded[0]), fixture.roles[0])
+		}
+	}
+}
+
+func TestExpandBindings_RoleDefaultsCarryHandlesPublicGovernedBy(t *testing.T) {
+	rec := Recipe{Name: "r", Roles: []RecipeRole{
+		{Name: "mutating-actions", Kind: "symbol", Match: []string{"app/controllers/**"}, Handles: []string{"POST", "DELETE"}},
+		{Name: "api", Match: []string{"app/controllers/api/**"}, Public: []string{"app/controllers/api/public/**"}, GovernedBy: "wiki/api/**"},
+	}}
+	inst := RecipeInstantiation{Recipe: "r", As: "inst", Bind: map[string]RecipeBinding{
+		"api": {Handles: []string{"PATCH"}},
+	}}
+	components := expandBindings(rec, inst, "enola/constraints/x.yaml")
+	byRole := map[string]ConstraintComponent{}
+	for _, c := range components {
+		byRole[c.Role] = c
+	}
+	actions := byRole["mutating-actions"]
+	if len(actions.Handles) != 2 || actions.Handles[0] != "POST" {
+		t.Fatalf("a defaulted role inherits handles: %+v", actions)
+	}
+	api := byRole["api"]
+	if len(api.Handles) != 1 || api.Handles[0] != "PATCH" {
+		t.Fatalf("a binding's handles override the role's: %+v", api)
+	}
+	if len(api.Public) != 1 || api.GovernedBy != "wiki/api/**" {
+		t.Fatalf("public and governed_by inherit from the role: %+v", api)
+	}
+}

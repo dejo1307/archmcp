@@ -24,8 +24,10 @@ const (
 type declarationKind uint32
 
 const (
-	declarationClass  declarationKind = 0
-	declarationModule declarationKind = 1
+	declarationClass    declarationKind = 0
+	declarationModule   declarationKind = 1
+	declarationConstant declarationKind = 3
+	declarationAlias    declarationKind = 4
 )
 
 type cDefinition struct {
@@ -54,7 +56,7 @@ type cLocation struct {
 	startLine   uint32
 	endLine     uint32
 	startColumn uint32
-	_           uint32
+	endColumn   uint32
 }
 
 type cDiagnosticArray struct {
@@ -62,12 +64,14 @@ type cDiagnosticArray struct {
 	len uintptr
 }
 
-// Location is a span the engine measured, lines and columns one-based.
+// Location is a span the engine measured, lines and columns one-based; the
+// end column is exclusive, so a span ends just before it.
 type Location struct {
 	URI         string
 	StartLine   int
 	EndLine     int
 	StartColumn int
+	EndColumn   int
 }
 
 // Library is the set of engine calls the provider needs, bound to one loaded
@@ -103,6 +107,7 @@ type Library struct {
 	constRefLocation   func(uintptr, uint64) *cLocation
 	constRefDocument   func(uintptr, uint64) *uint64
 	constRefResolved   func(uintptr, uint64) *cDeclaration
+	constRefName       func(uintptr, uint64) *byte
 	methodRefsIterNext func(uintptr, *cMethodReference) bool
 	methodRefsIterFree func(uintptr)
 	methodRefName      func(uintptr, uint64) *byte
@@ -137,6 +142,7 @@ func (l *Library) location(loc *cLocation) (Location, bool) {
 		StartLine:   int(loc.startLine) + 1,
 		EndLine:     int(loc.endLine) + 1,
 		StartColumn: int(loc.startColumn) + 1,
+		EndColumn:   int(loc.endColumn) + 1,
 	}
 	l.locationFree(loc)
 	return out, true
@@ -296,6 +302,12 @@ func (g *graph) constantReferenceDocument(id uint64) (uint64, bool) {
 	doc := *p
 	g.lib.freeU64(p)
 	return doc, true
+}
+
+// constantReferenceName is the segment as written at the reference, which is
+// the only name an unresolved reference has.
+func (g *graph) constantReferenceName(id uint64) string {
+	return g.lib.ownedString(g.lib.constRefName(g.handle, id))
 }
 
 func (g *graph) resolvedConstantReference(id uint64) (cDeclaration, bool) {

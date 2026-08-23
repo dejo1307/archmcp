@@ -22,13 +22,15 @@ func (r *Runner) Plan(ctx context.Context, args []string) {
 		symbolsFlag = fs.String("symbols", "", "comma-separated exact fact names the intended change touches")
 		patchFlag   = fs.String("patch", "", "a unified diff file to evaluate counterfactually over a scratch copy")
 		asJSON      = fs.Bool("json", false, "emit the report as JSON instead of text")
+		noRadius    = fs.Bool("no-radius", false, "skip the re-evaluation that names the verdicts a move of each path would change")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" plan [flags] [path...] [repo_path|config_path]\n\n"+
 			"The pre-edit contract: which declared constraints govern an intended change,\n"+
-			"its blast radius over the current snapshot, and — for a --patch — the\n"+
-			"constraint verdicts that WOULD appear, evaluated over a scratch copy BEFORE\n"+
-			"any edit lands in the tree. The working tree and its snapshot are never\n"+
+			"its blast radius over the current snapshot, the verdicts that would appear or\n"+
+			"vanish if each path left every part (one re-evaluation over the loaded\n"+
+			"snapshot), and, for a --patch, the constraint verdicts that WOULD appear,\n"+
+			"evaluated over a scratch copy BEFORE any edit lands in the tree. The working tree and its snapshot are never\n"+
 			"written; a report, never a gate.\n\n"+
 			"Positional arguments naming an existing directory or a .yaml/.yml file pick\n"+
 			"the repository or config (first match wins); every other positional is a\n"+
@@ -97,6 +99,7 @@ func (r *Runner) Plan(ctx context.Context, args []string) {
 		Store:         store,
 		Snapshot:      info,
 		OutputDirName: eng.Config().Output.Dir,
+		SkipRadius:    *noRadius,
 	}
 	if len(patch) > 0 {
 		cfgPath := tgt.cfgPath

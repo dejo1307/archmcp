@@ -31,6 +31,10 @@ const (
 type RuleForm struct {
 	Key     string
 	Subject func(ConstraintRule) string
+	// Set writes the subject back, so a pass that rewrites component names
+	// (recipe expansion binding roles to instance components) is driven by
+	// this table and cannot miss a form the table knows.
+	Set func(*ConstraintRule, string)
 	// WalksEdges marks the forms whose verdict is a claim about edges: they
 	// resolve their components as the SOURCE or the TARGET of a measured
 	// relation. The rest read a member's own props and never leave the fact
@@ -55,31 +59,31 @@ type RuleForm struct {
 // RuleForms is the closed form vocabulary, in the order the arity error names
 // them. Seven walk edges; seven read a member's own props.
 var RuleForms = []RuleForm{
-	{Key: "forbid", Subject: func(r ConstraintRule) string { return r.Forbid }, WalksEdges: true, Side: sourceSide},
-	{Key: "forbid_reach", Subject: func(r ConstraintRule) string { return r.ForbidReach }, WalksEdges: true, Side: sourceSide},
-	{Key: "allow", Subject: func(r ConstraintRule) string { return r.Allow }, WalksEdges: true, Side: sourceSide},
-	{Key: "protect", Subject: func(r ConstraintRule) string { return r.Protect }, WalksEdges: true, Side: targetSide},
-	{Key: "private", Subject: func(r ConstraintRule) string { return r.Private }, WalksEdges: true, Side: targetSide},
-	{Key: "forbid_fact", Subject: func(r ConstraintRule) string { return r.ForbidFact }},
-	{Key: "cap", Subject: func(r ConstraintRule) string { return r.Cap }},
-	{Key: "require", Subject: func(r ConstraintRule) string { return r.Require }},
-	{Key: "require_edge", Subject: func(r ConstraintRule) string { return r.RequireEdge }, WalksEdges: true, Side: requireEdgeSubjectSide, CensusMeasured: true},
-	{Key: "require_defines", Subject: func(r ConstraintRule) string { return r.RequireDefines }},
-	{Key: "forbid_cycles", Subject: func(r ConstraintRule) string { return r.ForbidCycles }},
+	{Key: "forbid", Subject: func(r ConstraintRule) string { return r.Forbid }, Set: func(r *ConstraintRule, v string) { r.Forbid = v }, WalksEdges: true, Side: sourceSide},
+	{Key: "forbid_reach", Subject: func(r ConstraintRule) string { return r.ForbidReach }, Set: func(r *ConstraintRule, v string) { r.ForbidReach = v }, WalksEdges: true, Side: sourceSide},
+	{Key: "allow", Subject: func(r ConstraintRule) string { return r.Allow }, Set: func(r *ConstraintRule, v string) { r.Allow = v }, WalksEdges: true, Side: sourceSide},
+	{Key: "protect", Subject: func(r ConstraintRule) string { return r.Protect }, Set: func(r *ConstraintRule, v string) { r.Protect = v }, WalksEdges: true, Side: targetSide},
+	{Key: "private", Subject: func(r ConstraintRule) string { return r.Private }, Set: func(r *ConstraintRule, v string) { r.Private = v }, WalksEdges: true, Side: targetSide},
+	{Key: "forbid_fact", Subject: func(r ConstraintRule) string { return r.ForbidFact }, Set: func(r *ConstraintRule, v string) { r.ForbidFact = v }},
+	{Key: "cap", Subject: func(r ConstraintRule) string { return r.Cap }, Set: func(r *ConstraintRule, v string) { r.Cap = v }},
+	{Key: "require", Subject: func(r ConstraintRule) string { return r.Require }, Set: func(r *ConstraintRule, v string) { r.Require = v }},
+	{Key: "require_edge", Subject: func(r ConstraintRule) string { return r.RequireEdge }, Set: func(r *ConstraintRule, v string) { r.RequireEdge = v }, WalksEdges: true, Side: requireEdgeSubjectSide, CensusMeasured: true},
+	{Key: "require_defines", Subject: func(r ConstraintRule) string { return r.RequireDefines }, Set: func(r *ConstraintRule, v string) { r.RequireDefines = v }},
+	{Key: "forbid_cycles", Subject: func(r ConstraintRule) string { return r.ForbidCycles }, Set: func(r *ConstraintRule, v string) { r.ForbidCycles = v }},
 	// independent reads its own members' edges against the includers resolved
 	// ancestry names; no component resolves as the far end of a measured
 	// relation, so it is not an edge-role form and the concept screen leaves it
 	// to its own refusal.
-	{Key: "independent", Subject: func(r ConstraintRule) string { return r.Independent }},
-	{Key: "require_name", Subject: func(r ConstraintRule) string { return r.RequireName }},
-	{Key: "forbid_name", Subject: func(r ConstraintRule) string { return r.ForbidName }},
-	{Key: "protocol", Subject: func(r ConstraintRule) string { return r.Protocol }, WalksEdges: true, Side: sourceSide, CensusMeasured: true},
-	{Key: "guide", Subject: func(r ConstraintRule) string { return r.Guide }},
-	{Key: "storage_stays_home", Subject: func(r ConstraintRule) string { return r.StorageStaysHome }},
-	{Key: "cap_runtime", Subject: func(r ConstraintRule) string { return r.CapRuntime }},
-	{Key: "require_consumer", Subject: func(r ConstraintRule) string { return r.RequireConsumer }},
-	{Key: "unique_across", Subject: func(r ConstraintRule) string { return r.UniqueAcross }},
-	{Key: "require_governed", Subject: func(r ConstraintRule) string { return r.RequireGoverned }},
+	{Key: "independent", Subject: func(r ConstraintRule) string { return r.Independent }, Set: func(r *ConstraintRule, v string) { r.Independent = v }},
+	{Key: "require_name", Subject: func(r ConstraintRule) string { return r.RequireName }, Set: func(r *ConstraintRule, v string) { r.RequireName = v }},
+	{Key: "forbid_name", Subject: func(r ConstraintRule) string { return r.ForbidName }, Set: func(r *ConstraintRule, v string) { r.ForbidName = v }},
+	{Key: "protocol", Subject: func(r ConstraintRule) string { return r.Protocol }, Set: func(r *ConstraintRule, v string) { r.Protocol = v }, WalksEdges: true, Side: sourceSide, CensusMeasured: true},
+	{Key: "guide", Subject: func(r ConstraintRule) string { return r.Guide }, Set: func(r *ConstraintRule, v string) { r.Guide = v }},
+	{Key: "storage_stays_home", Subject: func(r ConstraintRule) string { return r.StorageStaysHome }, Set: func(r *ConstraintRule, v string) { r.StorageStaysHome = v }},
+	{Key: "cap_runtime", Subject: func(r ConstraintRule) string { return r.CapRuntime }, Set: func(r *ConstraintRule, v string) { r.CapRuntime = v }},
+	{Key: "require_consumer", Subject: func(r ConstraintRule) string { return r.RequireConsumer }, Set: func(r *ConstraintRule, v string) { r.RequireConsumer = v }},
+	{Key: "unique_across", Subject: func(r ConstraintRule) string { return r.UniqueAcross }, Set: func(r *ConstraintRule, v string) { r.UniqueAcross = v }},
+	{Key: "require_governed", Subject: func(r ConstraintRule) string { return r.RequireGoverned }, Set: func(r *ConstraintRule, v string) { r.RequireGoverned = v }},
 }
 
 func sourceSide(ConstraintRule) string { return SideSource }
@@ -106,6 +110,7 @@ func requireEdgeSubjectSide(r ConstraintRule) string {
 type CounterpartRole struct {
 	Key   string
 	Names func(ConstraintRule) []string
+	Set   func(*ConstraintRule, []string)
 	Side  func(ConstraintRule) string
 }
 
@@ -114,11 +119,18 @@ type CounterpartRole struct {
 // except), the landing sites allowed to receive one (only), and the ordered
 // stages an edge must have reached (steps).
 var CounterpartRoles = []CounterpartRole{
-	{Key: "to", Names: func(r ConstraintRule) []string { return []string{r.To} }, Side: counterpartToSide},
-	{Key: "owners", Names: func(r ConstraintRule) []string { return r.Owners }, Side: sourceSide},
-	{Key: "only", Names: func(r ConstraintRule) []string { return r.Only }, Side: targetSide},
-	{Key: "except", Names: func(r ConstraintRule) []string { return r.Except }, Side: sourceSide},
-	{Key: "steps", Names: func(r ConstraintRule) []string { return r.Steps }, Side: targetSide},
+	{Key: "to", Names: func(r ConstraintRule) []string { return []string{r.To} }, Set: func(r *ConstraintRule, v []string) { r.To = firstOrEmpty(v) }, Side: counterpartToSide},
+	{Key: "owners", Names: func(r ConstraintRule) []string { return r.Owners }, Set: func(r *ConstraintRule, v []string) { r.Owners = v }, Side: sourceSide},
+	{Key: "only", Names: func(r ConstraintRule) []string { return r.Only }, Set: func(r *ConstraintRule, v []string) { r.Only = v }, Side: targetSide},
+	{Key: "except", Names: func(r ConstraintRule) []string { return r.Except }, Set: func(r *ConstraintRule, v []string) { r.Except = v }, Side: sourceSide},
+	{Key: "steps", Names: func(r ConstraintRule) []string { return r.Steps }, Set: func(r *ConstraintRule, v []string) { r.Steps = v }, Side: targetSide},
+}
+
+func firstOrEmpty(v []string) string {
+	if len(v) == 0 {
+		return ""
+	}
+	return v[0]
 }
 
 // counterpartToSide is the mirror of the subject's: to: is the far end of the
