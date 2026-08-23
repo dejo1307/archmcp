@@ -212,6 +212,9 @@ func dashboardSection(bin Binary) Section {
   server also exposes the same read-only dashboard. Data refresh is explicit, so an
   investigation is never interrupted. Run "--status" to find its URL, or pass
   "--no-dashboard" to disable it.
+
+  "--generate", "--refresh", and "check --write" each print an "Explore this
+  snapshot" line pointing at the dashboard command for what they just wrote.
 `, bin.Name),
 	}
 }

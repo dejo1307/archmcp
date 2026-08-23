@@ -254,14 +254,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  Artifacts:   %d\n", len(snapshot.Artifacts))
 		fmt.Fprintf(os.Stderr, "  Duration:    %s\n", snapshot.Meta.Duration)
 		fmt.Fprintf(os.Stderr, "  Output:      %s\n", filepath.Join(repoPaths[len(repoPaths)-1], cfg.Output.Dir))
-		switch {
-		case repoArg != "":
-			fmt.Fprintf(os.Stderr, "\nExplore this snapshot: enola dashboard %q\n", repoArg)
-		case cfgPath != "mcp-arch.yaml":
-			fmt.Fprintf(os.Stderr, "\nExplore this snapshot: enola dashboard %q\n", cfgPath)
-		default:
-			fmt.Fprintln(os.Stderr, "\nExplore this snapshot: enola dashboard")
-		}
+		printDashboardHint(os.Stderr, repoArg, cfgPath)
 		updatecheck.Fprint(os.Stderr, engine.ExtractorVersion())
 		memWatch.Report(os.Stderr, snapshot.Meta.FactCount)
 		os.Exit(0)
@@ -523,4 +516,5 @@ func runRefresh(ctx context.Context, eng *bootstrap.Engine, cfg *config.Config, 
 	fmt.Fprintf(os.Stderr, "  Insights:    %d\n", snapshot.Meta.InsightCount)
 	fmt.Fprintf(os.Stderr, "  Duration:    %s\n", snapshot.Meta.Duration)
 	fmt.Fprintf(os.Stderr, "  Output:      %s\n", filepath.Join(last, cfg.Output.Dir))
+	printDashboardHint(os.Stderr, repoArg, cfg.SourcePath)
 }
