@@ -2,7 +2,8 @@
 // graph — the enforcement half of the components/rules vocabulary pages
 // declare. A component resolves to the measured facts its match patterns
 // select (the same bounded path dialect declared layers use); a rule states
-// one of twelve enforceable forms over components: forbid (one component must
+// one of the enforceable forms in intent.RuleForms — twenty-one of them, and
+// that table is the count's only source: forbid (one component must
 // not reach another via a named edge kind), forbid_reach (one component must
 // not reach another through ANY measured path of rule-via edges — the
 // transitive form, a bounded breadth-first walk whose shortest witness path
@@ -47,6 +48,17 @@
 // emits no finding ever; in advisory mode it emits ONE 0.9 finding per
 // guided component — never one per member, because guidance is not a
 // violation census — so it rides check output visibly and can fail nothing.
+//
+// Eight further forms state laws only a graph can settle: forbid_cycles/among
+// (the named parts may not depend on each other in a circle), independent (no
+// module in the component reaches a class whose resolved ancestry includes
+// it), forbid_name (the negative of require_name), storage_stays_home (every
+// storage fact a member reaches is itself a member), cap_runtime (a
+// runtime-observed metric per member frame stays under a budget),
+// require_consumer (every member route has a client in the snapshot),
+// unique_across (no two members in different repositories share the named
+// property), and require_governed (every member file carries an anchor from a
+// compiled page).
 //
 // Everything here is exact and fail-closed: membership is path equality or a
 // declared subtree, target resolution is exact fact-name match — an edge whose

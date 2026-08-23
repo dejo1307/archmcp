@@ -138,7 +138,14 @@ func (r *Runner) Dispatch(ctx context.Context, args []string) bool {
 	case "check":
 		r.Check(ctx, args[1:]) // exits with the verdict's code
 	case "constraints":
-		r.Constraints(args[1:]) // lint and explain exit with their own codes
+		// lint exits with its own verdict (0 valid, 1 problems, 2 could not run) and
+		// mine exits 0 itself, but init and explain RETURN on success — and a handler
+		// that returns lands back in main's flag loop, which hands "constraints" to
+		// UnknownArgHelp and prints `unknown command "constraints" — did you mean
+		// "constraints"?` before exiting 1. A successful init reported itself as a
+		// failure for as long as the command had existed, so a caller scripting it
+		// had to read what it wrote and ignore the code it exited with.
+		r.Constraints(args[1:])
 		os.Exit(0)
 	case "plan":
 		r.Plan(ctx, args[1:])

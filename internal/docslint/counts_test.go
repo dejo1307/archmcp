@@ -44,7 +44,7 @@ var countWaivers = []struct{ Doc, Phrase, Reason string }{
 		Phrase: "fifteen explainers produced **9,131 findings**",
 		Reason: "a measurement, not a description: the corpus sweep in BENCHMARKS.md ran " +
 			"against the fifteen explainers that shipped at the time. Re-counting it to " +
-			"today's sixteen would report a number no run ever produced.",
+			"today's inventory would report a number no run ever produced.",
 	},
 	{
 		Doc:    "ARCHITECTURE.md",
