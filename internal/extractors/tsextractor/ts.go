@@ -3,6 +3,7 @@ package tsextractor
 import (
 	"context"
 	"encoding/json"
+	"github.com/enola-labs/enola/internal/extractors/extcoverage"
 	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"io/fs"
 	"log"
@@ -169,6 +170,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	isSvelteKit := detectSvelteKit(repoPath)
 	isEmber := detectEmber(repoPath)
 	isReactNav := detectReactNavigation(repoPath)
+	isAngular := detectAngular(repoPath)
 	// ORM detection is gated on the package.json dependency, exactly as Vue/Nuxt are, so
 	// a class coincidentally decorated @Entity models nothing in a repo without TypeORM.
 	isTypeORM, isDrizzle, isPrisma := detectORMs(repoPath)
@@ -186,12 +188,20 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// framework flags and path aliases above are read-only, and extractFile is a
 	// pure function of (src, relFile, …), so per-file work is independent. Results
 	// are merged in file order for deterministic output.
-	var tsFiles []string
+	var tsFiles, htmlFiles []string
 	knownFiles := make(map[string]bool)
 	for _, relFile := range files {
 		if isTypeScriptFile(relFile) {
 			tsFiles = append(tsFiles, relFile)
 			knownFiles[filepath.ToSlash(relFile)] = true
+			continue
+		}
+		// An Angular component's template is a separate .html file, and the members
+		// and child components it names are frequently referenced nowhere else. It is
+		// read only in an Angular repository: everywhere else a .html file is a page,
+		// a fixture or documentation, and scanning it would model nothing.
+		if isAngular && isAngularTemplateFile(relFile) && !facts.IsTestPath(relFile) {
+			htmlFiles = append(htmlFiles, relFile)
 		}
 	}
 
@@ -216,9 +226,8 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			return tsFileResult{}
 		}
 		aliases := aliasesForDir(aliasRoots, factpath.Dir(relFile))
-		res := tsFileResult{
-			facts: e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, orms, aliases, knownFiles, grpcStubs),
-		}
+		var res tsFileResult
+		res.facts, res.angular, res.angularRouter, res.angularInline, res.angularHTTP = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, orms, aliases, knownFiles, grpcStubs)
 		// Routers, mounts and held-back routes for the repo-wide mount pass below.
 		// Collected here because resolving an import needs this file's path aliases,
 		// which are in scope only during the per-file walk. Same test-path gate as
@@ -230,15 +239,50 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		return res
 	})
 
+	// Templates are scanned in parallel with no parser: an Angular template is not
+	// HTML once its @if/@for blocks are in it, and both dialects are live in the
+	// same repositories.
+	templates := make(map[string]*angularTemplate, len(htmlFiles))
+	if len(htmlFiles) > 0 {
+		scans := parallel.MapFiles(ctx, htmlFiles, func(relFile string) *angularTemplate {
+			src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+			if err != nil {
+				log.Printf("[ts-extractor] error reading %s: %v", relFile, err)
+				return nil
+			}
+			return scanAngularTemplate(src, relFile)
+		})
+		for i, t := range scans {
+			if t != nil {
+				templates[htmlFiles[i]] = t
+			}
+		}
+	}
+
 	// Group files by directory for module detection. Files that produced no
 	// facts (unreadable, or skipped as minified/bundled) do not register a
 	// module, so a directory containing only skipped bundles (e.g. a vendored
 	// scripts dir) stays out of the graph rather than surfacing as an empty module.
 	modules := make(map[string]bool)
 	routerFiles := make([]*routerFile, 0, len(perFile))
+	var angular angularCounts
+	var angularRouters []*angularRouterFile
+	var angularHTTPFiles []*angularHTTPFile
+	var angularRoutes, angularRequests angularCounts
+	inlineTemplates := map[string]*angularTemplate{}
 	for i, res := range perFile {
 		if res.routers != nil {
 			routerFiles = append(routerFiles, res.routers)
+		}
+		angular.merge(res.angular)
+		for name, t := range res.angularInline {
+			inlineTemplates[name] = t
+		}
+		if res.angularRouter != nil {
+			angularRouters = append(angularRouters, res.angularRouter)
+		}
+		if res.angularHTTP != nil {
+			angularHTTPFiles = append(angularHTTPFiles, res.angularHTTP)
 		}
 		if len(res.facts) == 0 {
 			continue
@@ -268,6 +312,68 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		composeEngineMounts(allFacts)
 	}
 
+	// Angular's routes are composed here, where every route array and every lazy
+	// mount in the repository is visible; a per-file pass can see only one end of a
+	// loadChildren. See angularroutes.go.
+	if routes, c := composeAngularRoutes(angularRouters); len(routes) > 0 || c.total() > 0 {
+		allFacts = append(allFacts, routes...)
+		for _, f := range routes {
+			modules[factpath.Dir(f.File)] = true
+		}
+		angularRoutes.merge(c)
+	}
+
+	// Templates are joined to the components that own them here, where the members of
+	// every class and the selector every component declared are both in hand.
+	angularTemplateCounts := attachAngularTemplates(allFacts, templates, inlineTemplates)
+
+	// Requests through an injected HttpClient are composed here: a base URL is a
+	// static of one service and named by many, so the constants are only all in hand
+	// once the repository is read. See angularhttp.go.
+	if reqs, c := composeAngularRequests(angularHTTPFiles); len(reqs) > 0 || c.total() > 0 {
+		allFacts = append(allFacts, reqs...)
+		for _, f := range reqs {
+			modules[factpath.Dir(f.File)] = true
+		}
+		angularRequests.merge(c)
+	}
+
+	// Every injects edge is made to name a symbol this snapshot holds, now that the
+	// whole repository is assembled; see reconcileAngularInjects.
+	if isAngular {
+		angular.merge(reconcileAngularInjects(allFacts))
+		angularRoutes.merge(resolveAngularLazyComponents(allFacts))
+	}
+
+	// What the injection pass could name, and what it could not, by cause. Emitted
+	// only when there were injection sites at all — a zero from an extractor that
+	// never looked reads the same as a zero from one that did, which is the whole
+	// failure this fact exists to prevent.
+	if angular.total() > 0 {
+		if f, ok := extcoverage.Fact(repoPath, "typescript:angular-di", "angular_inject",
+			angular.resolved, angular.unresolved); ok {
+			allFacts = append(allFacts, f)
+		}
+	}
+	if angularTemplateCounts.total() > 0 {
+		if f, ok := extcoverage.Fact(repoPath, "typescript:angular-templates", "angular_template_ref",
+			angularTemplateCounts.resolved, angularTemplateCounts.unresolved); ok {
+			allFacts = append(allFacts, f)
+		}
+	}
+	if angularRequests.total() > 0 {
+		if f, ok := extcoverage.Fact(repoPath, "typescript:angular-requests", "angular_http_call",
+			angularRequests.resolved, angularRequests.unresolved); ok {
+			allFacts = append(allFacts, f)
+		}
+	}
+	if angularRoutes.total() > 0 {
+		if f, ok := extcoverage.Fact(repoPath, "typescript:angular-routes", "angular_route",
+			angularRoutes.resolved, angularRoutes.unresolved); ok {
+			allFacts = append(allFacts, f)
+		}
+	}
+
 	// Prisma models live in schema.prisma — a separate DSL, so tree-sitter never sees it.
 	// Read it off-glob, the same way package.json and tsconfig.json already are.
 	if isPrisma {
@@ -276,6 +382,13 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 
 	// Emit module facts for each directory
 	pkgNames := collectPackageNames(repoPath)
+	// The workspace project each directory belongs to, where the repository states
+	// one. A monorepo's unit of ownership is its project, not its directory, and
+	// every reading that groups by unit was inferring the boundary from the path.
+	var projects map[string]string
+	if isAngular {
+		projects = angularProjectNames(repoPath)
+	}
 	for dir := range modules {
 		props := map[string]any{
 			"language": "typescript",
@@ -286,6 +399,9 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		// that happens to be labeled like the scope.
 		if name := nearestPackageName(pkgNames, dir); name != "" {
 			props["package_name"] = name
+		}
+		if name := nearestProjectName(projects, dir); name != "" {
+			props["workspace_project"] = name
 		}
 		allFacts = append(allFacts, facts.Fact{
 			Kind:  facts.KindModule,
@@ -314,9 +430,10 @@ type extractCtx struct {
 	imports     emberImportBindings // the file's import table, read for the module a superclass identifier came from
 	ioBindings  map[string]bool     // local names bound to imports from a network module (I/O sinks)
 	knownFiles  map[string]bool     // repo-relative (slash) paths of all indexed TS/JS files
+	aliases     map[string]tsAlias  // this directory's tsconfig path aliases, for resolving an import written as a bare specifier
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) []facts.Fact {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate, *angularHTTPFile) {
 	// The grammar is chosen here, so the kind table is too: TypeScript and TSX assign
 	// different meanings to the same symbol ids, and everything below reads node kinds
 	// through this table. See kinds.go.
@@ -324,24 +441,24 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	kinds := tsKindsFor(isTSX)
 
 	if isVueFile(relFile) {
-		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases)
+		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases), angularCounts{}, nil, nil, nil
 	}
 	if isSvelteFile(relFile) {
-		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases)
+		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases), angularCounts{}, nil, nil, nil
 	}
 	if isGraphQLDocFile(relFile) {
 		if facts.IsTestPath(relFile) {
-			return nil
+			return nil, angularCounts{}, nil, nil, nil
 		}
-		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation)
+		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation), angularCounts{}, nil, nil, nil
 	}
 	if isHbsFile(relFile) {
 		// Handlebars is only modeled where Ember's resolver gives the names
 		// deterministic meaning; a lone .hbs in a non-Ember repo stays out.
 		if !isEmber {
-			return nil
+			return nil, angularCounts{}, nil, nil, nil
 		}
-		return e.extractEmberHbs(src, relFile, knownFiles)
+		return e.extractEmberHbs(src, relFile, knownFiles), angularCounts{}, nil, nil, nil
 	}
 	// A Glimmer template-tag file is TypeScript/JavaScript with embedded
 	// <template> blocks: blank the blocks in place (newlines preserved, so every
@@ -392,7 +509,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
-		return result
+		return result, angularCounts{}, nil, nil, nil
 	}
 
 	tree := parser.Parse(src, nil)
@@ -420,6 +537,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		imports:     buildEmberImportBindings(kinds, root, src, relFile, aliases),
 		ioBindings:  buildIOImportBindings(kinds, root, src),
 		knownFiles:  knownFiles,
+		aliases:     aliases,
 	}
 	decls := e.extractDeclarations(kinds, root, ctx)
 
@@ -471,6 +589,24 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		}
 	}
 
+	// Angular: classify the decorator-declared classes and attach the edges their
+	// dependency injection declares. A post-pass over the declaration facts, as
+	// emberEnrich is, because the decorator that decides a class's role sits above
+	// the node the declaration walk stopped at.
+	var angular angularCounts
+	var router *angularRouterFile
+	var inlineTemplates map[string]*angularTemplate
+	var httpFile *angularHTTPFile
+	if isAngular {
+		result, angular, inlineTemplates, httpFile = angularEnrich(kinds, result, root, ctx, aliases)
+		// The route arrays and router calls this file declares, for the repo-wide
+		// walk in composeAngularRoutes. A test file's router configures a fixture,
+		// not the application, the same gate the server-route passes apply.
+		if !facts.IsTestPath(relFile) && declaresAngularRouting(src) {
+			router = collectAngularRouterFile(kinds, root, ctx, aliases)
+		}
+	}
+
 	// Detect Vue Router configuration files
 	if (isVue || isNuxt) && containsCreateRouterCall(kinds, root, src) {
 		result = append(result, facts.Fact{
@@ -486,7 +622,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 		})
 	}
 
-	return result
+	return result, angular, router, inlineTemplates, httpFile
 }
 
 func (e *TSExtractor) extractImports(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) []facts.Fact {
@@ -1272,7 +1408,20 @@ func isMinifiedSource(content []byte) bool {
 }
 
 // OwnsFile implements plugin.FileOwner for incremental caching.
-func (e *TSExtractor) OwnsFile(relFile string) bool { return isTypeScriptFile(relFile) }
+// OwnsFile includes .html, because an Angular component's references live in its
+// template and a template edit must re-run this extractor. The contract permits a
+// superset — over-inclusion only reduces cache reuse — and a .html file in a
+// non-Angular repository is read by nothing, so the only cost is a cache key that
+// notices a page changing.
+func (e *TSExtractor) OwnsFile(relFile string) bool {
+	return isTypeScriptFile(relFile) || isAngularTemplateFile(relFile)
+}
+
+// isAngularTemplateFile reports whether a path is a candidate component template.
+func isAngularTemplateFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".html" || ext == ".htm"
+}
 
 // hasChildKind reports whether node has a direct child of the given kind.
 func hasChildKind(kinds *tsutil.KindTable, node *sitter.Node, kind string) bool {
@@ -1565,7 +1714,12 @@ func nodeText(node *sitter.Node, src []byte) string {
 // specifier and nothing else.
 type tsAlias struct {
 	replacement string
-	exact       bool
+	// suffix is what follows the `*` in the target, for a mapping whose replacement
+	// does not end at the wildcard: `"@acme/ui/*": ["./packages/ui/*/src/index.ts"]`
+	// resolves `@acme/ui/forms` to `packages/ui/forms/src/index.ts`, not to
+	// `packages/ui/forms`. Empty for the ordinary `["./src/*"]` shape.
+	suffix string
+	exact  bool
 }
 
 type tsAliasRoot struct {
@@ -1679,6 +1833,22 @@ func withSvelteKitLibDefault(roots []tsAliasRoot) []tsAliasRoot {
 // tryParseTSConfigAliases reads path alias mappings from a tsconfig.json,
 // e.g. "@/*": ["./src/*"] maps prefix "@/" to replacement "src/". ok is
 // false if the file is missing/invalid or declares no usable paths.
+// tsAliasTarget resolves one `paths` target against the tsconfig's baseUrl.
+//
+// A target that already starts with "./" is relative to the tsconfig's own
+// directory and is left alone; anything else is relative to baseUrl, which is what
+// TypeScript does and what a workspace that sets `"baseUrl": "./src"` relies on.
+func tsAliasTarget(base, target string) string {
+	target = strings.TrimSpace(target)
+	if strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../") {
+		return strings.TrimPrefix(target, "./")
+	}
+	if base == "" {
+		return target
+	}
+	return base + "/" + target
+}
+
 func tryParseTSConfigAliases(tsconfigPath string) (map[string]tsAlias, bool) {
 	data, err := os.ReadFile(tsconfigPath)
 	if err != nil {
@@ -1687,13 +1857,24 @@ func tryParseTSConfigAliases(tsconfigPath string) (map[string]tsAlias, bool) {
 
 	var config struct {
 		CompilerOptions struct {
-			Paths map[string][]string `json:"paths"`
+			// BaseUrl is what a non-relative `paths` target is resolved against.
+			// TypeScript resolves `"@common/*": ["common/*"]` under a `baseUrl` of
+			// "./src" to src/common/*, and ignoring it resolved one directory too
+			// high — which in one workspace meant every aliased import in the
+			// application resolved to nothing, and with it every module composition
+			// edge those imports carry.
+			BaseURL string              `json:"baseUrl"`
+			Paths   map[string][]string `json:"paths"`
 		} `json:"compilerOptions"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, false
 	}
 
+	base := strings.Trim(strings.TrimPrefix(strings.TrimSpace(config.CompilerOptions.BaseURL), "./"), "/")
+	if base == "." {
+		base = ""
+	}
 	aliases := make(map[string]tsAlias)
 	for pattern, targets := range config.CompilerOptions.Paths {
 		if len(targets) == 0 {
@@ -1701,10 +1882,13 @@ func tryParseTSConfigAliases(tsconfigPath string) (map[string]tsAlias, bool) {
 		}
 		switch {
 		// "@/*": ["./src/*"] → prefix "@/" maps to replacement "src/"
-		case strings.HasSuffix(pattern, "*") && strings.HasSuffix(targets[0], "*"):
+		case strings.HasSuffix(pattern, "*") && strings.Contains(targets[0], "*"):
 			prefix := strings.TrimSuffix(pattern, "*")
-			replacement := strings.TrimSuffix(targets[0], "*")
-			aliases[prefix] = tsAlias{replacement: strings.TrimPrefix(replacement, "./")}
+			head, tail, _ := strings.Cut(targets[0], "*")
+			aliases[prefix] = tsAlias{
+				replacement: tsAliasTarget(base, head),
+				suffix:      tail,
+			}
 
 		// "@acme/common": ["./packages/common/src/index.ts"] — the bare package
 		// specifier, and the dominant way a monorepo names a sibling package. Dropping
@@ -1716,7 +1900,7 @@ func tryParseTSConfigAliases(tsconfigPath string) (map[string]tsAlias, bool) {
 		// is exactly why it went unnoticed.
 		case !strings.HasSuffix(pattern, "*") && !strings.HasSuffix(targets[0], "*"):
 			aliases[pattern] = tsAlias{
-				replacement: strings.TrimPrefix(targets[0], "./"),
+				replacement: tsAliasTarget(base, targets[0]),
 				exact:       true,
 			}
 		}
@@ -1752,18 +1936,18 @@ func resolveImportPath(importPath, fileDir string, aliases map[string]tsAlias) (
 		return factpath.Clean(a.replacement), false
 	}
 
-	bestPrefix, bestReplacement := "", ""
+	bestPrefix, bestAlias := "", tsAlias{}
 	for prefix, a := range aliases {
 		if a.exact || !strings.HasPrefix(importPath, prefix) {
 			continue
 		}
 		if len(prefix) > len(bestPrefix) || (len(prefix) == len(bestPrefix) && prefix < bestPrefix) {
-			bestPrefix, bestReplacement = prefix, a.replacement
+			bestPrefix, bestAlias = prefix, a
 		}
 	}
 	if bestPrefix != "" {
 		rest := strings.TrimPrefix(importPath, bestPrefix)
-		return factpath.Clean(bestReplacement + rest), false
+		return factpath.Clean(bestAlias.replacement + rest + bestAlias.suffix), false
 	}
 
 	// Relative imports
@@ -1790,6 +1974,14 @@ var tsModuleExts = []string{".ts", ".tsx", ".js", ".jsx", ".mjs", ".vue", ".svel
 // name (fileSymbolName → "<Folder>Index") is otherwise unmatchable.
 func resolveModuleFile(resolved string, knownFiles map[string]bool) (indexPath, dir string, ok bool) {
 	resolved = filepath.ToSlash(resolved)
+	// The path may already name a file. A tsconfig exact alias maps a bare package
+	// specifier straight onto its entry point — `"@acme/ui": ["./packages/ui/src/
+	// index.ts"]` — so the resolved path carries its extension, and appending another
+	// one matched nothing. Every caller then read the import as unresolvable: in one
+	// workspace that was every lazily-loaded feature module in the application.
+	if knownFiles[resolved] {
+		return resolved, factpath.Dir(resolved), true
+	}
 	for _, ext := range tsModuleExts {
 		if knownFiles[resolved+ext] {
 			return resolved + ext, factpath.Dir(resolved), true

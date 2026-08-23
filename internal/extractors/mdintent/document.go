@@ -1,7 +1,6 @@
 package mdintent
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -51,7 +50,7 @@ type section struct {
 	links map[string]bool
 }
 
-func documentFacts(repoPath, relFile string, src []byte, count *linkCount) []facts.Fact {
+func documentFacts(scope *inScope, relFile string, src []byte, count *linkCount) []facts.Fact {
 	slashed := filepath.ToSlash(relFile)
 	doc := &section{fact: &facts.Fact{
 		Kind: facts.KindSymbol,
@@ -118,7 +117,7 @@ func documentFacts(repoPath, relFile string, src []byte, count *linkCount) []fac
 			continue
 		}
 		for _, target := range linkTargets(line) {
-			if resolved, cause := resolveLink(repoPath, relFile, target); resolved != "" {
+			if resolved, cause := resolveLink(scope, relFile, target); resolved != "" {
 				if !current.links[resolved] {
 					current.links[resolved] = true
 					current.fact.Relations = append(current.fact.Relations, facts.Relation{Kind: facts.RelNames, Target: resolved})
@@ -185,7 +184,42 @@ func linkTargets(line string) []string {
 // the cause it does not: external for a URL, outside-repo for a path that
 // escapes the root, missing for one that is not on disk. An anchor-only
 // target is neither and returns nothing.
-func resolveLink(repoPath, relFile, target string) (string, string) {
+// inScope is the set a link may resolve against: every file the walker kept, plus
+// the directories those files live in.
+//
+// It is not the filesystem, and that distinction is the whole point. Resolving
+// against disk made a snapshot depend on WHETHER A PREVIOUS SNAPSHOT EXISTS: this
+// repository's own documentation names paths under its output directory, so
+// `.enola/extractor_cache.json` was missing on a cold run, present on the next, and
+// `.enola/previous` appeared on the one after that — three runs, three different
+// fact streams, on the one repository in the corpus whose docs describe enola. The
+// ignore globs already say what is source and what is output; the walker has
+// applied them, and this resolves against what the walker kept.
+type inScope struct {
+	paths map[string]bool
+}
+
+func newInScope(files []string) *inScope {
+	s := &inScope{paths: make(map[string]bool, len(files)*2)}
+	for _, f := range files {
+		clean := factpath.Clean(filepath.ToSlash(f))
+		s.paths[clean] = true
+		// A link may name a directory — `internal/cachecov`, `docs/` — and a
+		// directory is not a walked file. Every ancestor of a kept file is in
+		// scope by construction, and one holding nothing but ignored files is not.
+		for dir := factpath.Dir(clean); dir != "" && dir != "."; dir = factpath.Dir(dir) {
+			if s.paths[dir] {
+				break
+			}
+			s.paths[dir] = true
+		}
+	}
+	return s
+}
+
+func (s *inScope) has(path string) bool { return s.paths[path] }
+
+func resolveLink(scope *inScope, relFile, target string) (string, string) {
 	if target == "" || strings.HasPrefix(target, "#") {
 		return "", ""
 	}
@@ -209,7 +243,7 @@ func resolveLink(repoPath, relFile, target string) (string, string) {
 		if clean == ".." || strings.HasPrefix(clean, "../") {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(repoPath, clean)); err == nil { //factpath:host
+		if scope.has(clean) {
 			if clean == "." {
 				return "", ""
 			}

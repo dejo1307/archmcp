@@ -120,3 +120,30 @@ func TestLoad_CleansTheOutputDir(t *testing.T) {
 		t.Errorf("ignore = %v, want the glob to match the cleaned directory", cfg.Ignore)
 	}
 }
+
+// A cluster config that snapshots subdirectories leaves an output directory in
+// each. Only the rooted glob covered them, so enola indexed its own
+// llm_context.md as a source document and a repository's fact count depended on
+// which of its subdirectories somebody had snapshotted before.
+func TestNormalize_IgnoresANestedOutputDirectory(t *testing.T) {
+	cfg := Default()
+	if err := cfg.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{".enola/**", "**/.enola/**"} {
+		if !contains(cfg.Ignore, want) {
+			t.Errorf("ignore = %v, want %q", cfg.Ignore, want)
+		}
+	}
+
+	custom := Default()
+	custom.Output.Dir = "build/enola"
+	if err := custom.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"build/enola/**", "**/build/enola/**"} {
+		if !contains(custom.Ignore, want) {
+			t.Errorf("custom ignore = %v, want %q", custom.Ignore, want)
+		}
+	}
+}

@@ -12,6 +12,9 @@ ignore:
   - "**/tmp/**"
   - "**/public/assets/**"
   - ".enola/**"
+  # And at any depth: a cluster config that snapshots subdirectories leaves an
+  # output directory in each, and enola then indexes its own llm_context.md.
+  - "**/.enola/**"
   # Go reserves testdata/ for fixtures and never compiles it. Fixture repos are
   # miniature codebases, so indexing them injects their routes and client call
   # sites into the host repo's graph. Kept in sync with config.Default().

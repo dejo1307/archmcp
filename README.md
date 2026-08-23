@@ -219,7 +219,7 @@ New findings (reported — no failure policy set):
 
 No --fail-on policy is set, so nothing in this run could fail the build. These are
 reported for you to judge. Enforce the ones you want enforced: --fail-on=layers
-(`enola check --help` lists all sixteen).
+(`enola check --help` lists all 17).
 ```
 
 A gate that enforces nothing has to *say* it enforces nothing. Silence there is indistinguishable from an all-clear, and that is the one failure mode a green exit code cannot report on its own.
@@ -249,7 +249,7 @@ The whole loop, unedited - the change is reported and nothing fails, the same ru
 
 ## What fails the build
 
-Two separate things decide that, and confusing them is the fastest way to be surprised by this tool: **what enola finds**, and **what your policy fails on**. enola runs all sixteen of its checks - it calls them **explainers** - on every single run. The policy picks which of their findings are allowed to set the exit code.
+Two separate things decide that, and confusing them is the fastest way to be surprised by this tool: **what enola finds**, and **what your policy fails on**. enola runs all seventeen of its checks - it calls them **explainers** - on every single run. The policy picks which of their findings are allowed to set the exit code.
 
 **Out of the box that policy is empty.** Every finding is reported, the run exits `0`, and the output says in as many words that nothing was enforced. Nothing breaks until you name what should break:
 
@@ -272,7 +272,7 @@ Two separate things decide that, and confusing them is the fastest way to be sur
 
 So enola states what it measured and stops there. The exception it makes for itself is the one above: an unenforced run must say it enforced nothing, because a silent green is exactly what a broken gate looks like.
 
-**Any of the sixteen can fail the build.** `--fail-on` takes the names above as a comma-separated list, and `--min-confidence` sets the floor within them. Two more things can fail it that are not findings at all:
+**Any of the seventeen can fail the build.** `--fail-on` takes the names above as a comma-separated list, and `--min-confidence` sets the floor within them. Two more things can fail it that are not findings at all:
 
 - **scope spillover** - packages your change reached outside the area you declared with `--target`, gated with `--max-spillover=N`. A change can trip this with zero failing findings.
 - **a gate that could not run.** A missing baseline or a bad flag exits `2`; a baseline that isn't comparable to the current code exits `3` and enola declines to grade rather than blaming your change. Neither is a judgement about the code, and neither is suppressed by `--warn-only`.
@@ -333,7 +333,7 @@ New findings (reported — no failure policy set):
 
 No --fail-on policy is set, so no FINDING could fail this run — only the threshold
 above grades it. These are reported for you to judge; enforce the ones you want
-enforced: --fail-on=layers (`enola check --help` lists all sixteen).
+enforced: --fail-on=layers (`enola check --help` lists all 17).
 ```
 
 The `--target` you declare is a claim about intent, and this is the gate holding you to it. Nothing here is a judgement about `telemetry` - the code may be perfectly good. It is a report that the change did something its own description didn't cover.
@@ -418,6 +418,7 @@ Nothing here is a setting. enola looks for the markers below and runs whatever i
 | Vue        | `package.json` with `vue` dependency (Nuxt / Vue Router / Composition API aware) |
 | Svelte     | `package.json` with `svelte` dependency (SvelteKit routing / `$lib` alias aware) |
 | Ember      | `package.json` with `ember-source` dependency (`.gts`/`.gjs` template tags, `.hbs` templates, router map, ember-data) |
+| Angular    | `package.json` with `@angular/core`, or an `angular.json` (component/directive/pipe/service/module roles; constructor and `inject()` DI; `.html` and inline templates in both the `*ngIf` and the `@if` dialect; router paths composed across lazy `loadChildren`; NgModule and standalone composition; `HttpClient` call sites; Nx/`angular.json` project boundaries) |
 | Python     | `pyproject.toml`, `requirements.txt`, `setup.py`, … (FastAPI / Django / SQLAlchemy aware) |
 | Kotlin     | `build.gradle(.kts)` with Kotlin/Android (Compose / Hilt / Room aware) |
 | Swift      | `Package.swift`, `.xcodeproj`, `.xcworkspace` (SwiftUI / UIKit aware) |
@@ -475,7 +476,7 @@ Apache License 2.0 - see [`LICENSE`](LICENSE).
 
 Everything ships here:
 
-- **Every language** - Go, TypeScript/JavaScript/Vue/Svelte/Ember, Python, Java, Kotlin, Scala, Dart/Flutter, Ruby, PHP, Swift, Rust, C/C++, .NET (C#/VB.NET/F#/Razor/XAML), Terraform/HCL, Ansible, gRPC/Protobuf, OpenAPI, AsyncAPI, GraphQL
+- **Every language** - Go, TypeScript/JavaScript/Vue/Svelte/Ember/Angular, Python, Java, Kotlin, Scala, Dart/Flutter, Ruby, PHP, Swift, Rust, C/C++, .NET (C#/VB.NET/F#/Razor/XAML), Terraform/HCL, Ansible, gRPC/Protobuf, OpenAPI, AsyncAPI, GraphQL
 - **All 19 MCP tools**, plus the cross-repo linker
 - **All seventeen explainers** - `cycles`, `layers`, `crossrepo`, `coverage`, `unused-routes`, `messaging-coverage`, `god-class`, `hotspots`, `dependency-depth`, `exported-surface`, `complexity-outliers`, `intent`, `constraints`, `domain`, `query-loops`, `entry-points`, `dead-methods`
 - Baselines, `diff_snapshot`, snapshot receipts, the `--explain` report, and the localhost dashboard

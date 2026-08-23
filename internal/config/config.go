@@ -417,6 +417,13 @@ func Default() *Config {
 			// default before changing it still has artifacts here, and indexing its own
 			// history is exactly the failure the derived glob exists to prevent.
 			defaultOutputDir + "/**",
+			// And at any depth. A cluster config that snapshots subdirectories —
+			// `modules/web` and `modules/api` of one repository — leaves an output
+			// directory in each, and only the rooted glob covered them: enola then
+			// indexed its own llm_context.md as a source document, so a repository's
+			// fact count depended on which of its subdirectories somebody had
+			// snapshotted before.
+			"**/" + defaultOutputDir + "/**",
 			// Build / cache artifacts. These are generated output (often transpiled
 			// JS, e.g. Next.js .next/) and must never be indexed as source — doing so
 			// pollutes query_facts with thousands of spurious facts. The **/<dir>/**
@@ -623,9 +630,18 @@ func (c *Config) Normalize() error {
 		return err
 	}
 
-	glob := dir + "/**"
-	if !contains(c.Ignore, glob) {
-		c.Ignore = append(c.Ignore, glob)
+	// Both anchorings. The rooted glob covers this repository's own output; the
+	// nested one covers a snapshot somebody took of a SUBDIRECTORY — a cluster
+	// config pointing at `modules/web` and `modules/api` leaves an `.enola` in each,
+	// and only the root one was ignored. The artifacts then index as source: one
+	// corpus repository carried 14 markdown facts for the sections of a nested
+	// `llm_context.md`, and how many it carried depended on which subdirectories
+	// somebody had snapshotted, which is the same reproducibility failure the rooted
+	// glob exists to prevent, one directory down.
+	for _, glob := range []string{dir + "/**", "**/" + dir + "/**"} {
+		if !contains(c.Ignore, glob) {
+			c.Ignore = append(c.Ignore, glob)
+		}
 	}
 	return nil
 }

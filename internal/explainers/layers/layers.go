@@ -62,6 +62,35 @@ var (
 	// are all delivery; components, helpers and modifiers are all rendering
 	// (a modifier importing a service is normal, a service importing a
 	// component is not); services and the ember-data quartet are all domain.
+	// Angular's own conventions, as its style guide states them and as ten public
+	// repositories write them.
+	//
+	// Four words a naive reading of the style guide would include are deliberately
+	// absent, each because the corpus showed what claiming it costs:
+	//
+	//   - `core` and `shared` are CONTAINERS, not layers. A real application keeps
+	//     `core/services/…` and `shared/components/…`, whose inner segment already
+	//     names the layer, and claiming the container made every `core` service
+	//     reaching into `shared` a violation — which is how those applications are
+	//     built.
+	//   - `layout` is a shell in an application and a family of layout components in
+	//     a library, and it also appears NESTED (`core/services/layout`), where
+	//     claiming it inverted the enclosing directory's own layer. 17 of one
+	//     library's 21 violations came from it.
+	//   - `selectors` means NgRx selectors in one convention and picker widgets in
+	//     another; one workspace's `shared/lib/selectors` is components.
+	//
+	// What is left is the set whose meaning does not move between repositories.
+	angularLayers = []layerDef{
+		{Name: "pages", Patterns: []string{"pages", "features", "views", "containers", "screens"}, Level: 3},
+		{Name: "components", Patterns: []string{"components"}, Level: 2},
+		{Name: "directives", Patterns: []string{"directives"}, Level: 2},
+		{Name: "pipes", Patterns: []string{"pipes"}, Level: 2},
+		{Name: "services", Patterns: []string{"services", "guards", "resolvers", "interceptors"}, Level: 1},
+		{Name: "store", Patterns: []string{"store", "effects", "reducers", "facades"}, Level: 1},
+		{Name: "models", Patterns: []string{"models", "types", "interfaces", "constants"}, Level: 0},
+	}
+
 	emberLayers = []layerDef{
 		{Name: "route", Patterns: []string{"routes"}, Level: 3},
 		{Name: "controller", Patterns: []string{"controllers"}, Level: 3},
@@ -256,6 +285,11 @@ var patternDefs = []patternDef{
 		dottedSegments: true, signatureLayers: []string{"domain", "infrastructure", "application"},
 		minSignatureLayers: 2},
 	{name: "ember-octane", layers: emberLayers, frameworks: []string{"ember"}},
+	// Two distinctive layers required: `components`/`services`/`models` are generic
+	// enough that a single stray directory in a repository that merely contains some
+	// Angular should not decide its architecture.
+	{name: "angular-layered", layers: angularLayers, frameworks: []string{"angular"},
+		signatureLayers: []string{"pages", "store", "directives", "pipes"}, minSignatureLayers: 2},
 
 	// Language-gated patterns.
 	{name: "go-standard", layers: goStdLayers, languages: []string{"go"}},

@@ -2173,7 +2173,108 @@ import (
 // require_governed; since and growth on rules; recipe roles carry selector
 // defaults, so a repository's own recipe binds in one line; every edge and
 // cycle verdict names its smallest cut.
-const cacheVersion = "v241"
+// v242: Angular's decorator-declared classes and its dependency injection. A
+// class carrying @Component/@Directive/@Pipe/@Injectable/@NgModule now records the
+// role the container gives it, its selector or pipe name, where its template lives,
+// and framework_registered — without which a container-instantiated class reads as
+// code nothing names. Constructor parameters and inject() initializers become
+// injects edges, resolved through the file's own import table or a class the file
+// declares and COUNTED as unresolved otherwise; across a ten-repository corpus that
+// is 21,418 injection sites which previously formed no edge at all. Everything is
+// gated on an @angular/core dependency, so a decorator of the same name in another
+// repository still models nothing.
+// v243: Angular's routes. A route array declares a path fragment; the prefix it
+// hangs under is decided by a parent's children:, by the entry whose loadChildren
+// lazily loads the module the array belongs to, or by nothing at all — so the paths
+// are composed by a repo-wide walk outward from the application roots (forRoot and
+// provideRouter), the shape the Express, gorilla/mux and Axum passes already share.
+// A lazy module names no array, so one is found by an exact export name, by the
+// target file's single forChild array, or by the single one among that file's own
+// imports; anything ambiguous is counted rather than guessed, and an array no root
+// reaches emits nothing rather than a fragment. Every fact carries type=page, so an
+// application's navigation can never surface as an unserved HTTP endpoint.
+// v244: three resolution fixes in the TypeScript path resolver and the Angular
+// router, each found by running the router against real workspaces.
+// resolveModuleFile now accepts a path that already names a file, because a
+// tsconfig EXACT alias maps a bare specifier onto its entry point with the
+// extension included and appending another matched nothing; a wildcard alias keeps
+// whatever follows the `*` in its target, instead of resolving one directory short;
+// and a route path written as a constant member is folded to the literal it names,
+// through an enum or an `as const` map in this file or the one it was imported
+// from. The first two are TypeScript-wide and affect every repository with a
+// workspace-style tsconfig, not only Angular ones.
+// v245: Angular templates. A component member is very often referenced ONLY from
+// its template — `(click)="save()"`, `{{ total }}` — and so is a child component,
+// which appears as a tag and nowhere else in the class; 4,251 external templates and
+// 10,844 inline ones were previously walked past, so every such symbol read as code
+// nothing calls. Templates are now scanned (both the older `*ngIf` dialect and
+// Angular 17 `@if`/`@for`/`@defer` blocks) and joined to the component that owns
+// them. A binding is an edge only when it names a member that component declares; a
+// tag resolves against a DECLARED selector, matched whole so a compound selector
+// needs both of its halves; anything else is counted by cause, never guessed. The
+// extractor now also owns .html for cache-invalidation purposes, since a template
+// edit changes what it emits.
+// v246: the Angular composition graph and the workspace shape. An application's
+// dependency structure is in its @NgModule declarations/imports/exports/providers
+// arrays and a standalone component's own imports — not in its import statements,
+// which say which files were loaded rather than which declarations were assembled.
+// Those arrays are now edges, resolved through the same import table as the
+// injection edges and reconciled the same way, so none of them names a node that
+// does not exist. Module facts additionally carry the workspace project that owns
+// their directory, read from an Nx project.json or an angular.json projects map:
+// in a monorepo the unit of ownership is the project, and every reading that groups
+// by unit was inferring that boundary from the path.
+// v247: Angular requests made through an injected HttpClient. The general client
+// pass requires a "/"-rooted literal, which is right when the receiver is anonymous
+// — it is what keeps map.get("key") out of the graph — and wrong here: a class that
+// injects HttpClient has a member whose declared type says so, and this.<that
+// member>.get(…) is a request whatever its argument looks like. Two shapes that rule
+// was rejecting are now read: a path with no leading slash (one client's whole
+// module contributed nothing) and a class-static base concatenated with a literal
+// tail, folded repo-wide because the base belongs to the service that owns the
+// resource and is named by every service that touches it. An unresolved LEADING
+// operand means the prefix is unknown and the call contributes nothing.
+// v248: three corrections found by auditing what the explainers now report on
+// Angular repositories. A tsconfig `paths` target is resolved against `baseUrl`,
+// which TypeScript does and this did not — in one workspace that meant every
+// aliased import resolved to nothing, and with it every module composition edge
+// those imports carry. `loadComponent: () => import('./page')` binds to the class
+// that file declares, so a page reachable only through a lazy route is no longer a
+// component nothing renders. And framework_registered is now set ONLY on NgModules:
+// after the template, composition and injection passes a component, directive, pipe
+// or service is named by edges the graph holds, and flagging them as
+// framework-invoked would suppress the dead code those edges make findable.
+// v249: dependency injection reaches the module layer. The module-edges binder
+// rolled up calls, dependencies and instantiations but not injections — and a
+// constructor parameter IS how a dependency is declared under a DI container, with
+// frequently no call, instantiation or import edge beside it to carry the pair.
+// Adding the relation takes an Angular storefront library from 3,895 derived module
+// edges to 6,128, a Java monolith from 1,407 to 1,700 and an ASP.NET Core media
+// server from 68 to 97. Every reading that walks the module graph moves with it,
+// by value rather than by count: no explainer reports a different NUMBER of
+// findings on the corpus, while one storefront's deepest chain becomes 78 not 77.
+// v250: a markdown link resolves against the walked files, not the filesystem.
+// mdintent stat'd each link target on disk, so a repository whose documentation
+// names paths under its own output directory produced a different fact stream on
+// every run: this one's docs cite `.enola/extractor_cache.json`, absent on a cold
+// run and present on the next, and `.enola/previous`, which the run after that
+// creates. Three passes, three hashes, on the one corpus row whose docs describe
+// enola — the property the whole reproducibility claim rests on, broken by reading
+// the disk instead of the file list the walker had already filtered.
+// v251: a markdown document is not a public surface. Sections became exported
+// symbols when mdintent started reading every page, and exported-surface read a
+// document as a module exporting its whole API — a changelog "exports 1,405 of
+// 1,405 symbols (100%)", 22 such findings across the corpus. Markdown joins Ruby as
+// a language whose symbols carry no visibility signal, so the ratio measures the
+// module rather than the format.
+// v252: the output directory is ignored at any depth, not only at the repository
+// root. A cluster config that snapshots subdirectories leaves an `.enola` in each,
+// and only the rooted glob covered them — so enola indexed its own llm_context.md
+// as a source document, and a repository's fact count depended on which of its
+// subdirectories somebody had snapshotted before. Harmless while a stray markdown
+// file was merely unread; a document with a section per heading once every page
+// became a source.
+const cacheVersion = "v252"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

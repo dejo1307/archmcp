@@ -24,6 +24,24 @@ import (
 	"github.com/enola-labs/enola/pkg/mcputil"
 )
 
+// noSurfaceLanguages are languages whose symbols carry no visibility signal, so an
+// exported/total ratio over them measures the language rather than the module.
+//
+//   - Ruby is public-by-default: every class and method is "exported", the ratio is
+//     ~100% for every module, and the reading floods with namespace modules. "Too
+//     big/central" is already covered by the god-class and complexity explainers.
+//   - Markdown symbols are a document and its headings, and a heading is exported by
+//     construction — there is no private one. A document is not a module with an API,
+//     and reading it as one produced this estate's most confident nonsense: a
+//     changelog "exports 1,405 of 1,405 symbols (100%)". Twenty-two of 323 findings
+//     across the corpus named a document before this skip existed.
+//
+// Other languages in a multi-repo snapshot are unaffected.
+var noSurfaceLanguages = map[string]bool{
+	"ruby":     true,
+	"markdown": true,
+}
+
 const (
 	// minSymbols is the smallest module (by symbol count) considered; below this,
 	// exporting everything is unremarkable.
@@ -79,13 +97,7 @@ func (e *SurfaceExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 
 	mods := make(map[string]*moduleSurface)
 	for _, s := range symbols {
-		// Ruby is public-by-default: every class/method is "exported", so the
-		// exported/total ratio is ~100% for every module and carries no signal (it
-		// floods with namespace modules like Core::V3, RailsAdmin, V2). Skip Ruby
-		// symbols so Ruby modules never become candidates; other languages in a
-		// multi-repo snapshot are unaffected. "Too big/central" is already covered by
-		// the god-class and complexity explainers.
-		if lang, _ := s.Props["language"].(string); lang == "ruby" {
+		if lang, _ := s.Props["language"].(string); noSurfaceLanguages[lang] {
 			continue
 		}
 		exported, ok := s.Props["exported"].(bool)
