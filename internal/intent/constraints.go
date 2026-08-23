@@ -88,7 +88,8 @@ type ConstraintComponent struct {
 }
 
 // ConstraintRule declares one enforcement statement about components. Exactly
-// one of fourteen forms selects what the rule says: Forbid/To (this component must
+// one of the twenty-one forms in RuleForms selects what the rule says, and that
+// table is the count's only source: Forbid/To (this component must
 // not reach that one), ForbidReach/To (this component must not reach that one
 // through ANY measured path — the transitive form, walked breadth-first under
 // a hard depth cap; Via narrows the walked edge kinds and defaults to every
@@ -144,6 +145,20 @@ type ConstraintComponent struct {
 // or fact name; exemplar existence is checked at delivery time against the
 // snapshot, never at parse time, because prior art may move without the
 // advice going stale).
+// Eight further forms state laws only a graph can settle: ForbidCycles/Among
+// (the named parts may not depend on each other in a circle — the module graph
+// contracted to one node per part, every strongly connected component of two
+// or more reported), Independent (no module in the component may reach a class
+// whose resolved ancestry includes it, so a mixin stays independent of its
+// includers), ForbidName/Pattern (the negative of RequireName: no member's name
+// may match the bounded pattern, optionally judged on exported members only),
+// StorageStaysHome (every storage fact a member reaches is itself a member — a
+// part keeps to the tables it owns), CapRuntime/Metric/Max (a runtime-observed
+// metric per member frame stays under a declared budget), RequireConsumer
+// (every member route has a client in the snapshot, read from the
+// cross-repository route match), UniqueAcross/By (no two members in different
+// repositories share the named property), and RequireGoverned (every member
+// file carries an anchor from a compiled page).
 // Unlike a claim (a measurement expected to hold), a rule carries enforcement
 // semantics: a breach is a decided-rule finding, and Because — mandatory — is
 // the rationale the resulting finding surfaces, so a violation always says why

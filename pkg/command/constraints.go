@@ -63,7 +63,11 @@ func (r *Runner) Constraints(args []string) {
 			"Exit codes (lint):\n"+
 			"  0  every declaration is valid\n"+
 			"  1  validation problems were reported\n"+
-			"  2  the command could not run\n")
+			"  2  the command could not run\n\n"+
+			"Exit codes (mine, init, explain):\n"+
+			"  0  a report was produced\n"+
+			"  2  the command could not run — no snapshot to read, or a declaration\n"+
+			"     init would have had to overwrite\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		os.Exit(check.StatusUsageError.ExitCode())
