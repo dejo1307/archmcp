@@ -128,7 +128,7 @@ func (e *Engine) DriftFromMeta(repoPath string, meta facts.SnapshotMeta) (Drift,
 		return Drift{Unknown: true}, nil
 	}
 
-	files, _, _, err := e.walkRepo(repoPath)
+	files, _, _, _, err := e.walkRepo(repoPath)
 	if err != nil {
 		return Drift{}, fmt.Errorf("walking %s: %w", repoPath, err)
 	}

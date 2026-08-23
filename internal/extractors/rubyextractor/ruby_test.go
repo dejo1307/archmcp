@@ -1956,16 +1956,37 @@ func TestDetect_NoRubyOnlyBashShebang(t *testing.T) {
 	}
 }
 
-func TestDetect_LooseRubyBeyondMaxDepth(t *testing.T) {
+// Detection has no depth bound. This test asserted the opposite until the bound was
+// removed, and it was right to: the three-level scan it described was real, and a
+// Ruby file at a/b/c/d was genuinely invisible. That is the bug, not the contract.
+// A bounded scan is beatable by any repository one level deeper than the bound —
+// dotnet/runtime hides 3,270 C/C++ sources from a three-level scan, flutterfire's
+// Java sits at depth 10 — so the fix was to stop walking rather than to walk further.
+func TestDetect_LooseRubyAtAnyDepth(t *testing.T) {
 	dir := t.TempDir()
-	// depth 4 (a/b/c/d) is beyond the maxDepth-3 scan → not detected.
 	writeFile(t, dir, "a/b/c/d/deep.rb", "class Deep\nend\n")
 	ok, err := New().Detect(dir)
 	if err != nil {
 		t.Fatalf("Detect error: %v", err)
 	}
+	if !ok {
+		t.Fatalf("Detect with .rb at depth 4 = false, want true")
+	}
+}
+
+// The other half of the same contract: vendored code is still not a signal, at any
+// depth. Removing the bound must not turn "a repository that carries someone else's
+// Ruby" into "a Ruby repository".
+func TestDetect_VendoredRubyIsNotASignal(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "vendor/bundle/gems/foo/lib/foo.rb", "class Foo\nend\n")
+	writeFile(t, dir, "node_modules/pkg/x.rb", "class X\nend\n")
+	ok, err := New().Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect error: %v", err)
+	}
 	if ok {
-		t.Fatalf("Detect with .rb beyond maxDepth = true, want false")
+		t.Fatalf("Detect with only vendored .rb = true, want false")
 	}
 }
 

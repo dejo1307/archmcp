@@ -5,12 +5,12 @@ package rustextractor
 
 import (
 	"context"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
@@ -33,28 +33,27 @@ func (e *RustExtractor) Name() string {
 // to 3 subdirectory levels to support monorepos where a Rust crate lives in a
 // subdirectory, mirroring the Python extractor's monorepo detection.
 func (e *RustExtractor) Detect(repoPath string) (bool, error) {
-	if _, err := os.Stat(filepath.Join(repoPath, "Cargo.toml")); err == nil {
-		return true, nil
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// DetectFiles implements plugin.FileListDetector.
+//
+// A Cargo.toml at any depth detects, replacing the old three-level scan. The .rs
+// fallback is the other half, and it is not hypothetical: the Linux kernel carries
+// 473 .rs files and NOT ONE Cargo.toml, so a manifest-only rule leaves the whole of
+// rust/ unindexed however deep it is willing to look. The extension is unambiguous —
+// nothing else spells .rs — which is what makes the fallback safe here and not for
+// the JVM languages, where a build file is shared between Java, Kotlin and Scala.
+func (e *RustExtractor) DetectFiles(_ string, files []string) (bool, error) {
+	for _, rel := range files {
+		if detectnames.HasSegment(rel, "target") {
+			continue
+		}
+		if detectnames.Base(rel) == "Cargo.toml" || strings.HasSuffix(rel, ".rs") {
+			return true, nil
+		}
 	}
-	found := false
-	_ = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || found {
-			return nil
-		}
-		rel, _ := filepath.Rel(repoPath, path)
-		depth := strings.Count(filepath.ToSlash(rel), "/")
-		if d.IsDir() {
-			if depth >= 3 {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if filepath.Base(path) == "Cargo.toml" {
-			found = true
-		}
-		return nil
-	})
-	return found, nil
+	return false, nil
 }
 
 // isRustFile returns true if the file has a .rs extension.

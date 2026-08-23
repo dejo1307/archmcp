@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
@@ -30,29 +31,32 @@ func (e *SwiftExtractor) Name() string {
 
 // Detect returns true if the repository looks like a Swift or iOS project.
 func (e *SwiftExtractor) Detect(repoPath string) (bool, error) {
-	// Check for Package.swift (Swift Package Manager)
-	if _, err := os.Stat(filepath.Join(repoPath, "Package.swift")); err == nil {
-		return true, nil
-	}
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
 
-	// Check up to two levels deep for .xcodeproj or .xcworkspace
-	entries, err := os.ReadDir(repoPath)
-	if err != nil {
-		return false, nil
-	}
-	for _, entry := range entries {
-		if matchesXcodeProject(entry.Name()) {
+// DetectFiles implements plugin.FileListDetector.
+//
+// The rule this replaces was a root Package.swift or an .xcodeproj within two
+// directory levels. On a Flutter monorepo neither exists near the root:
+// flutterfire's projects are at packages/<pkg>/<pkg>/example/ios/Runner.xcodeproj,
+// so all 147 of its Swift files were unindexed, and 482 of flutter-packages'. This
+// was the single largest miss on that corpus, and it is one the depth-limited
+// detectors' story did not cover — root-anchoring is the same bug wearing different
+// clothes.
+func (e *SwiftExtractor) DetectFiles(_ string, files []string) (bool, error) {
+	for _, rel := range files {
+		if detectnames.HasAnySegment(rel, "Pods", "Carthage", ".build", "DerivedData") {
+			continue
+		}
+		name := detectnames.Base(rel)
+		if name == "Package.swift" || strings.HasSuffix(name, ".swift") {
 			return true, nil
 		}
-		if entry.IsDir() {
-			subEntries, err := os.ReadDir(filepath.Join(repoPath, entry.Name()))
-			if err != nil {
-				continue
-			}
-			for _, sub := range subEntries {
-				if matchesXcodeProject(sub.Name()) {
-					return true, nil
-				}
+		// An Xcode project is a DIRECTORY, so it reaches the name set only through the
+		// files inside it; match on the segment rather than the leaf.
+		for _, seg := range strings.Split(rel, "/") {
+			if matchesXcodeProject(seg) {
+				return true, nil
 			}
 		}
 	}

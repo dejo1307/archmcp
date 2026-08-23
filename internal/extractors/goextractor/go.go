@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -47,14 +48,27 @@ func (e *GoExtractor) Name() string {
 
 // Detect returns true if the repository contains a go.mod file.
 func (e *GoExtractor) Detect(repoPath string) (bool, error) {
-	_, err := os.Stat(filepath.Join(repoPath, "go.mod"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// DetectFiles implements plugin.FileListDetector.
+//
+// The rule this replaces was a go.mod at the REPOSITORY ROOT, which is not a depth
+// bound but has the same effect and is easier to miss for it: ente keeps its server
+// in server/go.mod and its CLI in cli/go.mod, so 493 Go files went unindexed in a
+// repository enola was being asked to read as a cross-repo cluster — the Flutter
+// client resolved, the Go backend it calls did not exist.
+//
+// A go.mod anywhere detects, and .go is accepted alongside it for a tree vendored
+// or split without its own module file. Neither spelling belongs to another
+// language.
+func (e *GoExtractor) DetectFiles(_ string, files []string) (bool, error) {
+	for _, rel := range files {
+		if detectnames.Base(rel) == "go.mod" || strings.HasSuffix(rel, ".go") {
+			return true, nil
 		}
-		return false, err
 	}
-	return true, nil
+	return false, nil
 }
 
 // OwnsFile declares the paths this extractor reads: Go source, plus the module

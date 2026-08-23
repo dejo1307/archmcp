@@ -2274,7 +2274,20 @@ import (
 // subdirectories somebody had snapshotted before. Harmless while a stray markdown
 // file was merely unread; a document with a section per heading once every page
 // became a source.
-const cacheVersion = "v252"
+// v253: detection stopped re-walking the tree. Every extractor answered Detect with
+// its own bounded walk, and every bound was a cliff a real repository falls off:
+// dotnet/runtime keeps all 3,270 of its C/C++ sources below the three levels the C++
+// detector scanned, so the extractor never ran and 5,574 files it owns were missing
+// from the graph. Raising a bound only moves the cliff — flutterfire's Java sits at
+// depth 10, past the generous 8 the JVM extractors allowed — and root-anchored rules
+// failed the same way without looking like depth at all: ente's Go backend is at
+// server/go.mod, so 493 Go files went unindexed in a repository being read as a
+// cross-repo cluster. Detection is now membership over the names the engine already
+// walked (plugin.FileListDetector), which has no bound to beat and costs no walk;
+// across a 20-repository polyglot corpus this recovered 13,496 of 13,828 files that
+// an extractor claimed and no extractor read. The remaining 332 are .html and loose
+// .js that OwnsFile over-claims and detection correctly declines.
+const cacheVersion = "v253"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

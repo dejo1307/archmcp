@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/extractors/jvmsrc"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
@@ -58,6 +59,16 @@ var buildMarkers = []string{
 // conflict — the opposite of the Java/Kotlin split, where a shared Gradle file
 // could not distinguish the two.
 func (e *ScalaExtractor) Detect(repoPath string) (bool, error) {
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// detectByBuild answers from the build definition alone: the markers, a root
+// *.sbt, or a Maven/Gradle file that names Scala. Those files are equally used by
+// Java and Kotlin, so the file alone proves nothing and the coordinate is what
+// names the language. Kept separate from the source fallback because it is the
+// half that must stay conservative.
+func (e *ScalaExtractor) detectByBuild(repoPath string) (bool, error) {
+
 	for _, m := range buildMarkers {
 		if _, err := os.Stat(filepath.Join(repoPath, filepath.FromSlash(m))); err == nil {
 			return true, nil
@@ -88,42 +99,26 @@ func (e *ScalaExtractor) Detect(repoPath string) (bool, error) {
 			return true, nil
 		}
 	}
-	// Fallback: real Scala sources under an unrecognized build setup. Mirrors the
-	// Java extractor's containsJavaSource so a repo is extracted rather than
-	// silently skipped when its build tooling is not one enola knows.
-	return containsScalaSource(repoPath, 8), nil
+	return false, nil
 }
 
-// containsScalaSource reports whether any .scala/.sc file exists under root within
-// maxDepth directory levels. It returns on the first match and skips hidden and
-// common build/dependency directories so it stays cheap on large repositories.
-func containsScalaSource(root string, maxDepth int) bool {
-	var search func(dir string, depth int) bool
-	search = func(dir string, depth int) bool {
-		if depth > maxDepth {
-			return false
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return false
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if entry.IsDir() {
-				if strings.HasPrefix(name, ".") || name == "build" ||
-					name == "target" || name == "out" || name == "node_modules" {
-					continue
-				}
-				if search(filepath.Join(dir, name), depth+1) {
-					return true
-				}
-			} else if isScalaFile(name) {
-				return true
-			}
-		}
-		return false
+// DetectFiles implements plugin.FileListDetector. The build-marker and coordinate
+// checks above are unchanged — they are what tell Scala apart from Java and Kotlin
+// under a shared Gradle or Maven build — and only the source fallback loses its
+// eight-level bound.
+func (e *ScalaExtractor) DetectFiles(repoPath string, files []string) (bool, error) {
+	if ok, err := e.detectByBuild(repoPath); ok || err != nil {
+		return ok, err
 	}
-	return search(root, 0)
+	for _, rel := range files {
+		if detectnames.HasAnySegment(rel, "build", "target", "out") {
+			continue
+		}
+		if isScalaFile(detectnames.Base(rel)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // isScalaFile reports whether the path is a Scala source. `.sc` covers Mill build

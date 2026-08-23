@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/extractors/extcoverage"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
@@ -38,44 +39,35 @@ func (e *RubyExtractor) Detect(repoPath string) (bool, error) {
 	if _, err := os.Stat(filepath.Join(repoPath, "Gemfile")); err == nil {
 		return true, nil
 	}
-	return containsRubyFile(repoPath, 3), nil
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
 }
 
-// containsRubyFile reports whether a Ruby file exists within maxDepth directory
-// levels of root (0 = root only). Vendored and VCS directories are skipped.
-// A file counts as Ruby if isRubyFile matches its name (.rb/.rake/Rakefile) or,
-// for an extensionless file, it carries a Ruby shebang.
-func containsRubyFile(root string, maxDepth int) bool {
-	var found bool
-	var walk func(dir string, depth int)
-	walk = func(dir string, depth int) {
-		if found || depth > maxDepth {
-			return
+// DetectFiles implements plugin.FileListDetector. The bounded scan it replaces
+// stopped at three levels; membership has no bound. The shebang probe survives
+// because an extensionless executable cannot be recognised from its name — it is
+// still a 256-byte read, and now only for the extensionless names in the set.
+func (e *RubyExtractor) DetectFiles(repoPath string, files []string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(repoPath, "Gemfile")); err == nil {
+		return true, nil
+	}
+	var extensionless []string
+	for _, rel := range files {
+		name := detectnames.Base(rel)
+		if isRubyFile(name) {
+			return true, nil
 		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
-		for _, ent := range entries {
-			if found {
-				return
-			}
-			name := ent.Name()
-			if ent.IsDir() {
-				if name == "vendor" || name == "node_modules" || strings.HasPrefix(name, ".") {
-					continue
-				}
-				walk(filepath.Join(dir, name), depth+1)
-				continue
-			}
-			if isRubyFile(name) || (filepath.Ext(name) == "" && hasRubyShebang(filepath.Join(dir, name))) {
-				found = true
-				return
-			}
+		if filepath.Ext(name) == "" {
+			extensionless = append(extensionless, rel)
 		}
 	}
-	walk(root, 0)
-	return found
+	// Deferred to a second pass so the free answer is always taken first: a repo with
+	// one .rb file never opens anything.
+	for _, rel := range extensionless {
+		if hasRubyShebang(filepath.Join(repoPath, filepath.FromSlash(rel))) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // hasRubyShebang reports whether the file at absPath begins with a Ruby shebang

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
 
@@ -35,10 +36,47 @@ func (e *TSExtractor) Name() string {
 // Detect returns true if the repository (or one of its immediate subdirectories
 // in the case of a monorepo) contains TypeScript markers.
 func (e *TSExtractor) Detect(repoPath string) (bool, error) {
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// unambiguousTSExts are the extensions that name this extractor's languages and
+// nothing else. They are a strict SUBSET of what isTypeScriptFile claims, and the
+// gap is the whole point: .js, .jsx, .mjs, .hbs and .graphql are all files a
+// repository in any language may carry — a build script, a docs asset, a schema
+// shared with a Go server — so detecting on them would make almost every repository
+// a TypeScript one. Ownership may over-claim safely; detection may not.
+var unambiguousTSExts = map[string]bool{
+	".ts": true, ".tsx": true, ".vue": true, ".svelte": true, ".gts": true,
+}
+
+// DetectFiles implements plugin.FileListDetector.
+//
+// The marker search runs first and is unchanged — it is what finds the tsconfig or
+// package.json that also tells Extract WHERE the project root is. What is new is the
+// fallback: a repository whose TypeScript lives past findTSRoot's adaptive 2/8-level
+// search was previously undetectable, which cost 178 files in the dart-sdk and 65 in
+// roslyn, both of them TypeScript tooling parked deep inside a repository written in
+// something else.
+//
+// Detecting without a root is already a state this extractor handles: a GraphQL-docs
+// repository has reached Extract with findTSRoot returning no root since that arm was
+// added, and every consumer of it pairs tsRoot with a repoPath fallback.
+func (e *TSExtractor) DetectFiles(repoPath string, files []string) (bool, error) {
 	if _, found := findTSRoot(repoPath); found {
 		return true, nil
 	}
-	return detectGraphQLDocs(repoPath), nil
+	if detectGraphQLDocs(repoPath) {
+		return true, nil
+	}
+	for _, rel := range files {
+		if detectnames.HasAnySegment(rel, "node_modules", "dist", "build", "out", "coverage") {
+			continue
+		}
+		if unambiguousTSExts[strings.ToLower(filepath.Ext(rel))] {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // findTSRoot returns the directory that is the TypeScript project root, along
