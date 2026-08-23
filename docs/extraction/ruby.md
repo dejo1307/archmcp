@@ -6,6 +6,9 @@ call edges.
 
 Fixture: [`ruby_sample`](../../internal/engine/testdata/repos/ruby_sample/)
 
+For the workflow rather than the fact model — binding the shipped Rails convention
+recipes, pinning a baseline and grading a change — see [RAILS.md](../RAILS.md).
+
 ## At a glance
 
 | You write | enola stores | Kind |
