@@ -206,7 +206,7 @@ func dashboardSection() Section {
 		Title: "DASHBOARD",
 		Body: `  When the MCP server starts, a read-only HTTP dashboard is served on a free
   localhost port (127.0.0.1). It shows the same status data plus the snapshot and
-  graph receipts, and refreshes every 30 seconds. Run "--status" while the server
+  graph receipts. Refresh it explicitly when you want updated data. Run "--status" while the server
   is up to get its URL, or pass "--no-dashboard" to skip it entirely.
 `,
 	}

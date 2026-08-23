@@ -45,6 +45,12 @@ var insightLabels = map[string]string{
 	"crossrepo":           "Cross-repo dependencies",
 	"coverage":            "Coverage gaps",
 	"unused-routes":       "Unused routes",
+	"domain":              "Domain boundaries",
+	"query-loops":         "Query loops",
+	"entry-points":        "Entry points",
+	"messaging-coverage":  "Messaging coverage",
+	"intent":              "Intent",
+	"constraints":         "Constraint violations",
 }
 
 // mergedLabels returns the engine's label map widened by a wrapper's extra

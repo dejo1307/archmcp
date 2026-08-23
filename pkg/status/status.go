@@ -673,7 +673,7 @@ func PrintStatus() {
 		fmt.Fprintf(os.Stderr, "Server:    running (PID %d)\n", ss.PID)
 		fmt.Fprintf(os.Stderr, "Uptime:    %s\n", formatDuration(time.Since(ss.StartTime)))
 		if ss.DashboardPort > 0 {
-			fmt.Fprintf(os.Stderr, "Dashboard: http://127.0.0.1:%d (auto-refreshes every 30s)\n", ss.DashboardPort)
+			fmt.Fprintf(os.Stderr, "Dashboard: http://127.0.0.1:%d (refresh data explicitly)\n", ss.DashboardPort)
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "Server:    not running (was PID %d)\n", ss.PID)

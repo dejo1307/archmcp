@@ -6,38 +6,34 @@
   <title>{{.Title}} — dashboard</title>
   <style>
     :root {
-      --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --border: #e2e2e2;
-      --card: #f7f7f8; --accent: #2563eb; --ok: #16a34a; --off: #b91c1c;
-      --warn: #b45309; --th: #efeff1;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #16181d; --fg: #e6e6e6; --muted: #9aa0aa; --border: #2c2f36;
-        --card: #1e2127; --accent: #6ea8fe; --ok: #4ade80; --off: #f87171;
-        --warn: #fbbf24; --th: #242832;
-      }
+      --bg: #041031; --fg: #f5f3fb; --muted: #a9b1ce;
+      --border: rgba(139, 165, 255, .16); --card: #0b1432;
+      --accent: #6f8fff; --violet: #8b4fe0; --lilac: #b87bea;
+      --ok: #68c49a; --off: #e27a63; --warn: #e4b968; --th: #111b3b;
     }
     * { box-sizing: border-box; }
     body {
-      margin: 0; padding: 2rem 1.25rem; background: var(--bg); color: var(--fg);
-      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0; padding: 1.5rem 1.25rem 3rem; background: var(--bg); color: var(--fg);
+      font: 14px/1.55 "Instrument Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    .wrap { max-width: 960px; margin: 0 auto; }
+    .wrap { max-width: 1180px; margin: 0 auto; }
     header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem; margin-bottom: .25rem; }
+    h1, h2, h3 { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     h1 { font-size: 1.4rem; margin: 0; }
-    h2 { font-size: 1.05rem; margin: 2rem 0 .6rem; border-bottom: 1px solid var(--border); padding-bottom: .35rem; }
+    h2 { font-size: 1.05rem; letter-spacing: -.015em; margin: 1.75rem 0 .65rem; }
     .refresh { color: var(--muted); font-size: .85rem; margin-bottom: 1.25rem; }
     .badge { font-size: .8rem; font-weight: 600; padding: .1rem .5rem; border-radius: 999px; }
     .badge.on { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
     .badge.off { background: color-mix(in srgb, var(--off) 18%, transparent); color: var(--off); }
+    .badge.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: .75rem .9rem; }
-    .card .k { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; }
-    .card .v { font-size: 1.15rem; font-weight: 600; margin-top: .15rem; word-break: break-word; }
+    .card { background: linear-gradient(180deg, #0b1432, #08112b); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; }
+    .card .k { color: #8fa0c5; font: 500 .64rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .08em; }
+    .card .v { font-size: 1.25rem; font-weight: 650; margin-top: .25rem; word-break: break-word; }
     .table-scroll { overflow-x: auto; }
     table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
     th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
-    th { background: var(--th); font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+    th { background: var(--th); font: 500 .68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .06em; color: #8fa0c5; }
     td.num, th.num { text-align: right; }
     tr.total td { font-weight: 700; border-top: 2px solid var(--border); }
     tr.self-row td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
@@ -45,8 +41,106 @@
     .note { color: var(--muted); font-style: italic; }
     .chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .2rem; }
     .chip { background: var(--th); border: 1px solid var(--border); border-radius: 6px; padding: .05rem .45rem; font-size: .8rem; }
-    footer { margin-top: 2.5rem; color: var(--muted); font-size: .8rem; }
+    footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: #7784a4; font-size: .72rem; }
+    .project-link { display: inline-flex; align-items: center; gap: .35rem; color: #8996b8; text-decoration: none; }
+    .project-link:hover { color: var(--fg); }
+    .project-link svg { width: 13px; height: 13px; fill: currentColor; }
     code { background: var(--th); padding: .05rem .3rem; border-radius: 4px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
+    .top-actions { display: flex; align-items: center; gap: .55rem; }
+    .brand { display: flex; align-items: center; font-size: 1.15rem; font-weight: 750; letter-spacing: -.04em; }
+    .brand h1 { font: inherit; margin: 0; }
+    .brand-dot { color: var(--violet); }
+    .tabs { display: flex; gap: .25rem; overflow-x: auto; padding: .25rem; margin-bottom: 1.25rem; border: 1px solid var(--border); border-radius: 10px; background: #07112d; scrollbar-width: thin; }
+    .tab { flex: 0 0 auto; border: 0; border-radius: 7px; padding: .5rem .8rem; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: .8rem; font-weight: 600; }
+    .tab:hover { color: var(--fg); background: var(--card); }
+    .tab.active { color: #fff; background: linear-gradient(135deg, rgba(62,111,224,.55), rgba(139,79,224,.55)); box-shadow: inset 0 0 0 1px rgba(139,165,255,.18); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .panel-intro { margin-bottom: 1rem; }
+    .panel-intro h2 { margin: 0 0 .25rem; font-size: 1.25rem; }
+    .panel-intro p { margin: 0; color: var(--muted); }
+    .data-section { margin-top: 1.75rem; }
+    .data-section:first-child { margin-top: 0; }
+    .data-section h2 { margin-bottom: .7rem; }
+    .path-card .v { font-size: .9rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .snapshot-head { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+    .snapshot-head h2 { margin: 0 0 .2rem; font-size: 1.35rem; }
+    .snapshot-head p { margin: 0; color: var(--muted); }
+    .snapshot-alert { margin: .8rem 0 0; padding: .7rem .85rem; border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--warn) 8%, transparent); color: #e5c98e; font-size: .8rem; }
+    .technical-receipt { margin-top: 1.8rem; border-top: 1px solid var(--border); }
+    .technical-receipt > summary { cursor: pointer; padding: 1rem 0; color: var(--muted); font-weight: 600; }
+    .technical-receipt[open] > summary { color: var(--fg); }
+    .technical-grid { display: grid; grid-template-columns: minmax(150px, .35fr) minmax(0, 1fr); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .technical-grid dt, .technical-grid dd { margin: 0; padding: .55rem .7rem; border-bottom: 1px solid var(--border); }
+    .technical-grid dt { color: #8fa0c5; background: var(--th); font: 500 .66rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .05em; }
+    .technical-grid dd { min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; }
+    .hero { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; padding: 1.35rem 1.5rem; background: radial-gradient(circle at 88% 8%, rgba(139,79,224,.13), transparent 32%), linear-gradient(135deg, #0b173b, #08112b); margin-bottom: 1.25rem; }
+    .hero h1 { font-size: clamp(1.55rem, 3vw, 2rem); line-height: 1.1; letter-spacing: -.035em; margin-bottom: .4rem; }
+    .hero p { color: var(--muted); max-width: 650px; margin: 0; font-size: .9rem; }
+    .hero-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin-top: 1rem; }
+    .primary-action { display: inline-flex; align-items: center; border: 0; border-radius: 8px; padding: .55rem .85rem; background: linear-gradient(135deg, #3e6fe0, var(--violet)); color: #fff; cursor: pointer; font: inherit; font-weight: 650; box-shadow: 0 12px 35px rgba(119,75,211,.25); }
+    .section-kicker { color: #9bb4f5; font: 500 .64rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .11em; margin-bottom: .45rem; }
+    .quality-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #08112b; }
+    .quality-item { min-width: 0; padding: .9rem 1rem; border-right: 1px solid var(--border); }
+    .quality-item:last-child { border-right: 0; }
+    .quality-item .k { display: block; color: #8fa0c5; font: 500 .62rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .07em; }
+    .quality-item .v { display: block; margin-top: .25rem; font-size: 1rem; font-weight: 650; }
+    .quality-item .why { display: block; margin-top: .3rem; color: #7f8bac; font-size: .68rem; line-height: 1.35; }
+    .accounting-note { margin: .75rem 0 0; color: var(--muted); font-size: .78rem; }
+    .accounting-note.ok::before { content: "✓"; margin-right: .4rem; color: var(--ok); }
+    .explorer-head { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin: 1.8rem 0 .7rem; }
+    .explorer-head h2 { margin: 0; }
+    .graph-search { width: min(260px, 45vw); border: 1px solid var(--border); border-radius: 8px; background: #08112b; color: var(--fg); padding: .5rem .65rem; font: inherit; outline: none; }
+    .graph-search:focus { border-color: #6f8fff; box-shadow: 0 0 0 2px rgba(111,143,255,.14); }
+    .graph-search-form { display: flex; gap: .4rem; }
+    .secondary-action { border: 1px solid var(--border); border-radius: 8px; padding: .5rem .7rem; background: var(--card); color: var(--fg); cursor: pointer; font: inherit; font-weight: 600; }
+    .explorer { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 500px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #07112d; }
+    .inspector-pane { min-width: 0; border-left: 1px solid var(--border); background: #08112b; }
+    .inspector-head { padding: .85rem 1rem; border-bottom: 1px solid var(--border); }
+    .inspector-head h3 { margin: 0; font-size: .88rem; }
+    .inspector-head p { margin: .2rem 0 0; color: #7180aa; font-size: .68rem; }
+    .inspector-empty { padding: .9rem 1rem; color: var(--muted); font-size: .75rem; }
+    .findings-pane { border-top: 1px solid var(--border); padding: .85rem 1rem; }
+    .findings-pane h3 { margin: .2rem .35rem .7rem; font-size: .82rem; }
+    .findings-groups { max-height: 390px; overflow: auto; }
+    .finding-group { border-top: 1px solid var(--border); }
+    .finding-group:first-of-type { border-top: 0; }
+    .finding-group > summary { display: flex; justify-content: space-between; gap: .5rem; cursor: pointer; padding: .65rem .35rem; color: #cbd3eb; font-size: .76rem; font-weight: 600; list-style: none; }
+    .finding-group > summary::-webkit-details-marker { display: none; }
+    .finding-count { color: #8294c8; font: .66rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .finding-button { width: 100%; border: 0; border-radius: 7px; background: transparent; color: #9faaca; padding: .5rem .55rem; text-align: left; cursor: pointer; font: inherit; font-size: .72rem; line-height: 1.4; }
+    .finding-button:hover, .finding-button.active { color: #fff; background: rgba(111,143,255,.1); }
+    .finding-meta { display: block; color: #7180aa; margin-top: .2rem; font: .6rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .graph-pane { position: relative; display: flex; flex-direction: column; min-width: 0; }
+    .graph-canvas { flex: 1; min-height: 420px; overflow: auto; padding: .5rem; background-image: radial-gradient(rgba(139,165,255,.13) .7px, transparent .7px); background-size: 18px 18px; }
+    .module-graph { display: block; width: auto; min-width: 100%; height: auto; }
+    .graph-canvas.fit .module-graph { width: 100%; min-width: 100%; }
+    .module-edge { stroke: #536a9f; stroke-width: 1.2; opacity: .34; transition: opacity .18s, stroke .18s; pointer-events: none; }
+    .module-edge-hit { stroke: transparent; stroke-width: 12; cursor: pointer; }
+    .module-edge-hit:hover + .module-edge { opacity: 1; stroke: #9b75e8; stroke-width: 2; }
+    .module-node { cursor: pointer; transition: opacity .18s; }
+    .module-node rect { fill: #0d193b; stroke: #33456f; rx: 7; transition: fill .18s, stroke .18s; }
+    .module-node text { fill: #cbd3eb; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; }
+    .module-node:hover rect, .module-node.active rect { fill: #172657; stroke: #7d92e4; }
+    .module-node[data-role="selected"] rect { fill: #23336b; stroke: #9b75e8; stroke-width: 2; }
+    .module-node.dim, .module-edge.dim { opacity: .12; }
+    .module-edge.active { opacity: .9; stroke: #9b75e8; stroke-width: 1.8; }
+    .module-detail { display: none; padding: .9rem 1rem; background: #0a1432; }
+    .module-detail.open { display: block; }
+    .module-detail b { display: block; font-size: .82rem; }
+    .module-detail span { color: #8f9bbb; font-size: .7rem; }
+    .module-stats { display: flex; flex-wrap: wrap; gap: .35rem .8rem; margin-top: .65rem; font: .65rem ui-monospace, SFMono-Regular, Menlo, monospace; color: #9bb4f5; }
+    .graph-columns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 72px; padding: .55rem 28px 0; color: #8294c8; font: .62rem ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .08em; }
+    .graph-columns span:nth-child(2) { text-align: center; }
+    .graph-columns span:last-child { text-align: right; }
+    .graph-note { padding: .55rem .8rem; border-top: 1px solid var(--border); color: #7180aa; font-size: .65rem; }
+    .graph-summary { display: flex; flex-wrap: wrap; gap: .45rem; margin: .65rem 0; }
+    .module-table button { max-width: 36rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+    .quality-disclosure { margin-top: 1.5rem; border-top: 1px solid var(--border); }
+    .quality-disclosure > summary { cursor: pointer; padding: .9rem 0; color: #aeb8d4; font-size: .78rem; }
+    .quality-disclosure[open] > summary { color: #fff; }
+    @media (max-width: 860px) { body { padding: 1rem; } .topbar { align-items: flex-start; } .explorer { grid-template-columns: 1fr; } .inspector-pane { border-left: 0; border-top: 1px solid var(--border); } .graph-canvas { min-height: 300px; } .findings-groups { max-height: 220px; } .quality-row { grid-template-columns: repeat(2, 1fr); } }
     .count-link {
       background: none; border: 0; padding: 0; margin: 0; cursor: pointer;
       color: var(--accent); font: inherit; font-weight: 600; text-decoration: underline;
@@ -115,123 +209,297 @@
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>{{.Title}}</h1>
-    {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">not running</span>{{end}}
-  </header>
-  <div class="refresh">This page refreshes automatically every {{.RefreshSeconds}} seconds. Served on <code>http://127.0.0.1:{{.Port}}</code>{{if .FrontDoor}} and on the shared URL <code>{{.StableURL}}</code>{{end}}.</div>
-
-  <h2>This server</h2>
-  <p class="note">Everything on this page describes this one process and the graph it holds. Other servers are listed below.</p>
-  <div class="grid">
-    <div class="card"><div class="k">Process</div><div class="v">PID {{.PID}}</div></div>
-    {{if .Binary}}<div class="card"><div class="k">Binary</div><div class="v">{{.Binary}}</div></div>{{end}}
-    {{if .Uptime}}<div class="card"><div class="k">Uptime</div><div class="v">{{.Uptime}}</div></div>{{end}}
-    {{if .StartedAt}}<div class="card"><div class="k">Started</div><div class="v">{{.StartedAt}}</div></div>{{end}}
-    {{if .ReposLoaded}}<div class="card"><div class="k">Repos loaded</div><div class="v">{{.ReposLoaded}}</div></div>{{end}}
-    <div class="card"><div class="k">Calls served</div><div class="v">{{.SessionCalls}}</div></div>
-    <div class="card"><div class="k">Dashboard port</div><div class="v">{{.Port}}{{if .FrontDoor}} <span class="badge on">shared URL</span>{{end}}</div></div>
+  <div class="topbar">
+    <div class="brand"><h1>{{.Title}}<span class="brand-dot">.</span></h1></div>
+    <div class="top-actions">
+      {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">not running</span>{{end}}
+      <button class="secondary-action" type="button" onclick="location.reload()" title="Reload the dashboard from the currently loaded snapshot">Refresh data</button>
+    </div>
   </div>
-  {{if .WorkDir}}<div class="card" style="margin-top:.75rem"><div class="k">Launched from</div><div class="v">{{.WorkDir}}{{if .ConfigPath}} <span class="note" style="font-size:.85rem;font-weight:400">(config: {{.ConfigPath}})</span>{{end}}</div></div>{{end}}
 
-  {{if .Instances}}
-  <h2>Servers running <span class="note">({{len .Instances}})</span></h2>
-  <p class="note">One enola server runs per agent session, each with its own graph. Follow a link to inspect another one.</p>
-  <div class="table-scroll"><table>
-    <thead><tr><th>PID</th><th>Binary</th><th>Repos</th><th class="num">Uptime</th><th class="num">Calls</th><th>Dashboard</th></tr></thead>
-    <tbody>
-      {{range .Instances}}<tr{{if .Self}} class="self-row"{{end}}>
-        <td>{{.PID}}{{if .Self}} <span class="badge on">this page</span>{{end}}</td>
-        <td>{{.Binary}}</td>
-        <td>{{.Repos}}</td>
-        <td class="num">{{.Uptime}}</td>
-        <td class="num">{{.Calls}}</td>
-        <td>{{if .URL}}<a href="{{.URL}}">{{.URL}}</a>{{if .FrontDoor}} <span class="chip">shared</span>{{end}}{{else}}<span class="note">none</span>{{end}}</td>
-      </tr>{{end}}
-    </tbody>
-  </table></div>
-  {{end}}
+  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+    <button class="tab active" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview" onclick="selectTab('overview')">Overview</button>
+    <button class="tab" id="tab-architecture" role="tab" aria-selected="false" aria-controls="panel-architecture" data-tab="architecture" onclick="selectTab('architecture')">Architecture</button>
+    <button class="tab" id="tab-snapshots" role="tab" aria-selected="false" aria-controls="panel-snapshots" data-tab="snapshots" onclick="selectTab('snapshots')">Snapshots</button>
+    <button class="tab" id="tab-activity" role="tab" aria-selected="false" aria-controls="panel-activity" data-tab="activity" onclick="selectTab('activity')">Activity</button>
+    <button class="tab" id="tab-quality" role="tab" aria-selected="false" aria-controls="panel-quality" data-tab="quality" onclick="selectTab('quality')">Quality</button>
+  </nav>
 
-  <h2>Tool usage</h2>
-  {{if .Tools}}
-  <div class="table-scroll"><table>
-    <thead><tr><th>Tool</th><th class="num">This server</th><th class="num">All servers, lifetime</th></tr></thead>
-    <tbody>
-      {{range .Tools}}<tr><td>{{.Name}}</td><td class="num">{{.Session}}</td><td class="num">{{.Total}}</td></tr>{{end}}
-    </tbody>
-  </table></div>
-  <p class="note">
-    "This server" counts only the calls this process has served{{if .TrackingSince}}; the lifetime column sums every repo on this machine since {{.TrackingSince}}{{end}}{{if .ReposTracked}} ({{.ReposTracked}} repo(s) tracked){{end}}.
-  </p>
-  {{else}}<p class="note">No tool calls recorded yet.</p>{{end}}
+  <main>
+  <section class="tab-panel active" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+  <section class="hero">
+    <div class="section-kicker">Repository intelligence</div>
+    <h1>{{if .HasGraph}}Your architecture is mapped.{{else}}Ready to map this repository.{{end}}</h1>
+    <p>{{if .HasGraph}}See what Enola found and whether the analysis is complete enough to trust.{{else}}Generate a snapshot from your coding agent to reveal dependencies, hotspots, routes, and structural findings.{{end}}</p>
+    <div class="hero-meta">
+      {{if .HasReceipt}}{{with .Receipt}}<span class="chip">{{.FactCount}} facts</span><span class="chip">{{.InsightCount}} findings</span>{{end}}{{end}}
+      {{if .Insights}}<button type="button" class="primary-action" onclick="openModal('insights-modal')">Review findings</button>{{end}}
+    </div>
+  </section>
 
-  <h2>Value estimate <span class="note">(approximate)</span></h2>
-  {{if .Values}}
-  <div class="table-scroll"><table>
-    <thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">~Time saved</th><th class="num">~Tokens saved</th></tr></thead>
-    <tbody>
-      {{range .Values}}<tr><td>{{.Label}}</td><td class="num">{{.Calls}}</td><td class="num">{{.TimeSaved}}</td><td class="num">{{.TokensSaved}}</td></tr>{{end}}
-      <tr class="total"><td>{{.ValueTotal.Label}}</td><td class="num">{{.ValueTotal.Calls}}</td><td class="num">{{.ValueTotal.TimeSaved}}</td><td class="num">{{.ValueTotal.TokensSaved}}{{if .BeyondContext}}&#8224;{{end}}</td></tr>
-    </tbody>
-  </table></div>
-  {{if .BeyondContext}}<p class="note">&#8224; Some indexed corpus exceeds a single context window &mdash; that part is not reproducible by re-reading files at any budget, so the token figure understates it.</p>{{end}}
-  {{else}}<p class="note">No value recorded yet.</p>{{end}}
+  <div class="data-section">
+    <div class="section-kicker">Development feedback</div><h2>What changed?</h2>
+    {{if .Changes.Available}}
+      {{if .Changes.Incomparable}}
+      <div class="snapshot-alert"><b>Comparison unavailable.</b> The current and previous snapshots used different extraction inputs, so their raw deltas would describe rebuild noise rather than a trustworthy code change.</div>
+      {{else if .Changes.Initial}}
+      <p class="note">This is the first recorded architecture snapshot. The next snapshot will provide a change comparison.</p>
+      {{else}}
+      <p class="note">Compared with the {{.Changes.ComparedTo}} · {{.Changes.Headline}}</p>
+      <div class="grid">
+        <div class="card"><div class="k">New findings</div><div class="v">{{if .Changes.NewFindingDetails}}<button type="button" class="count-link" onclick="openModal('new-findings-modal')">{{.Changes.FindingsNew}}</button>{{else}}{{.Changes.FindingsNew}}{{end}}</div></div>
+        <div class="card"><div class="k">Resolved findings</div><div class="v">{{.Changes.FindingsResolved}}</div></div>
+        <div class="card"><div class="k">Facts added / removed</div><div class="v">+{{.Changes.FactsAdded}} / −{{.Changes.FactsRemoved}}</div></div>
+        <div class="card"><div class="k">Dependencies added / removed</div><div class="v">+{{.Changes.EdgesAdded}} / −{{.Changes.EdgesRemoved}}</div></div>
+      </div>
+      {{end}}
+    {{else}}<p class="note">No earlier architecture snapshot is available yet. Generate another snapshot after a change to start tracking deltas.</p>{{end}}
+  </div>
 
-  <h2>Current snapshot receipt</h2>
-  {{if .HasReceipt}}{{with .Receipt}}
   <div class="grid">
-    <div class="card"><div class="k">Snapshot ID</div><div class="v">{{.SnapshotID}}</div></div>
-    <div class="card"><div class="k">enola version</div><div class="v">{{.EnolaVersion}}</div></div>
-    <div class="card"><div class="k">Generated at</div><div class="v">{{.GeneratedAt}}</div></div>
-    <div class="card"><div class="k">Duration</div><div class="v">{{.Duration}}</div></div>
-    <div class="card"><div class="k">Facts</div><div class="v">{{.FactCount}}</div></div>
-    <div class="card"><div class="k">Insights</div><div class="v">{{if $.Insights}}<button type="button" class="count-link" onclick="openModal('insights-modal')">{{$.InsightTotal}}</button>{{else}}{{.InsightCount}}{{end}}</div></div>
+    {{if .HasReceipt}}{{with .Receipt}}
+    <div class="card"><div class="k">Current facts</div><div class="v">{{.FactCount}}</div></div>
+    <div class="card"><div class="k">Findings</div><div class="v">{{if $.Insights}}<button type="button" class="count-link" onclick="openModal('insights-modal')">{{$.InsightTotal}}</button>{{else}}{{.InsightCount}}{{end}}</div></div>
+    <div class="card"><div class="k">Source files indexed</div><div class="v">{{.Quality.FilesParsed}}</div></div>
+    {{end}}{{end}}
+    {{if .HasGraph}}{{with .Graph}}
+    <div class="card"><div class="k">Repositories</div><div class="v">{{len .Repos}}</div></div>
+    <div class="card"><div class="k">Services</div><div class="v">{{if $.Services}}<button type="button" class="count-link" onclick="openModal('services-modal')">{{.ServiceCount}}</button>{{else}}{{.ServiceCount}}{{end}}</div></div>
+    <div class="card"><div class="k">Cross-repo edges</div><div class="v">{{if $.CrossRepoEdges}}<button type="button" class="count-link" onclick="openModal('edges-modal')">{{.CrossRepoEdgeCount}}</button>{{else}}{{.CrossRepoEdgeCount}}{{end}}</div></div>
+    {{end}}{{end}}
     {{/* extra-cards: extension slot — see pkg/dashboard.Options.Overlay */}}
     {{block "extra-cards" $}}{{end}}
-    {{if .Git}}<div class="card"><div class="k">Git</div><div class="v">{{.Git.Ref}}{{if .Git.Commit}} @ {{.Git.Commit}}{{end}}{{if .Git.Dirty}} (dirty){{end}}</div></div>{{end}}
   </div>
-  <div class="card" style="margin-top:.75rem"><div class="k">Repo path</div><div class="v">{{.RepoPath}}</div></div>
-  {{if .Extractors}}<div style="margin-top:.75rem"><div class="k">Extractors</div><div class="chips">{{range .Extractors}}<span class="chip">{{.}}</span>{{end}}</div></div>{{end}}
-  {{if .Explainers}}<div style="margin-top:.6rem"><div class="k">Explainers</div><div class="chips">{{range .Explainers}}<span class="chip">{{.}}</span>{{end}}</div></div>{{end}}
+  </section>
 
-  <h3 style="margin:1.25rem 0 .5rem;font-size:.95rem">Extraction quality</h3>
-  <div class="grid">
-    <div class="card"><div class="k">Files seen</div><div class="v">{{.Quality.FilesSeen}}</div></div>
-    <div class="card"><div class="k">Files parsed</div><div class="v">{{.Quality.FilesParsed}}</div></div>
-    <div class="card"><div class="k">Files skipped</div><div class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.Quality.FilesSkipped}}</button>{{else}}{{.Quality.FilesSkipped}}{{end}}</div></div>
-    <div class="card"><div class="k">Dirs skipped</div><div class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.Quality.DirsSkipped}}</button>{{else}}{{.Quality.DirsSkipped}}{{end}}</div></div>
-    <div class="card"><div class="k">Parse errors</div><div class="v">{{if $.ParseErrors}}<button type="button" class="count-link" onclick="openModal('parse-errors-modal')">{{.Quality.ParseErrors}}</button>{{else}}{{.Quality.ParseErrors}}{{end}}</div></div>
-    {{if .Quality.Coverage}}{{with .Quality.Coverage}}
-    <div class="card"><div class="k">Services</div><div class="v">{{if $.Coverage}}<button type="button" class="count-link" onclick="openModal('coverage-modal')">{{.ServicesTotal}}</button>{{else}}{{.ServicesTotal}}{{end}}</div></div>
-    <div class="card"><div class="k">Coverage gaps</div><div class="v">{{if $.Coverage}}<button type="button" class="count-link" onclick="openModal('coverage-modal')">{{.CoverageGaps}}</button>{{else}}{{.CoverageGaps}}{{end}}</div></div>
-    <div class="card"><div class="k">Unresolved edges</div><div class="v">{{if $.UnresolvedRoutes}}<button type="button" class="count-link" onclick="openModal('coverage-unresolved-modal')">{{.UnresolvedEdges}}</button>{{else}}{{.UnresolvedEdges}}{{end}}</div></div>
-    {{end}}{{end}}
+  <section class="tab-panel" id="panel-architecture" role="tabpanel" aria-labelledby="tab-architecture" hidden>
+  <div class="panel-intro"><div class="section-kicker">Explore</div><h2>Architecture</h2><p>Search dependencies, inspect connected modules, and review structural findings.</p></div>
+  {{if .ModuleGraph}}
+  <div class="explorer-head">
+    <div><h2>Architecture map</h2></div>
+    <form class="graph-search-form" action="/#architecture" method="get">
+      <input id="module-search" class="graph-search" name="module" type="search" list="all-modules" value="{{.ModuleGraph.FocusName}}" placeholder="Search every module…" aria-label="Search every module">
+      <datalist id="all-modules">{{range .ModuleGraph.AllModules}}<option value="{{.}}">{{end}}</datalist>
+      <button class="secondary-action" type="submit">Explore</button>
+      <button class="secondary-action" type="button" id="graph-fit" aria-pressed="false" onclick="toggleGraphFit(this)">Fit view</button>
+    </form>
   </div>
-  {{end}}{{else}}<p class="note">{{.ReceiptNote}}</p>{{end}}
+  {{$graph := .ModuleGraph}}
+  <div class="graph-summary">
+    <span class="chip">Module graph</span>
+    {{if $graph.Focused}}<span class="chip">Neighborhood of {{$graph.FocusName}}</span>{{else}}<span class="chip">Showing {{len $graph.Nodes}} of {{$graph.Total}} connected modules</span>{{end}}
+    <span class="chip">{{len $graph.Edges}} visible module dependencies{{if $graph.OmittedEdges}} · {{$graph.OmittedEdges}} hidden for clarity{{end}}</span>
+    {{if not $graph.Focused}}<span class="chip">Layered by dependency direction</span>{{end}}
+  </div>
+  <p class="note">Search covers {{if $graph.AllModulesTruncated}}the {{len $graph.AllModules}} most-connected of {{$graph.Total}}{{else}}all {{$graph.Total}}{{end}} connected modules. {{if $graph.Focused}}This view contains the selected module, its immediate incoming and outgoing dependencies, and the dependencies between them. <a href="/#architecture">Clear focus</a>.{{else}}Choose a module to replace this overview with its immediate dependency neighborhood.{{end}}</p>
+  <section class="explorer" aria-label="Architecture explorer">
+    <div class="graph-pane">
+      {{if $graph.Focused}}<div class="graph-columns"><span>Consumers</span><span>Selected module</span><span>Dependencies</span></div>{{end}}
+      <div class="graph-canvas">
+        <svg class="module-graph" width="{{$graph.Width}}" height="{{$graph.Height}}" viewBox="0 0 {{$graph.Width}} {{$graph.Height}}" role="img" aria-label="Module dependency graph">
+          <defs><marker id="module-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#536a9f"/></marker></defs>
+          {{range $graph.Edges}}<line class="module-edge-hit" data-source="{{.Source}}" data-target="{{.Target}}" data-source-name="{{.SourceName}}" data-target-name="{{.TargetName}}" data-source-file="{{.SourceFile}}" data-target-file="{{.TargetFile}}" data-kind="{{.Kind}}" x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" onclick="selectDependency(this)"/><line class="module-edge" data-source="{{.Source}}" data-target="{{.Target}}" x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" marker-end="url(#module-arrow)"/>{{end}}
+          {{range $graph.Nodes}}<g class="module-node" data-id="{{.ID}}" data-role="{{.Role}}" data-name="{{.Name}}" data-file="{{.File}}" data-in="{{.FanIn}}" data-out="{{.FanOut}}" onclick="selectModule(this)"><title>{{.Name}}</title><rect x="{{.X}}" y="{{.Y}}" width="154" height="36"/><text x="{{.X}}" y="{{.Y}}" dx="9" dy="22">{{.Display}}</text></g>{{end}}
+        </svg>
+      </div>
+      {{if $graph.Limited}}<div class="graph-note">{{if $graph.Focused}}This neighborhood is bounded to keep individual relationships inspectable.{{else}}This overview shows the most-connected modules and a representative dependency backbone. Search for any module to inspect its complete immediate neighborhood.{{end}}</div>{{end}}
+    </div>
+    <aside class="inspector-pane" aria-label="Architecture inspector">
+      <div class="inspector-head"><h3>Inspector</h3><p>Select a module, dependency, or finding to inspect it.</p></div>
+      <div id="inspector-empty" class="inspector-empty">Nothing selected. Choose a node or edge on the map.</div>
+      <div id="module-detail" class="module-detail"><div><b id="module-detail-name"></b><span id="module-detail-file"></span></div><div class="module-stats"><span id="module-detail-in"></span><span id="module-detail-out"></span></div></div>
+      {{if .Insights}}<div class="findings-pane">
+      <h3>Findings <span class="note">({{.InsightTotal}})</span> <button type="button" class="count-link" onclick="openModal('insights-modal')">review all</button></h3>
+      <div class="findings-groups">{{range .Insights}}
+      <details class="finding-group">
+        <summary><span>{{.Label}}</span><span class="finding-count">{{.Count}}</span></summary>
+        {{range .Items}}<button type="button" class="finding-button" data-title="{{.Title}}" data-confidence="{{.Confidence}}" data-evidence="{{.Evidence}}" onclick="selectFinding(this)">{{.Title}}<span class="finding-meta">{{.Confidence}}%{{if .Evidence}} · {{.Evidence}}{{end}}</span></button>{{end}}
+      </details>
+      {{end}}</div>
+      </div>{{end}}
+    </aside>
+  </section>
 
-  <h2>Graph receipt <span class="note">(this server's graph)</span></h2>
-  {{if .HasGraph}}{{with .Graph}}
+  <div class="data-section"><h2>Most-connected modules in this view</h2>
+  <p class="note">These counts describe module imports. Symbol-level finding counts may be larger because many call sites can live inside one module.</p>
+  <div class="table-scroll"><table class="module-table">
+    <thead><tr><th>Module</th><th>File</th><th class="num">Consumer modules</th><th class="num">Dependency modules</th><th class="num">Connections</th></tr></thead>
+    <tbody>{{range $graph.Nodes}}<tr><td><button type="button" class="count-link" onclick="focusModule('{{.ID}}')">{{.Name}}</button></td><td>{{.File}}</td><td class="num">{{.FanIn}}</td><td class="num">{{.FanOut}}</td><td class="num">{{.Degree}}</td></tr>{{end}}</tbody>
+  </table></div></div>
+  {{else}}<p class="note">No module dependencies loaded yet.</p>{{end}}
+
+  {{if .HasGraph}}{{with .Graph}}{{if or (gt (len .Repos) 1) .ServiceCount .CrossRepoEdgeCount}}
+  <h2>Graph summary</h2>
   <div class="grid">
-    <div class="card"><div class="k">Snapshot ID</div><div class="v">{{.SnapshotID}}</div></div>
-    <div class="card"><div class="k">enola version</div><div class="v">{{.EnolaVersion}}</div></div>
-    <div class="card"><div class="k">Generated at</div><div class="v">{{.GeneratedAt}}</div></div>
-    <div class="card"><div class="k">Facts</div><div class="v">{{.FactCount}}</div></div>
-    <div class="card"><div class="k">Insights</div><div class="v">{{if $.Insights}}<button type="button" class="count-link" onclick="openModal('insights-modal')">{{$.InsightTotal}}</button>{{else}}{{.InsightCount}}{{end}}</div></div>
+    {{if gt (len .Repos) 1}}<div class="card"><div class="k">Repositories</div><div class="v">{{len .Repos}}</div></div>{{end}}
+    {{if .ServiceCount}}<div class="card"><div class="k">Services</div><div class="v">{{if $.Services}}<button type="button" class="count-link" onclick="openModal('services-modal')">{{.ServiceCount}}</button>{{else}}{{.ServiceCount}}{{end}}</div></div>{{end}}
+    {{if .CrossRepoEdgeCount}}<div class="card"><div class="k">Cross-repo edges</div><div class="v">{{if $.CrossRepoEdges}}<button type="button" class="count-link" onclick="openModal('edges-modal')">{{.CrossRepoEdgeCount}}</button>{{else}}{{.CrossRepoEdgeCount}}{{end}}</div></div>{{end}}
+  </div>
+  {{end}}{{end}}{{else}}<p class="note">{{.GraphNote}}</p>{{end}}
+  </section>
+
+  <section class="tab-panel" id="panel-snapshots" role="tabpanel" aria-labelledby="tab-snapshots" hidden>
+  <div class="panel-intro"><div class="section-kicker">Snapshot state</div><h2>Snapshots</h2><p>When this architecture was captured, what it represents, and whether anything needs attention.</p></div>
+  {{if .HasReceipt}}{{with .Receipt}}
+  <div class="snapshot-head">
+    <div><h2>{{$.Snapshot.RepoName}}</h2><p>{{if $.Snapshot.Age}}Generated {{$.Snapshot.Age}}{{else}}Generated {{.GeneratedAt}}{{end}} · snapshot <code>{{$.Snapshot.ShortID}}</code></p></div>
+    <span class="badge {{$.Snapshot.StatusClass}}">{{$.Snapshot.Status}}</span>
+  </div>
+  <div class="grid">
+    {{if .Git}}<div class="card"><div class="k">Git capture</div><div class="v">{{.Git.Ref}}{{if $.Snapshot.ShortCommit}} @ {{$.Snapshot.ShortCommit}}{{end}}</div></div>{{end}}
+    <div class="card"><div class="k">Source files indexed</div><div class="v">{{.Quality.FilesParsed}}</div></div>
+    <div class="card"><div class="k">Architecture facts</div><div class="v">{{.FactCount}}</div></div>
+    <div class="card"><div class="k">Findings</div><div class="v">{{if $.Insights}}<button type="button" class="count-link" onclick="openModal('insights-modal')">{{$.InsightTotal}}</button>{{else}}{{.InsightCount}}{{end}}</div></div>
+    <div class="card"><div class="k">Extraction schema</div><div class="v">{{if .ExtractorVersion}}{{.ExtractorVersion}}{{else}}not recorded{{end}}</div></div>
+    <div class="card"><div class="k">Analysis duration</div><div class="v">{{.Duration}}</div></div>
+  </div>
+  {{if and .Git .Git.Dirty}}<p class="snapshot-alert">This snapshot was generated while the working tree had local changes. It describes that exact working state, not only commit <code>{{$.Snapshot.ShortCommit}}</code>.</p>{{end}}
+
+  <div class="data-section"><h2>Analysis scope</h2>
+    <p class="note">These extractors contributed facts. Quality details explain ignored and unsupported files.</p>
+    {{if .Extractors}}<div class="chips">{{range .Extractors}}<span class="chip">{{.}}</span>{{end}}</div>{{else}}<p class="note">No extractors recorded.</p>{{end}}
+    <p style="margin:.8rem 0 0"><button type="button" class="count-link" onclick="selectTab('quality')">Review analysis completeness →</button></p>
+  </div>
+
+  <div class="data-section"><h2>Graph composition</h2>
+  {{if $.HasGraph}}{{with $.Graph}}
+  {{if gt (len .Repos) 1}}
+  <div class="grid">
+    <div class="card"><div class="k">Repositories</div><div class="v">{{len .Repos}}</div></div>
     <div class="card"><div class="k">Services</div><div class="v">{{if $.Services}}<button type="button" class="count-link" onclick="openModal('services-modal')">{{.ServiceCount}}</button>{{else}}{{.ServiceCount}}{{end}}</div></div>
     <div class="card"><div class="k">Cross-repo edges</div><div class="v">{{if $.CrossRepoEdges}}<button type="button" class="count-link" onclick="openModal('edges-modal')">{{.CrossRepoEdgeCount}}</button>{{else}}{{.CrossRepoEdgeCount}}{{end}}</div></div>
   </div>
-  {{if .Repos}}
-  <h3 style="margin:1.25rem 0 .5rem;font-size:.95rem">Repos in graph</h3>
-  <div class="table-scroll"><table>
-    <thead><tr><th>Label</th><th>Path</th><th>Added</th><th>In graph for</th><th class="num">Facts</th></tr></thead>
-    <tbody>
-      {{range .Repos}}<tr><td>{{.Label}}</td><td>{{.Path}}</td><td>{{.AddedAt}}</td><td>{{.InGraphFor}}</td><td class="num">{{.FactCount}}</td></tr>{{end}}
-    </tbody>
+  <h3 style="margin:1.25rem 0 .5rem">Repositories in graph</h3><div class="table-scroll"><table>
+    <thead><tr><th>Repository</th><th>Git capture</th><th>In graph for</th><th class="num">Facts</th></tr></thead>
+    <tbody>{{range .Repos}}<tr><td>{{.Label}}</td><td>{{if .Git}}{{.Git.Ref}}{{if .Git.Commit}} @ {{.Git.Commit}}{{end}}{{if .Git.Dirty}} (local changes){{end}}{{else}}—{{end}}</td><td>{{.InGraphFor}}</td><td class="num">{{.FactCount}}</td></tr>{{end}}</tbody>
   </table></div>
-  {{end}}
-  {{end}}{{else}}<p class="note">{{.GraphNote}}</p>{{end}}
+  {{else}}<p class="note">Single-repository graph. The loaded graph is the current snapshot, so a second receipt would duplicate the same facts and findings.</p>{{end}}
+  {{end}}{{else}}<p class="note">{{$.GraphNote}}</p>{{end}}
+  </div>
 
-  <footer>{{.Title}} dashboard · read-only · localhost only</footer>
+  <details class="technical-receipt"><summary>Technical receipt</summary>
+    <dl class="technical-grid">
+      <dt>Snapshot ID</dt><dd>{{.SnapshotID}}</dd>
+      <dt>Generated</dt><dd>{{if $.Snapshot.Generated}}{{$.Snapshot.Generated}}{{else}}{{.GeneratedAt}}{{end}}</dd>
+      <dt>Repository</dt><dd>{{.RepoPath}}</dd>
+      <dt>Enola build</dt><dd>{{.EnolaVersion}}</dd>
+      <dt>Extractor schema</dt><dd>{{.ExtractorVersion}}</dd>
+      <dt>Configuration hash</dt><dd>{{.ConfigHash}}</dd>
+      <dt>Ignore rules hash</dt><dd>{{.IgnoreGlobHash}}</dd>
+    </dl>
+    {{if .Explainers}}<h3>Explainers run</h3><div class="chips">{{range .Explainers}}<span class="chip">{{.}}</span>{{end}}</div>{{end}}
+    {{if .Renderers}}<h3>Renderers</h3><div class="chips">{{range .Renderers}}<span class="chip">{{.}}</span>{{end}}</div>{{end}}
+  </details>
+  {{end}}{{else}}<p class="note">{{.ReceiptNote}}</p>{{end}}
+  </section>
+
+  <section class="tab-panel" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
+  <div class="panel-intro"><div class="section-kicker">Usage</div><h2>Activity</h2><p>What this server has done now, separated from Enola's lifetime activity across repositories.</p></div>
+
+  <div class="snapshot-head">
+    <div><h2>Current server session</h2><p>{{if .ReposLoaded}}{{.ReposLoaded}}{{else}}No repository label available{{end}}{{if .Uptime}} · running for {{.Uptime}}{{end}}</p></div>
+    {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">stopped</span>{{end}}
+  </div>
+  <div class="grid">
+    <div class="card"><div class="k">Tool calls this session</div><div class="v">{{.SessionCalls}}</div></div>
+    {{if .StartedAt}}<div class="card"><div class="k">Session started</div><div class="v">{{.StartedAt}}</div></div>{{end}}
+  </div>
+  {{if .SessionCalls}}<div class="data-section"><h2>Tools used this session</h2><div class="table-scroll"><table>
+    <thead><tr><th>Tool</th><th class="num">Calls</th></tr></thead>
+    <tbody>{{range .Tools}}{{if .Session}}<tr><td>{{.Name}}</td><td class="num">{{.Session}}</td></tr>{{end}}{{end}}</tbody>
+  </table></div></div>{{else}}<p class="note">No MCP tool calls have reached this server session yet. Snapshot generation performed by a separate command is recorded in lifetime activity, not here.</p>{{end}}
+
+  <div class="data-section"><div class="snapshot-head"><div><h2>Lifetime activity</h2><p>{{.ReposTracked}} repositories{{if .TrackingSince}} · tracked since {{.TrackingSince}}{{end}}</p></div></div>
+  {{if .Tools}}<div class="table-scroll"><table>
+    <thead><tr><th>Tool</th><th class="num">Total calls</th></tr></thead>
+    <tbody>{{range .Tools}}<tr><td>{{.Name}}</td><td class="num">{{.Total}}</td></tr>{{end}}</tbody>
+  </table></div>{{else}}<p class="note">No lifetime tool activity recorded yet.</p>{{end}}</div>
+
+  <div class="data-section"><h2>Estimated value across all repositories <span class="note">(approximate)</span></h2>{{if .Values}}<div class="table-scroll"><table>
+    <thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">~Time saved</th><th class="num">~Tokens saved</th></tr></thead>
+    <tbody>{{range .Values}}<tr><td>{{.Label}}</td><td class="num">{{.Calls}}</td><td class="num">{{.TimeSaved}}</td><td class="num">{{.TokensSaved}}</td></tr>{{end}}<tr class="total"><td>{{.ValueTotal.Label}}</td><td class="num">{{.ValueTotal.Calls}}</td><td class="num">{{.ValueTotal.TimeSaved}}</td><td class="num">{{.ValueTotal.TokensSaved}}{{if $.BeyondContext}}+{{end}}</td></tr></tbody>
+  </table></div>{{else}}<p class="note">No value recorded yet.</p>{{end}}</div>
+
+  <details class="technical-receipt"><summary>Runtime details</summary>
+  <div class="grid">
+    <div class="card"><div class="k">Server process</div><div class="v">{{if .Running}}PID {{.PID}}{{else}}stopped{{end}}</div></div>
+    {{if .Binary}}<div class="card"><div class="k">Binary</div><div class="v">{{.Binary}}</div></div>{{end}}
+    <div class="card"><div class="k">Dashboard port</div><div class="v">{{.Port}}</div></div>
+  </div>
+  {{if .WorkDir}}<div class="card path-card" style="margin-top:.75rem"><div class="k">Working directory</div><div class="v">{{.WorkDir}}</div></div>{{end}}
+  {{if .ConfigPath}}<div class="card path-card" style="margin-top:.75rem"><div class="k">Config path</div><div class="v">{{.ConfigPath}}</div></div>{{end}}
+  {{if .StableURL}}<div class="card path-card" style="margin-top:.75rem"><div class="k">Shared dashboard URL</div><div class="v"><a href="{{.StableURL}}">{{.StableURL}}</a>{{if .FrontDoor}} · this server is the front door{{end}}</div></div>{{end}}
+  {{if .Instances}}<div class="data-section"><h2>Servers running</h2><div class="table-scroll"><table>
+    <thead><tr><th>Server</th><th>Repositories</th><th>Uptime</th><th class="num">Calls</th><th>Dashboard</th></tr></thead>
+    <tbody>{{range .Instances}}<tr{{if .Self}} class="self-row"{{end}}><td>{{.Binary}} · PID {{.PID}}{{if .Self}} <span class="chip">this page</span>{{end}}</td><td>{{.Repos}}</td><td>{{.Uptime}}</td><td class="num">{{.Calls}}</td><td>{{if .URL}}<a href="{{.URL}}">open{{if .FrontDoor}} · shared{{end}}</a>{{else}}—{{end}}</td></tr>{{end}}</tbody>
+  </table></div></div>{{end}}
+  </details>
+  </section>
+
+  <section class="tab-panel" id="panel-quality" role="tabpanel" aria-labelledby="tab-quality" hidden>
+  <div class="panel-intro"><div class="section-kicker">Completeness</div><h2>Analysis quality</h2><p>Extraction coverage, skipped inputs, parsing failures, and unresolved connections.</p></div>
+  {{if .HasReceipt}}{{with .Receipt}}
+  <div class="snapshot-head">
+    <div><h2>{{$.Quality.Status}}</h2><p>{{$.Quality.Summary}}</p></div>
+    <span class="badge {{$.Quality.StatusClass}}">{{if .Quality.ParseErrors}}{{.Quality.ParseErrors}} error(s){{else}}{{if $.Quality.CoverageLabel}}{{$.Quality.CoverageLabel}}{{else}}no parse errors{{end}}{{end}}</span>
+  </div>
+  {{if $.Quality.Inactive}}<div class="snapshot-alert"><b>Extractor coverage detail:</b> {{range $i, $cause := $.Quality.Inactive}}{{if $i}} · {{end}}{{$cause.Count}} file(s) {{$cause.Cause}}{{end}}. This affects {{$.Quality.InactiveShare}} of the {{$.Quality.FilesWalked}} files walked and does not mean the rest of the snapshot failed.</div>{{end}}
+
+  {{if .Quality.Census}}{{with .Quality.Census}}
+  <h2>File accounting</h2>
+  <div class="quality-row">
+    <div class="quality-item"><span class="k">Files walked</span><span class="v">{{.FilesWalked}}</span><span class="why">All files encountered before classification.</span></div>
+    <div class="quality-item"><span class="k">Indexed</span><span class="v">{{.Parsed}}</span><span class="why">Source files that produced architecture facts.</span></div>
+    <div class="quality-item"><span class="k">Intentionally ignored</span><span class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.ExcludedByIgnore}}</button>{{else}}{{.ExcludedByIgnore}}{{end}}</span><span class="why">Matched configured ignore rules.</span></div>
+    <div class="quality-item"><span class="k">Non-source / unsupported</span><span class="v">{{.ExcludedByKind}}</span><span class="why">Assets, data, or file types without an extractor.</span></div>
+    <div class="quality-item"><span class="k">No facts emitted</span><span class="v">{{.SkippedWithCause}}</span><span class="why">Recognized files that contained no indexable structure.</span></div>
+  </div>
+  <p class="accounting-note ok">These categories account for every walked file. Ignored and non-source files are not parse failures.</p>
+
+  {{if $.Quality.Potential}}<div class="data-section"><h2>Potential architecture blind spots</h2><p class="note">These file types can carry behavior or architecture, but are outside the current graph. Review whether they matter for this repository.</p><div class="table-scroll"><table>
+    <thead><tr><th>File kind</th><th class="num">Files</th><th>Why review it</th></tr></thead>
+    <tbody>{{range $.Quality.Potential}}<tr><td>{{.Kind}}</td><td class="num">{{.Count}}</td><td class="title">{{.Reason}}</td></tr>{{end}}</tbody>
+  </table></div></div>{{end}}
+
+  {{if $.Quality.NoFacts}}<div class="data-section"><h2>Recognized files with no facts</h2><p class="note">These were analyzed successfully but contained no indexable architecture.</p><div class="table-scroll"><table>
+    <thead><tr><th>Reason</th><th class="num">Files</th></tr></thead>
+    <tbody>{{range $.Quality.NoFacts}}<tr><td>{{.Cause}}</td><td class="num">{{.Count}}</td></tr>{{end}}</tbody>
+  </table></div></div>{{end}}
+
+  {{if $.Quality.ExpectedFiles}}<details class="technical-receipt"><summary>Expected non-source exclusions · {{$.Quality.ExpectedFiles}} files across {{$.Quality.ExpectedKinds}} kinds</summary>
+    <p class="note">Assets, fixtures, snapshots, certificates, and other file kinds that normally do not define application architecture.</p>
+    <div class="table-scroll"><table><thead><tr><th>File kind</th><th class="num">Files</th></tr></thead><tbody>
+    {{range $.Quality.Expected}}<tr><td>{{.Kind}}</td><td class="num">{{.Count}}</td></tr>{{end}}
+    </tbody></table></div>
+  </details>{{end}}
+  {{end}}{{else}}
+  <div class="quality-row">
+    <div class="quality-item"><span class="k">Source files seen</span><span class="v">{{.Quality.FilesSeen}}</span></div>
+    <div class="quality-item"><span class="k">Indexed</span><span class="v">{{.Quality.FilesParsed}}</span></div>
+    <div class="quality-item"><span class="k">Intentionally ignored</span><span class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.Quality.FilesSkipped}}</button>{{else}}{{.Quality.FilesSkipped}}{{end}}</span></div>
+  </div>
+  {{end}}
+
+  <div class="data-section"><h2>Errors and cross-repository coverage</h2><div class="quality-row">
+    <div class="quality-item"><span class="k">Parse errors</span><span class="v">{{if $.ParseErrors}}<button type="button" class="count-link" onclick="openModal('parse-errors-modal')">{{.Quality.ParseErrors}}</button>{{else}}{{.Quality.ParseErrors}}{{end}}</span><span class="why">Actual extractor failures requiring attention.</span></div>
+    <div class="quality-item"><span class="k">Ignored directories</span><span class="v">{{if $.SkippedSample}}<button type="button" class="count-link" onclick="openModal('skipped-modal')">{{.Quality.DirsSkipped}}</button>{{else}}{{.Quality.DirsSkipped}}{{end}}</span><span class="why">Pruned directories; their contents were never walked.</span></div>
+    {{if .Quality.Coverage}}{{with .Quality.Coverage}}
+    <div class="quality-item"><span class="k">Services</span><span class="v">{{if $.Coverage}}<button type="button" class="count-link" onclick="openModal('coverage-modal')">{{.ServicesTotal}}</button>{{else}}{{.ServicesTotal}}{{end}}</span></div>
+    <div class="quality-item"><span class="k">Coverage gaps</span><span class="v">{{if $.Coverage}}<button type="button" class="count-link" onclick="openModal('coverage-modal')">{{.CoverageGaps}}</button>{{else}}{{.CoverageGaps}}{{end}}</span></div>
+    <div class="quality-item"><span class="k">Unresolved edges</span><span class="v">{{if $.UnresolvedRoutes}}<button type="button" class="count-link" onclick="openModal('coverage-unresolved-modal')">{{.UnresolvedEdges}}</button>{{else}}{{.UnresolvedEdges}}{{end}}</span></div>
+    {{end}}{{end}}
+  </div></div>
+  {{end}}{{else}}<p class="note">{{.ReceiptNote}}</p>{{end}}
+  </section>
+  </main>
+
+  <footer>
+    <span>Read-only dashboard</span>
+    <a class="project-link" href="https://github.com/enola-labs/enola" target="_blank" rel="noopener noreferrer" aria-label="Star Enola on GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2l2.05 4.15 4.58.67-3.31 3.22.78 4.56L8 11.65 3.9 13.8l.78-4.56L1.37 6.02l4.58-.67L8 1.2z"/></svg>
+      Open source on GitHub · Star Enola
+    </a>
+  </footer>
 </div>
 
 {{if .Services}}
@@ -329,6 +597,22 @@
 </div>
 {{end}}
 
+{{if .Changes.NewFindingDetails}}
+<div class="modal" id="new-findings-modal" onclick="if(event.target===this)closeModal(this)">
+  <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="New findings since previous snapshot">
+    <div class="modal-head">
+      <h3>New findings <span class="note">({{len .Changes.NewFindingDetails}})</span></h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
+    </div>
+    <div class="insight-summary">Structurally introduced since the previous recorded snapshot.</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Category</th><th>Finding</th><th class="num">Confidence</th><th>Evidence</th></tr></thead>
+      <tbody>{{range .Changes.NewFindingDetails}}<tr><td>{{.Label}}</td><td class="title">{{.Title}}</td><td class="num">{{.Confidence}}%</td><td>{{.Evidence}}</td></tr>{{end}}</tbody>
+    </table></div>
+  </div>
+</div>
+{{end}}
+
 {{if .Coverage}}
 <div class="modal" id="coverage-modal" onclick="if(event.target===this)closeModal(this)">
   <div class="modal-panel wide" role="dialog" aria-modal="true" aria-label="Cross-repo coverage">
@@ -398,16 +682,32 @@
 {{block "extra-modals" $}}{{end}}
 
 <script>
-  // JS-driven auto-refresh (replaces the old <meta refresh>) so it can be paused
-  // while a modal is open — otherwise a reload would close the modal mid-read.
-  var refreshMs = {{.RefreshSeconds}} * 1000;
-  var reloadTimer = null;
-  function startRefresh() { stopRefresh(); reloadTimer = setTimeout(function () { location.reload(); }, refreshMs); }
-  function stopRefresh() { if (reloadTimer !== null) { clearTimeout(reloadTimer); reloadTimer = null; } }
+  function selectTab(name, updateHash) {
+    var panel = document.getElementById('panel-' + name);
+    var tab = document.getElementById('tab-' + name);
+    if (!panel || !tab) return;
+    document.querySelectorAll('.tab-panel').forEach(function(p) {
+      var active = p === panel;
+      p.classList.toggle('active', active);
+      p.hidden = !active;
+    });
+    document.querySelectorAll('.tab').forEach(function(t) {
+      var active = t === tab;
+      t.classList.toggle('active', active);
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
+      t.setAttribute('tabindex', active ? '0' : '-1');
+    });
+    if (updateHash !== false && history.replaceState) history.replaceState(null, '', '#' + name);
+  }
+  function initialTab() {
+    var name = location.hash.replace(/^#/, '');
+    if (!document.getElementById('tab-' + name)) name = 'overview';
+    selectTab(name, false);
+  }
+
   function openModal(id) {
     var m = document.getElementById(id);
     if (!m) return;
-    stopRefresh();
     m.classList.add('open');
     if (id === 'insights-modal') {
       var sel = document.getElementById('insight-band');
@@ -475,20 +775,175 @@
       if (toDiagram) toDiagram.hidden = !showTable;
     }
   }
+  function graphNodes() { return Array.prototype.slice.call(document.querySelectorAll('.module-node')); }
+  function graphEdges() { return Array.prototype.slice.call(document.querySelectorAll('.module-edge')); }
+  function clearGraphFocus() {
+    graphNodes().forEach(function(n) { n.classList.remove('active', 'dim'); });
+    graphEdges().forEach(function(e) { e.classList.remove('active', 'dim'); });
+  }
+  function openInspector() {
+    var empty = document.getElementById('inspector-empty');
+    var detail = document.getElementById('module-detail');
+    if (empty) empty.hidden = true;
+    if (detail) detail.classList.add('open');
+    return detail;
+  }
+  function toggleGraphFit(button) {
+    var canvas = document.querySelector('.graph-canvas');
+    if (!canvas) return;
+    var fit = canvas.classList.toggle('fit');
+    button.setAttribute('aria-pressed', fit ? 'true' : 'false');
+    button.textContent = fit ? 'Readable size' : 'Fit view';
+  }
+  function selectModule(node) {
+    clearGraphFocus();
+    var id = node.getAttribute('data-id');
+    var related = {};
+    related[id] = true;
+    graphEdges().forEach(function(e) {
+      var connected = e.getAttribute('data-source') === id || e.getAttribute('data-target') === id;
+      e.classList.toggle('active', connected);
+      e.classList.toggle('dim', !connected);
+      if (connected) { related[e.getAttribute('data-source')] = true; related[e.getAttribute('data-target')] = true; }
+    });
+    graphNodes().forEach(function(n) {
+      n.classList.toggle('active', n === node);
+      n.classList.toggle('dim', !related[n.getAttribute('data-id')]);
+    });
+    var detail = openInspector();
+    if (detail) {
+      document.getElementById('module-detail-name').textContent = node.getAttribute('data-name');
+      document.getElementById('module-detail-file').textContent = node.getAttribute('data-file') || '';
+      document.getElementById('module-detail-in').textContent = node.getAttribute('data-in') + ' consumer modules';
+      document.getElementById('module-detail-out').textContent = node.getAttribute('data-out') + ' dependency modules';
+    }
+  }
+  function selectDependency(hit) {
+    clearGraphFocus();
+    var source = hit.getAttribute('data-source');
+    var target = hit.getAttribute('data-target');
+    graphNodes().forEach(function(n) {
+      var connected = n.getAttribute('data-id') === source || n.getAttribute('data-id') === target;
+      n.classList.toggle('active', connected);
+      n.classList.toggle('dim', !connected);
+    });
+    graphEdges().forEach(function(e) {
+      var selected = e.getAttribute('data-source') === source && e.getAttribute('data-target') === target;
+      e.classList.toggle('active', selected);
+      e.classList.toggle('dim', !selected);
+    });
+    var detail = openInspector();
+    if (!detail) return;
+    document.getElementById('module-detail-name').textContent = hit.getAttribute('data-source-name') + ' → ' + hit.getAttribute('data-target-name');
+    var sourceFile = hit.getAttribute('data-source-file') || 'source file unavailable';
+    var targetFile = hit.getAttribute('data-target-file') || 'target file unavailable';
+    document.getElementById('module-detail-file').textContent = sourceFile + ' → ' + targetFile;
+    document.getElementById('module-detail-in').textContent = hit.getAttribute('data-kind');
+    document.getElementById('module-detail-out').textContent = 'module-level evidence';
+  }
+  function focusModule(id) {
+    var node = document.querySelector('.module-node[data-id="' + id + '"]');
+    if (!node) return;
+    selectModule(node);
+    var canvas = node.closest('.graph-canvas');
+    if (canvas) canvas.scrollIntoView({behavior: 'smooth', block: 'center'});
+  }
+  function filterModules(query) {
+    clearGraphFocus();
+    query = (query || '').trim().toLowerCase();
+    graphNodes().forEach(function(n) {
+      var match = !query || (n.getAttribute('data-name') || '').toLowerCase().indexOf(query) !== -1 || (n.getAttribute('data-file') || '').toLowerCase().indexOf(query) !== -1;
+      n.classList.toggle('dim', !match);
+    });
+    if (query) graphEdges().forEach(function(e) { e.classList.add('dim'); });
+  }
+  function selectFinding(button) {
+    document.querySelectorAll('.finding-button').forEach(function(b) { b.classList.toggle('active', b === button); });
+    clearGraphFocus();
+    var evidence = (button.getAttribute('data-evidence') || '').toLowerCase();
+	showFindingInspector(button);
+    if (!evidence) return;
+    var matches = {};
+    graphNodes().forEach(function(n) {
+      var name = (n.getAttribute('data-name') || '').toLowerCase();
+      var file = (n.getAttribute('data-file') || '').toLowerCase();
+      var match = (name && evidence.indexOf(name) !== -1) || (file && evidence.indexOf(file) !== -1) || (file && file.indexOf(evidence) !== -1);
+      n.classList.toggle('active', match);
+      n.classList.toggle('dim', !match);
+      if (match) matches[n.getAttribute('data-id')] = true;
+    });
+	var matchedVisible = Object.keys(matches).length > 0;
+	if (!matchedVisible) {
+	  var bestModule = '';
+	  document.querySelectorAll('#all-modules option').forEach(function(option) {
+	    var moduleName = (option.value || '').toLowerCase();
+	    var belongsToModule = evidence === moduleName || evidence.indexOf(moduleName + '/') === 0;
+	    if (belongsToModule && moduleName.length > bestModule.length) bestModule = option.value;
+	  });
+	  if (bestModule) {
+	    try {
+	      sessionStorage.setItem('enola-selected-finding', JSON.stringify({
+	        title: button.getAttribute('data-title') || '',
+	        confidence: button.getAttribute('data-confidence') || '',
+	        evidence: button.getAttribute('data-evidence') || ''
+	      }));
+	    } catch (_) {}
+	    window.location.assign('/?module=' + encodeURIComponent(bestModule) + '#architecture');
+	    return;
+	  }
+	}
+    graphEdges().forEach(function(e) {
+      var active = matches[e.getAttribute('data-source')] || matches[e.getAttribute('data-target')];
+      e.classList.toggle('active', !!active);
+      e.classList.toggle('dim', !active);
+    });
+  }
+  function showFindingInspector(button) {
+    showFindingDetails({
+      title: button.getAttribute('data-title') || button.textContent.trim(),
+      confidence: button.getAttribute('data-confidence') || '',
+      evidence: button.getAttribute('data-evidence') || ''
+    });
+  }
+  function showFindingDetails(finding) {
+    var detail = openInspector();
+    if (!detail) return;
+    var symbolLevel = (finding.title || '').toLowerCase().indexOf('symbol') !== -1;
+    document.getElementById('module-detail-name').textContent = finding.title || 'Selected finding';
+    document.getElementById('module-detail-file').textContent = finding.evidence || 'No file evidence';
+    document.getElementById('module-detail-in').textContent = (finding.confidence ? finding.confidence + '% · ' : '') + (symbolLevel ? 'symbol-level finding' : 'finding');
+    document.getElementById('module-detail-out').textContent = 'Map shows module imports';
+  }
+  function restoreFindingInspector() {
+    try {
+      var raw = sessionStorage.getItem('enola-selected-finding');
+      if (!raw) return;
+      sessionStorage.removeItem('enola-selected-finding');
+      showFindingDetails(JSON.parse(raw));
+    } catch (_) {}
+  }
   {{/* extra-scripts: extension slot — see pkg/dashboard.Options.Overlay */}}
   {{block "extra-scripts" $}}{{end}}
   function closeModal(el) {
     var m = el && el.closest ? el.closest('.modal') : el;
     if (m && m.classList) m.classList.remove('open');
-    startRefresh();
   }
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       var open = document.querySelector('.modal.open');
       if (open) closeModal(open);
     }
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && document.activeElement.classList.contains('tab')) {
+      var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+      var current = tabs.indexOf(document.activeElement);
+      var next = (current + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].focus();
+      selectTab(tabs[next].getAttribute('data-tab'));
+    }
   });
-  startRefresh();
+  window.addEventListener('hashchange', initialTab);
+  initialTab();
+  restoreFindingInspector();
 </script>
 </body>
 </html>

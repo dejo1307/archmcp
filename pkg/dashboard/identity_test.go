@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,14 +15,8 @@ import (
 	"github.com/enola-labs/enola/pkg/status"
 )
 
-// TestPageDescribesItsOwnServer is the regression test for the complaint that
-// started this work: with one enola server per agent terminal, the dashboard used
-// to fill its Server/PID/uptime cards from the cross-process aggregate, which
-// picks whichever process started last. A page served by this process would then
-// announce a sibling's PID.
-//
-// Here a foreign instance is registered with a NEWER start time — exactly the
-// case that used to win — and the page must still describe this process.
+// TestPageDescribesItsOwnServer guards the Activity tab: runtime identity comes
+// from the tracker for this process, never from a sibling server.
 func TestPageDescribesItsOwnServer(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -50,24 +43,15 @@ func TestPageDescribesItsOwnServer(t *testing.T) {
 	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	body := rec.Body.String()
 
-	for _, want := range []string{
-		"PID " + strconv.Itoa(os.Getpid()), // this process, not the newer sibling
-		"enola-enterprise 4.2.0",           // which binary is serving the page
-		"/tmp/my-workspace",                // which terminal launched it
-		"my-repo",                          // what THIS server has loaded
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("body missing %q — the page must describe the process serving it", want)
+	for _, operational := range []string{"panel-activity", "enola-enterprise 4.2.0", "/tmp/my-workspace", "my-repo"} {
+		if !strings.Contains(body, operational) {
+			t.Errorf("Activity tab missing this server's operational detail %q", operational)
 		}
-	}
-	if strings.Contains(body, "PID "+strconv.Itoa(foreignPID)) {
-		t.Error("body names another server's PID as its own")
 	}
 }
 
-// TestPageListsLiveInstances covers the switcher: a user with several agent
-// terminals open must be able to reach every other server's dashboard from any
-// one of them, and see at a glance which page they are on.
+// TestPageListsLiveInstances confirms the Activity tab provides the original
+// server switcher alongside the product-focused Overview and Architecture tabs.
 func TestPageListsLiveInstances(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -97,14 +81,9 @@ func TestPageListsLiveInstances(t *testing.T) {
 	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	body := rec.Body.String()
 
-	for _, want := range []string{
-		"Servers running",
-		"http://127.0.0.1:54545", // a clickable link to the sibling's dashboard
-		"other-repo",             // what the sibling has loaded
-		"this page",              // the row marking the current dashboard
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("body missing %q", want)
+	for _, operational := range []string{"Servers running", "http://127.0.0.1:54545", "other-repo", "this page"} {
+		if !strings.Contains(body, operational) {
+			t.Errorf("Activity tab missing server-switcher detail %q", operational)
 		}
 	}
 }
@@ -122,8 +101,18 @@ func TestPageWithoutTrackerStillRenders(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "g1") {
-		t.Error("body missing the graph receipt")
+	if !strings.Contains(rec.Body.String(), "Your architecture is mapped.") {
+		t.Error("body missing the populated architecture state")
+	}
+	for _, tab := range []string{"overview", "architecture", "snapshots", "activity", "quality"} {
+		if !strings.Contains(rec.Body.String(), `id="tab-`+tab+`"`) ||
+			!strings.Contains(rec.Body.String(), `id="panel-`+tab+`"`) {
+			t.Errorf("body missing %q tab or panel", tab)
+		}
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `href="https://github.com/enola-labs/enola"`) ||
+		!strings.Contains(body, "Open source on GitHub · Star Enola") {
+		t.Error("body missing the subtle open-source project link")
 	}
 }
 

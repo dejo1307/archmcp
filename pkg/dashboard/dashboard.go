@@ -1,6 +1,6 @@
 // Package dashboard serves a read-only localhost HTTP dashboard alongside the
-// enola MCP server. It binds a free ephemeral port on 127.0.0.1 and renders —
-// refreshing every 30 seconds — the same activity data as --status plus the
+// enola MCP server. It binds a free ephemeral port on 127.0.0.1 and renders the
+// same activity data as --status plus the
 // contents of the current-snapshot and graph-wide receipt.json files, so a user
 // can visually inspect what the snapshot captured.
 //
@@ -27,16 +27,16 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/enola-labs/enola/pkg/bootstrap"
+	"github.com/enola-labs/enola/pkg/diff"
 	"github.com/enola-labs/enola/pkg/facts"
+	"github.com/enola-labs/enola/pkg/history"
 	"github.com/enola-labs/enola/pkg/status"
 )
-
-// refreshSeconds is the client-side auto-refresh interval, stated on the page.
-const refreshSeconds = 30
 
 //go:embed page.html.tmpl
 var pageTemplate string
@@ -133,6 +133,14 @@ type Server struct {
 	labels map[string]string // insight-source allowlist + display labels
 	title  string            // product name in the page title/heading/footer
 	mux    *http.ServeMux
+
+	changeMu      sync.Mutex
+	changeCacheID string
+	changeCache   changeSummary
+
+	graphMu       sync.Mutex
+	graphCacheKey string
+	graphCache    *moduleGraphView
 
 	// frontDoor is set once this server claims the stable port. Read from every
 	// request handler and written by the claim goroutine, hence atomic.
@@ -271,7 +279,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := s.buildPage()
+	data := s.buildPageForModule(r.URL.Query().Get("module"))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, data); err != nil {
 		log.Printf("dashboard: render failed: %v", err)
@@ -358,10 +366,46 @@ type valueRow struct {
 	TokensSaved string
 }
 
+// snapshotSummary turns receipt provenance into the user-facing state shown at
+// the top of the Snapshots tab. The full receipt remains available below it.
+type snapshotSummary struct {
+	RepoName, Age, Generated, ShortID, ShortCommit, Status, StatusClass string
+}
+
+type qualityBlindSpot struct {
+	Kind, Reason string
+	Count        int
+}
+
+type qualityAssessment struct {
+	Status, StatusClass, Summary string
+	CoverageLabel                string
+	Potential                    []qualityBlindSpot
+	Expected                     []qualityBlindSpot
+	Inactive                     []facts.CensusCause
+	NoFacts                      []facts.CensusCause
+	ExpectedFiles, ExpectedKinds int
+	InactiveFiles, FilesWalked   int
+	InactiveShare                string
+}
+
+type changeSummary struct {
+	Available, Incomparable, Initial bool
+	Headline, ComparedTo             string
+	FactsAdded, FactsRemoved         int
+	EdgesAdded, EdgesRemoved         int
+	FindingsNew, FindingsResolved    int
+	NewFindingDetails                []changeFinding
+}
+
+type changeFinding struct {
+	Source, Label, Title, Evidence string
+	Confidence                     int
+}
+
 // pageData is the full template model.
 type pageData struct {
-	RefreshSeconds int
-	Title          string
+	Title string
 
 	// This server's own identity. Never sourced from the cross-process aggregate:
 	// with several agent terminals open, that would name a sibling process.
@@ -396,6 +440,7 @@ type pageData struct {
 
 	HasReceipt  bool
 	Receipt     *facts.Receipt
+	Snapshot    snapshotSummary
 	ReceiptNote string
 
 	HasGraph  bool
@@ -409,6 +454,8 @@ type pageData struct {
 	// EdgeDiagram is the node-link layout of CrossRepoEdges for the diagram view of
 	// the edges modal; nil when there are no edges (the modal shows the table only).
 	EdgeDiagram *diagramView
+	// ModuleGraph is the bounded, interactive module-level architecture map.
+	ModuleGraph *moduleGraphView
 
 	// Insights (grouped by explainer) back the clickable Insights card; the
 	// structural/candidate split is shown in the modal header.
@@ -424,6 +471,8 @@ type pageData struct {
 	UnresolvedRoutes []routeRow
 	SkippedSample    []string
 	ParseErrors      []facts.ParseError
+	Quality          qualityAssessment
+	Changes          changeSummary
 
 	// Extra is whatever Options.Extra returned for this request — the data the
 	// overlay blocks render. Nil in a plain engine dashboard, and nil whenever a
@@ -432,13 +481,13 @@ type pageData struct {
 	Extra any
 }
 
-// buildPage collects the status, current-snapshot receipt and graph-wide receipt
-// into the template model. Every source degrades gracefully to a note on error.
-func (s *Server) buildPage() pageData {
+// buildPageForModule collects the status, current-snapshot receipt and
+// graph-wide receipt into the template model, focusing the architecture map on
+// module if non-empty. Every source degrades gracefully to a note on error.
+func (s *Server) buildPageForModule(module string) pageData {
 	data := pageData{
-		RefreshSeconds: refreshSeconds,
-		Title:          s.title,
-		Port:           s.port,
+		Title: s.title,
+		Port:  s.port,
 	}
 
 	now := time.Now()
@@ -493,9 +542,11 @@ func (s *Server) buildPage() pageData {
 	if rv := s.currentReceipt(); rv != nil {
 		data.HasReceipt = true
 		data.Receipt = rv
+		data.Snapshot = summarizeSnapshot(rv, now)
 		// Capped skip/parse-error samples back the clickable Extraction-quality cards.
 		data.SkippedSample = rv.Quality.SkippedSample
 		data.ParseErrors = rv.Quality.ParseErrorSample
+		data.Quality = assessQuality(rv)
 	} else {
 		data.ReceiptNote = "No snapshot loaded yet — run generate_snapshot to populate this."
 	}
@@ -515,6 +566,12 @@ func (s *Server) buildPage() pageData {
 	// counters. Empty (store not loaded) → the cards render as plain numbers.
 	data.Services, data.CrossRepoEdges = graphDetails(s.eng.Store())
 	data.EdgeDiagram = buildEdgeDiagram(data.Services, data.CrossRepoEdges)
+	currentSnapshotID := ""
+	if data.Receipt != nil {
+		currentSnapshotID = data.Receipt.SnapshotID
+	}
+	data.ModuleGraph = s.readModuleGraph(currentSnapshotID, module)
+	data.Changes = s.readChangeSummary(s.eng.ActiveRepo(), currentSnapshotID)
 
 	// Insight list (grouped by explainer) backing the clickable Insights counter.
 	// Empty → the counter renders as a plain number.
@@ -532,6 +589,207 @@ func (s *Server) buildPage() pageData {
 	}
 
 	return data
+}
+
+func (s *Server) readModuleGraph(snapshotID, focus string) *moduleGraphView {
+	key := snapshotID + "\x00" + focus
+	s.graphMu.Lock()
+	defer s.graphMu.Unlock()
+	if snapshotID != "" && key == s.graphCacheKey {
+		return s.graphCache
+	}
+	result := buildModuleGraphFocused(s.eng.Store(), focus)
+	s.graphCacheKey, s.graphCache = key, result
+	return result
+}
+
+func (s *Server) readChangeSummary(repoPath, snapshotID string) changeSummary {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
+	if snapshotID != "" && snapshotID == s.changeCacheID {
+		return s.changeCache
+	}
+	result := readChangeSummary(repoPath, snapshotID, s.labels)
+	s.changeCacheID, s.changeCache = snapshotID, result
+	return result
+}
+
+func readChangeSummary(repoPath, snapshotID string, labels map[string]string) changeSummary {
+	if repoPath == "" || snapshotID == "" {
+		return changeSummary{}
+	}
+	root, err := history.Root(repoPath, "")
+	if err != nil {
+		return changeSummary{}
+	}
+	entries, err := history.Read(root)
+	if err != nil || len(entries) == 0 {
+		return changeSummary{}
+	}
+	var entry history.Entry
+	entryIndex := -1
+	found := false
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].ID == snapshotID {
+			entry = entries[i]
+			entryIndex = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		return changeSummary{}
+	}
+	s := entry.Summary
+	result := changeSummary{
+		Available: true, Incomparable: s.Incomparable, Initial: s.Initial,
+		Headline: s.Headline(), ComparedTo: "previous recorded snapshot",
+		FactsAdded: s.FactsAdded, FactsRemoved: s.FactsRemoved,
+		EdgesAdded: s.EdgesAdded, EdgesRemoved: s.EdgesRemoved,
+		FindingsNew: s.FindingsNew, FindingsResolved: s.FindingsResolved,
+	}
+	if !s.Incomparable && !s.Initial && entryIndex > 0 && entry.Blob != nil && entries[entryIndex-1].Blob != nil {
+		previous, previousErr := history.Load(root, entries[entryIndex-1])
+		current, currentErr := history.Load(root, entry)
+		if previousErr == nil && currentErr == nil {
+			delta := diff.Compute(previous, current)
+			for _, finding := range delta.FindingsNew {
+				label := labels[finding.Source]
+				if label == "" {
+					label = finding.Source
+				}
+				result.NewFindingDetails = append(result.NewFindingDetails, changeFinding{
+					Source: finding.Source, Label: label, Title: finding.Title,
+					Confidence: int(finding.Confidence*100 + 0.5), Evidence: firstEvidence(finding.Evidence),
+				})
+			}
+		}
+	}
+	return result
+}
+
+var reviewableFileKinds = map[string]string{
+	".sql":   "Queries and transformations may encode data architecture.",
+	".toml":  "Project and dependency configuration may affect architecture.",
+	".html":  "Templates may contain routes, calls, or application structure.",
+	".j2":    "Templates may contain generated configuration or queries.",
+	".jinja": "Templates may contain generated configuration or queries.",
+	".pyi":   "Python type declarations may describe public interfaces.",
+	".sh":    "Scripts may describe build and operational dependencies.",
+	".ps1":   "Scripts may describe build and operational dependencies.",
+}
+
+func assessQuality(r *facts.Receipt) qualityAssessment {
+	q := qualityAssessment{Status: "Analysis complete", StatusClass: "on", Summary: "No parse failures or obvious extractor gaps were recorded."}
+	if census := r.Quality.Census; census != nil {
+		for kind, count := range census.ExcludedKinds {
+			if reason, review := reviewableFileKinds[kind]; review {
+				q.Potential = append(q.Potential, qualityBlindSpot{Kind: kind, Count: count, Reason: reason})
+			} else {
+				q.ExpectedFiles += count
+				q.ExpectedKinds++
+				q.Expected = append(q.Expected, qualityBlindSpot{Kind: kind, Count: count})
+			}
+		}
+		sort.Slice(q.Potential, func(i, j int) bool {
+			if q.Potential[i].Count != q.Potential[j].Count {
+				return q.Potential[i].Count > q.Potential[j].Count
+			}
+			return q.Potential[i].Kind < q.Potential[j].Kind
+		})
+		sort.Slice(q.Expected, func(i, j int) bool {
+			if q.Expected[i].Count != q.Expected[j].Count {
+				return q.Expected[i].Count > q.Expected[j].Count
+			}
+			return q.Expected[i].Kind < q.Expected[j].Kind
+		})
+		for _, cause := range census.TopSkipCauses {
+			if strings.Contains(cause.Cause, "did not run") {
+				q.Inactive = append(q.Inactive, cause)
+				q.InactiveFiles += cause.Count
+			} else {
+				q.NoFacts = append(q.NoFacts, cause)
+			}
+		}
+		q.FilesWalked = census.FilesWalked
+		q.InactiveShare = formatShare(q.InactiveFiles, census.FilesWalked)
+	}
+	if r.Quality.ParseErrors > 0 {
+		q.Status = "Analysis needs attention"
+		q.StatusClass = "off"
+		q.Summary = fmt.Sprintf("%d parse error(s) may leave gaps in the architecture map.", r.Quality.ParseErrors)
+	} else if q.InactiveFiles > 0 && materialCoverageGap(q.InactiveFiles, q.FilesWalked) {
+		q.Status = "Material extractor coverage gap"
+		q.StatusClass = "off"
+		q.CoverageLabel = "material gap"
+		q.Summary = fmt.Sprintf("%d of %d walked files (%s) belonged to an extractor that did not run.", q.InactiveFiles, q.FilesWalked, q.InactiveShare)
+	} else if q.InactiveFiles > 0 {
+		q.Status = "Coverage worth reviewing"
+		q.StatusClass = "warn"
+		q.CoverageLabel = "limited coverage"
+		q.Summary = fmt.Sprintf("Analysis completed without parse errors. %d of %d walked files (%s) belonged to an extractor that did not activate.", q.InactiveFiles, q.FilesWalked, q.InactiveShare)
+	} else if len(q.Potential) > 0 {
+		q.Status = "Coverage worth reviewing"
+		q.StatusClass = "warn"
+		q.Summary = "Analysis succeeded, but potentially architectural file types are outside the current graph."
+	}
+	return q
+}
+
+// materialCoverageGap deliberately requires meaningful corpus impact before the
+// dashboard uses red/error language. A handful of nested examples in a large
+// monorepo is transparent but not alarming; a missing language population is.
+func materialCoverageGap(files, walked int) bool {
+	if files <= 0 {
+		return false
+	}
+	return files >= 100 || walked > 0 && float64(files)/float64(walked) >= 0.05
+}
+
+func formatShare(part, total int) string {
+	if part <= 0 || total <= 0 {
+		return "unknown share"
+	}
+	pct := float64(part) / float64(total) * 100
+	if pct < 0.1 {
+		return "<0.1%"
+	}
+	return fmt.Sprintf("%.1f%%", pct)
+}
+
+func summarizeSnapshot(r *facts.Receipt, now time.Time) snapshotSummary {
+	s := snapshotSummary{
+		RepoName:    filepath.Base(r.RepoPath),
+		ShortID:     shortDigest(r.SnapshotID, 12),
+		Status:      "Snapshot ready",
+		StatusClass: "on",
+	}
+	if generated, err := time.Parse(time.RFC3339, r.GeneratedAt); err == nil {
+		s.Age = formatDuration(now.Sub(generated)) + " ago"
+		s.Generated = generated.Local().Format("2006-01-02 15:04:05 MST")
+	} else {
+		s.Generated = r.GeneratedAt
+	}
+	if r.Git != nil {
+		s.ShortCommit = shortDigest(r.Git.Commit, 8)
+		if r.Git.Dirty {
+			s.Status = "Captured with local changes"
+			s.StatusClass = "warn"
+		}
+	}
+	if r.Quality.ParseErrors > 0 {
+		s.Status = "Analysis needs attention"
+		s.StatusClass = "off"
+	}
+	return s
+}
+
+func shortDigest(value string, n int) string {
+	value = strings.TrimPrefix(value, "sha256:")
+	if len(value) > n {
+		return value[:n]
+	}
+	return value
 }
 
 // currentReceipt returns the receipt to display for the current snapshot, or nil
