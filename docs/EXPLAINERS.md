@@ -28,7 +28,7 @@ All of which buys a finding you can trust. It does not buy a verdict — and the
 between those two is what the rest of this document is about.
 
 Across the 81 public repositories swept in [BENCHMARKS.md](BENCHMARKS.md), enola's
-explainers produced **9,131 findings**. Every one of them is derived rather than
+fifteen explainers produced **9,131 findings**. Every one of them is derived rather than
 guessed, and that number is still the problem rather than the achievement. Nobody is
 going to read 9,131 findings. Nobody is going to fix them. A report that hands you all
 of them has told you something true and useless in the same breath, and the honest
