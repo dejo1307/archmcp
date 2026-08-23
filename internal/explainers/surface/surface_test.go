@@ -316,3 +316,32 @@ func TestExplain_ProductionModuleNamedLikeATestKept(t *testing.T) {
 		t.Errorf("a production module named 'contest' must not be excluded, got %d insights", len(insights))
 	}
 }
+
+// A markdown document is not a module with a public API. Its headings are
+// exported by construction — there is no private one — so the ratio measures the
+// format rather than the code, and the estate's most confident nonsense came out of
+// reading one: a changelog "exports 1,405 of 1,405 symbols (100%)".
+func TestSurface_MarkdownDocumentsAreNotAPublicSurface(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(facts.Fact{Kind: facts.KindModule, Name: "CHANGELOG", File: "CHANGELOG.md", Repo: "app"})
+	for i := range 40 {
+		store.Add(facts.Fact{
+			Kind: facts.KindSymbol,
+			Name: fmt.Sprintf("CHANGELOG#release-%d", i),
+			File: "CHANGELOG.md",
+			Repo: "app",
+			Props: map[string]any{
+				"language": "markdown", "symbol_kind": "section", "exported": true,
+			},
+		})
+	}
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range insights {
+		if strings.Contains(i.Title, "CHANGELOG") {
+			t.Errorf("reported a markdown document as a public surface: %q", i.Title)
+		}
+	}
+}

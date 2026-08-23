@@ -2261,7 +2261,20 @@ import (
 // creates. Three passes, three hashes, on the one corpus row whose docs describe
 // enola — the property the whole reproducibility claim rests on, broken by reading
 // the disk instead of the file list the walker had already filtered.
-const cacheVersion = "v250"
+// v251: a markdown document is not a public surface. Sections became exported
+// symbols when mdintent started reading every page, and exported-surface read a
+// document as a module exporting its whole API — a changelog "exports 1,405 of
+// 1,405 symbols (100%)", 22 such findings across the corpus. Markdown joins Ruby as
+// a language whose symbols carry no visibility signal, so the ratio measures the
+// module rather than the format.
+// v252: the output directory is ignored at any depth, not only at the repository
+// root. A cluster config that snapshots subdirectories leaves an `.enola` in each,
+// and only the rooted glob covered them — so enola indexed its own llm_context.md
+// as a source document, and a repository's fact count depended on which of its
+// subdirectories somebody had snapshotted before. Harmless while a stray markdown
+// file was merely unread; a document with a section per heading once every page
+// became a source.
+const cacheVersion = "v252"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

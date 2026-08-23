@@ -33,11 +33,11 @@ would have been.
 
 ## The corpus
 
-91 repositories, 406,365 source files parsed, 7,424,970 facts carrying 24
-distinct language tags (Ansible, C, C++, C#, Dart, F#, Go, HCL, Java, Kotlin, PHP,
-Python, Razor, Ruby, Rust, Scala, SQL, Stimulus, Swift, TypeScript, VB.NET, XAML,
-gRPC, OpenAPI). Public open-source only: every row is a repository you can clone
-and re-run.
+91 repositories, 432,510 source files parsed, 7,756,077 facts carrying 26
+distinct language tags (Ansible, C, C++, C#, Dart, F#, Go, HCL, Java, Kotlin,
+Markdown, PHP, Python, Razor, Ruby, Rust, Scala, SQL, Stimulus, Swift, TypeScript,
+VB.NET, XAML, gRPC, OpenAPI, AsyncAPI). Public open-source only: every row is a
+repository you can clone and re-run.
 
 **91 of 91 reproduce** — identical `snapshot_id` and identical
 `facts.jsonl` hash across a cold run and two warm ones, i.e. across cache states.
@@ -301,21 +301,21 @@ than an unsupported language, because nothing in the output says so.
 
 ### Angular
 
-Ten repositories, 31,537 files parsed, 368,092 facts. All ten reproduce; the largest
-peaks at 311 MiB.
+Ten repositories, 33,174 files parsed, 406,391 facts. All ten reproduce; the largest
+peaks at 346 MiB.
 
 | Repository | Files parsed | Facts | Cold | Warm |
 |---|---|---|---|---|
-| gauzy | 8,687 | 114,219 | 7.9s | 5.1s |
-| angular | 6,385 | 69,604 | 5.4s | 3.7s |
-| spartacus | 7,156 | 68,011 | 5.0s | 4.0s |
-| peertube | 2,789 | 40,359 | 31.3s | 1.8s |
-| taiga-ui | 2,903 | 30,015 | 2.4s | 1.7s |
-| components | 1,992 | 27,468 | 2.3s | 1.6s |
-| ngrx | 890 | 8,632 | 1.5s | 1.1s |
-| dashboard | 368 | 5,604 | 0.6s | 0.4s |
-| ngx-admin | 243 | 2,488 | 0.4s | 0.3s |
-| ng-alain | 124 | 1,692 | 0.3s | 0.2s |
+| gauzy | 8,870 | 119,935 | 7.4s | 5.3s |
+| angular | 7,097 | 78,896 | 6.6s | 3.9s |
+| spartacus | 7,266 | 75,315 | 5.8s | 4.6s |
+| peertube | 2,825 | 42,819 | 33.0s | 1.8s |
+| taiga-ui | 2,980 | 35,419 | 2.2s | 1.9s |
+| components | 2,271 | 32,419 | 2.5s | 1.8s |
+| ngrx | 1,075 | 10,356 | 1.8s | 0.8s |
+| dashboard | 397 | 6,720 | 0.7s | 0.5s |
+| ngx-admin | 254 | 2,746 | 0.4s | 0.3s |
+| ng-alain | 139 | 1,766 | 0.3s | 0.2s |
 
 The corpus is split so that each mechanism has a control, the same way the .NET one is:
 
@@ -329,9 +329,9 @@ The corpus is split so that each mechanism has a control, the same way the .NET 
 | peertube, dashboard, gauzy | Angular against an **Express**, a **Go** and a **NestJS** backend |
 | ngrx | a DI/state library with no application around it |
 
-**peertube's 31.3s cold against a 1.8s warm** is the row to watch, and it is not the
+**peertube's 33.0s cold against a 1.8s warm** is the row to watch, and it is not the
 Angular work: the same repository took 29.6s cold before any of it, and the cost is
-its OpenAPI specification plus a 2,789-file TypeScript tree.
+its OpenAPI specification plus a 2,825-file TypeScript tree.
 
 **Two rows correctly report almost nothing.** spartacus produces no routes at all —
 its only `RouterModule.forRoot` calls live in `.spec.ts` files, and its routing is
@@ -348,9 +348,19 @@ three. Running cold then warm is the point: it tests that a cached run and a
 from-scratch run agree, not merely that the same code path repeats itself.
 
 > **91 of 91 repositories in this sweep produced a byte-identical `snapshot_id` and a
-> byte-identical `facts.jsonl` across all three runs — 273 runs, 7,424,970 facts,
+> byte-identical `facts.jsonl` across all three runs — 273 runs, 7,756,077 facts,
 > zero drift.** `insights.json` is byte-stable on all 91 as well. This is one sweep:
 > the Dart/Flutter rows previously measured separately are folded in.
+
+Two defects had to be fixed for that sentence to be true again, and both had the same
+shape: **a snapshot must not depend on whether a previous snapshot exists.** A
+markdown link was resolved by stat-ing the filesystem, so this repository's own docs
+— which cite paths under its output directory — linked to nothing on a cold run and
+to something on the next. And the output directory was ignored only at the repository
+root, so a cluster config that snapshots subdirectories left an `.enola` in each and
+enola indexed its own `llm_context.md` as a source document. Ten repositories in this
+corpus carried such facts, `linux` and `wordpress` among them. Links now resolve
+against the walked file set, and the output directory is ignored at any depth.
 
 The 0.4.0 validation ran the whole sweep **twice**, forty minutes apart, and compared
 the two: all 81 `facts.jsonl` were byte-identical between sweeps as well — 486 runs in
@@ -624,11 +634,11 @@ so the demonstration proves its own limit in the same run.
 | Largest Go | Grafana — 10,315 files, 171,445 facts, 10.9s / 5.5s |
 | Throughput | 4,100–36,100 facts/sec depending on language |
 | Parse errors, all 91 repositories | **0** |
-| Memory | peak heap per run is recorded by the sweep (`--memstats`) alongside time and hashes. The Linux kernel is the high-water mark at **5,473 MiB**; only five others exceed 1 GiB (GitLab 1,773, dotnet/runtime 1,382, roslyn 1,337, dart-sdk 1,286, rust-lang/rust 1,226). The largest Angular repository peaks at 311 MiB. No repository required tuning on this machine |
+| Memory | peak heap per run is recorded by the sweep (`--memstats`) alongside time and hashes. The Linux kernel is the high-water mark at **6,699 MiB**; only five others exceed 1 GiB (GitLab 2,543, roslyn 1,680, dotnet/runtime 1,505, dart-sdk 1,432, rust-lang/rust 1,395). The largest Angular repository peaks at 346 MiB. No repository required tuning on this machine |
 
-Warm runs are 1.2×–17.5× faster than cold (over the 78 repositories whose cold run
+Warm runs are 1.2×–17.9× faster than cold (over the 79 repositories whose cold run
 exceeds 0.5s; below that the timing is noise), from the per-file content-hash cache
-in `snapshot.meta.json`. One row runs 0.84× — i.e. slower warm than cold — which is
+in `snapshot.meta.json`. One row runs 0.94× — i.e. slower warm than cold — which is
 what this machine's run-to-run spread looks like on a repository that indexes in
 under two seconds, and is quoted rather than trimmed. These numbers establish that the graph the other four
 sections rely on can actually be built on real code. enola isn't benchmarked on
@@ -636,7 +646,7 @@ speed as a competitive claim.
 
 ## 5. What the extractors see
 
-Across the corpus enola extracted **34,538 routes** (26,355 server, 8,183 client) and
+Across the corpus enola extracted **34,548 routes** (26,355 server, 8,193 client) and
 recognised **49 distinct frameworks** without configuration:
 
 ```
@@ -647,7 +657,7 @@ fastapi 357 · flask 297 · fetch 278 · dart 173 · go_router 156
 grpc 134 · axum 133 · vue 103 · auto_route 100 · utoipa 87
 graphql-ruby 81 · net/http 63 · nuxt 55 · blazor 48 · openapi-fetch 46
 guzzle 44 · navigator 43 · http-client 40 · nextjs 39 · httpclient 36
-pekko-http 29 · faraday 23 · http4s 21 · net-http 14 · sveltekit 13
+pekko-http 29 · net-http 24 · faraday 23 · http4s 21 · sveltekit 13
 express 11 · client-seam 10 · file-get-contents 9 · hono 7 · gorilla/mux 5
 retrofit 4 · django 4 · urlsession 2 · razorpages 2
 ```
@@ -674,9 +684,9 @@ root `config/routes.rb` alone, so every engine and plugin route file went unread
 Grape had no extractor at all, leaving GitLab's entire v4 REST API invisible behind a
 single `mount ::API::API` (`grape 1,948`).
 
-Fact kinds: 5,398,870 symbols · 1,701,794 dependencies · 105,759 file refs ·
-94,039 test refs · 78,385 modules · 34,538 routes · 6,569 associations ·
-4,923 storage · 87 extraction · 6 intent. **`association` is new in 0.4.0** — a
+Fact kinds: 5,655,046 symbols · 1,776,581 dependencies · 105,759 file refs ·
+94,075 test refs · 78,389 modules · 34,548 routes · 6,569 associations ·
+4,923 storage · 181 extraction · 6 intent. **`association` is new in 0.4.0** — a
 model's declared `has_many`/`belongs_to` relations, which is what lets `endpoint`
 walk from a URL to the tables behind it. Service nodes
 are absent here by construction: the sweep indexes one repository at a time, and a
