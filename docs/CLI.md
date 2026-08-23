@@ -278,8 +278,25 @@ The argument is a **repository** when it is a directory and a **config file** wh
 - **Architecture** - detected pattern with confidence, cyclic dependencies, layer violations, cross-repo edges
 - **Impact analysis (hotspots)** - top modules ranked by fan-in + fan-out coupling, with criticality tier and blast radius
 - **Code health** - per-explainer findings with their top offenders: god classes (high fan-in symbols), call-graph hotspots, deep dependency chains, large public surfaces, and complexity outliers
+- **Vendored candidates** - directories that look like in-tree copies of another project, so you can decide whether to exclude them. Nothing is excluded on your behalf; the section is absent when there is nothing to report
 
 Every finding carries a confidence score, and it means something exact: `1.0` is a structural fact — in practice a dependency cycle, the one thing enola computes rather than infers — while anything below is a flagged heuristic for you to review (a god class is a statistical fan-in outlier, not a rule, so it tops out below `1.0` however extreme it gets). The analyses are computed by graph algorithms - Tarjan's SCC, which finds groups of modules that can all reach each other, for cycles; longest-path for the deepest import chain; and mean+2σ outlier tests, which flag what sits two standard deviations above your own repository's average, for the rest - so the same commit yields the same report. The vocabulary here is defined in **[docs/GLOSSARY.md](GLOSSARY.md)**.
+
+**Vendored candidates.** Airflow vendors nothing, so its report has no such section. Here is one that does — [gmsh](https://gitlab.onelab.info/gmsh/gmsh), a mesh generator that keeps its dependencies in `contrib/`:
+
+```
+Vendored candidates (nothing excluded)
+  6 directories carrying their own licence under a dependency-named parent (564 files)
+    contrib/Netgen                               305 files, cpp, LICENSE, no inbound refs
+    contrib/voro++                               78 files, cpp, LICENSE, 1 inbound ref
+    contrib/metis                                74 files, c, LICENSE.txt, 1 inbound ref
+    contrib/hxt                                  68 files, c/cpp, LICENSE.txt, 44 inbound refs
+    contrib/ANN                                  28 files, c/cpp, License.txt, 9 inbound refs
+    … and 1 more                                 see .enola/insights.json
+    Add any you agree are vendored to `ignore:` in your enola config.
+```
+
+Each line is a directory carrying its own licence file under a parent conventionally used for dependencies. That is a hint and not a verdict — the same names are used for first-party code, and gmsh's own `contrib/mobile/` and `contrib/MeshOptimizer/` are correctly absent from the list. **Nothing here has been excluded from the snapshot**: every one of those 564 files is in the graph. The inbound reference count is the part worth reading before you act — `contrib/hxt` has 44 references from gmsh's own code and `contrib/Netgen` has none, which are different decisions. To exclude any of them from future snapshots, add its glob to `ignore:` in your config; the full list, with the globs, is in `.enola/insights.json` and via `query_insights(explainer="vendored-candidates")`.
 
 Here's the actual report for [Apache Airflow](https://github.com/apache/airflow) - a large polyglot codebase (Python, TypeScript, Java and gRPC in one tree) analyzed in a single pass: **68,161 facts, 175,000+ resolved edges, in under 8 seconds** on a laptop (extraction parses files in parallel across cores). Nothing here was written by a model.
 
@@ -540,7 +557,7 @@ The baseline is a pinned artifact rather than "whatever state the tool last held
 
 **A stale baseline warns; it never blocks.** Past three days it tells you exactly how stale and what that means (the delta now also contains whatever the repo itself changed in between) - then grades anyway, because a long-lived baseline is a legitimate way to measure a multi-day refactor and only you know which you meant.
 
-**Nothing fails by default.** A bare `enola check` runs all seventeen explainers, reports every finding the change introduced, and exits `0` - saying in its own output that no policy was in effect, because a gate that enforces nothing must never be mistaken for a gate that found nothing. What breaks the build is what you name:
+**Nothing fails by default.** A bare `enola check` runs all eighteen explainers, reports every finding the change introduced, and exits `0` - saying in its own output that no policy was in effect, because a gate that enforces nothing must never be mistaken for a gate that found nothing. What breaks the build is what you name:
 
 ```bash
 enola check --fail-on=layers                               # fail on a declared layer order

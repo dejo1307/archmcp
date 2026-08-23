@@ -133,6 +133,23 @@ func (r *Report) Render() string {
 		b.WriteString("\n")
 	}
 
+	// Vendored candidates — a scope note, deliberately after Code health and
+	// deliberately worded as a question rather than a defect. Nothing here was
+	// excluded from the snapshot, and the reader is the one who decides.
+	if v := r.Vendored; v != nil && v.Count > 0 {
+		b.WriteString("Vendored candidates (nothing excluded)\n")
+		fmt.Fprintf(&b, "  %d director%s carrying their own licence under a dependency-named parent (%d files)\n",
+			v.Count, vendoredPlural(v.Count), v.Files)
+		for _, it := range v.Top {
+			fmt.Fprintf(&b, "    %-44s %s\n", truncate(it.Name, 44), it.Detail)
+		}
+		if v.Omitted > 0 {
+			fmt.Fprintf(&b, "    %-44s %s\n", fmt.Sprintf("… and %d more", v.Omitted), "see .enola/insights.json")
+		}
+		b.WriteString("    Add any you agree are vendored to `ignore:` in your enola config.\n")
+		b.WriteString("\n")
+	}
+
 	// Enterprise / extra sections
 	for _, s := range r.ExtraSections {
 		fmt.Fprintf(&b, "%s\n", s.Title)
@@ -163,4 +180,12 @@ func truncate(s string, max int) string {
 		return s[:max]
 	}
 	return s[:max-1] + "…"
+}
+
+// vendoredPlural gives the English plural ending of "directory" for n.
+func vendoredPlural(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
 }

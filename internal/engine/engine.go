@@ -618,7 +618,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 	// 4. Run explainers
 	tStage = time.Now()
-	allInsights, usedExplainers, err := e.runExplainers(ctx)
+	allInsights, usedExplainers, err := e.runExplainers(ctx, allNames)
 	if err != nil {
 		return nil, fmt.Errorf("explanation: %w", err)
 	}
@@ -1234,7 +1234,7 @@ func (e *Engine) runAnnotators(ctx context.Context) {
 }
 
 // runExplainers runs all enabled explainers.
-func (e *Engine) runExplainers(ctx context.Context) ([]facts.Insight, []string, error) {
+func (e *Engine) runExplainers(ctx context.Context, allNames []string) ([]facts.Insight, []string, error) {
 	var allInsights []facts.Insight
 	var usedNames []string
 
@@ -1246,7 +1246,15 @@ func (e *Engine) runExplainers(ctx context.Context) ([]facts.Insight, []string, 
 		}
 
 		log.Printf("[engine] running explainer: %s", exp.Name())
-		insights, err := exp.Explain(ctx, e.store)
+		// An explainer whose evidence includes files no extractor parses gets the
+		// walked names too; see plugin.WalkAware.
+		var insights []facts.Insight
+		var err error
+		if wa, ok := exp.(plugin.WalkAware); ok {
+			insights, err = wa.ExplainFiles(ctx, e.store, allNames)
+		} else {
+			insights, err = exp.Explain(ctx, e.store)
+		}
 		if err != nil {
 			log.Printf("[engine] explainer %s error: %v", exp.Name(), err)
 			continue

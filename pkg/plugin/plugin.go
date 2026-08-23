@@ -170,6 +170,28 @@ type Explainer interface {
 	Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error)
 }
 
+// WalkAware is an optional interface an Explainer may implement to receive the
+// names of every file the walk visited, alongside the fact store.
+//
+// It exists for findings whose evidence is a file that no extractor parses. A
+// LICENSE has no extension and belongs to no language, so it appears in no fact —
+// yet it is the thing that tells a vendored dependency apart from a directory
+// that merely shares its name. Only the walker knows it is there.
+//
+// The names are passed rather than a repository path deliberately: an explainer
+// that reads the disk stops being a pure function of the snapshot, and two runs
+// over the same facts could then disagree. A name list keeps explain-time I/O at
+// zero and the finding reproducible, which is what the determinism tests assert.
+//
+// Names are repo-relative and forward-slash, collected pre-ignore and post-prune —
+// the same set detection answers from, so a marker the ignore globs drop is still
+// visible and a pruned dependency tree is still invisible.
+type WalkAware interface {
+	// ExplainFiles analyses the fact store with the walked file names available.
+	// An Explainer implementing it has ExplainFiles called INSTEAD of Explain.
+	ExplainFiles(ctx context.Context, store *facts.Store, files []string) ([]facts.Insight, error)
+}
+
 // Renderer produces output artifacts from a snapshot.
 type Renderer interface {
 	// Name returns the renderer identifier (e.g. "llm_context").
