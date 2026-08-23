@@ -10,6 +10,7 @@ package explain
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -72,6 +73,19 @@ type FindingGroup struct {
 	Top   []RankedItem `json:"top,omitempty"`
 }
 
+// VendoredReport summarises the vendored-candidates finding for the statistics
+// report: how many directories look like vendored dependencies, how much code
+// they hold, and the largest of them.
+type VendoredReport struct {
+	Count int          `json:"count"`
+	Files int          `json:"files"`
+	Top   []RankedItem `json:"top,omitempty"`
+	// Omitted is how many candidates Top does not show. Reported explicitly rather
+	// than left to the reader to infer: a truncated list that does not say it is
+	// truncated is the same failure this whole finding exists to avoid.
+	Omitted int `json:"omitted,omitempty"`
+}
+
 // Report is the full statistical picture of a snapshot. Fields are plain types
 // only, so consumers in other modules (enola-enterprise) can read them without
 // importing enola's internal packages.
@@ -115,6 +129,12 @@ type Report struct {
 	// explainers (god-class, hotspots, dependency-depth, exported-surface,
 	// complexity-outliers), each with a total count and its top offenders.
 	CodeHealth []FindingGroup `json:"code_health,omitempty"`
+
+	// Vendored holds the vendored-candidates explainer's report: directories that
+	// look like in-tree copies of another project. It is a scope note rather than a
+	// defect, which is why it is not folded into CodeHealth — nothing here is wrong
+	// with the code, and nothing has been excluded from the snapshot.
+	Vendored *VendoredReport `json:"vendored_candidates,omitempty"`
 
 	// ExtraSections are appended (e.g. by enterprise) and rendered after the
 	// base report.
@@ -264,6 +284,31 @@ func Compute(eng *bootstrap.Engine) *Report {
 			}
 		}
 
+		// Matched on Source rather than on a title prefix like the cases above. The
+		// title formats are a contract those explainers keep deliberately; this one
+		// carries its candidates as EVIDENCE, so there is nothing to parse out of a
+		// string and no reason to invent a format to parse.
+		for _, in := range snap.Insights {
+			if in.Source != "vendored-candidates" {
+				continue
+			}
+			v := &VendoredReport{Count: len(in.Evidence)}
+			for _, ev := range in.Evidence {
+				v.Files += leadingInt(ev.Detail)
+				if len(v.Top) < topPerGroup {
+					v.Top = append(v.Top, RankedItem{
+						Name:   strings.TrimSuffix(path.Dir(ev.File), "/"),
+						Detail: ev.Detail,
+					})
+				}
+			}
+			v.Omitted = v.Count - len(v.Top)
+			if v.Count > 0 {
+				r.Vendored = v
+			}
+			break
+		}
+
 		for _, g := range []*FindingGroup{godClass, hotspots, deepChains, surfaces, complexFns} {
 			if g.Count > 0 {
 				r.CodeHealth = append(r.CodeHealth, *g)
@@ -309,6 +354,16 @@ const topPerGroup = 5
 
 // addFinding increments a group's count and records the offender as a top item
 // until the per-group display cap is reached.
+// leadingInt reads the integer a detail string starts with ("305 indexed file(s), …"),
+// or 0. Used only to total the candidate file counts.
+func leadingInt(s string) int {
+	n := 0
+	for i := 0; i < len(s) && s[i] >= '0' && s[i] <= '9'; i++ {
+		n = n*10 + int(s[i]-'0')
+	}
+	return n
+}
+
 func addFinding(g *FindingGroup, name, detail string) {
 	g.Count++
 	if len(g.Top) < topPerGroup {

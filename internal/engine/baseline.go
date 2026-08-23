@@ -198,21 +198,37 @@ func LoadSnapshotDir(dir string) (*facts.Snapshot, error) {
 // comparison was never going to work.
 //
 // Extractor detection is replicated from runExtractors deliberately rather than
-// approximated: the recorded set is "enabled AND detected", and Detect is a cheap
-// file-presence probe. Counting fields (facts, files, timings) are left zero — this
-// is not a snapshot and must not be mistaken for one; only the fields
-// diff.CompareMeta reads are populated.
+// approximated: the recorded set is "enabled AND detected". It walks the repository
+// to do it, which is why the walk is here rather than a bounded probe per extractor:
+// detection now answers from the walked names (plugin.FileListDetector), and this
+// list is compared against the recorded snapshot's by diff.CompareMeta. Answering
+// the question a second way would make the two disagree on exactly the repositories
+// the file-list detectors were added for — and WarnExtractorSet is fatal to
+// check.BlockingKinds, so the disagreement would report "not comparable" on every
+// run, freeze no baseline, and never resolve. One walk is also cheaper than the
+// per-extractor bounded walks it replaces: 1.44s of them on dotnet/runtime.
+//
+// A walk error is not fatal here. This function answers "is a comparison possible",
+// and the honest answer when the tree cannot be read is the pre-walk one — every
+// extractor falls back to its own Detect, exactly as before.
+//
+// Counting fields (facts, files, timings) are left zero — this is not a snapshot and
+// must not be mistaken for one; only the fields diff.CompareMeta reads are populated.
 func (e *Engine) CurrentMeta(repoPath string) *facts.SnapshotMeta {
 	absRepo, err := filepath.Abs(repoPath)
 	if err != nil {
 		return nil
+	}
+	_, _, allNames, _, walkErr := e.walkRepo(absRepo)
+	if walkErr != nil {
+		allNames = nil
 	}
 	var used []string
 	for _, ext := range e.extractors.All() {
 		if !e.cfg.IsExtractorEnabled(ext.Name()) {
 			continue
 		}
-		if detected, err := ext.Detect(absRepo); err == nil && detected {
+		if detected, err := e.detect(ext, absRepo, allNames); err == nil && detected {
 			used = append(used, ext.Name())
 		}
 	}

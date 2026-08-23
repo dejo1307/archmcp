@@ -471,7 +471,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 	// 1. Walk repository and collect files
 	tStage := time.Now()
-	files, testFiles, skips, err := e.walkRepo(absRepo)
+	files, testFiles, allNames, skips, err := e.walkRepo(absRepo)
 	if err != nil {
 		return nil, fmt.Errorf("walking repo: %w", err)
 	}
@@ -496,7 +496,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		defer cache.discard()
 	}
 	preCount := e.store.Count()
-	usedExtractors, shadowedExtractors, parseErrs, err := e.runExtractors(ctx, absRepo, files, currentHashes, cache)
+	usedExtractors, shadowedExtractors, parseErrs, err := e.runExtractors(ctx, absRepo, files, allNames, currentHashes, cache)
 	if err != nil {
 		return nil, fmt.Errorf("extraction: %w", err)
 	}
@@ -512,7 +512,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	// Reference-only extraction over test/spec files. Runs every snapshot (not
 	// cached with the main extractors) and adds only KindTestRef facts, so a
 	// production symbol exercised solely by a test is not mis-reported as dead.
-	e.runTestRefExtractors(ctx, absRepo, testFiles, files)
+	e.runTestRefExtractors(ctx, absRepo, testFiles, files, allNames)
 
 	// Compile this repo's resolved intent declaration into intent facts, inside
 	// the extraction window so SetRepoRange/TagRange treat declared facts
@@ -618,7 +618,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 
 	// 4. Run explainers
 	tStage = time.Now()
-	allInsights, usedExplainers, err := e.runExplainers(ctx)
+	allInsights, usedExplainers, err := e.runExplainers(ctx, allNames)
 	if err != nil {
 		return nil, fmt.Errorf("explanation: %w", err)
 	}
@@ -927,9 +927,18 @@ const skippedSampleCap = 20
 // walkRepo collects all files in the repo, applying ignore patterns. It returns
 // the indexable source files, separately the test/spec files matched by
 // TestGlobs (excluded from normal indexing but collected for reference-only
-// extraction — see runTestRefExtractors), and a tally of what the ignore globs
-// dropped — ignored files, and pruned directories — for the snapshot receipt.
-func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips walkSkips, err error) {
+// extraction — see runTestRefExtractors), the names every visited file had before
+// the ignore check (allNames, for plugin.FileListDetector — see detect), and a
+// tally of what the ignore globs dropped — ignored files, and pruned directories —
+// for the snapshot receipt.
+//
+// allNames is collected POST-PRUNE and PRE-IGNORE, and detection depends on both
+// halves. Post-prune: a pruned directory is vendored or generated code the walker
+// never descends into, and detection must not fire on it — a repository does not
+// become a C++ project by carrying node_modules. Pre-ignore: an ignored FILE may be
+// the only marker a language has, and the bundled config ignores **/*.yaml, which
+// is how a Dart repository is spelled.
+func (e *Engine) walkRepo(repoPath string) (files, testFiles, allNames []string, skips walkSkips, err error) {
 	// A symlinked repo root walks as a single non-directory entry (WalkDir
 	// Lstats the root), silently yielding zero files. Resolve the ROOT only —
 	// symlinks inside the tree keep their non-followed semantics — so a config
@@ -956,6 +965,13 @@ func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips wal
 		// of them; it is a fact that matches nothing. See ARCHITECTURE.md, "Fact
 		// paths are forward-slash on every host".
 		relPath := filepath.ToSlash(rawRel)
+
+		// Every visited FILE, named before the ignore check decides anything. This is
+		// the set plugin.FileListDetector answers from; see walkRepo's own comment for
+		// why it is taken here and not two lines lower.
+		if !d.IsDir() {
+			allNames = append(allNames, relPath)
+		}
 
 		// Skip ignored paths
 		if pattern, ok := e.ignoreMatch(relPath); ok {
@@ -985,7 +1001,24 @@ func (e *Engine) walkRepo(repoPath string) (files, testFiles []string, skips wal
 		}
 		return nil
 	})
-	return files, testFiles, skips, err
+	return files, testFiles, allNames, skips, err
+}
+
+// detect answers whether an extractor applies to this repository, preferring the
+// walked name set over a second walk of the tree.
+//
+// allNames is nil at the call sites that have no walk of their own to offer; those
+// fall back to Detect, which is the pre-FileListDetector behaviour. Every call site
+// inside a snapshot has one, and so does CurrentMeta — deliberately, because the
+// two must agree. CurrentMeta's extractor list is compared against the recorded
+// snapshot's by diff.CompareMeta, and a disagreement raises WarnExtractorSet, which
+// check.BlockingKinds treats as fatal: a repository detected one way here and the
+// other way there would report "not comparable" on every run, forever.
+func (e *Engine) detect(ext extractors.Extractor, repoPath string, allNames []string) (bool, error) {
+	if fd, ok := ext.(plugin.FileListDetector); ok && allNames != nil {
+		return fd.DetectFiles(repoPath, allNames)
+	}
+	return ext.Detect(repoPath)
 }
 
 // matchesTestGlob reports whether a repo-relative path matches any TestGlob.
@@ -1025,7 +1058,7 @@ func (e *Engine) ignoreMatch(relPath string) (string, bool) {
 //
 // It also reports the SHADOWED extractors: those registered and applicable to this
 // repository, but excluded by an explicit `extractors:` list. See reportShadowed.
-func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []string, hashes map[string]string, cache *extractorCache) ([]string, []string, []facts.ParseError, error) {
+func (e *Engine) runExtractors(ctx context.Context, repoPath string, files, allNames []string, hashes map[string]string, cache *extractorCache) ([]string, []string, []facts.ParseError, error) {
 	var usedNames []string
 	var shadowed []string
 	var parseErrs []facts.ParseError
@@ -1043,14 +1076,14 @@ func (e *Engine) runExtractors(ctx context.Context, repoPath string, files []str
 			// Detect is a cheap file-presence probe, and only disabled extractors
 			// reach here, so this costs nothing on a config that enables everything.
 			if e.cfg.ExtractorsExplicit {
-				if detected, err := ext.Detect(repoPath); err == nil && detected {
+				if detected, err := e.detect(ext, repoPath, allNames); err == nil && detected {
 					shadowed = append(shadowed, ext.Name())
 				}
 			}
 			continue
 		}
 
-		detected, err := ext.Detect(repoPath)
+		detected, err := e.detect(ext, repoPath, allNames)
 		if err != nil {
 			log.Printf("[engine] extractor %s detect error: %v", ext.Name(), err)
 			parseErrs = append(parseErrs, facts.ParseError{Extractor: ext.Name(), Msg: "detect: " + err.Error()})
@@ -1135,7 +1168,7 @@ func (e *Engine) reportShadowed(repoPath string, shadowed []string) {
 // extractor whose reference resolution depends on which production modules exist
 // (Python — see plugin.TestRefExtractor) does not have to re-walk the repo and
 // re-implement the ignore globs to find out.
-func (e *Engine) runTestRefExtractors(ctx context.Context, repoPath string, testFiles, prodFiles []string) {
+func (e *Engine) runTestRefExtractors(ctx context.Context, repoPath string, testFiles, prodFiles, allNames []string) {
 	if len(testFiles) == 0 {
 		return
 	}
@@ -1147,7 +1180,7 @@ func (e *Engine) runTestRefExtractors(ctx context.Context, repoPath string, test
 		if !ok {
 			continue
 		}
-		if detected, err := ext.Detect(repoPath); err != nil || !detected {
+		if detected, err := e.detect(ext, repoPath, allNames); err != nil || !detected {
 			continue
 		}
 		owned := testFiles
@@ -1201,7 +1234,7 @@ func (e *Engine) runAnnotators(ctx context.Context) {
 }
 
 // runExplainers runs all enabled explainers.
-func (e *Engine) runExplainers(ctx context.Context) ([]facts.Insight, []string, error) {
+func (e *Engine) runExplainers(ctx context.Context, allNames []string) ([]facts.Insight, []string, error) {
 	var allInsights []facts.Insight
 	var usedNames []string
 
@@ -1213,7 +1246,15 @@ func (e *Engine) runExplainers(ctx context.Context) ([]facts.Insight, []string, 
 		}
 
 		log.Printf("[engine] running explainer: %s", exp.Name())
-		insights, err := exp.Explain(ctx, e.store)
+		// An explainer whose evidence includes files no extractor parses gets the
+		// walked names too; see plugin.WalkAware.
+		var insights []facts.Insight
+		var err error
+		if wa, ok := exp.(plugin.WalkAware); ok {
+			insights, err = wa.ExplainFiles(ctx, e.store, allNames)
+		} else {
+			insights, err = exp.Explain(ctx, e.store)
+		}
 		if err != nil {
 			log.Printf("[engine] explainer %s error: %v", exp.Name(), err)
 			continue

@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -37,38 +38,23 @@ func (e *Extractor) Name() string { return "ansible" }
 // directory levels — infrastructure repos commonly nest their Ansible under
 // <area>/ansible/.
 func (e *Extractor) Detect(repoPath string) (bool, error) {
-	found := false
-	root := filepath.Clean(repoPath) //factpath:host
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || found {
-			return filepath.SkipAll
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// DetectFiles implements plugin.FileListDetector: an ansible.cfg or a roles/
+// directory at any depth, where the old walk stopped at three. Both signals now
+// read off the names — a roles/ segment anywhere in a path is the directory the
+// walk used to have to reach, and ansible.cfg is a name rather than a stat.
+func (e *Extractor) DetectFiles(_ string, files []string) (bool, error) {
+	for _, rel := range files {
+		if detectnames.HasSegment(rel, "roles") {
+			return true, nil
 		}
-		if !d.IsDir() {
-			return nil
+		if detectnames.Base(rel) == "ansible.cfg" {
+			return true, nil
 		}
-		name := d.Name()
-		if path != root && (strings.HasPrefix(name, ".") || ansibleSkipDirs[name]) {
-			return filepath.SkipDir
-		}
-		rel, _ := filepath.Rel(root, path)
-		depth := 0
-		if rel != "." {
-			depth = strings.Count(filepath.ToSlash(rel), "/") + 1
-		}
-		if name == "roles" && path != root {
-			found = true
-			return filepath.SkipAll
-		}
-		if _, statErr := os.Stat(filepath.Join(path, "ansible.cfg")); statErr == nil {
-			found = true
-			return filepath.SkipAll
-		}
-		if depth >= 3 {
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	return found, nil
+	}
+	return false, nil
 }
 
 type play struct {

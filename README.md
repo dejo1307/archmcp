@@ -249,7 +249,7 @@ The whole loop, unedited - the change is reported and nothing fails, the same ru
 
 ## What fails the build
 
-Two separate things decide that, and confusing them is the fastest way to be surprised by this tool: **what enola finds**, and **what your policy fails on**. enola runs all seventeen of its checks - it calls them **explainers** - on every single run. The policy picks which of their findings are allowed to set the exit code.
+Two separate things decide that, and confusing them is the fastest way to be surprised by this tool: **what enola finds**, and **what your policy fails on**. enola runs all eighteen of its checks - it calls them **explainers** - on every single run. The policy picks which of their findings are allowed to set the exit code.
 
 **Out of the box that policy is empty.** Every finding is reported, the run exits `0`, and the output says in as many words that nothing was enforced. Nothing breaks until you name what should break:
 
@@ -265,6 +265,7 @@ Two separate things decide that, and confusing them is the fastest way to be sur
 - outbound calls enola could not match to any route it loaded (`coverage`)
 - messaging call sites without an AsyncAPI contract, and contract operations without detected code (`messaging-coverage`)
 - which repositories in a cluster ended up depending on which (`crossrepo`)
+- directories that look like vendored third-party code, reported so you can decide whether to ignore them (`vendored-candidates` — informational, so it can never fail a build)
 
 **enola holds itself to this.** This repository declares its own layer order in [`enola-intent.yaml`](enola-intent.yaml) - six layers, entrypoint down to the fact model - and its CI runs `enola check --fail-on=layers` against it. Not `--fail-on=cycles`: enola is written in Go, where the compiler already refuses an import cycle between packages, so gating on one would enforce a rule the toolchain enforces first. The layer order is the part the compiler cannot see. Nothing but that file stops `internal/upgrade` importing `pkg/cli` today, and the build is green either way until something says otherwise.
 
@@ -272,7 +273,7 @@ Two separate things decide that, and confusing them is the fastest way to be sur
 
 So enola states what it measured and stops there. The exception it makes for itself is the one above: an unenforced run must say it enforced nothing, because a silent green is exactly what a broken gate looks like.
 
-**Any of the seventeen can fail the build.** `--fail-on` takes the names above as a comma-separated list, and `--min-confidence` sets the floor within them. Two more things can fail it that are not findings at all:
+**Any of the eighteen can fail the build.** `--fail-on` takes the names above as a comma-separated list, and `--min-confidence` sets the floor within them. Two more things can fail it that are not findings at all:
 
 - **scope spillover** - packages your change reached outside the area you declared with `--target`, gated with `--max-spillover=N`. A change can trip this with zero failing findings.
 - **a gate that could not run.** A missing baseline or a bad flag exits `2`; a baseline that isn't comparable to the current code exits `3` and enola declines to grade rather than blaming your change. Neither is a judgement about the code, and neither is suppressed by `--warn-only`.
@@ -454,7 +455,7 @@ It is silent for builds from source, never runs when `CI` is set, and turns off 
 - **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** - reproducibility, delta precision, cross-repo coverage and scale, measured on 81 public repositories.
 - **[docs/SNAPSHOTS.md](docs/SNAPSHOTS.md)** - why enola computes a graph on demand and keeps it as an addressable snapshot, rather than maintaining one continuously-updated graph, and where the opposite choice is the right one.
 - **[docs/GLOSSARY.md](docs/GLOSSARY.md)** - the words enola uses in its own output - finding, baseline, receipt, coverage gap, incidental shift - defined in one place.
-- **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** - what the seventeen explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 9,131 findings about a corpus into the one that is about your change.
+- **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** - what the eighteen explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 9,131 findings about a corpus into the one that is about your change.
 - **[docs/extraction/](docs/extraction/)** - per language, what specific code produces which facts, from committed fixtures, and what each extractor deliberately does not resolve.
 - **[docs/EXTENDING.md](docs/EXTENDING.md)** - teaching enola a connection it does not know: binders, cross-repo signals, and the `linking:` vocabulary that fixes a wrong edge from config rather than a patch.
 - **[docs/INTENT.md](docs/INTENT.md)** - declared intent: the `enola-intent.yaml` / cluster / `enola_intent:` frontmatter carriers, the full vocabulary (via, relations, origin channels), what compiles, how verdicts behave, and the working rules for keeping declarations truthful.
@@ -478,7 +479,7 @@ Everything ships here:
 
 - **Every language** - Go, TypeScript/JavaScript/Vue/Svelte/Ember/Angular, Python, Java, Kotlin, Scala, Dart/Flutter, Ruby, PHP, Swift, Rust, C/C++, .NET (C#/VB.NET/F#/Razor/XAML), Terraform/HCL, Ansible, gRPC/Protobuf, OpenAPI, AsyncAPI, GraphQL
 - **All 19 MCP tools**, plus the cross-repo linker
-- **All seventeen explainers** - `cycles`, `layers`, `crossrepo`, `coverage`, `unused-routes`, `messaging-coverage`, `god-class`, `hotspots`, `dependency-depth`, `exported-surface`, `complexity-outliers`, `intent`, `constraints`, `domain`, `query-loops`, `entry-points`, `dead-methods`
+- **All eighteen explainers** - `cycles`, `layers`, `crossrepo`, `coverage`, `unused-routes`, `messaging-coverage`, `god-class`, `hotspots`, `dependency-depth`, `exported-surface`, `complexity-outliers`, `intent`, `constraints`, `domain`, `query-loops`, `entry-points`, `dead-methods`
 - Baselines, `diff_snapshot`, snapshot receipts, the `--explain` report, and the localhost dashboard
 
 ## Acknowledgements

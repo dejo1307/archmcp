@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
@@ -51,16 +52,30 @@ func (e *CppExtractor) Name() string {
 // accepted. A bare .h alone is NOT a signal — that would false-positive on repos
 // that merely vendor a header.
 func (e *CppExtractor) Detect(repoPath string) (bool, error) {
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// DetectFiles implements plugin.FileListDetector: the same question answered over
+// the names the engine already walked, with no depth bound to fall off.
+//
+// The bound this replaces was three directory levels, and dotnet/runtime keeps
+// every one of its 3,270 C/C++ sources below it (src/coreclr/vm/... is four), so
+// the extractor never ran and 5,574 files it owns were absent from the graph. The
+// receipt said so all along — "claimed by cpp, which did not run this snapshot" —
+// which is how the miss was sized rather than guessed at.
+func (e *CppExtractor) DetectFiles(_ string, files []string) (bool, error) {
 	hasCSource := false
 	hasCppSource := false
 	hasBuildFile := false
 	hasHeader := false
 
-	walkShallow(repoPath, 3, func(path string, isDir bool) {
-		if isDir {
-			return
+	for _, rel := range files {
+		// Build output holds generated and copied sources. The old shallow walk could
+		// not reach most of it and so never had to say this; a full name set does.
+		if detectnames.HasAnySegment(rel, "build", "out", "cmake-build-debug", "cmake-build-release") {
+			continue
 		}
-		name := filepath.Base(path)
+		name := detectnames.Base(rel)
 		switch {
 		case isCFile(name):
 			hasCSource = true
@@ -72,9 +87,14 @@ func (e *CppExtractor) Detect(repoPath string) (bool, error) {
 			name == "meson.build" || strings.HasSuffix(name, ".vcxproj"):
 			hasBuildFile = true
 		}
-	})
+		if hasCSource || hasCppSource {
+			// An unambiguous source settles it; the build-file arm cannot change the
+			// answer once either is true.
+			return true, nil
+		}
+	}
 
-	return hasCSource || hasCppSource || (hasBuildFile && hasHeader), nil
+	return hasBuildFile && hasHeader, nil
 }
 
 // Extract parses C++ files with tree-sitter and emits architectural facts.
@@ -579,28 +599,4 @@ func (e *CppExtractor) OwnsFile(relFile string) bool {
 		return true
 	}
 	return strings.ToLower(filepath.Ext(relFile)) == ".h"
-}
-
-// walkShallow invokes fn for each entry up to maxDepth directory levels below
-// root (root entries are depth 1). It is best-effort and ignores read errors.
-func walkShallow(root string, maxDepth int, fn func(path string, isDir bool)) {
-	var walk func(dir string, depth int)
-	walk = func(dir string, depth int) {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if strings.HasPrefix(name, ".") {
-				continue
-			}
-			full := filepath.Join(dir, name)
-			fn(full, entry.IsDir())
-			if entry.IsDir() && depth < maxDepth {
-				walk(full, depth+1)
-			}
-		}
-	}
-	walk(root, 1)
 }

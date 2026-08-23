@@ -37,18 +37,3 @@ func (r *Registry) Get(name string) Extractor {
 func (r *Registry) All() []Extractor {
 	return r.extractors
 }
-
-// DetectAll returns extractors that support the given repository.
-func (r *Registry) DetectAll(repoPath string) ([]Extractor, error) {
-	var matched []Extractor
-	for _, e := range r.extractors {
-		ok, err := e.Detect(repoPath)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			matched = append(matched, e)
-		}
-	}
-	return matched, nil
-}

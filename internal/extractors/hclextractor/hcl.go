@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -49,30 +50,22 @@ func isHCLFile(path string) bool {
 
 // Detect probes for any .tf/.hcl file within three directory levels.
 func (e *Extractor) Detect(repoPath string) (bool, error) {
-	found := false
-	root := filepath.Clean(repoPath) //factpath:host
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || found {
-			return filepath.SkipAll
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// DetectFiles implements plugin.FileListDetector: a .tf/.hcl file at any depth,
+// replacing a three-level scan that missed modules/*/*/*/main.tf in any layered
+// Terraform layout.
+func (e *Extractor) DetectFiles(_ string, files []string) (bool, error) {
+	for _, rel := range files {
+		if detectnames.HasSegment(rel, ".terraform") {
+			continue
 		}
-		if d.IsDir() {
-			name := d.Name()
-			if path != root && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "testdata") {
-				return filepath.SkipDir
-			}
-			rel, _ := filepath.Rel(root, path)
-			if rel != "." && strings.Count(filepath.ToSlash(rel), "/") >= 3 {
-				return filepath.SkipDir
-			}
-			return nil
+		if isHCLFile(rel) {
+			return true, nil
 		}
-		if isHCLFile(path) {
-			found = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return found, nil
+	}
+	return false, nil
 }
 
 var (

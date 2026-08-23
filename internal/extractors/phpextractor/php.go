@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
@@ -50,42 +51,28 @@ func (e *PHPExtractor) Detect(repoPath string) (bool, error) {
 			return true, nil
 		}
 	}
-	return containsPHPFile(repoPath, 3), nil
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
 }
 
-// containsPHPFile reports whether a .php file exists within maxDepth directory
-// levels of root (0 = root only). Vendored and VCS directories are skipped.
-func containsPHPFile(root string, maxDepth int) bool {
-	var found bool
-	var walk func(dir string, depth int)
-	walk = func(dir string, depth int) {
-		if found || depth > maxDepth {
-			return
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
-		for _, ent := range entries {
-			if found {
-				return
-			}
-			name := ent.Name()
-			if ent.IsDir() {
-				if name == "vendor" || name == "node_modules" || strings.HasPrefix(name, ".") {
-					continue
-				}
-				walk(filepath.Join(dir, name), depth+1)
-				continue
-			}
-			if isPHPFile(name) {
-				found = true
-				return
-			}
+// DetectFiles implements plugin.FileListDetector. The root-marker fast paths above
+// stay stat-based (a root file is one syscall either way); what changes is the
+// fallback, which was a three-level scan and is now membership over every walked
+// name — so a Gemfile-less, composer-less PHP tree is found wherever it lives.
+func (e *PHPExtractor) DetectFiles(repoPath string, files []string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(repoPath, "composer.json")); err == nil {
+		return true, nil
+	}
+	for _, m := range wordpressMarkers {
+		if _, err := os.Stat(filepath.Join(repoPath, m)); err == nil {
+			return true, nil
 		}
 	}
-	walk(root, 0)
-	return found
+	for _, rel := range files {
+		if isPHPFile(detectnames.Base(rel)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // detectWordPress reports whether the repository is a WordPress codebase, which

@@ -2,13 +2,13 @@ package pythonextractor
 
 import (
 	"context"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
@@ -31,43 +31,37 @@ func (e *PythonExtractor) Name() string {
 // It checks root-level markers first, then walks up to 3 subdirectory levels
 // to support monorepos where Python code lives in a subdirectory (e.g. python/).
 func (e *PythonExtractor) Detect(repoPath string) (bool, error) {
-	// Root-level markers — fast path.
-	rootMarkers := []string{
-		"pyproject.toml", "setup.py", "requirements.txt", "Pipfile",
-		"pytest.ini", "mypy.ini", "tox.ini", "setup.cfg",
-	}
-	for _, name := range rootMarkers {
-		if _, err := os.Stat(filepath.Join(repoPath, name)); err == nil {
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// pyMarkers are the manifests that name a Python project wherever they appear.
+var pyMarkers = map[string]bool{
+	"pyproject.toml": true, "setup.py": true, "requirements.txt": true, "Pipfile": true,
+	"pytest.ini": true, "mypy.ini": true, "tox.ini": true, "setup.cfg": true,
+}
+
+// DetectFiles implements plugin.FileListDetector.
+//
+// Two bounds went away here, not one. The marker search was capped at three levels,
+// and the markers were the ONLY signal — so a manifest-less Python tree was
+// undetectable at any depth, which no amount of raising the cap would have fixed.
+// gmsh (52 .py, 43 of them within the old bound) and the dart-sdk (102) were both
+// invisible for that second reason rather than the first.
+//
+// .py is therefore accepted as a signal in its own right. The extension is
+// unambiguous — it names one language and no build system shares it — unlike the
+// Gradle file that forced the JVM extractors to insist on a declared plugin.
+func (e *PythonExtractor) DetectFiles(_ string, files []string) (bool, error) {
+	for _, rel := range files {
+		if detectnames.HasAnySegment(rel, "site-packages", "__pycache__", ".venv", "venv") {
+			continue
+		}
+		name := detectnames.Base(rel)
+		if pyMarkers[name] || strings.HasSuffix(name, ".py") {
 			return true, nil
 		}
 	}
-
-	// Subdirectory search (up to 3 levels deep) — handles monorepos.
-	subMarkers := map[string]bool{
-		"pyproject.toml":   true,
-		"setup.py":         true,
-		"requirements.txt": true,
-		"Pipfile":          true,
-	}
-	found := false
-	_ = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || found {
-			return nil
-		}
-		rel, _ := filepath.Rel(repoPath, path)
-		depth := strings.Count(filepath.ToSlash(rel), "/")
-		if d.IsDir() {
-			if depth >= 3 {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if subMarkers[filepath.Base(path)] {
-			found = true
-		}
-		return nil
-	})
-	return found, nil
+	return false, nil
 }
 
 // Extract parses Python files and emits architectural facts.

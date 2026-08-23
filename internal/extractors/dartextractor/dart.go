@@ -26,13 +26,13 @@ package dartextractor
 
 import (
 	"context"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
@@ -46,12 +46,6 @@ func New() *DartExtractor { return &DartExtractor{} }
 
 func (e *DartExtractor) Name() string { return "dart" }
 
-// maxDetectDepth bounds the subdirectory walk in Detect. Four levels covers every
-// layout in the benchmark corpus: a repo-root pubspec (immich's mobile/ is one level),
-// a melos workspace (flutter/packages is two), and a nested app (ente's
-// mobile/apps/photos is three).
-const maxDetectDepth = 4
-
 // Detect reports whether the repository contains Dart.
 //
 // pubspec.yaml is the definitive marker — it is what makes a directory a pub package —
@@ -60,31 +54,40 @@ const maxDetectDepth = 4
 // split there is no ambiguity to guard against here: nothing but Dart uses either
 // marker.
 func (e *DartExtractor) Detect(repoPath string) (bool, error) {
-	if _, err := os.Stat(filepath.Join(repoPath, "pubspec.yaml")); err == nil {
-		return true, nil
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// DetectFiles implements plugin.FileListDetector.
+//
+// This is the extractor for which the engine's name set has to be the PRE-ignore
+// one. A Dart repository is spelled by pubspec.yaml, and the bundled mcp-arch.yaml
+// ignores **/*.yaml wholesale — so under the indexed list alone, pubspec never
+// appears and a Flutter monorepo detects only by its .dart files. Both signals are
+// kept; see plugin.FileListDetector for why the walk hands over ignored names.
+func (e *DartExtractor) DetectFiles(_ string, files []string) (bool, error) {
+	for _, rel := range files {
+		if skipDetectPath(rel) {
+			continue
+		}
+		name := detectnames.Base(rel)
+		if name == "pubspec.yaml" || (strings.HasSuffix(name, ".dart") && !isGeneratedDart(rel)) {
+			return true, nil
+		}
 	}
-	found := false
-	_ = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || found {
-			return nil
+	return false, nil
+}
+
+// skipDetectPath applies skipDetectDir to every segment of a repo-relative name, so
+// the directories the old walk refused to descend into are refused identically when
+// the names arrive from the engine instead.
+func skipDetectPath(rel string) bool {
+	segs := strings.Split(rel, "/")
+	for _, seg := range segs[:len(segs)-1] {
+		if skipDetectDir(seg) {
+			return true
 		}
-		rel, _ := filepath.Rel(repoPath, path)
-		slashRel := filepath.ToSlash(rel)
-		if d.IsDir() {
-			if slashRel != "." && skipDetectDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			if strings.Count(slashRel, "/") >= maxDetectDepth {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Name() == "pubspec.yaml" || (strings.HasSuffix(d.Name(), ".dart") && !isGeneratedDart(slashRel)) {
-			found = true
-		}
-		return nil
-	})
-	return found, nil
+	}
+	return false
 }
 
 // skipDetectDir keeps Detect out of dependency and build trees. A vendored .pub-cache

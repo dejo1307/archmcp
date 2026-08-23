@@ -40,6 +40,39 @@ type Extractor interface {
 	Extract(ctx context.Context, repoPath string, files []string) ([]facts.Fact, error)
 }
 
+// FileListDetector is an optional interface an Extractor may implement to answer
+// detection from the file names the engine has ALREADY walked, instead of walking
+// the tree again itself.
+//
+// Every detector that re-walked had to bound its own walk to stay affordable, and
+// every one of those bounds was a cliff a real repository falls off: dotnet/runtime
+// carries 3,270 C/C++ sources with NOT ONE inside the three levels cppextractor
+// scanned, so the extractor never ran and the language was absent from the graph
+// with nothing but a log line to say so. Raising the bound moves the cliff rather
+// than removing it — flutterfire's Java sits at depth 10, past even the generous 8
+// the JVM extractors allowed. Membership over the walked set has no bound to beat.
+//
+// It is also strictly cheaper than what it replaces. A full detection pass over
+// dotnet/runtime cost 1.44s of bounded walking, and linux 2.46s, repeated for every
+// registered extractor and again for the test-ref gate; answering from a list the
+// engine already holds costs nothing.
+//
+// The names include files the ignore globs EXCLUDE, and exclude every file under a
+// directory the walk pruned. Both halves are load-bearing. A pruned tree is
+// vendored code that must never trigger detection, while an ignored FILE may be the
+// only marker a language has: the bundled mcp-arch.yaml ignores **/*.yaml, and a
+// Dart repository is spelled by pubspec.yaml. Detecting on a file that will not be
+// indexed costs at worst one extractor running to emit nothing.
+//
+// Implementations must be a pure function of the names (repoPath is passed for the
+// stat fast paths a root marker allows, not for a second walk). Extractors that do
+// not implement it keep answering through Detect, unchanged.
+type FileListDetector interface {
+	// DetectFiles reports whether this extractor supports the repository, given
+	// every file name the engine's walk visited (repo-relative, forward-slash).
+	DetectFiles(repoPath string, files []string) (bool, error)
+}
+
 // FileOwner is an optional interface an Extractor may implement to declare which
 // files it parses. The engine uses it to scope incremental caching: an
 // extractor's previously computed facts are reused only when the contents of the
@@ -135,6 +168,28 @@ type Explainer interface {
 	Name() string
 	// Explain analyzes the fact store and returns insights.
 	Explain(ctx context.Context, store *facts.Store) ([]facts.Insight, error)
+}
+
+// WalkAware is an optional interface an Explainer may implement to receive the
+// names of every file the walk visited, alongside the fact store.
+//
+// It exists for findings whose evidence is a file that no extractor parses. A
+// LICENSE has no extension and belongs to no language, so it appears in no fact —
+// yet it is the thing that tells a vendored dependency apart from a directory
+// that merely shares its name. Only the walker knows it is there.
+//
+// The names are passed rather than a repository path deliberately: an explainer
+// that reads the disk stops being a pure function of the snapshot, and two runs
+// over the same facts could then disagree. A name list keeps explain-time I/O at
+// zero and the finding reproducible, which is what the determinism tests assert.
+//
+// Names are repo-relative and forward-slash, collected pre-ignore and post-prune —
+// the same set detection answers from, so a marker the ignore globs drop is still
+// visible and a pruned dependency tree is still invisible.
+type WalkAware interface {
+	// ExplainFiles analyses the fact store with the walked file names available.
+	// An Explainer implementing it has ExplainFiles called INSTEAD of Explain.
+	ExplainFiles(ctx context.Context, store *facts.Store, files []string) ([]facts.Insight, error)
 }
 
 // Renderer produces output artifacts from a snapshot.

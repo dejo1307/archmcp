@@ -33,6 +33,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/queryloops"
 	"github.com/enola-labs/enola/internal/explainers/surface"
 	"github.com/enola-labs/enola/internal/explainers/unusedroutes"
+	"github.com/enola-labs/enola/internal/explainers/vendoredcandidates"
 	"github.com/enola-labs/enola/internal/extractors/ansibleextractor"
 	"github.com/enola-labs/enola/internal/extractors/asyncapiextractor"
 	"github.com/enola-labs/enola/internal/extractors/cppextractor"
@@ -499,6 +500,7 @@ func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	eng.RegisterExplainer(complexity.New())
 	eng.RegisterExplainer(intentcheck.New())
 	eng.RegisterExplainer(constraints.New())
+	eng.RegisterExplainer(vendoredcandidates.New())
 
 	// Register all OSS renderers
 	eng.RegisterRenderer(llmcontext.New(cfg.Output.MaxContextTokens))

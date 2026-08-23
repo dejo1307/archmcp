@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/extractors/jvmsrc"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
@@ -35,6 +36,14 @@ func (e *KotlinExtractor) Name() string {
 // conventional src/main/kotlin root is a sufficient fallback so a repo with an
 // unrecognized build setup is still extracted rather than silently skipped.
 func (e *KotlinExtractor) Detect(repoPath string) (bool, error) {
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// detectByBuild answers from the build definition at the repository root. A
+// Gradle or Maven file is shared with Java and Scala, so the plugin or coordinate
+// is what names the language; this half stays exactly as conservative as it was.
+func (e *KotlinExtractor) detectByBuild(repoPath string) (bool, error) {
+
 	for _, name := range []string{"build.gradle.kts", "build.gradle"} {
 		data, err := os.ReadFile(filepath.Join(repoPath, name))
 		if err != nil {
@@ -59,6 +68,29 @@ func (e *KotlinExtractor) Detect(repoPath string) (bool, error) {
 	// build file. Cheap stat, no directory walk.
 	if fi, err := os.Stat(filepath.Join(repoPath, "src", "main", "kotlin")); err == nil && fi.IsDir() {
 		return true, nil
+	}
+	return false, nil
+}
+
+// DetectFiles implements plugin.FileListDetector.
+//
+// Everything detectByBuild reads is anchored at the repository ROOT, which is why
+// an Android module inside a Flutter plugin never matched: flutterfire declares
+// Kotlin in packages/<pkg>/<pkg>/android/build.gradle, and 61 .kt files went
+// unindexed for want of a root that would never exist. .kt and .kts are
+// unambiguous — the caution that applies to build.gradle does not apply to the
+// source extension itself — so membership settles it.
+func (e *KotlinExtractor) DetectFiles(repoPath string, files []string) (bool, error) {
+	if ok, err := e.detectByBuild(repoPath); ok || err != nil {
+		return ok, err
+	}
+	for _, rel := range files {
+		if detectnames.HasAnySegment(rel, "build", "target") {
+			continue
+		}
+		if l := strings.ToLower(rel); strings.HasSuffix(l, ".kt") || strings.HasSuffix(l, ".kts") {
+			return true, nil
+		}
 	}
 	return false, nil
 }

@@ -37,7 +37,7 @@ func walkFixture(t *testing.T, ignore []string, files map[string]string) ([]stri
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	srcFiles, testFiles, skips, err := eng.walkRepo(root)
+	srcFiles, testFiles, _, skips, err := eng.walkRepo(root)
 	if err != nil {
 		t.Fatalf("walkRepo: %v", err)
 	}

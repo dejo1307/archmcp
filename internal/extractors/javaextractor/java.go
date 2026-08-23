@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/extractors/jvmsrc"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
@@ -36,7 +37,26 @@ func (e *JavaExtractor) Detect(repoPath string) (bool, error) {
 	if _, err := os.Stat(filepath.Join(repoPath, "pom.xml")); err == nil {
 		return true, nil
 	}
-	return containsJavaSource(repoPath, 8), nil
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// DetectFiles implements plugin.FileListDetector.
+//
+// The bound this replaces was eight levels, which reads as generous until a real
+// repository is measured against it: flutterfire's Java lives at
+// packages/<pkg>/<pkg>/android/src/main/java/io/flutter/plugins/... — depth 10 — so
+// all 66 of its Java files, and 509 of flutter-packages', were invisible. That is
+// the argument against raising a bound rather than deleting it.
+func (e *JavaExtractor) DetectFiles(_ string, files []string) (bool, error) {
+	for _, rel := range files {
+		if detectnames.HasAnySegment(rel, "build", "target") {
+			continue
+		}
+		if isJavaFile(detectnames.Base(rel)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Extract parses Java files and emits architectural facts.
@@ -335,36 +355,4 @@ func (e *JavaExtractor) OwnsFile(relFile string) bool { return isJavaFile(relFil
 func (e *JavaExtractor) AffectsKey(relFile string) bool {
 	l := strings.ToLower(relFile)
 	return strings.HasSuffix(l, ".kt") || strings.HasSuffix(l, ".scala") || strings.HasSuffix(l, ".sc")
-}
-
-// containsJavaSource reports whether any .java file exists under root within
-// maxDepth directory levels. It returns on the first match and skips hidden and
-// common build/dependency directories so it stays cheap on large repos.
-func containsJavaSource(root string, maxDepth int) bool {
-	var search func(dir string, depth int) bool
-	search = func(dir string, depth int) bool {
-		if depth > maxDepth {
-			return false
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return false
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if entry.IsDir() {
-				if strings.HasPrefix(name, ".") || name == "build" ||
-					name == "target" || name == "node_modules" {
-					continue
-				}
-				if search(filepath.Join(dir, name), depth+1) {
-					return true
-				}
-			} else if isJavaFile(name) {
-				return true
-			}
-		}
-		return false
-	}
-	return search(root, 0)
 }

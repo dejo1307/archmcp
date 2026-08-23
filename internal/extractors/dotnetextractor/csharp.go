@@ -12,13 +12,13 @@ package dotnetextractor
 
 import (
 	"context"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/detectnames"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/parallel"
@@ -39,12 +39,6 @@ func New() *CSharpExtractor {
 // name silently disables the extractor instead of erroring.
 func (e *CSharpExtractor) Name() string { return "dotnet" }
 
-// detectMaxDepth bounds Detect's walk. A .NET solution puts its project files
-// under src/<Project>/<Project>.csproj at most a few levels down; walking the
-// whole tree of a repository the size of dotnet/runtime (32k sources, 6k project
-// files) to answer a yes/no question is wasted work.
-const detectMaxDepth = 4
-
 // Detect returns true if the repository looks like a .NET project: an MSBuild
 // solution or project file of ANY .NET language, or any real C# source, within
 // detectMaxDepth levels.
@@ -61,35 +55,31 @@ const detectMaxDepth = 4
 // unread sources, indistinguishable from an empty repo. Now the project graph is
 // read whatever language the sources are in, so a claim always produces facts.
 func (e *CSharpExtractor) Detect(repoPath string) (bool, error) {
-	found := false
-	_ = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || found {
-			return nil
+	return e.DetectFiles(repoPath, detectnames.Walk(repoPath))
+}
+
+// DetectFiles implements plugin.FileListDetector.
+//
+// The four-level bound this replaces existed because walking dotnet/runtime to
+// answer yes-or-no was judged wasted work. Measured, that objection points the
+// other way: a full detection pass over dotnet/runtime cost 1.44s of exactly that
+// bounded walking, repeated per extractor and again for the test-ref gate, and
+// membership over the engine's list costs nothing at all.
+//
+// obj/ and bin/ stay excluded, and now by path segment rather than by the walk not
+// reaching them: obj/ holds generated C# that would make any tree with a stale build
+// directory look like a C# project.
+func (e *CSharpExtractor) DetectFiles(_ string, files []string) (bool, error) {
+	for _, rel := range files {
+		if detectnames.HasAnySegment(rel, "obj", "bin") {
+			continue
 		}
-		rawRel, relErr := filepath.Rel(repoPath, path)
-		if relErr != nil {
-			return nil
+		if isCSharpFile(rel) || isProjectFile(rel) || isSolutionFile(rel) ||
+			isRazorFile(rel) || isXamlFile(rel) || isVBFile(rel) || isFSharpFile(rel) {
+			return true, nil
 		}
-		rel := factpath.Slash(rawRel)
-		if d.IsDir() {
-			// Never descend into build output: obj/ holds generated C# that would
-			// make any tree with a stale build directory look like a C# project.
-			switch d.Name() {
-			case "obj", "bin", "node_modules", ".git":
-				return filepath.SkipDir
-			}
-			if strings.Count(filepath.ToSlash(rel), "/") >= detectMaxDepth {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if isCSharpFile(path) || isProjectFile(path) || isSolutionFile(path) ||
-			isRazorFile(path) || isXamlFile(path) || isVBFile(path) || isFSharpFile(path) {
-			found = true
-		}
-		return nil
-	})
-	return found, nil
+	}
+	return false, nil
 }
 
 func isCSharpFile(path string) bool {
