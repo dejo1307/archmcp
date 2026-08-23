@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/enola-labs/enola/internal/facts"
 )
@@ -239,4 +240,33 @@ func TestCollect_ReopenedLeafCarriesNoTargetFile(t *testing.T) {
 		return
 	}
 	t.Fatal("the bare read of a reopened module is still a dependency on the name")
+}
+
+// The shape that hung the provider on a Rails monolith: `<LibDDWAF>` at
+// lib_ddwaf.rb:262 spans to line 267, so its end column belongs to another
+// line and, at 25 against a start column of 27, satisfies the adjacency
+// arithmetic against itself. Before the identity and same-line conditions the
+// walk returned it as its own predecessor and never terminated, which cost a
+// cluster regeneration 26 minutes and 6.7GB before it was killed.
+func TestPathPrefixes_AReferenceIsNeverItsOwnPredecessor(t *testing.T) {
+	leaf := &constantReference{
+		id:       1,
+		location: Location{URI: "file:///w/lib_ddwaf.rb", StartLine: 262, EndLine: 267, StartColumn: 27, EndColumn: 25},
+	}
+	byLine := map[string][]*constantReference{
+		leaf.location.URI + "\x00262": {leaf},
+	}
+	c := &collector{declarationNames: map[uint64]string{}}
+
+	walked := make(chan []string, 1)
+	go func() { walked <- c.pathPrefixes(byLine, leaf) }()
+
+	select {
+	case prefixes := <-walked:
+		if len(prefixes) != 0 {
+			t.Fatalf("a reference on its own line has no prefixes, got %v", prefixes)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pathPrefixes did not return: the reference was accepted as its own predecessor")
+	}
 }
