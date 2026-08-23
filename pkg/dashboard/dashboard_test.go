@@ -711,6 +711,9 @@ func TestHandlerRendersQualityModals(t *testing.T) {
 	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	body := rec.Body.String()
+	if !strings.Contains(body, "Report extraction issue") || !strings.Contains(body, "github.com/enola-labs/enola/issues/new") {
+		t.Error("parse errors should offer a prefilled extraction issue")
+	}
 	for _, want := range []string{
 		`id="coverage-modal"`, `id="coverage-unresolved-modal"`, `id="skipped-modal"`, `id="parse-errors-modal"`,
 		`Files walked`, `Intentionally ignored`, `Non-source / unsupported`, `No facts emitted`,

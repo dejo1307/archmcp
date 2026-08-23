@@ -38,6 +38,7 @@
     tr.total td { font-weight: 700; border-top: 2px solid var(--border); }
     tr.self-row td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
     a { color: var(--accent); }
+    .secondary-action { border: 1px solid var(--border); border-radius: 7px; padding: .4rem .65rem; background: var(--card); color: var(--fg); font-weight: 600; }
     .note { color: var(--muted); font-style: italic; }
     .chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .2rem; }
     .chip { background: var(--th); border: 1px solid var(--border); border-radius: 6px; padding: .05rem .45rem; font-size: .8rem; }
@@ -489,6 +490,12 @@
     <div class="quality-item"><span class="k">Unresolved edges</span><span class="v">{{if $.UnresolvedRoutes}}<button type="button" class="count-link" onclick="openModal('coverage-unresolved-modal')">{{.UnresolvedEdges}}</button>{{else}}{{.UnresolvedEdges}}{{end}}</span></div>
     {{end}}{{end}}
   </div></div>
+  {{if gt .Quality.ParseErrors 0}}
+  <div class="snapshot-alert">
+    <b>Possible extractor gap.</b> Enola could not parse {{.Quality.ParseErrors}} source file(s). If the files contain valid source, this may be an extractor bug.
+    <a class="secondary-action" style="display:inline-block;margin-left:.55rem;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://github.com/enola-labs/enola/issues/new?title=Extraction%20gap%20in%20snapshot%20{{.SnapshotID}}&amp;body=Snapshot%3A%20{{.SnapshotID}}%0AEnola%20version%3A%20{{.EnolaVersion}}%0AParse%20errors%3A%20{{.Quality.ParseErrors}}%0A%0APlease%20describe%20the%20valid%20source%20Enola%20could%20not%20parse.">Report extraction issue</a>
+  </div>
+  {{end}}
   {{end}}{{else}}<p class="note">{{.ReceiptNote}}</p>{{end}}
   </section>
   </main>
