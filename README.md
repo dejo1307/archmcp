@@ -501,4 +501,13 @@ Everything ships here:
 
 ## Acknowledgements
 
+**[Muhamed Isabegović](https://github.com/misabegovic)** is the author of a large part of
+what this repository does. The constraints program — declared architectural law over the
+fact graph — is his, along with the vocabulary it verdicts, `plan` and `constraints mine`,
+the fact-provider seam and the providers that ride it, the shareable history store behind
+`blame` and `diff`, declared intent compiling into the graph, Ember support, the Rails
+extraction work with the `dead-methods` and `query-loops` explainers, the Ruby surface for
+writing laws as sentences, and the verdict writers that put a finding where CI reads it.
+He also maintains the Ruby and Rails integration gems that drive enola from Bundler.
+
 enola bundles third-party components under their own licenses; see [`NOTICE`](NOTICE). Swift parsing uses the [tree-sitter-swift](https://github.com/alex-pinkus/tree-sitter-swift) grammar by Alex Pinkus (MIT), vendored under [`internal/extractors/swiftextractor/grammar/`](internal/extractors/swiftextractor/grammar/); Dart parsing uses [tree-sitter-dart](https://github.com/UserNobody14/tree-sitter-dart) by UserNobody14 and others (MIT), vendored under [`internal/extractors/dartextractor/grammar/`](internal/extractors/dartextractor/grammar/). Every other grammar is a normal Go module dependency and is not vendored.

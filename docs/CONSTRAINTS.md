@@ -1,5 +1,10 @@
 # Declared constraints — the repo's law
 
+> The constraints program — this vocabulary, its evaluator, the provider seam it reads,
+> and the Ruby surface for writing laws as sentences — was contributed by
+> [Muhamed Isabegović](https://github.com/misabegovic), who also maintains the Ruby and
+> Rails integration gems enola-labs endorses.
+
 [INTENT.md](INTENT.md) states what an architecture *is meant to look like*;
 constraints state what it is **not allowed to do**, and the
 `constraints` explainer verdicts them against the measured graph on
@@ -1398,9 +1403,7 @@ for the advice to travel with.
 
 ## Laws written in Ruby
 
-This surface was contributed by [Muhamed Isabegović](https://github.com/misabegovic),
-who also maintains the Ruby and Rails integration gems enola-labs endorses. It shipped
-in v0.4.4.
+Shipped in v0.4.4.
 
 A repository whose team writes Ruby may write its laws in Ruby. Files
 ending in `.rb` in `enola/constraints/` are read beside the YAML ones,

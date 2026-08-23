@@ -7,22 +7,57 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
-## Unreleased
+## v0.4.5 — 2026-08-23
 
-Landing in the next release.
+**The verdict where CI reads it, provider facts cached, and detection that stops re-walking the tree**
+
+Most of this release is the work of
+[Muhamed Isabegović](https://github.com/misabegovic).
+
+`enola check` has four writers over one verdict: `--format` picks text, json, sarif or
+annotations, and nothing is recomputed for a writer. SARIF carries one rule per declared
+rule id with the team's `because:` as its description, the evidence span as its region,
+and a stable identity under `partialFingerprints`. Annotations place every positioned
+finding on its file and line, as GitHub workflow commands or Buildkite markdown grouped
+by file; findings with no position are counted at the end rather than placed somewhere
+plausible. The host is a flag and never read from the environment, so a laptop renders
+what CI rendered.
+
+Every verdict now also says what it could not see. One `could not see:` line and a
+census report what each provider contributed and where two of them overlapped, joined
+per site. Two providers that spell the same receiver differently produce one edge rather
+than two, with the surviving relation stamped `resolution_agreement`; receivers that
+genuinely differ are both kept and counted by shape. `since` and `growth` read git blame
+per witness file at author time, so a rebase does not restart the clock, and a breach
+that cannot be dated names which of three things was unknown instead of defaulting to
+now.
+
+**Provider facts are cached.** A per-file provider keeps one entry per file keyed by
+content; the built-in Rubydex provider keeps one whole-index entry keyed by its library
+version, the Ruby file set and the lockfile. The receipt says how much was reused, so a
+warm run that reuses nothing is visible rather than merely slow. On a Rails monolith of
+roughly 1.7 million facts, providers were 249 seconds of a 292 second run before this.
 
 **Language detection no longer re-walks the tree.** Every extractor used to answer
 `Detect` with its own bounded walk, and every bound was a cliff a real repository falls
 off — dotnet/runtime keeps all 3,270 of its C/C++ sources below the three levels the C++
 detector scanned, so the extractor never ran at all. Detection is now membership over
-the file list the engine already walked, which has no bound to beat and costs no walk.
-Across a 20-repository polyglot corpus it recovers 13,496 of the 13,828 files an
-extractor claimed and no extractor read.
+the file list the engine already walked. Across a 20-repository polyglot corpus it
+recovers 13,496 of the 13,828 files an extractor claimed and no extractor read.
 
-**`constraints init` and `constraints explain` no longer report success as failure.**
-Both returned on success instead of exiting, so the argument loop re-read `constraints`
-as an unknown command and exited `1` after printing a correct report. Their exit codes
-are now documented alongside `lint`'s.
+`constraints explain` answers incoming edges as well as outgoing ones, and reports what
+moving a file out of its part would cost: the verdicts that would appear and the ones
+that would vanish. Rubydex emits one dependency per qualified read, carrying the file
+that defines it, and every refusal carries a cause from a closed set.
+
+Fixed: `constraints init` and `constraints explain` returned on success instead of
+exiting, so the argument loop re-read `constraints` as an unknown command and exited `1`
+after printing a correct report. Their exit codes are now documented beside `lint`'s.
+
+Documentation: a [Rails workflow page](docs/RAILS.md), the declaration standard split
+into [INTENT](docs/INTENT.md), [CONSTRAINTS](docs/CONSTRAINTS.md) and
+[PROVIDERS](docs/PROVIDERS.md), an [index of the docs tree](docs/README.md), and this
+changelog.
 
 ## v0.4.4 — 2026-08-23
 
