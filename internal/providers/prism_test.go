@@ -74,12 +74,12 @@ func TestPrismProvider_GoldenThroughTheSeam(t *testing.T) {
 	ff, records := Run(context.Background(), []Provider{{
 		Name:            "prism",
 		Command:         []string{"ruby", prismScript(t)},
-		ExpectedVersion: "0.1.0",
+		ExpectedVersion: "0.2.0",
 	}}, repo, nil, nil)
 	if len(records) != 1 || records[0].Skipped {
 		t.Fatalf("census = %+v, want a clean run", records)
 	}
-	if records[0].Version != "0.1.0" {
+	if records[0].Version != "0.2.0" {
 		t.Errorf("reported version = %q", records[0].Version)
 	}
 
@@ -182,5 +182,29 @@ func TestPrismProvider_EmitsInstantiations(t *testing.T) {
 	}
 	if strings.Count(joined, "one_shot_call") != 1 {
 		t.Errorf("only the chained instantiation carries the ceremony:\n%s", joined)
+	}
+}
+
+func TestPrismProvider_FilesListingParsesOnlyListedFiles(t *testing.T) {
+	requirePrism(t)
+	repo := writePrismFixture(t)
+	if err := os.WriteFile(filepath.Join(repo, "app", "other.rb"), []byte("class Other\n  def run\n    Ledger.record(1)\n  end\nend\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	listing := filepath.Join(t.TempDir(), "files.txt")
+	if err := os.WriteFile(listing, []byte("app/other.rb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("ruby", prismScript(t), repo, FilesFlag, listing).Output()
+	if err != nil {
+		t.Fatalf("provider failed: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if !strings.Contains(line, `"file":"app/other.rb"`) {
+			t.Fatalf("a listed run must name only listed files, got %s", line)
+		}
+	}
+	if !strings.Contains(string(out), "Other#run -> Ledger#record") {
+		t.Fatalf("listed file's facts missing from %s", out)
 	}
 }

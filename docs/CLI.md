@@ -567,11 +567,16 @@ enola check --fail-on=layers,cycles,intent                 # …and cycles, and 
 enola check --fail-on=god-class --min-confidence=0.8       # an inferred one needs a lower floor
 enola check --fail-on=layers --warn-only                   # enforce, but only warn this time
 enola check --json                                         # machine-readable verdict
+enola check --format=sarif > enola.sarif                   # SARIF 2.1.0, one result per finding in every bucket
+enola check --format=annotations --host=buildkite          # one entry per positioned finding, for buildkite-agent annotate
+enola check --format=annotations --host=github             # the same as workflow commands, for Actions
 enola check --detail                                       # full delta under the verdict
 enola check --baseline=previous                            # compare against the preceding snapshot
 enola check --focus=internal/auth                          # narrow the delta to what you touched
 enola check --write                                        # also persist the snapshot (default: read-only)
 ```
+
+**The verdict has four writers, and all four read the same verdict.** `--format` picks `text` (the default), `json` (what `--json` means), `sarif` or `annotations`; nothing is recomputed for a writer, so a fifth is a table row. SARIF carries one rule per declared rule id with the team's `because` as its description, one result per finding in every bucket (failures as errors, advisories and declared findings as warnings, resolved findings at no level and with no region, suppressed and exempted findings with the ledger entry or exemption that excused them), the evidence span as the region, and the finding's stable identity under `partialFingerprints.enola/v1`. Annotations place every finding that has a measured position on its file and line, as Buildkite markdown grouped by file (`--link` takes the pull request's files view so each line links into the diff) or as GitHub workflow commands; findings without a position are counted at the end and never placed. The host is a flag and never read from the environment, so a run on a laptop renders exactly what the run in CI rendered.
 
 The eighteen names `--fail-on` accepts are `cycles`, `layers`, `intent`, `constraints`,
 `crossrepo`, `coverage`, `unused-routes`, `messaging-coverage`, `god-class`, `hotspots`,

@@ -298,3 +298,65 @@ func TestGroundSkipDiagnosis_ImportsAndMarkupDiagnoseDifferently(t *testing.T) {
 		}
 	}
 }
+
+// A module reopened in two files is a member of both components by name. A
+// producer that says which file a read's target is defined in keeps the edge
+// off the reopening it never touched: `Foo::VERSION` read from the formatters
+// is a dependency on the support file that defines VERSION, not on the cli
+// file that reopens Foo.
+func TestExplain_TargetFileKeepsAReadOffTheReopening(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		componentIntent("formatters", "lib/formatters/**"),
+		componentIntent("cli", "lib/cli.rb"),
+		componentIntent("support", "lib/version.rb"),
+		ruleIntent("formatters-avoid-cli", "formatters", "cli", "depends_on", "printing must not reach the command line"),
+		facts.Fact{Kind: facts.KindSymbol, Name: "Foo", File: "lib/cli.rb"},
+		facts.Fact{Kind: facts.KindSymbol, Name: "Foo", File: "lib/version.rb"},
+		facts.Fact{Kind: facts.KindSymbol, Name: "Foo::VERSION", File: "lib/version.rb"},
+		facts.Fact{Kind: facts.KindSymbol, Name: "Foo::Formatters::Sarif", File: "lib/formatters/sarif.rb"},
+		facts.Fact{Kind: facts.KindDependency, Name: "rubydex-ref: Foo::Formatters::Sarif -> Foo::VERSION", File: "lib/formatters/sarif.rb",
+			Props:     map[string]any{"resolution_level": "resolved", facts.PropTargetFile: "lib/version.rb"},
+			Relations: []facts.Relation{{Kind: facts.RelDependsOn, Target: "Foo::VERSION"}}},
+		facts.Fact{Kind: facts.KindDependency, Name: "rubydex-ref: Foo::Formatters::Sarif -> Foo", File: "lib/formatters/sarif.rb",
+			Props:     map[string]any{"resolution_level": "resolved", facts.PropTargetFile: "lib/version.rb"},
+			Relations: []facts.Relation{{Kind: facts.RelDependsOn, Target: "Foo"}}},
+	)
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range insights {
+		if strings.HasPrefix(in.Title, "Constraint formatters-avoid-cli violated") {
+			t.Fatalf("the reads land in lib/version.rb, which is not the cli: %s", in.Title)
+		}
+	}
+}
+
+// The same read without a carried file resolves by name, as every other
+// producer's edges do, and the reopening still answers: the preference is the
+// producer's statement, never a rule the consumer invents from name shapes.
+func TestExplain_WithoutATargetFileTheNameStillResolvesToEveryReopening(t *testing.T) {
+	store := facts.NewStore()
+	store.Add(
+		componentIntent("formatters", "lib/formatters/**"),
+		componentIntent("cli", "lib/cli.rb"),
+		ruleIntent("formatters-avoid-cli", "formatters", "cli", "depends_on", "printing must not reach the command line"),
+		facts.Fact{Kind: facts.KindSymbol, Name: "Foo", File: "lib/cli.rb"},
+		facts.Fact{Kind: facts.KindSymbol, Name: "Foo", File: "lib/version.rb"},
+		facts.Fact{Kind: facts.KindSymbol, Name: "Foo::Formatters::Sarif", File: "lib/formatters/sarif.rb"},
+		facts.Fact{Kind: facts.KindDependency, Name: "ref: Foo::Formatters::Sarif -> Foo", File: "lib/formatters/sarif.rb",
+			Props:     map[string]any{"resolution_level": "resolved"},
+			Relations: []facts.Relation{{Kind: facts.RelDependsOn, Target: "Foo"}}},
+	)
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range insights {
+		if strings.HasPrefix(in.Title, "Constraint formatters-avoid-cli violated") {
+			return
+		}
+	}
+	t.Fatal("a name-only edge onto a reopened module resolves by name, as before")
+}

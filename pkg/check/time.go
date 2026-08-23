@@ -19,13 +19,16 @@ type RevisionAt func(date time.Time) (snapshot *facts.Snapshot, at string, first
 // ApplyTime grades the dated and growth-bounded constraint verdicts. A
 // breach whose rule holds since a date is ratcheted to a report when the
 // history revision at or before that date already carried it, and stays a
-// failure when it did not; a rule dated before the first revision keeps its
-// failures and gains a descriptive finding naming that first date. A cap
-// whose rule allows growth fails only when its count exceeds the baseline's
-// count by more than the allowance.
-func ApplyTime(v Verdict, base *facts.Snapshot, history RevisionAt) Verdict {
+// failure when it did not. Where the history has no revision that old, the
+// witness line's git author date decides instead: a line last changed before
+// the rule's date is reported, one changed after it is graded, and a line git
+// cannot date (no repository, uncommitted, or behind a shallow clone's
+// boundary) grades as undated with the cause said once. A cap whose rule
+// allows growth fails only when its count exceeds the baseline's count by
+// more than the allowance.
+func ApplyTime(v Verdict, base *facts.Snapshot, history RevisionAt, age WitnessAge) Verdict {
 	var failures []facts.Insight
-	predated := map[string]bool{}
+	noted := map[string]bool{}
 	for _, in := range v.Failures {
 		if since, ok := sinceOf(in); ok && history != nil {
 			date, err := time.Parse("2006-01-02", since)
@@ -33,14 +36,21 @@ func ApplyTime(v Verdict, base *facts.Snapshot, history RevisionAt) Verdict {
 				snap, at, first, found := history(date)
 				switch {
 				case !found:
-					if first != "" && !predated[since] {
-						predated[since] = true
+					if first != "" && !noted["first:"+since] {
+						noted["first:"+since] = true
 						v.Descriptive = append(v.Descriptive, facts.Insight{
 							Title:         fmt.Sprintf("Rules dated %s predate the first architecture revision (%s)", since, first),
-							Description:   "A rule holds since a date the history does not reach, so every breach of it grades as introduced after the date. Pin a revision before the date, or date the rule at the first revision, to ratchet what was already there.",
+							Description:   "A rule holds since a date the history does not reach, so git's author date of each witness line decides whether a breach was there before the date. A line git cannot date grades as introduced after it.",
 							Confidence:    1.0,
 							Informational: true,
 						})
+					}
+					if ratcheted, note := ageDecides(in, date, since, age, &v, noted); ratcheted {
+						in.Description += note
+						v.Advisories = append(v.Advisories, in)
+						continue
+					} else if note != "" {
+						in.Description += note
 					}
 				case carries(snap, in.Title):
 					in.Description += fmt.Sprintf(" Present in the revision of %s, before the rule's date, so it is reported rather than graded.", at)
@@ -72,6 +82,58 @@ func ApplyTime(v Verdict, base *facts.Snapshot, history RevisionAt) Verdict {
 		}
 	}
 	return v
+}
+
+// ageDecides asks git for the witness line's author date when the history
+// store had no answer. True means the breach predates the rule and is
+// reported; the note is appended either way, and an unknown cause is also
+// recorded once per cause as a descriptive finding.
+func ageDecides(in facts.Insight, date time.Time, since string, age WitnessAge, v *Verdict, noted map[string]bool) (bool, string) {
+	if age == nil {
+		return false, ""
+	}
+	file, line, ok := witnessOf(in)
+	if !ok {
+		return false, ""
+	}
+	at, cause := age(file, line, date)
+	if cause == "" {
+		if at.Before(date) {
+			return true, fmt.Sprintf(" Last changed %s by git's author date, before the rule's date, so it is reported rather than graded.", at.Format("2006-01-02"))
+		}
+		return false, fmt.Sprintf(" Last changed %s by git's author date, after the rule's date, so it was introduced after the date.", at.Format("2006-01-02"))
+	}
+	if !noted[cause+":"+since] {
+		noted[cause+":"+since] = true
+		v.Descriptive = append(v.Descriptive, facts.Insight{
+			Title:         fmt.Sprintf("Rules dated %s could not be dated by git: %s", since, ageCauseTitle[cause]),
+			Description:   ageCauseDescription[cause],
+			Confidence:    1.0,
+			Informational: true,
+		})
+	}
+	return false, fmt.Sprintf(" Git could not date the witness line (%s), so the breach grades as undated.", strings.ReplaceAll(cause, "_", " "))
+}
+
+var ageCauseTitle = map[string]string{
+	AgeNoGit:       "no git history",
+	AgeUncommitted: "the witness line is uncommitted",
+	AgeShallow:     "the clone is shallow",
+}
+
+var ageCauseDescription = map[string]string{
+	AgeNoGit:       "The repository is not a git checkout, git is not on PATH, or the witness file is not tracked, so no author date exists to compare with the rule's date. The breach grades as a rule without a date would.",
+	AgeUncommitted: "The witness line has no commit yet, so it has no author date. Commit it, or accept that it grades as introduced after the date.",
+	AgeShallow:     "The witness line reaches the boundary of a shallow clone whose boundary commit is newer than the rule's date, so its real author date is not in this checkout. Deepen the clone to date it; until then it grades as introduced after the date.",
+}
+
+func witnessOf(in facts.Insight) (string, int, bool) {
+	for _, e := range in.Evidence {
+		if e.File != "" && e.Line > 0 {
+			return e.File, e.Line, true
+		}
+	}
+	return "", 0, false
 }
 
 func sinceOf(in facts.Insight) (string, bool) {

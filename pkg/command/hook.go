@@ -422,7 +422,8 @@ func (r *Runner) gradeQuietly(ctx context.Context, repoDir string) (check.Verdic
 	if suppressions, err := check.LoadSuppressions(anchor); err == nil {
 		policy.Suppressions = suppressions
 	}
-	return check.EvaluateCurrent(diff.Compute(base, current), policy, current.Insights), outDir, true
+	verdict := check.EvaluateCurrent(diff.Compute(base, current), policy, current.Insights)
+	return check.AttachCensus(verdict, current.Meta, policy, current.Insights), outDir, true
 }
 
 // configForRepo prefers a config inside the repository, matching how `enola check`

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/enola-labs/enola/internal/facts"
 )
 
 func requireLibrary(t *testing.T) *Library {
@@ -134,4 +136,107 @@ func TestPlainName(t *testing.T) {
 	if !sameLexicalOwner("Invoice#total", "Invoice") || sameLexicalOwner("Ledger#record", "Invoice") {
 		t.Error("the lexical owner is the name before the member separator")
 	}
+}
+
+// A qualified read arrives from the engine as one reference per segment. The
+// dependency is the leaf, carried with the file that defines it; the segments
+// before it are its path, never dependencies of their own, so a prefix that is
+// reopened in many files cannot land the read on one of them. A reference that
+// resolves to nothing is kept as a fact with its cause rather than dropped.
+func TestCollect_EmitsOneDependencyPerResolvedLeaf(t *testing.T) {
+	lib := requireLibrary(t)
+	repo := t.TempDir()
+	files := map[string]string{
+		"Gemfile":            "source \"https://rubygems.org\"\n",
+		"lib/foo.rb":         "module Foo\nend\n",
+		"lib/foo/version.rb": "module Foo\n  VERSION = \"1\"\nend\n",
+		"lib/foo/cli.rb":     "module Foo\n  class CLI\n  end\nend\n",
+		"lib/named.rb":       "class Base; end\nNamed = Base\n",
+		"lib/use.rb": "class Use\n" +
+			"  def v\n" +
+			"    Foo::VERSION\n" +
+			"    Named\n" +
+			"    Missing::Deep\n" +
+			"  end\n" +
+			"end\n",
+	}
+	for rel, body := range files {
+		path := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := Collect(context.Background(), lib, repo)
+	byName := map[string]facts.Fact{}
+	for _, f := range result.Facts {
+		byName[f.Name] = f
+	}
+	if _, prefix := byName["rubydex-ref: Use#v -> Foo"]; prefix {
+		t.Errorf("the prefix of a qualified read must not be a dependency of its own: %v", byName)
+	}
+	leaf, ok := byName["rubydex-ref: Use#v -> Foo::VERSION"]
+	if !ok || len(leaf.Relations) != 1 || leaf.Relations[0].Target != "Foo::VERSION" {
+		t.Fatalf("the leaf is the dependency: %+v", leaf)
+	}
+	if leaf.Props["target_file"] != "lib/foo/version.rb" {
+		t.Errorf("target_file = %v, want the file defining the leaf", leaf.Props["target_file"])
+	}
+	if !reflect.DeepEqual(leaf.Props["path_prefixes"], []string{"Foo"}) {
+		t.Errorf("path_prefixes = %v, want the segments before the leaf", leaf.Props["path_prefixes"])
+	}
+	alias, ok := byName["rubydex-ref: Use#v -> Named"]
+	if !ok || len(alias.Relations) != 0 || alias.Props["resolution_cause"] != "alias" {
+		t.Errorf("a read of a constant alias is a named miss, not an edge: %+v", alias)
+	}
+	missing, ok := byName["rubydex-ref: Use#v -> Missing::Deep"]
+	if !ok || len(missing.Relations) != 0 || missing.Props["resolution_cause"] != "unresolved" {
+		t.Errorf("an unresolved read is a named miss with its written path: %+v", missing)
+	}
+	if _, prefix := byName["rubydex-ref: Use#v -> Missing"]; prefix {
+		t.Error("an unresolved prefix folds into its leaf like a resolved one")
+	}
+	causes := map[string]int{}
+	for _, cause := range result.Census.SkipCauses {
+		causes[cause.Cause] = cause.Count
+	}
+	if causes["unresolved constant reference"] != 1 || causes["reference resolves to a constant alias"] != 1 {
+		t.Errorf("census = %+v, want the two misses counted by cause", result.Census)
+	}
+}
+
+// A name defined in several files carries no target_file: the engine names the
+// declaration, not which reopening a read lands on, and a guess here would be
+// the bug restated.
+func TestCollect_ReopenedLeafCarriesNoTargetFile(t *testing.T) {
+	lib := requireLibrary(t)
+	repo := t.TempDir()
+	files := map[string]string{
+		"Gemfile":        "source \"https://rubygems.org\"\n",
+		"lib/foo.rb":     "module Foo\nend\n",
+		"lib/foo/cli.rb": "module Foo\n  class CLI\n  end\nend\n",
+		"lib/use.rb":     "class Use\n  def v\n    Foo\n  end\nend\n",
+	}
+	for rel, body := range files {
+		path := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := Collect(context.Background(), lib, repo)
+	for _, f := range result.Facts {
+		if f.Name != "rubydex-ref: Use#v -> Foo" {
+			continue
+		}
+		if _, carried := f.Props["target_file"]; carried {
+			t.Errorf("a read of a module reopened in two files must not pick one: %+v", f.Props)
+		}
+		return
+	}
+	t.Fatal("the bare read of a reopened module is still a dependency on the name")
 }

@@ -274,6 +274,10 @@ type Verdict struct {
 	Status Status `json:"status"`
 	Policy Policy `json:"policy"`
 
+	// Census is what the run could not see, printed as one line under the
+	// headline on every outcome; see AttachCensus.
+	Census *Census `json:"census,omitempty"`
+
 	// Failures are the new findings that violated the policy.
 	Failures []facts.Insight `json:"failures,omitempty"`
 	// Advisories are new findings that did NOT violate it — reported so a clean exit

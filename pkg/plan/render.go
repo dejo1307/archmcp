@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/enola-labs/enola/internal/explainers/constraints"
 )
 
 func (r *Report) JSON() ([]byte, error) {
@@ -83,6 +85,37 @@ func renderTarget(sb *strings.Builder, t TargetReport, declared bool) {
 		}
 		if t.BlastRadius.Truncated {
 			fmt.Fprintf(sb, "    (samples capped at %d; the counts are exact)\n", BlastSampleCap)
+		}
+	}
+	if t.Radius != nil {
+		renderRadius(sb, *t.Radius)
+	}
+}
+
+// renderRadius prints the verdicts that would change if the target left every
+// part, the no-patch counterfactual beside the scratch-copy one.
+func renderRadius(sb *strings.Builder, r constraints.BlastRadius) {
+	fmt.Fprintf(sb, "  If it left every part (%d rule(s) re-run over the loaded snapshot):\n", r.RulesRun)
+	renderRadiusList(sb, "would start failing", r.Appear)
+	renderRadiusList(sb, "would stop being checked", r.Vanish)
+	for _, nc := range r.NotComputed {
+		fmt.Fprintf(sb, "    not computed: rule %s (%s)\n", nc.Rule, nc.Cause)
+	}
+}
+
+func renderRadiusList(sb *strings.Builder, heading string, verdicts []constraints.RadiusVerdict) {
+	if len(verdicts) == 0 {
+		fmt.Fprintf(sb, "    %s: nothing\n", heading)
+		return
+	}
+	fmt.Fprintf(sb, "    %s:\n", heading)
+	for _, v := range verdicts {
+		fmt.Fprintf(sb, "      %s\n", v.Title)
+		if v.Because != "" {
+			fmt.Fprintf(sb, "        because: %s\n", v.Because)
+		}
+		if v.Cut != "" {
+			fmt.Fprintf(sb, "        cut: %s\n", v.Cut)
 		}
 	}
 }

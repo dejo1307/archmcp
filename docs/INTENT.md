@@ -1328,6 +1328,19 @@ count exceed the baseline's count by N before the cap fails; without a
 baseline the cap alone applies. Ruby: `since "2026-08-01"` and `growth 2`
 inside a law.
 
+Where the history has no revision at or before the date, git decides
+instead: `check` reads the witness line's author date with one
+`git blame --porcelain -w` per witness file, reports a breach whose line
+was last changed before the date and grades one changed after it, and
+remembers the dates it read under `.enola/blame_cache.json` by the file's
+blob hash, so an unchanged file never asks git twice. Author time, never
+commit time. Three cases cannot be dated and grade as a rule without a
+date would, each said once as a descriptive finding: no git or an
+untracked witness file, a witness line not yet committed, and a shallow
+clone whose boundary commit is newer than the date. A shallow CI checkout
+that wants dated rules deepens the clone; the binary does not guess past
+the boundary.
+
 Every edge breach (`forbid`, `protect`, `private`) and every cycle breach
 now leads its suggested actions with the smallest cut the graph can see:
 the far part's public member with the same bare name, else its public
@@ -1703,6 +1716,26 @@ weigh is a claim nothing can act on: `constant-receiver`,
 language's own lookup rules (nesting, inheritance, the locked gems) to
 one declaration: neither a receiver typing, nor a signature-file claim,
 nor a path convention, which is why it is its own word.
+Two producers reading one Ruby tree read many of the same call sites,
+and they do not spell a receiver the same way: one engine writes a
+singleton class as `<Owner>`, the other writes the plain constant, and
+only one of them knows a class method from an instance one. The seam
+owns the one spelling table and applies it after validation and before
+merge, so no script learns another's notation. It then pairs call
+relations across producers by file, line, receiver and method: a
+relation two producers emitted identically is kept once, under the
+first producer in name order, in the spelling that carries the scope
+(`Board.find`, as the extractor names a class method), with a separate
+prop **`resolution_agreement: agreement`** beside the producer's own
+`resolution_level`, which is never rewritten. A site where the producers
+resolved different receivers is left exactly as each emitted it and
+counted in the receipt's provider block by shape: `differing`,
+`alias-resolved` when the producer carried `resolution_cause: alias` for
+that line, and `singleton-spelling`, a cause expected to read zero so a
+notation the table does not cover shows up as a number. Agreed,
+differing and one-sided counts per provider sit beside the census; a
+difference is a count, never a vote and never a refusal.
+
 `runtime-observed` is its own level, not a stronger static one: it
 states that a **booted application** reported the fact, and a fact
 carrying it must also carry an **`observed_via`** prop naming the
@@ -1722,6 +1755,38 @@ declarations parsed, constructs skipped with named causes — which the
 seam validates as strictly as the facts and carries into the
 receipt's provider census, the same honesty discipline the engine's
 file census applies to its own walk.
+
+### Reusing provider facts
+
+Provider facts enter the engine's extractor cache, under the same
+version and build stamps, so a provider whose inputs did not move is
+not run again. A provider whose output partitions by file declares it
+in its entry, `files: per-file`, with the `extensions:` it reads; the
+seam then keeps one entry per file, keyed by the provider's name, its
+reported version and the file's content digest, hands the provider only
+the files with no entry (the repository path, then `--files` and the
+path of a listing, one repo-relative path per line), and merges the
+cached facts for the rest. A fact the provider emits about a file it was
+not handed is dropped and counted, so a script cannot widen its own
+scope. A provider that declares nothing runs whole-tree on every
+snapshot as before; a provider that reads across files must not declare
+per-file, because the cache would serve facts computed against a tree
+that has since changed. The built-in Rubydex provider keeps one
+whole-index entry instead, keyed by the engine library version, the
+Ruby file set with content digests and `Gemfile.lock`; a hit reuses the
+facts and the census as recorded, a miss rebuilds the index, never
+patches it.
+
+The receipt's provider record carries a `reuse` block whenever the
+cache was consulted for a provider that ran: `reused` and `computed`
+fact counts, the files behind them for a per-file provider, facts
+dropped as `outside_scope`, and for the whole-index case `cache: hit`
+or `miss` with what the key did not match (`files`, `lockfile`,
+`version`, or `cold` when no index had been recorded). A skipped
+provider carries no reuse block, and a run without a cache carries
+none either: absent means not asked, never zero. A cold and a warm
+snapshot of one tree produce byte-identical facts, which the suite
+asserts.
 
 ### The Rubydex provider
 

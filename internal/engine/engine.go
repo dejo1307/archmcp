@@ -501,14 +501,6 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 		return nil, fmt.Errorf("extraction: %w", err)
 	}
 	e.reportShadowed(absRepo, shadowedExtractors)
-	if cache != nil {
-		log.Printf("[engine] extractor cache: %d reused", cache.hits)
-		// save is a no-op when this cache was opened non-persisting, and it creates
-		// its own directory, so neither condition is repeated here.
-		if err := cache.save(); err != nil {
-			log.Printf("[engine] could not write extractor cache: %v", err)
-		}
-	}
 	// Reference-only extraction over test/spec files. Runs every snapshot (not
 	// cached with the main extractors) and adds only KindTestRef facts, so a
 	// production symbol exercised solely by a test is not mis-reported as dead.
@@ -529,7 +521,16 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 	// an extractor already owns is never overwritten, so the census can say a
 	// provider contributed less than it emitted but the graph cannot silently
 	// change authorship.
-	provRecords := e.runProviders(ctx, absRepo, preCount)
+	provRecords := e.runProviders(ctx, absRepo, preCount, providerInput(files, testFiles, currentHashes, e.computeFileHashes(absRepo, testFiles), cache))
+	if cache != nil {
+		log.Printf("[engine] extractor cache: %d reused", cache.hits)
+		// Saved after the providers, whose entries share the spool. save is a no-op
+		// when this cache was opened non-persisting, and it creates its own
+		// directory, so neither condition is repeated here.
+		if err := cache.save(); err != nil {
+			log.Printf("[engine] could not write extractor cache: %v", err)
+		}
+	}
 
 	tExtract = time.Since(tStage)
 	newCount := e.store.Count()
@@ -692,6 +693,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			HeuristicInsights:  countHeuristicInsights(allInsights),
 			Coverage:           coverageSummary(e.store),
 			Census:             e.fileCensus(files, parsedPrefix, skips, usedExtractors, parseErrs),
+			Unseen:             e.unseenCensus(skips, provRecords, allInsights),
 		},
 		// FactsRef aliases the store's slice rather than copying it. This is safe:
 		// `work` is published (below) and then NEVER mutated again — the next
@@ -755,7 +757,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 // repo's extraction window began: everything the extractors (and the intent
 // compiler) added since is the identity set a provider fact may not collide
 // with — the extractor's account of a name+kind wins, always.
-func (e *Engine) runProviders(ctx context.Context, absRepo string, preCount int) []facts.ProviderRecord {
+func (e *Engine) runProviders(ctx context.Context, absRepo string, preCount int, in providers.Input) []facts.ProviderRecord {
 	if len(e.cfg.Providers) == 0 {
 		return nil
 	}
@@ -764,11 +766,17 @@ func (e *Engine) runProviders(ctx context.Context, absRepo string, preCount int)
 	for _, f := range extracted {
 		owned[f.Kind+"\x00"+f.Name] = true
 	}
-	provFacts, records := providers.Run(ctx, e.cfg.Providers, absRepo, func(kind, name string) bool {
-		return owned[kind+"\x00"+name]
-	}, func(file string) bool {
-		return e.isIgnored(file, false)
-	})
+	in.Providers = e.cfg.Providers
+	in.RepoPath = absRepo
+	in.Taken = func(kind, name string) bool { return owned[kind+"\x00"+name] }
+	in.Ignored = func(file string) bool { return e.isIgnored(file, false) }
+	provFacts, records := providers.RunWith(ctx, in)
+	// The join against the extractor's relations runs once per provider over
+	// the facts that survived the merge, and stamps which tree they describe;
+	// both are accounting on the record and change nothing in the graph.
+	tJoin := time.Now()
+	providers.Account(records, provFacts, extracted, gitInfo(absRepo, e.cfg.Output.Dir))
+	log.Printf("[providers] overlap join over %d provider fact(s) took %s", len(provFacts), time.Since(tJoin).Round(time.Millisecond))
 	e.store.Add(provFacts...)
 	if annotated := providers.LinkRuntimeObservations(e.store, preCount); annotated > 0 {
 		log.Printf("[providers] runtime observations annotated %d extracted route fact(s)", annotated)
@@ -777,6 +785,27 @@ func (e *Engine) runProviders(ctx context.Context, absRepo string, preCount int)
 		log.Printf("[providers] declared contracts typed %d extracted symbol fact(s)", typed)
 	}
 	return records
+}
+
+// providerInput gathers what the seam needs to reuse provider facts: every walked
+// file (the test files too, since a provider reads specs the extractors only
+// reference) with its content digest, and the cache when the engine keeps one.
+func providerInput(files, testFiles []string, hashes, testHashes map[string]string, cache *extractorCache) providers.Input {
+	all := make([]string, 0, len(files)+len(testFiles))
+	all = append(all, files...)
+	all = append(all, testFiles...)
+	merged := make(map[string]string, len(hashes)+len(testHashes))
+	for k, v := range hashes {
+		merged[k] = v
+	}
+	for k, v := range testHashes {
+		merged[k] = v
+	}
+	in := providers.Input{Files: all, Hashes: merged}
+	if cache != nil {
+		in.Cache = providerCache{c: cache}
+	}
+	return in
 }
 
 // runBinders runs every registered binder declaring the given stage, over the

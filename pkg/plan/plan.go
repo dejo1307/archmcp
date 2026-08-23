@@ -42,6 +42,7 @@ type Deps struct {
 	Snapshot      SnapshotInfo
 	OutputDirName string
 	NewEngine     EngineFactory
+	SkipRadius    bool
 }
 
 type SnapshotInfo struct {
@@ -65,6 +66,7 @@ type TargetReport struct {
 	Components    []constraints.ComponentBinding `json:"components,omitempty"`
 	NoRuleGoverns bool                           `json:"no_rule_governs"`
 	BlastRadius   *BlastRadius                   `json:"blast_radius,omitempty"`
+	Radius        *constraints.BlastRadius       `json:"radius,omitempty"`
 }
 
 type BlastRadius struct {
@@ -125,14 +127,19 @@ func Compute(ctx context.Context, req Request, deps Deps) (*Report, error) {
 	}
 
 	report := &Report{Repo: deps.RepoLabel, Snapshot: deps.Snapshot}
+	_, declared := constraints.ContractFor(deps.Store, "")
+	report.ConstraintsDeclared = declared
 	for _, target := range pathTargets(req.Paths, patchFiles) {
-		report.Targets = append(report.Targets, targetReport(deps.Store, deps.RepoLabel, target, TargetPath))
+		tr := targetReport(deps.Store, deps.RepoLabel, target, TargetPath)
+		if declared && tr.Measured && len(patchFiles) == 0 && !deps.SkipRadius {
+			radius := constraints.BlastRadiusFor(deps.Store, []string{target})
+			tr.Radius = &radius
+		}
+		report.Targets = append(report.Targets, tr)
 	}
 	for _, symbol := range sortedUnique(req.Symbols) {
 		report.Targets = append(report.Targets, targetReport(deps.Store, deps.RepoLabel, symbol, TargetSymbol))
 	}
-	_, declared := constraints.ContractFor(deps.Store, "")
-	report.ConstraintsDeclared = declared
 
 	if len(patchFiles) > 0 {
 		if deps.NewEngine == nil {

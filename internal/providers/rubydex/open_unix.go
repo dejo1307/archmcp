@@ -47,6 +47,7 @@ func Open(path string) (*Library, error) {
 		{&lib.constRefLocation, "rdx_constant_reference_location"},
 		{&lib.constRefDocument, "rdx_constant_reference_document"},
 		{&lib.constRefResolved, "rdx_resolved_constant_reference_declaration"},
+		{&lib.constRefName, "rdx_constant_reference_name"},
 		{&lib.methodRefsIterNext, "rdx_method_references_iter_next"},
 		{&lib.methodRefsIterFree, "rdx_method_references_iter_free"},
 		{&lib.methodRefName, "rdx_method_reference_name"},

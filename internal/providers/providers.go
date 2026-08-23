@@ -27,13 +27,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -52,6 +56,49 @@ type Provider struct {
 	Name            string   `yaml:"name"`
 	Command         []string `yaml:"command"`
 	ExpectedVersion string   `yaml:"expected_version"`
+	// Files declares how the provider's output partitions. Empty means the
+	// provider reads the whole tree on every run. FilesPerFile means every
+	// fact it emits names the file it came from and nothing else influenced
+	// it, so the seam may hand it only the files whose content has no cache
+	// entry and reuse the rest; a provider that reads across files must not
+	// declare it, because the cache would then serve facts computed against
+	// a tree that has since changed.
+	Files string `yaml:"files,omitempty"`
+	// Extensions names the file suffixes a per-file provider reads, so the
+	// seam keys and lists only those; required with FilesPerFile.
+	Extensions []string `yaml:"extensions,omitempty"`
+}
+
+// FilesPerFile is the one value Provider.Files accepts.
+const FilesPerFile = "per-file"
+
+// FilesFlag is the argument a per-file provider receives after the repository
+// path: the path of a file listing, one repo-relative path per line, the files
+// it is to read in this run.
+const FilesFlag = "--files"
+
+// Cache is what the engine lends the seam so provider facts can be reused
+// between snapshots. Keys are the seam's; the engine scopes them to its cache
+// version and build. Get hands a stored entry out once and carries it forward
+// to the next run; Peek reads without carrying forward, for an entry the caller
+// is about to replace; Put stores an entry for this run.
+type Cache interface {
+	Get(key string) ([]facts.Fact, bool)
+	Peek(key string) ([]facts.Fact, bool)
+	Put(key string, ff []facts.Fact)
+}
+
+// Input is everything one Run needs: the providers, the repository, the
+// extractor's identity set and ignore globs, and, when the engine caches, the
+// walked files with their content digests and the cache to reuse through.
+type Input struct {
+	Providers []Provider
+	RepoPath  string
+	Taken     func(kind, name string) bool
+	Ignored   func(file string) bool
+	Files     []string
+	Hashes    map[string]string
+	Cache     Cache
 }
 
 // Reserved prop keys on provider facts. The provenance pair is stamped by the
@@ -148,9 +195,21 @@ func Validate(providers []Provider) error {
 			return fmt.Errorf("providers[%d]: name %q is declared twice", i, p.Name)
 		}
 		seen[p.Name] = true
+		if p.Files != "" && p.Files != FilesPerFile {
+			return fmt.Errorf("providers[%d] (%s): files must be %q or absent, got %q", i, p.Name, FilesPerFile, p.Files)
+		}
+		if p.Files == FilesPerFile && len(p.Extensions) == 0 {
+			return fmt.Errorf("providers[%d] (%s): files: %s needs the extensions the provider reads", i, p.Name, FilesPerFile)
+		}
+		if p.Files == "" && len(p.Extensions) > 0 {
+			return fmt.Errorf("providers[%d] (%s): extensions only mean something with files: %s", i, p.Name, FilesPerFile)
+		}
 		if len(p.Command) == 0 {
 			if _, builtIn := builtIns[p.Name]; !builtIn {
 				return fmt.Errorf("providers[%d] (%s): missing command, and no built-in provider has that name (built-ins: %s)", i, p.Name, strings.Join(BuiltInNames(), ", "))
+			}
+			if p.Files != "" {
+				return fmt.Errorf("providers[%d] (%s): a built-in provider decides its own caching; files: is for commands", i, p.Name)
 			}
 			continue
 		}
@@ -173,7 +232,14 @@ func Validate(providers []Provider) error {
 // through the seam instead. Run never fails the snapshot: every per-provider
 // failure mode is a named skip in the census.
 func Run(ctx context.Context, providers []Provider, repoPath string, taken func(kind, name string) bool, ignored func(file string) bool) ([]facts.Fact, []facts.ProviderRecord) {
-	sorted := append([]Provider(nil), providers...)
+	return RunWith(ctx, Input{Providers: providers, RepoPath: repoPath, Taken: taken, Ignored: ignored})
+}
+
+// RunWith is Run with the engine's cache in hand. Without a cache every
+// provider runs whole-tree exactly as Run does.
+func RunWith(ctx context.Context, in Input) ([]facts.Fact, []facts.ProviderRecord) {
+	taken, ignored := in.Taken, in.Ignored
+	sorted := append([]Provider(nil), in.Providers...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
 	// Each provider is an independent process, so they run concurrently; what
@@ -192,19 +258,21 @@ func Run(ctx context.Context, providers []Provider, repoPath string, taken func(
 		wg.Add(1)
 		go func(i int, p Provider) {
 			defer wg.Done()
-			accepted, record := runOne(ctx, p, repoPath)
+			accepted, record := runOne(ctx, p, in)
 			outcomes[i] = outcome{accepted: accepted, record: record}
 		}(i, p)
 	}
 	wg.Wait()
 
-	var merged []facts.Fact
-	records := make([]facts.ProviderRecord, 0, len(sorted))
+	records := make([]facts.ProviderRecord, len(sorted))
+	keptAll := make([][]facts.Fact, len(sorted))
+	names := make([]string, len(sorted))
 	for i, p := range sorted {
 		accepted, record := outcomes[i].accepted, outcomes[i].record
+		names[i] = p.Name
 		if record.Skipped {
 			log.Printf("[providers] %s skipped: %s", p.Name, record.Reason)
-			records = append(records, record)
+			records[i] = record
 			continue
 		}
 		kept := accepted[:0]
@@ -227,17 +295,33 @@ func Run(ctx context.Context, providers []Provider, repoPath string, taken func(
 			log.Printf("[providers] %s: dropped %d fact(s) about files this repository's ignore globs exclude", p.Name, excluded)
 		}
 		record.ExcludedByIgnore = excluded
-		record.FactCount = len(kept)
-		records = append(records, record)
-		merged = append(merged, kept...)
-		log.Printf("[providers] %s (%s): merged %d facts", p.Name, record.Version, len(kept))
+		records[i] = record
+		keptAll[i] = kept
+	}
+	// Two producers reading one call site agree or differ; the seam records
+	// which, keeps an agreed relation once, and leaves every difference as
+	// emitted. Runs after validation and ignore, before the merge, so the
+	// counts describe what the graph holds.
+	keptAll = pairAcrossProviders(names, keptAll, records)
+	var merged []facts.Fact
+	for i, p := range sorted {
+		if records[i].Skipped {
+			continue
+		}
+		records[i].FactCount = len(keptAll[i])
+		merged = append(merged, keptAll[i]...)
+		log.Printf("[providers] %s (%s): merged %d facts", p.Name, records[i].Version, len(keptAll[i]))
+		if records[i].Agreed > 0 || records[i].Differing > 0 {
+			log.Printf("[providers] %s: %d call relation(s) agreed with another provider, %d differed, %d read by it alone", p.Name, records[i].Agreed, records[i].Differing, records[i].OneSided)
+		}
 	}
 	return merged, records
 }
 
 // runOne probes one provider's version, runs it, and strictly validates its
 // output. Any failure is returned as a skipped census record.
-func runOne(ctx context.Context, p Provider, repoPath string) ([]facts.Fact, facts.ProviderRecord) {
+func runOne(ctx context.Context, p Provider, in Input) ([]facts.Fact, facts.ProviderRecord) {
+	repoPath := in.RepoPath
 	record := facts.ProviderRecord{Name: p.Name}
 	skip := func(format string, args ...any) ([]facts.Fact, facts.ProviderRecord) {
 		record.Skipped = true
@@ -246,7 +330,7 @@ func runOne(ctx context.Context, p Provider, repoPath string) ([]facts.Fact, fac
 	}
 
 	if len(p.Command) == 0 {
-		return runBuiltIn(ctx, p, repoPath)
+		return runBuiltIn(ctx, p, in)
 	}
 
 	versionOut, err := exec.CommandContext(ctx, p.Command[0], append(p.Command[1:], "--version")...).Output()
@@ -267,31 +351,177 @@ func runOne(ctx context.Context, p Provider, repoPath string) ([]facts.Fact, fac
 		return skip("version mismatch: reported %s, expected %s", version, p.ExpectedVersion)
 	}
 
-	cmd := exec.CommandContext(ctx, p.Command[0], append(p.Command[1:], repoPath)...)
+	if p.Files == FilesPerFile && in.Cache != nil {
+		return runPerFile(ctx, p, in, version, record, skip)
+	}
+
+	accepted, census, err := invoke(ctx, p, repoPath, "")
+	if err != nil {
+		return skip("%v", err)
+	}
+	record.Census = census
+	stamp(accepted, p.Name, version)
+	sortFacts(accepted)
+	return accepted, record
+}
+
+// runPerFile serves a per-file provider's facts from the cache for every file
+// whose content digest has an entry and runs the provider over the rest,
+// listed in an argument file. A fact the provider emits about a file it was
+// not handed is dropped and counted: a provider that widened its own scope
+// would otherwise put facts in the graph the cache could never invalidate.
+func runPerFile(ctx context.Context, p Provider, in Input, version string, record facts.ProviderRecord, skip func(string, ...any) ([]facts.Fact, facts.ProviderRecord)) ([]facts.Fact, facts.ProviderRecord) {
+	reuse := &facts.ProviderReuse{}
+	record.Reuse = reuse
+	var reused []facts.Fact
+	var missing []string
+	keys := map[string]string{}
+	for _, file := range perFileCandidates(p, in.Files) {
+		digest := in.Hashes[file]
+		if digest == "" {
+			missing = append(missing, file)
+			continue
+		}
+		key := perFileKey(p.Name, version, digest)
+		keys[file] = key
+		if ff, ok := in.Cache.Get(key); ok {
+			reused = append(reused, ff...)
+			continue
+		}
+		missing = append(missing, file)
+	}
+	reuse.Reused = len(reused)
+	reuse.FilesReused = len(keys) - len(missing)
+	reuse.FilesComputed = len(missing)
+	if len(missing) == 0 {
+		sortFacts(reused)
+		return reused, record
+	}
+	listing, err := writeFileListing(missing)
+	if err != nil {
+		return skip("could not write the file listing: %v", err)
+	}
+	defer func() { _ = os.Remove(listing) }()
+	accepted, census, err := invoke(ctx, p, in.RepoPath, listing)
+	if err != nil {
+		return skip("%v", err)
+	}
+	record.Census = census
+	stamp(accepted, p.Name, version)
+	handed := make(map[string]bool, len(missing))
+	for _, file := range missing {
+		handed[file] = true
+	}
+	byFile := make(map[string][]facts.Fact, len(missing))
+	computed := accepted[:0]
+	for _, f := range accepted {
+		if !handed[f.File] {
+			reuse.OutsideScope++
+			continue
+		}
+		byFile[f.File] = append(byFile[f.File], f)
+		computed = append(computed, f)
+	}
+	if reuse.OutsideScope > 0 {
+		log.Printf("[providers] %s: dropped %d fact(s) about files it was not handed", p.Name, reuse.OutsideScope)
+	}
+	for _, file := range missing {
+		if key := keys[file]; key != "" {
+			in.Cache.Put(key, byFile[file])
+		}
+	}
+	reuse.Computed = len(computed)
+	all := append(reused, computed...)
+	sortFacts(all)
+	return all, record
+}
+
+// perFileCandidates is the set of walked files a per-file provider reads: those
+// with one of its declared extensions, in walk order.
+func perFileCandidates(p Provider, files []string) []string {
+	var out []string
+	for _, file := range files {
+		for _, ext := range p.Extensions {
+			if strings.HasSuffix(file, ext) {
+				out = append(out, file)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func perFileKey(name, version, digest string) string {
+	return "file\x00" + name + "\x00" + version + "\x00" + digest
+}
+
+func writeFileListing(files []string) (string, error) {
+	f, err := os.CreateTemp("", "enola-provider-files-*.txt")
+	if err != nil {
+		return "", err
+	}
+	w := bufio.NewWriter(f)
+	for _, file := range files {
+		if _, err := w.WriteString(filepath.ToSlash(file) + "\n"); err != nil {
+			_ = f.Close()
+			return "", err
+		}
+	}
+	if err := w.Flush(); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// invoke runs the provider over the repository, over the listed files only
+// when listing names one, and returns its validated facts and census.
+func invoke(ctx context.Context, p Provider, repoPath, listing string) ([]facts.Fact, *facts.ProviderCensus, error) {
+	args := append(append([]string(nil), p.Command[1:]...), repoPath)
+	if listing != "" {
+		args = append(args, FilesFlag, listing)
+	}
+	cmd := exec.CommandContext(ctx, p.Command[0], args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return skip("provider run failed: %v (%s)", err, strings.TrimSpace(stderr.String()))
+		return nil, nil, fmt.Errorf("provider run failed: %v (%s)", err, strings.TrimSpace(stderr.String()))
 	}
-
 	accepted, err := parseFacts(out)
 	if err != nil {
-		return skip("invalid output: %v", err)
+		return nil, nil, fmt.Errorf("invalid output: %v", err)
 	}
 	census, err := parseCensus(stderr.Bytes())
 	if err != nil {
-		return skip("invalid census: %v", err)
+		return nil, nil, fmt.Errorf("invalid census: %v", err)
 	}
-	record.Census = census
-	for i := range accepted {
-		accepted[i].Props[PropProvider] = p.Name
-		accepted[i].Props[PropProviderVersion] = version
+	return accepted, census, nil
+}
+
+func stamp(ff []facts.Fact, name, version string) {
+	for i := range ff {
+		ff[i].Props[PropProvider] = name
+		ff[i].Props[PropProviderVersion] = version
 	}
-	// Sorted before merge so the graph is a function of what the provider
-	// emitted, never of the order it happened to emit it in.
-	sort.Slice(accepted, func(i, j int) bool { return factOrder(accepted[i]) < factOrder(accepted[j]) })
-	return accepted, record
+}
+
+// sortFacts orders facts before merge so the graph is a function of what the
+// provider emitted, never of the order it happened to emit it in.
+func sortFacts(ff []facts.Fact) {
+	sort.Slice(ff, func(i, j int) bool { return factOrder(ff[i]) < factOrder(ff[j]) })
+}
+
+func digestOf(parts ...string) string {
+	h := sha256.New()
+	for _, part := range parts {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // parseFacts decodes a provider's JSONL strictly. The first invalid line

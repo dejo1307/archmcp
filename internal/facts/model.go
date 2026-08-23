@@ -135,6 +135,12 @@ const (
 	RelNames         = "names"          // Source names target by symbol literal without calling it: a method name passed as data (`perform_async(id, :on_done)`) for something else to dispatch. A reference, not a call; read by dead-code questions, ignored by call metrics.
 )
 
+// PropTargetFile is the repo-relative file a producer reports a relation's
+// target to be defined in, carried on the dependency fact beside the relation
+// so a consumer resolving the target by name can tell which of a reopened
+// name's files the edge lands on. Absent, the target resolves by name alone.
+const PropTargetFile = "target_file"
+
 // StorageKindTopic is the storage_kind prop value for a KindStorage fact that
 // represents a messaging topic reference (e.g. a Kafka topic a service produces to
 // or consumes from), as opposed to a database table or object store. The cross-repo
@@ -394,6 +400,71 @@ type SnapshotMeta struct {
 	Coverage           *CoverageSummary  `json:"coverage,omitempty"`           // cross-repo edge-coverage rollup, nil in single-repo mode
 	Census             *FileCensus       `json:"census,omitempty"`             // per-file walk accounting: every visited file in exactly one bucket
 	OutputHashes       map[string]string `json:"output_hashes,omitempty"`      // artifact name -> "sha256:"-prefixed hash of its written bytes
+	// Unseen is what this run could not see, assembled once after providers
+	// merged and the explainers ran, from counts the engine already holds. The
+	// verdict prints it as one line so "the graph agreed" and "the graph was not
+	// asked" never read the same.
+	Unseen *UnseenCensus `json:"unseen,omitempty"`
+}
+
+// UnseenCensus is the one account of what a run could not see. Every field
+// is a count the engine had anyway; assembling them here is what makes them
+// printable as one line under a verdict. A zero everywhere is a real answer
+// ("could not see: nothing"), which is why the struct is written even then.
+type UnseenCensus struct {
+	// FilesExcludedByIgnore and DirsExcludedByIgnore are what the ignore
+	// globs removed from the walk: files visited and dropped, and directories
+	// pruned whole.
+	FilesExcludedByIgnore int `json:"files_excluded_by_ignore"`
+	DirsExcludedByIgnore  int `json:"dirs_excluded_by_ignore"`
+	// ProviderSkips names each configured provider that ran and what it could
+	// not resolve (its top skip causes), or that did not run and why.
+	ProviderSkips []ProviderSkip `json:"provider_skips,omitempty"`
+	// OutsideGraph counts relations whose target is no fact in the graph, per
+	// relation kind: a dependency on a gem, an import of a package nobody
+	// indexed. Outside, never unresolved: the target exists, it is simply not
+	// in this graph.
+	OutsideGraph map[string]int `json:"outside_graph,omitempty"`
+	// DeadExemptions counts declared exemptions whose witness matched no
+	// violation, the constraints explainer's own finding.
+	DeadExemptions int `json:"dead_exemptions"`
+	// DynamicFeatureClasses counts classes defined in files that carry a
+	// dynamic dispatch prefix (`send`, `public_send` and the like). A count,
+	// never a verdict: the measurement that shaped this found doubt lowered
+	// only real breaches.
+	DynamicFeatureClasses int `json:"dynamic_feature_classes"`
+}
+
+// ProviderSkip is one provider's line in the unseen census.
+type ProviderSkip struct {
+	Name string `json:"name"`
+	// Reason is why the provider contributed nothing, when it did not run.
+	Reason string `json:"reason,omitempty"`
+	// Causes are the provider's own top skip causes when it ran.
+	Causes []CensusCause `json:"causes,omitempty"`
+}
+
+// RelationOverlap is the seam's account of one provider's relations of one
+// kind against the extractor's: what it repeated, what it spelled differently,
+// what it contradicted, what it stated about symbols the extractor never
+// declared, and what only it had. The five sum to the provider's relations of
+// that kind after merge.
+type RelationOverlap struct {
+	AlreadyResolved   int          `json:"already_resolved"`
+	Respelled         int          `json:"respelled"`
+	Conflict          int          `json:"conflict"`
+	NoExtractorSymbol int          `json:"no_extractor_symbol"`
+	ProviderOnly      int          `json:"provider_only"`
+	Respellings       []TargetPair `json:"respellings,omitempty"`
+	Conflicts         []TargetPair `json:"conflicts,omitempty"`
+}
+
+// TargetPair is one provider target beside the extractor target it was
+// compared with, kept as evidence for a respelling or a conflict.
+type TargetPair struct {
+	Source    string `json:"source"`
+	Provider  string `json:"provider"`
+	Extractor string `json:"extractor"`
 }
 
 // ProviderRecord is one configured external fact provider's entry in the
@@ -416,6 +487,59 @@ type ProviderRecord struct {
 	// reading a vendored tree nobody asked it to read.
 	ExcludedByIgnore int             `json:"excluded_by_ignore,omitempty"`
 	Census           *ProviderCensus `json:"census,omitempty"`
+	// Reuse says what the engine's cache did for this provider in this run.
+	// Present only when the cache was consulted for a provider that ran, so a
+	// skipped provider never reads as a hit and a run without a cache never
+	// reads as zero reuse: absent is "not asked", the way the rest of the
+	// receipt treats a number nobody measured.
+	Reuse *ProviderReuse `json:"reuse,omitempty"`
+
+	// Agreed counts this provider's call relations another provider emitted
+	// identically at the same file, line and callee; the seam keeps one of
+	// each pair. Differing counts the call sites where two providers resolved
+	// different receivers, both kept, by cause in Differences. OneSided counts
+	// the call relations no other provider read at that site.
+	Agreed      int                  `json:"agreed,omitempty"`
+	Differing   int                  `json:"differing,omitempty"`
+	OneSided    int                  `json:"one_sided,omitempty"`
+	Differences []ProviderDifference `json:"differences,omitempty"`
+
+	// Overlap is the seam's join of this provider's relations against the
+	// extractor's, per relation kind, computed after the merge and never
+	// acted on: repeated, respelled, contradicting, about undeclared symbols,
+	// or only the provider's.
+	Overlap map[string]*RelationOverlap `json:"overlap,omitempty"`
+	// Commit and Dirty say which tree the provider's facts describe. A provider
+	// that writes them in its own output is believed; otherwise they are read
+	// from the repository's git state at merge time, and CommitSource says
+	// which ("provider" or "git at merge").
+	Commit       string `json:"commit,omitempty"`
+	Dirty        bool   `json:"dirty,omitempty"`
+	CommitSource string `json:"commit_source,omitempty"`
+}
+
+// ProviderReuse is the cache's account of one provider run. For a per-file
+// provider, Reused and Computed count facts and FilesReused and FilesComputed
+// count the files behind them; OutsideScope counts facts the provider emitted
+// about files it was not handed, dropped. For a whole-index provider, Cache
+// reads hit or miss and Miss names what the key did not match: files, lockfile,
+// version, or cold when no index had been recorded.
+type ProviderReuse struct {
+	Reused        int    `json:"reused"`
+	Computed      int    `json:"computed"`
+	FilesReused   int    `json:"files_reused,omitempty"`
+	FilesComputed int    `json:"files_computed,omitempty"`
+	OutsideScope  int    `json:"outside_scope,omitempty"`
+	Cache         string `json:"cache,omitempty"`
+	Miss          string `json:"miss,omitempty"`
+}
+
+// ProviderDifference is one shape of disagreement between producers at the
+// same call site, with the first sites as evidence naming both spellings.
+type ProviderDifference struct {
+	Cause    string   `json:"cause"`
+	Count    int      `json:"count"`
+	Examples []string `json:"examples,omitempty"`
 }
 
 type ProviderCensus struct {

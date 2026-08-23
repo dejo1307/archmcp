@@ -3,6 +3,7 @@ package constraints
 import (
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/intent"
+	"strings"
 )
 
 // What a component owns is declared, never inferred, and the two declaring
@@ -86,6 +87,10 @@ type resolver struct {
 	ground  *grounding
 	methods *methodIndex
 	owned   map[string]*ownedFacts
+	// memberFiles indexes, per component and member name, the files the
+	// member was measured in, built on first use by a relation carrying a
+	// target file.
+	memberFiles map[string]map[string]map[string]bool
 }
 
 func newResolver(store *facts.Store, components map[string]component, members map[string]map[string]bool, memberFacts, carried map[string][]facts.Fact, ground *grounding) *resolver {
@@ -200,7 +205,7 @@ func (rs *resolver) memberOfSource(r rule, name string, f facts.Fact) (string, b
 // first, then a member's method, then the measured file a path-shaped target
 // grounds onto — the same order, and for the same reason.
 func (rs *resolver) target(r rule, name string, rel facts.Relation, from facts.Fact) (basis, bool) {
-	if rs.members[name][rel.Target] {
+	if rs.members[name][rel.Target] && rs.memberAtCarriedFile(name, rel, from) {
 		return exactBasis, true
 	}
 	if rs.ownsMethods(r, name) {
@@ -212,6 +217,41 @@ func (rs *resolver) target(r rule, name string, rel facts.Relation, from facts.F
 		return groundedBasis, true
 	}
 	return exactBasis, false
+}
+
+// memberAtCarriedFile keeps an exact-name membership honest when the producer
+// said which file the target is defined in. A name reopened across files is a
+// member of every component holding a reopening, so without the carried file a
+// read of `Foo::VERSION` landed on whichever component reopened `Foo`; with it,
+// the target is a member here only if this component measured that name in
+// that file. A relation carrying no file resolves by name as before.
+func (rs *resolver) memberAtCarriedFile(name string, rel facts.Relation, from facts.Fact) bool {
+	file, _ := from.Props[facts.PropTargetFile].(string)
+	if file == "" {
+		return true
+	}
+	if rs.memberFiles == nil {
+		rs.memberFiles = map[string]map[string]map[string]bool{}
+	}
+	files, indexed := rs.memberFiles[name]
+	if !indexed {
+		files = map[string]map[string]bool{}
+		for _, m := range rs.memberFacts[name] {
+			if m.File == "" {
+				continue
+			}
+			if files[m.Name] == nil {
+				files[m.Name] = map[string]bool{}
+			}
+			files[m.Name][m.File] = true
+			if m.Repo != "" {
+				files[m.Name][strings.TrimPrefix(m.File, m.Repo+"/")] = true
+			}
+		}
+		rs.memberFiles[name] = files
+	}
+	at := files[rel.Target]
+	return at[file] || (from.Repo != "" && at[from.Repo+"/"+file])
 }
 
 // memberBehind names the member a resolved target is a verdict about: the

@@ -33,7 +33,7 @@
 require "json"
 require "prism"
 
-PROVIDER_VERSION = "0.1.0"
+PROVIDER_VERSION = "0.2.0"
 
 if ARGV.include?("--version")
   puts PROVIDER_VERSION
@@ -41,7 +41,13 @@ if ARGV.include?("--version")
 end
 
 root = ARGV[0]
-abort "usage: enola_prism_provider.rb <repo-path>" unless root && File.directory?(root)
+abort "usage: enola_prism_provider.rb <repo-path> [--files LISTING]" unless root && File.directory?(root)
+
+# With --files the seam hands over the repo-relative paths whose facts it has no
+# cache entry for, one per line; only those are parsed, and every fact still
+# names its file, so the seam can store each file's facts under its own key.
+listing = ARGV.index("--files") && ARGV[ARGV.index("--files") + 1]
+abort "usage: enola_prism_provider.rb <repo-path> [--files LISTING]" if ARGV.include?("--files") && !listing
 
 SKIP_SEGMENTS = %w[vendor node_modules tmp].freeze
 
@@ -166,9 +172,13 @@ class CallCollector < Prism::Visitor
 end
 
 lines = []
-files = Dir.glob(File.join("**", "*.rb"), base: root).reject do |rel|
-  rel.split("/").any? { |segment| SKIP_SEGMENTS.include?(segment) }
-end.sort
+files = if listing
+  File.readlines(listing, chomp: true).reject(&:empty?).select { |rel| rel.end_with?(".rb") }.sort
+else
+  Dir.glob(File.join("**", "*.rb"), base: root).reject do |rel|
+    rel.split("/").any? { |segment| SKIP_SEGMENTS.include?(segment) }
+  end.sort
+end
 
 files.each do |rel|
   source = begin
