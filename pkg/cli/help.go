@@ -81,6 +81,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			bin.Name + " constraints <lint|mine|ledger> [repo_path|config_path]",
 			bin.Name + " plan [flags] [path...] [repo_path|config_path]",
 			bin.Name + " coverage [flags] [repo_path|config_path]",
+			bin.Name + " dashboard [--open] [repo_path|config_path]",
 			bin.Name + " doctor [repo_path]",
 			bin.Name + " log [flags] [repo_path|config_path]",
 			bin.Name + " show [<revision>] [repo_path|config_path]",
@@ -99,6 +100,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Flag: "plan", Desc: "The pre-edit contract: which declared constraints govern an\nintended change (--paths, --symbols), its blast radius over the\ncurrent snapshot, and — for a --patch — the constraint verdicts\nthat WOULD appear, evaluated over a scratch copy BEFORE any edit\nlands in the tree. Nothing is written; a report, never a gate.\nRun \"" + bin.Name + " plan --help\" for the flags."},
 			{Flag: "coverage", Desc: "Report which cross-repo edges were resolved and which were not,\nper service — telling a genuinely isolated service apart from one\nwhose outbound edges could not be followed. Needs two or more\nrepositories in one graph. A report, not a gate: always exits 0."},
 			{Flag: "endpoint", Desc: "Report what changing an HTTP endpoint reaches: the controller\nserving it, the models that controller touches, the models\nassociated with those, the tables behind them, and the callers,\nincluding the frontend screen a calling route module implements.\nUse impact_analysis when you have a symbol; use this when what\nyou have is a URL."},
+			{Flag: "dashboard", Desc: "Serve the latest snapshot in a read-only local dashboard without\nstarting an MCP server. Runs in the foreground until Ctrl-C.\nUse --open to launch the default browser."},
 			{Flag: "log", Desc: "EXPERIMENTAL. Show what this repository's architecture has done over\ntime — one line per recorded snapshot, with what changed since the\none before it. Read-only: it reports what was observed and never\nsnapshots to fill a gap. Every snapshot is recorded as a revision\n(~450 bytes, outside the repo); set `history.enabled: false` to stop."},
 			{Flag: "show", Desc: "EXPERIMENTAL. Show what ONE recorded revision did to the architecture\n— \"log\" says a revision added twelve facts, this says which twelve.\nReconstructs the revision and its predecessor out of\nthe stored history and compares them, so a past change is described in the same words it\nwas described in at the time. A revision is a snapshot id or prefix, a\ngit commit, HEAD~N, @<seq>, a ref name, or `latest` (the default)."},
 			{Flag: "diff", Desc: "EXPERIMENTAL. Show the architecture delta between any two recorded\nrevisions — the question a week of work produces, where \"show\" answers\nfor a single one. Either side of the range may be empty, meaning the\noldest or newest recorded revision."},
@@ -125,6 +127,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Comment: "Start MCP server with default config", Command: bin.Name},
 			{Comment: "Start MCP server with custom config", Command: bin.Name + " my-config.yaml"},
 			{Comment: "Generate a snapshot and exit", Command: bin.Name + " --generate"},
+			{Comment: "Explore the latest snapshot in the dashboard", Command: bin.Name + " dashboard --open"},
 			{Comment: "Index a whole cluster from one config (see CONFIG_PATH)", Command: bin.Name + " --generate cluster.yaml"},
 			{Comment: "Re-read one repository of that cluster into the existing union", Command: bin.Name + " --generate --refresh ../service-a cluster.yaml"},
 			{Comment: "Print a statistics report for a repository and exit", Command: bin.Name + " --explain /path/to/repo"},
@@ -153,7 +156,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 		},
 		Sections: []Section{
 			gateSection(bin),
-			dashboardSection(),
+			dashboardSection(bin),
 			updatesSection(bin),
 			mcpConfigSection(bin),
 			buildSection(bin),
@@ -201,14 +204,15 @@ func gateSection(bin Binary) Section {
 
 // dashboardSection documents the read-only HTTP dashboard served alongside the
 // MCP server.
-func dashboardSection() Section {
+func dashboardSection(bin Binary) Section {
 	return Section{
 		Title: "DASHBOARD",
-		Body: `  When the MCP server starts, a read-only HTTP dashboard is served on a free
-  localhost port (127.0.0.1). It shows the same status data plus the snapshot and
-  graph receipts. Refresh it explicitly when you want updated data. Run "--status" while the server
-  is up to get its URL, or pass "--no-dashboard" to skip it entirely.
-`,
+		Body: fmt.Sprintf(`  Run "%s dashboard [repo_path|config_path]" to serve the latest snapshot
+  without starting an MCP server; add --open to launch the browser. The normal MCP
+  server also exposes the same read-only dashboard. Data refresh is explicit, so an
+  investigation is never interrupted. Run "--status" to find its URL, or pass
+  "--no-dashboard" to disable it.
+`, bin.Name),
 	}
 }
 
