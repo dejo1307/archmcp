@@ -324,7 +324,14 @@ func TestWhere_LintCountsAndRendersThePredicate(t *testing.T) {
 // Every rule form must verdict over a predicate-selected component exactly as
 // it does over a path-selected one: the selector is the only thing that
 // changed, so a form that reads membership differently would be a second
-// vocabulary. One breach per form, all twelve law forms plus guidance.
+// vocabulary. One breach per form, thirteen law forms plus guidance.
+//
+// That is not every form in intent.RuleForms. The seven left out — forbid_cycles,
+// independent, storage_stays_home, cap_runtime, require_consumer, unique_across
+// and require_governed — verdict over inputs a single-repository fixture of plain
+// symbol facts cannot state: a contracted module graph, resolved ancestry, a
+// cross-repository route match, runtime observations, and compiled page anchors.
+// They are covered where those inputs exist, not here.
 func TestWhere_EveryRuleFormVerdictsOverAPredicateComponent(t *testing.T) {
 	base := func() *facts.Store {
 		store := facts.NewStore()
