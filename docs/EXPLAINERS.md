@@ -28,7 +28,7 @@ All of which buys a finding you can trust. It does not buy a verdict — and the
 between those two is what the rest of this document is about.
 
 Across the 81 public repositories swept in [BENCHMARKS.md](BENCHMARKS.md), enola's
-fifteen explainers produced **9,131 findings**. Every one of them is derived rather than
+explainers produced **9,131 findings**. Every one of them is derived rather than
 guessed, and that number is still the problem rather than the achievement. Nobody is
 going to read 9,131 findings. Nobody is going to fix them. A report that hands you all
 of them has told you something true and useless in the same breath, and the honest
@@ -44,10 +44,10 @@ find*. It is **what happens to a finding after you have found it** — and that 
 entirely on the thing [SNAPSHOTS.md](SNAPSHOTS.md) describes: whether your graph is a
 value you can compare against another one, or a picture of right now.
 
-## Eighteen explainers: three proofs and fourteen estimates
+## Eighteen explainers: three proofs and fifteen estimates
 
 An explainer reads the fact graph and emits **findings** — a claim, a confidence, and
-the entities the claim is about. There are sixteen, and they fall into six kinds:
+the entities the claim is about. There are eighteen, and they fall into six kinds:
 
 - **The proofs.** `cycles` runs Tarjan's SCC over the resolved import edges — a cycle
   either exists or it does not. `intent` diffs DECLARED architecture (a repo's
@@ -112,8 +112,8 @@ the entities the claim is about. There are sixteen, and they fall into six kinds
 
 What each one computes, every threshold it uses and what it deliberately ignores is in
 [ARCHITECTURE.md → Insights](../ARCHITECTURE.md#insights-explainers). The distinction
-that matters here is smaller and blunter: **three of the seventeen prove something. The
-other fourteen estimate.** A cycle is a fact about your import graph. A god class is an opinion
+that matters here is smaller and blunter: **three of the eighteen prove something. The
+other fifteen estimate.** A cycle is a fact about your import graph. A god class is an opinion
 about your repository, expressed as a number, and reasonable people can disagree with
 it.
 
