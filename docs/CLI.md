@@ -60,6 +60,8 @@ The install script installs **only the binary**, by design - it does not place a
 curl -fsSL https://raw.githubusercontent.com/enola-labs/enola/main/mcp-arch.yaml -o mcp-arch.yaml
 ```
 
+Third-party code copied into your own source tree is worth adding to those globs: the bundled list covers where dependencies conventionally live — `vendor/`, `node_modules/`, `Pods/` — but not a library vendored into `src/`, which is then part of everything the snapshot says about size, coupling and layering. The `vendored-candidates` explainer reports the ones it can recognise, each with the glob to paste.
+
 The [`examples/`](../examples/) directory has ready-made per-language and multi-repo starting points, and [`examples/full.yaml`](../examples/full.yaml) documents every option. For the full field reference and defaults, see **[ARCHITECTURE.md → Configuration](../ARCHITECTURE.md#configuration)**.
 
 ### Connect it to your agent
