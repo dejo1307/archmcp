@@ -200,8 +200,9 @@ func countUnreserved(sections []section) int {
 	return n
 }
 
-// maxRepoMapRows is the module count above which the repository map stops being a
-// per-module table and becomes a summary.
+// maxTableRows is the row count above which a per-item table stops being a census
+// and becomes a summary. It governs the repository map, the routes and the
+// storage sections, which had the same shape and the same failure.
 //
 // The table is one row per module, sorted by NAME, and unbounded. On a repository
 // of two thousand modules that is sixty thousand characters — the whole budget —
@@ -209,7 +210,7 @@ func countUnreserved(sections []section) int {
 // received was the alphabetically FIRST two thirds of a module census and no other
 // section of the document. Alphabetical order carries no information about a
 // codebase, which makes that the worst possible prefix to keep.
-const maxRepoMapRows = 60
+const maxTableRows = 60
 
 // maxLargestModules caps the "largest modules" list in that summary.
 const maxLargestModules = 20
@@ -261,7 +262,7 @@ func (r *LLMContextRenderer) renderRepoMap(snapshot *facts.Snapshot) string {
 		return unique[i].Name < unique[j].Name
 	})
 
-	if len(unique) > maxRepoMapRows {
+	if len(unique) > maxTableRows {
 		writeRepoMapSummary(&sb, unique, symbolCounts, multiRepo(unique))
 		return sb.String()
 	}
@@ -631,13 +632,21 @@ func (r *LLMContextRenderer) renderRoutes(snapshot *facts.Snapshot) string {
 
 	var sb strings.Builder
 	sb.WriteString("## Routes\n\n")
-	sb.WriteString("| Method | Path | File | Type |\n")
-	sb.WriteString("|--------|------|------|------|\n")
 
 	sort.Slice(routes, func(i, j int) bool {
-		return routes[i].Name < routes[j].Name
+		if routes[i].Name != routes[j].Name {
+			return routes[i].Name < routes[j].Name
+		}
+		return routes[i].File < routes[j].File
 	})
 
+	if len(routes) > maxTableRows {
+		writeRouteSummary(&sb, routes)
+		return sb.String()
+	}
+
+	sb.WriteString("| Method | Path | File | Type |\n")
+	sb.WriteString("|--------|------|------|------|\n")
 	for _, route := range routes {
 		method, _ := route.Props["method"].(string)
 		routeType, _ := route.Props["type"].(string)
@@ -645,6 +654,73 @@ func (r *LLMContextRenderer) renderRoutes(snapshot *facts.Snapshot) string {
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// writeRouteSummary groups routes by the first segment of their path, which is
+// how an HTTP surface is actually divided — /api against /admin against the rest
+// — and is the only grouping available without asking the router.
+//
+// One example path per prefix, because a count alone does not tell a reader what
+// the prefix serves and a full listing is what this replaces.
+func writeRouteSummary(sb *strings.Builder, routes []facts.Fact) {
+	type group struct {
+		prefix  string
+		count   int
+		methods map[string]bool
+		example string
+	}
+	byPrefix := map[string]*group{}
+	var order []string
+	for _, rt := range routes {
+		key := pathPrefix(rt.Name)
+		g := byPrefix[key]
+		if g == nil {
+			g = &group{prefix: key, methods: map[string]bool{}, example: rt.Name}
+			byPrefix[key] = g
+			order = append(order, key)
+		}
+		g.count++
+		if m, _ := rt.Props["method"].(string); m != "" {
+			g.methods[m] = true
+		}
+	}
+
+	fmt.Fprintf(sb, "%d routes, grouped by path prefix. query_facts(kind=\"route\") for all of them.\n\n", len(routes))
+	sort.Slice(order, func(i, j int) bool {
+		if byPrefix[order[i]].count != byPrefix[order[j]].count {
+			return byPrefix[order[i]].count > byPrefix[order[j]].count
+		}
+		return order[i] < order[j]
+	})
+	if len(order) > maxTableRows {
+		order = order[:maxTableRows]
+	}
+
+	sb.WriteString("| Prefix | Routes | Methods | Example |\n")
+	sb.WriteString("|--------|--------|---------|----------|\n")
+	for _, key := range order {
+		g := byPrefix[key]
+		methods := make([]string, 0, len(g.methods))
+		for m := range g.methods {
+			methods = append(methods, m)
+		}
+		sort.Strings(methods)
+		fmt.Fprintf(sb, "| `%s` | %d | %s | `%s` |\n", g.prefix, g.count, strings.Join(methods, ", "), g.example)
+	}
+	sb.WriteString("\n")
+}
+
+// pathPrefix returns the first segment of a route path, with the leading slash
+// kept so the value reads as a path. A root route is its own group.
+func pathPrefix(name string) string {
+	trimmed := strings.TrimPrefix(name, "/")
+	if trimmed == "" {
+		return "/"
+	}
+	if i := strings.Index(trimmed, "/"); i > 0 {
+		return "/" + trimmed[:i]
+	}
+	return "/" + trimmed
 }
 
 func (r *LLMContextRenderer) renderStorage(snapshot *facts.Snapshot) string {
@@ -655,13 +731,21 @@ func (r *LLMContextRenderer) renderStorage(snapshot *facts.Snapshot) string {
 
 	var sb strings.Builder
 	sb.WriteString("## Storage\n\n")
-	sb.WriteString("| Name | Kind | Operation | File |\n")
-	sb.WriteString("|------|------|-----------|------|\n")
 
 	sort.Slice(storage, func(i, j int) bool {
-		return storage[i].Name < storage[j].Name
+		if storage[i].Name != storage[j].Name {
+			return storage[i].Name < storage[j].Name
+		}
+		return storage[i].File < storage[j].File
 	})
 
+	if len(storage) > maxTableRows {
+		writeStorageSummary(&sb, storage)
+		return sb.String()
+	}
+
+	sb.WriteString("| Name | Kind | Operation | File |\n")
+	sb.WriteString("|------|------|-----------|------|\n")
 	for _, s := range storage {
 		storageKind, _ := s.Props["storage_kind"].(string)
 		operation, _ := s.Props["operation"].(string)
@@ -670,6 +754,57 @@ func (r *LLMContextRenderer) renderStorage(snapshot *facts.Snapshot) string {
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// writeStorageSummary groups data stores by their KIND — a Postgres table, an
+// ActiveRecord model, a Kafka topic and an S3 bucket are all stores the code
+// names, and the discriminator is the thing a reader sorts them by first — and
+// then names as many as fit.
+func writeStorageSummary(sb *strings.Builder, storage []facts.Fact) {
+	byKind := map[string][]string{}
+	var kinds []string
+	for _, st := range storage {
+		kind, _ := st.Props["storage_kind"].(string)
+		if kind == "" {
+			kind = "unknown"
+		}
+		if _, ok := byKind[kind]; !ok {
+			kinds = append(kinds, kind)
+		}
+		byKind[kind] = append(byKind[kind], st.Name)
+	}
+	sort.Strings(kinds)
+
+	fmt.Fprintf(sb, "%d data stores. query_facts(kind=\"storage\") for all of them.\n\n", len(storage))
+	for _, kind := range kinds {
+		names := dedupeSorted(byKind[kind])
+		shown := names
+		if len(shown) > maxStorageNames {
+			shown = shown[:maxStorageNames]
+		}
+		fmt.Fprintf(sb, "- **%s** (%d): `%s`", kind, len(names), strings.Join(shown, "`, `"))
+		if omitted := len(names) - len(shown); omitted > 0 {
+			fmt.Fprintf(sb, " … and %d more", omitted)
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+}
+
+// maxStorageNames caps how many store names are listed per kind.
+const maxStorageNames = 25
+
+// dedupeSorted removes repeats from an already-sorted slice. A model read in
+// several files is one store.
+func dedupeSorted(in []string) []string {
+	out := in[:0:0]
+	for i, v := range in {
+		if i > 0 && v == in[i-1] {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 func (r *LLMContextRenderer) renderDependencyRules(snapshot *facts.Snapshot) string {
@@ -708,6 +843,39 @@ func (r *LLMContextRenderer) renderDependencyRules(snapshot *facts.Snapshot) str
 
 	if len(edges) == 0 {
 		sb.WriteString("_No internal dependency rules detected._\n\n")
+		return sb.String()
+	}
+
+	if len(edges) > maxTableRows {
+		// The raw edge list is what `traverse` and query_facts serve, and it is the
+		// least summarisable thing in this document: on a large monorepo it is
+		// thousands of alphabetically sorted lines. What a reader can act on is
+		// which modules reach furthest, which no other section reports — Critical
+		// Modules ranks fan-IN, and this is its opposite.
+		outDegree := map[string]int{}
+		for e := range seen {
+			outDegree[e.from]++
+		}
+		names := make([]string, 0, len(outDegree))
+		for name := range outDegree {
+			names = append(names, name)
+		}
+		sort.Slice(names, func(i, j int) bool {
+			if outDegree[names[i]] != outDegree[names[j]] {
+				return outDegree[names[i]] > outDegree[names[j]]
+			}
+			return names[i] < names[j]
+		})
+		if len(names) > maxTableRows {
+			names = names[:maxTableRows]
+		}
+		fmt.Fprintf(&sb, "%d internal module dependencies. The modules that reach furthest; traverse() or query_facts(kind=\"dependency\") for the edges themselves.\n\n", len(edges))
+		sb.WriteString("| Module | Depends on |\n")
+		sb.WriteString("|--------|------------|\n")
+		for _, name := range names {
+			fmt.Fprintf(&sb, "| `%s` | %d modules |\n", name, outDegree[name])
+		}
+		sb.WriteString("\n")
 		return sb.String()
 	}
 
@@ -802,15 +970,22 @@ func (r *LLMContextRenderer) renderCriticalModules(snapshot *facts.Snapshot) str
 }
 
 func (r *LLMContextRenderer) renderRiskZones(snapshot *facts.Snapshot) string {
-	var risks []string
+	type risk struct {
+		line       string
+		confidence float64
+	}
+	var risks []risk
 
 	for _, insight := range snapshot.Insights {
 		if strings.Contains(insight.Title, "Cyclic dependency") ||
 			strings.Contains(insight.Title, "Layer violation") ||
 			strings.Contains(insight.Title, "Coverage gap") ||
 			strings.Contains(insight.Title, "Partial coverage") {
-			risks = append(risks, fmt.Sprintf("- **%s** (confidence: %.0f%%): %s",
-				insight.Title, insight.Confidence*100, insight.Description))
+			risks = append(risks, risk{
+				line: fmt.Sprintf("- **%s** (confidence: %.0f%%): %s",
+					insight.Title, insight.Confidence*100, insight.Description),
+				confidence: insight.Confidence,
+			})
 		}
 	}
 
@@ -820,12 +995,29 @@ func (r *LLMContextRenderer) renderRiskZones(snapshot *facts.Snapshot) string {
 
 	var sb strings.Builder
 	sb.WriteString("## Risk Zones\n\n")
-	for _, risk := range risks {
-		sb.WriteString(risk + "\n")
+	// Highest confidence first and capped. Every finding here carries a full
+	// description, so an application with hundreds of them is tens of thousands of
+	// characters — and taking them in the order the explainers happened to emit
+	// them meant a truncation kept whichever ones came first rather than the ones
+	// most likely to be real.
+	sort.SliceStable(risks, func(i, j int) bool { return risks[i].confidence > risks[j].confidence })
+	shown := risks
+	if len(shown) > maxRiskZones {
+		shown = shown[:maxRiskZones]
+	}
+	if omitted := len(risks) - len(shown); omitted > 0 {
+		fmt.Fprintf(&sb, "%d findings, the %d most confident shown. query_insights() for all.\n\n", len(risks), len(shown))
+	}
+	for _, risk := range shown {
+		sb.WriteString(risk.line + "\n")
 	}
 	sb.WriteString("\n")
 	return sb.String()
 }
+
+// maxRiskZones caps how many cycle, layer and coverage findings the summary
+// carries. Each one is a full sentence of description.
+const maxRiskZones = 25
 
 // renderFeatureGuide writes where a new feature goes, DERIVED from the layer
 // order the snapshot recognised rather than authored per taxonomy.
