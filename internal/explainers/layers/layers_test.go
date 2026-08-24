@@ -2,6 +2,7 @@ package layers
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -159,13 +160,16 @@ func TestDetectPatterns_Hexagonal(t *testing.T) {
 		t.Fatal("expected hexagonal pattern to be detected")
 	}
 
-	// 4/4 modules classified, 4/7 layers matched
-	// confidence = (classified/total)*0.6 + (matched/total)*0.4 ≈ 0.828
-	classified, totalModules := 4.0, 4.0
-	matched, totalLayers := 4.0, 7.0
-	expectedConf := (classified/totalModules)*0.6 + (matched/totalLayers)*0.4
-	if math.Abs(hexPattern.Confidence-expectedConf) > 0.01 {
-		t.Errorf("confidence = %f, want ≈ %f", hexPattern.Confidence, expectedConf)
+	// Confidence is the share of modules sitting in a layer that carries a
+	// direction — here all four — clamped at the heuristic ceiling. It used to
+	// blend in the share of the taxonomy's own layer NAMES that appeared, which
+	// paid a pattern for being narrow: matching all four names of the four-layer
+	// .NET taxonomy across 3% of a repository scored 0.42.
+	if math.Abs(hexPattern.Confidence-common.MaxHeuristicConfidence) > 0.01 {
+		t.Errorf("confidence = %f, want the heuristic ceiling %f", hexPattern.Confidence, common.MaxHeuristicConfidence)
+	}
+	if hexPattern.Graded != 4 || hexPattern.Scanned != 4 {
+		t.Errorf("graded/scanned = %d/%d, want 4/4", hexPattern.Graded, hexPattern.Scanned)
 	}
 
 	if len(hexPattern.Layers) != 4 {
@@ -937,6 +941,16 @@ func TestEmberUtilLayerDoesNotClaimLib(t *testing.T) {
 
 // --- P0 regression cases: the three false-positive classes the corpus exposed ---
 
+// mustExplain runs the explainer over a store and fails the test on error.
+func mustExplain(t *testing.T, s *facts.Store) []facts.Insight {
+	t.Helper()
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	return insights
+}
+
 // violationTitles returns the titles of the heuristic layer violations in a
 // snapshot, which is what the three tests below assert over.
 func violationTitles(t *testing.T, s *facts.Store) []string {
@@ -1026,5 +1040,77 @@ func TestAutoloadRootSkipsAssetDirectories(t *testing.T) {
 	}
 	if _, ok := autoloadedLayer("app/tools/replan", "app"); !ok {
 		t.Error("app/tools is autoloaded and must still be claimed")
+	}
+}
+
+// TestMinClassifiedShare_SuppressesThinClaims pins the coverage floor. A
+// taxonomy recognising its own vocabulary across a corner of a repository built
+// to a different plan is a wrong statement, not a tentative one: gitea has no
+// internal/ or pkg/ and was named go-standard on directories under routers/api
+// matching the word "api".
+func TestMinClassifiedShare_SuppressesThinClaims(t *testing.T) {
+	s := facts.NewStore()
+	names := []string{"routers/api", "cmd/serve"}
+	for i := 0; i < 30; i++ {
+		names = append(names, fmt.Sprintf("models/thing%d", i))
+	}
+	s.Add(makeModulesLang("go", names...)...)
+
+	for _, in := range mustExplain(t, s) {
+		if strings.HasPrefix(in.Title, "Architecture pattern:") {
+			t.Errorf("named an architecture from 2 of %d modules: %q", len(names), in.Title)
+		}
+	}
+
+	// The same taxonomy on a repository that actually follows it.
+	fat := facts.NewStore()
+	fat.Add(makeModulesLang("go", "cmd/serve", "internal/app", "internal/store", "pkg/api", "docs")...)
+	if findInsight(mustExplain(t, fat), "Architecture pattern: go-standard") == nil {
+		t.Error("expected go-standard on a repository that follows the layout")
+	}
+}
+
+// TestMinClassifiedShare_SuppressionDoesNotPromote pins WHERE the floor is
+// applied. A modular CMS matched the framework-gated .NET taxonomy across 3% of
+// itself and the language-agnostic hexagonal one across 26%; flooring at
+// admission removed the first and handed the repository to the second, trading a
+// wrong statement for a worse one. The floor belongs on the winner.
+func TestMinClassifiedShare_SuppressionDoesNotPromote(t *testing.T) {
+	s := facts.NewStore()
+	var names []string
+	// Thin, specific: two .NET clean-architecture project names.
+	names = append(names, "src/Shop.Domain", "src/Shop.Infrastructure")
+	// Fat, generic: enough ports-and-adapters vocabulary to satisfy hexagonal.
+	for i := 0; i < 10; i++ {
+		names = append(names, fmt.Sprintf("modules/mod%d/interfaces", i))
+		names = append(names, fmt.Sprintf("modules/mod%d/infrastructure", i))
+	}
+	for i := 0; i < 40; i++ {
+		names = append(names, fmt.Sprintf("modules/mod%d/unclassified", i))
+	}
+	s.Add(makeModulesLang("csharp", names...)...)
+	s.Add(frameworkFact("aspnetcore"))
+
+	for _, in := range mustExplain(t, s) {
+		if strings.HasPrefix(in.Title, "Architecture pattern:") {
+			t.Errorf("a floored winner promoted a worse pattern: %q", in.Title)
+		}
+	}
+}
+
+// TestDescribePattern_StatesWhatItCannotGrade: two taxonomies deliberately
+// collapse most of their directories to one tier, so on many repositories they
+// can express no ordering at all. A statement that says nothing about direction
+// reads as a clean bill of health; this one says which it is.
+func TestDescribePattern_StatesWhatItCannotGrade(t *testing.T) {
+	p := &archPattern{Name: "go-standard", Scanned: 10, Classified: 8, Graded: 8}
+	if got := describePattern(p, conformance{Same: 40}); !strings.Contains(got, "without grading anything") {
+		t.Errorf("expected an ungradeable statement, got %q", got)
+	}
+	if got := describePattern(p, conformance{Inward: 9, Against: 1}); !strings.Contains(got, "90% obey") {
+		t.Errorf("expected the obedience share, got %q", got)
+	}
+	if got := describePattern(p, conformance{Inward: 9}); !strings.Contains(got, "none run against") {
+		t.Errorf("expected a clean statement, got %q", got)
 	}
 }

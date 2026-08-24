@@ -298,6 +298,35 @@ type patternDef struct {
 	minSignatureLayers int
 }
 
+// minClassifiedShare is the fraction of a repository's distinct modules a
+// taxonomy must name before it is allowed to compete for the statement at all.
+//
+// CALIBRATED, NOT CHOSEN. Measured over the labelled corpus in
+// enola-benchmarks/arch-expected.json, the classified share separates cleanly
+// with a ten-point gap and nothing inside it:
+//
+//	 3%  a modular CMS named "dotnet-clean" — which it has never claimed to be
+//	 9%  an RPC framework named "spring-layered" off one Spring sub-project
+//	13%  a Go application named "go-standard" with no internal/ or pkg/ at all,
+//	     on 42 directories under routers/api/** matching the word "api"
+//	14%  a media server named "dotnet-clean"
+//	     ── 0.20 ──
+//	24%  the Android reference application, correctly named
+//	31%  … and every repository above it, all correctly named
+//
+// So the floor is not tuned to a target: every repository below it is a wrong
+// statement and every repository above it is a right one. What makes them wrong
+// is the same thing in each case — a taxonomy recognising its own vocabulary in
+// a repository built to a different plan — and a repository that follows a
+// layout genuinely does match most of it (enola's own tree: 92%).
+//
+// A floor SUPPRESSES rather than downgrades, because a low-confidence
+// architecture statement is not a weaker claim, it is a wrong one: nothing a
+// reader does with "this is dotnet-clean" gets better for being told it was 3%.
+//
+// It is applied to the winning pattern only — see thickEnough.
+const minClassifiedShare = 0.20
+
 // patternDefs lists all known architecture patterns. Order does not affect the
 // outcome; bestPattern selects by specificity then confidence.
 var patternDefs = []patternDef{
@@ -392,6 +421,41 @@ type archPattern struct {
 	Specificity int // from patternDef.specificity(); used to break ties in bestPattern
 	Layers      map[string]*layerDef
 	Modules     map[string]string // module -> layer name
+
+	// Scanned, Classified and Graded are the denominators the statement is built
+	// from. Classified counts every module the taxonomy named; Graded counts the
+	// subset sitting in a layer that carries a direction, which is the only part
+	// the claimed ORDER describes. They diverge whenever a repository's matches
+	// are mostly wiring — one Java project in the corpus classifies 84 modules of
+	// which 45 are a config package, so an "ordered" reading of it rests on 39.
+	Scanned    int
+	Classified int
+	Graded     int
+}
+
+// conformance counts what the measured imports did with the order the pattern
+// claims, over edges whose BOTH ends sit in a layer that carries a direction.
+//
+// This is the number the pattern insight was missing. Confidence was a coverage
+// ratio over directory NAMES, so a repository whose names look hexagonal and
+// whose edges do not scored the same as one where both agree — and the corpus
+// has both. Inward and Against are the two halves of the answer; Against is
+// exactly what the violations below the statement enumerate.
+type conformance struct {
+	Inward  int
+	Against int
+	Same    int
+}
+
+// obeys returns the share of ordered cross-layer imports that run inward, and
+// whether the question applies at all: a repository whose modules span one level
+// has no cross-layer edges to obey anything.
+func (c conformance) obeys() (float64, bool) {
+	total := c.Inward + c.Against
+	if total == 0 {
+		return 0, false
+	}
+	return float64(c.Inward) / float64(total), true
 }
 
 // Explain analyzes the fact store and detects architectural patterns, one
@@ -490,7 +554,7 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 			Actions:       []string{"Keep the declaration beside the code it governs"},
 		})
 		insights = append(insights, vacuousDeclarationInsights(dp, modules)...)
-		violations := e.detectViolations(scoped, dp)
+		violations, _ := e.detectViolations(scoped, dp)
 		for i := range violations {
 			violations[i].Confidence = 1.0
 		}
@@ -498,7 +562,7 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 	}
 
 	// Report detected architecture pattern
-	if best := e.bestPattern(patterns); best != nil {
+	if best := thickEnough(e.bestPattern(patterns)); best != nil {
 		// Sort the classified modules so the evidence order is deterministic —
 		// ranging best.Modules directly would follow Go's randomized map order.
 		mods := make([]string, 0, len(best.Modules))
@@ -515,9 +579,14 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 			})
 		}
 
+		// The violations are computed BEFORE the statement is written, because the
+		// statement quotes their denominator: how many imports obeyed the order is
+		// not knowable until the same walk that found the ones that did not.
+		violations, conf := e.detectViolations(scoped, best)
+
 		insights = append(insights, facts.Insight{
 			Title:         fmt.Sprintf("Architecture pattern: %s", best.Name),
-			Description:   fmt.Sprintf("Detected %s architecture pattern with %.0f%% confidence. Found %d layers with %d classified modules.", best.Name, best.Confidence*100, len(best.Layers), len(best.Modules)),
+			Description:   describePattern(best, conf),
 			Confidence:    best.Confidence,
 			Informational: true, // Which pattern was recognised is not a defect, at any confidence.
 			Evidence:      evidence,
@@ -526,13 +595,43 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 				"Review cross-layer dependencies for violations",
 			},
 		})
-
-		// Detect layer violations
-		violations := e.detectViolations(scoped, best)
 		insights = append(insights, violations...)
 	}
 
 	return insights
+}
+
+// describePattern writes the statement enola makes about a repository.
+//
+// It states three things a reader can check, in place of one number nobody could:
+// how much of the repository the taxonomy named, how much of that carries a
+// direction, and what the measured imports did with that direction. "Recognised
+// hexagonal, 66% confidence" and "the names say hexagonal and 340 imports run
+// against it" are the same snapshot; only the second is worth reading.
+func describePattern(p *archPattern, conf conformance) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Recognised %s from directory names: %d of %d modules classified",
+		p.Name, p.Classified, p.Scanned)
+	if p.Graded != p.Classified {
+		fmt.Fprintf(&sb, ", %d of them in layers that carry a direction (the rest are wiring, which is named but not ordered)", p.Graded)
+	}
+	sb.WriteString(". ")
+
+	share, applies := conf.obeys()
+	switch {
+	case !applies:
+		// Two taxonomies in this set deliberately collapse most of their
+		// directories to one tier, so on many repositories they can express no
+		// ordering at all. Saying so is the difference between a statement that
+		// found nothing and a repository that breached nothing.
+		sb.WriteString("No import in this repository crosses one of its ordered layers, so the pattern names a layout without grading anything: nothing here can breach it.")
+	case conf.Against == 0:
+		fmt.Fprintf(&sb, "All %d imports between ordered layers run inward; none run against the order.", conf.Inward)
+	default:
+		fmt.Fprintf(&sb, "Of %d imports between ordered layers, %d run inward and %d against it (%.0f%% obey the order); the %d are reported separately below.",
+			conf.Inward+conf.Against, conf.Inward, conf.Against, share*100, conf.Against)
+	}
+	return sb.String()
 }
 
 func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frameworks map[string]bool) []*archPattern {
@@ -596,6 +695,24 @@ func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frame
 			continue
 		}
 
+		// Count the classified modules that sit in a layer carrying a direction.
+		// A module in a neutral layer is named but not ordered, so it is evidence
+		// that the taxonomy fits and no evidence at all about the layering.
+		graded := 0
+		for _, layerName := range pattern.Modules {
+			if def := pattern.Layers[layerName]; def != nil && !def.Neutral {
+				graded++
+			}
+		}
+		// All three counts are over DISTINCT module names, because the classified
+		// one has to be: pattern.Modules is keyed by name, so two extractors
+		// emitting the same directory (a grammar directory read by two of them, in
+		// this repository) collapse there and not in a running total. Mixing the
+		// bases made enola's own snapshot say 119 of 129 modules were classified
+		// and 117 of those ordered — reading as two wiring modules where there
+		// were none, only two duplicates.
+		pattern.Scanned, pattern.Classified, pattern.Graded = distinctModules(modules), len(pattern.Modules), graded
+
 		// Require enough distinctive signature layers when the pattern declares
 		// them, so a match built only from generic names (e.g. just model + ui)
 		// or from a single stray directory does not qualify.
@@ -604,27 +721,47 @@ func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frame
 			continue
 		}
 
-		// Confidence based on how many modules are classified
-		coverage := float64(matchCount) / float64(len(modules))
-		// Also factor in how many distinct layers are matched
-		layerCoverage := float64(len(pattern.Layers)) / float64(len(def.layers)+autoLayers)
-
+		// Confidence is how much of the repository the claimed ORDER describes,
+		// and nothing else.
+		//
+		// It used to be `coverage*0.6 + layerCoverage*0.4`, where layerCoverage was
+		// the share of the taxonomy's OWN layer names that appeared. That second
+		// term rewarded a narrow taxonomy for being narrow and punished a wide one
+		// for being wide: a modular CMS matching all four names of the four-layer
+		// .NET taxonomy across 3% of its modules scored 0.42 — higher than several
+		// repositories the taxonomy genuinely describes — because 0.4 of the score
+		// was already banked before a single module was counted. The blend also had
+		// no meaning a reader could state. This one does: 0.24 means the ordered
+		// layers account for 24% of the modules measured.
+		//
 		// Ceiling is deliberately below 1.0: confidence 1.0 is reserved for a
 		// structural fact, and a pattern match is a coverage ratio over directory
-		// names — a well-supported guess, never a certainty. A repo where every
-		// module matched every layer would otherwise present as proof.
-		pattern.Confidence = (coverage*0.6 + layerCoverage*0.4)
+		// names — a well-supported guess, never a certainty.
+		pattern.Confidence = float64(graded) / float64(pattern.Scanned)
 		if pattern.Confidence > common.MaxHeuristicConfidence {
 			pattern.Confidence = common.MaxHeuristicConfidence
 		}
 
-		// Minimum threshold
-		if pattern.Confidence >= 0.2 && len(pattern.Layers) >= 2 {
+		// Everything that matched two layers enters the comparison. The coverage
+		// floor is applied to the WINNER instead, in explainRepo — see
+		// minClassifiedShare for why the difference matters.
+		if len(pattern.Layers) >= 2 {
 			patterns = append(patterns, pattern)
 		}
 	}
 
 	return patterns
+}
+
+// distinctModules counts the distinct module NAMES in a scope. Two extractors
+// can emit a fact for the same directory, and a denominator that counts both
+// cannot be compared against a numerator keyed by name.
+func distinctModules(modules []facts.Fact) int {
+	seen := make(map[string]struct{}, len(modules))
+	for _, m := range modules {
+		seen[m.Name] = struct{}{}
+	}
+	return len(seen)
 }
 
 // countSignatureLayers returns how many of the given distinctive layer names the
@@ -652,6 +789,26 @@ func (e *LayerExplainer) bestPattern(patterns []*archPattern) *archPattern {
 			(p.Specificity == best.Specificity && p.Confidence > best.Confidence) {
 			best = p
 		}
+	}
+	return best
+}
+
+// thickEnough applies the coverage floor to the pattern that WON, and returns
+// nil when it does not clear it.
+//
+// The floor is applied here rather than at admission, because suppression must
+// not promote. Applied at admission it removed a modular CMS's thin
+// `dotnet-clean` match and handed the repository to the generic `hexagonal`
+// pattern, which had recognised `Interfaces` and `Infrastructure` across a
+// quarter of it — trading a wrong statement for a worse one. If the taxonomy
+// that fits a repository best does not describe enough of it, no taxonomy does,
+// and the repository has no statement.
+func thickEnough(best *archPattern) *archPattern {
+	if best == nil || best.Scanned == 0 {
+		return nil
+	}
+	if float64(best.Classified)/float64(best.Scanned) < minClassifiedShare {
+		return nil
 	}
 	return best
 }
@@ -703,7 +860,7 @@ func presentFrameworks(ff []facts.Fact) map[string]bool {
 //
 // The facts passed in are one repository's, so an import can only ever be
 // verdicted against the taxonomy of the repository it was measured in.
-func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPattern) []facts.Insight {
+func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPattern) ([]facts.Insight, conformance) {
 	projectOf := moduleProjects(scoped)
 	type violation struct {
 		sourceModule, targetModule string
@@ -721,6 +878,7 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 	}
 	seen := make(map[string]bool)
 	var violations []violation
+	var conf conformance
 
 	for _, dep := range scoped {
 		if dep.Kind != facts.KindDependency {
@@ -778,13 +936,23 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 				continue
 			}
 			// A neutral layer is classified but unordered: it sits in no dependency
-			// direction, so neither end of an edge touching one can be verdicted.
+			// direction, so neither end of an edge touching one can be verdicted —
+			// and it must not be counted as conformance either way.
 			if sourceDef.Neutral || targetDef.Neutral {
 				continue
 			}
-			if sourceDef.Level >= targetDef.Level {
+			// Every ordered edge is counted, whichever way it runs. The edges that
+			// OBEY the order are the denominator that makes the ones that breach it
+			// mean something, and they were never measured before.
+			switch {
+			case sourceDef.Level > targetDef.Level:
+				conf.Inward++
+				continue
+			case sourceDef.Level == targetDef.Level:
+				conf.Same++
 				continue
 			}
+			conf.Against++
 			// Same assembly, no violation. .NET's layer boundary is the PROJECT, and
 			// two directories inside one compile into the same DLL — the reason the
 			// cycles explainer already says an intra-assembly cycle is a coupling
@@ -857,7 +1025,7 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 		})
 	}
 
-	return insights
+	return insights, conf
 }
 
 // resolveLayerModule walks path up its directory segments until it names a

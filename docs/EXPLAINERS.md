@@ -70,6 +70,16 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   `exported-surface` flags large modules that export nearly everything.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
   against eleven known taxonomies, then flags imports that run the wrong way through it.
+  The statement it makes carries its own denominators — modules classified, how many of
+  those sit in an ordered layer, and how many measured imports run inward against how
+  many run against the order — because "hexagonal, 66% confidence" and "the names say
+  hexagonal and 340 imports run against it" are the same snapshot and only the second is
+  worth reading. Confidence is `graded / scanned` — classified modules in a non-neutral
+  layer over distinct non-test modules — where it was previously
+  `0.6·coverage + 0.4·(matched layers / taxonomy size)`, a second term whose denominator
+  was the layer table rather than the repository. A taxonomy whose `classified / scanned`
+  is under 0.20 makes no statement at all: a thin match is a wrong claim rather than a
+  tentative one.
   A taxonomy may also mark a layer NEUTRAL: classified, but sitting in no dependency
   direction, so no import to or from it can be a violation. Wiring is what this is for —
   a Hilt `di` package and a Spring `@Configuration` package are referenced by every layer
