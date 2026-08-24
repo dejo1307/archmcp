@@ -104,35 +104,6 @@ func TestMatchesLayer(t *testing.T) {
 	}
 }
 
-func TestDominantLanguage(t *testing.T) {
-	tests := []struct {
-		name    string
-		modules []facts.Fact
-		want    string
-	}{
-		{"empty", nil, ""},
-		{"single", makeModulesLang("go", "cmd", "pkg"), "go"},
-		{
-			"majority wins",
-			append(makeModulesLang("python", "a", "b", "c"), makeModulesLang("typescript", "d")...),
-			"python",
-		},
-		{
-			"tie breaks alphabetically",
-			append(makeModulesLang("ruby", "a"), makeModulesLang("go", "b")...),
-			"go",
-		},
-		{"no language prop", makeModules("a", "b"), ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := dominantLanguage(tt.modules); got != tt.want {
-				t.Errorf("dominantLanguage = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPresentFrameworks(t *testing.T) {
 	s := facts.NewStore()
 	s.Add(frameworkFact("nextjs"))
@@ -153,7 +124,7 @@ func TestPresentFrameworks(t *testing.T) {
 func TestDetectPatterns_Hexagonal(t *testing.T) {
 	modules := makeModules("domain/entity", "application/usecase", "adapter/rest", "presentation/views")
 	e := New()
-	patterns := e.detectPatterns(modules, "", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	hexPattern := findPattern(patterns, "hexagonal")
 	if hexPattern == nil {
@@ -180,7 +151,7 @@ func TestDetectPatterns_Hexagonal(t *testing.T) {
 func TestDetectPatterns_NextJS(t *testing.T) {
 	modules := makeModulesLang("typescript", "app", "components", "hooks", "lib")
 	e := New()
-	patterns := e.detectPatterns(modules, "typescript", fwSet("nextjs"))
+	patterns := e.detectPatterns(modules, fwSet("nextjs"))
 
 	if findPattern(patterns, "nextjs") == nil {
 		t.Error("expected nextjs pattern to be detected when framework=nextjs is present")
@@ -190,7 +161,7 @@ func TestDetectPatterns_NextJS(t *testing.T) {
 func TestDetectPatterns_GoStandard(t *testing.T) {
 	modules := makeModulesLang("go", "cmd/server", "internal/auth", "pkg/utils")
 	e := New()
-	patterns := e.detectPatterns(modules, "go", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	if findPattern(patterns, "go-standard") == nil {
 		t.Error("expected go-standard pattern to be detected")
@@ -200,7 +171,7 @@ func TestDetectPatterns_GoStandard(t *testing.T) {
 func TestDetectPatterns_RailsMVC(t *testing.T) {
 	modules := makeModulesLang("ruby", "app/models", "app/controllers", "app/views", "app/helpers")
 	e := New()
-	patterns := e.detectPatterns(modules, "ruby", fwSet("rails"))
+	patterns := e.detectPatterns(modules, fwSet("rails"))
 
 	if findPattern(patterns, "rails-mvc") == nil {
 		t.Error("expected rails-mvc pattern to be detected")
@@ -210,7 +181,7 @@ func TestDetectPatterns_RailsMVC(t *testing.T) {
 func TestDetectPatterns_AndroidClean(t *testing.T) {
 	modules := makeModulesLang("kotlin", "domain", "data", "ui", "designsystem")
 	e := New()
-	patterns := e.detectPatterns(modules, "kotlin", fwSet("android"))
+	patterns := e.detectPatterns(modules, fwSet("android"))
 
 	if findPattern(patterns, "android-clean") == nil {
 		t.Error("expected android-clean pattern to be detected")
@@ -220,9 +191,9 @@ func TestDetectPatterns_AndroidClean(t *testing.T) {
 func TestDetectPatterns_IOSClean(t *testing.T) {
 	modules := makeModulesLang("swift", "Domain/UseCases", "Data/Network", "Screens", "DesignSystem")
 	e := New()
-	patterns := e.detectPatterns(modules, "swift", fwSet("swiftui"))
+	patterns := e.detectPatterns(modules, fwSet("swiftui"))
 
-	best := e.bestPattern(patterns)
+	best := firstSelected(e, patterns)
 	if best == nil || best.Name != "ios-clean" {
 		t.Errorf("expected ios-clean to win, got %v", best)
 	}
@@ -231,9 +202,9 @@ func TestDetectPatterns_IOSClean(t *testing.T) {
 func TestDetectPatterns_SpringLayered(t *testing.T) {
 	modules := makeModulesLang("java", "controller", "service", "repository", "entity", "config")
 	e := New()
-	patterns := e.detectPatterns(modules, "java", fwSet("spring"))
+	patterns := e.detectPatterns(modules, fwSet("spring"))
 
-	best := e.bestPattern(patterns)
+	best := firstSelected(e, patterns)
 	if best == nil || best.Name != "spring-layered" {
 		t.Errorf("expected spring-layered to win, got %v", best)
 	}
@@ -242,7 +213,7 @@ func TestDetectPatterns_SpringLayered(t *testing.T) {
 func TestDetectPatterns_Django(t *testing.T) {
 	modules := makeModulesLang("python", "models", "views", "serializers", "urls", "admin")
 	e := New()
-	patterns := e.detectPatterns(modules, "python", fwSet("django"))
+	patterns := e.detectPatterns(modules, fwSet("django"))
 
 	if findPattern(patterns, "django") == nil {
 		t.Error("expected django pattern to be detected")
@@ -255,7 +226,7 @@ func TestDetectPatterns_PythonNotNextJS(t *testing.T) {
 	// Airflow-like Python repo: generic dirs but no nextjs framework signal.
 	modules := makeModulesLang("python", "api", "app", "utils", "lib", "services")
 	e := New()
-	patterns := e.detectPatterns(modules, "python", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	if p := findPattern(patterns, "nextjs"); p != nil {
 		t.Errorf("python repo should not be detected as nextjs (got confidence %f)", p.Confidence)
@@ -266,7 +237,7 @@ func TestDetectPatterns_RailsNotNextJS(t *testing.T) {
 	// Discourse-like repo: JS-heavy Rails app, but framework is rails not nextjs.
 	modules := makeModulesLang("ruby", "app", "lib", "api", "services", "components")
 	e := New()
-	patterns := e.detectPatterns(modules, "ruby", fwSet("rails"))
+	patterns := e.detectPatterns(modules, fwSet("rails"))
 
 	if p := findPattern(patterns, "nextjs"); p != nil {
 		t.Errorf("rails repo should not be detected as nextjs (got confidence %f)", p.Confidence)
@@ -277,7 +248,7 @@ func TestDetectPatterns_GenericOOPNotHexagonal(t *testing.T) {
 	// Swift/Kotlin-style repo with only generic dirs (no ports/adapters/usecases).
 	modules := makeModulesLang("swift", "model", "view", "ui", "networking")
 	e := New()
-	patterns := e.detectPatterns(modules, "swift", fwSet("swiftui"))
+	patterns := e.detectPatterns(modules, fwSet("swiftui"))
 
 	if p := findPattern(patterns, "hexagonal"); p != nil {
 		t.Errorf("generic OOP repo should not be detected as hexagonal (got confidence %f)", p.Confidence)
@@ -289,7 +260,7 @@ func TestDetectPatterns_SingleSignatureNotHexagonal(t *testing.T) {
 	// signature layer) is not enough to call a repo hexagonal.
 	modules := makeModulesLang("python", "api", "core", "utils", "infrastructure")
 	e := New()
-	patterns := e.detectPatterns(modules, "python", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	if findPattern(patterns, "hexagonal") != nil {
 		t.Error("a single signature layer should not trigger hexagonal")
@@ -300,7 +271,7 @@ func TestDetectPatterns_GoNotNextJS(t *testing.T) {
 	// A Go repo with an "api" dir must not match nextjs (no nextjs framework, wrong language).
 	modules := makeModulesLang("go", "cmd", "internal", "pkg", "api")
 	e := New()
-	patterns := e.detectPatterns(modules, "go", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	if findPattern(patterns, "nextjs") != nil {
 		t.Error("go repo should not be detected as nextjs")
@@ -314,7 +285,7 @@ func TestDetectPatterns_BelowThreshold(t *testing.T) {
 	// Only 1 module matches 1 layer out of many unrelated modules
 	modules := makeModules("domain", "foo", "bar", "baz", "qux", "quux", "corge", "grault", "garply", "waldo")
 	e := New()
-	patterns := e.detectPatterns(modules, "", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	// "domain" is not a hexagonal signature layer, and coverage is below the
 	// 0.2 threshold anyway, so hexagonal must not be reported.
@@ -329,62 +300,118 @@ func TestGateOK(t *testing.T) {
 	tests := []struct {
 		name string
 		def  patternDef
-		lang string
 		fw   map[string]bool
 		want bool
 	}{
-		{"no gate", patternDef{}, "anything", nil, true},
-		{"language match", patternDef{languages: []string{"go"}}, "go", nil, true},
-		{"language mismatch", patternDef{languages: []string{"go"}}, "python", nil, false},
-		{"framework present", patternDef{frameworks: []string{"nextjs"}}, "", fwSet("nextjs"), true},
-		{"framework absent", patternDef{frameworks: []string{"nextjs"}}, "", fwSet("rails"), false},
+		{"no gate", patternDef{}, nil, true},
+		{"framework present", patternDef{frameworks: []string{"nextjs"}}, fwSet("nextjs"), true},
+		{"framework absent", patternDef{frameworks: []string{"nextjs"}}, fwSet("rails"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.def.gateOK(tt.lang, tt.fw); got != tt.want {
+			if got := tt.def.gateOK(tt.fw); got != tt.want {
 				t.Errorf("gateOK = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-// --- bestPattern ---
-
-func TestBestPattern(t *testing.T) {
-	e := New()
-
-	patterns := []*archPattern{
-		{Name: "a", Confidence: 0.5},
-		{Name: "b", Confidence: 0.8},
-		{Name: "c", Confidence: 0.3},
+// TestDescribes pins which languages a taxonomy may classify. It replaced a gate
+// on the repository's dominant language, which both hid a Go layout behind a
+// bigger front end and let the taxonomy that won classify modules written in
+// something else.
+func TestDescribes(t *testing.T) {
+	goStd := patternDef{appliesTo: []string{"go"}}
+	if !goStd.describes("go") || goStd.describes("typescript") {
+		t.Error("go-standard must describe go modules and no others")
+	}
+	if !(patternDef{}).describes("php") {
+		t.Error("a taxonomy naming no languages describes any of them")
 	}
 
-	best := e.bestPattern(patterns)
-	if best.Name != "b" {
-		t.Errorf("bestPattern = %s, want b (highest confidence)", best.Name)
+	mods := []facts.Fact{
+		{Kind: facts.KindModule, Name: "pkg/api", Props: map[string]any{"language": "go"}},
+		{Kind: facts.KindModule, Name: "public/app", Props: map[string]any{"language": "typescript"}},
+	}
+	cohort, langs := goStd.cohort(mods)
+	if len(cohort) != 1 || cohort[0].Name != "pkg/api" {
+		t.Errorf("cohort = %v, want just the go module", cohort)
+	}
+	if len(langs) != 1 || !langs["go"] {
+		t.Errorf("cohort languages = %v, want {go}", langs)
 	}
 }
 
-func TestBestPattern_PrefersSpecificity(t *testing.T) {
+// --- bestPattern ---
+
+// pat builds a pattern that clears the coverage floor, for the selection tests.
+func pat(name string, spec int, conf float64, langs ...string) *archPattern {
+	set := map[string]bool{}
+	for _, l := range langs {
+		set[l] = true
+	}
+	return &archPattern{Name: name, Specificity: spec, Confidence: conf,
+		Languages: set, Scanned: 10, Classified: 10}
+}
+
+func TestSelectPatterns_OneAnswerPerCohort(t *testing.T) {
+	e := New()
+
+	// Same cohort: one question, so only the strongest is reported.
+	got := e.selectPatterns([]*archPattern{
+		pat("a", 2, 0.5, "go"), pat("b", 2, 0.8, "go"), pat("c", 2, 0.3, "go"),
+	})
+	if len(got) != 1 || got[0].Name != "b" {
+		t.Errorf("same cohort selected %v, want just b", names(got))
+	}
+
+	// Disjoint cohorts: two halves of a polyglot repository, both true. This is
+	// the Rails-monolith-with-an-Ember-front-end case, where reporting one
+	// statement meant the loser's modules were described by the winner's order.
+	got = e.selectPatterns([]*archPattern{
+		pat("ember-octane", 2, 0.8, "typescript"), pat("rails-mvc", 2, 0.5, "ruby"),
+	})
+	if len(got) != 2 {
+		t.Errorf("disjoint cohorts selected %v, want both", names(got))
+	}
+
+	// An ungated taxonomy overlaps everything, so it yields to whatever claimed
+	// those modules first even at higher confidence.
+	got = e.selectPatterns([]*archPattern{
+		pat("rails-mvc", 2, 0.4, "ruby"),
+		{Name: "hexagonal", Specificity: 0, Confidence: 0.9, Scanned: 10, Classified: 10,
+			Languages: map[string]bool{"ruby": true, "php": true}},
+	})
+	if len(got) != 1 || got[0].Name != "rails-mvc" {
+		t.Errorf("overlapping cohorts selected %v, want just rails-mvc", names(got))
+	}
+}
+
+func names(ps []*archPattern) []string {
+	var out []string
+	for _, p := range ps {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
+func TestSelectPatterns_PrefersSpecificity(t *testing.T) {
 	e := New()
 
 	// A generic pattern with high confidence should lose to a more specific
-	// (framework-gated) pattern even at lower confidence.
-	patterns := []*archPattern{
-		{Name: "hexagonal", Confidence: 0.9, Specificity: 0},
-		{Name: "rails-mvc", Confidence: 0.5, Specificity: 2},
-	}
-
-	best := e.bestPattern(patterns)
-	if best.Name != "rails-mvc" {
-		t.Errorf("bestPattern = %s, want rails-mvc (more specific)", best.Name)
+	// (framework-gated) pattern over the same modules, even at lower confidence.
+	best := firstSelected(e, []*archPattern{
+		pat("hexagonal", 0, 0.9, "ruby"),
+		pat("rails-mvc", 2, 0.5, "ruby"),
+	})
+	if best == nil || best.Name != "rails-mvc" {
+		t.Errorf("selected %v, want rails-mvc (more specific)", best)
 	}
 }
 
-func TestBestPattern_Empty(t *testing.T) {
-	e := New()
-	if got := e.bestPattern(nil); got != nil {
-		t.Errorf("bestPattern(nil) = %v, want nil", got)
+func TestSelectPatterns_Empty(t *testing.T) {
+	if got := New().selectPatterns(nil); len(got) != 0 {
+		t.Errorf("selectPatterns(nil) = %v, want none", got)
 	}
 }
 
@@ -802,7 +829,7 @@ func TestDetectPatterns_ModuleRoleOutranksPath(t *testing.T) {
 			mods = append(mods, m)
 		}
 	}
-	pattern := e.bestPattern(e.detectPatterns(mods, "", nil))
+	pattern := firstSelected(e, e.detectPatterns(mods, nil))
 	if pattern == nil {
 		t.Fatal("no pattern detected")
 	}
@@ -822,7 +849,7 @@ func TestDetectPatterns_ConfidenceStaysBelowOne(t *testing.T) {
 	}
 
 	e := New()
-	for _, p := range e.detectPatterns(s.ByKind(facts.KindModule), "go", nil) {
+	for _, p := range e.detectPatterns(s.ByKind(facts.KindModule), nil) {
 		if p.Confidence >= 1.0 {
 			t.Errorf("pattern %q reached confidence %v; 1.0 is reserved for structural facts",
 				p.Name, p.Confidence)
@@ -940,6 +967,15 @@ func TestEmberUtilLayerDoesNotClaimLib(t *testing.T) {
 }
 
 // --- P0 regression cases: the three false-positive classes the corpus exposed ---
+
+// firstSelected returns the strongest reported pattern, or nil. Tests that
+// predate per-cohort selection ask "which one wins", which is the first.
+func firstSelected(e *LayerExplainer, patterns []*archPattern) *archPattern {
+	if got := e.selectPatterns(patterns); len(got) > 0 {
+		return got[0]
+	}
+	return nil
+}
 
 // mustExplain runs the explainer over a store and fails the test on error.
 func mustExplain(t *testing.T, s *facts.Store) []facts.Insight {
@@ -1104,13 +1140,37 @@ func TestMinClassifiedShare_SuppressionDoesNotPromote(t *testing.T) {
 // reads as a clean bill of health; this one says which it is.
 func TestDescribePattern_StatesWhatItCannotGrade(t *testing.T) {
 	p := &archPattern{Name: "go-standard", Scanned: 10, Classified: 8, Graded: 8}
-	if got := describePattern(p, conformance{Same: 40}); !strings.Contains(got, "without grading anything") {
+	if got := describePattern(p, conformance{Same: 40}, 10); !strings.Contains(got, "without grading anything") {
 		t.Errorf("expected an ungradeable statement, got %q", got)
 	}
-	if got := describePattern(p, conformance{Inward: 9, Against: 1}); !strings.Contains(got, "90% obey") {
+	if got := describePattern(p, conformance{Inward: 9, Against: 1}, 10); !strings.Contains(got, "90% obey") {
 		t.Errorf("expected the obedience share, got %q", got)
 	}
-	if got := describePattern(p, conformance{Inward: 9}); !strings.Contains(got, "none run against") {
+	if got := describePattern(p, conformance{Inward: 9}, 10); !strings.Contains(got, "none run against") {
 		t.Errorf("expected a clean statement, got %q", got)
+	}
+}
+
+// TestDescribePattern_NamesItsCohort: a taxonomy is scored over the modules it
+// could describe, so a Go SDK of 28 modules inside a Python repository of 1310
+// produces a true statement that reads as a claim about the whole repository
+// unless it says which part of it was measured.
+func TestDescribePattern_NamesItsCohort(t *testing.T) {
+	p := &archPattern{
+		Name: "go-standard", Scanned: 28, Classified: 18, Graded: 18,
+		Languages: map[string]bool{"go": true},
+	}
+	got := describePattern(p, conformance{}, 1310)
+	if !strings.Contains(got, "18 of 28 go modules classified") {
+		t.Errorf("expected the cohort's language named, got %q", got)
+	}
+	if !strings.Contains(got, "2% of this repository's 1310 modules") {
+		t.Errorf("expected the cohort's share of the repository, got %q", got)
+	}
+	// A taxonomy measured over the whole repository has no cohort to distinguish.
+	whole := &archPattern{Name: "rails-mvc", Scanned: 100, Classified: 90, Graded: 90,
+		Languages: map[string]bool{"ruby": true}}
+	if got := describePattern(whole, conformance{}, 100); strings.Contains(got, "of this repository's") {
+		t.Errorf("a whole-repository cohort must not report a share, got %q", got)
 	}
 }

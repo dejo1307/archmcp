@@ -192,24 +192,31 @@ func (r *LLMContextRenderer) renderArchPattern(snapshot *facts.Snapshot) string 
 	var sb strings.Builder
 	sb.WriteString("## Architecture Pattern\n\n")
 
-	// Find architecture insights
+	// Every architecture insight, not the first. A polyglot repository gets one
+	// statement per language cohort — a Rails monolith shipping an Ember front
+	// end is both — and returning at the first one showed the reader whichever
+	// cohort happened to rank highest while hiding that the other half of the
+	// repository had been described at all.
+	found := false
 	for _, insight := range snapshot.Insights {
-		if strings.HasPrefix(insight.Title, "Architecture pattern:") {
-			fmt.Fprintf(&sb, "**%s** (confidence: %.0f%%)\n\n", insight.Title, insight.Confidence*100)
-			sb.WriteString(insight.Description + "\n\n")
+		if !strings.HasPrefix(insight.Title, "Architecture pattern:") {
+			continue
+		}
+		found = true
+		fmt.Fprintf(&sb, "**%s** (confidence: %.0f%%)\n\n", insight.Title, insight.Confidence*100)
+		sb.WriteString(insight.Description + "\n\n")
 
-			if len(insight.Evidence) > 0 {
-				sb.WriteString("Layer mapping:\n")
-				for _, ev := range insight.Evidence {
-					fmt.Fprintf(&sb, "- %s\n", ev.Detail)
-				}
-				sb.WriteString("\n")
+		if len(insight.Evidence) > 0 {
+			sb.WriteString("Layer mapping:\n")
+			for _, ev := range insight.Evidence {
+				fmt.Fprintf(&sb, "- %s\n", ev.Detail)
 			}
-			return sb.String()
+			sb.WriteString("\n")
 		}
 	}
-
-	sb.WriteString("_No specific architecture pattern detected._\n\n")
+	if !found {
+		sb.WriteString("_No specific architecture pattern detected._\n\n")
+	}
 	return sb.String()
 }
 

@@ -270,9 +270,22 @@ type patternDef struct {
 	name   string
 	layers []layerDef
 
-	// languages, if non-empty, requires the repo's dominant language to be one
-	// of these for the pattern to be considered.
-	languages []string
+	// appliesTo names the languages this taxonomy DESCRIBES. Empty means any.
+	//
+	// It replaces a gate on the repository's dominant language, which asked the
+	// wrong question twice over. A Go application with a larger TypeScript front
+	// end has a dominant language of typescript, so its Go layout was never even
+	// considered — grafana's 954 Go modules got no statement at all. And a
+	// taxonomy admitted by the dominant language then classified every module in
+	// the repository, including the ones written in something else: a Rails
+	// monolith that ships an Ember front end had its Ruby app/services and
+	// app/serializers verdicted through Ember's layer order.
+	//
+	// Scoring a taxonomy over the modules it could describe, rather than over
+	// every module in the repository, fixes both: the denominator is the cohort,
+	// and a polyglot repository gets one statement per cohort instead of one
+	// statement and a wrong one.
+	appliesTo []string
 	// frameworks, if non-empty, requires at least one of these frameworks to be
 	// present in the facts for the pattern to be considered.
 	frameworks []string
@@ -331,25 +344,25 @@ const minClassifiedShare = 0.20
 // outcome; bestPattern selects by specificity then confidence.
 var patternDefs = []patternDef{
 	// Framework-gated patterns (most specific).
-	{name: "nextjs", layers: nextjsLayers, frameworks: []string{"nextjs"}},
-	{name: "rails-mvc", layers: railsLayers, frameworks: []string{"rails"},
+	{name: "nextjs", layers: nextjsLayers, frameworks: []string{"nextjs"}, appliesTo: []string{"typescript"}},
+	{name: "rails-mvc", layers: railsLayers, frameworks: []string{"rails"}, appliesTo: []string{"ruby"},
 		autoloadRoot: "app", autoloadLevel: 1},
-	{name: "android-clean", layers: androidLayers, frameworks: []string{"android"}},
-	{name: "ios-clean", layers: iosLayers, frameworks: []string{"swiftui", "uikit"}},
-	{name: "spring-layered", layers: springLayers, frameworks: []string{"spring"}},
-	{name: "django", layers: djangoLayers, frameworks: []string{"django"}},
+	{name: "android-clean", layers: androidLayers, frameworks: []string{"android"}, appliesTo: []string{"kotlin", "java"}},
+	{name: "ios-clean", layers: iosLayers, frameworks: []string{"swiftui", "uikit"}, appliesTo: []string{"swift"}},
+	{name: "spring-layered", layers: springLayers, frameworks: []string{"spring"}, appliesTo: []string{"java", "kotlin"}},
+	{name: "django", layers: djangoLayers, frameworks: []string{"django"}, appliesTo: []string{"python"}},
 	{name: "dotnet-clean", layers: dotnetCleanLayers, frameworks: []string{"aspnetcore", "efcore"},
-		dottedSegments: true, signatureLayers: []string{"domain", "infrastructure", "application"},
+		appliesTo: []string{"csharp", "vbnet", "fsharp", "razor", "xaml"}, dottedSegments: true, signatureLayers: []string{"domain", "infrastructure", "application"},
 		minSignatureLayers: 2},
-	{name: "ember-octane", layers: emberLayers, frameworks: []string{"ember"}},
+	{name: "ember-octane", layers: emberLayers, frameworks: []string{"ember"}, appliesTo: []string{"typescript", "handlebars"}},
 	// Two distinctive layers required: `components`/`services`/`models` are generic
 	// enough that a single stray directory in a repository that merely contains some
 	// Angular should not decide its architecture.
-	{name: "angular-layered", layers: angularLayers, frameworks: []string{"angular"},
+	{name: "angular-layered", layers: angularLayers, frameworks: []string{"angular"}, appliesTo: []string{"typescript"},
 		signatureLayers: []string{"pages", "store", "directives", "pipes"}, minSignatureLayers: 2},
 
 	// Language-gated patterns.
-	{name: "go-standard", layers: goStdLayers, languages: []string{"go"}},
+	{name: "go-standard", layers: goStdLayers, appliesTo: []string{"go"}},
 
 	// Language-agnostic patterns, gated on distinctive signature layers. Require
 	// at least two distinct ports-and-adapters layers so a single stray
@@ -378,27 +391,44 @@ func (d patternDef) specificity() int {
 	switch {
 	case len(d.frameworks) > 0:
 		return 2
-	case len(d.languages) > 0:
+	case len(d.appliesTo) > 0:
 		return 1
 	default:
 		return 0
 	}
 }
 
-// gateOK reports whether the pattern's language/framework requirements are met.
-func (d patternDef) gateOK(lang string, frameworks map[string]bool) bool {
-	if len(d.languages) > 0 {
-		matched := false
-		for _, l := range d.languages {
-			if l == lang {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
+// describes reports whether this taxonomy applies to a module's language.
+func (d patternDef) describes(lang string) bool {
+	if len(d.appliesTo) == 0 {
+		return true
+	}
+	for _, l := range d.appliesTo {
+		if l == lang {
+			return true
 		}
 	}
+	return false
+}
+
+// cohort returns the modules this taxonomy could describe, and the languages
+// they are written in.
+func (d patternDef) cohort(modules []facts.Fact) ([]facts.Fact, map[string]bool) {
+	out := make([]facts.Fact, 0, len(modules))
+	langs := map[string]bool{}
+	for _, m := range modules {
+		lang, _ := m.Props["language"].(string)
+		if !d.describes(lang) {
+			continue
+		}
+		out = append(out, m)
+		langs[lang] = true
+	}
+	return out, langs
+}
+
+// gateOK reports whether the pattern's framework requirement is met.
+func (d patternDef) gateOK(frameworks map[string]bool) bool {
 	if len(d.frameworks) > 0 {
 		matched := false
 		for _, f := range d.frameworks {
@@ -431,6 +461,24 @@ type archPattern struct {
 	Scanned    int
 	Classified int
 	Graded     int
+
+	// Languages is the cohort this pattern was scored over — the languages of the
+	// modules it could describe. Two patterns whose cohorts overlap are two
+	// answers to one question and only the better may be reported; two whose
+	// cohorts are disjoint describe different halves of a polyglot repository and
+	// both are true.
+	Languages map[string]bool
+}
+
+// label is the short name a finding cites the pattern by. A declared order is
+// already named for its repository, and repeating that inside a violation title
+// nests one parenthesis in another for no added information: the useful
+// distinction there is declared against recognised.
+func (p *archPattern) label() string {
+	if strings.HasPrefix(p.Name, "declared (") {
+		return "declared"
+	}
+	return p.Name
 }
 
 // conformance counts what the measured imports did with the order the pattern
@@ -522,12 +570,11 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 		return nil
 	}
 
-	// Derive language/framework signals used to gate pattern detection.
-	lang := dominantLanguage(modules)
+	// Derive the framework signals used to gate pattern detection.
 	frameworks := presentFrameworks(scoped)
 
 	// Detect which architecture patterns match
-	patterns := e.detectPatterns(modules, lang, frameworks)
+	patterns := e.detectPatterns(modules, frameworks)
 
 	var insights []facts.Insight
 
@@ -561,8 +608,8 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 		insights = append(insights, violations...)
 	}
 
-	// Report detected architecture pattern
-	if best := thickEnough(e.bestPattern(patterns)); best != nil {
+	// Report the architecture pattern of each language cohort.
+	for _, best := range e.selectPatterns(patterns) {
 		// Sort the classified modules so the evidence order is deterministic —
 		// ranging best.Modules directly would follow Go's randomized map order.
 		mods := make([]string, 0, len(best.Modules))
@@ -586,7 +633,7 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 
 		insights = append(insights, facts.Insight{
 			Title:         fmt.Sprintf("Architecture pattern: %s", best.Name),
-			Description:   describePattern(best, conf),
+			Description:   describePattern(best, conf, distinctModules(modules)),
 			Confidence:    best.Confidence,
 			Informational: true, // Which pattern was recognised is not a defect, at any confidence.
 			Evidence:      evidence,
@@ -601,6 +648,24 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 	return insights
 }
 
+// cohortLabel names the languages a pattern was scored over, for the statement.
+// Empty when the taxonomy describes every language, because there is no cohort
+// to distinguish it from.
+func cohortLabel(p *archPattern) string {
+	if len(p.Languages) == 0 || len(p.Languages) > 2 {
+		return ""
+	}
+	langs := make([]string, 0, len(p.Languages))
+	for l := range p.Languages {
+		if l == "" {
+			return ""
+		}
+		langs = append(langs, l)
+	}
+	sort.Strings(langs)
+	return strings.Join(langs, "/") + " "
+}
+
 // describePattern writes the statement enola makes about a repository.
 //
 // It states three things a reader can check, in place of one number nobody could:
@@ -608,10 +673,19 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 // direction, and what the measured imports did with that direction. "Recognised
 // hexagonal, 66% confidence" and "the names say hexagonal and 340 imports run
 // against it" are the same snapshot; only the second is worth reading.
-func describePattern(p *archPattern, conf conformance) string {
+func describePattern(p *archPattern, conf conformance, repoModules int) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Recognised %s from directory names: %d of %d modules classified",
-		p.Name, p.Classified, p.Scanned)
+	fmt.Fprintf(&sb, "Recognised %s from directory names: %d of %d %smodules classified",
+		p.Name, p.Classified, p.Scanned, cohortLabel(p))
+	// Name the cohort's size against the repository whenever it is not the whole
+	// of it. A taxonomy is now scored over the modules it could describe, so a Go
+	// SDK of 28 modules inside a Python repository of 1310 produces a true
+	// statement that reads as a claim about the repository unless it says which
+	// part of it was measured.
+	if repoModules > p.Scanned {
+		fmt.Fprintf(&sb, " — %.0f%% of this repository's %d modules",
+			100*float64(p.Scanned)/float64(repoModules), repoModules)
+	}
 	if p.Graded != p.Classified {
 		fmt.Fprintf(&sb, ", %d of them in layers that carry a direction (the rest are wiring, which is named but not ordered)", p.Graded)
 	}
@@ -634,16 +708,23 @@ func describePattern(p *archPattern, conf conformance) string {
 	return sb.String()
 }
 
-func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frameworks map[string]bool) []*archPattern {
+func (e *LayerExplainer) detectPatterns(allModules []facts.Fact, frameworks map[string]bool) []*archPattern {
 	var patterns []*archPattern
 
 	for di := range patternDefs {
 		def := patternDefs[di]
 
-		// Skip patterns whose language/framework gate is not satisfied. This is
-		// what stops e.g. a Python or Ruby repo from matching the generic
-		// "nextjs" directory names, or a plain OOP repo from matching nextjs.
-		if !def.gateOK(lang, frameworks) {
+		// Skip patterns whose framework gate is not satisfied. This is what stops
+		// a plain OOP repo from matching the generic "nextjs" directory names.
+		if !def.gateOK(frameworks) {
+			continue
+		}
+
+		// Score over the modules this taxonomy could describe, not over the whole
+		// repository. Everything below — matchCount, the signature gate, both
+		// denominators — is then a measurement of the cohort.
+		modules, cohortLangs := def.cohort(allModules)
+		if len(modules) == 0 {
 			continue
 		}
 
@@ -652,6 +733,7 @@ func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frame
 			Specificity: def.specificity(),
 			Layers:      make(map[string]*layerDef),
 			Modules:     make(map[string]string),
+			Languages:   cohortLangs,
 		}
 
 		matchCount := 0
@@ -776,21 +858,57 @@ func countSignatureLayers(pattern *archPattern, signature []string) int {
 	return n
 }
 
-func (e *LayerExplainer) bestPattern(patterns []*archPattern) *archPattern {
-	if len(patterns) == 0 {
-		return nil
-	}
+// selectPatterns returns the patterns to report: the best one for each cohort of
+// languages, strongest first, with no two cohorts overlapping.
+//
+// A repository used to get exactly one statement, which is right only when it is
+// written in one thing. A Rails monolith shipping an Ember front end matched both
+// taxonomies at equal specificity, so confidence alone decided, and the loser's
+// half of the repository was then described by the winner's layer order. Both are
+// true here, over disjoint sets of modules, and both are reported.
+//
+// Overlapping cohorts are still one question with one answer: the ungated
+// hexagonal taxonomy describes every language, so it is reported only where no
+// gated taxonomy claimed those modules first.
+func (e *LayerExplainer) selectPatterns(patterns []*archPattern) []*archPattern {
+	ranked := append([]*archPattern(nil), patterns...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].Specificity != ranked[j].Specificity {
+			return ranked[i].Specificity > ranked[j].Specificity
+		}
+		if ranked[i].Confidence != ranked[j].Confidence {
+			return ranked[i].Confidence > ranked[j].Confidence
+		}
+		return ranked[i].Name < ranked[j].Name
+	})
 
-	best := patterns[0]
-	for _, p := range patterns[1:] {
-		// Prefer the more specific pattern (framework > language > generic);
-		// break ties by confidence.
-		if p.Specificity > best.Specificity ||
-			(p.Specificity == best.Specificity && p.Confidence > best.Confidence) {
-			best = p
+	claimed := map[string]bool{}
+	var out []*archPattern
+	for _, p := range ranked {
+		if overlaps(p.Languages, claimed) {
+			continue
+		}
+		// The floor is applied per cohort, and a floored winner still CLAIMS its
+		// languages: suppression must not promote, and a worse-fitting taxonomy
+		// over the same modules is exactly what would take its place.
+		for lang := range p.Languages {
+			claimed[lang] = true
+		}
+		if thickEnough(p) != nil {
+			out = append(out, p)
 		}
 	}
-	return best
+	return out
+}
+
+// overlaps reports whether any language in langs is already claimed.
+func overlaps(langs, claimed map[string]bool) bool {
+	for lang := range langs {
+		if claimed[lang] {
+			return true
+		}
+	}
+	return false
 }
 
 // thickEnough applies the coverage floor to the pattern that WON, and returns
@@ -809,26 +927,6 @@ func thickEnough(best *archPattern) *archPattern {
 	}
 	if float64(best.Classified)/float64(best.Scanned) < minClassifiedShare {
 		return nil
-	}
-	return best
-}
-
-// dominantLanguage returns the most common language across module facts, using
-// the Props["language"] attribute every extractor sets. Ties break
-// alphabetically for deterministic output.
-func dominantLanguage(modules []facts.Fact) string {
-	counts := make(map[string]int)
-	for _, m := range modules {
-		if lang, ok := m.Props["language"].(string); ok && lang != "" {
-			counts[lang]++
-		}
-	}
-	best := ""
-	bestN := 0
-	for lang, n := range counts {
-		if n > bestN || (n == bestN && lang < best) {
-			best, bestN = lang, n
-		}
 	}
 	return best
 }
@@ -1008,7 +1106,13 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 		addEntity(v.targetModule, "imported module")
 
 		insights = append(insights, facts.Insight{
-			Title: fmt.Sprintf("Layer violation: %s -> %s", v.sourceLayer, v.targetLayer),
+			// The taxonomy is named because a polyglot repository now gets one
+			// statement per language cohort, and two of them can produce the same
+			// pair of layer names: openproject reports `components -> controller`
+			// out of Ruby view components and `components -> pages` out of Angular
+			// ones, and without this there is nothing in the finding that says
+			// which order was applied.
+			Title: fmt.Sprintf("Layer violation: %s -> %s (%s)", v.sourceLayer, v.targetLayer, pattern.label()),
 			Description: fmt.Sprintf(
 				"Module %q (layer: %s, level %d) imports module %q (layer: %s, level %d). "+
 					"Inner layers should not depend on outer layers.",
