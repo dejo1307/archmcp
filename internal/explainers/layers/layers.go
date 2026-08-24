@@ -864,13 +864,10 @@ func (e *LayerExplainer) detectPatterns(allModules []facts.Fact, frameworks map[
 
 		matchCount := 0
 		for _, mod := range modules {
-			for i, layer := range def.layers {
-				if matchesLayerIn(mod.Name, layer.Patterns, def.dottedSegments) {
-					pattern.Layers[layer.Name] = &def.layers[i]
-					pattern.Modules[mod.Name] = layer.Name
-					matchCount++
-					break
-				}
+			if i, ok := classifyModule(mod.Name, def); ok {
+				pattern.Layers[def.layers[i].Name] = &def.layers[i]
+				pattern.Modules[mod.Name] = def.layers[i].Name
+				matchCount++
 			}
 		}
 
@@ -970,6 +967,37 @@ func distinctModules(modules []facts.Fact) int {
 		seen[m.Name] = struct{}{}
 	}
 	return len(seen)
+}
+
+// classifyModule picks the layer a module belongs to: the first match in the
+// taxonomy's declaration order, except that UNORDERED layers are considered
+// first.
+//
+// Matching is position-blind — any path segment may match — so a wiring directory
+// nested inside an ordered one takes the enclosing layer: an Android module at
+// core/data/…/data/di classified as `data` rather than `di`, and a Spring package
+// at …/service/config as `service` rather than `config`. Preferring the neutral
+// layer is the fail-safe direction. Misclassifying INTO one only silences a
+// verdict, because a neutral layer produces none; misclassifying OUT of one
+// invents a verdict about a directory whose whole role is to be referenced by
+// every layer it wires.
+//
+// Deciding by position instead — the deepest matching segment — was measured and
+// rejected: it reclassified `adapter/rest` from adapter to handler and broke
+// hexagonal detection on a canonical ports-and-adapters layout, with nothing in
+// the corpus improved.
+func classifyModule(name string, def patternDef) (int, bool) {
+	for _, wantNeutral := range []bool{true, false} {
+		for i := range def.layers {
+			if def.layers[i].Neutral != wantNeutral {
+				continue
+			}
+			if matchesLayerIn(name, def.layers[i].Patterns, def.dottedSegments) {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // countSignatureLayers returns how many of the given distinctive layer names the

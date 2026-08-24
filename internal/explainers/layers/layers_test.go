@@ -1285,3 +1285,43 @@ func TestPrescribedTaxonomies(t *testing.T) {
 		}
 	})
 }
+
+// TestClassifyModule_PrefersUnorderedLayers pins the wiring-first rule. Matching
+// is position-blind, so a wiring directory nested inside an ordered one took the
+// enclosing layer: nowinandroid's core/data/…/data/di classified as `data`, and a
+// Spring package at …/service/config as `service`. Preferring the neutral layer is
+// the fail-safe direction — misclassifying into one only silences a verdict, while
+// misclassifying out of one invents one about a directory every layer references.
+func TestClassifyModule_PrefersUnorderedLayers(t *testing.T) {
+	android := patternDefs[indexOfPattern(t, "android-clean")]
+	i, ok := classifyModule("core/data/src/main/kotlin/app/core/data/di", android)
+	if !ok || android.layers[i].Name != "di" {
+		t.Errorf("nested wiring classified as %q, want di", android.layers[i].Name)
+	}
+	if !android.layers[i].Neutral {
+		t.Error("the di layer must be unordered")
+	}
+
+	spring := patternDefs[indexOfPattern(t, "spring-layered")]
+	i, ok = classifyModule("src/main/java/app/service/config", spring)
+	if !ok || spring.layers[i].Name != "config" {
+		t.Errorf("nested config classified as %q, want config", spring.layers[i].Name)
+	}
+
+	// An ordered layer with no wiring segment is unaffected.
+	i, ok = classifyModule("src/main/java/app/service/impl", spring)
+	if !ok || spring.layers[i].Name != "service" {
+		t.Errorf("ordinary module classified as %q, want service", spring.layers[i].Name)
+	}
+}
+
+func indexOfPattern(t *testing.T, name string) int {
+	t.Helper()
+	for i := range patternDefs {
+		if patternDefs[i].name == name {
+			return i
+		}
+	}
+	t.Fatalf("no taxonomy named %q", name)
+	return 0
+}
