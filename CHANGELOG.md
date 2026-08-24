@@ -7,6 +7,51 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
+## v0.4.7 — 2026-08-24
+
+**A built-in provider stops building the facts the configuration throws away**
+
+The provider seam drops facts about files the repository's ignore globs exclude, because
+a provider walks the tree itself and cannot know what the configuration leaves out. That
+holds for an external provider, a separate process handed a repository path. A built-in
+runs in the engine's own address space, and its input already carries the predicate.
+
+Rubydex is a built-in, and on a Rails monolith it built 2,155,664 facts so the seam
+could discard 1,520,163 of them, each one named, located, given a relation, appended to
+a slice growing into the millions and sorted with the rest. Collection now takes the
+predicate: an excluded document is skipped before its definitions are read, and an
+excluded reference before its fact is built. The census names both counts, so what the
+exclusions cost stays visible rather than disappearing quietly. Same configuration, same
+globs, 440 seconds before and 193 after, with 1,800,829 facts byte-for-byte identical.
+Indexing is untouched — vendored gems and engine directories are still handed to the
+indexer, because that is what lets a workspace constant resolve to a declaration outside
+it. Indexing is how the graph resolves; emission is what enters it.
+
+This release is the work of [Muhamed Isabegović](https://github.com/misabegovic).
+
+## v0.4.6 — 2026-08-24
+
+**A constant reference is never its own predecessor**
+
+Fixed: a Ruby prefix walk that could not terminate. The walk steps back over the
+segments written before a leaf on its line, so that `Foo::VERSION` reports `VERSION` as
+the dependency and `Foo` as the path it was named through, and it found the previous
+segment by comparing columns alone. A reference spanning several lines carries an end
+column belonging to its last line, and when that number plus the separator happened to
+equal its own start column, the reference was returned as its own predecessor and the
+walk went round forever. One reference does this on a Rails monolith; the provider was
+killed at 26 minutes holding 6.7GB with nothing written, on a tree the engine indexes in
+24 seconds. A second Rails application hung the same way. A candidate now qualifies only
+when it is a different reference ending on the line the walk is on, which is what the
+adjacency pass twenty lines earlier already asserts.
+
+Two things ride along: the walk appends and reverses once instead of allocating a new
+slice at every step, and a declaration's name is fetched across the library boundary
+once rather than per reference — that monolith resolves 1,624,360 references to 132,603
+declarations. Facts are byte-for-byte identical where both builds complete.
+
+This release is the work of [Muhamed Isabegović](https://github.com/misabegovic).
+
 ## v0.4.5 — 2026-08-23
 
 **The verdict where CI reads it, provider facts cached, and detection that stops re-walking the tree**
