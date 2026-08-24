@@ -510,3 +510,46 @@ func TestFileDir(t *testing.T) {
 		}
 	}
 }
+
+// TestFeatureGuideIsDerived: the guide is a rendering of the recognised layer
+// order, not authored prose. It used to be a switch over three taxonomy names
+// with a generic fallback for the other eleven, so most repositories were told to
+// "identify the appropriate module/package" while the snapshot held their exact
+// layer order.
+func TestFeatureGuideIsDerived(t *testing.T) {
+	var ff []facts.Fact
+	for _, m := range []string{"app/controllers", "app/models", "app/services", "app/jobs"} {
+		ff = append(ff, facts.Fact{Kind: facts.KindModule, Name: m,
+			Props: map[string]any{"language": "ruby"}})
+	}
+	snap := makeSnapshot(ff, []facts.Insight{{
+		Title: "Architecture pattern: rails-mvc", Confidence: 0.8, Informational: true,
+	}})
+
+	got := New(16000).renderFeatureGuide(snap)
+
+	if !strings.Contains(got, "laid out as **rails-mvc**") {
+		t.Fatalf("expected the recognised taxonomy to be named:\n%s", got)
+	}
+	// Peers share a tier and must be listed together, not numbered as steps: the
+	// Rails taxonomy deliberately puts its domain directories at one level.
+	if !strings.Contains(got, "**job, model, service**") {
+		t.Errorf("expected the domain peers grouped on one tier:\n%s", got)
+	}
+	// A layer the repository does not have says nothing about the repository.
+	for _, absent := range []string{"presenter", "notifier", "interactor"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("layer %q has no module here and must not be listed:\n%s", absent, got)
+		}
+	}
+	// Examples come from this repository, not from the taxonomy.
+	if !strings.Contains(got, "app/controllers") {
+		t.Errorf("expected a real module as the example:\n%s", got)
+	}
+
+	// Nothing recognised: no section at all, rather than advice true of every
+	// codebase ever written.
+	if out := New(16000).renderFeatureGuide(makeSnapshot(ff, nil)); out != "" {
+		t.Errorf("expected no section when no order was recognised, got:\n%s", out)
+	}
+}

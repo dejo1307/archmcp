@@ -7,8 +7,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/enola-labs/enola/internal/explainers/layers"
 	"github.com/enola-labs/enola/internal/facts"
 )
+
+// maxLayerMappingLines caps how many module-to-layer lines the architecture
+// section prints per pattern. The section is reserved out of the budget, so it
+// has to be bounded, and the reader wants the shape rather than the census.
+const maxLayerMappingLines = 12
 
 // LLMContextRenderer produces a compact markdown summary optimized for LLM consumption.
 type LLMContextRenderer struct {
@@ -67,7 +73,17 @@ func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapsho
 		// snapshot, overran the whole budget — which truncated this section away on
 		// exactly the clusters whose extraction is least complete.
 		{name: "Extraction Quality", content: r.renderExtractionQuality(snapshot), reserve: true},
-		{name: "Architecture Pattern", content: r.renderArchPattern(snapshot)},
+		// Reserved for the same reason Extraction Quality is, and discovered the same
+		// way: Repository Map grows with the repository, and on a large one it spent
+		// the entire budget before this section was reached. Two repositories in the
+		// benchmark corpus rendered 64,000 characters of module list and not one word
+		// of the architecture the snapshot had recognised — which is the single thing
+		// this file exists to tell a reader. Its size is bounded below, so reserving
+		// it costs a fixed and small amount.
+		{name: "Architecture Pattern", content: r.renderArchPattern(snapshot), reserve: true},
+		// Immediately after the statement, and reserved with it: the guide is a
+		// rendering of the same layer order, and the two are read together.
+		{name: "How to Add a Feature", content: r.renderFeatureGuide(snapshot), reserve: true},
 		{name: "Cross-Repo Dependencies", content: r.renderCrossRepo(snapshot)},
 		{name: "Entry Points", content: r.renderEntryPoints(snapshot)},
 		{name: "Routes", content: r.renderRoutes(snapshot)},
@@ -75,7 +91,6 @@ func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapsho
 		{name: "Dependency Rules", content: r.renderDependencyRules(snapshot)},
 		{name: "Critical Modules", content: r.renderCriticalModules(snapshot)},
 		{name: "Risk Zones", content: r.renderRiskZones(snapshot)},
-		{name: "How to Add a Feature", content: r.renderFeatureGuide(snapshot)},
 		{name: "Meta", content: r.renderMeta(snapshot)},
 	}
 
@@ -206,10 +221,21 @@ func (r *LLMContextRenderer) renderArchPattern(snapshot *facts.Snapshot) string 
 		fmt.Fprintf(&sb, "**%s** (confidence: %.0f%%)\n\n", insight.Title, insight.Confidence*100)
 		sb.WriteString(insight.Description + "\n\n")
 
+		// A SAMPLE of the layer mapping, not all of it. One evidence line per
+		// classified module is a thousand lines on a large repository, and the
+		// exhaustive list is available from query_insights; what belongs in a
+		// budgeted summary is enough of it to see the shape.
 		if len(insight.Evidence) > 0 {
 			sb.WriteString("Layer mapping:\n")
-			for _, ev := range insight.Evidence {
+			shown := insight.Evidence
+			if len(shown) > maxLayerMappingLines {
+				shown = shown[:maxLayerMappingLines]
+			}
+			for _, ev := range shown {
 				fmt.Fprintf(&sb, "- %s\n", ev.Detail)
+			}
+			if omitted := len(insight.Evidence) - len(shown); omitted > 0 {
+				fmt.Fprintf(&sb, "- … and %d more (query_insights(explainer=\"layers\") for all)\n", omitted)
 			}
 			sb.WriteString("\n")
 		}
@@ -551,67 +577,91 @@ func (r *LLMContextRenderer) renderRiskZones(snapshot *facts.Snapshot) string {
 	return sb.String()
 }
 
+// renderFeatureGuide writes where a new feature goes, DERIVED from the layer
+// order the snapshot recognised rather than authored per taxonomy.
+//
+// It used to be a switch over three pattern names with hand-written prose, and a
+// generic fallback for everything else. That fallback was what most repositories
+// got — eleven of the fourteen taxonomies had no case — so a Nuxt front end whose
+// layering had been recognised in full, every classified module placed and every
+// cross-layer import running inward, was told to "identify the appropriate
+// module/package for the feature". Everything that guidance needed was already in
+// the snapshot.
+//
+// One guide per language cohort, because a polyglot repository has one layer
+// order per cohort and a reader adding a feature is working in one of them.
 func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string {
 	var sb strings.Builder
 	sb.WriteString("## How to Add a Feature\n\n")
 
-	// Determine guide based on detected architecture
-	var archPattern string
+	written := false
 	for _, insight := range snapshot.Insights {
-		if strings.HasPrefix(insight.Title, "Architecture pattern:") {
-			archPattern = strings.TrimPrefix(insight.Title, "Architecture pattern: ")
-			break
+		if !strings.HasPrefix(insight.Title, "Architecture pattern:") {
+			continue
+		}
+		name := strings.TrimPrefix(insight.Title, "Architecture pattern: ")
+		tiers, ok := layers.GuideFor(name, snapshot.Facts)
+		if !ok {
+			continue // a declared order: its layers come from intent, not the taxonomy
+		}
+		if written {
+			sb.WriteString("\n")
+		}
+		written = true
+
+		fmt.Fprintf(&sb, "This code is laid out as **%s**. A dependency runs from an outer layer to an inner one, so a feature is built inward:\n\n", name)
+		// GROUPED BY LEVEL, because layers sharing one are PEERS and not steps.
+		// Several taxonomies deliberately collapse many directories onto a single
+		// tier — the Rails one puts models, services, jobs, mailers, policies and a
+		// dozen more at the same level precisely because no order holds between
+		// them — and numbering them one per line asserted an eighteen-step sequence
+		// that does not exist.
+		//
+		// A layer with no example is a layer this repository does not have. Listing
+		// it says only that the taxonomy has a word for something absent here.
+		n := 0
+		for i := 0; i < len(tiers); {
+			if tiers[i].Neutral || tiers[i].Example == "" {
+				i++
+				continue
+			}
+			level := tiers[i].Level
+			var names []string
+			example := tiers[i].Example
+			for ; i < len(tiers) && !tiers[i].Neutral && tiers[i].Level == level; i++ {
+				if tiers[i].Example == "" {
+					continue
+				}
+				names = append(names, tiers[i].Name)
+			}
+			if len(names) == 0 {
+				continue
+			}
+			n++
+			fmt.Fprintf(&sb, "%d. **%s** — e.g. `%s`\n", n, strings.Join(names, ", "), example)
+		}
+		// Naming the unordered layers matters as much as ordering the rest: they
+		// are where wiring goes, and a reader who does not know they are exempt
+		// will try to place them in the order.
+		var neutral []string
+		for _, t := range tiers {
+			if t.Neutral && t.Example != "" {
+				neutral = append(neutral, t.Name)
+			}
+		}
+		if len(neutral) > 0 {
+			fmt.Fprintf(&sb, "\nOutside that order: %s — classified, but in no dependency direction, so nothing that touches them is a layer violation.\n",
+				strings.Join(neutral, ", "))
 		}
 	}
 
-	// Detect dominant language for platform-specific guidance.
-	dominantLang := detectDominantLanguage(snapshot)
-
-	switch archPattern {
-	case "hexagonal":
-		if dominantLang == "swift" {
-			sb.WriteString("This project follows a clean architecture pattern (iOS/Swift):\n\n")
-			sb.WriteString("1. **Define domain model** in Domain/Models\n")
-			sb.WriteString("2. **Define repository protocol** in Domain/Repositories\n")
-			sb.WriteString("3. **Implement use case** in Domain/UseCases\n")
-			sb.WriteString("4. **Implement repository** in Data/Repositories (calls API services)\n")
-			sb.WriteString("5. **Create ViewModel** in Presentation/ (depends on use cases via DI)\n")
-			sb.WriteString("6. **Build SwiftUI View** consuming the ViewModel\n")
-			sb.WriteString("7. **Wire dependencies** in Core/DI/DIContainer\n")
-		} else {
-			sb.WriteString("This project follows a hexagonal/clean architecture:\n\n")
-			sb.WriteString("1. **Define domain types** in the domain/model layer\n")
-			sb.WriteString("2. **Define a port** (interface) in the port layer for external interactions\n")
-			sb.WriteString("3. **Implement the use case** in the application/service layer\n")
-			sb.WriteString("4. **Implement adapters** for infrastructure (DB, API clients, etc.)\n")
-			sb.WriteString("5. **Add the handler** (HTTP/gRPC) in the handler layer\n")
-			sb.WriteString("6. **Wire dependencies** in the main/cmd entry point\n")
-		}
-
-	case "nextjs":
-		sb.WriteString("This project follows a Next.js architecture:\n\n")
-		sb.WriteString("1. **Create the page/route** in the `app/` or `pages/` directory\n")
-		sb.WriteString("2. **Build UI components** in `components/`\n")
-		sb.WriteString("3. **Add hooks** for client-side logic in `hooks/`\n")
-		sb.WriteString("4. **Add server-side logic** as API routes or server actions\n")
-		sb.WriteString("5. **Add shared types** in `types/`\n")
-		sb.WriteString("6. **Add utility functions** in `lib/` or `utils/`\n")
-
-	case "go-standard":
-		sb.WriteString("This project follows Go standard project layout:\n\n")
-		sb.WriteString("1. **Add the command** in `cmd/` if it's a new binary\n")
-		sb.WriteString("2. **Implement business logic** in `internal/`\n")
-		sb.WriteString("3. **Add shared libraries** in `pkg/` (if intended for external use)\n")
-		sb.WriteString("4. **Define API contracts** in `api/`\n")
-		sb.WriteString("5. **Wire the feature** in the appropriate `cmd/` main file\n")
-
-	default:
-		sb.WriteString("General guidance:\n\n")
-		sb.WriteString("1. Identify the appropriate module/package for the feature\n")
-		sb.WriteString("2. Follow existing patterns in the codebase\n")
-		sb.WriteString("3. Keep dependencies flowing in one direction\n")
-		sb.WriteString("4. Add appropriate exports for cross-module usage\n")
-		sb.WriteString("5. Wire the feature in the entry point\n")
+	// Nothing recognised, nothing to say. The generic five-step advice this used to
+	// print — identify the module, follow existing patterns, keep dependencies
+	// flowing one way — is true of every codebase ever written, which is what makes
+	// it worthless: it is not derived from this snapshot and it costs budget that a
+	// section with real content could spend. An empty section is dropped.
+	if !written {
+		return ""
 	}
 
 	sb.WriteString("\n")
