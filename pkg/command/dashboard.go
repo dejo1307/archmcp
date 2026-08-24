@@ -7,21 +7,37 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
+	"time"
 
+	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/dashboard"
+	"github.com/enola-labs/enola/pkg/status"
 )
 
 // Dashboard restores the latest snapshot and serves its read-only dashboard
 // without also starting an MCP stdio server. It remains in the foreground so
 // Ctrl-C has the unsurprising effect of stopping the listener.
 func (r *Runner) Dashboard(ctx context.Context, args []string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "status":
+			r.dashboardStatus()
+			return
+		case "stop":
+			r.stopDashboards()
+			return
+		}
+	}
 	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	open := fs.Bool("open", false, "open the dashboard in the default browser")
+	foreground := fs.Bool("foreground", false, "stay attached to this terminal until Ctrl-C")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s dashboard [--open] [repo_path|config_path]\n\n", r.name())
-		fmt.Fprintln(os.Stderr, "Serve the latest architecture snapshot as a read-only local dashboard.")
+		fmt.Fprintf(os.Stderr, "Usage: %s dashboard [--open] [--foreground] [repo_path|config_path]\n", r.name())
+		fmt.Fprintf(os.Stderr, "       %s dashboard <status|stop>\n\n", r.name())
+		fmt.Fprintln(os.Stderr, "Serve the latest architecture snapshot as a read-only local dashboard. Starts in the background by default.")
 	}
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -36,6 +52,10 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	if fs.NArg() == 1 {
 		arg = fs.Arg(0)
 	}
+	if !*foreground {
+		r.startDashboardDetached(*open, arg)
+		return
+	}
 
 	t := r.resolveTarget(arg)
 	if restored := bootstrap.AutoLoadSnapshot(t.engine, t.engine.Config()); restored == nil {
@@ -43,11 +63,29 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 			t.configNote, r.name(), arg)
 	}
 
+	// A dashboard-only process is still an active Enola session. Register it just
+	// like the MCP startup path does so Activity does not claim zero sessions while
+	// the process serving that very page is running. No tool callback is installed:
+	// this process serves no MCP calls, so its session count truthfully stays zero.
+	tracker := status.NewTracker(t.repoPaths[0])
+	tracker.SetStartTime(time.Now())
+	wd, _ := os.Getwd()
+	tracker.SetIdentity(status.Identity{
+		Binary:     r.name() + " dashboard",
+		Version:    version.Version,
+		ConfigPath: t.cfgPath,
+		WorkDir:    wd,
+	})
+	tracker.SetGraphFunc(bootstrap.GraphStateFunc(t.engine))
+	defer tracker.Close()
+
 	port := dashboard.ResolveStablePort(t.engine.Config().Dashboard.Port)
-	dash, err := dashboard.Start(t.engine, dashboard.Options{StablePort: port})
+	dash, err := dashboard.Start(t.engine, dashboard.Options{Tracker: tracker, StablePort: port})
 	if err != nil {
 		r.checkFatal("starting dashboard: %v", err)
 	}
+	tracker.SetDashboardPort(dash.Port())
+	tracker.PersistStartup()
 	fmt.Fprintf(os.Stderr, "Dashboard: %s\n", dash.URL())
 	if port > 0 {
 		fmt.Fprintf(os.Stderr, "Bookmarkable URL: http://127.0.0.1:%d\n", port)
@@ -59,6 +97,89 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 		}
 	}
 	<-ctx.Done()
+}
+
+func (r *Runner) startDashboardDetached(open bool, target string) {
+	if !detachable {
+		r.checkFatal("background dashboards are not supported on this platform; use --foreground")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		r.checkFatal("locating executable: %v", err)
+	}
+	args := []string{"dashboard", "--foreground"}
+	if target != "" {
+		args = append(args, target)
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	detach(cmd)
+	if err := cmd.Start(); err != nil {
+		r.checkFatal("starting background dashboard: %v", err)
+	}
+
+	var inst status.Instance
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, candidate := range dashboardInstances(status.LiveInstances()) {
+			if candidate.PID == cmd.Process.Pid && candidate.URL() != "" {
+				inst = candidate
+				break
+			}
+		}
+		if inst.PID != 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if inst.PID == 0 {
+		r.checkFatal("background dashboard did not become ready")
+	}
+	fmt.Fprintf(os.Stderr, "Dashboard started in background: %s\n", inst.URL())
+	fmt.Fprintf(os.Stderr, "Stop it with: %s dashboard stop\n", r.name())
+	if open {
+		if err := openBrowser(inst.URL()); err != nil {
+			fmt.Fprintf(os.Stderr, "Could not open browser: %v\n", err)
+		}
+	}
+}
+
+func dashboardInstances(instances []status.Instance) []status.Instance {
+	out := make([]status.Instance, 0, len(instances))
+	for _, inst := range instances {
+		if strings.HasSuffix(inst.Binary, " dashboard") {
+			out = append(out, inst)
+		}
+	}
+	return out
+}
+
+func (r *Runner) dashboardStatus() {
+	instances := dashboardInstances(status.LiveInstances())
+	if len(instances) == 0 {
+		fmt.Fprintln(os.Stderr, "No standalone dashboards are running.")
+		return
+	}
+	for _, inst := range instances {
+		fmt.Fprintf(os.Stderr, "PID %d · %s · %s\n", inst.PID, inst.RepoLabels(), inst.URL())
+	}
+}
+
+func (r *Runner) stopDashboards() {
+	instances := dashboardInstances(status.LiveInstances())
+	if len(instances) == 0 {
+		fmt.Fprintln(os.Stderr, "No standalone dashboards are running.")
+		return
+	}
+	stopped := 0
+	for _, inst := range instances {
+		if err := stopDashboardProcess(inst.PID); err != nil {
+			fmt.Fprintf(os.Stderr, "Could not stop dashboard PID %d: %v\n", inst.PID, err)
+			continue
+		}
+		stopped++
+	}
+	fmt.Fprintf(os.Stderr, "Stopped %d standalone dashboard(s).\n", stopped)
 }
 
 func openBrowser(url string) error {

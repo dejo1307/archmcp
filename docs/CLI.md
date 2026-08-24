@@ -440,6 +440,7 @@ Every path argument follows the same rule: **a directory is a repository, a file
 | `install [--hooks] [--global]` | **Tell your coding agents enola is here.** Writes its instructions into the files they actually read - `.claude/rules/enola.md`, `.cursor/rules/enola.mdc`, and a marked block in `AGENTS.md` if you have one. Previews every change and asks before writing. See [Wiring it into your agents](#wiring-it-into-your-agents---enola-install). |
 | `coverage [--repo=<svc>] [--unresolved] [--json]` | **Which cross-repo edges enola resolved, and which it did not** — per service, so you can tell a genuinely isolated service from one whose outbound edges enola could not follow. The unresolved list is always shown: it is what makes the resolved count worth believing, and each entry is either a repository you have not loaded, a third-party endpoint, or a blind spot in enola. Needs two or more repositories in one graph. A report, not a gate — it always exits `0`. |
 | `doctor [repo]` | **Are the session hooks actually firing?** `install --hooks` writes a hook configuration and reports success — but whether your agent honours that configuration is a contract owned by the agent, not by enola, and a config it ignores looks identical to one it runs. So the hooks record every time they fire, *including* the runs where they deliberately say nothing, and this reports when each last ran, what it concluded, and whether the pinned baseline can still be graded against at all. `NEVER FIRED` after a real session means the wiring is not working. A report, not a gate — it always exits `0`. |
+| `dashboard [--open] [--foreground] [repo\|config]` | **Explore the latest snapshot visually without starting MCP.** Starts the read-only localhost dashboard in the background; `--open` launches the browser and `--foreground` keeps it attached until Ctrl-C. Use `dashboard status` or `dashboard stop` to manage background dashboards. |
 | `providers list \| fetch <name>` | **The fact providers this binary carries itself.** `list` names each built-in and whether it is ready; `fetch rubydex` downloads the pinned Rubydex engine library from rubygems.org, verifies its published sha256, and caches it under the user cache directory, after which a `providers:` entry named `rubydex` with no command runs in-process. The only network access a provider ever makes, and never at snapshot time. |
 | `uninstall [--global]` | Remove everything `install` wrote, leaving the rest of each file byte-for-byte as it was. |
 | `baseline pin\|show\|clear [repo\|config]` | Manage the diff baseline - the "before" a change is graded against. `pin` freezes the snapshot on disk when every repository's own receipt shows it matches the working tree under this build and config (members of a cluster must also agree on one union), and otherwise snapshots first, linking once on the cluster's last turn, and says which repository made it regenerate; `show` reports what the current baseline describes; `clear` removes it. Stored per repository, in that repo's `.enola/baseline`, so several repos each keep their own. |
@@ -758,17 +759,23 @@ And the estimate stays conservative where it can't measure. It prices the ingest
 
 ### The dashboard
 
-Starting the MCP server also starts a **read-only dashboard** on a free loopback port (`127.0.0.1`), printed to stderr on startup - run `enola --status` while the server is up to get the URL again. It refreshes every 30 seconds and shows, in one page:
+Open the latest snapshot directly:
 
-- **this server** - its PID, binary, uptime, the repos *it* has loaded, and the directory it was launched from;
-- **every enola server running right now**, with a link to each one's dashboard, so you can switch between them;
-- the same activity and value data as `--status`, split into what this server has served and the lifetime total across all of them;
-- the **snapshot receipt** - snapshot ID, enola version, git ref, extractors, fact/insight counts;
-- the **graph receipt** - the repos in this server's graph, and clickable counters listing the services and cross-repo edges (the edges also render as a node-link diagram);
-- the **insights** grouped by explainer, filterable by confidence band, so you can see what each finding is and how certain it is;
-- **extraction quality** - per-service coverage, unresolved routes, and samples of skipped files and parse errors, which is where you look when a snapshot seems thin.
+```bash
+enola dashboard --open
+```
 
-It is strictly a viewer: every request reads through the same concurrency-safe accessors the MCP tools use and never mutates server state. It binds loopback only and serves nothing but that one page. Pass `--no-dashboard` to skip it.
+This serves only the dashboard in the background and immediately returns your terminal prompt. Use `enola dashboard status` to recover its URL and `enola dashboard stop` to stop it. Add `--foreground` when you deliberately want the process attached until Ctrl-C. Starting the MCP server also starts the same **read-only dashboard** on a free loopback port (`127.0.0.1`), printed to stderr at startup; run `enola --status` to recover its URL. Data refresh is explicit, so a graph investigation is never interrupted by a periodic page reload.
+
+The dashboard is organized into five tabs:
+
+- **Overview** — architectural change cards, current facts, findings, repositories, services, and cross-repository edges.
+- **Architecture** — a searchable module graph, focused consumer/dependency neighborhoods, edge evidence, findings, and a synchronized module table.
+- **Snapshots** — freshness, Git capture, extractor schema, repositories in the graph, and the complete technical receipt.
+- **Activity** — every currently active Enola session, this page's highlighted session, lifetime totals across completed and active sessions, and estimated value. Lifetime totals are retained; individual completed-session records are not.
+- **Quality** — complete file accounting, expected exclusions, potential blind spots, inactive extractors, parse failures, and unresolved cross-repository connections. Genuine parse failures include a prefilled GitHub issue action.
+
+It is strictly a viewer: every request reads through the same concurrency-safe accessors the MCP tools use and never mutates server state. It binds loopback only and serves nothing but the dashboard. Use **Refresh data** when you want to reload the currently available state. Pass `--no-dashboard` to skip the dashboard attached to an MCP server.
 
 #### Several servers at once
 

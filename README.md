@@ -128,6 +128,14 @@ A report, not a gate - it always exits `0`. It is the fastest way to find out th
 - **whether your baseline still counts.** One pinned by a different enola version, or under different ignore rules, is not comparable - and nothing is graded against it until you re-pin.
 - **whether there is a newer release** - and specifically whether the **extractors** changed, which means your snapshots are missing facts a current build would find. `enola upgrade` installs it.
 
+**5. Explore the architecture visually.** Once a snapshot exists, open the read-only local dashboard:
+
+```bash
+enola dashboard --open
+```
+
+It starts in the background, so your terminal remains available; use `enola dashboard status` to recover the URL and `enola dashboard stop` when finished. The dashboard brings together architectural changes, the dependency map, findings, snapshot provenance, every active Enola session, lifetime activity, and extraction quality. If no snapshot exists yet, create one with `enola --generate`; repository data never leaves your machine.
+
 ### Not using an agent?
 
 The gate is a plain CLI. No MCP, no hooks, no config file:

@@ -76,12 +76,13 @@ func DefaultHelp(bin Binary) HelpSpec {
 		Intro:   "Give your AI agent a map of the codebase before it starts exploring.",
 		Usage: []string{
 			bin.Name + " [flags] [repo_path|config_path]",
+			bin.Name + " dashboard [--open] [--foreground] [repo_path|config_path]",
+			bin.Name + " dashboard <status|stop>",
 			bin.Name + " baseline <pin|show|clear> [repo_path|config_path]",
 			bin.Name + " check [flags] [repo_path|config_path]",
 			bin.Name + " constraints <lint|mine|ledger> [repo_path|config_path]",
 			bin.Name + " plan [flags] [path...] [repo_path|config_path]",
 			bin.Name + " coverage [flags] [repo_path|config_path]",
-			bin.Name + " dashboard [--open] [repo_path|config_path]",
 			bin.Name + " doctor [repo_path]",
 			bin.Name + " log [flags] [repo_path|config_path]",
 			bin.Name + " show [<revision>] [repo_path|config_path]",
@@ -92,6 +93,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			bin.Name + " install [--hooks] [--global] [repo_path]",
 		},
 		Commands: []FlagDoc{
+			{Flag: "dashboard", Desc: "Explore the latest snapshot in a read-only local web dashboard.\nStarts in the background, without an MCP server:\n  dashboard --open       start it and launch the browser\n  dashboard status       print running dashboard URLs\n  dashboard stop         stop standalone dashboards\n  --foreground           stay attached; stop with Ctrl-C"},
 			{Flag: "install", Desc: "Write " + bin.Name + "'s instructions into the files your coding\nagents read (Claude Code, Cursor, AGENTS.md). Previews every\nchange and asks before writing.\n  --hooks   also run the loop automatically: report the\n            architectural delta at the end of a session, but only\n            if the change introduced a regression. Opt-in,\n            because hooks run commands.\n  --global  configure this user rather than this repository.\n  --dry-run show what would change and write nothing."},
 			{Flag: "uninstall", Desc: "Remove everything \"install\" wrote, leaving the rest of each\nfile byte-for-byte as it was."},
 			{Flag: "baseline", Desc: "Manage the diff baseline — the \"before\" your changes are graded\nagainst. \"pin\" snapshots the repository and freezes it (no separate\n--generate needed), \"show\" reports what the current baseline\ndescribes, \"clear\" removes it. The baseline is stored per-repository,\nin that repo's output dir, so several repos each keep their own."},
@@ -100,7 +102,6 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Flag: "plan", Desc: "The pre-edit contract: which declared constraints govern an\nintended change (--paths, --symbols), its blast radius over the\ncurrent snapshot, and — for a --patch — the constraint verdicts\nthat WOULD appear, evaluated over a scratch copy BEFORE any edit\nlands in the tree. Nothing is written; a report, never a gate.\nRun \"" + bin.Name + " plan --help\" for the flags."},
 			{Flag: "coverage", Desc: "Report which cross-repo edges were resolved and which were not,\nper service — telling a genuinely isolated service apart from one\nwhose outbound edges could not be followed. Needs two or more\nrepositories in one graph. A report, not a gate: always exits 0."},
 			{Flag: "endpoint", Desc: "Report what changing an HTTP endpoint reaches: the controller\nserving it, the models that controller touches, the models\nassociated with those, the tables behind them, and the callers,\nincluding the frontend screen a calling route module implements.\nUse impact_analysis when you have a symbol; use this when what\nyou have is a URL."},
-			{Flag: "dashboard", Desc: "Serve the latest snapshot in a read-only local dashboard without\nstarting an MCP server. Runs in the foreground until Ctrl-C.\nUse --open to launch the default browser."},
 			{Flag: "log", Desc: "EXPERIMENTAL. Show what this repository's architecture has done over\ntime — one line per recorded snapshot, with what changed since the\none before it. Read-only: it reports what was observed and never\nsnapshots to fill a gap. Every snapshot is recorded as a revision\n(~450 bytes, outside the repo); set `history.enabled: false` to stop."},
 			{Flag: "show", Desc: "EXPERIMENTAL. Show what ONE recorded revision did to the architecture\n— \"log\" says a revision added twelve facts, this says which twelve.\nReconstructs the revision and its predecessor out of\nthe stored history and compares them, so a past change is described in the same words it\nwas described in at the time. A revision is a snapshot id or prefix, a\ngit commit, HEAD~N, @<seq>, a ref name, or `latest` (the default)."},
 			{Flag: "diff", Desc: "EXPERIMENTAL. Show the architecture delta between any two recorded\nrevisions — the question a week of work produces, where \"show\" answers\nfor a single one. Either side of the range may be empty, meaning the\noldest or newest recorded revision."},
@@ -124,10 +125,11 @@ func DefaultHelp(bin Binary) HelpSpec {
 		},
 		ConfigDoc: "Path to the config file (default: mcp-arch.yaml). Set `repos:` in it to\n  name a multi-repo cluster; entries resolve relative to the config file, so\n  a checked-in cluster config means the same thing wherever it is run from.",
 		Examples: []Example{
+			{Comment: "Start the dashboard in the background and open it", Command: bin.Name + " dashboard --open"},
+			{Comment: "Find or stop a background dashboard", Command: bin.Name + " dashboard status  # or: " + bin.Name + " dashboard stop"},
 			{Comment: "Start MCP server with default config", Command: bin.Name},
 			{Comment: "Start MCP server with custom config", Command: bin.Name + " my-config.yaml"},
 			{Comment: "Generate a snapshot and exit", Command: bin.Name + " --generate"},
-			{Comment: "Explore the latest snapshot in the dashboard", Command: bin.Name + " dashboard --open"},
 			{Comment: "Index a whole cluster from one config (see CONFIG_PATH)", Command: bin.Name + " --generate cluster.yaml"},
 			{Comment: "Re-read one repository of that cluster into the existing union", Command: bin.Name + " --generate --refresh ../service-a cluster.yaml"},
 			{Comment: "Print a statistics report for a repository and exit", Command: bin.Name + " --explain /path/to/repo"},
@@ -155,8 +157,8 @@ func DefaultHelp(bin Binary) HelpSpec {
 			{Comment: "Check version", Command: bin.Name + " --version"},
 		},
 		Sections: []Section{
-			gateSection(bin),
 			dashboardSection(bin),
+			gateSection(bin),
 			updatesSection(bin),
 			mcpConfigSection(bin),
 			buildSection(bin),
@@ -208,13 +210,17 @@ func dashboardSection(bin Binary) Section {
 	return Section{
 		Title: "DASHBOARD",
 		Body: fmt.Sprintf(`  Run "%s dashboard [repo_path|config_path]" to serve the latest snapshot
-  without starting an MCP server; add --open to launch the browser. The normal MCP
+  without starting an MCP server; add --open to launch the browser. It starts in the
+  background, "dashboard status" prints its URL, and "dashboard stop" stops it;
+  --foreground retains the attached Ctrl-C workflow. The normal MCP
   server also exposes the same read-only dashboard. Data refresh is explicit, so an
   investigation is never interrupted. Run "--status" to find its URL, or pass
   "--no-dashboard" to disable it.
 
-  "--generate", "--refresh", and "check --write" each print an "Explore this
-  snapshot" line pointing at the dashboard command for what they just wrote.
+  In an interactive terminal, "--generate", "--refresh", and "check --write"
+  each print an "Explore this snapshot" command using "dashboard --open" and
+  the matching stop command. CI,
+  redirected output, hooks, and ENOLA_NO_PROMPTS=1 suppress the hint.
 `, bin.Name),
 	}
 }
