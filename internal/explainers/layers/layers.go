@@ -408,7 +408,7 @@ type patternDef struct {
 // It is applied to the winning pattern only — see thickEnough.
 const minClassifiedShare = 0.20
 
-// FOUR ECOSYSTEMS ARE DELIBERATELY ABSENT, AND EACH WAS MEASURED BEFORE BEING
+// FIVE ECOSYSTEMS ARE DELIBERATELY ABSENT, AND EACH WAS MEASURED BEFORE BEING
 // LEFT OUT. The rule this file follows is that a taxonomy names only words whose
 // meaning does not move between repositories; these four have no such words.
 //
@@ -438,6 +438,19 @@ const minClassifiedShare = 0.20
 //	         and adding those words to go-standard would re-rank pkg/services and
 //	         pkg/models in every Go repository that has them — a change measured
 //	         against one example, affecting many.
+//
+//	.NET     Beyond the clean-architecture layout already covered, the five .NET
+//	         repositories in the corpus share no order. A modular CMS keeps
+//	         Views/Services/ViewModels inside each of a thousand Modules; a
+//	         component library has Components/Pages/Services; a UI framework and a
+//	         file manager have product names. And the one that looks most like a
+//	         layered application is the trap: a media server's
+//	         `MediaBrowser.Controller` is its DOMAIN ABSTRACTIONS assembly —
+//	         IServerApplicationHost.cs, Entities/, Dto/ — so a taxonomy matching
+//	         the word Controller across dotted project names, which is how the
+//	         .NET one has to match, would read fifty modules of interfaces as a
+//	         delivery layer. Same failure as `core` in the hexagonal patterns: a
+//	         word that names something else here.
 //
 // Each of these is worth revisiting when the corpus holds two or more unrelated
 // repositories that agree. One repository is a validation; it is not evidence of
