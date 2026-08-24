@@ -1232,3 +1232,56 @@ func TestPHPLayered(t *testing.T) {
 		t.Fatalf("expected exactly the data -> controller violation, got %v", titles)
 	}
 }
+
+// TestPrescribedTaxonomies covers the two taxonomies taken from a framework's
+// documented directory structure rather than from what repositories share. Both
+// are framework-gated, so neither can reach a repository that is not one of these
+// applications, and neither carries a signature gate for the same reason nextjs
+// does not.
+func TestPrescribedTaxonomies(t *testing.T) {
+	t.Run("nuxt", func(t *testing.T) {
+		s := facts.NewStore()
+		s.Add(makeModulesLang("typescript",
+			"app/pages/home", "app/components/card", "app/composables/useAuth",
+			"app/utils/format", "server/api", "app/plugins")...)
+		s.Add(frameworkFact("nuxt"))
+		addDep(s, "app/pages/home/index.vue", "app/components/card")
+		addDep(s, "app/components/card/Card.vue", "app/composables/useAuth")
+		// The Nitro backend is a different runtime, at no point in the front
+		// end's order, so neither direction across it is a violation.
+		addDep(s, "app/composables/useAuth/index.ts", "server/api")
+		addDep(s, "server/api/handler.ts", "app/utils/format")
+		// The genuine smell: a composable reaching up into a page.
+		addDep(s, "app/composables/useAuth/index.ts", "app/pages/home")
+
+		insights := mustExplain(t, s)
+		if findInsight(insights, "Architecture pattern: nuxt") == nil {
+			t.Fatal("expected nuxt to be detected")
+		}
+		var titles []string
+		for _, in := range insights {
+			if strings.HasPrefix(in.Title, "Layer violation:") {
+				titles = append(titles, in.Title)
+			}
+		}
+		if len(titles) != 1 || !strings.Contains(titles[0], "composables -> pages") {
+			t.Fatalf("expected exactly the composables -> pages violation, got %v", titles)
+		}
+	})
+
+	t.Run("sveltekit", func(t *testing.T) {
+		s := facts.NewStore()
+		s.Add(makeModulesLang("typescript",
+			"src/routes/article", "src/routes/login", "src/lib/api", "src/lib/stores")...)
+		s.Add(frameworkFact("sveltekit"))
+		addDep(s, "src/routes/article/+page.svelte", "src/lib/api")
+
+		in := findInsight(mustExplain(t, s), "Architecture pattern: sveltekit")
+		if in == nil {
+			t.Fatal("expected sveltekit to be detected")
+		}
+		if !strings.Contains(in.Description, "none run against") {
+			t.Errorf("a route importing lib runs with the grain: %q", in.Description)
+		}
+	})
+}

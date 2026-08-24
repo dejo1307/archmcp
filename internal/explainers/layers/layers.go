@@ -78,6 +78,37 @@ var (
 		{Name: "types", Patterns: []string{"types"}, Level: 0},
 	}
 
+	// Nuxt layout.
+	//
+	// Unlike php-layered above, this is NOT derived from what repositories happen
+	// to share: Nuxt PRESCRIBES its directory structure, and the framework gate
+	// means the taxonomy cannot be applied to anything that is not a Nuxt
+	// application. The one Nuxt repository in the corpus validates it rather than
+	// defines it.
+	//
+	// `server` is classified and left unordered. It is the Nitro backend — a
+	// different runtime that happens to live in the same tree — so it sits at no
+	// point in the front end's dependency order, and plugins and middleware are
+	// wiring for the reason the Spring config package is.
+	nuxtLayers = []layerDef{
+		{Name: "pages", Patterns: []string{"pages", "layouts"}, Level: 3},
+		{Name: "components", Patterns: []string{"components"}, Level: 2},
+		{Name: "composables", Patterns: []string{"composables", "stores"}, Level: 1},
+		{Name: "utils", Patterns: []string{"utils", "types", "constants"}, Level: 0},
+		{Name: "server", Patterns: []string{"server"}, Neutral: true},
+		{Name: "wiring", Patterns: []string{"plugins", "middleware"}, Neutral: true},
+	}
+
+	// SvelteKit layout. Prescribed by the framework, like Nuxt above, and smaller
+	// than any other taxonomy here because SvelteKit prescribes less: src/routes
+	// holds what the router serves and src/lib holds everything it is built from.
+	// Two tiers is the whole of the ordering it defines, so on most repositories
+	// this will name a layout and grade nothing — which the statement says.
+	svelteKitLayers = []layerDef{
+		{Name: "routes", Patterns: []string{"routes"}, Level: 2},
+		{Name: "lib", Patterns: []string{"lib"}, Level: 1},
+	}
+
 	// Ember (Octane) app layout. The ordering expresses the real smells: a
 	// service or model importing a component, or anything importing a route,
 	// runs against the resolver's direction of flow. Peers are collapsed to one
@@ -377,6 +408,41 @@ type patternDef struct {
 // It is applied to the winning pattern only — see thickEnough.
 const minClassifiedShare = 0.20
 
+// FOUR ECOSYSTEMS ARE DELIBERATELY ABSENT, AND EACH WAS MEASURED BEFORE BEING
+// LEFT OUT. The rule this file follows is that a taxonomy names only words whose
+// meaning does not move between repositories; these four have no such words.
+//
+//	Python   The obvious gap — 2,265 unnamed modules across two repositories —
+//	         and the vocabulary does not survive comparison. One workflow engine's
+//	         recurring segments are hooks, operators, sensors and providers, which
+//	         are its own PLUGIN KINDS sitting at one level rather than layers; a
+//	         commerce platform's are graphql, mutations and migrations; an
+//	         analytics platform's are commands and views; a library's are modules,
+//	         infrastructure and tasks. What repeats across all four is `utils` and
+//	         `common`. There is no Python layer vocabulary to encode, only four
+//	         project vocabularies.
+//
+//	Rust     Three repositories, three unrelated layouts: an async runtime whose
+//	         directories are domain modules (runtime, sync, io, net, time), a web
+//	         application with routes/controllers/models, and a compiler split into
+//	         crates named for products. Rust's unit of structure is the crate, and
+//	         a crate boundary is already visible in the graph without a taxonomy
+//	         inventing layers above it.
+//
+//	Swift    An SPM package's directories under Sources/ are TARGET names, which
+//	         are products rather than tiers. The ios-clean taxonomy already covers
+//	         the app layouts that do use layer names.
+//
+//	Go (web) One repository in the corpus uses the widely-copied
+//	         routers/services/models/modules layout rather than the standard one,
+//	         and adding those words to go-standard would re-rank pkg/services and
+//	         pkg/models in every Go repository that has them — a change measured
+//	         against one example, affecting many.
+//
+// Each of these is worth revisiting when the corpus holds two or more unrelated
+// repositories that agree. One repository is a validation; it is not evidence of
+// a convention.
+
 // patternDefs lists all known architecture patterns. Order does not affect the
 // outcome; bestPattern selects by specificity then confidence.
 var patternDefs = []patternDef{
@@ -392,6 +458,11 @@ var patternDefs = []patternDef{
 		appliesTo: []string{"csharp", "vbnet", "fsharp", "razor", "xaml"}, dottedSegments: true, signatureLayers: []string{"domain", "infrastructure", "application"},
 		minSignatureLayers: 2},
 	{name: "ember-octane", layers: emberLayers, frameworks: []string{"ember"}, appliesTo: []string{"typescript", "handlebars"}},
+	// No signature gate on either of these, for the reason nextjs has none: the
+	// framework fact already establishes that the repository is one of these
+	// applications, and a prescribed layout does not need a second opinion.
+	{name: "nuxt", layers: nuxtLayers, frameworks: []string{"nuxt"}, appliesTo: []string{"typescript"}},
+	{name: "sveltekit", layers: svelteKitLayers, frameworks: []string{"sveltekit"}, appliesTo: []string{"typescript"}},
 	// Two distinctive layers required: `components`/`services`/`models` are generic
 	// enough that a single stray directory in a repository that merely contains some
 	// Angular should not decide its architecture.
