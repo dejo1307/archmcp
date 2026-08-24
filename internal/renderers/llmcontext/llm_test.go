@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/enola-labs/enola/internal/explainers/layers"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -515,18 +516,23 @@ func TestFileDir(t *testing.T) {
 }
 
 // TestFeatureGuideIsDerived: the guide is a rendering of the recognised layer
-// order, not authored prose. It used to be a switch over three taxonomy names
-// with a generic fallback for the other eleven, so most repositories were told to
+// order, not authored prose. It used to be a switch over three taxonomy names with
+// a generic fallback for the other eleven, so most repositories were told to
 // "identify the appropriate module/package" while the snapshot held their exact
 // layer order.
 func TestFeatureGuideIsDerived(t *testing.T) {
-	var ff []facts.Fact
-	for _, m := range []string{"app/controllers", "app/models", "app/services", "app/jobs"} {
-		ff = append(ff, facts.Fact{Kind: facts.KindModule, Name: m,
-			Props: map[string]any{"language": "ruby"}})
-	}
-	snap := makeSnapshot(ff, []facts.Insight{{
+	snap := makeSnapshot(nil, []facts.Insight{{
 		Title: "Architecture pattern: rails-mvc", Confidence: 0.8, Informational: true,
+		Metrics: map[string]any{
+			layers.MetricLayersOrdered: []string{"controller", "view", "job", "model", "service", "presenter"},
+			layers.MetricLayerLevels: map[string]any{
+				"controller": 2, "view": 2, "job": 1, "model": 1, "service": 1, "presenter": 1,
+			},
+			layers.MetricLayerExamples: map[string]string{
+				"controller": "app/controllers", "job": "app/jobs",
+				"model": "app/models", "service": "app/services",
+			},
+		},
 	}})
 
 	got := New(16000).renderFeatureGuide(snap)
@@ -540,19 +546,51 @@ func TestFeatureGuideIsDerived(t *testing.T) {
 		t.Errorf("expected the domain peers grouped on one tier:\n%s", got)
 	}
 	// A layer the repository does not have says nothing about the repository.
-	for _, absent := range []string{"presenter", "notifier", "interactor"} {
+	for _, absent := range []string{"presenter", "view"} {
 		if strings.Contains(got, absent) {
 			t.Errorf("layer %q has no module here and must not be listed:\n%s", absent, got)
 		}
 	}
-	// Examples come from this repository, not from the taxonomy.
 	if !strings.Contains(got, "app/controllers") {
 		t.Errorf("expected a real module as the example:\n%s", got)
 	}
 
 	// Nothing recognised: no section at all, rather than advice true of every
 	// codebase ever written.
-	if out := New(16000).renderFeatureGuide(makeSnapshot(ff, nil)); out != "" {
+	if out := New(16000).renderFeatureGuide(makeSnapshot(nil, nil)); out != "" {
 		t.Errorf("expected no section when no order was recognised, got:\n%s", out)
+	}
+}
+
+// TestFeatureGuide_ServesADeclaredOrder is the capability the metrics field was
+// added for. A declared layer order lives in the repository's own intent facts, so
+// there is no built-in taxonomy to look up by name — the guide read the order out
+// of patternDefs and therefore had nothing to say about a repository that states
+// its own architecture, enola's own tree included.
+func TestFeatureGuide_ServesADeclaredOrder(t *testing.T) {
+	snap := makeSnapshot(nil, []facts.Insight{{
+		Title: "Architecture pattern: declared (enola)", Confidence: 1.0, Informational: true,
+		Metrics: map[string]any{
+			layers.MetricLayersOrdered:   []string{"entrypoint", "surface", "core"},
+			layers.MetricLayerLevels:     map[string]any{"entrypoint": 2, "surface": 1, "core": 0},
+			layers.MetricLayersUnordered: []string{"wiring"},
+			layers.MetricLayerExamples: map[string]string{
+				"entrypoint": "cmd/enola", "surface": "pkg/cli", "core": "internal/facts",
+				"wiring": "internal/bootstrap",
+			},
+		},
+	}})
+
+	got := New(16000).renderFeatureGuide(snap)
+	if !strings.Contains(got, "laid out as **declared (enola)**") {
+		t.Fatalf("a declared order must produce a guide:\n%s", got)
+	}
+	for i, want := range []string{"**entrypoint** — e.g. `cmd/enola`", "**surface** — e.g. `pkg/cli`", "**core** — e.g. `internal/facts`"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("step %d missing (%q):\n%s", i+1, want, got)
+		}
+	}
+	if !strings.Contains(got, "Outside that order: wiring") {
+		t.Errorf("unordered layers must be named as exempt:\n%s", got)
 	}
 }

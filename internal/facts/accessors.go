@@ -69,3 +69,87 @@ func ShortName(s string) string {
 	}
 	return s
 }
+
+// Metric accessors read Insight.Metrics, which a restored snapshot delivers with
+// every number as a float64 however it was written. Each one collapses "absent",
+// "nil map" and "wrong type" into the zero value for the same reason PropString
+// does: no caller has ever needed to tell them apart.
+
+// MetricInt reads an integer metric, tolerating the float64 a JSON round-trip
+// leaves behind. Both forms occur in one process: an explainer writes int, and
+// the same insight read back from a baseline arrives as float64.
+func (in Insight) MetricInt(key string) int {
+	if in.Metrics == nil {
+		return 0
+	}
+	switch v := in.Metrics[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	}
+	return 0
+}
+
+// MetricFloat reads a fractional metric, tolerating an integer written for a whole
+// number.
+func (in Insight) MetricFloat(key string) float64 {
+	if in.Metrics == nil {
+		return 0
+	}
+	switch v := in.Metrics[key].(type) {
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	}
+	return 0
+}
+
+// MetricStrings reads a list-valued metric. A round-tripped snapshot delivers it
+// as []any of strings rather than as []string, so both are accepted; a non-string
+// element is skipped rather than failing the whole read, because a partial list is
+// still usable and a caller has no way to act on the difference.
+func (in Insight) MetricStrings(key string) []string {
+	if in.Metrics == nil {
+		return nil
+	}
+	switch v := in.Metrics[key].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// MetricStringMap reads a map-valued metric, accepting the map[string]any a JSON
+// round-trip produces alongside the map[string]string an explainer writes.
+func (in Insight) MetricStringMap(key string) map[string]string {
+	if in.Metrics == nil {
+		return nil
+	}
+	switch v := in.Metrics[key].(type) {
+	case map[string]string:
+		return v
+	case map[string]any:
+		out := make(map[string]string, len(v))
+		for k, e := range v {
+			if s, ok := e.(string); ok {
+				out[k] = s
+			}
+		}
+		return out
+	}
+	return nil
+}

@@ -1325,3 +1325,115 @@ func indexOfPattern(t *testing.T, name string) int {
 	t.Fatalf("no taxonomy named %q", name)
 	return 0
 }
+
+// --- metrics ---
+
+// TestPatternMetrics_AgreeWithTheProse is the guard the whole Metrics field exists
+// for. The description and the metrics are two renderings of the same measurement,
+// and the failure mode is that one is updated and the other is not — which is
+// exactly how the benchmark's regex over "N of M modules classified" broke when the
+// cohort's language was added to that sentence. Anything the prose states, this
+// asserts the metrics state identically.
+func TestPatternMetrics_AgreeWithTheProse(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("ruby",
+		"app/controllers", "app/models", "app/services", "app/views", "app/jobs")...)
+	s.Add(frameworkFact("rails"))
+	addDep(s, "app/controllers/x.rb", "app/services")
+	addDep(s, "app/models/y.rb", "app/controllers") // against the order
+
+	in := findInsight(mustExplain(t, s), "Architecture pattern: rails-mvc")
+	if in == nil {
+		t.Fatal("expected rails-mvc")
+	}
+	if in.Metrics == nil {
+		t.Fatal("the pattern insight carries no metrics")
+	}
+
+	// Every number the sentence quotes must appear in the metrics as the same value.
+	for _, tc := range []struct {
+		key  string
+		want int
+	}{
+		{MetricModulesClassified, 5},
+		{MetricModulesScanned, 5},
+		{MetricImportsInward, 1},
+		{MetricImportsAgainst, 1},
+	} {
+		if got := in.MetricInt(tc.key); got != tc.want {
+			t.Errorf("%s = %d, want %d", tc.key, got, tc.want)
+		}
+	}
+	if !strings.Contains(in.Description, "5 of 5 ruby modules classified") {
+		t.Errorf("prose disagrees with modules_classified/scanned: %q", in.Description)
+	}
+	if !strings.Contains(in.Description, "1 run inward and 1 against") {
+		t.Errorf("prose disagrees with the conformance counts: %q", in.Description)
+	}
+	if langs := in.MetricStrings(MetricCohortLanguages); len(langs) != 1 || langs[0] != "ruby" {
+		t.Errorf("cohort_languages = %v, want [ruby]", langs)
+	}
+}
+
+// TestPatternMetrics_LayerOrderAndExamples pins the part no reader could
+// reconstruct: the order runs OUTERMOST FIRST, unordered layers are separated
+// rather than ranked, and each layer carries a module from this repository.
+func TestPatternMetrics_LayerOrderAndExamples(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("java",
+		"app/controller", "app/service", "app/entity", "app/config")...)
+	s.Add(frameworkFact("spring"))
+
+	in := findInsight(mustExplain(t, s), "Architecture pattern: spring-layered")
+	if in == nil {
+		t.Fatal("expected spring-layered")
+	}
+	ordered := in.MetricStrings(MetricLayersOrdered)
+	if len(ordered) != 3 || ordered[0] != "controller" || ordered[2] != "entity" {
+		t.Errorf("layers_ordered = %v, want controller … entity", ordered)
+	}
+	if un := in.MetricStrings(MetricLayersUnordered); len(un) != 1 || un[0] != "config" {
+		t.Errorf("layers_unordered = %v, want [config]", un)
+	}
+	ex := in.MetricStringMap(MetricLayerExamples)
+	if ex["controller"] != "app/controller" || ex["entity"] != "app/entity" {
+		t.Errorf("layer_examples = %v, want modules from this repository", ex)
+	}
+}
+
+// TestPatternMetrics_DeclaredOrder: a repository that STATES its architecture gets
+// the same metrics as one that had it guessed. This is the case the feature guide
+// could not reach — a declared order lives in intent facts, so there is nothing to
+// look up by pattern name.
+func TestPatternMetrics_DeclaredOrder(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "repo/cmd", Repo: "repo",
+		Props: map[string]any{"language": "go"}})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "repo/internal/core", Repo: "repo",
+		Props: map[string]any{"language": "go"}})
+	for i, layer := range []struct {
+		name  string
+		paths []string
+	}{{"entrypoint", []string{"cmd/**"}}, {"core", []string{"internal/**"}}} {
+		s.Add(facts.Fact{Kind: facts.KindIntent, Name: "layer:" + layer.name, Repo: "repo",
+			Props: map[string]any{
+				"intent_kind": "layer", "layer_name": layer.name,
+				"order": i, "paths": layer.paths, "intent_owner": "repo",
+			}})
+	}
+
+	in := findInsight(mustExplain(t, s), "Architecture pattern: declared (repo)")
+	if in == nil {
+		t.Fatal("expected the declared pattern")
+	}
+	ordered := in.MetricStrings(MetricLayersOrdered)
+	if len(ordered) != 2 || ordered[0] != "entrypoint" || ordered[1] != "core" {
+		t.Fatalf("layers_ordered = %v, want [entrypoint core] — outermost first", ordered)
+	}
+	if ex := in.MetricStringMap(MetricLayerExamples); ex["entrypoint"] != "repo/cmd" {
+		t.Errorf("layer_examples = %v, want the declared module", ex)
+	}
+	if got := in.MetricInt(MetricModulesClassified); got != 2 {
+		t.Errorf("modules_classified = %d, want 2", got)
+	}
+}

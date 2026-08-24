@@ -264,6 +264,27 @@ type Insight struct {
 	// under --fail-on=layers that would fail the very pull request that adopted the
 	// policy. See check.Policy.fails.
 	Informational bool `json:"informational,omitempty"`
+
+	// Metrics carries the numbers a finding computed, as data rather than as prose.
+	//
+	// Everything an explainer measures currently reaches a reader only through the
+	// title and description, and every tool that wants a number back parses it out
+	// again: pkg/explain regexes integers from titles (firstParenInt), and the
+	// architecture benchmark regexed "N of M modules classified" out of a sentence
+	// until adding the cohort's language to that sentence broke it. A sentence is the
+	// right shape for a reader and the wrong one for a caller.
+	//
+	// It MIRRORS the description rather than replacing it. internal/diff compares
+	// Title, Confidence, Description and Evidence by explicit enumeration, so a
+	// number that moved out of the description and into here would stop being
+	// something the gate can see change. The prose keeps the numbers; this is the
+	// machine-readable copy of them, and a test asserts the two agree.
+	//
+	// Shaped like Fact.Props, and inheriting its one hazard: a map survives the JSON
+	// round-trip of a restored snapshot with every number as a float64. Read it
+	// through MetricInt/MetricFloat/MetricStrings rather than type-asserting, which
+	// is the mistake declared.go already had to correct in place.
+	Metrics map[string]any `json:"metrics,omitempty"`
 }
 
 // Label is the repo label the facts in this snapshot carry, and the only correct way to

@@ -1019,19 +1019,20 @@ func (r *LLMContextRenderer) renderRiskZones(snapshot *facts.Snapshot) string {
 // carries. Each one is a full sentence of description.
 const maxRiskZones = 25
 
-// renderFeatureGuide writes where a new feature goes, DERIVED from the layer
-// order the snapshot recognised rather than authored per taxonomy.
+// renderFeatureGuide writes where a new feature goes, DERIVED from the layer order
+// the snapshot recognised rather than authored per taxonomy.
 //
-// It used to be a switch over three pattern names with hand-written prose, and a
-// generic fallback for everything else. That fallback was what most repositories
-// got — eleven of the fourteen taxonomies had no case — so a Nuxt front end whose
-// layering had been recognised in full, every classified module placed and every
-// cross-layer import running inward, was told to "identify the appropriate
-// module/package for the feature". Everything that guidance needed was already in
-// the snapshot.
+// It reads that order out of the pattern insight's metrics rather than looking the
+// taxonomy up by name, which is what lets it serve a repository that DECLARES its
+// architecture: a declared order lives in the repository's own intent facts, so
+// there is nothing in the built-in taxonomies to look up, and enola's own tree —
+// which declares six layers — got no guide at all.
 //
-// One guide per language cohort, because a polyglot repository has one layer
-// order per cohort and a reader adding a feature is working in one of them.
+// It used to be a switch over three pattern names with hand-written prose and a
+// generic fallback for everything else, which is what most repositories got.
+//
+// One guide per language cohort, because a polyglot repository has one layer order
+// per cohort and a reader adding a feature is working in one of them.
 func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string {
 	var sb strings.Builder
 	sb.WriteString("## How to Add a Feature\n\n")
@@ -1041,17 +1042,21 @@ func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string
 		if !strings.HasPrefix(insight.Title, "Architecture pattern:") {
 			continue
 		}
-		name := strings.TrimPrefix(insight.Title, "Architecture pattern: ")
-		tiers, ok := layers.GuideFor(name, snapshot.Facts)
-		if !ok {
-			continue // a declared order: its layers come from intent, not the taxonomy
+		ordered := insight.MetricStrings(layers.MetricLayersOrdered)
+		if len(ordered) == 0 {
+			continue
 		}
+		examples := insight.MetricStringMap(layers.MetricLayerExamples)
+		levels := insight.Metrics[layers.MetricLayerLevels]
+
+		name := strings.TrimPrefix(insight.Title, "Architecture pattern: ")
 		if written {
 			sb.WriteString("\n")
 		}
 		written = true
 
 		fmt.Fprintf(&sb, "This code is laid out as **%s**. A dependency runs from an outer layer to an inner one, so a feature is built inward:\n\n", name)
+
 		// GROUPED BY LEVEL, because layers sharing one are PEERS and not steps.
 		// Several taxonomies deliberately collapse many directories onto a single
 		// tier — the Rails one puts models, services, jobs, mailers, policies and a
@@ -1062,19 +1067,22 @@ func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string
 		// A layer with no example is a layer this repository does not have. Listing
 		// it says only that the taxonomy has a word for something absent here.
 		n := 0
-		for i := 0; i < len(tiers); {
-			if tiers[i].Neutral || tiers[i].Example == "" {
+		for i := 0; i < len(ordered); {
+			if examples[ordered[i]] == "" {
 				i++
 				continue
 			}
-			level := tiers[i].Level
+			level, hasLevel := layerLevel(levels, ordered[i])
+			example := examples[ordered[i]]
 			var names []string
-			example := tiers[i].Example
-			for ; i < len(tiers) && !tiers[i].Neutral && tiers[i].Level == level; i++ {
-				if tiers[i].Example == "" {
+			for ; i < len(ordered); i++ {
+				if examples[ordered[i]] == "" {
 					continue
 				}
-				names = append(names, tiers[i].Name)
+				if l, ok := layerLevel(levels, ordered[i]); hasLevel != ok || l != level {
+					break
+				}
+				names = append(names, ordered[i])
 			}
 			if len(names) == 0 {
 				continue
@@ -1082,13 +1090,14 @@ func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string
 			n++
 			fmt.Fprintf(&sb, "%d. **%s** — e.g. `%s`\n", n, strings.Join(names, ", "), example)
 		}
+
 		// Naming the unordered layers matters as much as ordering the rest: they
 		// are where wiring goes, and a reader who does not know they are exempt
 		// will try to place them in the order.
 		var neutral []string
-		for _, t := range tiers {
-			if t.Neutral && t.Example != "" {
-				neutral = append(neutral, t.Name)
+		for _, layer := range insight.MetricStrings(layers.MetricLayersUnordered) {
+			if examples[layer] != "" {
+				neutral = append(neutral, layer)
 			}
 		}
 		if len(neutral) > 0 {
@@ -1108,6 +1117,23 @@ func (r *LLMContextRenderer) renderFeatureGuide(snapshot *facts.Snapshot) string
 
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// layerLevel reads one layer's rank out of the metrics map, which arrives as
+// map[string]any either way and carries its numbers as float64 once a snapshot has
+// been through JSON.
+func layerLevel(levels any, name string) (int, bool) {
+	m, ok := levels.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	switch v := m[name].(type) {
+	case int:
+		return v, true
+	case float64:
+		return int(v), true
+	}
+	return 0, false
 }
 
 // renderExtractionQuality surfaces how complete the extraction was, so an agent

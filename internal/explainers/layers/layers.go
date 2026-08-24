@@ -718,16 +718,26 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 		for _, mod := range mods {
 			evidence = append(evidence, facts.Evidence{Fact: mod, Detail: fmt.Sprintf("module %q maps to declared layer %q", mod, dp.Modules[mod])})
 		}
+		// The violations are computed first here for the same reason they are for a
+		// recognised pattern: the conformance counts come out of that walk, and a
+		// declared order deserves the same numbers as a guessed one.
+		violations, dconf := e.detectViolations(scoped, dp)
+		dp.Scanned, dp.Classified = distinctModules(modules), len(dp.Modules)
+		for _, layer := range dp.Modules {
+			if def := dp.Layers[layer]; def != nil && !def.Neutral {
+				dp.Graded++
+			}
+		}
 		insights = append(insights, facts.Insight{
 			Title:         fmt.Sprintf("Architecture pattern: %s", dp.Name),
 			Description:   fmt.Sprintf("Declared layer order with %d layers and %d classified modules. Declared, not recognised: confidence is exact.", len(dp.Layers), len(dp.Modules)),
 			Confidence:    1.0,
 			Informational: true, // Describes the declaration; the violations below are the findings.
+			Metrics:       patternMetrics(dp, dconf),
 			Evidence:      evidence,
 			Actions:       []string{"Keep the declaration beside the code it governs"},
 		})
 		insights = append(insights, vacuousDeclarationInsights(dp, modules)...)
-		violations, _ := e.detectViolations(scoped, dp)
 		for i := range violations {
 			violations[i].Confidence = 1.0
 		}
@@ -762,6 +772,7 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 			Description:   describePattern(best, conf, distinctModules(modules)),
 			Confidence:    best.Confidence,
 			Informational: true, // Which pattern was recognised is not a defect, at any confidence.
+			Metrics:       patternMetrics(best, conf),
 			Evidence:      evidence,
 			Actions: []string{
 				"Ensure new code follows the detected layer structure",
@@ -790,6 +801,122 @@ func cohortLabel(p *archPattern) string {
 	}
 	sort.Strings(langs)
 	return strings.Join(langs, "/") + " "
+}
+
+// Metric keys the pattern insight publishes. One vocabulary, declared here rather
+// than spelled out at each call site, because the readers are in other packages —
+// the renderer builds the feature guide from the layer order, and the benchmark
+// grades the denominators.
+const (
+	MetricModulesScanned    = "modules_scanned"
+	MetricModulesClassified = "modules_classified"
+	MetricModulesGraded     = "modules_graded"
+	MetricImportsInward     = "imports_inward"
+	MetricImportsAgainst    = "imports_against"
+	MetricImportsSameLevel  = "imports_same_level"
+	MetricLayersOrdered     = "layers_ordered"
+	MetricLayersUnordered   = "layers_unordered"
+	MetricLayerExamples     = "layer_examples"
+	MetricLayerLevels       = "layer_levels"
+	MetricCohortLanguages   = "cohort_languages"
+)
+
+// patternMetrics is the machine-readable copy of what describePattern says in
+// prose. The two are built from the same values in the same place so they cannot
+// disagree; a test asserts it.
+//
+// The layer order is the part no reader could reconstruct. A recognised pattern's
+// order is in patternDefs, which a renderer could in principle look up by name — a
+// DECLARED order is in the repository's intent facts and cannot be looked up at
+// all, which is why the feature guide had nothing to say about repositories that
+// state their own architecture.
+func patternMetrics(p *archPattern, conf conformance) map[string]any {
+	ordered, unordered := layerNamesByRank(p)
+	m := map[string]any{
+		MetricModulesScanned:    p.Scanned,
+		MetricModulesClassified: p.Classified,
+		MetricModulesGraded:     p.Graded,
+		MetricImportsInward:     conf.Inward,
+		MetricImportsAgainst:    conf.Against,
+		MetricImportsSameLevel:  conf.Same,
+		MetricLayersOrdered:     ordered,
+		MetricLayersUnordered:   unordered,
+		MetricLayerExamples:     layerExamples(p),
+		// Levels, not just the order, because layers SHARING one are peers rather
+		// than steps: the Rails taxonomy puts a dozen directories on its domain tier
+		// deliberately, and a reader given only a sequence reads twelve steps that do
+		// not exist. The renderer groups on this.
+		MetricLayerLevels: layerLevels(p),
+	}
+	if langs := sortedKeys(p.Languages); len(langs) > 0 {
+		m[MetricCohortLanguages] = langs
+	}
+	return m
+}
+
+// layerNamesByRank splits a pattern's layers into the ordered ones, OUTERMOST
+// FIRST, and the unordered ones. Outermost first is the direction a feature is
+// built in and the direction a dependency runs, so it is the order a reader wants
+// and the order the guide prints.
+func layerNamesByRank(p *archPattern) (ordered, unordered []string) {
+	for name, def := range p.Layers {
+		if def == nil {
+			continue
+		}
+		if def.Neutral {
+			unordered = append(unordered, name)
+			continue
+		}
+		ordered = append(ordered, name)
+	}
+	sort.Strings(unordered)
+	sort.Slice(ordered, func(i, j int) bool {
+		li, lj := p.Layers[ordered[i]], p.Layers[ordered[j]]
+		if li.Level != lj.Level {
+			return li.Level > lj.Level
+		}
+		return ordered[i] < ordered[j]
+	})
+	return ordered, unordered
+}
+
+// layerExamples names one module per layer, taken from what this repository
+// actually measured. It is what turns a layer ORDER into instructions: "components
+// then composables" is a rule, and "app/components/card then app/composables/auth"
+// is the same rule in the reader's own tree. Lowest name per layer, so the choice
+// is stable across runs rather than following map order.
+func layerExamples(p *archPattern) map[string]string {
+	out := map[string]string{}
+	for mod, layer := range p.Modules {
+		if cur, ok := out[layer]; !ok || mod < cur {
+			out[layer] = mod
+		}
+	}
+	return out
+}
+
+// layerLevels reports each ordered layer's rank. Unordered layers are absent
+// rather than given a sentinel: they have no rank, and a number would invite a
+// reader to compare them.
+func layerLevels(p *archPattern) map[string]any {
+	out := map[string]any{}
+	for name, def := range p.Layers {
+		if def == nil || def.Neutral {
+			continue
+		}
+		out[name] = def.Level
+	}
+	return out
+}
+
+// sortedKeys returns a set's members in a deterministic order.
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // describePattern writes the statement enola makes about a repository.
