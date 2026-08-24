@@ -70,6 +70,13 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   `exported-surface` flags large modules that export nearly everything.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
   against eleven known taxonomies, then flags imports that run the wrong way through it.
+  A taxonomy may also mark a layer NEUTRAL: classified, but sitting in no dependency
+  direction, so no import to or from it can be a violation. Wiring is what this is for —
+  a Hilt `di` package and a Spring `@Configuration` package are referenced by every layer
+  they wire and reference every layer they wire, so any rank given to them makes half of
+  those edges a violation. It is the same judgement the Go layout makes about
+  `internal`/`pkg` and the Rails one about `lib`, applied to a directory that is a real
+  thing with no place in an order rather than one that holds every layer.
   A repo that DECLARES its layer order is verdicted against the declaration as well:
   that pattern is stated rather than guessed, so it and its violations are proof-class.
   It sits beside the recognised pattern, not in place of it — recognition scores itself

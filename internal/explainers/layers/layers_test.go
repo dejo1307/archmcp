@@ -934,3 +934,97 @@ func TestEmberUtilLayerDoesNotClaimLib(t *testing.T) {
 		t.Error("app/utils should still match the ember util layer")
 	}
 }
+
+// --- P0 regression cases: the three false-positive classes the corpus exposed ---
+
+// violationTitles returns the titles of the heuristic layer violations in a
+// snapshot, which is what the three tests below assert over.
+func violationTitles(t *testing.T, s *facts.Store) []string {
+	t.Helper()
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	var titles []string
+	for _, in := range insights {
+		if strings.HasPrefix(in.Title, "Layer violation:") {
+			titles = append(titles, in.Title)
+		}
+	}
+	return titles
+}
+
+// TestDetectViolations_AndroidDomainMayImportData pins the layer ORDER of the
+// Android taxonomy against the reference application it was measured on.
+//
+// nowinandroid's architecture guide puts "the data layer at the bottom", and its
+// use cases import repositories. With domain ranked innermost, three of those
+// imports were reported as violations on Google's own sample. Only the reverse —
+// a repository reaching up into the UI — is a defect.
+func TestDetectViolations_AndroidDomainMayImportData(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("kotlin",
+		"core/data/repository", "core/domain", "feature/ui", "core/designsystem")...)
+	s.Add(frameworkFact("android"))
+	// The documented direction of flow: UI -> domain -> data.
+	addDep(s, "core/domain/GetTopicsUseCase.kt", "core/data/repository")
+	addDep(s, "feature/ui/TopicsScreen.kt", "core/domain")
+	// The genuine smell: data reaching up into the UI.
+	addDep(s, "core/data/repository/TopicsRepository.kt", "feature/ui")
+
+	titles := violationTitles(t, s)
+	if len(titles) != 1 {
+		t.Fatalf("expected exactly 1 Android violation (data -> ui), got %d: %v", len(titles), titles)
+	}
+	if !strings.Contains(titles[0], "data -> ui") {
+		t.Errorf("expected the data -> ui violation, got %q", titles[0])
+	}
+}
+
+// TestDetectViolations_WiringLayerIsNeutral pins layerDef.Neutral: a Spring
+// `config` package is referenced by, and references, every layer it wires, so no
+// edge touching it may be verdicted. Giving it a level produced 61 of
+// thingsboard's 75 findings and all 7 of dubbo's. The ordinary Spring smell in
+// the same snapshot must still be reported.
+func TestDetectViolations_WiringLayerIsNeutral(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("java",
+		"app/controller", "app/service", "app/repository", "app/entity", "app/config")...)
+	s.Add(frameworkFact("spring"))
+	addDep(s, "app/service/UserService.java", "app/config")
+	addDep(s, "app/repository/UserRepo.java", "app/config")
+	addDep(s, "app/config/WebConfig.java", "app/controller")
+	// A service reaching up into a controller is still a violation.
+	addDep(s, "app/service/UserService.java", "app/controller")
+
+	titles := violationTitles(t, s)
+	if len(titles) != 1 {
+		t.Fatalf("expected exactly 1 Spring violation (service -> controller), got %d: %v", len(titles), titles)
+	}
+	if !strings.Contains(titles[0], "service -> controller") {
+		t.Errorf("expected the service -> controller violation, got %q", titles[0])
+	}
+}
+
+// TestAutoloadRootSkipsAssetDirectories pins notAutoloaded. app/javascript holds
+// a whole second application, not a Rails layer: chatwoot keeps a Vue app there,
+// and claiming it made five entrypoints importing app/views into violations.
+func TestAutoloadRootSkipsAssetDirectories(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("ruby",
+		"app/models", "app/controllers", "app/views", "app/javascript/widget", "app/assets")...)
+	s.Add(frameworkFact("rails"))
+	addDep(s, "app/javascript/widget/router.js", "app/views")
+
+	if titles := violationTitles(t, s); len(titles) != 0 {
+		t.Fatalf("expected no violation out of a frontend directory, got %v", titles)
+	}
+	for _, name := range []string{"javascript", "assets"} {
+		if _, ok := autoloadedLayer("app/"+name+"/x", "app"); ok {
+			t.Errorf("app/%s must not be claimed as an autoloaded layer", name)
+		}
+	}
+	if _, ok := autoloadedLayer("app/tools/replan", "app"); !ok {
+		t.Error("app/tools is autoloaded and must still be claimed")
+	}
+}

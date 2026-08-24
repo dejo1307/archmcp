@@ -27,6 +27,22 @@ type layerDef struct {
 	Name     string
 	Patterns []string
 	Level    int // Lower level = inner/domain, higher = outer/infra
+	// Neutral marks a layer that is CLASSIFIED but never ordered: no import to or
+	// from it can be a violation, whatever the levels say.
+	//
+	// Wiring is the case this exists for. A Hilt `di` package and a Spring
+	// `@Configuration` package are referenced by every layer they wire and
+	// reference every layer they wire — that is their whole job — so any level
+	// they are given makes half of those edges a violation. Giving them one
+	// produced 61 of thingsboard's 75 findings, 7 of dubbo's 7, and
+	// nowinandroid's `data -> di`, none of which name a defect.
+	//
+	// It is the same argument the Go layout makes for `internal`/`pkg` and the
+	// Rails one for `lib`, with one difference: those are collapsed into a shared
+	// tier because they hold ANY layer, whereas wiring is a real, nameable thing
+	// that simply has no place in a dependency order. Keeping it classified keeps
+	// it out of the unclassified remainder, so coverage still counts it.
+	Neutral bool
 }
 
 // Predefined layer patterns for common architectures.
@@ -181,13 +197,22 @@ var (
 		{Name: "lib", Patterns: []string{"lib"}, Level: 1},
 	}
 
-	// Android clean architecture / MVVM layout
+	// Android clean architecture / MVVM layout.
+	//
+	// The order is DATA at the bottom, then domain, then UI — Android's own
+	// guidance, not the Uncle-Bob orientation the iOS layout below uses. The
+	// difference is real rather than an oversight: Android's domain layer holds
+	// use cases that call repositories, so `domain -> data` is the documented
+	// direction of flow. nowinandroid's own architecture guide states it as
+	// "with the data layer at the bottom", and every use case in it imports a
+	// repository. Ranking domain innermost reported three of those imports as
+	// violations on Google's reference application.
 	androidLayers = []layerDef{
-		{Name: "domain", Patterns: []string{"domain"}, Level: 0},
-		{Name: "data", Patterns: []string{"data", "repository", "repositories"}, Level: 1},
+		{Name: "data", Patterns: []string{"data", "repository", "repositories"}, Level: 0},
+		{Name: "domain", Patterns: []string{"domain"}, Level: 1},
 		{Name: "ui", Patterns: []string{"ui", "presentation", "view", "views", "screen", "screens"}, Level: 3},
-		{Name: "di", Patterns: []string{"di", "injection"}, Level: 2},
 		{Name: "designsystem", Patterns: []string{"designsystem"}, Level: 3},
+		{Name: "di", Patterns: []string{"di", "injection"}, Neutral: true},
 	}
 
 	// iOS clean architecture / MVVM layout
@@ -205,7 +230,10 @@ var (
 		{Name: "repository", Patterns: []string{"repository", "repositories", "dao", "daos"}, Level: 1},
 		{Name: "entity", Patterns: []string{"entity", "entities", "model", "models", "domain"}, Level: 0},
 		{Name: "dto", Patterns: []string{"dto", "dtos"}, Level: 2},
-		{Name: "config", Patterns: []string{"config", "configuration"}, Level: 2},
+		// Wiring, not a layer — see layerDef.Neutral. `dto` keeps its level: the
+		// corpus produced no dto finding at all, and a rank nothing has exercised
+		// is not evidence to change.
+		{Name: "config", Patterns: []string{"config", "configuration"}, Neutral: true},
 	}
 
 	// .NET clean architecture. The layer is the last dot-separated component of a
@@ -746,7 +774,15 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 
 			sourceDef := pattern.Layers[sourceLayer]
 			targetDef := pattern.Layers[targetLayer]
-			if sourceDef == nil || targetDef == nil || sourceDef.Level >= targetDef.Level {
+			if sourceDef == nil || targetDef == nil {
+				continue
+			}
+			// A neutral layer is classified but unordered: it sits in no dependency
+			// direction, so neither end of an edge touching one can be verdicted.
+			if sourceDef.Neutral || targetDef.Neutral {
+				continue
+			}
+			if sourceDef.Level >= targetDef.Level {
 				continue
 			}
 			// Same assembly, no violation. .NET's layer boundary is the PROJECT, and
@@ -922,5 +958,26 @@ func autoloadedLayer(modulePath, root string) (string, bool) {
 	if len(parts) < 2 || parts[0] != root || parts[1] == "" {
 		return "", false
 	}
+	if notAutoloaded[parts[1]] {
+		return "", false
+	}
 	return parts[1], true
+}
+
+// notAutoloaded names the children of Rails' `app/` that the framework does NOT
+// autoload, so the autoload rule above cannot claim them as layers.
+//
+// Rails::Engine builds the eager-load paths from `app/*` minus exactly these
+// three, because they hold assets and templates rather than Ruby constants.
+// `frontend` joins them as vite_rails' documented root — the same thing under a
+// different name. The rule matters because these directories hold a WHOLE OTHER
+// APPLICATION: chatwoot keeps a Vue app in app/javascript, which the autoload
+// rule made a domain-tier Rails layer, and its five entrypoints importing
+// app/views were reported as layer violations. A frontend reading the templates
+// it mounts into is how Rails and Vite are wired together, not a defect.
+var notAutoloaded = map[string]bool{
+	"assets":     true,
+	"javascript": true,
+	"views":      true,
+	"frontend":   true,
 }
