@@ -112,6 +112,23 @@ func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapsho
 
 	// Once the budget is spent, keep scanning: a later reserved section is still owed
 	// the bytes held back for it.
+	// NO UNRESERVED SECTION MAY TAKE MORE THAN ITS SHARE. Without this the first
+	// oversized section spends the whole budget and every section after it is
+	// omitted, which is how a repository of two thousand modules rendered a module
+	// census and nothing else. Bounding the sections one at a time only moves the
+	// problem down the list — the map was fixed, and Entry Points took the budget;
+	// that was fixed, and Routes took it — because the cause is the allocation and
+	// not any one section.
+	//
+	// A section that exceeds its share is truncated rather than dropped: half of
+	// Routes plus Storage plus Risk Zones tells a reader more than all of Routes.
+	// The share is generous enough that only a genuinely oversized section meets
+	// it, so small documents lay out exactly as before.
+	perSection := remaining
+	if n := countUnreserved(sections); n > 1 {
+		perSection = remaining * maxSectionSharePercent / 100
+	}
+
 	spent := false
 	for i, sec := range sections {
 		if sec.content == "" {
@@ -125,10 +142,20 @@ func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapsho
 			continue
 		}
 
+		budget := remaining
+		if budget > perSection {
+			budget = perSection
+		}
+
 		switch {
-		case len(sec.content) <= remaining:
+		case len(sec.content) <= budget:
 			sb.WriteString(sec.content)
 			remaining -= len(sec.content)
+		case budget > 200:
+			sb.WriteString(cutAt(sec.content, budget-100))
+			fmt.Fprintf(&sb, "\n\n---\n*[Truncated in: %s]*\n", sec.name)
+			remaining -= budget
+			continue
 		case remaining > 200:
 			// Partially include this section
 			sb.WriteString(cutAt(sec.content, remaining-100))
@@ -157,6 +184,36 @@ func (r *LLMContextRenderer) Render(ctx context.Context, snapshot *facts.Snapsho
 	}, nil
 }
 
+// maxSectionSharePercent is the largest share of the remaining budget one
+// unreserved section may take. Calibrated so that the documents in the benchmark
+// corpus lay out unchanged unless a section is genuinely oversized.
+const maxSectionSharePercent = 35
+
+// countUnreserved counts the sections competing for the shared budget.
+func countUnreserved(sections []section) int {
+	n := 0
+	for _, sec := range sections {
+		if !sec.reserve && sec.content != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// maxRepoMapRows is the module count above which the repository map stops being a
+// per-module table and becomes a summary.
+//
+// The table is one row per module, sorted by NAME, and unbounded. On a repository
+// of two thousand modules that is sixty thousand characters — the whole budget —
+// and the truncation that followed cut it mid-table, so what an agent actually
+// received was the alphabetically FIRST two thirds of a module census and no other
+// section of the document. Alphabetical order carries no information about a
+// codebase, which makes that the worst possible prefix to keep.
+const maxRepoMapRows = 60
+
+// maxLargestModules caps the "largest modules" list in that summary.
+const maxLargestModules = 20
+
 func (r *LLMContextRenderer) renderRepoMap(snapshot *facts.Snapshot) string {
 	var sb strings.Builder
 	sb.WriteString("## Repository Map\n\n")
@@ -184,23 +241,162 @@ func (r *LLMContextRenderer) renderRepoMap(snapshot *facts.Snapshot) string {
 		}
 	}
 
-	// Sort modules by name
-	sort.Slice(modules, func(i, j int) bool {
-		return modules[i].Name < modules[j].Name
+	// Two extractors can emit a fact for the same directory, and a map must not
+	// list it twice.
+	seen := make(map[string]bool, len(modules))
+	unique := make([]facts.Fact, 0, len(modules))
+	for _, m := range modules {
+		key := m.Repo + "\x00" + m.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, m)
+	}
+
+	sort.Slice(unique, func(i, j int) bool {
+		if unique[i].Repo != unique[j].Repo {
+			return unique[i].Repo < unique[j].Repo
+		}
+		return unique[i].Name < unique[j].Name
 	})
+
+	if len(unique) > maxRepoMapRows {
+		writeRepoMapSummary(&sb, unique, symbolCounts, multiRepo(unique))
+		return sb.String()
+	}
 
 	sb.WriteString("| Module | Language | Symbols | Exported |\n")
 	sb.WriteString("|--------|----------|---------|----------|\n")
-	for _, mod := range modules {
-		lang := "unknown"
-		if l, ok := mod.Props["language"].(string); ok {
-			lang = l
-		}
+	for _, mod := range unique {
 		fmt.Fprintf(&sb, "| `%s` | %s | %d | %d |\n",
-			mod.Name, lang, symbolCounts[mod.Name], exportedCounts[mod.Name])
+			mod.Name, moduleLanguage(mod), symbolCounts[mod.Name], exportedCounts[mod.Name])
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// writeRepoMapSummary renders where the code LIVES rather than listing every
+// module: one row per area — a repository's top-level directory, which is the
+// grouping every layout in the corpus actually uses — and then the largest
+// modules by symbol count.
+//
+// Size is the ordering because it is the one measure already computed here and
+// the one a reader wants first: which parts of this tree hold the code. The full
+// census remains a query away, and the line below says so rather than leaving a
+// reader to wonder what was dropped.
+func writeRepoMapSummary(sb *strings.Builder, modules []facts.Fact, symbolCounts map[string]int, labelled bool) {
+	type area struct {
+		name    string
+		modules int
+		symbols int
+		langs   map[string]bool
+	}
+	byArea := map[string]*area{}
+	var order []string
+	totalSymbols := 0
+
+	for _, m := range modules {
+		key := areaOf(m, labelled)
+		a := byArea[key]
+		if a == nil {
+			a = &area{name: key, langs: map[string]bool{}}
+			byArea[key] = a
+			order = append(order, key)
+		}
+		a.modules++
+		a.symbols += symbolCounts[m.Name]
+		totalSymbols += symbolCounts[m.Name]
+		if l := moduleLanguage(m); l != "unknown" {
+			a.langs[l] = true
+		}
+	}
+
+	fmt.Fprintf(sb, "%d modules, %d symbols, grouped by area. Every module is in `facts.jsonl`, or query_facts(kind=\"module\").\n\n",
+		len(modules), totalSymbols)
+
+	sort.Slice(order, func(i, j int) bool {
+		if byArea[order[i]].symbols != byArea[order[j]].symbols {
+			return byArea[order[i]].symbols > byArea[order[j]].symbols
+		}
+		return order[i] < order[j]
+	})
+
+	sb.WriteString("| Area | Modules | Symbols | Languages |\n")
+	sb.WriteString("|------|---------|---------|-----------|\n")
+	for _, key := range order {
+		a := byArea[key]
+		langs := make([]string, 0, len(a.langs))
+		for l := range a.langs {
+			langs = append(langs, l)
+		}
+		sort.Strings(langs)
+		if len(langs) == 0 {
+			langs = []string{"unknown"}
+		}
+		fmt.Fprintf(sb, "| `%s` | %d | %d | %s |\n", a.name, a.modules, a.symbols, strings.Join(langs, ", "))
+	}
+
+	largest := append([]facts.Fact(nil), modules...)
+	sort.Slice(largest, func(i, j int) bool {
+		if symbolCounts[largest[i].Name] != symbolCounts[largest[j].Name] {
+			return symbolCounts[largest[i].Name] > symbolCounts[largest[j].Name]
+		}
+		return largest[i].Name < largest[j].Name
+	})
+	if len(largest) > maxLargestModules {
+		largest = largest[:maxLargestModules]
+	}
+	sb.WriteString("\nLargest modules:\n")
+	for _, m := range largest {
+		if symbolCounts[m.Name] == 0 {
+			continue
+		}
+		fmt.Fprintf(sb, "- `%s` — %d symbols (%s)\n", m.Name, symbolCounts[m.Name], moduleLanguage(m))
+	}
+	sb.WriteString("\n")
+}
+
+// areaOf names the part of the tree a module belongs to: its first path segment,
+// prefixed by the repository label only when the snapshot holds more than one.
+// Repo is populated in single-repo snapshots too, so prefixing unconditionally
+// put the same label in front of every row of a table that has nothing to
+// distinguish.
+func areaOf(m facts.Fact, labelled bool) string {
+	name := m.Name
+	if i := strings.Index(name, "/"); i > 0 {
+		name = name[:i]
+	}
+	if labelled && m.Repo != "" {
+		return m.Repo + "/" + name
+	}
+	return name
+}
+
+// multiRepo reports whether these modules come from more than one repository.
+func multiRepo(modules []facts.Fact) bool {
+	first, seen := "", false
+	for _, m := range modules {
+		if m.Repo == "" {
+			continue
+		}
+		if !seen {
+			first, seen = m.Repo, true
+			continue
+		}
+		if m.Repo != first {
+			return true
+		}
+	}
+	return false
+}
+
+// moduleLanguage reads the language every extractor sets on a module fact.
+func moduleLanguage(m facts.Fact) string {
+	if l, ok := m.Props["language"].(string); ok && l != "" {
+		return l
+	}
+	return "unknown"
 }
 
 func (r *LLMContextRenderer) renderArchPattern(snapshot *facts.Snapshot) string {
@@ -365,12 +561,66 @@ func (r *LLMContextRenderer) renderEntryPoints(snapshot *facts.Snapshot) string 
 		return sb.String()
 	}
 
-	sort.Strings(entryPoints)
+	// Bounded and grouped, for the reason the repository map is. This was one
+	// alphabetically sorted line per entry point with no cap, and an application
+	// with nine hundred routes rendered nine hundred lines — which spent whatever
+	// budget the map had left and truncated mid-list, so what survived was the
+	// routes whose paths sort first.
+	//
+	// The kinds are not equivalent and are not capped alike. A `main` or an app
+	// entry point is the handful of places execution actually begins, and all of
+	// them are listed; routes and handlers are a population, where a sample plus
+	// the total says more than a prefix does.
+	byKind := map[string][]string{}
+	var kinds []string
 	for _, ep := range entryPoints {
-		sb.WriteString(ep + "\n")
+		kind := entryPointKind(ep)
+		if _, ok := byKind[kind]; !ok {
+			kinds = append(kinds, kind)
+		}
+		byKind[kind] = append(byKind[kind], ep)
+	}
+	sort.Strings(kinds)
+
+	for _, kind := range kinds {
+		eps := byKind[kind]
+		sort.Strings(eps)
+		shown := eps
+		if kind != "main" && kind != "app" && len(shown) > maxEntryPointSamples {
+			shown = shown[:maxEntryPointSamples]
+		}
+		if omitted := len(eps) - len(shown); omitted > 0 {
+			fmt.Fprintf(&sb, "%d %ss, %d shown:\n", len(eps), kind, len(shown))
+		}
+		for _, ep := range shown {
+			sb.WriteString(ep + "\n")
+		}
+		if omitted := len(eps) - len(shown); omitted > 0 {
+			fmt.Fprintf(&sb, "- … and %d more (query_facts(kind=\"route\") for all)\n", omitted)
+		}
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// maxEntryPointSamples caps how many entry points of one POPULATION kind — routes,
+// handlers — the summary lists. Kinds that name where execution begins are listed
+// in full.
+const maxEntryPointSamples = 15
+
+// entryPointKind reads back the kind from a rendered entry-point line, which is
+// written as "- **kind**: ..." or "- **kind** METHOD ...".
+func entryPointKind(line string) string {
+	const marker = "- **"
+	if !strings.HasPrefix(line, marker) {
+		return "other"
+	}
+	rest := line[len(marker):]
+	i := strings.Index(rest, "**")
+	if i < 0 {
+		return "other"
+	}
+	return rest[:i]
 }
 
 func (r *LLMContextRenderer) renderRoutes(snapshot *facts.Snapshot) string {

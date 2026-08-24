@@ -417,8 +417,11 @@ func bigRepoMapSnapshot(modules int, cov *facts.CoverageSummary) *facts.Snapshot
 	var ff []facts.Fact
 	for i := 0; i < modules; i++ {
 		ff = append(ff, facts.Fact{
-			Kind:  facts.KindModule,
-			Name:  fmt.Sprintf("service/%03d/%s", i, strings.Repeat("segment_", 4)),
+			Kind: facts.KindModule,
+			// One AREA per module, because the repository map now groups by the
+			// first path segment: a fixture whose modules all share one segment
+			// summarises to a single row and stops exercising truncation at all.
+			Name:  fmt.Sprintf("service_%03d/%s", i, strings.Repeat("segment_", 4)),
 			Props: map[string]any{"language": "go"},
 		})
 	}
