@@ -57,7 +57,14 @@ var (
 		{Name: "repository", Patterns: []string{"repository", "repositories", "repo", "repos", "store", "storage", "persistence", "db", "database"}, Level: 2},
 		{Name: "presentation", Patterns: []string{"presentation", "ui", "view", "views", "screen", "screens", "page", "pages"}, Level: 3},
 		{Name: "handler", Patterns: []string{"handler", "handlers", "controller", "controllers", "api", "http", "grpc", "rest"}, Level: 3},
-		{Name: "domain", Patterns: []string{"domain", "entity", "entities", "model", "models", "core"}, Level: 0},
+		// `core` is deliberately absent, for the reason the Angular taxonomy gives
+		// for the same word: it names a CONTAINER, not a layer. A PHP platform
+		// keeping its whole product under src/Core/ had 1049 of its 1491 classified
+		// modules read as domain on the strength of that one segment, which then
+		// made every Core/… module reaching Core/Framework/Adapter or Core/…/Api a
+		// violation — 339 of them, on a repository this taxonomy does not describe
+		// at all.
+		{Name: "domain", Patterns: []string{"domain", "entity", "entities", "model", "models"}, Level: 0},
 	}
 
 	// Next.js layers
@@ -252,6 +259,36 @@ var (
 		{Name: "api", Patterns: []string{"api", "webapp", "grpc"}, Level: 3},
 	}
 
+	// PHP application layout.
+	//
+	// There is no single PHP framework the way there is a single Rails, so this is
+	// gated on the LANGUAGE and built only from the words that recur across
+	// unrelated PHP codebases — a forum, a groupware server and its apps all use
+	// Controller, Service, Db and Command to mean the same things, without sharing
+	// a framework. Measured over the PHP modules of four such repositories this
+	// vocabulary names 31%, 38%, 36% and 57% of them, and 17% of WordPress, which
+	// has no such layering and therefore stays under the coverage floor rather
+	// than being described by a taxonomy that does not fit it.
+	//
+	// Three tiers, not more. The corpus supports delivery above domain above data
+	// and nothing finer, and a distinction that is not a dependency ordering must
+	// not be modelled as one — the argument the Rails layout below makes at
+	// length.
+	//
+	// Listeners, subscribers and service providers are classified and left
+	// UNORDERED. They are invoked by the framework and reference whatever they
+	// wire, which is the same shape as the Hilt and Spring wiring packages above,
+	// and nothing in the corpus says which tier they belong to. Exceptions join
+	// them because every layer defines and throws them.
+	phpLayers = []layerDef{
+		{Name: "controller", Patterns: []string{"controller", "controllers"}, Level: 2},
+		{Name: "http", Patterns: []string{"http", "api", "middleware", "request", "requests"}, Level: 2},
+		{Name: "command", Patterns: []string{"command", "commands", "console"}, Level: 2},
+		{Name: "service", Patterns: []string{"service", "services", "job", "jobs", "handler", "handlers", "factory", "factories"}, Level: 1},
+		{Name: "data", Patterns: []string{"db", "entity", "entities", "model", "models", "repository", "repositories", "migration", "migrations"}, Level: 0},
+		{Name: "wiring", Patterns: []string{"listener", "listeners", "subscriber", "subscribers", "provider", "providers", "exception", "exceptions"}, Neutral: true},
+	}
+
 	// Django layout
 	djangoLayers = []layerDef{
 		{Name: "models", Patterns: []string{"model", "models"}, Level: 0},
@@ -363,6 +400,11 @@ var patternDefs = []patternDef{
 
 	// Language-gated patterns.
 	{name: "go-standard", layers: goStdLayers, appliesTo: []string{"go"}},
+	// Two distinctive layers required, for the reason the Angular pattern gives:
+	// a repository holding one stray Api or Command directory has not thereby
+	// declared an architecture.
+	{name: "php-layered", layers: phpLayers, appliesTo: []string{"php"},
+		signatureLayers: []string{"controller", "service", "data"}, minSignatureLayers: 2},
 
 	// Language-agnostic patterns, gated on distinctive signature layers. Require
 	// at least two distinct ports-and-adapters layers so a single stray
@@ -848,6 +890,23 @@ func distinctModules(modules []facts.Fact) int {
 
 // countSignatureLayers returns how many of the given distinctive layer names the
 // detected pattern matched.
+//
+// PRESENCE, NOT WEIGHT, AND THAT WAS TRIED. Requiring two modules per signature
+// layer removes exactly one wrong statement from the corpus — WordPress named
+// php-layered on 45 modules of which 44 belong to libraries vendored into
+// wp-includes — and costs a right one: a Java platform's Angular front end is
+// 232 of 269 modules at 99% obedience, and its distinctive evidence is 54 `pages`
+// directories plus a single `directives`. No absolute threshold separates those
+// two, because what is wrong about the WordPress claim is not its size but that
+// the code is somebody else's; and no relative one does either, since a correct
+// Angular match sits at 3% signature share and the wrong PHP one at 20%.
+//
+// So the wrong statement stays, recorded as a known gap in the benchmark corpus
+// rather than tuned away with a threshold that takes a correct one with it. The
+// real fix is excluding vendored trees from architecture the way test trees
+// already are, which is its own piece of work — and note that the existing
+// vendored-candidates heuristic would not catch this one either: wp-includes is
+// not a conventional vendor directory name.
 func countSignatureLayers(pattern *archPattern, signature []string) int {
 	n := 0
 	for _, name := range signature {
@@ -946,6 +1005,33 @@ func presentFrameworks(ff []facts.Fact) map[string]bool {
 	}
 	return out
 }
+
+// ONLY `imports` IS READ, AND THAT WAS MEASURED RATHER THAN ASSUMED. The obvious
+// next move is to verdict `calls`, `instantiates`, `injects` and `implements` as
+// well, on the reasoning that an autoloaded language has no import statements to
+// find. It does not survive contact with the corpus. Resolving every one of those
+// edges to a module pair (symbol name to its declaring module, names declared in
+// two modules dropped as ambiguous) and subtracting the pairs `imports` already
+// yields:
+//
+//	a Rails monolith        150 new module pairs   0 of them wrong-direction
+//	a Spring application     680 new module pairs   0
+//	a Go application         779 new module pairs   0
+//	a Rails + Angular app   1455 new module pairs   5
+//
+// Three thousand pairs for five findings, every one of them the same shape as
+// findings the import edges already reported — and bought with a resolution step
+// whose unresolved tail runs from 27,000 to 105,000 targets per repository, each
+// one a chance to attribute an edge to the wrong module.
+//
+// The premise was wrong twice. In every language here a reference across a module
+// boundary requires an import, so `calls` is a SUBSET of `imports` once both are
+// reduced to module granularity. And the autoloaded language is not an exception:
+// the Ruby extractor synthesizes coupling edges from constant references, which is
+// why a Rails monolith with no `require` in its application code still has 11,486
+// import edges. Where a Rails taxonomy reports nothing it is because that taxonomy
+// deliberately collapses its domain directories to one tier, not because the
+// evidence is missing.
 
 // detectViolations checks for layer boundary violations (inner layer importing
 // outer layer). Each distinct (source module -> target module) pair is reported

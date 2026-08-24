@@ -1118,8 +1118,10 @@ func TestMinClassifiedShare_SuppressionDoesNotPromote(t *testing.T) {
 	names = append(names, "src/Shop.Domain", "src/Shop.Infrastructure")
 	// Fat, generic: enough ports-and-adapters vocabulary to satisfy hexagonal.
 	for i := 0; i < 10; i++ {
+		// Vocabulary the generic taxonomy owns and the .NET one does not, so the
+		// two patterns stay separable: `infrastructure` is a layer in BOTH.
 		names = append(names, fmt.Sprintf("modules/mod%d/interfaces", i))
-		names = append(names, fmt.Sprintf("modules/mod%d/infrastructure", i))
+		names = append(names, fmt.Sprintf("modules/mod%d/adapters", i))
 	}
 	for i := 0; i < 40; i++ {
 		names = append(names, fmt.Sprintf("modules/mod%d/unclassified", i))
@@ -1172,5 +1174,61 @@ func TestDescribePattern_NamesItsCohort(t *testing.T) {
 		Languages: map[string]bool{"ruby": true}}
 	if got := describePattern(whole, conformance{}, 100); strings.Contains(got, "of this repository's") {
 		t.Errorf("a whole-repository cohort must not report a share, got %q", got)
+	}
+}
+
+// TestHexagonal_CoreIsNotADomainLayer pins the removal of `core` from the
+// hexagonal domain patterns. A platform that keeps its whole product under
+// src/Core/ had 1049 of 1491 classified modules read as domain on that one
+// segment, which made every Core/… module reaching Core/…/Api a violation.
+func TestHexagonal_CoreIsNotADomainLayer(t *testing.T) {
+	s := facts.NewStore()
+	var names []string
+	for i := 0; i < 12; i++ {
+		names = append(names, fmt.Sprintf("src/Core/Content/thing%d", i))
+	}
+	names = append(names, "src/Core/Framework/Adapter", "src/Core/Framework/Api",
+		"src/Core/Framework/Interfaces", "src/Core/Application")
+	s.Add(makeModulesLang("csharp", names...)...)
+	// A Core/… module reaching the platform's own Api directory.
+	addDep(s, "src/Core/Content/thing0/x.cs", "src/Core/Framework/Api")
+
+	for _, in := range mustExplain(t, s) {
+		if strings.HasPrefix(in.Title, "Layer violation:") {
+			t.Errorf("a container segment must not make its own subtree a domain layer: %q", in.Title)
+		}
+	}
+}
+
+// TestPHPLayered pins the language-gated PHP taxonomy. There is no single PHP
+// framework the way there is a single Rails, so it is built only from the words
+// that recur across unrelated PHP codebases, and its wiring tier is unordered for
+// the reason the Spring config package is.
+func TestPHPLayered(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("php",
+		"lib/Controller", "lib/Http", "lib/Service", "lib/Db", "lib/Migration",
+		"lib/Listener", "lib/Exception")...)
+	// Idiomatic: delivery down to domain down to data.
+	addDep(s, "lib/Controller/PageController.php", "lib/Service")
+	addDep(s, "lib/Service/PageService.php", "lib/Db")
+	// Wiring is referenced by and references everything, and is never a violation.
+	addDep(s, "lib/Service/PageService.php", "lib/Listener")
+	addDep(s, "lib/Listener/Hook.php", "lib/Controller")
+	// The genuine smell: data reaching up into delivery.
+	addDep(s, "lib/Db/PageMapper.php", "lib/Controller")
+
+	insights := mustExplain(t, s)
+	if findInsight(insights, "Architecture pattern: php-layered") == nil {
+		t.Fatal("expected php-layered to be detected")
+	}
+	var titles []string
+	for _, in := range insights {
+		if strings.HasPrefix(in.Title, "Layer violation:") {
+			titles = append(titles, in.Title)
+		}
+	}
+	if len(titles) != 1 || !strings.Contains(titles[0], "data -> controller") {
+		t.Fatalf("expected exactly the data -> controller violation, got %v", titles)
 	}
 }

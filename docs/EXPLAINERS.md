@@ -69,7 +69,7 @@ the entities the claim is about. There are eighteen, and they fall into six kind
 - **Graph shape.** `dependency-depth` measures the longest transitive import chain;
   `exported-surface` flags large modules that export nearly everything.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
-  against eleven known taxonomies, then flags imports that run the wrong way through it.
+  against twelve known taxonomies, then flags imports that run the wrong way through it.
   Each taxonomy is scored over the modules whose LANGUAGE it describes, and one is
   reported per language cohort — so a Rails monolith with an Ember front end is named as
   both, over disjoint modules, rather than having one half verdicted by the other's layer
