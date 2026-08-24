@@ -20,6 +20,7 @@ import (
 	"github.com/enola-labs/enola/internal/updatecheck"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/check"
+	"github.com/enola-labs/enola/pkg/cli"
 	pkghistory "github.com/enola-labs/enola/pkg/history"
 )
 
@@ -341,14 +342,14 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	// After the verdict and on STDERR, in both output modes. Stderr because `--json`
 	// promises stdout is a verdict document and nothing else, and after because a
 	// housekeeping note must never be the first thing read when the gate just failed.
-	if *write {
+	if *write && cli.ShowDashboardHint(os.Stderr) {
 		// Only when --write actually persisted a snapshot: without it the dashboard
 		// would read whatever a PRIOR --generate left behind, which is not what this
 		// run graded and would be a misleading thing to point someone at.
 		if arg != "" {
-			fmt.Fprintf(os.Stderr, "\nExplore this snapshot: %s dashboard %q\n", r.name(), arg)
+			fmt.Fprintf(os.Stderr, "\nExplore this snapshot in your browser:\n  %s dashboard --open %q\nIt starts in the background; stop it later with: %s dashboard stop\n", r.name(), arg, r.name())
 		} else {
-			fmt.Fprintf(os.Stderr, "\nExplore this snapshot: %s dashboard\n", r.name())
+			fmt.Fprintf(os.Stderr, "\nExplore this snapshot in your browser:\n  %s dashboard --open\nIt starts in the background; stop it later with: %s dashboard stop\n", r.name(), r.name())
 		}
 	}
 	updatecheck.Fprint(os.Stderr, engine.ExtractorVersion())

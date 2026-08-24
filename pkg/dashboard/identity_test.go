@@ -81,10 +81,18 @@ func TestPageListsLiveInstances(t *testing.T) {
 	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	body := rec.Body.String()
 
-	for _, operational := range []string{"Servers running", "http://127.0.0.1:54545", "other-repo", "this page"} {
+	for _, operational := range []string{"Active sessions", "http://127.0.0.1:54545", "other-repo", "this page"} {
 		if !strings.Contains(body, operational) {
 			t.Errorf("Activity tab missing server-switcher detail %q", operational)
 		}
+	}
+	activeAt := strings.Index(body, "Active sessions")
+	runtimeAt := strings.Index(body, "Runtime details")
+	if activeAt < 0 || runtimeAt < 0 || activeAt > runtimeAt {
+		t.Error("active sessions must be visible before the collapsed runtime details")
+	}
+	if !strings.Contains(body, "Individual completed-session records are not retained") {
+		t.Error("Activity tab does not explain lifetime aggregation versus session history")
 	}
 }
 

@@ -395,10 +395,18 @@
   </section>
 
   <section class="tab-panel" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
-  <div class="panel-intro"><div class="section-kicker">Usage</div><h2>Activity</h2><p>What this server has done now, separated from Enola's lifetime activity across repositories.</p></div>
+  <div class="panel-intro"><div class="section-kicker">Usage</div><h2>Activity</h2><p>Every active Enola session, this page's session, and lifetime activity across completed and running sessions.</p></div>
 
   <div class="snapshot-head">
-    <div><h2>Current server session</h2><p>{{if .ReposLoaded}}{{.ReposLoaded}}{{else}}No repository label available{{end}}{{if .Uptime}} · running for {{.Uptime}}{{end}}</p></div>
+    <div><h2>Active sessions</h2><p>{{len .Instances}} Enola server(s) running now. The highlighted row is the session serving this page.</p></div>
+  </div>
+  {{if .Instances}}<div class="table-scroll"><table>
+    <thead><tr><th>Session</th><th>Repositories</th><th>Uptime</th><th class="num">Calls</th><th>Dashboard</th></tr></thead>
+    <tbody>{{range .Instances}}<tr{{if .Self}} class="self-row"{{end}}><td>{{.Binary}} · PID {{.PID}}{{if .Self}} <span class="chip">this page</span>{{end}}</td><td>{{.Repos}}</td><td>{{.Uptime}}</td><td class="num">{{.Calls}}</td><td>{{if .URL}}<a href="{{.URL}}">open{{if .FrontDoor}} · shared{{end}}</a>{{else}}—{{end}}</td></tr>{{end}}</tbody>
+  </table></div>{{else}}<p class="note">No registered Enola server sessions are currently available.</p>{{end}}
+
+  <div class="snapshot-head data-section">
+    <div><h2>This page's session</h2><p>{{if .ReposLoaded}}{{.ReposLoaded}}{{else}}No repository label available{{end}}{{if .Uptime}} · running for {{.Uptime}}{{end}}</p></div>
     {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">stopped</span>{{end}}
   </div>
   <div class="grid">
@@ -410,7 +418,7 @@
     <tbody>{{range .Tools}}{{if .Session}}<tr><td>{{.Name}}</td><td class="num">{{.Session}}</td></tr>{{end}}{{end}}</tbody>
   </table></div></div>{{else}}<p class="note">No MCP tool calls have reached this server session yet. Snapshot generation performed by a separate command is recorded in lifetime activity, not here.</p>{{end}}
 
-  <div class="data-section"><div class="snapshot-head"><div><h2>Lifetime activity</h2><p>{{.ReposTracked}} repositories{{if .TrackingSince}} · tracked since {{.TrackingSince}}{{end}}</p></div></div>
+  <div class="data-section"><div class="snapshot-head"><div><h2>Lifetime activity</h2><p>Aggregated across completed and active sessions · {{.ReposTracked}} repositories{{if .TrackingSince}} · tracked since {{.TrackingSince}}{{end}}. Individual completed-session records are not retained.</p></div></div>
   {{if .Tools}}<div class="table-scroll"><table>
     <thead><tr><th>Tool</th><th class="num">Total calls</th></tr></thead>
     <tbody>{{range .Tools}}<tr><td>{{.Name}}</td><td class="num">{{.Total}}</td></tr>{{end}}</tbody>
@@ -430,10 +438,6 @@
   {{if .WorkDir}}<div class="card path-card" style="margin-top:.75rem"><div class="k">Working directory</div><div class="v">{{.WorkDir}}</div></div>{{end}}
   {{if .ConfigPath}}<div class="card path-card" style="margin-top:.75rem"><div class="k">Config path</div><div class="v">{{.ConfigPath}}</div></div>{{end}}
   {{if .StableURL}}<div class="card path-card" style="margin-top:.75rem"><div class="k">Shared dashboard URL</div><div class="v"><a href="{{.StableURL}}">{{.StableURL}}</a>{{if .FrontDoor}} · this server is the front door{{end}}</div></div>{{end}}
-  {{if .Instances}}<div class="data-section"><h2>Servers running</h2><div class="table-scroll"><table>
-    <thead><tr><th>Server</th><th>Repositories</th><th>Uptime</th><th class="num">Calls</th><th>Dashboard</th></tr></thead>
-    <tbody>{{range .Instances}}<tr{{if .Self}} class="self-row"{{end}}><td>{{.Binary}} · PID {{.PID}}{{if .Self}} <span class="chip">this page</span>{{end}}</td><td>{{.Repos}}</td><td>{{.Uptime}}</td><td class="num">{{.Calls}}</td><td>{{if .URL}}<a href="{{.URL}}">open{{if .FrontDoor}} · shared{{end}}</a>{{else}}—{{end}}</td></tr>{{end}}</tbody>
-  </table></div></div>{{end}}
   </details>
   </section>
 
