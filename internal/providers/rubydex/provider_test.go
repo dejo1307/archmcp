@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func writeFixture(t *testing.T) string {
 func TestCollect_EmitsTheReferenceScriptsFacts(t *testing.T) {
 	lib := requireLibrary(t)
 	repo := writeFixture(t)
-	result := Collect(context.Background(), lib, repo)
+	result := Collect(context.Background(), lib, repo, nil)
 	if result.Refusal != "" {
 		t.Fatalf("refused: %s", result.Refusal)
 	}
@@ -109,8 +110,8 @@ func TestCollect_EmitsTheReferenceScriptsFacts(t *testing.T) {
 func TestCollect_IsDeterministic(t *testing.T) {
 	lib := requireLibrary(t)
 	repo := writeFixture(t)
-	first := Collect(context.Background(), lib, repo)
-	second := Collect(context.Background(), lib, repo)
+	first := Collect(context.Background(), lib, repo, nil)
+	second := Collect(context.Background(), lib, repo, nil)
 	if !reflect.DeepEqual(first, second) {
 		t.Fatal("two runs over the same tree must agree")
 	}
@@ -122,7 +123,7 @@ func TestCollect_NoGemfileIsARefusalInTheCensus(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "a.rb"), []byte("class A; end\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result := Collect(context.Background(), lib, repo)
+	result := Collect(context.Background(), lib, repo, nil)
 	if result.Refusal != "" || len(result.Facts) != 0 || len(result.Census.SkipCauses) != 1 || result.Census.SkipCauses[0].Cause != "no Gemfile: not a workspace Rubydex can index" {
 		t.Fatalf("result = %+v, want a named refusal in the census and nothing emitted", result)
 	}
@@ -170,7 +171,7 @@ func TestCollect_EmitsOneDependencyPerResolvedLeaf(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	result := Collect(context.Background(), lib, repo)
+	result := Collect(context.Background(), lib, repo, nil)
 	byName := map[string]facts.Fact{}
 	for _, f := range result.Facts {
 		byName[f.Name] = f
@@ -229,7 +230,7 @@ func TestCollect_ReopenedLeafCarriesNoTargetFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	result := Collect(context.Background(), lib, repo)
+	result := Collect(context.Background(), lib, repo, nil)
 	for _, f := range result.Facts {
 		if f.Name != "rubydex-ref: Use#v -> Foo" {
 			continue
@@ -268,5 +269,60 @@ func TestPathPrefixes_AReferenceIsNeverItsOwnPredecessor(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("pathPrefixes did not return: the reference was accepted as its own predecessor")
+	}
+}
+
+// The built-in is told what the configuration excludes, so the seam has
+// nothing left to drop for it. A file the predicate rejects contributes no
+// facts at all, and the census names both what it skipped and why.
+func TestCollect_ExcludedFilesProduceNoFacts(t *testing.T) {
+	lib := requireLibrary(t)
+	repo := t.TempDir()
+	files := map[string]string{
+		"Gemfile":                      "source \"https://rubygems.org\"\n",
+		"lib/kept.rb":                  "class Kept\n  def run\n    Helper::VALUE\n  end\nend\n",
+		"lib/helper.rb":                "module Helper\n  VALUE = 1\nend\n",
+		"vendor/bundle/lib/dropped.rb": "class Dropped\n  def run\n    Helper::VALUE\n  end\nend\n",
+	}
+	for rel, body := range files {
+		path := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ignored := func(file string) bool { return strings.HasPrefix(file, "vendor/") }
+
+	all := Collect(context.Background(), lib, repo, nil)
+	filtered := Collect(context.Background(), lib, repo, ignored)
+
+	dropped := 0
+	for _, f := range all.Facts {
+		if ignored(f.File) {
+			dropped++
+		}
+	}
+	if dropped == 0 {
+		t.Fatal("the fixture must produce facts about the excluded file, or the test asserts nothing")
+	}
+	for _, f := range filtered.Facts {
+		if ignored(f.File) {
+			t.Fatalf("the seam had a fact left to drop: %s in %s", f.Name, f.File)
+		}
+	}
+	if len(filtered.Facts) != len(all.Facts)-dropped {
+		t.Fatalf("filtering removed %d facts, the excluded file accounts for %d",
+			len(all.Facts)-len(filtered.Facts), dropped)
+	}
+	var named bool
+	for _, cause := range filtered.Census.SkipCauses {
+		if strings.Contains(cause.Cause, "ignore globs") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatal("the census must name what the exclusions cost, not only remove it")
 	}
 }

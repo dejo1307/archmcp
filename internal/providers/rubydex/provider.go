@@ -45,6 +45,9 @@ type collector struct {
 	bundleAbsent        bool
 	documentCache       map[uint64][]span
 	declarationNames    map[uint64]string
+	ignored             func(file string) bool
+	excludedDocuments   int
+	excludedReferences  int
 }
 
 type span struct {
@@ -56,7 +59,16 @@ type span struct {
 
 // Collect indexes the repository at root with the loaded library and returns
 // the facts the reference script would have emitted for it.
-func Collect(ctx context.Context, lib *Library, root string) Result {
+//
+// ignored reports whether a repo-relative file is excluded by the
+// repository's configuration. The seam drops facts about such files after a
+// provider returns, which for a built-in is work done to be thrown away: on a
+// Rails monolith 1,520,163 of 2,155,664 facts. A built-in runs in the
+// engine's own address space and can be told, so it is: an excluded document
+// is skipped before its definitions are read, which also skips the graph
+// calls behind them, and an excluded reference before its fact is built. A
+// nil predicate accepts everything.
+func Collect(ctx context.Context, lib *Library, root string, ignored func(file string) bool) Result {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return Result{Refusal: err.Error()}
@@ -64,7 +76,7 @@ func Collect(ctx context.Context, lib *Library, root string) Result {
 	if _, err := os.Stat(filepath.Join(root, "Gemfile")); err != nil {
 		return Result{Census: facts.ProviderCensus{ConstructsSkipped: 1, SkipCauses: []facts.CensusCause{{Cause: "no Gemfile: not a workspace Rubydex can index", Count: 1}}}}
 	}
-	c := &collector{root: root, workspace: "file://" + root + "/", documentCache: map[uint64][]span{}, declarationNames: map[uint64]string{}}
+	c := &collector{root: root, workspace: "file://" + root + "/", documentCache: map[uint64][]span{}, declarationNames: map[uint64]string{}, ignored: ignored}
 	paths, dependencyPaths, bundleAbsent := workspacePaths(ctx, root)
 	c.dependencyPaths = dependencyPaths
 	c.bundleAbsent = bundleAbsent
@@ -76,9 +88,15 @@ func Collect(ctx context.Context, lib *Library, root string) Result {
 
 	var documents []uint64
 	for _, doc := range c.g.documents() {
-		if c.inWorkspace(c.g.documentURI(doc)) {
-			documents = append(documents, doc)
+		uri := c.g.documentURI(doc)
+		if !c.inWorkspace(uri) {
+			continue
 		}
+		if c.excluded(uri) {
+			c.excludedDocuments++
+			continue
+		}
+		documents = append(documents, doc)
 	}
 	for _, doc := range documents {
 		for _, definition := range c.g.definitions(doc) {
@@ -130,6 +148,10 @@ func workspacePaths(ctx context.Context, root string) (paths []string, dependenc
 		}
 	}
 	return paths, dependencyPaths, false
+}
+
+func (c *collector) excluded(uri string) bool {
+	return c.ignored != nil && c.ignored(c.relative(uri))
 }
 
 func (c *collector) inWorkspace(uri string) bool {
@@ -227,6 +249,10 @@ func (c *collector) emitReferences(ids []cConstantReference) {
 	for _, id := range ids {
 		location, ok := c.g.constantReferenceLocation(id.id)
 		if !ok || !c.inWorkspace(location.URI) {
+			continue
+		}
+		if c.excluded(location.URI) {
+			c.excludedReferences++
 			continue
 		}
 		ref := &constantReference{id: id.id, location: location}
@@ -473,6 +499,8 @@ func (c *collector) census(filesSeen, diagnostics int) facts.ProviderCensus {
 	add("receiver resolves to no constant", c.untypedReceivers)
 	add("declaration is a constant alias, not a class", c.aliasedDeclarations)
 	add("rubydex diagnostic", diagnostics)
+	add("document excluded by the repository's ignore globs", c.excludedDocuments)
+	add("reference in a file the repository's ignore globs exclude", c.excludedReferences)
 	if c.bundleAbsent {
 		add("bundle not on PATH or not readable: workspace indexed without its gems", 1)
 	}

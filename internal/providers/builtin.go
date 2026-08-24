@@ -17,7 +17,7 @@ import (
 // `providers:` entry with no command uses. Each runs in-process and answers
 // with facts that pass the same validation as JSONL from an external tool,
 // a census, and the version of the engine it read through.
-var builtIns = map[string]func(ctx context.Context, repoPath string) ([]facts.Fact, string, facts.ProviderCensus, string){
+var builtIns = map[string]func(ctx context.Context, repoPath string, ignored func(file string) bool) ([]facts.Fact, string, facts.ProviderCensus, string){
 	"rubydex": runRubydex,
 }
 
@@ -48,7 +48,7 @@ func runBuiltIn(ctx context.Context, p Provider, in Input) ([]facts.Fact, facts.
 			return accepted, record
 		}
 	}
-	accepted, version, census, refusal := run(ctx, repoPath)
+	accepted, version, census, refusal := run(ctx, repoPath, in.Ignored)
 	if refusal != "" {
 		return skip("%s", refusal)
 	}
@@ -169,7 +169,7 @@ func readRubydexMeta(cache Cache) (rubydexIndexMeta, bool) {
 	return meta, true
 }
 
-func runRubydex(ctx context.Context, repoPath string) ([]facts.Fact, string, facts.ProviderCensus, string) {
+func runRubydex(ctx context.Context, repoPath string, ignored func(file string) bool) ([]facts.Fact, string, facts.ProviderCensus, string) {
 	path, installed := rubydex.Installed()
 	if !installed {
 		return nil, "", facts.ProviderCensus{}, fmt.Sprintf("the Rubydex library is not installed at %s; run `%s`", path, rubydex.FetchHint)
@@ -178,7 +178,7 @@ func runRubydex(ctx context.Context, repoPath string) ([]facts.Fact, string, fac
 	if err != nil {
 		return nil, "", facts.ProviderCensus{}, err.Error()
 	}
-	result := rubydex.Collect(ctx, lib, repoPath)
+	result := rubydex.Collect(ctx, lib, repoPath, ignored)
 	if result.Refusal != "" {
 		return nil, "", facts.ProviderCensus{}, result.Refusal
 	}
