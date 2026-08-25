@@ -7,9 +7,58 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
-## v0.4.7 — 2026-08-24
+## v0.4.7 — 2026-08-25
 
-**A built-in provider stops building the facts the configuration throws away**
+**Layers scored per language cohort, and a built-in provider that stops building the facts the configuration throws away**
+
+The layers explainer recognised one architecture per repository and scored every taxonomy
+over the whole tree. A taxonomy now declares the languages it may classify and is scored
+over that cohort alone; selection runs strongest first and skips a taxonomy whose cohort
+another has already claimed, so an ungated one yields rather than competing everywhere. A
+repository running two layer orders reports both, with the strongest kept beside them so
+the JSON shape does not move. Violation titles carry the taxonomy name, because two
+cohorts can produce the same layer pair — that changes finding identity, so a pinned
+baseline churns once.
+
+Three classes of false positive are gone. Dependency-injection and configuration packages
+are classified but placed in no direction, since every layer both uses them and is used by
+them, and matching now prefers an unordered layer, so a wiring directory nested inside an
+ordered one no longer inherits the enclosing layer — `core/data/…/data/di` read as data
+before. `android-clean` orders data innermost, per Android's own guidance, while
+`ios-clean` keeps the opposite order on purpose: the two disagree about which way domain
+and data depend, and neither is wrong. The Rails autoload rule stopped claiming `app/`
+children Rails does not autoload, which is where front-end applications live. And `core`
+left the hexagonal domain patterns, because it names a container rather than a layer: one
+platform keeping its product under `src/Core/` had 1,049 of its 1,491 classified modules
+read as domain on that segment alone, and 339 findings followed.
+
+`php-layered`, `nuxt` and `sveltekit` are new — the PHP one gated on the language, since
+there is no single PHP framework, the other two built from the frameworks' own prescribed
+directory structures. Python, Rust, Swift, the routers/services/models Go layout and .NET
+were each measured and deliberately left out, with what was measured recorded beside the
+taxonomy table: three share no vocabulary that holds across unrelated repositories, one
+would re-rank `pkg/services` everywhere on the evidence of a single example, and the .NET
+repository that looks layered is the trap — a media server whose `MediaBrowser.Controller`
+is its domain abstractions assembly, which dotted-name matching would read as fifty modules
+of delivery. Confidence drops the coverage term whose denominator was the layer table
+rather than the repository, and its floor applies to the pattern that won rather than at
+admission, where it had dropped a thin framework-gated match and handed the repository to
+an ungated hexagonal one.
+
+Explainers stated their numbers in prose and every caller parsed them back out of the
+title. An insight now carries `Metrics` beside its description, shaped like a fact's props;
+layers publishes its denominators, conformance counts and layer order for recognised and
+declared patterns alike, which is what lets the digest serve a repository that states its
+own architecture rather than one recognised for it. Metrics mirrors rather than replaces:
+the numbers stay in the prose the diff gate reads.
+
+That digest is bounded now. Its repository map was one unbounded row per module, so a large
+repository spent all 64,000 characters on an alphabetical census and the architecture
+section was never reached. Above a row cap the map summarises by area, entry points group
+by kind, routes by path prefix, storage by kind and dependency edges by out-degree, and no
+one section may take more than its share of the budget — a section over its share is
+truncated, not dropped. A large monolith's digest went from 64,000 characters holding two
+sections to 28,000 holding ten, with no truncation left to do.
 
 The provider seam drops facts about files the repository's ignore globs exclude, because
 a provider walks the tree itself and cannot know what the configuration leaves out. That
@@ -27,7 +76,7 @@ Indexing is untouched — vendored gems and engine directories are still handed 
 indexer, because that is what lets a workspace constant resolve to a declaration outside
 it. Indexing is how the graph resolves; emission is what enters it.
 
-This release is the work of [Muhamed Isabegović](https://github.com/misabegovic).
+The provider work is [Muhamed Isabegović](https://github.com/misabegovic)'s.
 
 ## v0.4.6 — 2026-08-24
 
