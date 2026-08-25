@@ -349,6 +349,18 @@ enforced: --fail-on=layers (`enola check --help` lists all 17).
 
 The `--target` you declare is a claim about intent, and this is the gate holding you to it. Nothing here is a judgement about `telemetry` - the code may be perfectly good. It is a report that the change did something its own description didn't cover.
 
+## Limitations
+
+What enola does not do, and where each limit is documented in full.
+
+- enola models structure: modules, symbols, routes, storage, dependencies and the edges between them. It has no representation for runtime behaviour - a timeout, a retry budget, whether a message can be lost - and cannot report on any of it.
+- Of the eighteen explainers, only `cycles`, `intent`, `constraints` and a declared layer order produce findings at confidence `1.00`. That is the floor `check` gates at, so naming the others in `--fail-on` has no effect unless you also lower `--min-confidence`. See [docs/EXPLAINERS.md](docs/EXPLAINERS.md).
+- Most findings are advisory. Across the benchmark corpus, 96.3% of them could not fail a build under the default policy.
+- The gate grades the delta against a baseline, so pre-existing findings stay silent and a repository can carry them indefinitely while every check passes. Read the findings directly to pay down existing debt.
+- Outlier thresholds are computed per repository. A uniformly complex codebase produces few findings, and a clean check means the change introduced nothing new rather than that the repository is clean.
+- Extraction is incomplete. Each snapshot carries a coverage report and a census of what the run could not see; what an extractor does not resolve is documented per language in [docs/extraction/](docs/extraction/), and explainers that under-report say so in [docs/EXPLAINERS.md](docs/EXPLAINERS.md). [docs/BLIND-SPOTS.md](docs/BLIND-SPOTS.md) records how such gaps were found.
+- Confidence is comparable within an explainer but not across explainers, so enola does not rank findings or say what to fix first.
+
 ## Why not CodeGraph, graphify, or codebase-memory-mcp?
 
 Several open-source projects turn a repository into a queryable graph for an AI agent. They are well built and they optimize for different things:
@@ -470,7 +482,7 @@ It is silent for builds from source, never runs when `CI` is set, and turns off 
 - **[docs/EXPLAINERS.md](docs/EXPLAINERS.md)** - what the eighteen explainers compute, why a derived finding you can trust is still not a verdict, and how a delta turns 9,131 findings about a corpus into the one that is about your change.
 - **[docs/RAILS.md](docs/RAILS.md)** - the Rails workflow end to end: index the app, bind the shipped convention recipes with one command, pin a baseline, and read a graded change - with the output each step actually prints.
 - **[docs/extraction/](docs/extraction/)** - per language, what specific code produces which facts, from committed fixtures, and what each extractor deliberately does not resolve.
-- **[docs/BLIND-SPOTS.md](docs/BLIND-SPOTS.md)** - what an agent cannot see: six specific, reproducible failures against five public codebases, each with the repository, the pinned commit, the command and the wrong answer, so you can re-run them. One of the six is a bug in enola itself.
+- **[docs/BLIND-SPOTS.md](docs/BLIND-SPOTS.md)** - what an agent cannot see: six specific, reproducible failures against five public codebases, each with the repository, the pinned commit, the command and the wrong answer, so you can re-run them. One of the six is a bug in enola itself, found this way and fixed.
 - **[docs/EXTENDING.md](docs/EXTENDING.md)** - teaching enola a connection it does not know: binders, cross-repo signals, and the `linking:` vocabulary that fixes a wrong edge from config rather than a patch.
 - **[docs/INTENT.md](docs/INTENT.md)** - declared intent: the `enola-intent.yaml` / cluster / `enola_intent:` frontmatter carriers, the closed vocabularies, what compiles, and how verdicts behave.
 - **[docs/CONSTRAINTS.md](docs/CONSTRAINTS.md)** - a repository's law: components, the 21 rule forms, modes, exemptions, recipes bound in one command or written by hand, laws written in Ruby, and the pre-edit contract.
