@@ -317,7 +317,7 @@ What enola does not do, and where each limit is documented in full.
 - Most findings are advisory. Across the benchmark corpus, 96.3% of them could not fail a build under the default policy.
 - The gate grades the delta against a baseline, so pre-existing findings stay silent and a repository can carry them indefinitely while every check passes. Read the findings directly to pay down existing debt.
 - Outlier thresholds are computed per repository. A uniformly complex codebase produces few findings, and a clean check means the change introduced nothing new rather than that the repository is clean.
-- Extraction is incomplete. Each snapshot carries a coverage report and a census of what the run could not see; what an extractor does not resolve is documented per language in [docs/extraction/](docs/extraction/), and explainers that under-report say so in [docs/EXPLAINERS.md](docs/EXPLAINERS.md). [docs/BLIND-SPOTS.md](docs/BLIND-SPOTS.md) records how such gaps were found.
+- The graph has an explicit analysis scope and visible limits. Ignore rules define which files are included; each snapshot separately reports configured exclusions, parse failures and relationships that enola detected but could not resolve. Per-language extraction limits are documented in [docs/extraction/](docs/extraction/), and explainers that under-report say so in [docs/EXPLAINERS.md](docs/EXPLAINERS.md). [docs/BLIND-SPOTS.md](docs/BLIND-SPOTS.md) records how such gaps were found.
 - Confidence is comparable within an explainer but not across explainers, so enola does not rank findings or say what to fix first.
 
 ## Why not CodeGraph, graphify, or codebase-memory-mcp?
