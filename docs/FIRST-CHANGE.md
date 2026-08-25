@@ -2,9 +2,9 @@
 
 *The loop, end to end, on a repository small enough to read in one screen.*
 
-[RAILS.md](RAILS.md) walks this same loop through a Rails application. This one uses a
-plain module with no framework at all, because the loop does not depend on one: what
-follows is shown in Go and then repeated, unchanged, in TypeScript.
+[RAILS.md](RAILS.md) walks this same loop through a Rails application. This guide uses a
+plain module because the loop does not depend on a framework. It starts in Go, then
+shows the same declared violation in TypeScript.
 
 Everything below is runnable. The module is
 [`examples/layers-gate/`](../examples/layers-gate/) in this repository, and
@@ -15,7 +15,8 @@ walkthrough in a throwaway copy.
 
 ## The module
 
-Four packages, one rule about how they may depend on each other:
+Five packages. Four are assigned to three layers; `telemetry` sits outside the
+declaration:
 
 ```
 web/         delivery — the outermost layer
@@ -37,10 +38,9 @@ layers:
 Outermost first. Each layer may depend on the ones below it and on its own peers;
 depending upwards is the violation.
 
-**Declaring it is what makes the verdict usable.** enola recognises layer orders it was
-never told about, but an inferred one caps at confidence `0.80`, while a declared one is
-verdicted at `1.00` — and `1.00` is the floor `enola check` gates at. An order you
-declared is one you can put in front of a build; an order enola guessed is a report.
+Declaring the order turns an inferred pattern into a rule enola can enforce at the
+default confidence floor. An inferred order is reported at no more than `0.80`; a
+declared one is reported at `1.00`, the default floor for `enola check`.
 
 ---
 
@@ -65,7 +65,7 @@ in [CLI.md → The gate](CLI.md#the-gate---enola-check).
 
 ## 2. Make a change
 
-One that is entirely reasonable to write, and that crosses the line:
+Add a reasonable-looking change that crosses the layer boundary:
 
 ```go
 // LoadPrice emails the buyer a receipt — from inside the storage layer.
@@ -76,9 +76,8 @@ func LoadPrice(item, buyer string) int {
 }
 ```
 
-Nothing here is a bug. It compiles, it does what it says, and a reviewer reading the diff
-alone sees four sensible lines. What it also does is make the innermost layer depend on
-the outermost one.
+The code compiles and behaves as intended, but it makes the innermost layer depend on
+the outermost one. That relationship is easy to miss when reading the diff alone.
 
 ## 3. Grade it
 
@@ -110,9 +109,8 @@ New coupling (4):
   storage.LoadPrice                            --declares--> storage
 ```
 
-Exit `0`. **A bare `enola check` cannot fail**, and it says so in its own output rather
-than leaving you to infer it — a gate that enforces nothing must never be mistaken for a
-gate that found nothing.
+Exit `0`. A bare `enola check` cannot fail. The output states that no policy was set, so
+the report cannot be mistaken for an enforced gate.
 
 Read the two halves separately. The **finding** is the judgement: one declared layer
 order, crossed, at full confidence, naming the import that did it. The **delta** below it
@@ -132,9 +130,8 @@ Regressions (fail):
 Policy: fail on new findings from [layers] at confidence >= 1.00.
 ```
 
-Exit `1`. Same finding, same run, same delta — the only thing that changed is that you
-named `layers` as something you want the build to refuse. That separation is the whole
-design: enola reports everything it found and fails only what you asked it to fail.
+Exit `1`. Same change and same finding; only the policy changed. enola reports everything
+it found and fails only what you asked it to fail.
 
 ## 5. Hold the change to the scope you claimed
 
@@ -167,16 +164,15 @@ Measurements over threshold:
   - [fail] 1 package(s) reached outside the declared scope
 ```
 
-Note the last line of the scope report. Spillover is worth reading **even when every
-finding is clean**: "this change touched a package nobody mentioned" is a fact about the
-change, not about the architecture, and no explainer will ever produce it.
+Spillover is graded separately from findings. It says the edit exceeded its declared
+target, not that the architecture itself is invalid.
 
 ---
 
 ## The same loop, in TypeScript
 
-Nothing above is Go-specific. Here is the identical sequence on a small TypeScript
-package — same three layers, same declaration, same violation:
+Nothing above is Go-specific. Here is the same rule on a small TypeScript package: three
+layers, one declaration and the same violation.
 
 ```yaml
 # enola-intent.yaml
@@ -220,11 +216,11 @@ Added (4):
   file_ref   src/storage/storage.ts                       src/storage/storage.ts:1
 ```
 
-The verdict is the same sentence because it is the same graph. Languages differ in what
-can be *extracted* from them — that is what [extraction/](extraction/README.md)
-documents, per language, including the limits — but once facts exist they are one
-vocabulary, which is also why a change spanning a Go service and its TypeScript client
-gets one verdict rather than two.
+Both examples produce the same kind of finding because every extractor emits the same
+fact vocabulary. Languages differ in what can be extracted from them; the per-language
+coverage and limits are documented in [extraction/](extraction/README.md). Once those
+facts enter the graph, a change spanning a Go service and its TypeScript client receives
+one verdict rather than two.
 
 ---
 

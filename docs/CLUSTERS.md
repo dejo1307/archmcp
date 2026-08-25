@@ -1,14 +1,13 @@
 # Two services, one graph
 
-*What it takes to see an edge that neither repository contains, and how enola reports the
-ones it could not see.*
+*How enola matches client calls to server routes across repositories and reports calls
+it cannot resolve.*
 
-A single repository is the easy case: everything a dependency needs is in the tree you
-indexed. Across services it is not. The `web` service calls the `api` service, and
-**nothing in either repository says so** — the call is a string, the route is a
-registration, and they were written months apart by different people.
+Within one repository, enola resolves relationships against one source tree. Across
+services, the evidence is split: `web` contains the client call, `api` contains the
+registered route, and neither declares the dependency directly.
 
-This walks the whole thing on two services small enough to read. They are
+This guide uses two services small enough to read. They are
 [`examples/cross-repo/`](../examples/cross-repo/), and
 [`examples/cross-repo/run.sh`](../examples/cross-repo/run.sh) runs it.
 
@@ -26,9 +25,8 @@ repos:
   - web
 ```
 
-That is the entire difference between a repository run and a cluster run. Every command
-that takes a repository takes this instead: **a directory is a repository, a file is a
-config.**
+Pass this config wherever a command accepts a repository: a directory selects one
+repository, while a config file can select several.
 
 ```
 $ enola --generate cluster.yaml
@@ -44,12 +42,11 @@ Snapshot complete:
   Output:      ./web/.enola
 ```
 
-**Note where the output landed.** A multi-repo run writes the full union to the *last*
-repository in the config. Each repo also keeps its own artifacts, but reading the first
-one gets you a partial graph and no cross-repo edges at all — a mistake that looks like
-enola failing to link anything.
+The command prints the last repository's output directory, but every repository receives
+the same complete linked graph. Reading either `api/.enola` or `web/.enola` returns the
+whole cluster.
 
-## 2. What makes this hard
+## 2. How the edge is resolved
 
 Here is the route the `api` service registers:
 
@@ -69,11 +66,9 @@ func registerOrders(r *mux.Router) {
 Read `registerOrders` on its own and the service appears to serve `/orders/{id}`. It does
 not. It serves **`/api/v2/orders/{id}`**, which is what the client calls.
 
-The prefix and the leaf path are never written together, and neither function contains
-the answer. Recovering it means composing the prefix **across the call boundary**. Match
-on the bare path and the client's call resolves to nothing; match on the wrong composed
-path and it resolves to something wrong, which is worse — a missing edge is a gap, and a
-wrong edge is acted upon.
+The prefix and leaf path are never written together. Enola recovers the served path by
+composing them across the call boundary. Using only the leaf path would miss the client;
+composing it incorrectly would create a false edge.
 
 So the routes are stored at the path they are actually served at:
 
@@ -96,9 +91,8 @@ connection it does not already know.
 
 ## 3. Ask what it missed
 
-A resolved-edge count on its own is not worth much, because you cannot tell a service
-with no outbound calls from one whose calls enola failed to follow. `coverage` reports
-both, per service:
+A resolved-edge count alone does not distinguish a service with no outbound calls from
+one whose calls enola could not follow. `coverage` reports both cases per service:
 
 ```
 $ enola coverage cluster.yaml
@@ -127,11 +121,10 @@ func fetchDynamic(tenant string) {
 }
 ```
 
-The path is assembled at runtime from a value enola cannot see, so there is no path to
-match against any route. enola records that an outbound call happened and reports it
-unresolved rather than guessing. **The unresolved list is what makes the resolved count
-worth believing** — it is always printed, and `coverage` always exits `0`, because it is a
-report and not a gate.
+The path is assembled at runtime from a value enola cannot see, so there is no complete
+path to match against a route. enola records the outbound call and reports it unresolved
+rather than guessing. Reporting unresolved calls gives the resolved count context.
+`coverage` exits `0` because it is a report, not a gate.
 
 Three things put an entry on that list, and they need different responses:
 
@@ -141,8 +134,8 @@ Three things put an entry on that list, and they need different responses:
 | A genuinely third-party endpoint | Nothing; it is correct |
 | A blind spot in enola's extraction | [BLIND-SPOTS.md](BLIND-SPOTS.md) records how these are found, including one found in enola itself |
 
-Load the missing repository and re-run: that is the one experiment that distinguishes the
-first from the other two.
+If you suspect a missing service, add its repository and re-run. A resolved call confirms
+that the service was outside the original graph.
 
 ## 4. Grade a change across the seam
 
@@ -155,16 +148,15 @@ enola baseline pin cluster.yaml     # every member must agree on one union
 enola check cluster.yaml
 ```
 
-This is where a cluster earns its cost. Rename a route in `api` and the verdict names the
-client that called it, in the other repository, which no test in either one would have
-caught — the api's tests pass, the web service's tests pass, and the call is broken.
-`enola endpoint 'GET /api/v2/orders' cluster.yaml` asks the same question directly, without a
-baseline.
+Rename a route in `api` and the verdict can name the client in `web` that called it. This
+can catch a cross-repository mismatch while each repository's tests still pass.
+`enola endpoint 'GET /api/v2/orders' cluster.yaml` asks the same question directly,
+without a baseline.
 
-A pair of explainers only mean anything over a cluster: `unused-routes` reports backend
-routes that no loaded client calls, and `crossrepo` reports the seams themselves. The
-first is only trustworthy when coverage is high — an unresolved client call site and an
-unused route are the same fact seen from the two ends.
+The `unused-routes` and `crossrepo` explainers require a cluster. `unused-routes` reports
+backend routes that no loaded client calls; `crossrepo` reports the seams themselves.
+Treat unused-route findings cautiously when resolution coverage is low: an unresolved
+client call may belong to a route currently reported as unused.
 
 ---
 
@@ -173,8 +165,8 @@ unused route are the same fact seen from the two ends.
 enola links what it can *demonstrate*. Two services that share a type name are not
 thereby coupled: a shared name with no import and no call becomes a symmetric
 `cross_repo_shared_code` observation with no direction, verified against the declaring
-files rather than the names alone. It is reported as coupling to look at, never as a
-dependency, because a dependency is a claim about what breaks when you change something.
+files rather than the names alone. It is reported as coupling to inspect, not as a
+directional dependency.
 
 The full rules — what links, what does not, and how to tune it — are in
 [ARCHITECTURE.md → Cross-repo](../ARCHITECTURE.md#cross-repo-the-graph-of-graphs) and
