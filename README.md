@@ -134,7 +134,7 @@ A report, not a gate - it always exits `0`. It is the fastest way to find out th
 enola dashboard --open
 ```
 
-It starts in the background, so your terminal remains available; use `enola dashboard status` to recover the URL and `enola dashboard stop` when finished. The dashboard brings together architectural changes, the dependency map, findings, snapshot provenance, every active Enola session, lifetime activity, and extraction quality. If no snapshot exists yet, create one with `enola --generate`; repository data never leaves your machine.
+It starts in the background, so your terminal remains available; use `enola dashboard status` to recover the URL and `enola dashboard stop` when finished. The dashboard brings together architectural changes, the dependency map, findings, snapshot provenance, every active Enola session, lifetime activity, and extraction quality. If no snapshot exists yet, create one with `enola --generate`; repository data never leaves your machine. See the **[dashboard user guide](docs/DASHBOARD.md)** for a walkthrough of every tab.
 
 ### Not using an agent?
 
@@ -442,6 +442,7 @@ It is silent for builds from source, never runs when `CI` is set, and turns off 
 
 - **[Documentation](docs/README.md)** — choose a guide by task.
 - **[Your first graded change](docs/FIRST-CHANGE.md)** — the loop end to end, on a module small enough to read.
+- **[Dashboard guide](docs/DASHBOARD.md)** — review changes visually, trace dependencies and verify snapshot provenance.
 - **[Architecture](ARCHITECTURE.md)** — the fact model, pipeline, graph, MCP tools and value model.
 - **[Changelog](CHANGELOG.md)** — every released version, newest first.
 - **[Examples](examples/)** — runnable gates, cross-repository analysis, configuration and CI workflows.
