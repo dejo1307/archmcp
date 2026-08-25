@@ -4,6 +4,8 @@ Start with the page closest to what you need:
 
 - **New to Enola?** Read the main [README](../README.md).
 - **Installing, configuring or scripting it?** Use [CLI.md](CLI.md).
+- **Want to see the loop once, end to end?** Follow [FIRST-CHANGE.md](FIRST-CHANGE.md).
+- **More than one repository?** Follow [CLUSTERS.md](CLUSTERS.md).
 - **Using Rails specifically?** Follow [RAILS.md](RAILS.md).
 - **Understanding the engine?** Read [ARCHITECTURE.md](../ARCHITECTURE.md).
 
@@ -12,6 +14,8 @@ Start with the page closest to what you need:
 | Page | Covers |
 |---|---|
 | [CLI.md](CLI.md) | Installation, agent integration, commands, flags, exit codes, scope controls and the dashboard. |
+| [FIRST-CHANGE.md](FIRST-CHANGE.md) | The loop end to end on a module small enough to read: declare a layer order, pin, change, grade, and hold the change to its declared scope. Shown in Go, then repeated in TypeScript. |
+| [CLUSTERS.md](CLUSTERS.md) | Two services in one graph: what it takes to resolve an edge neither repository contains, and how coverage reports the ones it could not. |
 | [RAILS.md](RAILS.md) | The Rails workflow from installation through a graded change, with the output from each step. |
 
 ## Change analysis
@@ -20,7 +24,7 @@ Start with the page closest to what you need:
 |---|---|
 | [EXPLAINERS.md](EXPLAINERS.md) | The eighteen structural checks, confidence levels, and how before/after comparison isolates findings introduced by a change. |
 | [SNAPSHOTS.md](SNAPSHOTS.md) | Why Enola computes addressable snapshots instead of maintaining one continuously updated graph. |
-| [HISTORY.md](HISTORY.md) | `blame` and `diff` for finding when a structural change happened. |
+| [HISTORY.md](HISTORY.md) | `log`, `show`, `diff`, `blame`, `gc` and `history` - the recorded timeline of a repository's architecture, what it costs to keep, and how to share it across machines. |
 
 ## Evidence and limitations
 

@@ -23,6 +23,121 @@ Some of what a rule can select is measured by a **provider** rather than an
 extractor — `ancestor:` reads a resolved ancestry chain, and a rule may verdict over
 a runtime observation or a declared signature. See [PROVIDERS.md](PROVIDERS.md).
 
+## Start here
+
+The rest of this page is a reference: 21 rule forms, the selector
+dialect, recipes, modes, exemptions. You do not need any of it to
+write your first rule. The loop is four commands, and it is worth
+running once on a repository you know before reading further.
+
+**1. Ask what enola can bind for you.** `constraints init` writes a
+first declaration, binding every shipped recipe whose required roles
+resolve to directories your repository actually has. It refuses to
+overwrite an existing declaration and it guesses nothing — which
+means the honest answer on many repositories is that it binds
+nothing:
+
+```
+$ enola constraints init .
+clean                not bound: no directory for frameworks, interface-adapters, use-cases, entities
+layered              not bound: no directory for presentation, application, domain, infrastructure
+ports-and-adapters   not bound: no directory for core, ports, adapters
+rails-conventions    not bound: no directory for controllers, jobs, models, mailers, policies, …
+nothing to bind: no shipped recipe's roles resolve to a directory here
+```
+
+That is not a failure. A recipe is a named pattern with required
+roles ([Recipes](#recipes--named-patterns-as-instantiable-bundles)),
+and a repository laid out its own way has none of them. Read the list
+as a question — *is my repository one of these, under different
+directory names?* If it is, bind the recipe by naming the roles
+yourself. If it is not, write the rule directly, which is step 2.
+
+**2. Write one rule, by hand.** Two components and one rule is a
+complete declaration. This goes in `enola-intent.yaml`, beside the
+`layers:` you may already have:
+
+```yaml
+components:
+  - name: storage
+    match: ["storage/**"]
+  - name: notify
+    match: ["notify/**"]
+
+rules:
+  - id: storage-sends-nothing
+    forbid: storage
+    to: notify
+    via: imports
+    because: "persistence must not decide what the buyer is told"
+```
+
+`because:` is mandatory, and it is not decoration: every finding this
+rule produces carries it, so a violation says why the rule exists
+rather than only that it was broken.
+
+**3. Check that it means what you think.** `constraints lint`
+validates the vocabulary and — when a snapshot exists — resolves each
+component against it, so you find out that a selector matches nothing
+*before* a verdict silently passes:
+
+```
+$ enola constraints lint .
+Component resolution against the snapshot at ./.enola:
+  notify                   2 member(s)
+                             match notify/**
+  storage                  2 member(s)
+                             match storage/**
+
+OK — every declaration is valid.
+```
+
+A component with `0 member(s)` is the failure mode to watch for. It
+is valid YAML, it lints clean, and it can never be violated.
+
+**4. Enforce it.** The `constraints` explainer verdicts declared
+rules on every snapshot at confidence `1.00`, so the gate can fail on
+them:
+
+```
+$ enola check --fail-on=constraints .
+FAIL — 1 structural regression introduced.
+law: 1 rule · 1 breach · none excused
+
+Regressions (fail):
+  - [constraints] 1.00 — Constraint storage-sends-nothing violated: storage -> notify via imports
+      forbidden imports edge
+      storage/storage.go:3
+      import "layersgate/notify"
+```
+
+**Then: what is the law actually doing?** As a declaration grows,
+the question stops being "does it pass" and becomes "how much of it
+is being excused rather than obeyed". `constraints ledger` answers
+that — every rule beside its breaches, its suppressions and its
+exemptions, each with an owner, a reason and an age:
+
+```
+$ enola constraints ledger .
+law: 1 rule · 1 breach · none excused
+read from the snapshot generated 2026-08-25T19:30:54Z — a rule declared since then is not counted here
+
+storage-sends-nothing [ratchet] — 1 breach reported, 0 excused · declared in enola-intent.yaml
+    because: persistence must not decide what the buyer is told
+```
+
+`constraints mine` is the fifth command, and it belongs after these
+four rather than before them: it proposes candidate rules out of the
+regularities your snapshot already shows, which is useful once you
+know what a rule means and can judge a proposal. It never
+self-adopts.
+
+From here, the reference. [Components](#components) is the selector
+dialect, [The 21 rule forms](#the-21-rule-forms) is everything a rule
+can say, [Modes](#modes) is how strictly each is enforced,
+[Exemptions](#exemptions--declared-carve-outs) is how a breach is
+signed off, and [`plan` / `plan_check`](#plan--plan_check--the-pre-edit-contract)
+answers which rules govern a change *before* you make it.
 ## The constraints directory
 
 A repo whose law outgrows one file splits it into per-domain files
