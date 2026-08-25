@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/engine"
@@ -423,7 +424,8 @@ func (r *Runner) gradeQuietly(ctx context.Context, repoDir string) (check.Verdic
 		policy.Suppressions = suppressions
 	}
 	verdict := check.EvaluateCurrent(diff.Compute(base, current), policy, current.Insights)
-	return check.AttachCensus(verdict, current.Meta, policy, current.Insights), outDir, true
+	verdict = check.AttachCensus(verdict, current.Meta, policy, current.Insights)
+	return check.AttachLedger(verdict, eng.Store(), policy, current.Insights, time.Now()), outDir, true
 }
 
 // configForRepo prefers a config inside the repository, matching how `enola check`

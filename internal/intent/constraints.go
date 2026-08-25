@@ -348,22 +348,30 @@ func DecodeExemptions(encoded string) []ConstraintExemption {
 
 // AllowedComponentKinds is the closed fact-kind vocabulary a component selector
 // may narrow to — the measured kinds the constraints explainer resolves over,
-// plus the two reference kinds it resolves over ONLY when a declaration names
-// one. A component that omits `kind:` never acquires a test_ref, a file_ref or
-// a lint fact: those carry reference edges (or, for lint, a linter's report)
-// rather than architectural coupling, and the explainers that count dependents
-// exclude them for that reason. Naming the kind is the opt-in, and it is what
-// lets a rule speak about tests at all — "a component test must not reach a
-// fixture factory" has a test file at its near end, and no component could
-// select one — and what lets a rule wrap a linter's rule: `kind: lint` with a
-// `where: lint_rule` and a `forbid_fact` form.
+// plus the kinds it resolves over ONLY when a declaration names one. A
+// component that omits `kind:` never acquires a test_ref, a file_ref, a lint or
+// a dependency fact. The reasons differ and both are the same shape: test_ref
+// and file_ref carry reference edges rather than architectural coupling, and
+// the explainers that count dependents exclude them; lint carries a linter's
+// report; dependency carries either an import edge, whose home is the importing
+// file rather than any component, or — with `where: {type: package}` — an
+// EXTERNAL PACKAGE, which is not code in this repository at all. Sweeping any
+// of them into every unnarrowed component would silently change what every
+// existing rule judges.
+//
+// Naming the kind is the whole opt-in, and it is what lets a rule speak about
+// each of them: "a component test must not reach a fixture factory" has a test
+// file at its near end and no component could select one; `kind: lint` with a
+// `where: lint_rule` wraps a linter's rule; `kind: dependency` with a
+// `where: {type: package, pinned: false}` states that every dependency this
+// repository declares must name one version.
 var AllowedComponentKinds = map[string]bool{
 	"module": true, "symbol": true, "route": true, "storage": true,
-	"test_ref": true, "file_ref": true, "lint": true,
+	"test_ref": true, "file_ref": true, "lint": true, "dependency": true,
 }
 
 func allowedComponentKinds() string {
-	return "file_ref, lint, module, route, storage, symbol, test_ref"
+	return "dependency, file_ref, lint, module, route, storage, symbol, test_ref"
 }
 
 // AllowedRuleVias is the closed edge vocabulary a rule may forbid — relation

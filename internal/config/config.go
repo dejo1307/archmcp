@@ -535,7 +535,7 @@ func Default() *Config {
 			"**/integration_test/**/*.dart",
 			"**/test_driver/**/*.dart",
 		},
-		Extractors: []string{"asyncapi", "cpp", "dart", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent"},
+		Extractors: []string{"asyncapi", "cpp", "dart", "dotnet", "go", "grpc", "java", "kotlin", "openapi", "php", "python", "typescript", "swift", "ruby", "rust", "scala", "hcl", "ansible", "mdintent", "manifests"},
 		Explainers: append([]string(nil), KnownExplainers...),
 		Renderers:  []string{"llm_context"},
 		Output: OutputConfig{

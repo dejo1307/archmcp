@@ -49,7 +49,9 @@ components:
   - name: domain                 # lowercase token
     match: ["app/domain/**"]     # exact path, prefix/** subtree, or **/name
                                  # basename glob — nothing else
-    kind: module                 # optional: module, route, storage, symbol
+    kind: module                 # optional: module, route, storage, symbol —
+                                 # plus test_ref, file_ref, lint and dependency,
+                                 # which a component acquires ONLY by naming them
     name_pattern: "*Serializer"  # optional: a fact-name family — an exact
                                  # name, one prefix*, or one *suffix
     service: billing             # optional: one repo of a multi-repo snapshot,
@@ -1650,6 +1652,38 @@ request API (`render`, `redirect_to`, `params`, `session`, `cookies`,
 `flash`) stays out of models and services, all advisory, all in force
 only where the two roles are bound.
 
+> The rule `supply-chain` states — every external dependency declared, pinned, and
+> given a stated purpose — is H14 from Stanislav Rumega's position paper
+> [*Tell Your Coding Agent to Work as an Architect First*](https://github.com/styrumg/Architect-First-Article).
+
+`supply-chain` is the odd one out, and worth reading as the shape rather
+than the rule. It has one role and one law — every declared dependency
+names a version — and the role binds to nothing the repository has to
+name, because what an unpinned dependency IS is a property the facts
+carry rather than a place in the tree:
+
+```yaml
+use_recipe:
+  - recipe: supply-chain
+    as: supply
+    bind:
+      unpinned-dependencies: {}
+```
+
+The role's own selector is `kind: dependency` with
+`where: {type: package, pinned: false}`, over the package facts the
+`manifests` extractor measures (see [INTENT.md](INTENT.md)), and the law is a
+`forbid_fact` over it — no new rule form, because "this set must be empty" was
+already one. `dependency` is an opt-in member kind for the same reason
+`test_ref` and `lint` are: a component that does not name it never acquires a
+package, so no existing rule changes what it judges.
+
+One caveat before adopting it: `where:` fails closed and loudly on a property
+no measured fact carries, so a repository with no manifest enola reads gets a
+`1.0` *selector cannot be evaluated* finding rather than silence. A rule that
+holds because it looked at nothing must never read as compliance — but it is
+surprising the first time.
+
 **A first declaration in one command.** `enola constraints init [repo]`
 reads the shipped recipes, binds every role whose conventional directory
 the repository has, and writes one `use_recipe` per recipe whose required
@@ -1770,6 +1804,67 @@ candidate the scaffolder leaves is listed with the reason it stays
 a constraint proposal. Nothing is written to the repository's plugin
 and no ESLint configuration is touched: the scaffold is a starting
 point the operator reviews, like the would-be declaration.
+
+## `constraints ledger` — how much of the law is being excused
+
+Every excuse this vocabulary admits already demands a signature. A suppression
+entry names an owner, a reason and a date, and the ledger rejects as a whole if
+any is missing. An `exempt:` carve-out names the same three beside the witness
+it covers. What was never asked is the question those signatures answer
+together: **how much of the declared law is being excused rather than obeyed.**
+
+`enola constraints ledger` asks it:
+
+```
+law: 34 rules (28 ratchet, 4 advisory, 2 strict) · 12 breaches · 5 excused (42%) · oldest excuse 214 days · 2 excuses matched nothing
+
+company-fk [ratchet] — 7 breaches reported, 3 excused · declared in enola/constraints/billing.yaml
+    because: tenant isolation rides the company FK
+    exemption by alice (2024-11-02, 296 days ago) — users must have fk_constraints containing company_id->companies
+        "legacy tables migrate in Q4"
+    suppression by bob (2026-06-01, 85 days ago)
+        "second signature while the migration lands"
+```
+
+Three things in that output are the point, and none of them is visible one
+verdict at a time.
+
+**The rate.** A rule most of whose breaches are signed away is a rule to
+reconsider — the declaration is asking for something the codebase has decided
+not to do, and the team is paying a signature per occurrence to say so. Read
+one excuse at a time, that looks like thirty separate reasonable decisions. Read
+as a ratio, it is one wrong rule. The gate cannot make that judgement and
+should not try; what it can do is make the number available to whoever can.
+
+**The age.** An excuse nobody has revisited in a year is a reason that has
+probably stopped being true. `since:` and `date:` were mandatory long before
+anything read them; this is what they were mandatory *for*.
+
+**The ones that match nothing.** An excuse that excused nothing in this
+snapshot is the row somebody can act on today: the breach it covered was fixed,
+moved, or stopped being selected, and the signature is still standing. It is
+marked inline and counted on the summary line. The snapshot's own census
+already reported the same two facts as `unused suppression` and
+`exemption matching nothing`; the ledger is where they acquire a denominator.
+
+The report reads the **snapshot's** compiled intent facts, not the working
+tree's YAML — deliberately, so both halves of every ratio come from one state
+of the law. A rule declared since the snapshot was generated is therefore
+absent, and the report prints the snapshot's timestamp so a reader can tell.
+This is the opposite choice from `plan`, which answers governance from the
+working tree precisely because its question is about an edit that has not
+happened yet.
+
+**A report, never a gate.** It exits `0` whenever it produced a report. Nothing
+here changes what `enola check` fails on, and nothing here fails a build: a gate
+that failed on its own unpopularity is the one nobody would leave enabled — the
+false-alarm economy of [EXPLAINERS.md](EXPLAINERS.md) applied to the gate's own
+record rather than to its findings.
+
+`enola check` carries the same summary as one line beside its census line, and
+as a `law` object in `--format json`. A repository that declares no rules gets
+no line and no object at all: undeclared is unasked, and a zeroed ledger would
+read as a law with nothing wrong with it.
 
 ## `plan` / `plan_check` — the pre-edit contract
 

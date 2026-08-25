@@ -310,6 +310,7 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		check.OwnershipFromExtractors(eng.Extractors()), current.Insights, *focus, measurements...)
 	verdict = check.AttachGuidance(verdict, eng.Store())
 	verdict = check.AttachCensus(verdict, current.Meta, policy, current.Insights)
+	verdict = check.AttachLedger(verdict, eng.Store(), policy, current.Insights, time.Now())
 
 	switch outFormat {
 	case check.FormatText:

@@ -67,6 +67,13 @@ var extractorDocs = map[string]extractorDoc{
 	"openapi":    {Labels: []string{"OpenAPI", "gRPC and OpenAPI"}, Page: "grpc-openapi.md"},
 	"grpc":       {Labels: []string{"gRPC", "gRPC and OpenAPI"}, Page: "grpc-openapi.md"},
 
+	"manifests": {
+		NoPageWhy: "not a language. It reads the package manifests of seven ecosystems " +
+			"for one thing — the DECLARED direct dependencies — and a repository is not " +
+			"written in any of them. What it emits and what a declaration may say about " +
+			"it is documented in docs/INTENT.md, beside the verdicts that read it.",
+	},
+
 	"mdintent": {
 		NoPageWhy: "not a language. It compiles enola's own knowledge pages into intent " +
 			"facts, so what it reads is documented in docs/INTENT.md — a language table " +

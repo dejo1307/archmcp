@@ -241,6 +241,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	insights = append(insights, claimVerdicts(store, present, retired)...)
 	insights = append(insights, relationVerdicts(store)...)
 	insights = append(insights, anchorVerdicts(store, present, retired)...)
+	insights = append(insights, dependencyVerdicts(store)...)
 
 	sort.Slice(overridden, func(i, j int) bool {
 		if overridden[i].Repo != overridden[j].Repo {

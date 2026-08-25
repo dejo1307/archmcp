@@ -139,19 +139,26 @@ const requireSkipConfidence = 0.4
 // it does not name one.
 var memberKinds = []string{facts.KindModule, facts.KindSymbol, facts.KindRoute, facts.KindStorage}
 
-// referenceMemberKinds are kinds a component may select only by naming them.
-// They carry reference edges rather than architectural coupling — a test file
-// referencing a production symbol must not make that symbol look used by
-// production — so the explainers that count dependents exclude them, and a
-// component that did not ask for them must not acquire them either.
+// referenceMemberKinds are kinds a component may select only by naming them —
+// each for its own reason, all with the same consequence.
 //
-// A rule about tests is the case that needs them: "a component test must not
-// reach a fixture factory" is an ordinary edge rule whose near end is a test
-// file, and while no component could select one the rule could not be written
-// at all, reporting `matches nothing` with both ends of the forbidden edge
-// measured. Naming the kind is the whole opt-in: a declaration that omits
-// `kind:` ranges over memberKinds exactly as before.
-var referenceMemberKinds = []string{facts.KindTestRef, facts.KindFileRef, facts.KindLint}
+// test_ref and file_ref carry reference edges rather than architectural
+// coupling: a test file referencing a production symbol must not make that
+// symbol look used by production, so the explainers that count dependents
+// exclude them, and a component that did not ask for them must not acquire
+// them either. lint carries a linter's report. dependency carries either an
+// import edge, whose home is the importing file rather than any component, or
+// an external package — a thing this repository DECLARES rather than contains,
+// which no path-shaped component was ever written to hold.
+//
+// A rule about tests is the case that first needed this: "a component test must
+// not reach a fixture factory" is an ordinary edge rule whose near end is a
+// test file, and while no component could select one the rule could not be
+// written at all. Supply-chain rules are the newest: `kind: dependency` with a
+// `where: {type: package, pinned: false}` selects exactly the declared packages
+// that name no single version. Naming the kind is the whole opt-in: a
+// declaration that omits `kind:` ranges over memberKinds exactly as before.
+var referenceMemberKinds = []string{facts.KindTestRef, facts.KindFileRef, facts.KindLint, facts.KindDependency}
 
 // reachVias are the edge kinds the private form walks — the same closed
 // vocabulary a rule's via may name, kept as a sorted slice here because the
