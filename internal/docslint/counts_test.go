@@ -40,13 +40,6 @@ var countSubjects = []struct {
 // whatever sentence replaced it.
 var countWaivers = []struct{ Doc, Phrase, Reason string }{
 	{
-		Doc:    "docs/EXPLAINERS.md",
-		Phrase: "fifteen explainers produced **9,131 findings**",
-		Reason: "a measurement, not a description: the corpus sweep in BENCHMARKS.md ran " +
-			"against the fifteen explainers that shipped at the time. Re-counting it to " +
-			"today's inventory would report a number no run ever produced.",
-	},
-	{
 		Doc:    "ARCHITECTURE.md",
 		Phrase: "since two tools disagreeing about what \"stale\" means",
 		Reason: "'two tools' here is any two programs, not the MCP tool inventory.",

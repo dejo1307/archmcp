@@ -1,4 +1,4 @@
-# What an agent cannot see
+# Six blind spots in source browsing
 
 ## What this document is
 
@@ -7,11 +7,11 @@ and debugging enola against five public open-source codebases. Each one names th
 repository, the pinned commit, the command that was run, and the answer that came back
 wrong, so you can re-run it instead of taking it on trust.
 
-It exists because the case for a code graph is normally argued in the abstract - *agents
-need context* - or with a benchmark score that says nothing about your codebase. This
-argues it from the other end: here is what was actually got wrong, why, and which of it a
-graph addresses. The failures escalate deliberately, from an accident that better habits
-would catch, to limits no amount of care or budget can cross:
+The case for a code graph is often argued in the abstract - *agents need context* - or
+with a benchmark score that says little about a particular codebase. This document starts
+with what went wrong, why, and which failures a graph can address. The examples progress
+from an avoidable truncated read to structural questions that source browsing alone does
+not answer reliably:
 
 | | |
 |---|---|
@@ -27,17 +27,18 @@ This is not a benchmark ([BENCHMARKS.md](BENCHMARKS.md) is), not a feature tour
 own, section 6 measures it, and the closing section lists what this evidence does *not*
 support.
 
-Read it if you are deciding whether a structural index earns its place in your agent setup,
-or if you want to know precisely where an agent armed with grep stops being reliable.
+Read it if you are deciding whether a structural index earns its place in your agent
+setup, or where source search starts to lose structural context.
 
-## The one thing they have in common
+## What the failures have in common
 
 Every wrong answer in this document was produced by a capable agent reading real data
 correctly. None of them is a hallucination. They are all the same failure: **a bounded,
 confident read of a partial state.**
 
-That failure is not fixed by a better search. It is fixed by having the whole thing as an
-artifact you can query, keep, and compare.
+Better search does not remove that boundary. A scoped structural model makes the measured
+relationships queryable and comparable, while its receipt records exclusions and known
+limits.
 
 Everything below was measured while building and fixing enola, mostly in a single working
 session. Where enola itself was wrong, that is here too - it is the most useful part.

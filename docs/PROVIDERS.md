@@ -1,14 +1,9 @@
 # Providers — measured facts enola did not extract
 
-enola's own extractors parse source. A **provider** is anything else that can put a
-measured fact into the graph: a tool enola does not ship, a booted application, a
-signature file. Each one declares how it resolved what it emitted, so a consumer can
-always weigh a claim against an extraction.
-
-The seam is fail-closed end to end, and every run lands in the snapshot receipt's
-provider census — including providers that contributed nothing, and why. Declared
-constraints can verdict over what a provider reports; see
-[CONSTRAINTS.md](CONSTRAINTS.md).
+enola's own extractors parse source. A **provider** adds measured facts from somewhere
+else: a tool enola does not ship, a booted application or a signature file. Each fact
+states how it was resolved, and every run records which providers contributed. Declared
+constraints can evaluate provider facts; see [CONSTRAINTS.md](CONSTRAINTS.md).
 
 ## The provider seam
 
@@ -18,8 +13,8 @@ engine config's `providers:` block: an executable run once with
 in the store's own schema. The contract is fail-closed end to end —
 one invalid line rejects the provider's whole output, a provider fact
 may not collide with an extractor fact's kind+name identity, and every
-fact must carry a **`resolution_level`** prop: the provider's own
-honesty declaration of how it resolved what it emitted (the same
+fact must carry a **`resolution_level`** prop: the basis on which the
+provider resolved what it emitted (the same
 vocabulary the Stimulus pass uses for its `markup-declared` binding
 facts). The seam stamps provenance (`provider`, `provider_version`)
 onto every accepted fact, and each run lands in the receipt's provider
@@ -79,7 +74,7 @@ A provider may additionally report its own coverage accounting over
 one stderr line prefixed `enola-provider-census: ` — files seen,
 declarations parsed, constructs skipped with named causes — which the
 seam validates as strictly as the facts and carries into the
-receipt's provider census, the same honesty discipline the engine's
+receipt's provider census, the same coverage discipline the engine's
 file census applies to its own walk.
 
 ## Reusing provider facts
@@ -175,7 +170,7 @@ whose method and path a `runtime-route:` observation reports gains
 **`runtime_observed: true`** and the merged, sorted `observed_via`
 set, so runtime truth is queryable on the measured graph
 (`query_facts(kind=route, prop=runtime_observed, prop_value=true)`)
-and constraint rules can verdict over it (a `require` on
+and constraint rules can evaluate it (a `require` on
 `observed_via`, a `forbid_fact` over a component selecting
 observations). Runtime truth informs the graph; it never gates
 anything by itself — observations carry no linker verdicts
@@ -219,9 +214,9 @@ true`**, the merged sorted `declared_signature` summary, and the
 merged sorted `declared_in` file set — never touching the extractor's
 account of the symbol itself. Declared truth is then queryable
 (`query_facts(kind=symbol, prop=typed, prop_value=true)`) and
-constraint rules can verdict over it — a `require` on `declared_in`
+constraint rules can evaluate it — a `require` on `declared_in`
 over an API component, a `forbid_fact` over a component selecting
-retired contracts — with every verdict citing the signature file that
+retired contracts — with every finding citing the signature file that
 made the claim. A declaration is a claim about the implementation,
 not proof of it: the provider records what the signature file says,
 the level says who said it, and nothing presents the claim as

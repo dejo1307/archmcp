@@ -15,29 +15,25 @@ bidirectional Rails relation would not manufacture a cycle that isn't there. Run
 textbook algorithm over a graph assembled carelessly and you get textbook answers to
 the wrong question.
 
-**And a finding is an answer, not a lead.** enola does not hand an agent a set of
-plausibly-relevant files and let it work out whether they form a cycle. It hands back
-the conclusion — these modules, this cycle, confidence `1.0`, computed by a real
-algorithm over real edges — so nothing downstream has to re-derive it, and two agents
-asking the same question get the same answer. Nothing in that chain is retrieved by
-similarity or guessed by a model; see
+**A finding is a computed claim, with evidence and confidence.** For a cycle at
+confidence `1.0`, that claim is a structural conclusion over the measured graph. For an
+outlier or recognised convention below `1.0`, it is a candidate to inspect. In both
+cases enola returns the result rather than asking the agent to reconstruct it from a set
+of files. Nothing in that chain is retrieved by similarity or guessed by a model; see
 [ARCHITECTURE.md → The idea](../ARCHITECTURE.md#the-idea) for why that is the founding
 constraint rather than an optimisation.
 
-All of which buys a finding you can trust. It does not buy a verdict — and the gap
-between those two is what the rest of this document is about.
+That makes a finding reproducible. It does not make every finding certain or enforceable;
+the rest of this document explains that distinction.
 
-Across the 81 public repositories swept in [BENCHMARKS.md](BENCHMARKS.md), enola's
-fifteen explainers produced **9,131 findings**. Every one of them is derived rather than
-guessed, and that number is still the problem rather than the achievement. Nobody is
-going to read 9,131 findings. Nobody is going to fix them. A report that hands you all
-of them has told you something true and useless in the same breath, and the honest
-response to it is to close the tab.
+Across the 91 public repositories in the current [benchmark sweep](BENCHMARKS.md),
+enola's eighteen explainers produced **12,027 findings**. The volume is the problem: a
+repository-wide report is useful for investigation, but too broad to describe one
+change.
 
-It was 29,633 until `hotspots` was capped at its top 20 per repository. That one
-explainer was roughly 80% of every finding enola produced, so its ranking decided what
-a reader saw first and the other fourteen sat underneath it. Capping it did not make
-the remaining count small enough to read, which is the point of everything below.
+At extractor version v197 the total was 29,633, including 23,775 `hotspots` findings.
+Capping that explainer at its top 20 per repository reduced noise, but did not make a
+full repository report specific to the change in front of you.
 
 So the question that decides whether any of this is worth running is not *what can you
 find*. It is **what happens to a finding after you have found it** — and that depends
@@ -53,16 +49,16 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   either exists or it does not. `intent` diffs DECLARED architecture (a repo's
   enola-intent.yaml, or a cluster config's intent block) against the measured
   cross-repo edges: an unexpected or mis-mechanism seam is set difference between
-  stated and measured, which either holds or it does not. Its estimating verdicts — a
+  stated and measured, which either holds or it does not. Its estimating findings — a
   declared seam the graph never measured, a page relation to an uncompiled page, a
   measurable code anchor no fact touches, a seam covered only by superseded intent —
   are capped below 1.0, because each absence can be drift or an extraction miss.
   It asks the same two-sided question of a repository's DECLARED DEPENDENCIES:
   a package the manifests carry that the declaration does not name is a set
-  difference and verdicts at 1.0, while a declaration naming a package no
+  difference and is reported at 1.0, while a declaration naming a package no
   manifest carries is 0.8 — removed and gone stale, or a manifest form the
   extractor does not read, and the facts cannot tell those apart.
-  `constraints` is the third: it verdicts the declared components-and-rules vocabulary
+  `constraints` is the third: it evaluates the declared components-and-rules vocabulary
   against the measured graph — a component resolves to the facts its match patterns
   select, and a rule states one of 21 enforceable forms over components (`forbid`,
   `forbid_reach`, `allow`, `protect`, `private`, and the rest). A breach is set
@@ -77,7 +73,7 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   against fourteen known taxonomies, then flags imports that run the wrong way through it.
   Each taxonomy is scored over the modules whose LANGUAGE it describes, and one is
   reported per language cohort — so a Rails monolith with an Ember front end is named as
-  both, over disjoint modules, rather than having one half verdicted by the other's layer
+  both, over disjoint modules, rather than having one half judged by the other's layer
   order. Every statement names its cohort and that cohort's share of the repository, and
   every violation names the taxonomy that judged it.
   The statement it makes carries its own denominators — modules classified, how many of
@@ -97,7 +93,7 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   those edges a violation. It is the same judgement the Go layout makes about
   `internal`/`pkg` and the Rails one about `lib`, applied to a directory that is a real
   thing with no place in an order rather than one that holds every layer.
-  A repo that DECLARES its layer order is verdicted against the declaration as well:
+  A repo that DECLARES its layer order is evaluated against the declaration as well:
   that pattern is stated rather than guessed, so it and its violations are proof-class.
   It sits beside the recognised pattern, not in place of it — recognition scores itself
   over the whole snapshot, so it has no per-repo off switch. Both patterns are reported
@@ -159,28 +155,27 @@ computes a saturating score — a fan-in ratio, a coverage share — clamps stri
 
 ## A list of everything wrong is not a list of anything you did
 
-Here is the shape of the problem, from the corpus. Eighteen repositories, before anyone
-changed a line:
+Here is the shape of the problem in the current delta corpus. Twenty repositories,
+before anyone changed a line:
 
-> **1,395 pre-existing findings.** Up to 141 in a single repository.
+> **1,620 pre-existing findings.** Up to 235 in a single repository.
 
 Now make a change. Add a feature, fix a bug, let an agent refactor a package. Two
 questions look similar and are not:
 
-1. *What is wrong with this repository?* — 1,395 answers, none of them yours.
+1. *What is wrong with this repository?* — 1,620 answers, none of them yours.
 2. *What did my change do to it?* — the question you can actually act on.
 
-Almost every one of those 1,395 findings was there before you opened the editor. You did
+Almost every one of those 1,620 findings was there before you opened the editor. You did
 not write them, you are not going to fix them today, and a tool that reports them
-alongside your change has buried the one thing you needed in 1,394 things you did not.
-This is how structural analysis dies in practice: not because the analysis is wrong, but
-because the signal-to-noise ratio makes the honest response *turn it off*.
+alongside your change has buried the one thing you needed in existing findings. That
+signal-to-noise ratio is why broad analysis is often disabled in CI.
 
 Answering question 2 requires something the analysis alone cannot give you. It requires
 the state of the repository *before* your change — still intact, still queryable, after
 the change has landed.
 
-## Which is exactly what a snapshot is for
+## Why the snapshot matters
 
 [SNAPSHOTS.md](SNAPSHOTS.md) makes the case that enola's graph is a **value**: computed
 when you ask, named by a fingerprint of its contents, kept rather than overwritten. This
@@ -191,20 +186,20 @@ time. And because every finding carries the entities it is about — the modules
 cycle, the symbol with the fan-in, the dependency edge that crossed a layer — a finding
 can be checked against what your change actually touched.
 
-Put those together and the report inverts. Instead of *1,395 findings, one of which might
+Put those together and the report inverts. Instead of *1,620 findings, one of which might
 be new*, you get:
 
 > **FAIL — 1 structural regression introduced.**
 
-Measured, on those same eighteen repositories: an injected dependency cycle was reported
-as **exactly one regression, and not one of the 1,395 pre-existing findings was repeated**
+Measured on those same twenty repositories: an injected dependency cycle was reported
+as **exactly one regression, and not one of the 1,620 pre-existing findings was repeated**
 ([BENCHMARKS.md § 2](BENCHMARKS.md#2-delta-precision--the-ratchet)). Revert the change
 and it goes quiet again. The verdict is a function of the tree, not of history.
 
-That is the whole trick, and it is not a smarter explainer. It is the same twenty-one
-explainers run twice, over two values that both still exist.
+The explainers did not change between those runs. The difference comes from comparing
+their findings across two snapshots.
 
-## Three answers, and the third is the interesting one
+## Three outcomes when snapshots are compared
 
 Comparing findings across two snapshots gives three outcomes, not two:
 
@@ -214,38 +209,27 @@ Comparing findings across two snapshots gives three outcomes, not two:
 - **Incidental shift** — the finding appeared or cleared, but nothing it cites was
   touched by your change.
 
-That third bucket is small, unglamorous, and the reason the gate stays switched on.
+The third bucket prevents statistical movement from being attributed to the change.
 
 Most of the eighteen explainers are relative to your repository. `mean + 2σ` moves when the
 population moves. A ranked top-N list has fixed membership size, so when a worse
 offender is deleted the next module rises into the window — and a finding "appears" for
 a module nobody edited. Both are real effects of statistics, not of your work.
 
-A tool that reports those as regressions is lying to you twice a week, and you will
-learn to ignore it. enola names them instead: they are listed under **incidental finding
-shifts**, with the reason, and they are never graded. Nothing is hidden — but nothing
-that drifted gets to masquerade as something you caused.
+A tool that reports those as regressions misattributes statistical movement to your
+work. enola lists them as **incidental finding shifts**, with the reason, and does not
+grade them.
 
-## Only one kind fails the build
+## What can fail the build
 
-Of the 29,633 findings across the corpus, 1,057 come from the cycles explainer, and
-**937 of those were load-order cycles at confidence `1.0` — 3.16%.** Only those were
-eligible to fail a build. The other 96.84% were reported and let you through. (In that
-measurement the remaining 120 cycles-sourced findings — oversized "highly coupled
-module cluster" findings — sat at `0.4`. That has since been corrected: a cluster is a
-cycle, a larger one, and exactly as certain, so it now reports at `1.0` and is
-gate-eligible like any other cycle. Encoding "hard to fix" in the confidence let a
-strictly worse graph report as an improvement.)
+At the default confidence floor of `1.0`, only proof-class findings are eligible:
+dependency cycles, `intent` set differences, violations of a declared layer order, and
+breaches of declared constraints. Heuristic findings are capped below `1.0`.
 
-That ratio is the design, not an accident. A cycle is the one finding computed with
-certainty rather than inferred, and it is consequential enough to be worth stopping for:
-it dictates load order, it makes both modules untestable in isolation, and it raises the
-price of every future refactor in that area. It is not a matter of taste.
-
-A god class is a matter of taste. So is a deep dependency chain, a large public surface,
-a complexity outlier. Those get reported so you can look, and they never break your
-build — because a gate that fails on opinions is a gate that gets deleted from CI in
-week two. Widen it if you disagree; the policy is a flag, not a belief.
+Eligibility is not enforcement. A finding fails the build only when `--fail-on` names
+its explainer. Lowering `--min-confidence` can include advisory findings such as god
+classes, deep dependency chains, large exported surfaces and complexity outliers when a
+team deliberately chooses to enforce them.
 
 ## What it looks like when it works
 
