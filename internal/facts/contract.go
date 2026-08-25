@@ -155,6 +155,36 @@ var AllViaKinds = map[string]bool{
 	ViaObjectStorage: true,
 }
 
+// Package ecosystems — the `ecosystem` prop a declared external dependency
+// carries, naming the packaging system it was declared in. The manifests
+// extractor writes them; intent declarations validate against
+// AllPackageEcosystems at parse time, for the same reason a seam's via is
+// validated: a declaration that names an ecosystem nothing measures would sit
+// in the file looking enforced and match nothing forever.
+const (
+	EcosystemGo       = "go"
+	EcosystemNPM      = "npm"
+	EcosystemRubyGems = "rubygems"
+	EcosystemCargo    = "cargo"
+	EcosystemPub      = "pub"
+	EcosystemPyPI     = "pypi"
+)
+
+// AllPackageEcosystems is every registered ecosystem value.
+var AllPackageEcosystems = map[string]bool{
+	EcosystemGo:       true,
+	EcosystemNPM:      true,
+	EcosystemRubyGems: true,
+	EcosystemCargo:    true,
+	EcosystemPub:      true,
+	EcosystemPyPI:     true,
+}
+
+// TypePackage is the `type` prop marking a KindDependency fact as a DECLARED
+// EXTERNAL PACKAGE rather than an import edge between this repository's own
+// modules. Both are dependencies; the prop is what a selector narrows on.
+const TypePackage = "package"
+
 // Route role values (the PropRole prop on a KindRoute fact): which side of the call
 // this route represents. The cross-repo HTTP linker matches RoleClient routes against
 // RoleServer ones; a route with no role is treated as a server route, because an

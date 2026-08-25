@@ -278,6 +278,14 @@ type Verdict struct {
 	// headline on every outcome; see AttachCensus.
 	Census *Census `json:"census,omitempty"`
 
+	// Law is the declared law's excuse summary — how many rules are declared,
+	// how many breaches they raised, and how many of those were signed away by
+	// a suppression or an exemption. Reported, never graded: see AttachLedger
+	// for why a gate must not fail on its own unpopularity. Absent entirely
+	// when the repository declares no rules, because undeclared is unasked and
+	// a zeroed ledger would read as a clean bill of health.
+	Law *LedgerSummary `json:"law,omitempty"`
+
 	// Failures are the new findings that violated the policy.
 	Failures []facts.Insight `json:"failures,omitempty"`
 	// Advisories are new findings that did NOT violate it — reported so a clean exit

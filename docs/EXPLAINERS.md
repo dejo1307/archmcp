@@ -57,6 +57,11 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   declared seam the graph never measured, a page relation to an uncompiled page, a
   measurable code anchor no fact touches, a seam covered only by superseded intent —
   are capped below 1.0, because each absence can be drift or an extraction miss.
+  It asks the same two-sided question of a repository's DECLARED DEPENDENCIES:
+  a package the manifests carry that the declaration does not name is a set
+  difference and verdicts at 1.0, while a declaration naming a package no
+  manifest carries is 0.8 — removed and gone stale, or a manifest form the
+  extractor does not read, and the facts cannot tell those apart.
   `constraints` is the third: it verdicts the declared components-and-rules vocabulary
   against the measured graph — a component resolves to the facts its match patterns
   select, and a rule states one of 21 enforceable forms over components (`forbid`,
@@ -103,6 +108,13 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   own; they summarise what the cross-repo linker already resolved — which repositories
   depend on which, where enola failed to follow a call, and which routes no loaded
   client calls, and where messaging contracts and detected Kafka call sites do not match.
+  `unused-routes` is worth naming for the question it actually answers: every server
+  route is an inbound message the repo promises to serve, and the reporter asks which
+  of those promises no loaded client ever sends — a completeness check over the seam
+  rather than over the code. It only means anything over a snapshot holding the backend
+  AND its clients: a single-repo snapshot has no service nodes, so it reports nothing at
+  all rather than reporting every route as unused, and past 80% unmatched the finding
+  says the client set is incomplete instead of listing endpoints to delete.
 - **The declaration-shaped ones.** Every explainer above keys off symbols, modules and
   their dependency edges, which left the route, storage and association facts the
   extractors emit feeding nothing. `domain` asks the questions those facts answer —

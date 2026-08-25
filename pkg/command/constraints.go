@@ -18,9 +18,11 @@ import (
 	"github.com/enola-labs/enola/pkg/check"
 )
 
-// Constraints is `enola constraints <lint|mine>` — the authoring loop for the
-// declared-constraint vocabulary. `mine` (see ConstraintsMine) proposes
-// candidate declarations out of the snapshot's own regularities; `lint`
+// Constraints is `enola constraints <lint|mine|init|explain|ledger>` — the
+// authoring loop for the declared-constraint vocabulary. `mine` (see
+// ConstraintsMine) proposes candidate declarations out of the snapshot's own
+// regularities; `ledger` (see ConstraintsLedger) reports how much of the law
+// already declared is being excused rather than obeyed; `lint`
 // parses each repo's declaration
 // (enola-intent.yaml, any enola/constraints/*.yaml files, and any
 // cluster-config override), reports every
@@ -46,10 +48,14 @@ func (r *Runner) Constraints(args []string) {
 		r.ConstraintsExplain(args[1:])
 		return
 	}
+	if len(args) > 0 && args[0] == "ledger" {
+		r.ConstraintsLedger(args[1:])
+		return
+	}
 	fs := flag.NewFlagSet("constraints", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" constraints <lint|mine|init|explain> [repo_path|config_path]\n\n"+
+		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" constraints <lint|mine|init|explain|ledger> [repo_path|config_path]\n\n"+
 			"lint validates the declared constraint vocabulary — inline in enola-intent.yaml\n"+
 			"and per-domain files under enola/constraints/ — and resolves each component\n"+
 			"against the current snapshot, if one exists (else validation only).\n\n"+
@@ -59,12 +65,15 @@ func (r *Runner) Constraints(args []string) {
 			"init writes a first declaration binding every shipped recipe whose roles\n"+
 			"resolve to directories the repository has. Run `"+r.name()+" constraints init --help`.\n"+
 			"explain names the components a file's facts belong to, the selector that\n"+
-			"admitted each, and the edges the file makes. Run `"+r.name()+" constraints explain --help`.\n\n"+
+			"admitted each, and the edges the file makes. Run `"+r.name()+" constraints explain --help`.\n"+
+			"ledger reports how much of the declared law is being EXCUSED rather than\n"+
+			"obeyed — every rule's breaches beside the suppressions and exemptions that\n"+
+			"signed them away, with each excuse's owner and age. Run `"+r.name()+" constraints ledger --help`.\n\n"+
 			"Exit codes (lint):\n"+
 			"  0  every declaration is valid\n"+
 			"  1  validation problems were reported\n"+
 			"  2  the command could not run\n\n"+
-			"Exit codes (mine, init, explain):\n"+
+			"Exit codes (mine, init, explain, ledger):\n"+
 			"  0  a report was produced\n"+
 			"  2  the command could not run — no snapshot to read, or a declaration\n"+
 			"     init would have had to overwrite\n")

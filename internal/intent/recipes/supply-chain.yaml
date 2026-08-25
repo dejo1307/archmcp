@@ -1,0 +1,14 @@
+recipe: supply-chain
+roles:
+  # The role carries its own selector, so a repository adopts this by naming the
+  # recipe and binding nothing: what an unpinned dependency IS is a property of
+  # the measured fact, not of where the repository keeps its code.
+  - name: unpinned-dependencies
+    kind: dependency
+    where:
+      type: package
+      pinned: false
+rules:
+  - id: dependencies-are-pinned
+    forbid_fact: unpinned-dependencies
+    because: "A dependency declared as a range is a different program on every build, and the build that reproduces a reported bug is not the build that shipped it. Pin it in the manifest, or commit the lockfile that resolves it."

@@ -132,6 +132,14 @@ func (v Verdict) Render() string {
 		sb.WriteString(v.Census.Line() + "\n")
 	}
 
+	// How much of the declared law is being excused rather than obeyed, beside
+	// what the run could not see, for the same reason: a PASS under a law whose
+	// breaches are mostly signed away is not the same run as a PASS under one
+	// nobody has had to excuse. Silent where nothing is declared.
+	if line := v.Law.Line(); line != "" {
+		sb.WriteString(line + "\n")
+	}
+
 	v.writeIntersection(&sb)
 	v.writeComparability(&sb)
 	v.writeBreaches(&sb)

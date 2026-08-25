@@ -46,6 +46,13 @@ type Declaration struct {
 	Serves   []Surface `yaml:"serves"`
 	Layers   []Layer   `yaml:"layers"`
 
+	// Dependencies is what this repo says about the external packages it pulls
+	// in: which ones it means to depend on, and what each is for. The manifests
+	// extractor measures which packages are declared, pinned and resolved; no
+	// parser can measure WHY one is there, and a dependency nobody can say the
+	// purpose of is the one worth noticing.
+	Dependencies []Dependency `yaml:"dependencies"`
+
 	// Components and Rules are the repo's declared desired architecture — its
 	// law, not a decision about it. They live here, in the always-validated
 	// declaration beside the code they govern, rather than on wiki pages:
@@ -74,6 +81,27 @@ type Service struct {
 type Seam struct {
 	Repo string `yaml:"repo"`
 	Via  string `yaml:"via"`
+}
+
+// Dependency is a declared external package: the name the manifest calls it,
+// what the repository uses it for, and whether it sits in a path where a
+// failure is a safety or enforcement failure rather than an inconvenience.
+//
+// Name is matched against the measured package's own name as written in the
+// manifest, never against the purl — a declaration is written by someone
+// reading a Gemfile, and asking them to spell `pkg:gem/rails` would be asking
+// them to encode the extractor's identity scheme by hand.
+type Dependency struct {
+	Name    string `yaml:"name"`
+	Purpose string `yaml:"purpose"`
+	// Ecosystem narrows the match when one name is a package in two ecosystems.
+	// Optional: omitted, the declaration covers the name wherever it is measured.
+	Ecosystem string `yaml:"ecosystem"`
+	// SafetyPath marks a dependency the declared architecture relies on to hold
+	// an invariant. It is a claim a human makes and nothing verdicts on its own;
+	// what it does is let a rule reach the set, so "everything in a safety path
+	// is pinned" is a law a repository can state.
+	SafetyPath bool `yaml:"safety_path"`
 }
 
 // Surface is a declared serving commitment: this repo offers callers the
@@ -169,6 +197,21 @@ func (d *Declaration) Problems() []string {
 		}
 		problems = append(problems, layerPathProblems(fmt.Sprintf("layers[%d] (%s)", i, l.Name), l)...)
 	}
+	for i, dep := range d.Dependencies {
+		if dep.Name == "" {
+			problems = append(problems, fmt.Sprintf("dependencies[%d]: missing name", i))
+		}
+		// A purpose is mandatory, and that IS the section. A list of package
+		// names is a manifest, which the repository already has and the
+		// extractor already reads; the only thing a declaration adds is the
+		// answer no parser can measure.
+		if strings.TrimSpace(dep.Purpose) == "" {
+			problems = append(problems, fmt.Sprintf("dependencies[%d] (%s): missing purpose — declaring a dependency without saying what it is for restates the manifest", i, dep.Name))
+		}
+		if dep.Ecosystem != "" && !facts.AllPackageEcosystems[dep.Ecosystem] {
+			problems = append(problems, fmt.Sprintf("dependencies[%d] (%s): ecosystem %q is not one enola measures (allowed: %s)", i, dep.Name, dep.Ecosystem, allowedEcosystems()))
+		}
+	}
 	if !d.UseRecipe.IsZero() {
 		problems = append(problems, fmt.Sprintf("use_recipe is not inline vocabulary — instantiations live in %s/*.yaml files, beside the code each bounded context governs", ConstraintsDirName))
 	}
@@ -177,6 +220,15 @@ func (d *Declaration) Problems() []string {
 
 // AllowedVia reports whether a via names a linker mechanism.
 func AllowedVia(via string) bool { return facts.AllViaKinds[via] }
+
+func allowedEcosystems() string {
+	out := make([]string, 0, len(facts.AllPackageEcosystems))
+	for k := range facts.AllPackageEcosystems {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
+}
 
 func allowedViaKinds() string {
 	kinds := make([]string, 0, len(facts.AllViaKinds))

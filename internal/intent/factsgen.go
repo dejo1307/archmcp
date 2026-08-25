@@ -56,6 +56,26 @@ func CompileFacts(d *Declaration) []facts.Fact {
 			Props: base("serves", map[string]any{"via": sv.Via, "description": sv.Description}),
 		})
 	}
+	for _, dep := range d.Dependencies {
+		props := map[string]any{
+			"package_name": dep.Name,
+			"purpose":      dep.Purpose,
+			"safety_path":  dep.SafetyPath,
+		}
+		// Only a declared ecosystem is compiled. An empty one is a declaration
+		// that covers the name wherever it is measured, and writing "" into the
+		// prop would make that indistinguishable from a narrowing nothing
+		// matches.
+		if dep.Ecosystem != "" {
+			props["ecosystem"] = dep.Ecosystem
+		}
+		out = append(out, facts.Fact{
+			Kind:  facts.KindIntent,
+			Name:  "depends on " + dep.Name,
+			File:  RepoFileName,
+			Props: base("dependency", props),
+		})
+	}
 	for i, l := range d.Layers {
 		out = append(out, facts.Fact{
 			Kind:  facts.KindIntent,

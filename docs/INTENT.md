@@ -50,6 +50,9 @@ layers:                    # this repo's layer order, outermost first
   - {name: handlers, paths: ["app/handlers/**"]}
   - {name: domain,   paths: ["app/domain/**"]}
   - {name: storage,  paths: ["app/storage/**"]}
+dependencies:              # external packages this repo means to pull in
+  - {name: rails, purpose: "the web framework"}
+  - {name: jwt, ecosystem: rubygems, purpose: "token verification", safety_path: true}
 ```
 
 In a cluster config the same document is nested one level under the
@@ -167,6 +170,19 @@ decision lives, not inside the repo it governs.
   `object-storage`. The last two name coupling a call graph cannot
   see: shared/vendored code, and bucket-mediated export/import
   handoffs. A via outside this set is a parse error naming the set.
+- **`dependencies`** — the external packages this repo means to depend on.
+  Each entry names one and states its **purpose**, which is mandatory: the
+  `manifests` extractor already measures which packages are declared, which
+  are pinned and what a lockfile resolved them to, so a list of names would
+  restate the manifest the repository already has. What no parser can measure
+  is why a package is there, and that is the whole of what this section adds.
+  `ecosystem` is optional and narrows the entry to one packaging system —
+  omitted, the name is covered wherever it is measured, which is what you want
+  until the day the same name is a gem and an npm package. `safety_path: true`
+  marks a package the declared architecture leans on to hold an invariant; it
+  verdicts nothing on its own, and exists so a rule can reach the set.
+  File-level only, never on a page: this is the repository's own account of
+  its supply chain, reviewed beside the manifest it describes.
 - **`rel`** — how pages relate: `depends-on`, `supersedes`,
   `superseded-by`, `part-of`, `relates-to`. Targets are
   repo-relative markdown paths.
@@ -176,7 +192,12 @@ decision lives, not inside the repo it governs.
   than a closed vocabulary: both fields required, the path
   repo-relative. With anchors the reverse query — *which
   decisions govern this file?* — becomes a graph traversal
-  instead of a grep through prose.
+  instead of a grep through prose. That direction is the
+  load-bearing one: a declared invariant naming no code location
+  is a claim with nothing to check it against, so the anchor
+  rather than the prose is what makes a decision enforceable —
+  and an anchor that stops resolving is a citation announcing it
+  went stale, instead of waiting for a reader to notice.
 - **`origin`** — where knowledge came from: `slack`, `langfuse`,
   `notion`, `github`, `web`, `repo`, `other`. Channels, not source
   files: the entry names the class of system the page's evidence was
@@ -200,6 +221,8 @@ them. Nothing about intent lives in a side channel:
 - each `consumes:` entry → a seam-intent fact with `intent_owner`
 - each `layers:` entry → per-layer facts feeding the layers explainer
 - each `claims:` entry → a claim fact the explainer re-evaluates
+- each `dependencies:` entry → a dependency-intent fact the explainer diffs
+  against the packages the `manifests` extractor measured
 
 ## How verdicts behave
 
@@ -212,6 +235,8 @@ confidences:
 | Mis-via (right target, wrong mechanism) | 1.0 | exact |
 | Failed claim (count or seam doesn't hold) | 1.0 | the claim is stated, the count is counted |
 | Missing intended seam (declared, not measured) | 0.8 | could be drift *or* an extraction miss — an estimate never presents as certainty |
+| Undeclared dependencies (measured, not declared) | 1.0 | set difference between the packages the manifests declare and the ones this file does — exact |
+| Declared dependency not measured | 0.8 | the package was removed and the declaration went stale, *or* its manifest form eluded the extractor |
 | Dangling relation (edge to an uncompiled page) | 0.8 | the target may be deleted or merely not opted in |
 | Dangling code anchor (a measurable path no fact touches) | 0.8 | the code moved or died — or this one file eluded extraction |
 | Superseded intent still measured (edge covered only by a retired page) | 0.8 | the code may lag the superseding decision — or the successor's intent is undeclared |
@@ -290,6 +315,81 @@ inventing an edge. And a declared seam **no linker can measure yet**
 (e.g. `object-storage`) surfaces as a standing 0.8 — that is the
 honest state, not noise; judge it once in whatever ledger your
 workflow keeps and it stays acknowledged.
+
+## What the manifests extractor measures
+
+The declared half above only means something beside a measured half, and that
+comes from the `manifests` extractor, which reads a repository's package
+manifests for one thing: its **declared direct dependencies**.
+
+| Manifest | Resolved against | Ecosystem |
+|---|---|---|
+| `go.mod` | itself — a `require` names an exact version | `go` |
+| `package.json` | `package-lock.json`, else `yarn.lock` (classic and berry) | `npm` |
+| `Gemfile` | `Gemfile.lock` | `rubygems` |
+| `Cargo.toml` | `Cargo.lock` | `cargo` |
+| `pubspec.yaml` | `pubspec.lock` | `pub` |
+| `requirements.txt`, `pyproject.toml` | itself — `==` is pip's pin | `pypi` |
+
+A lockfile is looked for **at or above** the manifest, nearest first, because
+that is where package managers put it: a monorepo keeps one lock at the
+workspace root and a manifest in every package. Reading only the sibling
+reported five of excalidraw's dependencies as unpinned when its root
+`yarn.lock` pins all of them.
+
+Each package becomes one `kind: dependency` fact carrying `type: package`,
+named by its Package URL (`pkg:gem/rails`, `pkg:npm/@scope/thing`) so a
+declaration written against an advisory database or a bill of materials joins
+this graph without a translation table. The props are `ecosystem`,
+`package_name`, `constraint` as written, `resolved_version` from the lockfile,
+`dev`, `manifest`, and `pinned`.
+
+**`pinned` has three states, and the third is the one that matters.** It is
+`true` when a lockfile resolved the package or the constraint names exactly one
+version — including Cargo's `= 1.2.3` and pip's `== 1.2.3`. It is `false` when
+no lockfile resolved it and the constraint is a range. And it is **absent** when
+a lockfile sits beside the manifest that enola cannot read — `pnpm-lock.yaml`,
+`bun.lockb` — because something resolved that dependency and enola did not look.
+The fact then carries `unresolved_lock` naming the file instead. A `where:`
+selector on `pinned` does not select such a package, which is the correct amount
+of silence: an earlier version answered `false` anyway and turned a yarn
+repository's twelve resolved dependencies into twelve false blocks, which is
+precisely how a gate stops being run. Everything else fails closed — a
+constraint this vocabulary does not recognise as exact is a range, because
+calling an unpinned dependency pinned is the error with a consequence.
+
+**Direct dependencies only.** The transitive closure of a lockfile runs to tens
+of thousands of entries on an ordinary Node or Rust project, and every one would
+enter a graph whose cost is dominated by node count. It is also the boundary the
+regulation draws: the Cyber Resilience Act's Annex I asks for a bill of
+materials covering "at the very least the top-level dependencies", whose
+essential requirements apply from 11 December 2027. A `// indirect` line in a
+`go.mod` and a nested `node_modules/x/node_modules/y` in a lock are both the
+closure, and both are skipped.
+
+**A package is a leaf.** Nothing here connects a package to the code that uses
+it. Resolving an import path to a declared package is a per-ecosystem resolution
+problem, and guessing it would put edges in the graph no parser proved. A
+package is joined to code only by the declarations a human writes about it.
+
+**Pinning is a rule you can state, not one enola holds.** The shipped
+`supply-chain` recipe is the whole of it, and it needs no rule form of its own:
+
+```yaml
+use_recipe:
+  - recipe: supply-chain
+    as: supply
+    bind:
+      unpinned-dependencies: {}
+```
+
+which expands to a component selecting `kind: dependency` with
+`where: {type: package, pinned: false}` and a `forbid_fact` over it. One caveat
+worth knowing before you adopt it: `where:` fails closed and loudly on a
+property no measured fact carries, so a repository with no manifest enola reads
+gets a `1.0` *selector cannot be evaluated* finding rather than silence. That is
+the right behaviour — a rule holding because it looked at nothing must never
+read as compliance — and it is surprising the first time.
 
 ## Where the rest of it lives
 

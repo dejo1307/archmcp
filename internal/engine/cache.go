@@ -2307,7 +2307,27 @@ import (
 // spelling, stamped resolution_agreement; differing receivers stay as emitted
 // and are counted by shape in the receipt. The merged fact set changes for
 // every Ruby repository with both providers on.
-const cacheVersion = "v256"
+// v257: a repository's DECLARED DIRECT dependencies enter the graph. The new
+// manifests extractor reads go.mod, package.json, Gemfile, Cargo.toml,
+// pubspec.yaml, requirements.txt and pyproject.toml — off-glob, because the
+// ignore globs hide most of them — and emits one KindDependency fact per
+// package, typed `package` to tell it apart from the import-edge dependency
+// facts every language extractor already emits. Each carries the constraint as
+// written, the version a lockfile beside the manifest resolved it to, and the
+// `pinned` boolean those two decide. Transitive entries are skipped: the
+// closure would add tens of thousands of nodes, and the top-level set is the
+// boundary the CRA's bill-of-materials requirement draws. Every repository with
+// a manifest gains facts.
+//
+// Three things the corpus corrected before this shipped. A lockfile is searched
+// for AT OR ABOVE the manifest, because a monorepo keeps one at the workspace
+// root; yarn.lock is read in both its formats; and `pinned` is left ABSENT,
+// with `unresolved_lock` naming the file, when a lockfile enola cannot read
+// sits beside the manifest — answering `false` there reported twelve of
+// excalidraw's resolved dependencies as unpinned. Cargo's `[dependencies.name]`
+// table sections are read too: tokio declares windows-sys only that way, so the
+// list form alone lost the dependency rather than its version.
+const cacheVersion = "v257"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
