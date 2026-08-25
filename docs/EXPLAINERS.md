@@ -69,7 +69,29 @@ the entities the claim is about. There are eighteen, and they fall into six kind
 - **Graph shape.** `dependency-depth` measures the longest transitive import chain;
   `exported-surface` flags large modules that export nearly everything.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
-  against eleven known taxonomies, then flags imports that run the wrong way through it.
+  against fourteen known taxonomies, then flags imports that run the wrong way through it.
+  Each taxonomy is scored over the modules whose LANGUAGE it describes, and one is
+  reported per language cohort — so a Rails monolith with an Ember front end is named as
+  both, over disjoint modules, rather than having one half verdicted by the other's layer
+  order. Every statement names its cohort and that cohort's share of the repository, and
+  every violation names the taxonomy that judged it.
+  The statement it makes carries its own denominators — modules classified, how many of
+  those sit in an ordered layer, and how many measured imports run inward against how
+  many run against the order — because "hexagonal, 66% confidence" and "the names say
+  hexagonal and 340 imports run against it" are the same snapshot and only the second is
+  worth reading. Confidence is `graded / scanned` — classified modules in a non-neutral
+  layer over distinct non-test modules — where it was previously
+  `0.6·coverage + 0.4·(matched layers / taxonomy size)`, a second term whose denominator
+  was the layer table rather than the repository. A taxonomy whose `classified / scanned`
+  is under 0.20 makes no statement at all: a thin match is a wrong claim rather than a
+  tentative one.
+  A taxonomy may also mark a layer NEUTRAL: classified, but sitting in no dependency
+  direction, so no import to or from it can be a violation. Wiring is what this is for —
+  a Hilt `di` package and a Spring `@Configuration` package are referenced by every layer
+  they wire and reference every layer they wire, so any rank given to them makes half of
+  those edges a violation. It is the same judgement the Go layout makes about
+  `internal`/`pkg` and the Rails one about `lib`, applied to a directory that is a real
+  thing with no place in an order rather than one that holds every layer.
   A repo that DECLARES its layer order is verdicted against the declaration as well:
   that pattern is stated rather than guessed, so it and its violations are proof-class.
   It sits beside the recognised pattern, not in place of it — recognition scores itself

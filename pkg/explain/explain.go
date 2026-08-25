@@ -89,6 +89,13 @@ type VendoredReport struct {
 // Report is the full statistical picture of a snapshot. Fields are plain types
 // only, so consumers in other modules (enola-enterprise) can read them without
 // importing enola's internal packages.
+// ArchitectureStatement is one named layer order the snapshot recognised. There
+// is one per language cohort, so a repository written in two things has two.
+type ArchitectureStatement struct {
+	Pattern    string  `json:"pattern"`
+	Confidence float64 `json:"confidence"`
+}
+
 type Report struct {
 	RepoPath    string   `json:"repo_path"`
 	GeneratedAt string   `json:"generated_at,omitempty"`
@@ -109,11 +116,17 @@ type Report struct {
 	RoutesByMethod []LabelCount `json:"routes_by_method,omitempty"`
 	Storage        int          `json:"storage"`
 
-	Architecture    string  `json:"architecture,omitempty"`
-	ArchConfidence  float64 `json:"architecture_confidence,omitempty"`
-	Cycles          int     `json:"cyclic_dependencies"`
-	LayerViolations int     `json:"layer_violations"`
-	CrossRepoEdges  int     `json:"cross_repo_edges"`
+	// Architecture and ArchConfidence are the STRONGEST statement, kept as scalars
+	// so the existing JSON shape does not move. Architectures holds all of them,
+	// which on a polyglot repository is more than one: a Rails monolith shipping an
+	// Ember front end is named as both, over disjoint sets of modules, and
+	// reporting only the higher-confidence half silently drops the other.
+	Architecture    string                  `json:"architecture,omitempty"`
+	ArchConfidence  float64                 `json:"architecture_confidence,omitempty"`
+	Architectures   []ArchitectureStatement `json:"architectures,omitempty"`
+	Cycles          int                     `json:"cyclic_dependencies"`
+	LayerViolations int                     `json:"layer_violations"`
+	CrossRepoEdges  int                     `json:"cross_repo_edges"`
 
 	Modules           int       `json:"modules"`
 	HighCriticality   int       `json:"high_criticality"`
@@ -249,14 +262,19 @@ func Compute(eng *bootstrap.Engine) *Report {
 			case strings.HasPrefix(in.Title, "Layer violation"):
 				r.LayerViolations++
 			case strings.HasPrefix(in.Title, "Architecture pattern:"):
-				// A repository that DECLARES its layer order produces two of these: the
-				// declared pattern at 1.00 and whatever layout enola also recognised. Last
-				// one wins would report the guess and hide the declaration — on a repo whose
-				// gate is enforcing the declaration, which makes the report contradict the
-				// verdict. Highest confidence wins instead, and the declared one is emitted
-				// first so it survives a tie.
+				// A repository can produce several of these: one per language cohort,
+				// plus a declared order at 1.00 where the repository states its own.
+				// All of them are kept.
+				name := strings.TrimSpace(strings.TrimPrefix(in.Title, "Architecture pattern:"))
+				r.Architectures = append(r.Architectures, ArchitectureStatement{
+					Pattern: name, Confidence: in.Confidence,
+				})
+				// The scalar keeps its old meaning — the strongest statement. A repo
+				// that DECLARES its layer order emits the declaration at 1.00 and the
+				// layout enola also recognised; last-one-wins would report the guess
+				// and hide the declaration, on a repo whose gate enforces it.
 				if in.Confidence > r.ArchConfidence {
-					r.Architecture = strings.TrimSpace(strings.TrimPrefix(in.Title, "Architecture pattern:"))
+					r.Architecture = name
 					r.ArchConfidence = in.Confidence
 				}
 			case strings.HasPrefix(in.Title, "Cross-repo dependencies"):

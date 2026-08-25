@@ -88,7 +88,14 @@ func (r *Report) Render() string {
 
 	// Architecture insights
 	b.WriteString("Architecture\n")
-	if r.Architecture != "" {
+	if len(r.Architectures) > 0 {
+		// One line per statement. A repository with two cohorts has two layer
+		// orders in force, and printing only the stronger one reads as a claim
+		// that the other half of the repository has none.
+		for _, a := range r.Architectures {
+			kv(&b, "Pattern", fmt.Sprintf("%s (%.0f%% confidence)", a.Pattern, a.Confidence*100))
+		}
+	} else if r.Architecture != "" {
 		kv(&b, "Pattern", fmt.Sprintf("%s (%.0f%% confidence)", r.Architecture, r.ArchConfidence*100))
 	} else {
 		kv(&b, "Pattern", "(none detected)")

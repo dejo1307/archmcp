@@ -2,6 +2,7 @@ package layers
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -103,35 +104,6 @@ func TestMatchesLayer(t *testing.T) {
 	}
 }
 
-func TestDominantLanguage(t *testing.T) {
-	tests := []struct {
-		name    string
-		modules []facts.Fact
-		want    string
-	}{
-		{"empty", nil, ""},
-		{"single", makeModulesLang("go", "cmd", "pkg"), "go"},
-		{
-			"majority wins",
-			append(makeModulesLang("python", "a", "b", "c"), makeModulesLang("typescript", "d")...),
-			"python",
-		},
-		{
-			"tie breaks alphabetically",
-			append(makeModulesLang("ruby", "a"), makeModulesLang("go", "b")...),
-			"go",
-		},
-		{"no language prop", makeModules("a", "b"), ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := dominantLanguage(tt.modules); got != tt.want {
-				t.Errorf("dominantLanguage = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPresentFrameworks(t *testing.T) {
 	s := facts.NewStore()
 	s.Add(frameworkFact("nextjs"))
@@ -152,20 +124,23 @@ func TestPresentFrameworks(t *testing.T) {
 func TestDetectPatterns_Hexagonal(t *testing.T) {
 	modules := makeModules("domain/entity", "application/usecase", "adapter/rest", "presentation/views")
 	e := New()
-	patterns := e.detectPatterns(modules, "", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	hexPattern := findPattern(patterns, "hexagonal")
 	if hexPattern == nil {
 		t.Fatal("expected hexagonal pattern to be detected")
 	}
 
-	// 4/4 modules classified, 4/7 layers matched
-	// confidence = (classified/total)*0.6 + (matched/total)*0.4 ≈ 0.828
-	classified, totalModules := 4.0, 4.0
-	matched, totalLayers := 4.0, 7.0
-	expectedConf := (classified/totalModules)*0.6 + (matched/totalLayers)*0.4
-	if math.Abs(hexPattern.Confidence-expectedConf) > 0.01 {
-		t.Errorf("confidence = %f, want ≈ %f", hexPattern.Confidence, expectedConf)
+	// Confidence is the share of modules sitting in a layer that carries a
+	// direction — here all four — clamped at the heuristic ceiling. It used to
+	// blend in the share of the taxonomy's own layer NAMES that appeared, which
+	// paid a pattern for being narrow: matching all four names of the four-layer
+	// .NET taxonomy across 3% of a repository scored 0.42.
+	if math.Abs(hexPattern.Confidence-common.MaxHeuristicConfidence) > 0.01 {
+		t.Errorf("confidence = %f, want the heuristic ceiling %f", hexPattern.Confidence, common.MaxHeuristicConfidence)
+	}
+	if hexPattern.Graded != 4 || hexPattern.Scanned != 4 {
+		t.Errorf("graded/scanned = %d/%d, want 4/4", hexPattern.Graded, hexPattern.Scanned)
 	}
 
 	if len(hexPattern.Layers) != 4 {
@@ -176,7 +151,7 @@ func TestDetectPatterns_Hexagonal(t *testing.T) {
 func TestDetectPatterns_NextJS(t *testing.T) {
 	modules := makeModulesLang("typescript", "app", "components", "hooks", "lib")
 	e := New()
-	patterns := e.detectPatterns(modules, "typescript", fwSet("nextjs"))
+	patterns := e.detectPatterns(modules, fwSet("nextjs"))
 
 	if findPattern(patterns, "nextjs") == nil {
 		t.Error("expected nextjs pattern to be detected when framework=nextjs is present")
@@ -186,7 +161,7 @@ func TestDetectPatterns_NextJS(t *testing.T) {
 func TestDetectPatterns_GoStandard(t *testing.T) {
 	modules := makeModulesLang("go", "cmd/server", "internal/auth", "pkg/utils")
 	e := New()
-	patterns := e.detectPatterns(modules, "go", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	if findPattern(patterns, "go-standard") == nil {
 		t.Error("expected go-standard pattern to be detected")
@@ -196,7 +171,7 @@ func TestDetectPatterns_GoStandard(t *testing.T) {
 func TestDetectPatterns_RailsMVC(t *testing.T) {
 	modules := makeModulesLang("ruby", "app/models", "app/controllers", "app/views", "app/helpers")
 	e := New()
-	patterns := e.detectPatterns(modules, "ruby", fwSet("rails"))
+	patterns := e.detectPatterns(modules, fwSet("rails"))
 
 	if findPattern(patterns, "rails-mvc") == nil {
 		t.Error("expected rails-mvc pattern to be detected")
@@ -206,7 +181,7 @@ func TestDetectPatterns_RailsMVC(t *testing.T) {
 func TestDetectPatterns_AndroidClean(t *testing.T) {
 	modules := makeModulesLang("kotlin", "domain", "data", "ui", "designsystem")
 	e := New()
-	patterns := e.detectPatterns(modules, "kotlin", fwSet("android"))
+	patterns := e.detectPatterns(modules, fwSet("android"))
 
 	if findPattern(patterns, "android-clean") == nil {
 		t.Error("expected android-clean pattern to be detected")
@@ -216,9 +191,9 @@ func TestDetectPatterns_AndroidClean(t *testing.T) {
 func TestDetectPatterns_IOSClean(t *testing.T) {
 	modules := makeModulesLang("swift", "Domain/UseCases", "Data/Network", "Screens", "DesignSystem")
 	e := New()
-	patterns := e.detectPatterns(modules, "swift", fwSet("swiftui"))
+	patterns := e.detectPatterns(modules, fwSet("swiftui"))
 
-	best := e.bestPattern(patterns)
+	best := firstSelected(e, patterns)
 	if best == nil || best.Name != "ios-clean" {
 		t.Errorf("expected ios-clean to win, got %v", best)
 	}
@@ -227,9 +202,9 @@ func TestDetectPatterns_IOSClean(t *testing.T) {
 func TestDetectPatterns_SpringLayered(t *testing.T) {
 	modules := makeModulesLang("java", "controller", "service", "repository", "entity", "config")
 	e := New()
-	patterns := e.detectPatterns(modules, "java", fwSet("spring"))
+	patterns := e.detectPatterns(modules, fwSet("spring"))
 
-	best := e.bestPattern(patterns)
+	best := firstSelected(e, patterns)
 	if best == nil || best.Name != "spring-layered" {
 		t.Errorf("expected spring-layered to win, got %v", best)
 	}
@@ -238,7 +213,7 @@ func TestDetectPatterns_SpringLayered(t *testing.T) {
 func TestDetectPatterns_Django(t *testing.T) {
 	modules := makeModulesLang("python", "models", "views", "serializers", "urls", "admin")
 	e := New()
-	patterns := e.detectPatterns(modules, "python", fwSet("django"))
+	patterns := e.detectPatterns(modules, fwSet("django"))
 
 	if findPattern(patterns, "django") == nil {
 		t.Error("expected django pattern to be detected")
@@ -251,7 +226,7 @@ func TestDetectPatterns_PythonNotNextJS(t *testing.T) {
 	// Airflow-like Python repo: generic dirs but no nextjs framework signal.
 	modules := makeModulesLang("python", "api", "app", "utils", "lib", "services")
 	e := New()
-	patterns := e.detectPatterns(modules, "python", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	if p := findPattern(patterns, "nextjs"); p != nil {
 		t.Errorf("python repo should not be detected as nextjs (got confidence %f)", p.Confidence)
@@ -262,7 +237,7 @@ func TestDetectPatterns_RailsNotNextJS(t *testing.T) {
 	// Discourse-like repo: JS-heavy Rails app, but framework is rails not nextjs.
 	modules := makeModulesLang("ruby", "app", "lib", "api", "services", "components")
 	e := New()
-	patterns := e.detectPatterns(modules, "ruby", fwSet("rails"))
+	patterns := e.detectPatterns(modules, fwSet("rails"))
 
 	if p := findPattern(patterns, "nextjs"); p != nil {
 		t.Errorf("rails repo should not be detected as nextjs (got confidence %f)", p.Confidence)
@@ -273,7 +248,7 @@ func TestDetectPatterns_GenericOOPNotHexagonal(t *testing.T) {
 	// Swift/Kotlin-style repo with only generic dirs (no ports/adapters/usecases).
 	modules := makeModulesLang("swift", "model", "view", "ui", "networking")
 	e := New()
-	patterns := e.detectPatterns(modules, "swift", fwSet("swiftui"))
+	patterns := e.detectPatterns(modules, fwSet("swiftui"))
 
 	if p := findPattern(patterns, "hexagonal"); p != nil {
 		t.Errorf("generic OOP repo should not be detected as hexagonal (got confidence %f)", p.Confidence)
@@ -285,7 +260,7 @@ func TestDetectPatterns_SingleSignatureNotHexagonal(t *testing.T) {
 	// signature layer) is not enough to call a repo hexagonal.
 	modules := makeModulesLang("python", "api", "core", "utils", "infrastructure")
 	e := New()
-	patterns := e.detectPatterns(modules, "python", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	if findPattern(patterns, "hexagonal") != nil {
 		t.Error("a single signature layer should not trigger hexagonal")
@@ -296,7 +271,7 @@ func TestDetectPatterns_GoNotNextJS(t *testing.T) {
 	// A Go repo with an "api" dir must not match nextjs (no nextjs framework, wrong language).
 	modules := makeModulesLang("go", "cmd", "internal", "pkg", "api")
 	e := New()
-	patterns := e.detectPatterns(modules, "go", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	if findPattern(patterns, "nextjs") != nil {
 		t.Error("go repo should not be detected as nextjs")
@@ -310,7 +285,7 @@ func TestDetectPatterns_BelowThreshold(t *testing.T) {
 	// Only 1 module matches 1 layer out of many unrelated modules
 	modules := makeModules("domain", "foo", "bar", "baz", "qux", "quux", "corge", "grault", "garply", "waldo")
 	e := New()
-	patterns := e.detectPatterns(modules, "", nil)
+	patterns := e.detectPatterns(modules, nil)
 
 	// "domain" is not a hexagonal signature layer, and coverage is below the
 	// 0.2 threshold anyway, so hexagonal must not be reported.
@@ -325,62 +300,118 @@ func TestGateOK(t *testing.T) {
 	tests := []struct {
 		name string
 		def  patternDef
-		lang string
 		fw   map[string]bool
 		want bool
 	}{
-		{"no gate", patternDef{}, "anything", nil, true},
-		{"language match", patternDef{languages: []string{"go"}}, "go", nil, true},
-		{"language mismatch", patternDef{languages: []string{"go"}}, "python", nil, false},
-		{"framework present", patternDef{frameworks: []string{"nextjs"}}, "", fwSet("nextjs"), true},
-		{"framework absent", patternDef{frameworks: []string{"nextjs"}}, "", fwSet("rails"), false},
+		{"no gate", patternDef{}, nil, true},
+		{"framework present", patternDef{frameworks: []string{"nextjs"}}, fwSet("nextjs"), true},
+		{"framework absent", patternDef{frameworks: []string{"nextjs"}}, fwSet("rails"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.def.gateOK(tt.lang, tt.fw); got != tt.want {
+			if got := tt.def.gateOK(tt.fw); got != tt.want {
 				t.Errorf("gateOK = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-// --- bestPattern ---
-
-func TestBestPattern(t *testing.T) {
-	e := New()
-
-	patterns := []*archPattern{
-		{Name: "a", Confidence: 0.5},
-		{Name: "b", Confidence: 0.8},
-		{Name: "c", Confidence: 0.3},
+// TestDescribes pins which languages a taxonomy may classify. It replaced a gate
+// on the repository's dominant language, which both hid a Go layout behind a
+// bigger front end and let the taxonomy that won classify modules written in
+// something else.
+func TestDescribes(t *testing.T) {
+	goStd := patternDef{appliesTo: []string{"go"}}
+	if !goStd.describes("go") || goStd.describes("typescript") {
+		t.Error("go-standard must describe go modules and no others")
+	}
+	if !(patternDef{}).describes("php") {
+		t.Error("a taxonomy naming no languages describes any of them")
 	}
 
-	best := e.bestPattern(patterns)
-	if best.Name != "b" {
-		t.Errorf("bestPattern = %s, want b (highest confidence)", best.Name)
+	mods := []facts.Fact{
+		{Kind: facts.KindModule, Name: "pkg/api", Props: map[string]any{"language": "go"}},
+		{Kind: facts.KindModule, Name: "public/app", Props: map[string]any{"language": "typescript"}},
+	}
+	cohort, langs := goStd.cohort(mods)
+	if len(cohort) != 1 || cohort[0].Name != "pkg/api" {
+		t.Errorf("cohort = %v, want just the go module", cohort)
+	}
+	if len(langs) != 1 || !langs["go"] {
+		t.Errorf("cohort languages = %v, want {go}", langs)
 	}
 }
 
-func TestBestPattern_PrefersSpecificity(t *testing.T) {
+// --- bestPattern ---
+
+// pat builds a pattern that clears the coverage floor, for the selection tests.
+func pat(name string, spec int, conf float64, langs ...string) *archPattern {
+	set := map[string]bool{}
+	for _, l := range langs {
+		set[l] = true
+	}
+	return &archPattern{Name: name, Specificity: spec, Confidence: conf,
+		Languages: set, Scanned: 10, Classified: 10}
+}
+
+func TestSelectPatterns_OneAnswerPerCohort(t *testing.T) {
+	e := New()
+
+	// Same cohort: one question, so only the strongest is reported.
+	got := e.selectPatterns([]*archPattern{
+		pat("a", 2, 0.5, "go"), pat("b", 2, 0.8, "go"), pat("c", 2, 0.3, "go"),
+	})
+	if len(got) != 1 || got[0].Name != "b" {
+		t.Errorf("same cohort selected %v, want just b", names(got))
+	}
+
+	// Disjoint cohorts: two halves of a polyglot repository, both true. This is
+	// the Rails-monolith-with-an-Ember-front-end case, where reporting one
+	// statement meant the loser's modules were described by the winner's order.
+	got = e.selectPatterns([]*archPattern{
+		pat("ember-octane", 2, 0.8, "typescript"), pat("rails-mvc", 2, 0.5, "ruby"),
+	})
+	if len(got) != 2 {
+		t.Errorf("disjoint cohorts selected %v, want both", names(got))
+	}
+
+	// An ungated taxonomy overlaps everything, so it yields to whatever claimed
+	// those modules first even at higher confidence.
+	got = e.selectPatterns([]*archPattern{
+		pat("rails-mvc", 2, 0.4, "ruby"),
+		{Name: "hexagonal", Specificity: 0, Confidence: 0.9, Scanned: 10, Classified: 10,
+			Languages: map[string]bool{"ruby": true, "php": true}},
+	})
+	if len(got) != 1 || got[0].Name != "rails-mvc" {
+		t.Errorf("overlapping cohorts selected %v, want just rails-mvc", names(got))
+	}
+}
+
+func names(ps []*archPattern) []string {
+	var out []string
+	for _, p := range ps {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
+func TestSelectPatterns_PrefersSpecificity(t *testing.T) {
 	e := New()
 
 	// A generic pattern with high confidence should lose to a more specific
-	// (framework-gated) pattern even at lower confidence.
-	patterns := []*archPattern{
-		{Name: "hexagonal", Confidence: 0.9, Specificity: 0},
-		{Name: "rails-mvc", Confidence: 0.5, Specificity: 2},
-	}
-
-	best := e.bestPattern(patterns)
-	if best.Name != "rails-mvc" {
-		t.Errorf("bestPattern = %s, want rails-mvc (more specific)", best.Name)
+	// (framework-gated) pattern over the same modules, even at lower confidence.
+	best := firstSelected(e, []*archPattern{
+		pat("hexagonal", 0, 0.9, "ruby"),
+		pat("rails-mvc", 2, 0.5, "ruby"),
+	})
+	if best == nil || best.Name != "rails-mvc" {
+		t.Errorf("selected %v, want rails-mvc (more specific)", best)
 	}
 }
 
-func TestBestPattern_Empty(t *testing.T) {
-	e := New()
-	if got := e.bestPattern(nil); got != nil {
-		t.Errorf("bestPattern(nil) = %v, want nil", got)
+func TestSelectPatterns_Empty(t *testing.T) {
+	if got := New().selectPatterns(nil); len(got) != 0 {
+		t.Errorf("selectPatterns(nil) = %v, want none", got)
 	}
 }
 
@@ -798,7 +829,7 @@ func TestDetectPatterns_ModuleRoleOutranksPath(t *testing.T) {
 			mods = append(mods, m)
 		}
 	}
-	pattern := e.bestPattern(e.detectPatterns(mods, "", nil))
+	pattern := firstSelected(e, e.detectPatterns(mods, nil))
 	if pattern == nil {
 		t.Fatal("no pattern detected")
 	}
@@ -818,7 +849,7 @@ func TestDetectPatterns_ConfidenceStaysBelowOne(t *testing.T) {
 	}
 
 	e := New()
-	for _, p := range e.detectPatterns(s.ByKind(facts.KindModule), "go", nil) {
+	for _, p := range e.detectPatterns(s.ByKind(facts.KindModule), nil) {
 		if p.Confidence >= 1.0 {
 			t.Errorf("pattern %q reached confidence %v; 1.0 is reserved for structural facts",
 				p.Name, p.Confidence)
@@ -932,5 +963,477 @@ func TestEmberUtilLayerDoesNotClaimLib(t *testing.T) {
 	// The real Ember utility directory still does.
 	if !matchesLayer("frontend/discourse/app/utils", util.Patterns) {
 		t.Error("app/utils should still match the ember util layer")
+	}
+}
+
+// --- P0 regression cases: the three false-positive classes the corpus exposed ---
+
+// firstSelected returns the strongest reported pattern, or nil. Tests that
+// predate per-cohort selection ask "which one wins", which is the first.
+func firstSelected(e *LayerExplainer, patterns []*archPattern) *archPattern {
+	if got := e.selectPatterns(patterns); len(got) > 0 {
+		return got[0]
+	}
+	return nil
+}
+
+// mustExplain runs the explainer over a store and fails the test on error.
+func mustExplain(t *testing.T, s *facts.Store) []facts.Insight {
+	t.Helper()
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	return insights
+}
+
+// violationTitles returns the titles of the heuristic layer violations in a
+// snapshot, which is what the three tests below assert over.
+func violationTitles(t *testing.T, s *facts.Store) []string {
+	t.Helper()
+	insights, err := New().Explain(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	var titles []string
+	for _, in := range insights {
+		if strings.HasPrefix(in.Title, "Layer violation:") {
+			titles = append(titles, in.Title)
+		}
+	}
+	return titles
+}
+
+// TestDetectViolations_AndroidDomainMayImportData pins the layer ORDER of the
+// Android taxonomy against the reference application it was measured on.
+//
+// nowinandroid's architecture guide puts "the data layer at the bottom", and its
+// use cases import repositories. With domain ranked innermost, three of those
+// imports were reported as violations on Google's own sample. Only the reverse —
+// a repository reaching up into the UI — is a defect.
+func TestDetectViolations_AndroidDomainMayImportData(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("kotlin",
+		"core/data/repository", "core/domain", "feature/ui", "core/designsystem")...)
+	s.Add(frameworkFact("android"))
+	// The documented direction of flow: UI -> domain -> data.
+	addDep(s, "core/domain/GetTopicsUseCase.kt", "core/data/repository")
+	addDep(s, "feature/ui/TopicsScreen.kt", "core/domain")
+	// The genuine smell: data reaching up into the UI.
+	addDep(s, "core/data/repository/TopicsRepository.kt", "feature/ui")
+
+	titles := violationTitles(t, s)
+	if len(titles) != 1 {
+		t.Fatalf("expected exactly 1 Android violation (data -> ui), got %d: %v", len(titles), titles)
+	}
+	if !strings.Contains(titles[0], "data -> ui") {
+		t.Errorf("expected the data -> ui violation, got %q", titles[0])
+	}
+}
+
+// TestDetectViolations_WiringLayerIsNeutral pins layerDef.Neutral: a Spring
+// `config` package is referenced by, and references, every layer it wires, so no
+// edge touching it may be verdicted. Giving it a level produced 61 of
+// thingsboard's 75 findings and all 7 of dubbo's. The ordinary Spring smell in
+// the same snapshot must still be reported.
+func TestDetectViolations_WiringLayerIsNeutral(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("java",
+		"app/controller", "app/service", "app/repository", "app/entity", "app/config")...)
+	s.Add(frameworkFact("spring"))
+	addDep(s, "app/service/UserService.java", "app/config")
+	addDep(s, "app/repository/UserRepo.java", "app/config")
+	addDep(s, "app/config/WebConfig.java", "app/controller")
+	// A service reaching up into a controller is still a violation.
+	addDep(s, "app/service/UserService.java", "app/controller")
+
+	titles := violationTitles(t, s)
+	if len(titles) != 1 {
+		t.Fatalf("expected exactly 1 Spring violation (service -> controller), got %d: %v", len(titles), titles)
+	}
+	if !strings.Contains(titles[0], "service -> controller") {
+		t.Errorf("expected the service -> controller violation, got %q", titles[0])
+	}
+}
+
+// TestAutoloadRootSkipsAssetDirectories pins notAutoloaded. app/javascript holds
+// a whole second application, not a Rails layer: chatwoot keeps a Vue app there,
+// and claiming it made five entrypoints importing app/views into violations.
+func TestAutoloadRootSkipsAssetDirectories(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("ruby",
+		"app/models", "app/controllers", "app/views", "app/javascript/widget", "app/assets")...)
+	s.Add(frameworkFact("rails"))
+	addDep(s, "app/javascript/widget/router.js", "app/views")
+
+	if titles := violationTitles(t, s); len(titles) != 0 {
+		t.Fatalf("expected no violation out of a frontend directory, got %v", titles)
+	}
+	for _, name := range []string{"javascript", "assets"} {
+		if _, ok := autoloadedLayer("app/"+name+"/x", "app"); ok {
+			t.Errorf("app/%s must not be claimed as an autoloaded layer", name)
+		}
+	}
+	if _, ok := autoloadedLayer("app/tools/replan", "app"); !ok {
+		t.Error("app/tools is autoloaded and must still be claimed")
+	}
+}
+
+// TestMinClassifiedShare_SuppressesThinClaims pins the coverage floor. A
+// taxonomy recognising its own vocabulary across a corner of a repository built
+// to a different plan is a wrong statement, not a tentative one: gitea has no
+// internal/ or pkg/ and was named go-standard on directories under routers/api
+// matching the word "api".
+func TestMinClassifiedShare_SuppressesThinClaims(t *testing.T) {
+	s := facts.NewStore()
+	names := []string{"routers/api", "cmd/serve"}
+	for i := 0; i < 30; i++ {
+		names = append(names, fmt.Sprintf("models/thing%d", i))
+	}
+	s.Add(makeModulesLang("go", names...)...)
+
+	for _, in := range mustExplain(t, s) {
+		if strings.HasPrefix(in.Title, "Architecture pattern:") {
+			t.Errorf("named an architecture from 2 of %d modules: %q", len(names), in.Title)
+		}
+	}
+
+	// The same taxonomy on a repository that actually follows it.
+	fat := facts.NewStore()
+	fat.Add(makeModulesLang("go", "cmd/serve", "internal/app", "internal/store", "pkg/api", "docs")...)
+	if findInsight(mustExplain(t, fat), "Architecture pattern: go-standard") == nil {
+		t.Error("expected go-standard on a repository that follows the layout")
+	}
+}
+
+// TestMinClassifiedShare_SuppressionDoesNotPromote pins WHERE the floor is
+// applied. A modular CMS matched the framework-gated .NET taxonomy across 3% of
+// itself and the language-agnostic hexagonal one across 26%; flooring at
+// admission removed the first and handed the repository to the second, trading a
+// wrong statement for a worse one. The floor belongs on the winner.
+func TestMinClassifiedShare_SuppressionDoesNotPromote(t *testing.T) {
+	s := facts.NewStore()
+	var names []string
+	// Thin, specific: two .NET clean-architecture project names.
+	names = append(names, "src/Shop.Domain", "src/Shop.Infrastructure")
+	// Fat, generic: enough ports-and-adapters vocabulary to satisfy hexagonal.
+	for i := 0; i < 10; i++ {
+		// Vocabulary the generic taxonomy owns and the .NET one does not, so the
+		// two patterns stay separable: `infrastructure` is a layer in BOTH.
+		names = append(names, fmt.Sprintf("modules/mod%d/interfaces", i))
+		names = append(names, fmt.Sprintf("modules/mod%d/adapters", i))
+	}
+	for i := 0; i < 40; i++ {
+		names = append(names, fmt.Sprintf("modules/mod%d/unclassified", i))
+	}
+	s.Add(makeModulesLang("csharp", names...)...)
+	s.Add(frameworkFact("aspnetcore"))
+
+	for _, in := range mustExplain(t, s) {
+		if strings.HasPrefix(in.Title, "Architecture pattern:") {
+			t.Errorf("a floored winner promoted a worse pattern: %q", in.Title)
+		}
+	}
+}
+
+// TestDescribePattern_StatesWhatItCannotGrade: two taxonomies deliberately
+// collapse most of their directories to one tier, so on many repositories they
+// can express no ordering at all. A statement that says nothing about direction
+// reads as a clean bill of health; this one says which it is.
+func TestDescribePattern_StatesWhatItCannotGrade(t *testing.T) {
+	p := &archPattern{Name: "go-standard", Scanned: 10, Classified: 8, Graded: 8}
+	if got := describePattern(p, conformance{Same: 40}, 10); !strings.Contains(got, "without grading anything") {
+		t.Errorf("expected an ungradeable statement, got %q", got)
+	}
+	if got := describePattern(p, conformance{Inward: 9, Against: 1}, 10); !strings.Contains(got, "90% obey") {
+		t.Errorf("expected the obedience share, got %q", got)
+	}
+	if got := describePattern(p, conformance{Inward: 9}, 10); !strings.Contains(got, "none run against") {
+		t.Errorf("expected a clean statement, got %q", got)
+	}
+}
+
+// TestDescribePattern_NamesItsCohort: a taxonomy is scored over the modules it
+// could describe, so a Go SDK of 28 modules inside a Python repository of 1310
+// produces a true statement that reads as a claim about the whole repository
+// unless it says which part of it was measured.
+func TestDescribePattern_NamesItsCohort(t *testing.T) {
+	p := &archPattern{
+		Name: "go-standard", Scanned: 28, Classified: 18, Graded: 18,
+		Languages: map[string]bool{"go": true},
+	}
+	got := describePattern(p, conformance{}, 1310)
+	if !strings.Contains(got, "18 of 28 go modules classified") {
+		t.Errorf("expected the cohort's language named, got %q", got)
+	}
+	if !strings.Contains(got, "2% of this repository's 1310 modules") {
+		t.Errorf("expected the cohort's share of the repository, got %q", got)
+	}
+	// A taxonomy measured over the whole repository has no cohort to distinguish.
+	whole := &archPattern{Name: "rails-mvc", Scanned: 100, Classified: 90, Graded: 90,
+		Languages: map[string]bool{"ruby": true}}
+	if got := describePattern(whole, conformance{}, 100); strings.Contains(got, "of this repository's") {
+		t.Errorf("a whole-repository cohort must not report a share, got %q", got)
+	}
+}
+
+// TestHexagonal_CoreIsNotADomainLayer pins the removal of `core` from the
+// hexagonal domain patterns. A platform that keeps its whole product under
+// src/Core/ had 1049 of 1491 classified modules read as domain on that one
+// segment, which made every Core/… module reaching Core/…/Api a violation.
+func TestHexagonal_CoreIsNotADomainLayer(t *testing.T) {
+	s := facts.NewStore()
+	var names []string
+	for i := 0; i < 12; i++ {
+		names = append(names, fmt.Sprintf("src/Core/Content/thing%d", i))
+	}
+	names = append(names, "src/Core/Framework/Adapter", "src/Core/Framework/Api",
+		"src/Core/Framework/Interfaces", "src/Core/Application")
+	s.Add(makeModulesLang("csharp", names...)...)
+	// A Core/… module reaching the platform's own Api directory.
+	addDep(s, "src/Core/Content/thing0/x.cs", "src/Core/Framework/Api")
+
+	for _, in := range mustExplain(t, s) {
+		if strings.HasPrefix(in.Title, "Layer violation:") {
+			t.Errorf("a container segment must not make its own subtree a domain layer: %q", in.Title)
+		}
+	}
+}
+
+// TestPHPLayered pins the language-gated PHP taxonomy. There is no single PHP
+// framework the way there is a single Rails, so it is built only from the words
+// that recur across unrelated PHP codebases, and its wiring tier is unordered for
+// the reason the Spring config package is.
+func TestPHPLayered(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("php",
+		"lib/Controller", "lib/Http", "lib/Service", "lib/Db", "lib/Migration",
+		"lib/Listener", "lib/Exception")...)
+	// Idiomatic: delivery down to domain down to data.
+	addDep(s, "lib/Controller/PageController.php", "lib/Service")
+	addDep(s, "lib/Service/PageService.php", "lib/Db")
+	// Wiring is referenced by and references everything, and is never a violation.
+	addDep(s, "lib/Service/PageService.php", "lib/Listener")
+	addDep(s, "lib/Listener/Hook.php", "lib/Controller")
+	// The genuine smell: data reaching up into delivery.
+	addDep(s, "lib/Db/PageMapper.php", "lib/Controller")
+
+	insights := mustExplain(t, s)
+	if findInsight(insights, "Architecture pattern: php-layered") == nil {
+		t.Fatal("expected php-layered to be detected")
+	}
+	var titles []string
+	for _, in := range insights {
+		if strings.HasPrefix(in.Title, "Layer violation:") {
+			titles = append(titles, in.Title)
+		}
+	}
+	if len(titles) != 1 || !strings.Contains(titles[0], "data -> controller") {
+		t.Fatalf("expected exactly the data -> controller violation, got %v", titles)
+	}
+}
+
+// TestPrescribedTaxonomies covers the two taxonomies taken from a framework's
+// documented directory structure rather than from what repositories share. Both
+// are framework-gated, so neither can reach a repository that is not one of these
+// applications, and neither carries a signature gate for the same reason nextjs
+// does not.
+func TestPrescribedTaxonomies(t *testing.T) {
+	t.Run("nuxt", func(t *testing.T) {
+		s := facts.NewStore()
+		s.Add(makeModulesLang("typescript",
+			"app/pages/home", "app/components/card", "app/composables/useAuth",
+			"app/utils/format", "server/api", "app/plugins")...)
+		s.Add(frameworkFact("nuxt"))
+		addDep(s, "app/pages/home/index.vue", "app/components/card")
+		addDep(s, "app/components/card/Card.vue", "app/composables/useAuth")
+		// The Nitro backend is a different runtime, at no point in the front
+		// end's order, so neither direction across it is a violation.
+		addDep(s, "app/composables/useAuth/index.ts", "server/api")
+		addDep(s, "server/api/handler.ts", "app/utils/format")
+		// The genuine smell: a composable reaching up into a page.
+		addDep(s, "app/composables/useAuth/index.ts", "app/pages/home")
+
+		insights := mustExplain(t, s)
+		if findInsight(insights, "Architecture pattern: nuxt") == nil {
+			t.Fatal("expected nuxt to be detected")
+		}
+		var titles []string
+		for _, in := range insights {
+			if strings.HasPrefix(in.Title, "Layer violation:") {
+				titles = append(titles, in.Title)
+			}
+		}
+		if len(titles) != 1 || !strings.Contains(titles[0], "composables -> pages") {
+			t.Fatalf("expected exactly the composables -> pages violation, got %v", titles)
+		}
+	})
+
+	t.Run("sveltekit", func(t *testing.T) {
+		s := facts.NewStore()
+		s.Add(makeModulesLang("typescript",
+			"src/routes/article", "src/routes/login", "src/lib/api", "src/lib/stores")...)
+		s.Add(frameworkFact("sveltekit"))
+		addDep(s, "src/routes/article/+page.svelte", "src/lib/api")
+
+		in := findInsight(mustExplain(t, s), "Architecture pattern: sveltekit")
+		if in == nil {
+			t.Fatal("expected sveltekit to be detected")
+		}
+		if !strings.Contains(in.Description, "none run against") {
+			t.Errorf("a route importing lib runs with the grain: %q", in.Description)
+		}
+	})
+}
+
+// TestClassifyModule_PrefersUnorderedLayers pins the wiring-first rule. Matching
+// is position-blind, so a wiring directory nested inside an ordered one took the
+// enclosing layer: nowinandroid's core/data/…/data/di classified as `data`, and a
+// Spring package at …/service/config as `service`. Preferring the neutral layer is
+// the fail-safe direction — misclassifying into one only silences a verdict, while
+// misclassifying out of one invents one about a directory every layer references.
+func TestClassifyModule_PrefersUnorderedLayers(t *testing.T) {
+	android := patternDefs[indexOfPattern(t, "android-clean")]
+	i, ok := classifyModule("core/data/src/main/kotlin/app/core/data/di", android)
+	if !ok || android.layers[i].Name != "di" {
+		t.Errorf("nested wiring classified as %q, want di", android.layers[i].Name)
+	}
+	if !android.layers[i].Neutral {
+		t.Error("the di layer must be unordered")
+	}
+
+	spring := patternDefs[indexOfPattern(t, "spring-layered")]
+	i, ok = classifyModule("src/main/java/app/service/config", spring)
+	if !ok || spring.layers[i].Name != "config" {
+		t.Errorf("nested config classified as %q, want config", spring.layers[i].Name)
+	}
+
+	// An ordered layer with no wiring segment is unaffected.
+	i, ok = classifyModule("src/main/java/app/service/impl", spring)
+	if !ok || spring.layers[i].Name != "service" {
+		t.Errorf("ordinary module classified as %q, want service", spring.layers[i].Name)
+	}
+}
+
+func indexOfPattern(t *testing.T, name string) int {
+	t.Helper()
+	for i := range patternDefs {
+		if patternDefs[i].name == name {
+			return i
+		}
+	}
+	t.Fatalf("no taxonomy named %q", name)
+	return 0
+}
+
+// --- metrics ---
+
+// TestPatternMetrics_AgreeWithTheProse is the guard the whole Metrics field exists
+// for. The description and the metrics are two renderings of the same measurement,
+// and the failure mode is that one is updated and the other is not — which is
+// exactly how the benchmark's regex over "N of M modules classified" broke when the
+// cohort's language was added to that sentence. Anything the prose states, this
+// asserts the metrics state identically.
+func TestPatternMetrics_AgreeWithTheProse(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("ruby",
+		"app/controllers", "app/models", "app/services", "app/views", "app/jobs")...)
+	s.Add(frameworkFact("rails"))
+	addDep(s, "app/controllers/x.rb", "app/services")
+	addDep(s, "app/models/y.rb", "app/controllers") // against the order
+
+	in := findInsight(mustExplain(t, s), "Architecture pattern: rails-mvc")
+	if in == nil {
+		t.Fatal("expected rails-mvc")
+	}
+	if in.Metrics == nil {
+		t.Fatal("the pattern insight carries no metrics")
+	}
+
+	// Every number the sentence quotes must appear in the metrics as the same value.
+	for _, tc := range []struct {
+		key  string
+		want int
+	}{
+		{MetricModulesClassified, 5},
+		{MetricModulesScanned, 5},
+		{MetricImportsInward, 1},
+		{MetricImportsAgainst, 1},
+	} {
+		if got := in.MetricInt(tc.key); got != tc.want {
+			t.Errorf("%s = %d, want %d", tc.key, got, tc.want)
+		}
+	}
+	if !strings.Contains(in.Description, "5 of 5 ruby modules classified") {
+		t.Errorf("prose disagrees with modules_classified/scanned: %q", in.Description)
+	}
+	if !strings.Contains(in.Description, "1 run inward and 1 against") {
+		t.Errorf("prose disagrees with the conformance counts: %q", in.Description)
+	}
+	if langs := in.MetricStrings(MetricCohortLanguages); len(langs) != 1 || langs[0] != "ruby" {
+		t.Errorf("cohort_languages = %v, want [ruby]", langs)
+	}
+}
+
+// TestPatternMetrics_LayerOrderAndExamples pins the part no reader could
+// reconstruct: the order runs OUTERMOST FIRST, unordered layers are separated
+// rather than ranked, and each layer carries a module from this repository.
+func TestPatternMetrics_LayerOrderAndExamples(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(makeModulesLang("java",
+		"app/controller", "app/service", "app/entity", "app/config")...)
+	s.Add(frameworkFact("spring"))
+
+	in := findInsight(mustExplain(t, s), "Architecture pattern: spring-layered")
+	if in == nil {
+		t.Fatal("expected spring-layered")
+	}
+	ordered := in.MetricStrings(MetricLayersOrdered)
+	if len(ordered) != 3 || ordered[0] != "controller" || ordered[2] != "entity" {
+		t.Errorf("layers_ordered = %v, want controller … entity", ordered)
+	}
+	if un := in.MetricStrings(MetricLayersUnordered); len(un) != 1 || un[0] != "config" {
+		t.Errorf("layers_unordered = %v, want [config]", un)
+	}
+	ex := in.MetricStringMap(MetricLayerExamples)
+	if ex["controller"] != "app/controller" || ex["entity"] != "app/entity" {
+		t.Errorf("layer_examples = %v, want modules from this repository", ex)
+	}
+}
+
+// TestPatternMetrics_DeclaredOrder: a repository that STATES its architecture gets
+// the same metrics as one that had it guessed. This is the case the feature guide
+// could not reach — a declared order lives in intent facts, so there is nothing to
+// look up by pattern name.
+func TestPatternMetrics_DeclaredOrder(t *testing.T) {
+	s := facts.NewStore()
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "repo/cmd", Repo: "repo",
+		Props: map[string]any{"language": "go"}})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "repo/internal/core", Repo: "repo",
+		Props: map[string]any{"language": "go"}})
+	for i, layer := range []struct {
+		name  string
+		paths []string
+	}{{"entrypoint", []string{"cmd/**"}}, {"core", []string{"internal/**"}}} {
+		s.Add(facts.Fact{Kind: facts.KindIntent, Name: "layer:" + layer.name, Repo: "repo",
+			Props: map[string]any{
+				"intent_kind": "layer", "layer_name": layer.name,
+				"order": i, "paths": layer.paths, "intent_owner": "repo",
+			}})
+	}
+
+	in := findInsight(mustExplain(t, s), "Architecture pattern: declared (repo)")
+	if in == nil {
+		t.Fatal("expected the declared pattern")
+	}
+	ordered := in.MetricStrings(MetricLayersOrdered)
+	if len(ordered) != 2 || ordered[0] != "entrypoint" || ordered[1] != "core" {
+		t.Fatalf("layers_ordered = %v, want [entrypoint core] — outermost first", ordered)
+	}
+	if ex := in.MetricStringMap(MetricLayerExamples); ex["entrypoint"] != "repo/cmd" {
+		t.Errorf("layer_examples = %v, want the declared module", ex)
+	}
+	if got := in.MetricInt(MetricModulesClassified); got != 2 {
+		t.Errorf("modules_classified = %d, want 2", got)
 	}
 }

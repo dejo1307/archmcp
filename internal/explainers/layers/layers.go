@@ -27,6 +27,22 @@ type layerDef struct {
 	Name     string
 	Patterns []string
 	Level    int // Lower level = inner/domain, higher = outer/infra
+	// Neutral marks a layer that is CLASSIFIED but never ordered: no import to or
+	// from it can be a violation, whatever the levels say.
+	//
+	// Wiring is the case this exists for. A Hilt `di` package and a Spring
+	// `@Configuration` package are referenced by every layer they wire and
+	// reference every layer they wire — that is their whole job — so any level
+	// they are given makes half of those edges a violation. Giving them one
+	// produced 61 of thingsboard's 75 findings, 7 of dubbo's 7, and
+	// nowinandroid's `data -> di`, none of which name a defect.
+	//
+	// It is the same argument the Go layout makes for `internal`/`pkg` and the
+	// Rails one for `lib`, with one difference: those are collapsed into a shared
+	// tier because they hold ANY layer, whereas wiring is a real, nameable thing
+	// that simply has no place in a dependency order. Keeping it classified keeps
+	// it out of the unclassified remainder, so coverage still counts it.
+	Neutral bool
 }
 
 // Predefined layer patterns for common architectures.
@@ -41,7 +57,14 @@ var (
 		{Name: "repository", Patterns: []string{"repository", "repositories", "repo", "repos", "store", "storage", "persistence", "db", "database"}, Level: 2},
 		{Name: "presentation", Patterns: []string{"presentation", "ui", "view", "views", "screen", "screens", "page", "pages"}, Level: 3},
 		{Name: "handler", Patterns: []string{"handler", "handlers", "controller", "controllers", "api", "http", "grpc", "rest"}, Level: 3},
-		{Name: "domain", Patterns: []string{"domain", "entity", "entities", "model", "models", "core"}, Level: 0},
+		// `core` is deliberately absent, for the reason the Angular taxonomy gives
+		// for the same word: it names a CONTAINER, not a layer. A PHP platform
+		// keeping its whole product under src/Core/ had 1049 of its 1491 classified
+		// modules read as domain on the strength of that one segment, which then
+		// made every Core/… module reaching Core/Framework/Adapter or Core/…/Api a
+		// violation — 339 of them, on a repository this taxonomy does not describe
+		// at all.
+		{Name: "domain", Patterns: []string{"domain", "entity", "entities", "model", "models"}, Level: 0},
 	}
 
 	// Next.js layers
@@ -53,6 +76,37 @@ var (
 		{Name: "api", Patterns: []string{"api"}, Level: 3},
 		{Name: "services", Patterns: []string{"services"}, Level: 1},
 		{Name: "types", Patterns: []string{"types"}, Level: 0},
+	}
+
+	// Nuxt layout.
+	//
+	// Unlike php-layered above, this is NOT derived from what repositories happen
+	// to share: Nuxt PRESCRIBES its directory structure, and the framework gate
+	// means the taxonomy cannot be applied to anything that is not a Nuxt
+	// application. The one Nuxt repository in the corpus validates it rather than
+	// defines it.
+	//
+	// `server` is classified and left unordered. It is the Nitro backend — a
+	// different runtime that happens to live in the same tree — so it sits at no
+	// point in the front end's dependency order, and plugins and middleware are
+	// wiring for the reason the Spring config package is.
+	nuxtLayers = []layerDef{
+		{Name: "pages", Patterns: []string{"pages", "layouts"}, Level: 3},
+		{Name: "components", Patterns: []string{"components"}, Level: 2},
+		{Name: "composables", Patterns: []string{"composables", "stores"}, Level: 1},
+		{Name: "utils", Patterns: []string{"utils", "types", "constants"}, Level: 0},
+		{Name: "server", Patterns: []string{"server"}, Neutral: true},
+		{Name: "wiring", Patterns: []string{"plugins", "middleware"}, Neutral: true},
+	}
+
+	// SvelteKit layout. Prescribed by the framework, like Nuxt above, and smaller
+	// than any other taxonomy here because SvelteKit prescribes less: src/routes
+	// holds what the router serves and src/lib holds everything it is built from.
+	// Two tiers is the whole of the ordering it defines, so on most repositories
+	// this will name a layout and grade nothing — which the statement says.
+	svelteKitLayers = []layerDef{
+		{Name: "routes", Patterns: []string{"routes"}, Level: 2},
+		{Name: "lib", Patterns: []string{"lib"}, Level: 1},
 	}
 
 	// Ember (Octane) app layout. The ordering expresses the real smells: a
@@ -181,13 +235,22 @@ var (
 		{Name: "lib", Patterns: []string{"lib"}, Level: 1},
 	}
 
-	// Android clean architecture / MVVM layout
+	// Android clean architecture / MVVM layout.
+	//
+	// The order is DATA at the bottom, then domain, then UI — Android's own
+	// guidance, not the Uncle-Bob orientation the iOS layout below uses. The
+	// difference is real rather than an oversight: Android's domain layer holds
+	// use cases that call repositories, so `domain -> data` is the documented
+	// direction of flow. nowinandroid's own architecture guide states it as
+	// "with the data layer at the bottom", and every use case in it imports a
+	// repository. Ranking domain innermost reported three of those imports as
+	// violations on Google's reference application.
 	androidLayers = []layerDef{
-		{Name: "domain", Patterns: []string{"domain"}, Level: 0},
-		{Name: "data", Patterns: []string{"data", "repository", "repositories"}, Level: 1},
+		{Name: "data", Patterns: []string{"data", "repository", "repositories"}, Level: 0},
+		{Name: "domain", Patterns: []string{"domain"}, Level: 1},
 		{Name: "ui", Patterns: []string{"ui", "presentation", "view", "views", "screen", "screens"}, Level: 3},
-		{Name: "di", Patterns: []string{"di", "injection"}, Level: 2},
 		{Name: "designsystem", Patterns: []string{"designsystem"}, Level: 3},
+		{Name: "di", Patterns: []string{"di", "injection"}, Neutral: true},
 	}
 
 	// iOS clean architecture / MVVM layout
@@ -205,7 +268,10 @@ var (
 		{Name: "repository", Patterns: []string{"repository", "repositories", "dao", "daos"}, Level: 1},
 		{Name: "entity", Patterns: []string{"entity", "entities", "model", "models", "domain"}, Level: 0},
 		{Name: "dto", Patterns: []string{"dto", "dtos"}, Level: 2},
-		{Name: "config", Patterns: []string{"config", "configuration"}, Level: 2},
+		// Wiring, not a layer — see layerDef.Neutral. `dto` keeps its level: the
+		// corpus produced no dto finding at all, and a rank nothing has exercised
+		// is not evidence to change.
+		{Name: "config", Patterns: []string{"config", "configuration"}, Neutral: true},
 	}
 
 	// .NET clean architecture. The layer is the last dot-separated component of a
@@ -222,6 +288,36 @@ var (
 		{Name: "application", Patterns: []string{"application", "usecases"}, Level: 1},
 		{Name: "infrastructure", Patterns: []string{"infrastructure", "persistence", "repositories"}, Level: 2},
 		{Name: "api", Patterns: []string{"api", "webapp", "grpc"}, Level: 3},
+	}
+
+	// PHP application layout.
+	//
+	// There is no single PHP framework the way there is a single Rails, so this is
+	// gated on the LANGUAGE and built only from the words that recur across
+	// unrelated PHP codebases — a forum, a groupware server and its apps all use
+	// Controller, Service, Db and Command to mean the same things, without sharing
+	// a framework. Measured over the PHP modules of four such repositories this
+	// vocabulary names 31%, 38%, 36% and 57% of them, and 17% of WordPress, which
+	// has no such layering and therefore stays under the coverage floor rather
+	// than being described by a taxonomy that does not fit it.
+	//
+	// Three tiers, not more. The corpus supports delivery above domain above data
+	// and nothing finer, and a distinction that is not a dependency ordering must
+	// not be modelled as one — the argument the Rails layout below makes at
+	// length.
+	//
+	// Listeners, subscribers and service providers are classified and left
+	// UNORDERED. They are invoked by the framework and reference whatever they
+	// wire, which is the same shape as the Hilt and Spring wiring packages above,
+	// and nothing in the corpus says which tier they belong to. Exceptions join
+	// them because every layer defines and throws them.
+	phpLayers = []layerDef{
+		{Name: "controller", Patterns: []string{"controller", "controllers"}, Level: 2},
+		{Name: "http", Patterns: []string{"http", "api", "middleware", "request", "requests"}, Level: 2},
+		{Name: "command", Patterns: []string{"command", "commands", "console"}, Level: 2},
+		{Name: "service", Patterns: []string{"service", "services", "job", "jobs", "handler", "handlers", "factory", "factories"}, Level: 1},
+		{Name: "data", Patterns: []string{"db", "entity", "entities", "model", "models", "repository", "repositories", "migration", "migrations"}, Level: 0},
+		{Name: "wiring", Patterns: []string{"listener", "listeners", "subscriber", "subscribers", "provider", "providers", "exception", "exceptions"}, Neutral: true},
 	}
 
 	// Django layout
@@ -242,9 +338,22 @@ type patternDef struct {
 	name   string
 	layers []layerDef
 
-	// languages, if non-empty, requires the repo's dominant language to be one
-	// of these for the pattern to be considered.
-	languages []string
+	// appliesTo names the languages this taxonomy DESCRIBES. Empty means any.
+	//
+	// It replaces a gate on the repository's dominant language, which asked the
+	// wrong question twice over. A Go application with a larger TypeScript front
+	// end has a dominant language of typescript, so its Go layout was never even
+	// considered — grafana's 954 Go modules got no statement at all. And a
+	// taxonomy admitted by the dominant language then classified every module in
+	// the repository, including the ones written in something else: a Rails
+	// monolith that ships an Ember front end had its Ruby app/services and
+	// app/serializers verdicted through Ember's layer order.
+	//
+	// Scoring a taxonomy over the modules it could describe, rather than over
+	// every module in the repository, fixes both: the denominator is the cohort,
+	// and a polyglot repository gets one statement per cohort instead of one
+	// statement and a wrong one.
+	appliesTo []string
 	// frameworks, if non-empty, requires at least one of these frameworks to be
 	// present in the facts for the pattern to be considered.
 	frameworks []string
@@ -270,29 +379,116 @@ type patternDef struct {
 	minSignatureLayers int
 }
 
+// minClassifiedShare is the fraction of a repository's distinct modules a
+// taxonomy must name before it is allowed to compete for the statement at all.
+//
+// CALIBRATED, NOT CHOSEN. Measured over the labelled corpus in
+// enola-benchmarks/arch-expected.json, the classified share separates cleanly
+// with a ten-point gap and nothing inside it:
+//
+//	 3%  a modular CMS named "dotnet-clean" — which it has never claimed to be
+//	 9%  an RPC framework named "spring-layered" off one Spring sub-project
+//	13%  a Go application named "go-standard" with no internal/ or pkg/ at all,
+//	     on 42 directories under routers/api/** matching the word "api"
+//	14%  a media server named "dotnet-clean"
+//	     ── 0.20 ──
+//	24%  the Android reference application, correctly named
+//	31%  … and every repository above it, all correctly named
+//
+// So the floor is not tuned to a target: every repository below it is a wrong
+// statement and every repository above it is a right one. What makes them wrong
+// is the same thing in each case — a taxonomy recognising its own vocabulary in
+// a repository built to a different plan — and a repository that follows a
+// layout genuinely does match most of it (enola's own tree: 92%).
+//
+// A floor SUPPRESSES rather than downgrades, because a low-confidence
+// architecture statement is not a weaker claim, it is a wrong one: nothing a
+// reader does with "this is dotnet-clean" gets better for being told it was 3%.
+//
+// It is applied to the winning pattern only — see thickEnough.
+const minClassifiedShare = 0.20
+
+// FIVE ECOSYSTEMS ARE DELIBERATELY ABSENT, AND EACH WAS MEASURED BEFORE BEING
+// LEFT OUT. The rule this file follows is that a taxonomy names only words whose
+// meaning does not move between repositories; these four have no such words.
+//
+//	Python   The obvious gap — 2,265 unnamed modules across two repositories —
+//	         and the vocabulary does not survive comparison. One workflow engine's
+//	         recurring segments are hooks, operators, sensors and providers, which
+//	         are its own PLUGIN KINDS sitting at one level rather than layers; a
+//	         commerce platform's are graphql, mutations and migrations; an
+//	         analytics platform's are commands and views; a library's are modules,
+//	         infrastructure and tasks. What repeats across all four is `utils` and
+//	         `common`. There is no Python layer vocabulary to encode, only four
+//	         project vocabularies.
+//
+//	Rust     Three repositories, three unrelated layouts: an async runtime whose
+//	         directories are domain modules (runtime, sync, io, net, time), a web
+//	         application with routes/controllers/models, and a compiler split into
+//	         crates named for products. Rust's unit of structure is the crate, and
+//	         a crate boundary is already visible in the graph without a taxonomy
+//	         inventing layers above it.
+//
+//	Swift    An SPM package's directories under Sources/ are TARGET names, which
+//	         are products rather than tiers. The ios-clean taxonomy already covers
+//	         the app layouts that do use layer names.
+//
+//	Go (web) One repository in the corpus uses the widely-copied
+//	         routers/services/models/modules layout rather than the standard one,
+//	         and adding those words to go-standard would re-rank pkg/services and
+//	         pkg/models in every Go repository that has them — a change measured
+//	         against one example, affecting many.
+//
+//	.NET     Beyond the clean-architecture layout already covered, the five .NET
+//	         repositories in the corpus share no order. A modular CMS keeps
+//	         Views/Services/ViewModels inside each of a thousand Modules; a
+//	         component library has Components/Pages/Services; a UI framework and a
+//	         file manager have product names. And the one that looks most like a
+//	         layered application is the trap: a media server's
+//	         `MediaBrowser.Controller` is its DOMAIN ABSTRACTIONS assembly —
+//	         IServerApplicationHost.cs, Entities/, Dto/ — so a taxonomy matching
+//	         the word Controller across dotted project names, which is how the
+//	         .NET one has to match, would read fifty modules of interfaces as a
+//	         delivery layer. Same failure as `core` in the hexagonal patterns: a
+//	         word that names something else here.
+//
+// Each of these is worth revisiting when the corpus holds two or more unrelated
+// repositories that agree. One repository is a validation; it is not evidence of
+// a convention.
+
 // patternDefs lists all known architecture patterns. Order does not affect the
 // outcome; bestPattern selects by specificity then confidence.
 var patternDefs = []patternDef{
 	// Framework-gated patterns (most specific).
-	{name: "nextjs", layers: nextjsLayers, frameworks: []string{"nextjs"}},
-	{name: "rails-mvc", layers: railsLayers, frameworks: []string{"rails"},
+	{name: "nextjs", layers: nextjsLayers, frameworks: []string{"nextjs"}, appliesTo: []string{"typescript"}},
+	{name: "rails-mvc", layers: railsLayers, frameworks: []string{"rails"}, appliesTo: []string{"ruby"},
 		autoloadRoot: "app", autoloadLevel: 1},
-	{name: "android-clean", layers: androidLayers, frameworks: []string{"android"}},
-	{name: "ios-clean", layers: iosLayers, frameworks: []string{"swiftui", "uikit"}},
-	{name: "spring-layered", layers: springLayers, frameworks: []string{"spring"}},
-	{name: "django", layers: djangoLayers, frameworks: []string{"django"}},
+	{name: "android-clean", layers: androidLayers, frameworks: []string{"android"}, appliesTo: []string{"kotlin", "java"}},
+	{name: "ios-clean", layers: iosLayers, frameworks: []string{"swiftui", "uikit"}, appliesTo: []string{"swift"}},
+	{name: "spring-layered", layers: springLayers, frameworks: []string{"spring"}, appliesTo: []string{"java", "kotlin"}},
+	{name: "django", layers: djangoLayers, frameworks: []string{"django"}, appliesTo: []string{"python"}},
 	{name: "dotnet-clean", layers: dotnetCleanLayers, frameworks: []string{"aspnetcore", "efcore"},
-		dottedSegments: true, signatureLayers: []string{"domain", "infrastructure", "application"},
+		appliesTo: []string{"csharp", "vbnet", "fsharp", "razor", "xaml"}, dottedSegments: true, signatureLayers: []string{"domain", "infrastructure", "application"},
 		minSignatureLayers: 2},
-	{name: "ember-octane", layers: emberLayers, frameworks: []string{"ember"}},
+	{name: "ember-octane", layers: emberLayers, frameworks: []string{"ember"}, appliesTo: []string{"typescript", "handlebars"}},
+	// No signature gate on either of these, for the reason nextjs has none: the
+	// framework fact already establishes that the repository is one of these
+	// applications, and a prescribed layout does not need a second opinion.
+	{name: "nuxt", layers: nuxtLayers, frameworks: []string{"nuxt"}, appliesTo: []string{"typescript"}},
+	{name: "sveltekit", layers: svelteKitLayers, frameworks: []string{"sveltekit"}, appliesTo: []string{"typescript"}},
 	// Two distinctive layers required: `components`/`services`/`models` are generic
 	// enough that a single stray directory in a repository that merely contains some
 	// Angular should not decide its architecture.
-	{name: "angular-layered", layers: angularLayers, frameworks: []string{"angular"},
+	{name: "angular-layered", layers: angularLayers, frameworks: []string{"angular"}, appliesTo: []string{"typescript"},
 		signatureLayers: []string{"pages", "store", "directives", "pipes"}, minSignatureLayers: 2},
 
 	// Language-gated patterns.
-	{name: "go-standard", layers: goStdLayers, languages: []string{"go"}},
+	{name: "go-standard", layers: goStdLayers, appliesTo: []string{"go"}},
+	// Two distinctive layers required, for the reason the Angular pattern gives:
+	// a repository holding one stray Api or Command directory has not thereby
+	// declared an architecture.
+	{name: "php-layered", layers: phpLayers, appliesTo: []string{"php"},
+		signatureLayers: []string{"controller", "service", "data"}, minSignatureLayers: 2},
 
 	// Language-agnostic patterns, gated on distinctive signature layers. Require
 	// at least two distinct ports-and-adapters layers so a single stray
@@ -321,27 +517,44 @@ func (d patternDef) specificity() int {
 	switch {
 	case len(d.frameworks) > 0:
 		return 2
-	case len(d.languages) > 0:
+	case len(d.appliesTo) > 0:
 		return 1
 	default:
 		return 0
 	}
 }
 
-// gateOK reports whether the pattern's language/framework requirements are met.
-func (d patternDef) gateOK(lang string, frameworks map[string]bool) bool {
-	if len(d.languages) > 0 {
-		matched := false
-		for _, l := range d.languages {
-			if l == lang {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
+// describes reports whether this taxonomy applies to a module's language.
+func (d patternDef) describes(lang string) bool {
+	if len(d.appliesTo) == 0 {
+		return true
+	}
+	for _, l := range d.appliesTo {
+		if l == lang {
+			return true
 		}
 	}
+	return false
+}
+
+// cohort returns the modules this taxonomy could describe, and the languages
+// they are written in.
+func (d patternDef) cohort(modules []facts.Fact) ([]facts.Fact, map[string]bool) {
+	out := make([]facts.Fact, 0, len(modules))
+	langs := map[string]bool{}
+	for _, m := range modules {
+		lang, _ := m.Props["language"].(string)
+		if !d.describes(lang) {
+			continue
+		}
+		out = append(out, m)
+		langs[lang] = true
+	}
+	return out, langs
+}
+
+// gateOK reports whether the pattern's framework requirement is met.
+func (d patternDef) gateOK(frameworks map[string]bool) bool {
 	if len(d.frameworks) > 0 {
 		matched := false
 		for _, f := range d.frameworks {
@@ -364,6 +577,59 @@ type archPattern struct {
 	Specificity int // from patternDef.specificity(); used to break ties in bestPattern
 	Layers      map[string]*layerDef
 	Modules     map[string]string // module -> layer name
+
+	// Scanned, Classified and Graded are the denominators the statement is built
+	// from. Classified counts every module the taxonomy named; Graded counts the
+	// subset sitting in a layer that carries a direction, which is the only part
+	// the claimed ORDER describes. They diverge whenever a repository's matches
+	// are mostly wiring — one Java project in the corpus classifies 84 modules of
+	// which 45 are a config package, so an "ordered" reading of it rests on 39.
+	Scanned    int
+	Classified int
+	Graded     int
+
+	// Languages is the cohort this pattern was scored over — the languages of the
+	// modules it could describe. Two patterns whose cohorts overlap are two
+	// answers to one question and only the better may be reported; two whose
+	// cohorts are disjoint describe different halves of a polyglot repository and
+	// both are true.
+	Languages map[string]bool
+}
+
+// label is the short name a finding cites the pattern by. A declared order is
+// already named for its repository, and repeating that inside a violation title
+// nests one parenthesis in another for no added information: the useful
+// distinction there is declared against recognised.
+func (p *archPattern) label() string {
+	if strings.HasPrefix(p.Name, "declared (") {
+		return "declared"
+	}
+	return p.Name
+}
+
+// conformance counts what the measured imports did with the order the pattern
+// claims, over edges whose BOTH ends sit in a layer that carries a direction.
+//
+// This is the number the pattern insight was missing. Confidence was a coverage
+// ratio over directory NAMES, so a repository whose names look hexagonal and
+// whose edges do not scored the same as one where both agree — and the corpus
+// has both. Inward and Against are the two halves of the answer; Against is
+// exactly what the violations below the statement enumerate.
+type conformance struct {
+	Inward  int
+	Against int
+	Same    int
+}
+
+// obeys returns the share of ordered cross-layer imports that run inward, and
+// whether the question applies at all: a repository whose modules span one level
+// has no cross-layer edges to obey anything.
+func (c conformance) obeys() (float64, bool) {
+	total := c.Inward + c.Against
+	if total == 0 {
+		return 0, false
+	}
+	return float64(c.Inward) / float64(total), true
 }
 
 // Explain analyzes the fact store and detects architectural patterns, one
@@ -430,12 +696,11 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 		return nil
 	}
 
-	// Derive language/framework signals used to gate pattern detection.
-	lang := dominantLanguage(modules)
+	// Derive the framework signals used to gate pattern detection.
 	frameworks := presentFrameworks(scoped)
 
 	// Detect which architecture patterns match
-	patterns := e.detectPatterns(modules, lang, frameworks)
+	patterns := e.detectPatterns(modules, frameworks)
 
 	var insights []facts.Insight
 
@@ -453,24 +718,34 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 		for _, mod := range mods {
 			evidence = append(evidence, facts.Evidence{Fact: mod, Detail: fmt.Sprintf("module %q maps to declared layer %q", mod, dp.Modules[mod])})
 		}
+		// The violations are computed first here for the same reason they are for a
+		// recognised pattern: the conformance counts come out of that walk, and a
+		// declared order deserves the same numbers as a guessed one.
+		violations, dconf := e.detectViolations(scoped, dp)
+		dp.Scanned, dp.Classified = distinctModules(modules), len(dp.Modules)
+		for _, layer := range dp.Modules {
+			if def := dp.Layers[layer]; def != nil && !def.Neutral {
+				dp.Graded++
+			}
+		}
 		insights = append(insights, facts.Insight{
 			Title:         fmt.Sprintf("Architecture pattern: %s", dp.Name),
 			Description:   fmt.Sprintf("Declared layer order with %d layers and %d classified modules. Declared, not recognised: confidence is exact.", len(dp.Layers), len(dp.Modules)),
 			Confidence:    1.0,
 			Informational: true, // Describes the declaration; the violations below are the findings.
+			Metrics:       patternMetrics(dp, dconf),
 			Evidence:      evidence,
 			Actions:       []string{"Keep the declaration beside the code it governs"},
 		})
 		insights = append(insights, vacuousDeclarationInsights(dp, modules)...)
-		violations := e.detectViolations(scoped, dp)
 		for i := range violations {
 			violations[i].Confidence = 1.0
 		}
 		insights = append(insights, violations...)
 	}
 
-	// Report detected architecture pattern
-	if best := e.bestPattern(patterns); best != nil {
+	// Report the architecture pattern of each language cohort.
+	for _, best := range e.selectPatterns(patterns) {
 		// Sort the classified modules so the evidence order is deterministic —
 		// ranging best.Modules directly would follow Go's randomized map order.
 		mods := make([]string, 0, len(best.Modules))
@@ -487,36 +762,222 @@ func (e *LayerExplainer) explainRepo(store *facts.Store, repo string) []facts.In
 			})
 		}
 
+		// The violations are computed BEFORE the statement is written, because the
+		// statement quotes their denominator: how many imports obeyed the order is
+		// not knowable until the same walk that found the ones that did not.
+		violations, conf := e.detectViolations(scoped, best)
+
 		insights = append(insights, facts.Insight{
 			Title:         fmt.Sprintf("Architecture pattern: %s", best.Name),
-			Description:   fmt.Sprintf("Detected %s architecture pattern with %.0f%% confidence. Found %d layers with %d classified modules.", best.Name, best.Confidence*100, len(best.Layers), len(best.Modules)),
+			Description:   describePattern(best, conf, distinctModules(modules)),
 			Confidence:    best.Confidence,
 			Informational: true, // Which pattern was recognised is not a defect, at any confidence.
+			Metrics:       patternMetrics(best, conf),
 			Evidence:      evidence,
 			Actions: []string{
 				"Ensure new code follows the detected layer structure",
 				"Review cross-layer dependencies for violations",
 			},
 		})
-
-		// Detect layer violations
-		violations := e.detectViolations(scoped, best)
 		insights = append(insights, violations...)
 	}
 
 	return insights
 }
 
-func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frameworks map[string]bool) []*archPattern {
+// cohortLabel names the languages a pattern was scored over, for the statement.
+// Empty when the taxonomy describes every language, because there is no cohort
+// to distinguish it from.
+func cohortLabel(p *archPattern) string {
+	if len(p.Languages) == 0 || len(p.Languages) > 2 {
+		return ""
+	}
+	langs := make([]string, 0, len(p.Languages))
+	for l := range p.Languages {
+		if l == "" {
+			return ""
+		}
+		langs = append(langs, l)
+	}
+	sort.Strings(langs)
+	return strings.Join(langs, "/") + " "
+}
+
+// Metric keys the pattern insight publishes. One vocabulary, declared here rather
+// than spelled out at each call site, because the readers are in other packages —
+// the renderer builds the feature guide from the layer order, and the benchmark
+// grades the denominators.
+const (
+	MetricModulesScanned    = "modules_scanned"
+	MetricModulesClassified = "modules_classified"
+	MetricModulesGraded     = "modules_graded"
+	MetricImportsInward     = "imports_inward"
+	MetricImportsAgainst    = "imports_against"
+	MetricImportsSameLevel  = "imports_same_level"
+	MetricLayersOrdered     = "layers_ordered"
+	MetricLayersUnordered   = "layers_unordered"
+	MetricLayerExamples     = "layer_examples"
+	MetricLayerLevels       = "layer_levels"
+	MetricCohortLanguages   = "cohort_languages"
+)
+
+// patternMetrics is the machine-readable copy of what describePattern says in
+// prose. The two are built from the same values in the same place so they cannot
+// disagree; a test asserts it.
+//
+// The layer order is the part no reader could reconstruct. A recognised pattern's
+// order is in patternDefs, which a renderer could in principle look up by name — a
+// DECLARED order is in the repository's intent facts and cannot be looked up at
+// all, which is why the feature guide had nothing to say about repositories that
+// state their own architecture.
+func patternMetrics(p *archPattern, conf conformance) map[string]any {
+	ordered, unordered := layerNamesByRank(p)
+	m := map[string]any{
+		MetricModulesScanned:    p.Scanned,
+		MetricModulesClassified: p.Classified,
+		MetricModulesGraded:     p.Graded,
+		MetricImportsInward:     conf.Inward,
+		MetricImportsAgainst:    conf.Against,
+		MetricImportsSameLevel:  conf.Same,
+		MetricLayersOrdered:     ordered,
+		MetricLayersUnordered:   unordered,
+		MetricLayerExamples:     layerExamples(p),
+		// Levels, not just the order, because layers SHARING one are peers rather
+		// than steps: the Rails taxonomy puts a dozen directories on its domain tier
+		// deliberately, and a reader given only a sequence reads twelve steps that do
+		// not exist. The renderer groups on this.
+		MetricLayerLevels: layerLevels(p),
+	}
+	if langs := sortedKeys(p.Languages); len(langs) > 0 {
+		m[MetricCohortLanguages] = langs
+	}
+	return m
+}
+
+// layerNamesByRank splits a pattern's layers into the ordered ones, OUTERMOST
+// FIRST, and the unordered ones. Outermost first is the direction a feature is
+// built in and the direction a dependency runs, so it is the order a reader wants
+// and the order the guide prints.
+func layerNamesByRank(p *archPattern) (ordered, unordered []string) {
+	for name, def := range p.Layers {
+		if def == nil {
+			continue
+		}
+		if def.Neutral {
+			unordered = append(unordered, name)
+			continue
+		}
+		ordered = append(ordered, name)
+	}
+	sort.Strings(unordered)
+	sort.Slice(ordered, func(i, j int) bool {
+		li, lj := p.Layers[ordered[i]], p.Layers[ordered[j]]
+		if li.Level != lj.Level {
+			return li.Level > lj.Level
+		}
+		return ordered[i] < ordered[j]
+	})
+	return ordered, unordered
+}
+
+// layerExamples names one module per layer, taken from what this repository
+// actually measured. It is what turns a layer ORDER into instructions: "components
+// then composables" is a rule, and "app/components/card then app/composables/auth"
+// is the same rule in the reader's own tree. Lowest name per layer, so the choice
+// is stable across runs rather than following map order.
+func layerExamples(p *archPattern) map[string]string {
+	out := map[string]string{}
+	for mod, layer := range p.Modules {
+		if cur, ok := out[layer]; !ok || mod < cur {
+			out[layer] = mod
+		}
+	}
+	return out
+}
+
+// layerLevels reports each ordered layer's rank. Unordered layers are absent
+// rather than given a sentinel: they have no rank, and a number would invite a
+// reader to compare them.
+func layerLevels(p *archPattern) map[string]any {
+	out := map[string]any{}
+	for name, def := range p.Layers {
+		if def == nil || def.Neutral {
+			continue
+		}
+		out[name] = def.Level
+	}
+	return out
+}
+
+// sortedKeys returns a set's members in a deterministic order.
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// describePattern writes the statement enola makes about a repository.
+//
+// It states three things a reader can check, in place of one number nobody could:
+// how much of the repository the taxonomy named, how much of that carries a
+// direction, and what the measured imports did with that direction. "Recognised
+// hexagonal, 66% confidence" and "the names say hexagonal and 340 imports run
+// against it" are the same snapshot; only the second is worth reading.
+func describePattern(p *archPattern, conf conformance, repoModules int) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Recognised %s from directory names: %d of %d %smodules classified",
+		p.Name, p.Classified, p.Scanned, cohortLabel(p))
+	// Name the cohort's size against the repository whenever it is not the whole
+	// of it. A taxonomy is now scored over the modules it could describe, so a Go
+	// SDK of 28 modules inside a Python repository of 1310 produces a true
+	// statement that reads as a claim about the repository unless it says which
+	// part of it was measured.
+	if repoModules > p.Scanned {
+		fmt.Fprintf(&sb, " — %.0f%% of this repository's %d modules",
+			100*float64(p.Scanned)/float64(repoModules), repoModules)
+	}
+	if p.Graded != p.Classified {
+		fmt.Fprintf(&sb, ", %d of them in layers that carry a direction (the rest are wiring, which is named but not ordered)", p.Graded)
+	}
+	sb.WriteString(". ")
+
+	share, applies := conf.obeys()
+	switch {
+	case !applies:
+		// Two taxonomies in this set deliberately collapse most of their
+		// directories to one tier, so on many repositories they can express no
+		// ordering at all. Saying so is the difference between a statement that
+		// found nothing and a repository that breached nothing.
+		sb.WriteString("No import in this repository crosses one of its ordered layers, so the pattern names a layout without grading anything: nothing here can breach it.")
+	case conf.Against == 0:
+		fmt.Fprintf(&sb, "All %d imports between ordered layers run inward; none run against the order.", conf.Inward)
+	default:
+		fmt.Fprintf(&sb, "Of %d imports between ordered layers, %d run inward and %d against it (%.0f%% obey the order); the %d are reported separately below.",
+			conf.Inward+conf.Against, conf.Inward, conf.Against, share*100, conf.Against)
+	}
+	return sb.String()
+}
+
+func (e *LayerExplainer) detectPatterns(allModules []facts.Fact, frameworks map[string]bool) []*archPattern {
 	var patterns []*archPattern
 
 	for di := range patternDefs {
 		def := patternDefs[di]
 
-		// Skip patterns whose language/framework gate is not satisfied. This is
-		// what stops e.g. a Python or Ruby repo from matching the generic
-		// "nextjs" directory names, or a plain OOP repo from matching nextjs.
-		if !def.gateOK(lang, frameworks) {
+		// Skip patterns whose framework gate is not satisfied. This is what stops
+		// a plain OOP repo from matching the generic "nextjs" directory names.
+		if !def.gateOK(frameworks) {
+			continue
+		}
+
+		// Score over the modules this taxonomy could describe, not over the whole
+		// repository. Everything below — matchCount, the signature gate, both
+		// denominators — is then a measurement of the cohort.
+		modules, cohortLangs := def.cohort(allModules)
+		if len(modules) == 0 {
 			continue
 		}
 
@@ -525,17 +986,15 @@ func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frame
 			Specificity: def.specificity(),
 			Layers:      make(map[string]*layerDef),
 			Modules:     make(map[string]string),
+			Languages:   cohortLangs,
 		}
 
 		matchCount := 0
 		for _, mod := range modules {
-			for i, layer := range def.layers {
-				if matchesLayerIn(mod.Name, layer.Patterns, def.dottedSegments) {
-					pattern.Layers[layer.Name] = &def.layers[i]
-					pattern.Modules[mod.Name] = layer.Name
-					matchCount++
-					break
-				}
+			if i, ok := classifyModule(mod.Name, def); ok {
+				pattern.Layers[def.layers[i].Name] = &def.layers[i]
+				pattern.Modules[mod.Name] = def.layers[i].Name
+				matchCount++
 			}
 		}
 
@@ -568,6 +1027,24 @@ func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frame
 			continue
 		}
 
+		// Count the classified modules that sit in a layer carrying a direction.
+		// A module in a neutral layer is named but not ordered, so it is evidence
+		// that the taxonomy fits and no evidence at all about the layering.
+		graded := 0
+		for _, layerName := range pattern.Modules {
+			if def := pattern.Layers[layerName]; def != nil && !def.Neutral {
+				graded++
+			}
+		}
+		// All three counts are over DISTINCT module names, because the classified
+		// one has to be: pattern.Modules is keyed by name, so two extractors
+		// emitting the same directory (a grammar directory read by two of them, in
+		// this repository) collapse there and not in a running total. Mixing the
+		// bases made enola's own snapshot say 119 of 129 modules were classified
+		// and 117 of those ordered — reading as two wiring modules where there
+		// were none, only two duplicates.
+		pattern.Scanned, pattern.Classified, pattern.Graded = distinctModules(modules), len(pattern.Modules), graded
+
 		// Require enough distinctive signature layers when the pattern declares
 		// them, so a match built only from generic names (e.g. just model + ui)
 		// or from a single stray directory does not qualify.
@@ -576,22 +1053,31 @@ func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frame
 			continue
 		}
 
-		// Confidence based on how many modules are classified
-		coverage := float64(matchCount) / float64(len(modules))
-		// Also factor in how many distinct layers are matched
-		layerCoverage := float64(len(pattern.Layers)) / float64(len(def.layers)+autoLayers)
-
+		// Confidence is how much of the repository the claimed ORDER describes,
+		// and nothing else.
+		//
+		// It used to be `coverage*0.6 + layerCoverage*0.4`, where layerCoverage was
+		// the share of the taxonomy's OWN layer names that appeared. That second
+		// term rewarded a narrow taxonomy for being narrow and punished a wide one
+		// for being wide: a modular CMS matching all four names of the four-layer
+		// .NET taxonomy across 3% of its modules scored 0.42 — higher than several
+		// repositories the taxonomy genuinely describes — because 0.4 of the score
+		// was already banked before a single module was counted. The blend also had
+		// no meaning a reader could state. This one does: 0.24 means the ordered
+		// layers account for 24% of the modules measured.
+		//
 		// Ceiling is deliberately below 1.0: confidence 1.0 is reserved for a
 		// structural fact, and a pattern match is a coverage ratio over directory
-		// names — a well-supported guess, never a certainty. A repo where every
-		// module matched every layer would otherwise present as proof.
-		pattern.Confidence = (coverage*0.6 + layerCoverage*0.4)
+		// names — a well-supported guess, never a certainty.
+		pattern.Confidence = float64(graded) / float64(pattern.Scanned)
 		if pattern.Confidence > common.MaxHeuristicConfidence {
 			pattern.Confidence = common.MaxHeuristicConfidence
 		}
 
-		// Minimum threshold
-		if pattern.Confidence >= 0.2 && len(pattern.Layers) >= 2 {
+		// Everything that matched two layers enters the comparison. The coverage
+		// floor is applied to the WINNER instead, in explainRepo — see
+		// minClassifiedShare for why the difference matters.
+		if len(pattern.Layers) >= 2 {
 			patterns = append(patterns, pattern)
 		}
 	}
@@ -599,8 +1085,67 @@ func (e *LayerExplainer) detectPatterns(modules []facts.Fact, lang string, frame
 	return patterns
 }
 
+// distinctModules counts the distinct module NAMES in a scope. Two extractors
+// can emit a fact for the same directory, and a denominator that counts both
+// cannot be compared against a numerator keyed by name.
+func distinctModules(modules []facts.Fact) int {
+	seen := make(map[string]struct{}, len(modules))
+	for _, m := range modules {
+		seen[m.Name] = struct{}{}
+	}
+	return len(seen)
+}
+
+// classifyModule picks the layer a module belongs to: the first match in the
+// taxonomy's declaration order, except that UNORDERED layers are considered
+// first.
+//
+// Matching is position-blind — any path segment may match — so a wiring directory
+// nested inside an ordered one takes the enclosing layer: an Android module at
+// core/data/…/data/di classified as `data` rather than `di`, and a Spring package
+// at …/service/config as `service` rather than `config`. Preferring the neutral
+// layer is the fail-safe direction. Misclassifying INTO one only silences a
+// verdict, because a neutral layer produces none; misclassifying OUT of one
+// invents a verdict about a directory whose whole role is to be referenced by
+// every layer it wires.
+//
+// Deciding by position instead — the deepest matching segment — was measured and
+// rejected: it reclassified `adapter/rest` from adapter to handler and broke
+// hexagonal detection on a canonical ports-and-adapters layout, with nothing in
+// the corpus improved.
+func classifyModule(name string, def patternDef) (int, bool) {
+	for _, wantNeutral := range []bool{true, false} {
+		for i := range def.layers {
+			if def.layers[i].Neutral != wantNeutral {
+				continue
+			}
+			if matchesLayerIn(name, def.layers[i].Patterns, def.dottedSegments) {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
 // countSignatureLayers returns how many of the given distinctive layer names the
 // detected pattern matched.
+//
+// PRESENCE, NOT WEIGHT, AND THAT WAS TRIED. Requiring two modules per signature
+// layer removes exactly one wrong statement from the corpus — WordPress named
+// php-layered on 45 modules of which 44 belong to libraries vendored into
+// wp-includes — and costs a right one: a Java platform's Angular front end is
+// 232 of 269 modules at 99% obedience, and its distinctive evidence is 54 `pages`
+// directories plus a single `directives`. No absolute threshold separates those
+// two, because what is wrong about the WordPress claim is not its size but that
+// the code is somebody else's; and no relative one does either, since a correct
+// Angular match sits at 3% signature share and the wrong PHP one at 20%.
+//
+// So the wrong statement stays, recorded as a known gap in the benchmark corpus
+// rather than tuned away with a threshold that takes a correct one with it. The
+// real fix is excluding vendored trees from architecture the way test trees
+// already are, which is its own piece of work — and note that the existing
+// vendored-candidates heuristic would not catch this one either: wp-includes is
+// not a conventional vendor directory name.
 func countSignatureLayers(pattern *archPattern, signature []string) int {
 	n := 0
 	for _, name := range signature {
@@ -611,39 +1156,75 @@ func countSignatureLayers(pattern *archPattern, signature []string) int {
 	return n
 }
 
-func (e *LayerExplainer) bestPattern(patterns []*archPattern) *archPattern {
-	if len(patterns) == 0 {
-		return nil
-	}
+// selectPatterns returns the patterns to report: the best one for each cohort of
+// languages, strongest first, with no two cohorts overlapping.
+//
+// A repository used to get exactly one statement, which is right only when it is
+// written in one thing. A Rails monolith shipping an Ember front end matched both
+// taxonomies at equal specificity, so confidence alone decided, and the loser's
+// half of the repository was then described by the winner's layer order. Both are
+// true here, over disjoint sets of modules, and both are reported.
+//
+// Overlapping cohorts are still one question with one answer: the ungated
+// hexagonal taxonomy describes every language, so it is reported only where no
+// gated taxonomy claimed those modules first.
+func (e *LayerExplainer) selectPatterns(patterns []*archPattern) []*archPattern {
+	ranked := append([]*archPattern(nil), patterns...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].Specificity != ranked[j].Specificity {
+			return ranked[i].Specificity > ranked[j].Specificity
+		}
+		if ranked[i].Confidence != ranked[j].Confidence {
+			return ranked[i].Confidence > ranked[j].Confidence
+		}
+		return ranked[i].Name < ranked[j].Name
+	})
 
-	best := patterns[0]
-	for _, p := range patterns[1:] {
-		// Prefer the more specific pattern (framework > language > generic);
-		// break ties by confidence.
-		if p.Specificity > best.Specificity ||
-			(p.Specificity == best.Specificity && p.Confidence > best.Confidence) {
-			best = p
+	claimed := map[string]bool{}
+	var out []*archPattern
+	for _, p := range ranked {
+		if overlaps(p.Languages, claimed) {
+			continue
+		}
+		// The floor is applied per cohort, and a floored winner still CLAIMS its
+		// languages: suppression must not promote, and a worse-fitting taxonomy
+		// over the same modules is exactly what would take its place.
+		for lang := range p.Languages {
+			claimed[lang] = true
+		}
+		if thickEnough(p) != nil {
+			out = append(out, p)
 		}
 	}
-	return best
+	return out
 }
 
-// dominantLanguage returns the most common language across module facts, using
-// the Props["language"] attribute every extractor sets. Ties break
-// alphabetically for deterministic output.
-func dominantLanguage(modules []facts.Fact) string {
-	counts := make(map[string]int)
-	for _, m := range modules {
-		if lang, ok := m.Props["language"].(string); ok && lang != "" {
-			counts[lang]++
+// overlaps reports whether any language in langs is already claimed.
+func overlaps(langs, claimed map[string]bool) bool {
+	for lang := range langs {
+		if claimed[lang] {
+			return true
 		}
 	}
-	best := ""
-	bestN := 0
-	for lang, n := range counts {
-		if n > bestN || (n == bestN && lang < best) {
-			best, bestN = lang, n
-		}
+	return false
+}
+
+// thickEnough applies the coverage floor to the pattern that WON, and returns
+// nil when it does not clear it.
+//
+// The floor is applied here rather than at admission, because suppression must
+// not promote. Applied at admission it removed a modular CMS's thin
+// `dotnet-clean` match and handed the repository to the generic `hexagonal`
+// pattern, which had recognised `Interfaces` and `Infrastructure` across a
+// quarter of it — trading a wrong statement for a worse one. If the taxonomy
+// that fits a repository best does not describe enough of it, no taxonomy does,
+// and the repository has no statement.
+func thickEnough(best *archPattern) *archPattern {
+	if best == nil || best.Scanned == 0 {
+		return nil
+	}
+	if float64(best.Classified)/float64(best.Scanned) < minClassifiedShare {
+		return nil
 	}
 	return best
 }
@@ -664,6 +1245,33 @@ func presentFrameworks(ff []facts.Fact) map[string]bool {
 	return out
 }
 
+// ONLY `imports` IS READ, AND THAT WAS MEASURED RATHER THAN ASSUMED. The obvious
+// next move is to verdict `calls`, `instantiates`, `injects` and `implements` as
+// well, on the reasoning that an autoloaded language has no import statements to
+// find. It does not survive contact with the corpus. Resolving every one of those
+// edges to a module pair (symbol name to its declaring module, names declared in
+// two modules dropped as ambiguous) and subtracting the pairs `imports` already
+// yields:
+//
+//	a Rails monolith        150 new module pairs   0 of them wrong-direction
+//	a Spring application     680 new module pairs   0
+//	a Go application         779 new module pairs   0
+//	a Rails + Angular app   1455 new module pairs   5
+//
+// Three thousand pairs for five findings, every one of them the same shape as
+// findings the import edges already reported — and bought with a resolution step
+// whose unresolved tail runs from 27,000 to 105,000 targets per repository, each
+// one a chance to attribute an edge to the wrong module.
+//
+// The premise was wrong twice. In every language here a reference across a module
+// boundary requires an import, so `calls` is a SUBSET of `imports` once both are
+// reduced to module granularity. And the autoloaded language is not an exception:
+// the Ruby extractor synthesizes coupling edges from constant references, which is
+// why a Rails monolith with no `require` in its application code still has 11,486
+// import edges. Where a Rails taxonomy reports nothing it is because that taxonomy
+// deliberately collapses its domain directories to one tier, not because the
+// evidence is missing.
+
 // detectViolations checks for layer boundary violations (inner layer importing
 // outer layer). Each distinct (source module -> target module) pair is reported
 // once: two files in the same module importing the same outer module are one
@@ -675,7 +1283,7 @@ func presentFrameworks(ff []facts.Fact) map[string]bool {
 //
 // The facts passed in are one repository's, so an import can only ever be
 // verdicted against the taxonomy of the repository it was measured in.
-func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPattern) []facts.Insight {
+func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPattern) ([]facts.Insight, conformance) {
 	projectOf := moduleProjects(scoped)
 	type violation struct {
 		sourceModule, targetModule string
@@ -693,6 +1301,7 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 	}
 	seen := make(map[string]bool)
 	var violations []violation
+	var conf conformance
 
 	for _, dep := range scoped {
 		if dep.Kind != facts.KindDependency {
@@ -746,9 +1355,27 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 
 			sourceDef := pattern.Layers[sourceLayer]
 			targetDef := pattern.Layers[targetLayer]
-			if sourceDef == nil || targetDef == nil || sourceDef.Level >= targetDef.Level {
+			if sourceDef == nil || targetDef == nil {
 				continue
 			}
+			// A neutral layer is classified but unordered: it sits in no dependency
+			// direction, so neither end of an edge touching one can be verdicted —
+			// and it must not be counted as conformance either way.
+			if sourceDef.Neutral || targetDef.Neutral {
+				continue
+			}
+			// Every ordered edge is counted, whichever way it runs. The edges that
+			// OBEY the order are the denominator that makes the ones that breach it
+			// mean something, and they were never measured before.
+			switch {
+			case sourceDef.Level > targetDef.Level:
+				conf.Inward++
+				continue
+			case sourceDef.Level == targetDef.Level:
+				conf.Same++
+				continue
+			}
+			conf.Against++
 			// Same assembly, no violation. .NET's layer boundary is the PROJECT, and
 			// two directories inside one compile into the same DLL — the reason the
 			// cycles explainer already says an intra-assembly cycle is a coupling
@@ -804,7 +1431,13 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 		addEntity(v.targetModule, "imported module")
 
 		insights = append(insights, facts.Insight{
-			Title: fmt.Sprintf("Layer violation: %s -> %s", v.sourceLayer, v.targetLayer),
+			// The taxonomy is named because a polyglot repository now gets one
+			// statement per language cohort, and two of them can produce the same
+			// pair of layer names: openproject reports `components -> controller`
+			// out of Ruby view components and `components -> pages` out of Angular
+			// ones, and without this there is nothing in the finding that says
+			// which order was applied.
+			Title: fmt.Sprintf("Layer violation: %s -> %s (%s)", v.sourceLayer, v.targetLayer, pattern.label()),
 			Description: fmt.Sprintf(
 				"Module %q (layer: %s, level %d) imports module %q (layer: %s, level %d). "+
 					"Inner layers should not depend on outer layers.",
@@ -821,7 +1454,7 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 		})
 	}
 
-	return insights
+	return insights, conf
 }
 
 // resolveLayerModule walks path up its directory segments until it names a
@@ -922,5 +1555,26 @@ func autoloadedLayer(modulePath, root string) (string, bool) {
 	if len(parts) < 2 || parts[0] != root || parts[1] == "" {
 		return "", false
 	}
+	if notAutoloaded[parts[1]] {
+		return "", false
+	}
 	return parts[1], true
+}
+
+// notAutoloaded names the children of Rails' `app/` that the framework does NOT
+// autoload, so the autoload rule above cannot claim them as layers.
+//
+// Rails::Engine builds the eager-load paths from `app/*` minus exactly these
+// three, because they hold assets and templates rather than Ruby constants.
+// `frontend` joins them as vite_rails' documented root — the same thing under a
+// different name. The rule matters because these directories hold a WHOLE OTHER
+// APPLICATION: chatwoot keeps a Vue app in app/javascript, which the autoload
+// rule made a domain-tier Rails layer, and its five entrypoints importing
+// app/views were reported as layer violations. A frontend reading the templates
+// it mounts into is how Rails and Vite are wired together, not a defect.
+var notAutoloaded = map[string]bool{
+	"assets":     true,
+	"javascript": true,
+	"views":      true,
+	"frontend":   true,
 }

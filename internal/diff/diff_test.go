@@ -863,3 +863,39 @@ func TestCompute_ChangedFilesDecideWhatANewRuleTouched(t *testing.T) {
 		t.Fatalf("with only the declaration changed every breach is declared, got declared=%d new=%d", len(d.FindingsDeclared), len(d.FindingsNew))
 	}
 }
+
+// TestMetricsDoNotDisturbTheDelta pins the constraint that shaped Insight.Metrics.
+//
+// The diff compares Title, Confidence, Description and Evidence by explicit
+// enumeration. Metrics is deliberately outside that set: a baseline taken before
+// the field existed must not report every finding as altered on the first run
+// after an upgrade, and a coverage share drifting by one module is data for a
+// tool rather than a structural change a gate should grade. The numbers stay in
+// the description, which IS compared, so nothing the gate could see was lost.
+func TestMetricsDoNotDisturbTheDelta(t *testing.T) {
+	base := facts.Insight{
+		Source: "layers", Title: "Architecture pattern: rails-mvc", Confidence: 0.8,
+		Description: "Recognised rails-mvc from directory names: 5 of 5 ruby modules classified.",
+	}
+	withMetrics := base
+	withMetrics.Metrics = map[string]any{"modules_scanned": 5, "layers_ordered": []string{"controller"}}
+
+	if insightChanged(base, withMetrics) {
+		t.Error("adding metrics must not read as an altered finding")
+	}
+
+	// And a metric moving on its own is still not a change...
+	moved := withMetrics
+	moved.Metrics = map[string]any{"modules_scanned": 6, "layers_ordered": []string{"controller", "model"}}
+	if insightChanged(withMetrics, moved) {
+		t.Error("a metric moving must not read as an altered finding on its own")
+	}
+
+	// ...while the same movement stated in the prose is, which is what keeps the
+	// gate's sensitivity where it was.
+	reworded := moved
+	reworded.Description = "Recognised rails-mvc from directory names: 6 of 6 ruby modules classified."
+	if !insightChanged(moved, reworded) {
+		t.Error("a number changing in the description must still read as altered")
+	}
+}
