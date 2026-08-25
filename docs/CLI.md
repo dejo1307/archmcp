@@ -116,7 +116,9 @@ Everything below is a prompt you type at your agent in plain English. enola pick
 
 > "Generate an architectural snapshot of /path/to/my/project"
 
-That's the whole setup. Snapshots are fast - seconds even on very large polyglot repos - and your agent now has all 19 tools (`enola --list`) plus a ready-to-read summary at `.enola/llm_context.md`.
+The snapshot gives your agent all 19 tools (`enola --list`) plus a summary at
+`.enola/llm_context.md`. Measured cold and warm times across the public corpus are in
+[BENCHMARKS.md](BENCHMARKS.md#4-scale).
 
 #### 2. Understand it
 
@@ -138,7 +140,7 @@ That's the whole setup. Snapshots are fast - seconds even on very large polyglot
 
 #### 4. Make the change - and verify it
 
-This is the loop that keeps an agent honest, and it's worth building the habit:
+This closes the verification loop around the agent's change:
 
 > "Pin the current architecture as a baseline before we start."
 
@@ -184,19 +186,25 @@ Some questions don't need an agent at all. The MCP server also serves a **read-o
 
 - *What is in this graph right now?* - the repos loaded, services, cross-repo edges (with a node-link diagram), fact and insight counts.
 - *What did the analysis find?* - every insight grouped by explainer and filterable by confidence, so you can see the cycles and hotspots without asking a model to list them.
-- *Is this snapshot trustworthy?* - the receipt: snapshot ID, enola version, git ref and dirty flag, extractors used.
+- *How was this snapshot produced?* - the receipt: snapshot ID, enola version, git ref and dirty flag, extractors used.
 - *Why does this snapshot look thin?* - extraction quality: files seen vs. parsed vs. skipped, parse errors with samples, unresolved cross-repo edges, coverage gaps.
 - *What has this actually saved me?* - the same value estimate `--status` prints, per tool and lifetime ([how it's calculated](../ARCHITECTURE.md#the-value-model)).
 
-Reading it costs nothing and burns no context. It's also the fastest way to sanity-check a snapshot before you trust an answer built on it.
+Reading it costs nothing and burns no context. It is also the fastest way to inspect a snapshot before relying on an answer built from it.
 
-#### 7. Especially good with local and smaller models
+#### 7. Useful with local and smaller models
 
-If you run a local LLM - Ollama, LM Studio, an on-prem endpoint, or a smaller hosted model - enola is not a nice-to-have, it's the difference between usable and not. A smaller model's weakness usually isn't writing code; it's holding a large repository in its head and doing multi-hop structural reasoning over it. enola does that part deterministically and hands over the answer:
+Local and smaller models often have less context available for exploring a large repository.
+Enola can move structural questions into deterministic graph queries and leave the model
+to interpret the result:
 
-- **Context stays small.** Instead of stuffing 40 files into a short context window hoping the dependency is in there, the model gets the exact dependent set - a handful of names, precisely scoped.
-- **No long inference chains to get wrong.** "What depends on this, transitively, across three repos" is a graph traversal, not a reasoning task. The model never attempts it, so it never fluffs it.
-- **Fewer round trips.** Every avoided grep-open-read cycle is a full local inference pass you don't wait for. On local hardware that's wall-clock time, not just tokens.
+- **Less source in context.** A graph query returns the dependents measured within the
+  snapshot's scope, so the model can open only the evidence it needs.
+- **Graph traversal outside the model.** Questions such as "what depends on this across
+  three repositories?" are answered over resolved edges rather than reconstructed from
+  a sequence of file reads.
+- **Fewer exploration turns.** Avoiding grep-open-read loops can reduce both inference
+  time and context use on local hardware.
 - **Nothing leaves your machine.** enola is a local binary, the graph is a local file, the dashboard binds loopback only. A fully offline architecture-intelligence stack.
 
 #### Keeping it current
@@ -206,8 +214,6 @@ If you run a local LLM - Ollama, LM Studio, an on-prem endpoint, or a smaller ho
 > **Very large repositories (e.g. the Linux kernel).** The first, cold index of a huge repo can take a minute or more and may exceed your MCP client's per-tool-call timeout, surfacing as `MCP error -32001: Request timed out`. The snapshot usually still finishes and is cached server-side - but to avoid the error, either:
 > - **Raise your MCP client's tool-call timeout.** In Claude Code, set the `MCP_TOOL_TIMEOUT` environment variable (milliseconds) before launching, e.g. `MCP_TOOL_TIMEOUT=600000`.
 > - **Pre-generate from the shell once**, then start the server: run `enola --generate <config-pointing-at-the-repo>` (writes `.enola/`), after which the MCP server auto-loads the cached snapshot on startup and later `generate_snapshot` calls reuse the extractor cache (only changed files are re-parsed), so they return quickly.
-
----
 
 ---
 
@@ -235,7 +241,7 @@ thing.
 | `query_insights` | What did the explainers find? |
 | `set_baseline` | Remember the architecture as it is now. |
 | `diff_snapshot` | What did my change actually do? |
-| `snapshot_receipt` | What was this graph generated over, and how complete was extraction? |
+| `snapshot_receipt` | What was this graph generated over, what was excluded, and where are its known limits? |
 | `compare_receipts` | Are these two snapshots comparable enough to trust a diff between them? |
 | `architecture_history` | How has the architecture changed over time? |
 | `architecture_blame` | When did this enter the architecture, and when did it leave? |
@@ -247,12 +253,12 @@ Full parameter reference for each: **[ARCHITECTURE.md → The tools](../ARCHITEC
 
 ## Explain a repository at a glance
 
-**Point it at any repository - yours or one you've never seen - and get its architecture on one screen, in seconds, with no AI, no API key, and no account.**
+**Generate a one-screen architecture report with no AI, API key or account.**
 
-`enola --explain [repo_path]` is a one-shot mode that generates a snapshot, computes statistics over the fact graph, and prints a human-readable report to stdout - no MCP server started, no artifacts written to `.enola/`, nothing sent anywhere. It is the fastest honest answer to "what *is* this codebase?"
+`enola --explain [repo_path]` is a one-shot mode that generates a snapshot, computes statistics over the fact graph, and prints a human-readable report to stdout - no MCP server started, no artifacts written to `.enola/`, nothing sent anywhere. Use it for a direct view of the structure enola measured.
 
 **When to use it:**
-- **Onboarding onto an unfamiliar codebase** - module count, architecture pattern, hottest packages, where the complexity lives. Ten seconds instead of a week of reading.
+- **Onboarding onto an unfamiliar codebase** - module count, architecture pattern, hottest packages and where the complexity lives.
 - **Evaluating code you didn't write** - a dependency, an acquisition, an open-source project, a contractor's delivery. Cycles, coupling and complexity are hard to hide from a graph.
 - **Pre-refactor sanity check** - cycles, layer violations, blast radius of the top modules, before you commit to a plan.
 - **CI and audits** - plain text, no color codes, safe to pipe or capture.
@@ -282,7 +288,13 @@ The argument is a **repository** when it is a directory and a **config file** wh
 - **Code health** - per-explainer findings with their top offenders: god classes (high fan-in symbols), call-graph hotspots, deep dependency chains, large public surfaces, and complexity outliers
 - **Vendored candidates** - directories that look like in-tree copies of another project, so you can decide whether to exclude them. Nothing is excluded on your behalf; the section is absent when there is nothing to report
 
-Every finding carries a confidence score, and it means something exact: `1.0` is a structural fact — in practice a dependency cycle, the one thing enola computes rather than infers — while anything below is a flagged heuristic for you to review (a god class is a statistical fan-in outlier, not a rule, so it tops out below `1.0` however extreme it gets). The analyses are computed by graph algorithms - Tarjan's SCC, which finds groups of modules that can all reach each other, for cycles; longest-path for the deepest import chain; and mean+2σ outlier tests, which flag what sits two standard deviations above your own repository's average, for the rest - so the same commit yields the same report. The vocabulary here is defined in **[docs/GLOSSARY.md](GLOSSARY.md)**.
+Every finding carries a confidence score. Proof-class findings reach `1.0`: dependency
+cycles, `intent` set differences, violations of a declared layer order, and breaches of
+declared constraints. Heuristics such as god classes and complexity outliers stay below
+`1.0`. The analyses use graph algorithms and repository-relative statistics, including
+Tarjan's SCC, longest-path and mean+2σ outlier tests. The same source, enola version and
+configuration produce the same report. The vocabulary is defined in
+**[docs/GLOSSARY.md](GLOSSARY.md)**.
 
 **Vendored candidates.** Airflow vendors nothing, so its report has no such section. Here is one that does — [gmsh](https://gitlab.onelab.info/gmsh/gmsh), a mesh generator that keeps its dependencies in `contrib/`:
 

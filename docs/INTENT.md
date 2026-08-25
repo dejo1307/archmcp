@@ -1,17 +1,15 @@
-# Declared intent — the enola standard
+# Declared architecture intent
 
 Enola measures what your architecture *is*. Intent declarations state
 what it was *meant* to be — and every snapshot diffs the two, so
 disagreement between decision and code surfaces as a finding with
 evidence instead of waiting for someone to notice.
 
-This page is the contract: where intent lives, exactly what enola
-reads, the full vocabulary, and how verdicts behave. Everything here
-is deterministic — declarations parse, compile, and verdict the same
-way on every machine, and an invalid declaration fails the snapshot
-rather than degrading silently.
+This page defines where intent lives, what enola reads, the vocabulary, and how findings
+are graded. Declarations parse and compile the same way on every machine; an invalid
+declaration fails the snapshot rather than being ignored.
 
-## The one rule: enola reads only what enola defines
+## The input contract
 
 Intent reaches enola through exactly three carriers, each an
 enola-defined schema:
@@ -98,7 +96,7 @@ reported, never gating, because the run that first declares an order is
 exactly when a mistyped path shows up.
 
 Declaring a layer order buys more than documentation. The `layers`
-explainer verdicts a declared order at confidence `1.00` — declared,
+explainer reports a declared order at confidence `1.00` — declared,
 not recognised — where a pattern it inferred for itself caps at
 `0.80`. Since `enola check` gates at a `1.00` floor, only a declared
 order is enforceable with `--fail-on=layers` alone; an inferred one
@@ -180,7 +178,7 @@ decision lives, not inside the repo it governs.
   omitted, the name is covered wherever it is measured, which is what you want
   until the day the same name is a gem and an npm package. `safety_path: true`
   marks a package the declared architecture leans on to hold an invariant; it
-  verdicts nothing on its own, and exists so a rule can reach the set.
+  produces no finding on its own, and exists so a rule can reach the set.
   File-level only, never on a page: this is the repository's own account of
   its supply chain, reviewed beside the manifest it describes.
 - **`rel`** — how pages relate: `depends-on`, `supersedes`,
@@ -224,10 +222,10 @@ them. Nothing about intent lives in a side channel:
 - each `dependencies:` entry → a dependency-intent fact the explainer diffs
   against the packages the `manifests` extractor measured
 
-## How verdicts behave
+## How intent findings are graded
 
-The `intent` explainer diffs declared against measured, with honest
-confidences:
+The `intent` explainer diffs declared against measured. Confidence reflects what the
+available evidence can establish:
 
 | Finding | Confidence | Why |
 |---|---|---|
@@ -246,14 +244,14 @@ page retired: an outgoing `superseded-by` relation (enola's own
 closed vocabulary), or the status token `superseded` — the one
 status token enola reads meaning into; the rest of the status
 taxonomy stays yours. A retired page's seams, claims, anchors and
-scope stop verdicting — history must not nag as drift — while its
-relations still verdict, because the supersession trail itself must
+scope stop contributing current findings, while its relations are still evaluated
+because the supersession trail itself must
 not break. The one thing a retired page still *says*: a measured
 seam that only a retired declaration covers surfaces as *superseded
 intent still measured* — the code has not caught up with the
 superseding decision, or the successor's intent is not declared
 where enola can see it. That finding replaces the generic
-unexpected-seam verdict for such edges, because it carries the
+unexpected-seam finding for such edges, because it carries the
 diagnosis.
 
 **Anchored code is traversable back to its decisions.**
@@ -269,7 +267,7 @@ governance alone, the `governing_intent` tool answers it directly
 in either direction — a fact name or file path lists the pages
 that govern it; a compiled page path lists its anchors with the
 measured coverage under each — without computing a blast radius.
-Its empty states stay honest to the counterparty rule: a snapshot
+Its empty states preserve the counterparty distinction: a snapshot
 with no compiled pages answers *not asked*, which is never the
 same answer as *asked, none governs*.
 
@@ -291,14 +289,14 @@ stale-citation check a wiki otherwise performs by hand, and it
 makes every anchored file's governing decisions reachable from the
 graph.
 
-Scope and affects, by contrast, are **never verdicted**: they
+Scope and affects, by contrast, are **not graded**: they
 speak the wiki's own repo vocabulary, and the mapping from that
 vocabulary to cluster labels is the deriving toolchain's side of
 the boundary (working rule 5) — a page about one name may compile
 against a cluster that labels the same repo another way. Keeping
 those names truthful is the wiki's job, where the mapping is
 known. Declared layer
-patterns verdict at 1.0 through the layers explainer, *alongside*
+patterns are reported at 1.0 through the layers explainer, *alongside*
 heuristic recognition rather than instead of it: a declaring repo gets
 its declared pattern and its proof-class violations, and the
 snapshot-wide heuristic pattern is still reported next to them. The
@@ -312,8 +310,7 @@ coverage**: unresolved client calls in a repo with exactly one
 declared HTTP target attribute to it (`attributed_by_intent`) —
 declarations supply what static analysis cannot, visibly, without
 inventing an edge. And a declared seam **no linker can measure yet**
-(e.g. `object-storage`) surfaces as a standing 0.8 — that is the
-honest state, not noise; judge it once in whatever ledger your
+(e.g. `object-storage`) surfaces as a standing 0.8. Judge it once in whatever ledger your
 workflow keeps and it stays acknowledged.
 
 ## What the manifests extractor measures
@@ -393,9 +390,8 @@ read as compliance — and it is surprising the first time.
 
 ## Where the rest of it lives
 
-This page is the declaration itself: where intent lives, what enola reads, the
-vocabularies, and how a verdict behaves. Two neighbours carry the parts that grew
-their own weight:
+This page covers where intent lives, what enola reads, the vocabularies, and how findings
+are graded. Two related pages cover the parts that grew beyond this contract:
 
 - **[CONSTRAINTS.md](CONSTRAINTS.md)** — a repository's *law*. Components and the
   selectors that resolve them, the 21 rule forms, modes, exemptions, recipes, laws
@@ -406,15 +402,15 @@ their own weight:
 Constraints reach enola through the same three carriers described above, with one
 narrowing: they are file-level only, never on a page.
 
-## Working with intent, the enola way
+## Working with intent
 
-1. **Declare only what you know.** A declaration triggers
-   unexpected-seam verdicts over everything it measures for that
+1. **Declare only what you know.** A declaration produces
+   unexpected-seam findings over everything it measures for that
    repo — declare a repo's seams when you can stand behind the
    complete list, not for completeness's sake.
 2. **Put the declaration where the decision lives.** If an ADR
    decides that the mobile app talks to the backend over GraphQL,
-   that ADR's page carries the seam — and every future verdict cites
+   that ADR's page carries the seam — and every future finding cites
    it.
 3. **One seam, one deciding page.** The same seam declared on two
    pages is a compile error, not a merge.

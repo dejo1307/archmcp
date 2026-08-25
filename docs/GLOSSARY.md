@@ -79,7 +79,7 @@ graph, and only one of them is good news.
 
 ## What enola keeps
 
-**Snapshot** — the complete result of one analysis run: the facts, the findings, the
+**Snapshot** — the published result of one analysis run: the facts, the findings, the
 metadata and the receipt, written together to `.enola/`. A snapshot is a value you keep,
 not a database you update — see [docs/SNAPSHOTS.md](SNAPSHOTS.md).
 
@@ -91,7 +91,8 @@ claimed.
 **Receipt** — the manifest recorded alongside every snapshot: enola's version, the git
 ref and whether the tree was dirty, which extractors ran, and extraction-quality
 counters (files parsed vs skipped, parse errors, how many findings were heuristic). It
-answers *what was this graph computed over, and how complete is it?*
+answers *what was this graph computed over, what was excluded, and where are its known
+limits?*
 
 **Baseline** — a snapshot you pinned as the "before" of a change (`enola baseline pin`,
 kept in `.enola/baseline/`). It survives later snapshots, so it stays valid across many
