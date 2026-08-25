@@ -37,7 +37,7 @@ there is no single PHP framework, the other two built from the frameworks' own p
 directory structures. Python, Rust, Swift, the routers/services/models Go layout and .NET
 were each measured and deliberately left out, with what was measured recorded beside the
 taxonomy table: three share no vocabulary that holds across unrelated repositories, one
-would re-rank `pkg/services` everywhere on the evidence of a single example, and the .NET
+would re-rank every `services` package on the evidence of a single example, and the .NET
 repository that looks layered is the trap — a media server whose `MediaBrowser.Controller`
 is its domain abstractions assembly, which dotted-name matching would read as fifty modules
 of delivery. Confidence drops the coverage term whose denominator was the layer table
