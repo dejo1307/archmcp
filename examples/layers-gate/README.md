@@ -72,3 +72,7 @@ not cover.
 Note what is **not** in any of these runs: a dependency cycle. There is no cycle in this
 module, and the gate never mentions one. Cycles are one of the twelve things enola
 measures, available to `--fail-on` like the rest — not a rule it arrives holding.
+
+---
+
+The same walkthrough in prose, with the output of every step explained: **[docs/FIRST-CHANGE.md](../../docs/FIRST-CHANGE.md)**.

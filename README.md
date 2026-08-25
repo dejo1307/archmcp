@@ -433,6 +433,7 @@ It is silent for builds from source, never runs when `CI` is set, and turns off 
 ## Learn more
 
 - **[Documentation](docs/README.md)** — choose a guide by task.
+- **[Your first graded change](docs/FIRST-CHANGE.md)** — the loop end to end, on a module small enough to read.
 - **[Architecture](ARCHITECTURE.md)** — the fact model, pipeline, graph, MCP tools and value model.
 - **[Changelog](CHANGELOG.md)** — every released version, newest first.
 - **[Examples](examples/)** — runnable gates, cross-repository analysis, configuration and CI workflows.

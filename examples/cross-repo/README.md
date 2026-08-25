@@ -83,3 +83,7 @@ Stated here rather than discovered later:
 In every case the choice is the same: **report the gap instead of inventing an edge.**
 `enola coverage` exists so those gaps are countable rather than hidden — see
 [docs/CLI.md](../../docs/CLI.md).
+
+---
+
+The same walkthrough in prose, with the output of every step explained: **[docs/CLUSTERS.md](../../docs/CLUSTERS.md)**.

@@ -435,6 +435,12 @@ Every path argument follows the same rule: **a directory is a repository, a file
 | `constraints <lint\|mine\|init\|explain\|ledger> [repo\|config]` | **The authoring loop.** `lint` validates the declared vocabulary and resolves each component against the current snapshot; `mine` proposes candidate rules out of the snapshot's own regularities; `init` writes a first declaration binding every shipped recipe whose required roles resolve to directories the repository has, refusing to overwrite and guessing nothing; `explain <path>` names the components a file's facts belong to, the selector that admitted each, and the edges the file makes; `ledger` reports how much of the declared law is being EXCUSED rather than obeyed — each rule's breaches beside the suppressions and exemptions that signed them away, with every excuse's owner, reason and age, and the ones that now match nothing. `lint` exits `0` when every declaration is valid, `1` when it reported validation problems; `mine`, `init`, `explain` and `ledger` exit `0` whenever they produced a report, and `2` when they could not run — no snapshot to read, or a declaration `init` would have had to overwrite. See [CONSTRAINTS.md](CONSTRAINTS.md). |
 | `endpoint [flags] <endpoint> [repo\|config]` | **What changing an HTTP endpoint reaches.** The controller serving it, the models that controller touches, the models associated with those, the tables behind them, and the callers - including the frontend screen a calling route module implements. The endpoint is matched as a substring of the path, optionally prefixed with a verb (`GET /v1/candidates`, or just `/v1/candidates`). Client call sites and mock-server routes are excluded: this answers about what the application serves. `--json` emits the report; `--max-routes` bounds how many matched endpoints are followed. The `endpoint_impact` MCP tool answers the same question in a session. |
 | `plan [flags] [path...] [repo\|config]` | **The pre-edit contract.** Which declared constraints govern an intended change (`--paths`, `--symbols`), its blast radius over the current snapshot, and — for a `--patch` — the constraint verdicts that WOULD appear, evaluated over a scratch copy before any edit lands in the tree. Nothing is written; a report, never a gate. Exits `0` on any produced report, `2` when it could not run. See [CONSTRAINTS.md](CONSTRAINTS.md). |
+| `log [flags] [repo\|config]` | **What has this architecture done over time?** One line per snapshot enola recorded, oldest first, with what changed since the one before it - `--graph` draws the branch topology, `--stat` breaks each delta down by fact kind, `-n` and `--since` bound the window. Read-only: it reports what was observed and never snapshots to fill a gap. `--backfill` instead BUILDS the timeline from the repository's own commit history, so a repository enola has never seen still has a past to read. **Experimental.** See [HISTORY.md](HISTORY.md). |
+| `show [rev] [repo\|config]` | **What did THIS revision do?** `log` says a revision added twelve facts; this says which twelve. Reconstructs the revision and its predecessor out of the stored history and compares them, so a past change is described in the words it was described in at the time. A revision is a snapshot id or prefix, a git commit, `HEAD~3`, `@7`, a ref name, or `latest` (the default). **Experimental.** |
+| `diff <a>..<b> [repo\|config]` | **What happened between these two points?** The architecture delta across a range - the question a week of work produces, where `show` answers for a single revision. Either side of the range may be empty, meaning the oldest or the newest recorded revision. **Experimental.** |
+| `blame [flags] <pattern> [repo\|config]` | **When did this enter the architecture, and when did it leave?** A question a snapshot cannot answer however good it is, because it is about the past. The pattern matches a module or symbol name, a file path, or both endpoints of an edge; `--findings` searches recorded findings instead ("which snapshot introduced this cycle?"), and `--first` stops at the introduction. Revisions whose stored contents have aged out are reported as `unsearched`, never as absent. **Experimental.** |
+| `gc [flags] [repo\|config]` | **What is stored, and what can go?** Reports how many revisions the history holds, how many can still be replayed, and how much disk they cost. With no flags it removes only garbage - segment directories no revision refers to. `--thin-older-than=90d` drops old contents while keeping the timeline complete, and `--prune-working` discards uncommitted-tree snapshots; each has to be asked for, because both lose something a reader could still reach. **Experimental.** |
+| `history <push\|pull\|verify\|gc> [store] [repo\|config]` | **Share a history between machines** through a directory store - a git repository, a shared mount, an S3-synced folder. Plain files, content-addressed, tamper-evident. `push` copies local revisions in, `pull` imports what other machines pushed, `verify` walks every chain and names gaps and tampering (exits `1` when it finds a problem), and `gc` applies retention - printed first, deleted only with `--apply`, and recorded in the chain. Point it with `history.shared_dir` or the first argument. **Experimental.** |
 | `upgrade` | Download and install the latest release over the running binary. |
 
 | Flag | What it does |
@@ -544,6 +550,36 @@ enola check /path/to/repo           # 2. grade what they did
 ```
 
 The baseline is a pinned artifact rather than "whatever state the tool last held" - it survives re-snapshots, publishes atomically, and travels to another machine. Why the graph works that way at all: **[docs/SNAPSHOTS.md](SNAPSHOTS.md)**.
+
+**`pin` never pins a stale snapshot.** If the repository holds no snapshot, or its tree has moved since the one it holds, `pin` regenerates first and says which repository made it do so, and why:
+
+```
+enola baseline: regenerating, shopfront holds no snapshot
+enola baseline: regenerating, shopfront moved since its snapshot: 1 modified (e.g. storage/storage.go)
+```
+
+That is what makes step 1 safe to run without thinking about it: the "before" is always the tree you were looking at when you typed it, not whenever enola last happened to index. For a cluster, every member must agree on one union before the pin stands, so a config with `repos:` snapshots what it must and links once on the cluster's last turn.
+
+A baseline is stored **per repository**, in that repo's own `.enola/baseline`, so several repositories each keep their own and pinning one never disturbs another. `baseline show` reports what the current one describes - when it was generated, over which repo, how many facts, and its snapshot id - and `baseline clear` removes it.
+
+**Pinned, or one step back?** `check` grades against the pinned baseline. `--baseline=previous` grades against the preceding snapshot instead - the `previous/` set that rotates every time a snapshot is written. The two answer different questions, and diverge as soon as more than one change has landed:
+
+```
+$ enola check                        # against the pin, three edits ago
+  symbols      +3
+  Added (3):
+    symbol     api.ChangeA                                  api/api.go:14
+    symbol     web.ChangeB                                  web/web.go:11
+    symbol     notify.ChangeC                               notify/notify.go:12
+
+$ enola check --baseline=previous    # against the last snapshot written
+  symbols      +2
+  Added (2):
+    symbol     web.ChangeB                                  web/web.go:11
+    symbol     notify.ChangeC                               notify/notify.go:12
+```
+
+Pin when you start a piece of work and the answer stays "what has this branch done since I began", however many times you re-snapshot in between - which is why it is the default and why a multi-day refactor only warns rather than declining. Reach for `previous` when the question is narrower: what did the run that just finished change?
 
 | Exit | Meaning |
 |------|---------|
