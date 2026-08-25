@@ -1,3 +1,7 @@
+# The rule — every external dependency declared, pinned, and given a stated
+# purpose — is H14 from Stanislav Rumega's position paper "Tell Your Coding
+# Agent to Work as an Architect First":
+# https://github.com/styrumg/Architect-First-Article
 recipe: supply-chain
 roles:
   # The role carries its own selector, so a repository adopts this by naming the

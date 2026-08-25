@@ -7,6 +7,56 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
+## v0.4.8 — 2026-08-25
+
+**Declared dependencies become facts, and the gate reports how much of the law is excused**
+
+A `manifests` extractor reads `go.mod`, `package.json`, `Gemfile`, `Cargo.toml`,
+`pubspec.yaml`, `requirements.txt` and `pyproject.toml`, emitting one fact per direct
+dependency named by its Package URL, carrying the constraint as written, the version a
+lockfile resolved it to, and whether it is pinned. Transitive entries are skipped: the
+closure runs to tens of thousands of nodes, and top-level is the boundary the Cyber
+Resilience Act draws for the products it covers from 11 December 2027.
+`enola-intent.yaml` gains a `dependencies:` section with a mandatory `purpose:`, and the
+`intent` explainer diffs it against the manifests — a measured package nothing declares
+verdicts at `1.0`, a declared package no manifest carries at `0.8`, since a removed
+dependency and an extraction miss look the same from here. The rule is H14 from Stanislav
+Rumega's position paper [*Tell Your Coding Agent to Work as an Architect
+First*](https://github.com/styrumg/Architect-First-Article): every external dependency
+declared, pinned, and given a stated purpose.
+
+`pinned` is three-valued. True when a lockfile resolved the package or the constraint
+names one version, false when no lockfile resolved a range, and absent — with
+`unresolved_lock` naming the file — when a lockfile enola cannot read sits at or above the
+manifest. Answering `false` in that third case reported 12 of one TypeScript monorepo's
+dependencies as unpinned when its root `yarn.lock` pins every one of them. A `where:`
+selector on `pinned` does not select an unanswered package.
+
+Six public repositories corrected the parsers. Cargo's `[dependencies.name]` table form
+was skipped entirely, and an async runtime declares its Windows dependency only under
+`[target.'cfg(windows)'.dependencies.…]`, so reading the list form alone lost the
+dependency rather than its version. Lockfiles are searched for at or above the manifest,
+nearest first, because a monorepo keeps one at the workspace root and a manifest in every
+package. `yarn.lock` is read in both its formats, and `uv.lock` and `poetry.lock` in the
+one they share with `Cargo.lock`. A PEP 621 `dependencies` array is read as quoted spans
+rather than split on commas: a comment line interrupting the array became a package, 33 of
+them in one Python project, and a single requirement containing commas was split into
+fragments. PEP 508 direct references and PEP 503 name normalisation came from the same
+corpus. That Python project went from 103 packages with 46 unpinned to 90 with 5; the four
+repositories measured against independently parsed manifests now match exactly.
+
+`enola check` prints the declared law's excuse rate as one line beside its census line and
+carries a `law` object in `--format json`. `enola constraints ledger` prints the per-rule
+table: breaches, the suppressions and exemptions that excused them, each excuse's owner
+and age, and the ones that matched nothing in this snapshot. Both read the owner, reason
+and date the two carriers already required. It is a report and changes no exit code.
+`kind: dependency` is opt-in for components, as `test_ref` and `lint` are, so a rule that
+does not name it judges what it judged before, and the shipped `supply-chain` recipe needs
+no new rule form.
+
+`cacheVersion` moves to `v257`: every repository re-extracts once, and one whose manifests
+enola reads gains facts, so a pinned baseline churns once.
+
 ## v0.4.7 — 2026-08-25
 
 **Layers scored per language cohort, and a built-in provider that stops building the facts the configuration throws away**

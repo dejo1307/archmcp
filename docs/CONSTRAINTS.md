@@ -1652,6 +1652,10 @@ request API (`render`, `redirect_to`, `params`, `session`, `cookies`,
 `flash`) stays out of models and services, all advisory, all in force
 only where the two roles are bound.
 
+> The rule `supply-chain` states — every external dependency declared, pinned, and
+> given a stated purpose — is H14 from Stanislav Rumega's position paper
+> [*Tell Your Coding Agent to Work as an Architect First*](https://github.com/styrumg/Architect-First-Article).
+
 `supply-chain` is the odd one out, and worth reading as the shape rather
 than the rule. It has one role and one law — every declared dependency
 names a version — and the role binds to nothing the repository has to
