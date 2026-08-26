@@ -352,6 +352,17 @@ type Verdict struct {
 
 	Guidance []constraints.GuidanceMatch `json:"guidance,omitempty"`
 
+	// Reviewers is who owns the modules this change touched, and who to route it to.
+	// Present only under --reviewers; nil otherwise, so the default verdict is
+	// unchanged and no author name is read unless someone asked for one.
+	//
+	// Never graded, for two independent reasons. It is derived from git history rather
+	// than from the code, so it moves while the architecture stands still — the one
+	// thing a delta gate cannot have in its verdict. And the contributor split under it
+	// is a correlation with defects measured on Windows Vista binaries, not a rule this
+	// repository declared, and enola fails only what was declared. See AttachReviewers.
+	Reviewers *Reviewers `json:"reviewers,omitempty"`
+
 	// ComparabilityWarnings is every warning, verbatim and in full. Not split by
 	// severity: diff.Comparability records kinds as a set rather than per-message, and
 	// inventing an alignment to sort the prose would be a lie about which message

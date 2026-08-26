@@ -147,6 +147,9 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 		target        = fs.String("target", "", "the symbol, type or package you INTENDED to change; packages reached outside its predicted blast radius are reported as spillover")
 		expected      = fs.String("expected", "", "comma-separated packages you expected to touch, in addition to the predicted radius")
 		maxSpillover  = fs.Int("max-spillover", -1, "fail when more than N packages are reached outside the declared scope (default: report only, never fail)")
+		reviewers     = fs.Bool("reviewers", false, "report who owns the modules this change touched, and who should review it (reads git author names)")
+		reviewWindow  = fs.Int("reviewer-window", 500, "with --reviewers, how many recent commits authorship is measured over")
+		author        = fs.String("author", "", "with --reviewers, whose change this is (default: git config user.name)")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: "+r.name()+" check [flags] [config_path]\n\n"+
@@ -309,6 +312,13 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	verdict = check.RegradeIntersection(verdict, base, current, policy,
 		check.OwnershipFromExtractors(eng.Extractors()), current.Insights, *focus, measurements...)
 	verdict = check.AttachGuidance(verdict, eng.Store())
+	// Opt-in, and gated here rather than inside AttachReviewers, so that without the
+	// flag no git author name is read, computed, or printed at all.
+	if *reviewers {
+		verdict = check.AttachReviewers(verdict, eng.Store(),
+			check.ReadAuthorship(anchor, *reviewWindow, eng.Store()),
+			check.Actor(anchor, *author))
+	}
 	verdict = check.AttachCensus(verdict, current.Meta, policy, current.Insights)
 	verdict = check.AttachLedger(verdict, eng.Store(), policy, current.Insights, time.Now())
 

@@ -30,34 +30,47 @@ func ApplyTime(v Verdict, base *facts.Snapshot, history RevisionAt, age WitnessA
 	var failures []facts.Insight
 	noted := map[string]bool{}
 	for _, in := range v.Failures {
-		if since, ok := sinceOf(in); ok && history != nil {
+		if since, ok := sinceOf(in); ok {
 			date, err := time.Parse("2006-01-02", since)
 			if err == nil {
-				snap, at, first, found := history(date)
-				switch {
-				case !found:
-					if first != "" && !noted["first:"+since] {
-						noted["first:"+since] = true
-						v.Descriptive = append(v.Descriptive, facts.Insight{
-							Title:         fmt.Sprintf("Rules dated %s predate the first architecture revision (%s)", since, first),
-							Description:   "A rule holds since a date the history does not reach, so git's author date of each witness line decides whether a breach was there before the date. A line git cannot date grades as introduced after it.",
-							Confidence:    1.0,
-							Informational: true,
-						})
+				// The architecture history ANNOTATES a dated breach; git's author date
+				// GRADES it. The two answer different questions — whether the finding
+				// was present at the date, versus whether the witness line was last
+				// changed before it — and they disagree whenever an old breach's
+				// witness was recently renamed, moved or reformatted.
+				//
+				// Grading with the history made the verdict depend on it, and a history
+				// is per-machine unless a shared store is set up and pushed to. The same
+				// commit then graded one way on a laptop that held a local record and
+				// another in a fresh CI clone that did not. Whatever decides a verdict
+				// has to be reproducible from the checkout, which is what blame is and
+				// what a local history is not. So the history's better answer is
+				// reported, and never subtracted from the failures.
+				if history != nil {
+					snap, at, first, found := history(date)
+					switch {
+					case !found:
+						if first != "" && !noted["first:"+since] {
+							noted["first:"+since] = true
+							v.Descriptive = append(v.Descriptive, facts.Insight{
+								Title:         fmt.Sprintf("Rules dated %s predate the first architecture revision (%s)", since, first),
+								Description:   "A rule holds since a date the history does not reach. Git's author date of each witness line decides whether a breach was there before the date; a line git cannot date grades as introduced after it.",
+								Confidence:    1.0,
+								Informational: true,
+							})
+						}
+					case carries(snap, in.Title):
+						in.Description += fmt.Sprintf(" Present in the revision of %s, before the rule's date — reported, not graded: git's author date of the witness line decides.", at)
+					default:
+						in.Description += fmt.Sprintf(" Absent from the revision of %s, the newest at or before the rule's date.", at)
 					}
-					if ratcheted, note := ageDecides(in, date, since, age, &v, noted); ratcheted {
-						in.Description += note
-						v.Advisories = append(v.Advisories, in)
-						continue
-					} else if note != "" {
-						in.Description += note
-					}
-				case carries(snap, in.Title):
-					in.Description += fmt.Sprintf(" Present in the revision of %s, before the rule's date, so it is reported rather than graded.", at)
+				}
+				if ratcheted, note := ageDecides(in, date, since, age, &v, noted); ratcheted {
+					in.Description += note
 					v.Advisories = append(v.Advisories, in)
 					continue
-				default:
-					in.Description += fmt.Sprintf(" Absent from the revision of %s, the newest at or before the rule's date, so it was introduced after the date.", at)
+				} else if note != "" {
+					in.Description += note
 				}
 			}
 		}

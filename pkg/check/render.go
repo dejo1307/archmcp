@@ -224,6 +224,7 @@ func (v Verdict) Render() string {
 	}
 
 	v.writeGuidance(&sb)
+	v.writeReviewers(&sb)
 
 	// Findings first (graded, then resolved, then merely moved), structure after: the
 	// reader is asking "is anything wrong?" before "what did I touch?".
@@ -726,6 +727,77 @@ func (v Verdict) writeGuidance(sb *strings.Builder) {
 			fmt.Fprintf(sb, "      changed: %s\n", f)
 		}
 	}
+}
+
+// writeReviewers prints the routing section: who owns what this change touched, and
+// where the actor is a stranger to code somebody else knows.
+//
+// Text and JSON only. SARIF and the CI annotation hosts are deliberately not given
+// this: both place entries on a diff line and both read as problems, and "ask Ada
+// about this package" is neither a defect nor a thing that belongs pinned to a line.
+func (v Verdict) writeReviewers(sb *strings.Builder) {
+	r := v.Reviewers
+	if r == nil {
+		return
+	}
+	if cause := reviewerCause(r.Cause); cause != "" {
+		fmt.Fprintf(sb, "\nReviewers for this change — not measured: %s\n", cause)
+		return
+	}
+	if len(r.Routes) == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "\nReviewers for this change (%d) — authorship over the last %d commits;\nsteering, never graded:\n", len(r.Routes), r.Window)
+	// A shallow clone still yields real shares, over a shorter span than was asked
+	// for. Reported rather than suppressed: the numbers are usable, and a reader who
+	// is not told the window was truncated will read them as the whole story.
+	if r.Cause == AuthorshipShallow {
+		sb.WriteString("  note: shallow clone — the window closed early, so shares cover less history than asked for\n")
+	}
+	if r.ActorUnknown {
+		fmt.Fprintf(sb, "  note: %q has no commits in the window — reporting owners only\n", r.Actor)
+	}
+	for i, route := range r.Routes {
+		if i == listCap {
+			fmt.Fprintf(sb, "  … %d more touched module(s)\n", len(r.Routes)-listCap)
+			break
+		}
+		if route.Owner != "" {
+			fmt.Fprintf(sb, "  %s — owner: %s (%.0f%%), %d minor contributor(s) of %d\n",
+				route.Module, route.Owner, route.OwnerShare*100, route.Minor, route.Total)
+		} else {
+			fmt.Fprintf(sb, "  %s — no single contributor above %.0f%%, %d minor contributor(s) of %d\n",
+				route.Module, ownedThreshold*100, route.Minor, route.Total)
+		}
+		if r.Actor == "" || !route.ActorIsMinor {
+			continue
+		}
+		fmt.Fprintf(sb, "      you are a minor contributor here (%.0f%%)\n", route.ActorShare*100)
+		for j, d := range route.ViaDependents {
+			if j == 3 {
+				fmt.Fprintf(sb, "      … and %d more module(s) you own that import it\n", len(route.ViaDependents)-3)
+				break
+			}
+			fmt.Fprintf(sb, "      you own %s (%.0f%%), which imports %s  [major-minor-dependency]\n",
+				d.Dependent, d.Share*100, route.Module)
+		}
+		if route.Owner != "" && route.Owner != r.Actor {
+			fmt.Fprintf(sb, "      suggested reviewer: %s\n", route.Owner)
+		}
+	}
+}
+
+// reviewerCause turns a declined authorship read into the sentence a reader can act
+// on. A routing section that simply printed nothing would be indistinguishable from a
+// repository where everybody owns everything.
+func reviewerCause(cause string) string {
+	switch cause {
+	case AuthorshipNoGit:
+		return "no readable git repository here"
+	case AuthorshipEmpty:
+		return "no commits in the window"
+	}
+	return ""
 }
 
 // writeBreaches reports the measurement thresholds this change met.
