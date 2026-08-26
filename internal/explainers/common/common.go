@@ -115,6 +115,37 @@ func resolveModuleDir(f facts.Fact, prod, test map[string]bool) string {
 	return candidates[len(candidates)-1]
 }
 
+// ModuleNameSets splits a store's module facts into the production and test name sets
+// that ResolveModule and nearestModule resolve against.
+//
+// Exported because the classification is not something a caller can redo safely: it
+// runs through IsTestModule, which consults the extractor's authoritative
+// `module_role` prop before falling back to the path. A caller that filtered test
+// modules by path alone would disagree with every explainer in this package.
+func ModuleNameSets(store *facts.Store) (prod, test map[string]bool) {
+	prod, test = map[string]bool{}, map[string]bool{}
+	for _, m := range store.ByKind(facts.KindModule) {
+		if IsTestModule(m) {
+			test[m.Name] = true
+			continue
+		}
+		prod[m.Name] = true
+	}
+	return prod, test
+}
+
+// ResolveModule reports which module a fact's file belongs to, resolving against the
+// module namespace the caller holds.
+//
+// This is the only correct file-to-module mapping in the codebase: it tries both the
+// raw and the repo-stripped directory (see ModuleDirCandidates for why neither alone
+// is safe) and then walks up to the nearest enclosing module for nested layouts.
+// Anything outside this package that needs to answer "which module is this file in"
+// must come through here rather than reaching for FileDir.
+func ResolveModule(f facts.Fact, prod, test map[string]bool) string {
+	return resolveModuleDir(f, prod, test)
+}
+
 // nearestModuleOrEmpty walks dir up its path until it reaches a known production or
 // test module, returning "" when nothing encloses it — the difference from
 // nearestModule, which reports the input unchanged and so cannot express a miss.
@@ -253,17 +284,10 @@ func BuildModuleGraphExcluding(store *facts.Store, excludeKinds ...string) map[s
 		}
 	}
 
-	modules := store.ByKind(facts.KindModule)
-	moduleNames := make(map[string]bool)
-	testModules := make(map[string]bool)
-	for _, m := range modules {
-		if IsTestModule(m) {
-			testModules[m.Name] = true
-			continue
-		}
-		moduleNames[m.Name] = true
-		if _, ok := graph[m.Name]; !ok {
-			graph[m.Name] = nil
+	moduleNames, testModules := ModuleNameSets(store)
+	for name := range moduleNames {
+		if _, ok := graph[name]; !ok {
+			graph[name] = nil
 		}
 	}
 

@@ -624,7 +624,50 @@ enola check --detail                                       # full delta under th
 enola check --baseline=previous                            # compare against the preceding snapshot
 enola check --focus=internal/auth                          # narrow the delta to what you touched
 enola check --write                                        # also persist the snapshot (default: read-only)
+enola check --reviewers                                    # who owns what you touched, and who should review it
 ```
+
+### Who should review this — `--reviewers`
+
+`--reviewers` adds one section to the verdict: for each module the change touched, who owns
+it, and — where you barely know the code you just edited but own something that imports it —
+who to ask.
+
+```
+Reviewers for this change (1) — authorship over the last 500 commits;
+steering, never graded:
+  pkg/auth — owner: Bob (100%), 0 minor contributor(s) of 1
+      you are a minor contributor here (0%)
+      you own pkg/tokens (100%), which imports pkg/auth  [major-minor-dependency]
+      suggested reviewer: Bob
+```
+
+> The `major-minor-dependency` — owning a component while being a stranger to one it
+> depends on — is from Christian Bird, Nachiappan Nagappan, Brendan Murphy, Harald Gall and
+> Premkumar Devanbu, [*Don't Touch My Code! Examining the Effects of Ownership on Software
+> Quality*](https://www.microsoft.com/en-us/research/publication/dont-touch-my-code-examining-the-effects-of-ownership-on-software-quality/)
+> (ESEC/FSE 2011). They found it in 52% of Windows Vista binaries, well above a randomised
+> null model, and recommended telling the owner what you need instead of making the change
+> yourself. The 5% line between major and minor contributors is theirs.
+
+Spotting it needs the import graph as well as the commit log, which is why it lives here
+rather than in a tool that reads only git.
+
+**Off by default.** Without the flag no author name is read or printed. The measurement is
+one `git log` over the last `--reviewer-window` commits (500), so it costs the same at any
+repository age and nothing is cached. Names come from `%aN`, so `.mailmap` applies.
+`--author` overrides `git config user.name`; an actor with no commits in the window is
+named once and only owners are reported.
+
+**Never graded.** It cannot change the verdict, the exit code, or what `--fail-on` fails on.
+It moves with your git history rather than your code, and the 5% line is a correlation
+measured on Vista binaries, not a rule you declared. A module with fewer than five commits
+in the window names no owner and carries no `major-minor-dependency`; at one commit somebody
+holds 100% of it. Expect the clearest signal where components have their own teams — in a
+single library maintained by one core team, most people are minor to most modules.
+
+Text and JSON only. SARIF and the annotation hosts place entries on diff lines as problems,
+and this is neither.
 
 **The verdict has four writers, and all four read the same verdict.** `--format` picks `text` (the default), `json` (what `--json` means), `sarif` or `annotations`; nothing is recomputed for a writer, so a fifth is a table row. SARIF carries one rule per declared rule id with the team's `because` as its description, one result per finding in every bucket (failures as errors, advisories and declared findings as warnings, resolved findings at no level and with no region, suppressed and exempted findings with the ledger entry or exemption that excused them), the evidence span as the region, and the finding's stable identity under `partialFingerprints.enola/v1`. Annotations place every finding that has a measured position on its file and line, as Buildkite markdown grouped by file (`--link` takes the pull request's files view so each line links into the diff) or as GitHub workflow commands; findings without a position are counted at the end and never placed. The host is a flag and never read from the environment, so a run on a laptop renders exactly what the run in CI rendered.
 
