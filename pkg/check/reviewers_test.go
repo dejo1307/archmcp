@@ -343,3 +343,37 @@ func TestSparseModuleStillMakesAnAbsentActorMinor(t *testing.T) {
 		t.Error("bob holds all of pkg/thin; sparse must not invert who is a stranger")
 	}
 }
+
+// A repository-scoped fact is not a file anybody touched. An extraction fact carries
+// the repository's directory name in File, and its coverage counters move on most
+// changes to a Ruby or TypeScript tree — so before changedFiles skipped it, every such
+// change opened the routing section with a line about the root module, measured over
+// the whole repository and telling the reader nothing.
+func TestRoutingIgnoresRepositoryScopedFacts(t *testing.T) {
+	store := storeWithModules(".", "pkg/auth")
+	a := authorshipOf(map[string]map[string]int{
+		".":        {"bob": 60, "ada": 10},
+		"pkg/auth": {"bob": 99, "ada": 1},
+	})
+	d := touchedDelta("pkg/auth/a.go")
+	// The shape enola actually produces: extcoverage puts filepath.Base(repoPath)
+	// in File, so the "path" here is the checkout's directory name.
+	d.FactsChanged = []diff.FactChange{{
+		Before: facts.Fact{Kind: facts.KindExtraction, Name: "ruby:calls", File: "chatwoot"},
+		After:  facts.Fact{Kind: facts.KindExtraction, Name: "ruby:calls", File: "chatwoot"},
+	}}
+
+	v := AttachReviewers(cleanVerdict(d), store, a, "ada")
+
+	if v.Reviewers == nil {
+		t.Fatal("no routing report")
+	}
+	for _, route := range v.Reviewers.Routes {
+		if route.Module == "." {
+			t.Fatalf("root module routed from an extraction fact: %+v", v.Reviewers.Routes)
+		}
+	}
+	if len(v.Reviewers.Routes) != 1 || v.Reviewers.Routes[0].Module != "pkg/auth" {
+		t.Fatalf("want the one touched module, got %+v", v.Reviewers.Routes)
+	}
+}
