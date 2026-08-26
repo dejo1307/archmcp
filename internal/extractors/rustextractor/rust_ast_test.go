@@ -304,8 +304,8 @@ fn make(id: u32) -> User {
 		t.Errorf("expected RelInstantiates -> User for the struct literal, got %+v", m.Relations)
 	}
 	// The field value's nested call is still walked and credited normally.
-	if !hasRelation(m, facts.RelCalls, "from") {
-		t.Errorf("expected RelCalls -> from for String::from(...) inside the literal, got %+v", m.Relations)
+	if !hasRelation(m, facts.RelCallsUnresolved, "from") {
+		t.Errorf("expected explicit unresolved call -> from for String::from(...) inside the literal, got %+v", m.Relations)
 	}
 }
 
@@ -391,8 +391,57 @@ fn run(repo: Repo) {
 	if !ok {
 		t.Fatal("expected fact for pkg.run")
 	}
-	if !hasRelation(r, facts.RelCalls, "save") {
-		t.Errorf("expected short-name RelCalls -> save for repo.save(), got %+v", r.Relations)
+	if !hasRelation(r, facts.RelCallsUnresolved, "save") {
+		t.Errorf("expected explicit unresolved call -> save for repo.save(), got %+v", r.Relations)
+	}
+}
+
+func TestAST_TypedReceiverMethod_ResolvesQualifiedSymbol(t *testing.T) {
+	ff := extractAST(t, `
+struct Repo;
+impl Repo { fn save(&self) {} }
+fn run(repo: Repo) { repo.save(); }
+`)
+	r, ok := findFact(ff, "pkg.run")
+	if !ok {
+		t.Fatal("expected fact for pkg.run")
+	}
+	if !hasRelation(r, facts.RelCalls, "pkg.Repo.save") {
+		t.Errorf("expected qualified call to pkg.Repo.save, got %+v", r.Relations)
+	}
+	if hasRelation(r, facts.RelCallsUnresolved, "save") {
+		t.Errorf("resolved method also emitted as unresolved: %+v", r.Relations)
+	}
+}
+
+func TestAST_CallRelationsDeduplicatedFrequencyPreserved(t *testing.T) {
+	ff := extractAST(t, `
+fn helper() {}
+fn run(value: String) {
+    helper(); helper(); helper();
+    value.clone(); value.clone();
+}
+`)
+	r, ok := findFact(ff, "pkg.run")
+	if !ok {
+		t.Fatal("expected fact for pkg.run")
+	}
+	counts := map[string]int{}
+	for _, rel := range r.Relations {
+		counts[rel.Kind+":"+rel.Target]++
+	}
+	if got := counts[facts.RelCalls+":pkg.helper"]; got != 1 {
+		t.Errorf("resolved relation count = %d, want 1: %+v", got, r.Relations)
+	}
+	if got := counts[facts.RelCallsUnresolved+":clone"]; got != 1 {
+		t.Errorf("unresolved primitive relation count = %d, want 1: %+v", got, r.Relations)
+	}
+	freq, ok := r.Props["call_frequencies"].(map[string]int)
+	if !ok {
+		t.Fatalf("call_frequencies = %#v, want map[string]int", r.Props["call_frequencies"])
+	}
+	if freq[facts.RelCalls+":pkg.helper"] != 3 || freq[facts.RelCallsUnresolved+":clone"] != 2 {
+		t.Errorf("call_frequencies = %#v, want helper=3 clone=2", freq)
 	}
 }
 
@@ -419,12 +468,8 @@ impl B {
 	if hasRelation(c, facts.RelCalls, "pkg.B.run") {
 		t.Errorf("A::run() must not resolve to pkg.B.run, got %+v", c.Relations)
 	}
-	if hasRelation(c, facts.RelCalls, "pkg.A.run") {
-		t.Errorf("A::run() must not be resolved without type inference, got %+v", c.Relations)
-	}
-	// Best-effort short-name fallback only.
-	if !hasRelation(c, facts.RelCalls, "run") {
-		t.Errorf("expected short-name RelCalls -> run, got %+v", c.Relations)
+	if !hasRelation(c, facts.RelCalls, "pkg.A.run") {
+		t.Errorf("expected syntactically qualified RelCalls -> pkg.A.run, got %+v", c.Relations)
 	}
 }
 
@@ -1009,8 +1054,13 @@ fn classify(s: &str) -> UDFKind {
 	if !ok {
 		t.Fatal("expected fact for pkg.classify")
 	}
-	if !hasRelation(f, facts.RelInstantiates, "UDFKind") {
-		t.Errorf("expected RelInstantiates -> UDFKind, got %+v", f.Relations)
+	if !hasRelation(f, facts.RelReferencesType, "UDFKind") {
+		t.Errorf("expected RelReferencesType -> UDFKind, got %+v", f.Relations)
+	}
+	for _, variant := range []string{"UDFKind::Aggregate", "UDFKind::Table"} {
+		if !hasRelation(f, facts.RelConstructsVariant, variant) {
+			t.Errorf("expected RelConstructsVariant -> %s, got %+v", variant, f.Relations)
+		}
 	}
 }
 
@@ -1030,8 +1080,8 @@ fn dispatch(cmd: Cmd) {
 		t.Fatal("expected fact for pkg.dispatch")
 	}
 	for _, want := range []string{"Cmd", "HomebrewCmd"} {
-		if !hasRelation(f, facts.RelInstantiates, want) {
-			t.Errorf("expected RelInstantiates -> %s, got %+v", want, f.Relations)
+		if !hasRelation(f, facts.RelReferencesType, want) {
+			t.Errorf("expected RelReferencesType -> %s, got %+v", want, f.Relations)
 		}
 	}
 }
@@ -1195,8 +1245,8 @@ impl Foo {
 	if !ok {
 		t.Fatal("expected fact for pkg.Foo.caller")
 	}
-	if !hasRelation(f, facts.RelCalls, "helper") {
-		t.Errorf("expected RelCalls -> helper, got %+v", f.Relations)
+	if !hasRelation(f, facts.RelCalls, "pkg.Foo.helper") {
+		t.Errorf("expected qualified RelCalls -> pkg.Foo.helper, got %+v", f.Relations)
 	}
 }
 

@@ -38,13 +38,14 @@ func extractFileASTFull(src []byte, relFile string, crates []crateInfo, moduleDi
 
 	dir := factpath.Dir(relFile)
 	w := &astWalker{
-		src:        src,
-		relFile:    relFile,
-		dir:        dir,
-		crateDir:   nearestCrateDir(dir, crates),
-		crates:     crates,
-		moduleDirs: moduleDirs,
-		fileRefIdx: -1,
+		src:         src,
+		relFile:     relFile,
+		dir:         dir,
+		crateDir:    nearestCrateDir(dir, crates),
+		crates:      crates,
+		moduleDirs:  moduleDirs,
+		fileRefIdx:  -1,
+		typeMethods: collectTypeMethods(root, src),
 	}
 	w.walkSourceFile(root)
 
@@ -133,16 +134,19 @@ type astWalker struct {
 	loopDepth    int // syntactic loop nesting (for/while/loop)
 	scalingDepth int // nesting of loops with a data-dependent (non-constant) trip count
 
-	fnMaxLoop        int             // peak loopDepth seen in the current function
-	fnMaxScaling     int             // peak scalingDepth seen in the current function
-	fnLoopCount      int             // number of loop constructs in the current function
-	fnCallsInLoop    []string        // resolved callees invoked at loopDepth > 0
-	fnCallsInScaling []string        // resolved callees invoked at repeatDepth > 0 (scaling subset)
-	fnInLoopSeen     map[string]bool // dedup set for fnCallsInLoop
-	fnInScalingSeen  map[string]bool // dedup set for fnCallsInScaling
-	fnIODirect       bool            // the current function makes a direct I/O call
-	fnRecursive      bool            // the current function calls itself
-	fnSelfName       string          // canonical name of the current function (for recursion)
+	fnMaxLoop        int                        // peak loopDepth seen in the current function
+	fnMaxScaling     int                        // peak scalingDepth seen in the current function
+	fnLoopCount      int                        // number of loop constructs in the current function
+	fnCallsInLoop    []string                   // resolved callees invoked at loopDepth > 0
+	fnCallsInScaling []string                   // resolved callees invoked at repeatDepth > 0 (scaling subset)
+	fnInLoopSeen     map[string]bool            // dedup set for fnCallsInLoop
+	fnInScalingSeen  map[string]bool            // dedup set for fnCallsInScaling
+	fnIODirect       bool                       // the current function makes a direct I/O call
+	fnRecursive      bool                       // the current function calls itself
+	fnSelfName       string                     // canonical name of the current function (for recursion)
+	fnCallFreq       map[string]int             // invocation frequency keyed by relation + target
+	fnReceiverTypes  map[string]string          // typed parameter name -> declared receiver type
+	typeMethods      map[string]map[string]bool // type -> methods declared in this file
 
 	// importMap maps a `use`-imported simple name to its canonical symbol fact
 	// name (e.g. "run" -> "src/helper.run") when the import resolved to a known
@@ -571,6 +575,7 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	savedCIL, savedCIS := w.fnCallsInLoop, w.fnCallsInScaling
 	savedILSeen, savedISSeen := w.fnInLoopSeen, w.fnInScalingSeen
 	savedIO, savedRec, savedSelf := w.fnIODirect, w.fnRecursive, w.fnSelfName
+	savedFreq, savedReceiverTypes := w.fnCallFreq, w.fnReceiverTypes
 	w.decisions = 0
 	w.loopDepth, w.scalingDepth = 0, 0
 	w.fnMaxLoop, w.fnMaxScaling, w.fnLoopCount = 0, 0, 0
@@ -578,6 +583,8 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	w.fnInLoopSeen, w.fnInScalingSeen = nil, nil
 	w.fnIODirect, w.fnRecursive = false, false
 	w.fnSelfName = f.Name
+	w.fnCallFreq = make(map[string]int)
+	w.fnReceiverTypes = parameterTypes(node.ChildByFieldName("parameters"), w.src)
 
 	if body := node.ChildByFieldName("body"); body != nil {
 		w.modFnStack = append(w.modFnStack, collectFnNames(body, w.src))
@@ -603,6 +610,9 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	if w.fnIODirect {
 		w.out[ownerIdx].Props["io_direct"] = true
 	}
+	if len(w.fnCallFreq) > 0 {
+		w.out[ownerIdx].Props["call_frequencies"] = w.fnCallFreq
+	}
 
 	w.decisions = savedDecisions
 	w.loopDepth, w.scalingDepth = savedLoopDepth, savedScaling
@@ -610,6 +620,7 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	w.fnCallsInLoop, w.fnCallsInScaling = savedCIL, savedCIS
 	w.fnInLoopSeen, w.fnInScalingSeen = savedILSeen, savedISSeen
 	w.fnIODirect, w.fnRecursive, w.fnSelfName = savedIO, savedRec, savedSelf
+	w.fnCallFreq, w.fnReceiverTypes = savedFreq, savedReceiverTypes
 
 	w.popOwner()
 }
@@ -868,7 +879,11 @@ func (w *astWalker) walkForCalls(node *sitter.Node) {
 		return // path segments hold nothing else worth walking
 	case "identifier":
 		if name := nodeText(node, w.src); isCapitalized(name) {
-			w.emitEdge(facts.RelInstantiates, name)
+			if isPreludeVariant(name) {
+				w.emitEdge(facts.RelConstructsVariant, name)
+			} else {
+				w.emitEdge(facts.RelInstantiates, name)
+			}
 		}
 	}
 
@@ -1074,7 +1089,11 @@ func (w *astWalker) handleCallExpression(node *sitter.Node) {
 		return
 	}
 	if isCapitalized(name) {
-		w.emitEdge(facts.RelInstantiates, name)
+		if isPreludeVariant(name) {
+			w.emitEdge(facts.RelConstructsVariant, name)
+		} else {
+			w.emitEdge(facts.RelInstantiates, name)
+		}
 		return
 	}
 	// Type::new() constructs Type via an associated fn, not a literal —
@@ -1092,16 +1111,40 @@ func (w *astWalker) handleCallExpression(node *sitter.Node) {
 			w.emitEdge(facts.RelCalls, w.dir+"."+w.qualify(name))
 			break
 		}
-		// Not a sibling of this impl block (another impl block, a trait
-		// default) — still unambiguously a method call, so fall back.
-		w.emitEdge(facts.RelCalls, name)
+		if len(w.typeStack) > 0 {
+			typ := w.typeStack[len(w.typeStack)-1]
+			if w.typeMethods[typ][name] {
+				w.emitEdge(facts.RelCalls, w.dir+"."+w.qualifyMod(typ+"."+name))
+				break
+			}
+		}
+		w.emitEdge(facts.RelCallsUnresolved, name)
 	case calleeOther:
-		// Receiver/path type is unknown without full type inference. Emitting
-		// the bare member name still lets short-name dead-code matching mark
-		// the (unqualified) target used, mirroring the Kotlin extractor's
-		// navigation_expression fallback.
-		w.emitEdge(facts.RelCalls, name)
+		if target := w.resolveMethodCall(fn, name); target != "" {
+			w.emitEdge(facts.RelCalls, target)
+		} else {
+			w.emitEdge(facts.RelCallsUnresolved, name)
+		}
 	}
+}
+
+func (w *astWalker) resolveMethodCall(fn *sitter.Node, name string) string {
+	if kindOf(fn) == "generic_function" {
+		fn = fn.ChildByFieldName("function")
+	}
+	var typ string
+	switch kindOf(fn) {
+	case "scoped_identifier":
+		typ = simpleTypeName(fn.ChildByFieldName("path"), w.src)
+	case "field_expression":
+		if recv := fn.ChildByFieldName("value"); recv != nil && kindOf(recv) == "identifier" {
+			typ = w.fnReceiverTypes[nodeText(recv, w.src)]
+		}
+	}
+	if typ != "" && w.typeMethods[typ][name] {
+		return w.dir + "." + w.qualifyMod(typ+"."+name)
+	}
+	return ""
 }
 
 // emitEdge records a relation either on the current production owner, or —
@@ -1123,6 +1166,11 @@ func (w *astWalker) emitEdge(kind, target string) {
 		w.testRefRels = append(w.testRefRels, facts.Relation{Kind: facts.RelCalls, Target: target})
 		return
 	}
+	if kind == facts.RelCalls || kind == facts.RelCallsUnresolved {
+		if w.fnCallFreq != nil {
+			w.fnCallFreq[kind+":"+target]++
+		}
+	}
 	if kind == facts.RelCalls {
 		w.recordCallMetrics(target)
 	}
@@ -1131,6 +1179,11 @@ func (w *astWalker) emitEdge(kind, target string) {
 		idx := w.ensureFileRefFact()
 		w.out[idx].Relations = append(w.out[idx].Relations, facts.Relation{Kind: kind, Target: target})
 		return
+	}
+	for _, rel := range owner.Relations {
+		if rel.Kind == kind && rel.Target == target {
+			return
+		}
 	}
 	owner.Relations = append(owner.Relations, facts.Relation{Kind: kind, Target: target})
 }
@@ -1478,6 +1531,51 @@ func collectFnNames(body *sitter.Node, src []byte) map[string]bool {
 	return names
 }
 
+func collectTypeMethods(root *sitter.Node, src []byte) map[string]map[string]bool {
+	out := make(map[string]map[string]bool)
+	var walk func(*sitter.Node)
+	walk = func(node *sitter.Node) {
+		if node == nil {
+			return
+		}
+		if kindOf(node) == "impl_item" {
+			if typ := simpleTypeName(node.ChildByFieldName("type"), src); typ != "" {
+				methods := collectFnNames(node.ChildByFieldName("body"), src)
+				if out[typ] == nil {
+					out[typ] = make(map[string]bool)
+				}
+				for name := range methods {
+					out[typ][name] = true
+				}
+			}
+		}
+		for i := uint(0); i < uint(node.NamedChildCount()); i++ {
+			walk(node.NamedChild(i))
+		}
+	}
+	walk(root)
+	return out
+}
+
+func parameterTypes(params *sitter.Node, src []byte) map[string]string {
+	out := make(map[string]string)
+	if params == nil {
+		return out
+	}
+	for i := uint(0); i < uint(params.NamedChildCount()); i++ {
+		param := params.NamedChild(i)
+		if kindOf(param) != "parameter" {
+			continue
+		}
+		pattern := param.ChildByFieldName("pattern")
+		typ := simpleTypeName(param.ChildByFieldName("type"), src)
+		if pattern != nil && kindOf(pattern) == "identifier" && typ != "" {
+			out[nodeText(pattern, src)] = typ
+		}
+	}
+	return out
+}
+
 // collectSubmoduleNames returns the names declared by body-less `mod foo;`
 // items directly in body — a file-based submodule (foo.rs or foo/mod.rs),
 // as opposed to an inline `mod foo { ... }` block. Used to recognize an
@@ -1565,10 +1663,20 @@ func (w *astWalker) scanScopedVariantReference(node *sitter.Node) {
 	if !isCapitalized(name) {
 		return
 	}
-	w.emitEdge(facts.RelInstantiates, name)
 	if seg := simpleTypeName(node.ChildByFieldName("path"), w.src); seg != "" && seg != "Self" && isCapitalized(seg) {
-		w.emitEdge(facts.RelInstantiates, seg)
+		w.emitEdge(facts.RelConstructsVariant, seg+"::"+name)
+		w.emitEdge(facts.RelReferencesType, seg)
+		return
 	}
+	w.emitEdge(facts.RelConstructsVariant, name)
+}
+
+func isPreludeVariant(name string) bool {
+	switch name {
+	case "Some", "None", "Ok", "Err":
+		return true
+	}
+	return false
 }
 
 func isCapitalized(s string) bool {

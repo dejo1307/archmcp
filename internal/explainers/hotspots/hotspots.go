@@ -12,8 +12,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/enola-labs/enola/internal/explainers/common"
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 )
 
@@ -91,7 +93,7 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 	values := make([]float64, 0, len(distinct))
 	for _, s := range distinct {
 		in := graph.ArchitecturalFanIn(s.Name)
-		out := graph.ArchitecturalFanOut(s.Name)
+		out := graph.ResolvedCallFanOut(s.Name)
 		score := in * out
 		scores[s.Name] = score
 		values = append(values, float64(score))
@@ -121,7 +123,7 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 			continue
 		}
 		in := graph.ArchitecturalFanIn(s.Name)
-		out := graph.ArchitecturalFanOut(s.Name)
+		out := graph.ResolvedCallFanOut(s.Name)
 		if in < minDegree || out < minDegree {
 			continue
 		}
@@ -151,7 +153,7 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		for _, edge := range firstN(graph.ArchitecturalReverseEdges(c.fact.Name), maxNeighbors) {
 			evidence = append(evidence, facts.Evidence{Symbol: edge.Target, Detail: "calls into " + c.fact.Name})
 		}
-		for _, edge := range firstN(graph.ArchitecturalForwardEdges(c.fact.Name), maxNeighbors) {
+		for _, edge := range firstN(graph.ResolvedCallForwardEdges(c.fact.Name), maxNeighbors) {
 			evidence = append(evidence, facts.Evidence{Symbol: edge.Target, Detail: "called by " + c.fact.Name})
 		}
 
@@ -166,6 +168,7 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 			),
 			Confidence: 0.7,
 			Evidence:   evidence,
+			Metrics:    fanOutMetrics(store, c.fact),
 			Actions: []string{
 				"Add focused tests around this chokepoint before refactoring",
 				"Consider decomposing it so call paths don't all funnel through one symbol",
@@ -175,6 +178,90 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 	}
 
 	return insights, nil
+}
+
+const (
+	MetricUniqueCallees               = "unique_callees"
+	MetricTypesInstantiated           = "types_instantiated"
+	MetricEnumVariantsConstructed     = "enum_variants_constructed"
+	MetricDataTypesReferenced         = "data_types_referenced"
+	MetricExternalPackageDependencies = "external_package_dependencies"
+	MetricInternalModuleDependencies  = "internal_module_dependencies"
+)
+
+func fanOutMetrics(store *facts.Store, symbol facts.Fact) map[string]any {
+	sets := map[string]map[string]bool{
+		MetricUniqueCallees: {}, MetricTypesInstantiated: {}, MetricEnumVariantsConstructed: {},
+		MetricDataTypesReferenced: {}, MetricExternalPackageDependencies: {}, MetricInternalModuleDependencies: {},
+	}
+	modules := make(map[string]bool)
+	for _, module := range store.ByKind(facts.KindModule) {
+		modules[module.Name] = true
+	}
+	for _, rel := range symbol.Relations {
+		switch rel.Kind {
+		case facts.RelCalls:
+			for _, target := range store.ByName(rel.Target) {
+				if target.Kind == facts.KindSymbol {
+					sets[MetricUniqueCallees][rel.Target] = true
+					break
+				}
+			}
+		case facts.RelInstantiates:
+			sets[MetricTypesInstantiated][rel.Target] = true
+		case facts.RelConstructsVariant:
+			sets[MetricEnumVariantsConstructed][rel.Target] = true
+		case facts.RelReferencesType:
+			sets[MetricDataTypesReferenced][rel.Target] = true
+		}
+	}
+	for _, f := range store.ByFile(symbol.File) {
+		if f.Kind != facts.KindDependency {
+			continue
+		}
+		source, _ := f.Props["source"].(string)
+		for _, rel := range f.Relations {
+			if rel.Kind != facts.RelImports {
+				continue
+			}
+			switch source {
+			case facts.DepSourceExternal:
+				sets[MetricExternalPackageDependencies][dependencyRoot(rel.Target)] = true
+			case facts.DepSourceInternal:
+				if module := enclosingModule(rel.Target, modules); module != "" {
+					sets[MetricInternalModuleDependencies][module] = true
+				}
+			}
+		}
+	}
+	metrics := make(map[string]any, len(sets))
+	for key, values := range sets {
+		metrics[key] = len(values)
+	}
+	return metrics
+}
+
+func enclosingModule(target string, modules map[string]bool) string {
+	for cur := target; cur != "." && cur != ""; cur = factpath.Dir(cur) {
+		if modules[cur] {
+			return cur
+		}
+		next := factpath.Dir(cur)
+		if next == cur {
+			break
+		}
+	}
+	return ""
+}
+
+func dependencyRoot(target string) string {
+	if i := strings.Index(target, "::"); i >= 0 {
+		return target[:i]
+	}
+	if i := strings.IndexByte(target, '/'); i >= 0 {
+		return target[:i]
+	}
+	return target
 }
 
 func firstN(edges []facts.Edge, n int) []facts.Edge {

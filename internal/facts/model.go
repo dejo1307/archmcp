@@ -122,17 +122,20 @@ const (
 
 // Relation kind constants.
 const (
-	RelDeclares      = "declares"
-	RelImports       = "imports"
-	RelCalls         = "calls"
-	RelImplements    = "implements"
-	RelDependsOn     = "depends_on"
-	RelInstantiates  = "instantiates"   // Source constructs an instance of target via a constructor call.
-	RelInjects       = "injects"        // Source declares target as a DI-injected constructor parameter.
-	RelHasMethod     = "has_method"     // Owner type (struct/interface/class) declares target as a method. Synthesized in NewGraph.
-	RelHandledBy     = "handled_by"     // A route/endpoint is served by target (e.g. a gRPC RPC route → its Go handler method). Added post-extraction.
-	RelImplementedBy = "implemented_by" // A declared contract operation is implemented by a code symbol. Added post-extraction.
-	RelNames         = "names"          // Source names target by symbol literal without calling it: a method name passed as data (`perform_async(id, :on_done)`) for something else to dispatch. A reference, not a call; read by dead-code questions, ignored by call metrics.
+	RelDeclares          = "declares"
+	RelImports           = "imports"
+	RelCalls             = "calls"
+	RelCallsUnresolved   = "calls_unresolved" // Invocation whose target could not be resolved to a declared symbol; excluded from architectural centrality.
+	RelImplements        = "implements"
+	RelDependsOn         = "depends_on"
+	RelInstantiates      = "instantiates"       // Source constructs an instance of target via a constructor call.
+	RelConstructsVariant = "constructs_variant" // Source constructs or names an enum/sum-type variant.
+	RelReferencesType    = "references_type"    // Source references a data type without constructing or calling it.
+	RelInjects           = "injects"            // Source declares target as a DI-injected constructor parameter.
+	RelHasMethod         = "has_method"         // Owner type (struct/interface/class) declares target as a method. Synthesized in NewGraph.
+	RelHandledBy         = "handled_by"         // A route/endpoint is served by target (e.g. a gRPC RPC route → its Go handler method). Added post-extraction.
+	RelImplementedBy     = "implemented_by"     // A declared contract operation is implemented by a code symbol. Added post-extraction.
+	RelNames             = "names"              // Source names target by symbol literal without calling it: a method name passed as data (`perform_async(id, :on_done)`) for something else to dispatch. A reference, not a call; read by dead-code questions, ignored by call metrics.
 )
 
 // PropTargetFile is the repo-relative file a producer reports a relation's

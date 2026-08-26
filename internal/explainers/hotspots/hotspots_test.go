@@ -518,3 +518,41 @@ func TestExplain_ReportedFanOutCountsOnlyOutgoingCoupling(t *testing.T) {
 		}
 	}
 }
+
+func TestFanOutMetrics_SeparatesCallsConstructionsTypesAndDependencies(t *testing.T) {
+	s := facts.NewStore()
+	symbol := facts.Fact{Kind: facts.KindSymbol, Name: "ui.ChatWidget.dispatch_command", File: "ui/chat.rs",
+		Relations: []facts.Relation{
+			{Kind: facts.RelCalls, Target: "commands.run"},
+			{Kind: facts.RelCalls, Target: "commands.run"},
+			{Kind: facts.RelCalls, Target: "external.unresolved"},
+			{Kind: facts.RelInstantiates, Target: "Event"},
+			{Kind: facts.RelConstructsVariant, Target: "Option::Some"},
+			{Kind: facts.RelConstructsVariant, Target: "Option::None"},
+			{Kind: facts.RelReferencesType, Target: "Option"},
+		}}
+	s.Add(symbol)
+	s.Add(facts.Fact{Kind: facts.KindSymbol, Name: "commands.run", File: "commands/run.rs"})
+	s.Add(facts.Fact{Kind: facts.KindModule, Name: "commands", File: "commands"})
+	s.Add(facts.Fact{Kind: facts.KindDependency, Name: "internal", File: "ui/chat.rs",
+		Props:     map[string]any{"source": facts.DepSourceInternal},
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "commands/run"}}})
+	s.Add(facts.Fact{Kind: facts.KindDependency, Name: "external", File: "ui/chat.rs",
+		Props:     map[string]any{"source": facts.DepSourceExternal},
+		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "serde"}}})
+	s.BuildGraph()
+
+	got := fanOutMetrics(s, symbol)
+	want := map[string]int{
+		MetricUniqueCallees: 1, MetricTypesInstantiated: 1, MetricEnumVariantsConstructed: 2,
+		MetricDataTypesReferenced: 1, MetricExternalPackageDependencies: 1, MetricInternalModuleDependencies: 1,
+	}
+	for key, n := range want {
+		if got[key] != n {
+			t.Errorf("%s = %v, want %d", key, got[key], n)
+		}
+	}
+	if out := s.Graph().ResolvedCallFanOut(symbol.Name); out != 1 {
+		t.Errorf("resolved call fan-out = %d, want 1; constructions and unresolved calls must not count", out)
+	}
+}

@@ -1414,8 +1414,8 @@ func (g *Graph) ArchitecturalFanIn(name string) int {
 // the symbol reaches OUT to — the forward counterpart of ArchitecturalReverseEdges,
 // and what an explainer wants when it means "the things this symbol depends on".
 //
-// It drops RelHasMethod, because containment in either direction is not outgoing
-// coupling: a type does not depend on its methods, it contains them, and their
+// It drops containment, construction, type-reference and unresolved-call edges.
+// A type does not depend on its methods, it contains them, and their
 // outgoing calls are already counted as the methods' own fan-out. Orientation is
 // not something this filter may assume. NewGraph synthesizes the edge owner -> method,
 // but grpcextractor emits it the other way, from an RPC method OUT to its service
@@ -1425,9 +1425,8 @@ func (g *Graph) ArchitecturalFanIn(name string) int {
 // Rails monolith it puts an importer base class (449 lines, 102 one-line delegations,
 // exactly ONE call out) at out-degree 104.
 //
-// Nothing else is filtered. The reverse filter's other two arms cannot fire here:
-// a symbol never points at a reference-only fact (test_ref/file_ref/route), and
-// RelInstantiates in this direction is the symbol really constructing another type.
+// Construction/type usage remains queryable through the unfiltered graph and its
+// separate metrics; it is simply not architectural call fan-out.
 func (g *Graph) ArchitecturalForwardEdges(name string) []Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -1465,10 +1464,43 @@ func (g *Graph) ArchitecturalFanOut(name string) int {
 	return n
 }
 
+// ResolvedCallForwardEdges returns the distinct declared symbols directly called by
+// name. Construction, type-reference, import and containment edges are deliberately
+// absent: this is the call fan-out used by the hotspot explainer.
+func (g *Graph) ResolvedCallForwardEdges(name string) []Edge {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	id, ok := g.lookup(name)
+	if !ok {
+		return nil
+	}
+	tgts, rels := g.adjOf(id, false)
+	var out []Edge
+	for i, tid := range tgts {
+		if g.relName(rels[i]) != RelCalls {
+			continue
+		}
+		idx, ok := g.factIndexForID(tid, RelCalls)
+		if !ok || g.facts[idx].Kind != KindSymbol {
+			continue
+		}
+		out = append(out, Edge{RelKind: RelCalls, Target: g.names[tid]})
+	}
+	return out
+}
+
+func (g *Graph) ResolvedCallFanOut(name string) int {
+	return len(g.ResolvedCallForwardEdges(name))
+}
+
 // isArchitecturalForwardEdge applies the coupling filter to one outgoing edge, given
 // its relation kind. Callers hold the lock.
 func (g *Graph) isArchitecturalForwardEdge(relID uint16) bool {
-	return g.relName(relID) != RelHasMethod
+	switch g.relName(relID) {
+	case RelHasMethod, RelInstantiates, RelConstructsVariant, RelReferencesType, RelCallsUnresolved, RelNames:
+		return false
+	}
+	return true
 }
 
 // isArchitecturalEdge applies the coupling filter to one incoming edge, given its
@@ -1480,7 +1512,7 @@ func (g *Graph) isArchitecturalEdge(srcID uint32, relID uint16) bool {
 	// class or a call-graph hotspot. Exclude it from fan-in / centrality (and the
 	// outlier distribution). Traversal, impact_analysis, find_path and orphans read
 	// the unfiltered index and still see it.
-	if rk == RelInstantiates || rk == RelImplementedBy {
+	if rk == RelInstantiates || rk == RelConstructsVariant || rk == RelReferencesType || rk == RelCallsUnresolved || rk == RelImplementedBy {
 		return false
 	}
 	if idx, ok := g.factIndexForID(srcID, rk); ok && isReferenceOnlyKind(g.facts[idx].Kind) {
@@ -1514,16 +1546,19 @@ func (g *Graph) EdgeCount() int {
 // to arrive says which one was meant: only a service is the target of depends_on, only
 // a module of imports.
 var kindForRel = map[string]string{
-	RelDependsOn:     KindService,
-	RelImports:       KindModule,
-	RelCalls:         KindSymbol,
-	RelImplements:    KindSymbol,
-	RelHasMethod:     KindSymbol,
-	RelInstantiates:  KindSymbol,
-	RelInjects:       KindSymbol,
-	RelDeclares:      KindSymbol,
-	RelHandledBy:     KindRoute,
-	RelImplementedBy: KindSymbol,
+	RelDependsOn:         KindService,
+	RelImports:           KindModule,
+	RelCalls:             KindSymbol,
+	RelCallsUnresolved:   KindSymbol,
+	RelImplements:        KindSymbol,
+	RelHasMethod:         KindSymbol,
+	RelInstantiates:      KindSymbol,
+	RelConstructsVariant: KindSymbol,
+	RelReferencesType:    KindSymbol,
+	RelInjects:           KindSymbol,
+	RelDeclares:          KindSymbol,
+	RelHandledBy:         KindRoute,
+	RelImplementedBy:     KindSymbol,
 }
 
 // kindRank orders fact kinds for picking among same-named facts when there is no edge
