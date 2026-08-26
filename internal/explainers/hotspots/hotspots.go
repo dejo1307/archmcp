@@ -143,6 +143,11 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 		candidates = candidates[:maxInsights]
 	}
 
+	modules := make(map[string]bool)
+	for _, module := range store.ByKind(facts.KindModule) {
+		modules[module.Name] = true
+	}
+
 	var insights []facts.Insight
 	for _, c := range candidates {
 		evidence := []facts.Evidence{{
@@ -168,7 +173,7 @@ func (e *HotspotExplainer) Explain(ctx context.Context, store *facts.Store) ([]f
 			),
 			Confidence: 0.7,
 			Evidence:   evidence,
-			Metrics:    fanOutMetrics(store, c.fact),
+			Metrics:    fanOutMetrics(store, c.fact, modules),
 			Actions: []string{
 				"Add focused tests around this chokepoint before refactoring",
 				"Consider decomposing it so call paths don't all funnel through one symbol",
@@ -189,14 +194,10 @@ const (
 	MetricInternalModuleDependencies  = "internal_module_dependencies"
 )
 
-func fanOutMetrics(store *facts.Store, symbol facts.Fact) map[string]any {
+func fanOutMetrics(store *facts.Store, symbol facts.Fact, modules map[string]bool) map[string]any {
 	sets := map[string]map[string]bool{
 		MetricUniqueCallees: {}, MetricTypesInstantiated: {}, MetricEnumVariantsConstructed: {},
 		MetricDataTypesReferenced: {}, MetricExternalPackageDependencies: {}, MetricInternalModuleDependencies: {},
-	}
-	modules := make(map[string]bool)
-	for _, module := range store.ByKind(facts.KindModule) {
-		modules[module.Name] = true
 	}
 	for _, rel := range symbol.Relations {
 		switch rel.Kind {

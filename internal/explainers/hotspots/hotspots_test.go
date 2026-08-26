@@ -542,7 +542,11 @@ func TestFanOutMetrics_SeparatesCallsConstructionsTypesAndDependencies(t *testin
 		Relations: []facts.Relation{{Kind: facts.RelImports, Target: "serde"}}})
 	s.BuildGraph()
 
-	got := fanOutMetrics(s, symbol)
+	modules := map[string]bool{}
+	for _, module := range s.ByKind(facts.KindModule) {
+		modules[module.Name] = true
+	}
+	got := fanOutMetrics(s, symbol, modules)
 	want := map[string]int{
 		MetricUniqueCallees: 1, MetricTypesInstantiated: 1, MetricEnumVariantsConstructed: 2,
 		MetricDataTypesReferenced: 1, MetricExternalPackageDependencies: 1, MetricInternalModuleDependencies: 1,

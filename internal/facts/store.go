@@ -1010,9 +1010,17 @@ func isRuntimeCall(language, target string) bool {
 	if i := strings.LastIndexAny(name, ".#:/\\"); i >= 0 {
 		name = name[i+1:]
 	}
-	switch name {
-	case "to_string", "clone", "into", "as_ref", "as_mut", "map", "filter", "reduce", "forEach", "collect", "iter", "iter_mut":
-		return true
+	// Ruby is excluded from the cross-language list below: a bare receiver-less
+	// call target like "collect" is never qualified the way a declared Ruby symbol
+	// is ("MyClass#collect"), so declared[name] can never match it and this name
+	// heuristic would be the sole vote — misclassifying a same-class method that
+	// happens to share a name with an Enumerable method as a runtime call, and
+	// dropping its caller edge (a false "dead code" positive downstream).
+	if language != "ruby" {
+		switch name {
+		case "to_string", "clone", "into", "as_ref", "as_mut", "map", "filter", "reduce", "forEach", "collect", "iter", "iter_mut":
+			return true
+		}
 	}
 	switch language {
 	case "rust":

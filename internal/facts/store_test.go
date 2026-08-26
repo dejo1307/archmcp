@@ -44,6 +44,22 @@ func TestBuildGraph_NormalizesCallsAndPreservesFrequency(t *testing.T) {
 	}
 }
 
+func TestBuildGraph_RubyBareSelfCallNotMisclassifiedAsRuntime(t *testing.T) {
+	s := NewStore()
+	s.Add(Fact{Kind: KindSymbol, Name: "app.run", Props: map[string]any{"language": "ruby"}, Relations: []Relation{
+		{Kind: RelCalls, Target: "collect"},
+	}})
+	// A user-defined Ruby method sharing a name with Enumerable#collect — stored
+	// under its qualified name, the way the Ruby extractor always emits symbols.
+	s.Add(Fact{Kind: KindSymbol, Name: "App#collect", Props: map[string]any{"language": "ruby"}})
+	s.BuildGraph()
+
+	run := s.ByName("app.run")[0]
+	if got := run.Relations[0].Kind; got == RelCallsRuntime {
+		t.Errorf("bare Ruby call to \"collect\" classified as %s, want anything but runtime — Ruby symbols are qualified, so declared[] can never match a bare target and the runtime-name heuristic would be the sole (and wrong) vote", got)
+	}
+}
+
 func makeSymbol(name, file, symbolKind string, exported bool) Fact {
 	return Fact{
 		Kind: KindSymbol,
