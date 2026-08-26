@@ -149,7 +149,7 @@ func (e *Explainer) Explain(ctx context.Context, store *facts.Store) ([]facts.In
 	for _, kind := range []string{facts.KindSymbol, facts.KindFileRef, facts.KindTestRef} {
 		for _, fact := range store.ByKind(kind) {
 			for _, rel := range fact.Relations {
-				if rel.Kind == facts.RelCalls || rel.Kind == facts.RelNames {
+				if rel.Kind == facts.RelCalls || rel.Kind == facts.RelCallsUnresolved || rel.Kind == facts.RelNames {
 					addCaller(rel.Target, fact.File)
 					if class := reflectedClass(rel.Target); class != "" {
 						reflected[class] = true

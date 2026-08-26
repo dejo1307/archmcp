@@ -14,6 +14,36 @@ func makeFact(kind, name, file string, rels ...Relation) Fact {
 	return Fact{Kind: kind, Name: name, File: file, Relations: rels}
 }
 
+func TestBuildGraph_NormalizesCallsAndPreservesFrequency(t *testing.T) {
+	s := NewStore()
+	s.Add(Fact{Kind: KindSymbol, Name: "app.run", Props: map[string]any{"language": "python"}, Relations: []Relation{
+		{Kind: RelCalls, Target: "app.helper"}, {Kind: RelCalls, Target: "app.helper"},
+		{Kind: RelCalls, Target: "send"}, {Kind: RelCalls, Target: "send"},
+		{Kind: RelCalls, Target: "len"},
+	}})
+	s.Add(Fact{Kind: KindSymbol, Name: "app.helper", Props: map[string]any{"language": "python"}})
+	s.BuildGraph()
+
+	run := s.ByName("app.run")[0]
+	wantKinds := map[string]string{"app.helper": RelCalls, "send": RelCallsUnresolved, "len": RelCallsRuntime}
+	for _, rel := range run.Relations {
+		if wantKinds[rel.Target] != rel.Kind {
+			t.Errorf("%s relation = %s, want %s", rel.Target, rel.Kind, wantKinds[rel.Target])
+		}
+	}
+	if got := s.Graph().ResolvedCallFanOut("app.run"); got != 1 {
+		t.Errorf("resolved call degree = %d, want 1", got)
+	}
+	freq := run.Props["call_frequencies"].(map[string]int)
+	if freq[RelCalls+":app.helper"] != 2 || freq[RelCallsUnresolved+":send"] != 2 {
+		t.Errorf("call frequencies = %#v", freq)
+	}
+	sum := s.CallResolution()
+	if sum.Invocations != 5 || sum.Unique != 3 || sum.Resolved != 2 || sum.Unresolved != 2 || sum.Runtime != 1 {
+		t.Errorf("call resolution = %+v", sum)
+	}
+}
+
 func makeSymbol(name, file, symbolKind string, exported bool) Fact {
 	return Fact{
 		Kind: KindSymbol,

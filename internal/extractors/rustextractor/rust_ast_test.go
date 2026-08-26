@@ -422,7 +422,10 @@ fn run(value: String) {
     value.clone(); value.clone();
 }
 `)
-	r, ok := findFact(ff, "pkg.run")
+	store := facts.NewStore()
+	store.Add(ff...)
+	store.BuildGraph()
+	r, ok := findFact(store.All(), "pkg.run")
 	if !ok {
 		t.Fatal("expected fact for pkg.run")
 	}
@@ -430,17 +433,17 @@ fn run(value: String) {
 	for _, rel := range r.Relations {
 		counts[rel.Kind+":"+rel.Target]++
 	}
-	if got := counts[facts.RelCalls+":pkg.helper"]; got != 1 {
-		t.Errorf("resolved relation count = %d, want 1: %+v", got, r.Relations)
+	if got := store.Graph().ResolvedCallFanOut("pkg.run"); got != 1 {
+		t.Errorf("resolved degree = %d, want one unique callee", got)
 	}
-	if got := counts[facts.RelCallsUnresolved+":clone"]; got != 1 {
-		t.Errorf("unresolved primitive relation count = %d, want 1: %+v", got, r.Relations)
+	if got := counts[facts.RelCallsRuntime+":clone"]; got != 2 {
+		t.Errorf("raw runtime invocation count = %d, want 2: %+v", got, r.Relations)
 	}
 	freq, ok := r.Props["call_frequencies"].(map[string]int)
 	if !ok {
 		t.Fatalf("call_frequencies = %#v, want map[string]int", r.Props["call_frequencies"])
 	}
-	if freq[facts.RelCalls+":pkg.helper"] != 3 || freq[facts.RelCallsUnresolved+":clone"] != 2 {
+	if freq[facts.RelCalls+":pkg.helper"] != 3 || freq[facts.RelCallsRuntime+":clone"] != 2 {
 		t.Errorf("call_frequencies = %#v, want helper=3 clone=2", freq)
 	}
 }

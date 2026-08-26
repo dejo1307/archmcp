@@ -1497,7 +1497,7 @@ func (g *Graph) ResolvedCallFanOut(name string) int {
 // its relation kind. Callers hold the lock.
 func (g *Graph) isArchitecturalForwardEdge(relID uint16) bool {
 	switch g.relName(relID) {
-	case RelHasMethod, RelInstantiates, RelConstructsVariant, RelReferencesType, RelCallsUnresolved, RelNames:
+	case RelHasMethod, RelInstantiates, RelConstructsVariant, RelReferencesType, RelCallsUnresolved, RelCallsRuntime, RelCallsExternal, RelNames:
 		return false
 	}
 	return true
@@ -1512,7 +1512,7 @@ func (g *Graph) isArchitecturalEdge(srcID uint32, relID uint16) bool {
 	// class or a call-graph hotspot. Exclude it from fan-in / centrality (and the
 	// outlier distribution). Traversal, impact_analysis, find_path and orphans read
 	// the unfiltered index and still see it.
-	if rk == RelInstantiates || rk == RelConstructsVariant || rk == RelReferencesType || rk == RelCallsUnresolved || rk == RelImplementedBy {
+	if rk == RelInstantiates || rk == RelConstructsVariant || rk == RelReferencesType || rk == RelCallsUnresolved || rk == RelCallsRuntime || rk == RelCallsExternal || rk == RelImplementedBy {
 		return false
 	}
 	if idx, ok := g.factIndexForID(srcID, rk); ok && isReferenceOnlyKind(g.facts[idx].Kind) {
@@ -1550,6 +1550,8 @@ var kindForRel = map[string]string{
 	RelImports:           KindModule,
 	RelCalls:             KindSymbol,
 	RelCallsUnresolved:   KindSymbol,
+	RelCallsRuntime:      KindSymbol,
+	RelCallsExternal:     KindSymbol,
 	RelImplements:        KindSymbol,
 	RelHasMethod:         KindSymbol,
 	RelInstantiates:      KindSymbol,

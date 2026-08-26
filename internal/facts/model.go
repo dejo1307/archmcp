@@ -126,6 +126,8 @@ const (
 	RelImports           = "imports"
 	RelCalls             = "calls"
 	RelCallsUnresolved   = "calls_unresolved" // Invocation whose target could not be resolved to a declared symbol; excluded from architectural centrality.
+	RelCallsRuntime      = "calls_runtime"    // Language/runtime/prelude invocation; retained for frequency, excluded from architecture.
+	RelCallsExternal     = "calls_external"   // Invocation resolved to an imported third-party package; expected outside the repository graph.
 	RelImplements        = "implements"
 	RelDependsOn         = "depends_on"
 	RelInstantiates      = "instantiates"       // Source constructs an instance of target via a constructor call.
@@ -417,13 +419,14 @@ type SnapshotMeta struct {
 	// negative (an extractor that never appears in the log), which is unreadable
 	// after the fact: a receipt showing thin extraction should say whose facts are
 	// missing by configuration rather than by absence.
-	ShadowedExtractors []string          `json:"shadowed_extractors,omitempty"`
-	ParseErrors        int               `json:"parse_errors,omitempty"`       // count of extractor detect/parse failures (non-fatal)
-	ParseErrorSample   []ParseError      `json:"parse_error_sample,omitempty"` // a capped sample of those failures
-	HeuristicInsights  int               `json:"heuristic_insights,omitempty"` // count of insights with confidence < 1.0 (heuristics, vs. structural facts)
-	Coverage           *CoverageSummary  `json:"coverage,omitempty"`           // cross-repo edge-coverage rollup, nil in single-repo mode
-	Census             *FileCensus       `json:"census,omitempty"`             // per-file walk accounting: every visited file in exactly one bucket
-	OutputHashes       map[string]string `json:"output_hashes,omitempty"`      // artifact name -> "sha256:"-prefixed hash of its written bytes
+	ShadowedExtractors []string               `json:"shadowed_extractors,omitempty"`
+	ParseErrors        int                    `json:"parse_errors,omitempty"`       // count of extractor detect/parse failures (non-fatal)
+	ParseErrorSample   []ParseError           `json:"parse_error_sample,omitempty"` // a capped sample of those failures
+	HeuristicInsights  int                    `json:"heuristic_insights,omitempty"` // count of insights with confidence < 1.0 (heuristics, vs. structural facts)
+	Coverage           *CoverageSummary       `json:"coverage,omitempty"`           // cross-repo edge-coverage rollup, nil in single-repo mode
+	CallResolution     *CallResolutionSummary `json:"call_resolution,omitempty"`    // resolved/unresolved/runtime invocation quality across all languages
+	Census             *FileCensus            `json:"census,omitempty"`             // per-file walk accounting: every visited file in exactly one bucket
+	OutputHashes       map[string]string      `json:"output_hashes,omitempty"`      // artifact name -> "sha256:"-prefixed hash of its written bytes
 	// Unseen is what this run could not see, assembled once after providers
 	// merged and the explainers ran, from counts the engine already holds. The
 	// verdict prints it as one line so "the graph agreed" and "the graph was not
@@ -684,6 +687,20 @@ type CoverageSummary struct {
 	ExtractionUnresolved int `json:"extraction_unresolved,omitempty"`
 }
 
+type CallResolutionCounts struct {
+	Invocations int `json:"invocations"`
+	Unique      int `json:"unique"`
+	Resolved    int `json:"resolved"`
+	Unresolved  int `json:"unresolved"`
+	Runtime     int `json:"runtime"`
+	External    int `json:"external"`
+}
+
+type CallResolutionSummary struct {
+	CallResolutionCounts
+	ByLanguage map[string]CallResolutionCounts `json:"by_language,omitempty"`
+}
+
 // Receipt is the compact, machine-readable manifest written to receipt.json — a
 // projection of SnapshotMeta that proves what the deterministic graph was
 // generated over (version, git, id, plugin sets, ignore-glob hash, output
@@ -717,16 +734,17 @@ type Receipt struct {
 // ReceiptQuality groups the extraction-completeness metrics — the loop signal a
 // consumer polls to detect thin extraction.
 type ReceiptQuality struct {
-	FilesSeen         int              `json:"files_seen"`
-	FilesParsed       int              `json:"files_parsed"`
-	FilesSkipped      int              `json:"files_skipped"`
-	DirsSkipped       int              `json:"dirs_skipped"`
-	SkippedSample     []string         `json:"skipped_sample,omitempty"`
-	ParseErrors       int              `json:"parse_errors"`
-	ParseErrorSample  []ParseError     `json:"parse_error_sample,omitempty"`
-	HeuristicInsights int              `json:"heuristic_insights"`
-	Coverage          *CoverageSummary `json:"coverage,omitempty"`
-	Census            *FileCensus      `json:"census,omitempty"`
+	FilesSeen         int                    `json:"files_seen"`
+	FilesParsed       int                    `json:"files_parsed"`
+	FilesSkipped      int                    `json:"files_skipped"`
+	DirsSkipped       int                    `json:"dirs_skipped"`
+	SkippedSample     []string               `json:"skipped_sample,omitempty"`
+	ParseErrors       int                    `json:"parse_errors"`
+	ParseErrorSample  []ParseError           `json:"parse_error_sample,omitempty"`
+	HeuristicInsights int                    `json:"heuristic_insights"`
+	Coverage          *CoverageSummary       `json:"coverage,omitempty"`
+	CallResolution    *CallResolutionSummary `json:"call_resolution,omitempty"`
+	Census            *FileCensus            `json:"census,omitempty"`
 }
 
 // Receipt projects a SnapshotMeta into the compact receipt manifest.
@@ -758,6 +776,7 @@ func (m SnapshotMeta) Receipt() Receipt {
 			ParseErrorSample:  m.ParseErrorSample,
 			HeuristicInsights: m.HeuristicInsights,
 			Coverage:          m.Coverage,
+			CallResolution:    m.CallResolution,
 			Census:            m.Census,
 		},
 	}
@@ -771,15 +790,16 @@ func (m SnapshotMeta) Receipt() Receipt {
 // machine-global picture of the live graph. It works for a single-repo graph too
 // (Repos then has one entry).
 type GraphReceipt struct {
-	GeneratedAt        string           `json:"generated_at"`          // RFC3339 UTC, this write
-	EnolaVersion       string           `json:"enola_version"`         // build version that produced the current graph
-	SnapshotID         string           `json:"snapshot_id"`           // whole-graph content fingerprint (SnapshotMeta.SnapshotID)
-	FactCount          int              `json:"fact_count"`            // total facts across all repos
-	InsightCount       int              `json:"insight_count"`         // total insights
-	ServiceCount       int              `json:"service_count"`         // KindService nodes = repos materialized in the cross-repo graph
-	CrossRepoEdgeCount int              `json:"cross_repo_edge_count"` // consumer->provider edges in the cross-repo "graph of graphs" (NOT the total dependency-fact count, which also covers ordinary imports)
-	Coverage           *CoverageSummary `json:"coverage,omitempty"`    // cross-repo edge-coverage rollup, nil in single-repo mode
-	Repos              []GraphRepoEntry `json:"repos"`                 // one entry per repository in the graph, sorted by Label
+	GeneratedAt        string                 `json:"generated_at"`          // RFC3339 UTC, this write
+	EnolaVersion       string                 `json:"enola_version"`         // build version that produced the current graph
+	SnapshotID         string                 `json:"snapshot_id"`           // whole-graph content fingerprint (SnapshotMeta.SnapshotID)
+	FactCount          int                    `json:"fact_count"`            // total facts across all repos
+	InsightCount       int                    `json:"insight_count"`         // total insights
+	ServiceCount       int                    `json:"service_count"`         // KindService nodes = repos materialized in the cross-repo graph
+	CrossRepoEdgeCount int                    `json:"cross_repo_edge_count"` // consumer->provider edges in the cross-repo "graph of graphs" (NOT the total dependency-fact count, which also covers ordinary imports)
+	Coverage           *CoverageSummary       `json:"coverage,omitempty"`    // cross-repo edge-coverage rollup, nil in single-repo mode
+	CallResolution     *CallResolutionSummary `json:"call_resolution,omitempty"`
+	Repos              []GraphRepoEntry       `json:"repos"` // one entry per repository in the graph, sorted by Label
 }
 
 // GraphRepoEntry describes one repository's membership in the current graph.

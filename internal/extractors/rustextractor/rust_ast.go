@@ -144,7 +144,6 @@ type astWalker struct {
 	fnIODirect       bool                       // the current function makes a direct I/O call
 	fnRecursive      bool                       // the current function calls itself
 	fnSelfName       string                     // canonical name of the current function (for recursion)
-	fnCallFreq       map[string]int             // invocation frequency keyed by relation + target
 	fnReceiverTypes  map[string]string          // typed parameter name -> declared receiver type
 	typeMethods      map[string]map[string]bool // type -> methods declared in this file
 
@@ -575,7 +574,7 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	savedCIL, savedCIS := w.fnCallsInLoop, w.fnCallsInScaling
 	savedILSeen, savedISSeen := w.fnInLoopSeen, w.fnInScalingSeen
 	savedIO, savedRec, savedSelf := w.fnIODirect, w.fnRecursive, w.fnSelfName
-	savedFreq, savedReceiverTypes := w.fnCallFreq, w.fnReceiverTypes
+	savedReceiverTypes := w.fnReceiverTypes
 	w.decisions = 0
 	w.loopDepth, w.scalingDepth = 0, 0
 	w.fnMaxLoop, w.fnMaxScaling, w.fnLoopCount = 0, 0, 0
@@ -583,7 +582,6 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	w.fnInLoopSeen, w.fnInScalingSeen = nil, nil
 	w.fnIODirect, w.fnRecursive = false, false
 	w.fnSelfName = f.Name
-	w.fnCallFreq = make(map[string]int)
 	w.fnReceiverTypes = parameterTypes(node.ChildByFieldName("parameters"), w.src)
 
 	if body := node.ChildByFieldName("body"); body != nil {
@@ -610,9 +608,6 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	if w.fnIODirect {
 		w.out[ownerIdx].Props["io_direct"] = true
 	}
-	if len(w.fnCallFreq) > 0 {
-		w.out[ownerIdx].Props["call_frequencies"] = w.fnCallFreq
-	}
 
 	w.decisions = savedDecisions
 	w.loopDepth, w.scalingDepth = savedLoopDepth, savedScaling
@@ -620,7 +615,7 @@ func (w *astWalker) handleFunction(node *sitter.Node) {
 	w.fnCallsInLoop, w.fnCallsInScaling = savedCIL, savedCIS
 	w.fnInLoopSeen, w.fnInScalingSeen = savedILSeen, savedISSeen
 	w.fnIODirect, w.fnRecursive, w.fnSelfName = savedIO, savedRec, savedSelf
-	w.fnCallFreq, w.fnReceiverTypes = savedFreq, savedReceiverTypes
+	w.fnReceiverTypes = savedReceiverTypes
 
 	w.popOwner()
 }
@@ -1166,11 +1161,6 @@ func (w *astWalker) emitEdge(kind, target string) {
 		w.testRefRels = append(w.testRefRels, facts.Relation{Kind: facts.RelCalls, Target: target})
 		return
 	}
-	if kind == facts.RelCalls || kind == facts.RelCallsUnresolved {
-		if w.fnCallFreq != nil {
-			w.fnCallFreq[kind+":"+target]++
-		}
-	}
 	if kind == facts.RelCalls {
 		w.recordCallMetrics(target)
 	}
@@ -1179,11 +1169,6 @@ func (w *astWalker) emitEdge(kind, target string) {
 		idx := w.ensureFileRefFact()
 		w.out[idx].Relations = append(w.out[idx].Relations, facts.Relation{Kind: kind, Target: target})
 		return
-	}
-	for _, rel := range owner.Relations {
-		if rel.Kind == kind && rel.Target == target {
-			return
-		}
 	}
 	owner.Relations = append(owner.Relations, facts.Relation{Kind: kind, Target: target})
 }

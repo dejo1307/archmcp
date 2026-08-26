@@ -692,6 +692,7 @@ func (e *Engine) GenerateSnapshot(ctx context.Context, repoPath string, appendMo
 			ParseErrorSample:   capParseErrors(parseErrs),
 			HeuristicInsights:  countHeuristicInsights(allInsights),
 			Coverage:           coverageSummary(e.store),
+			CallResolution:     e.store.CallResolution(),
 			Census:             e.fileCensus(files, parsedPrefix, skips, usedExtractors, parseErrs),
 			Unseen:             e.unseenCensus(skips, provRecords, allInsights),
 		},

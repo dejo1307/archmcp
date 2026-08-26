@@ -861,6 +861,7 @@ func (s *Store) Clear() {
 func (s *Store) BuildGraph() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.normalizeCallSemanticsLocked()
 	s.graph = NewGraph(s.facts)
 	// The interning table has done its job: the strings it canonicalized are held by
 	// the facts themselves now, and the map is pure overhead (1.3M entries on the
@@ -870,11 +871,264 @@ func (s *Store) BuildGraph() {
 	s.intern = nil
 }
 
+// normalizeCallSemanticsLocked applies the universal call contract before graph
+// consumers see facts. Caller holds s.mu.
+type callDependency struct{ target, source string }
+
+func (s *Store) normalizeCallSemanticsLocked() {
+	declared := make(map[string]bool, len(s.byName))
+	for name, indices := range s.byName {
+		for _, idx := range indices {
+			if s.facts[idx].Kind == KindSymbol {
+				declared[name] = true
+				break
+			}
+		}
+	}
+	depsByFile := make(map[string][]callDependency)
+	for i := range s.facts {
+		f := &s.facts[i]
+		if f.Kind != KindDependency {
+			continue
+		}
+		source, _ := f.Props["source"].(string)
+		for _, rel := range f.Relations {
+			if rel.Kind == RelImports {
+				depsByFile[f.File] = append(depsByFile[f.File], callDependency{rel.Target, source})
+			}
+		}
+	}
+	for i := range s.facts {
+		f := &s.facts[i]
+		if len(f.Relations) == 0 {
+			continue
+		}
+		lang, _ := f.Props["language"].(string)
+		if lang == "" {
+			continue
+		}
+		for ri := range f.Relations {
+			rel := &f.Relations[ri]
+			kind := rel.Kind
+			if kind == RelCalls || kind == RelCallsUnresolved || kind == RelCallsRuntime || kind == RelCallsExternal {
+				dependencySource := ""
+				runtimeCall := isRuntimeCall(lang, rel.Target)
+				if !declared[rel.Target] && !runtimeCall {
+					dependencySource = dependencyCallSource(rel.Target, depsByFile[f.File])
+				}
+				switch {
+				case declared[rel.Target]:
+					kind = RelCalls
+				case runtimeCall:
+					kind = RelCallsRuntime
+				case dependencySource == DepSourceStdlib:
+					kind = RelCallsRuntime
+				case dependencySource == DepSourceExternal:
+					kind = RelCallsExternal
+				default:
+					kind = RelCallsUnresolved
+				}
+			}
+			rel.Kind = kind
+		}
+		freq := duplicateCallFrequencies(f.Relations)
+		if len(freq) > 0 {
+			if f.Props == nil {
+				f.Props = make(map[string]any)
+			}
+			f.Props["call_frequencies"] = freq
+		} else if f.Props != nil {
+			delete(f.Props, "call_frequencies")
+		}
+	}
+}
+
+func duplicateCallFrequencies(rels []Relation) map[string]int {
+	if len(rels) <= dedupScanLimit {
+		var out map[string]int
+		for i, rel := range rels {
+			if !isCallRelation(rel.Kind) {
+				continue
+			}
+			first := true
+			for j := 0; j < i; j++ {
+				if rels[j].Kind == rel.Kind && rels[j].Target == rel.Target {
+					first = false
+					break
+				}
+			}
+			if !first {
+				continue
+			}
+			n := 1
+			for j := i + 1; j < len(rels); j++ {
+				if rels[j].Kind == rel.Kind && rels[j].Target == rel.Target {
+					n++
+				}
+			}
+			if n > 1 {
+				if out == nil {
+					out = make(map[string]int)
+				}
+				out[rel.Kind+":"+rel.Target] = n
+			}
+		}
+		return out
+	}
+	counts := make(map[string]int, len(rels))
+	for _, rel := range rels {
+		if isCallRelation(rel.Kind) {
+			counts[rel.Kind+":"+rel.Target]++
+		}
+	}
+	for key, n := range counts {
+		if n == 1 {
+			delete(counts, key)
+		}
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	return counts
+}
+
+func isCallRelation(kind string) bool {
+	return kind == RelCalls || kind == RelCallsUnresolved || kind == RelCallsRuntime || kind == RelCallsExternal
+}
+
+func dependencyCallSource(call string, deps []callDependency) string {
+	for _, dep := range deps {
+		if call == dep.target || strings.HasPrefix(call, dep.target+".") || strings.HasPrefix(call, dep.target+"::") || strings.HasPrefix(call, dep.target+"\\") {
+			return dep.source
+		}
+	}
+	return ""
+}
+
+func isRuntimeCall(language, target string) bool {
+	name := target
+	if i := strings.LastIndexAny(name, ".#:/\\"); i >= 0 {
+		name = name[i+1:]
+	}
+	switch name {
+	case "to_string", "clone", "into", "as_ref", "as_mut", "map", "filter", "reduce", "forEach", "collect", "iter", "iter_mut":
+		return true
+	}
+	switch language {
+	case "rust":
+		switch name {
+		case "unwrap", "expect", "iter", "iter_mut", "collect", "map", "filter", "ok", "err":
+			return true
+		}
+	case "python":
+		switch name {
+		case "len", "str", "int", "float", "bool", "list", "dict", "set", "tuple", "range", "enumerate", "zip", "isinstance", "super", "print":
+			return true
+		}
+	case "typescript", "javascript":
+		switch name {
+		case "toString", "map", "filter", "reduce", "forEach", "slice", "push", "pop":
+			return true
+		}
+	case "go":
+		switch name {
+		case "len", "cap", "make", "new", "append", "copy", "delete", "close", "panic", "recover":
+			return true
+		}
+	}
+	return false
+}
+
 // Graph returns the current graph index, or nil if BuildGraph has not been called.
 func (s *Store) Graph() *Graph {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.graph
+}
+
+// CallResolution summarizes normalized invocation quality. BuildGraph must have run.
+func (s *Store) CallResolution() *CallResolutionSummary {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sum := &CallResolutionSummary{ByLanguage: make(map[string]CallResolutionCounts)}
+	for _, f := range s.facts {
+		lang, _ := f.Props["language"].(string)
+		if lang == "" {
+			lang = "unknown"
+		}
+		counts := sum.ByLanguage[lang]
+		var seen map[string]bool
+		if len(f.Relations) > dedupScanLimit {
+			seen = make(map[string]bool, len(f.Relations))
+		}
+		for ri, rel := range f.Relations {
+			if !isCallRelation(rel.Kind) {
+				continue
+			}
+			key := rel.Kind + ":" + rel.Target
+			if seen != nil {
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+			} else {
+				duplicate := false
+				for rj := 0; rj < ri; rj++ {
+					if f.Relations[rj].Kind == rel.Kind && f.Relations[rj].Target == rel.Target {
+						duplicate = true
+						break
+					}
+				}
+				if duplicate {
+					continue
+				}
+			}
+			n := callFrequency(f.Props["call_frequencies"], key)
+			if n == 0 {
+				n = 1
+			}
+			counts.Invocations += n
+			counts.Unique++
+			sum.Invocations += n
+			sum.Unique++
+			switch rel.Kind {
+			case RelCalls:
+				counts.Resolved += n
+				sum.Resolved += n
+			case RelCallsUnresolved:
+				counts.Unresolved += n
+				sum.Unresolved += n
+			case RelCallsRuntime:
+				counts.Runtime += n
+				sum.Runtime += n
+			case RelCallsExternal:
+				counts.External += n
+				sum.External += n
+			}
+		}
+		if counts.Unique > 0 {
+			sum.ByLanguage[lang] = counts
+		}
+	}
+	if sum.Invocations == 0 {
+		return nil
+	}
+	return sum
+}
+
+func callFrequency(raw any, key string) int {
+	switch m := raw.(type) {
+	case map[string]int:
+		return m[key]
+	case map[string]any:
+		switch n := m[key].(type) {
+		case int:
+			return n
+		case float64:
+			return int(n)
+		}
+	}
+	return 0
 }
 
 // estimateJSONLSize guesses the serialized size of ff by marshalling a sample and

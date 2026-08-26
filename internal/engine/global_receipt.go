@@ -227,6 +227,7 @@ func (e *Engine) assembleGraphReceipt(b *snapshotBundle, now time.Time) facts.Gr
 		ServiceCount:       len(b.store.ByKind(facts.KindService)),
 		CrossRepoEdgeCount: crossRepoEdgeCount(b.store),
 		Coverage:           coverageSummary(b.store),
+		CallResolution:     b.store.CallResolution(),
 		Repos:              entries,
 	}
 	if b.snapshot != nil {

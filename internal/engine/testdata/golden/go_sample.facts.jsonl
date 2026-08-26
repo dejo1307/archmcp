@@ -14,5 +14,5 @@
 {"kind":"symbol","name":"pkg/a.helper","file":"pkg/a/a.go","line":37,"repo":"go_sample","props":{"cyclomatic":1,"exported":false,"language":"go","symbol_kind":"function"},"relations":[{"kind":"declares","target":"pkg/a"}]}
 {"kind":"symbol","name":"pkg/a.setup","file":"pkg/a/a.go","line":31,"repo":"go_sample","props":{"cyclomatic":1,"exported":false,"language":"go","symbol_kind":"function"},"relations":[{"kind":"declares","target":"pkg/a"}]}
 {"kind":"symbol","name":"pkg/b.Beta","file":"pkg/b/b.go","line":6,"repo":"go_sample","props":{"cyclomatic":1,"exported":true,"language":"go","symbol_kind":"function"},"relations":[{"kind":"calls","target":"pkg/a.Alpha"},{"kind":"declares","target":"pkg/b"}]}
-{"kind":"test_ref","name":"pkg/a/a_ext_test.go","file":"pkg/a/a_ext_test.go","repo":"go_sample","props":{"language":"go"},"relations":[{"kind":"calls","target":"pkg/a.Gamma"},{"kind":"calls","target":"t.Log"}]}
-{"kind":"test_ref","name":"pkg/a/a_test.go","file":"pkg/a/a_test.go","repo":"go_sample","props":{"language":"go"},"relations":[{"kind":"calls","target":"pkg/a.helper"},{"kind":"calls","target":"t.Fatalf"}]}
+{"kind":"test_ref","name":"pkg/a/a_ext_test.go","file":"pkg/a/a_ext_test.go","repo":"go_sample","props":{"language":"go"},"relations":[{"kind":"calls","target":"pkg/a.Gamma"},{"kind":"calls_unresolved","target":"t.Log"}]}
+{"kind":"test_ref","name":"pkg/a/a_test.go","file":"pkg/a/a_test.go","repo":"go_sample","props":{"language":"go"},"relations":[{"kind":"calls","target":"pkg/a.helper"},{"kind":"calls_unresolved","target":"t.Fatalf"}]}

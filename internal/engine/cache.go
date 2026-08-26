@@ -2327,7 +2327,11 @@ import (
 // excalidraw's resolved dependencies as unpinned. Cargo's `[dependencies.name]`
 // table sections are read too: tokio declares windows-sys only that way, so the
 // list form alone lost the dependency rather than its version.
-const cacheVersion = "v257"
+// v258: call semantics are normalized for every language before graph construction.
+// Resolved, unresolved and runtime/prelude invocations are distinct; duplicate
+// relation-target pairs contribute one degree edge while repeated invocation counts
+// survive in call_frequencies. Hotspot centrality consumes resolved symbols only.
+const cacheVersion = "v258"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

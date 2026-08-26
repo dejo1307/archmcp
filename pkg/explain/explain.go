@@ -189,7 +189,7 @@ func Compute(eng *bootstrap.Engine) *Report {
 		}
 	}
 	for _, k := range []string{
-		facts.RelDeclares, facts.RelImports, facts.RelCalls, facts.RelImplements,
+		facts.RelDeclares, facts.RelImports, facts.RelCalls, facts.RelCallsUnresolved, facts.RelCallsRuntime, facts.RelCallsExternal, facts.RelImplements,
 		facts.RelDependsOn, facts.RelInstantiates, facts.RelInjects, facts.RelHasMethod,
 	} {
 		if n := relCount[k]; n > 0 {
