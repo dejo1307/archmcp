@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 )
 
@@ -22,4 +23,19 @@ func isTerminal(f *os.File) bool {
 	}
 	info, err := f.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// DashboardHint renders the one-line pointer to the dashboard that every action
+// persisting snapshot artifacts (--generate, --refresh, check --write) prints on
+// success. It is the single source for that wording so the three call sites — in
+// two different packages, cmd/enola and pkg/command — cannot drift from each other.
+// target is the repo or config path the action itself resolved, or "" to use the
+// dashboard's own default.
+func DashboardHint(binName, target string) string {
+	open := binName + " dashboard --open"
+	if target != "" {
+		open += fmt.Sprintf(" %q", target)
+	}
+	return fmt.Sprintf("\nExplore this snapshot in your browser:\n  %s\nIt starts in the background; stop it later with: %s dashboard stop\n",
+		open, binName)
 }

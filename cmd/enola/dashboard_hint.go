@@ -3,21 +3,16 @@ package main
 import (
 	"fmt"
 	"io"
+
+	"github.com/enola-labs/enola/pkg/cli"
 )
 
 // printDashboardHint points at the dashboard after an action that persisted
 // snapshot artifacts, so the reader always knows how to open the visual view
-// of what was just written. It is unconditional — unlike an interactive
-// prompt, a one-line hint costs nothing when stdout/stderr are redirected,
-// which is the common case for --generate run from scripts and CI.
+// of what was just written. The wording itself lives in cli.DashboardHint,
+// shared with pkg/command/check.go's --write path, so the two cannot drift.
 func printDashboardHint(out io.Writer, repoArg, cfgPath string) {
-	_, _ = fmt.Fprintln(out, "\nExplore this snapshot in your browser:")
-	if target := dashboardHintTarget(repoArg, cfgPath); target != "" {
-		_, _ = fmt.Fprintf(out, "  enola dashboard --open %q\n", target)
-	} else {
-		_, _ = fmt.Fprintln(out, "  enola dashboard --open")
-	}
-	_, _ = fmt.Fprintln(out, "It starts in the background; stop it later with: enola dashboard stop")
+	_, _ = fmt.Fprint(out, cli.DashboardHint("enola", dashboardHintTarget(repoArg, cfgPath)))
 }
 
 // dashboardHintTarget names the repo or config path a subsequent `dashboard`
