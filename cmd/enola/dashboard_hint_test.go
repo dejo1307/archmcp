@@ -20,13 +20,13 @@ func TestDashboardHintTarget(t *testing.T) {
 func TestPrintDashboardHint(t *testing.T) {
 	var out bytes.Buffer
 	printDashboardHint(&out, "../repo", "mcp-arch.yaml")
-	if got := out.String(); got != "\nExplore this snapshot in your browser:\n  enola dashboard --open \"../repo\"\nIt starts in the background; stop it later with: enola dashboard stop\n" {
+	if got := out.String(); got != "\nExplore this snapshot in your browser:\n  enola dashboard --open \"../repo\"\nIt stays attached to the terminal; press Ctrl-C to stop it.\n" {
 		t.Fatalf("hint = %q", got)
 	}
 
 	out.Reset()
 	printDashboardHint(&out, "", "mcp-arch.yaml")
-	if got := out.String(); got != "\nExplore this snapshot in your browser:\n  enola dashboard --open\nIt starts in the background; stop it later with: enola dashboard stop\n" {
+	if got := out.String(); got != "\nExplore this snapshot in your browser:\n  enola dashboard --open\nIt stays attached to the terminal; press Ctrl-C to stop it.\n" {
 		t.Fatalf("default hint = %q", got)
 	}
 }

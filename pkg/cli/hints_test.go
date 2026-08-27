@@ -3,10 +3,10 @@ package cli
 import "testing"
 
 func TestDashboardHint(t *testing.T) {
-	if got, want := DashboardHint("enola", ""), "\nExplore this snapshot in your browser:\n  enola dashboard --open\nIt starts in the background; stop it later with: enola dashboard stop\n"; got != want {
+	if got, want := DashboardHint("enola", ""), "\nExplore this snapshot in your browser:\n  enola dashboard --open\nIt stays attached to the terminal; press Ctrl-C to stop it.\n"; got != want {
 		t.Fatalf("DashboardHint(no target) = %q, want %q", got, want)
 	}
-	if got, want := DashboardHint("enola", "../repo"), "\nExplore this snapshot in your browser:\n  enola dashboard --open \"../repo\"\nIt starts in the background; stop it later with: enola dashboard stop\n"; got != want {
+	if got, want := DashboardHint("enola", "../repo"), "\nExplore this snapshot in your browser:\n  enola dashboard --open \"../repo\"\nIt stays attached to the terminal; press Ctrl-C to stop it.\n"; got != want {
 		t.Fatalf("DashboardHint(with target) = %q, want %q", got, want)
 	}
 }

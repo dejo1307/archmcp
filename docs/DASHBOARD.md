@@ -15,17 +15,9 @@ enola --generate
 enola dashboard --open
 ```
 
-The dashboard starts in the background and returns the terminal prompt. Its startup
-message names the snapshot directory, prints the complete local `http://` URL, and tells
-you how to stop it.
-
-```bash
-enola dashboard status   # list standalone and MCP-hosted dashboards
-enola dashboard stop     # stop standalone dashboards only
-```
-
-`enola dashboard --foreground` stays attached to the terminal until Ctrl-C. Pass a
-repository or multi-repository config path to select its snapshot:
+The dashboard stays attached to the terminal until Ctrl-C. Its startup message names
+the snapshot directory and prints the complete local `http://` URL. Pass a repository
+or multi-repository config path to select its snapshot:
 
 ```bash
 enola dashboard --open ../service-a
@@ -131,14 +123,13 @@ After generating or writing a newer snapshot, choose **Refresh data**. The dashb
 refreshes on request.
 
 Refresh reloads the state available to the process serving that page. Use
-`enola dashboard status` to find the URL for another workspace.
+`enola --status` in another terminal to find the URL for another workspace.
 
 ## Several dashboards at once
 
 An MCP session can host the same dashboard, and several coding-agent sessions can run at
-once. Each process has its own graph and ephemeral URL. `enola dashboard status` lists
-all dashboard-serving processes and labels standalone dashboards separately from MCP
-servers. `enola dashboard stop` stops standalone dashboard processes.
+once. Each process has its own graph and ephemeral URL. `enola --status` lists the
+running sessions and their dashboard URLs.
 
 While any dashboard is running, Enola also tries to provide the bookmarkable shared URL
 `http://127.0.0.1:7171`. The first process owns it; another can take over after that

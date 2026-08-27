@@ -89,8 +89,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 		Intro:   "Give your AI agent a map of the codebase before it starts exploring.",
 		Usage: []string{
 			bin.Name + " [flags] [repo_path|config_path]",
-			bin.Name + " dashboard [--open] [--foreground] [repo_path|config_path]",
-			bin.Name + " dashboard <status|stop>",
+			bin.Name + " dashboard [--open] [repo_path|config_path]",
 			bin.Name + " baseline <pin|show|clear> [repo_path|config_path]",
 			bin.Name + " check [flags] [repo_path|config_path]",
 			bin.Name + " constraints <lint|mine|ledger> [repo_path|config_path]",
@@ -106,7 +105,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 			bin.Name + " install [--hooks] [--global] [repo_path]",
 		},
 		Commands: []FlagDoc{
-			{Flag: "dashboard", Desc: "Explore the latest snapshot in a read-only local web dashboard.\nStarts in the background, without an MCP server:\n  dashboard --open       start it and launch the browser\n  dashboard status       print running dashboard URLs\n  dashboard stop         stop standalone dashboards\n  --foreground           stay attached; stop with Ctrl-C"},
+			{Flag: "dashboard", Desc: "Explore the latest snapshot in a read-only local web dashboard,\nwithout starting an MCP server. Add --open to launch the browser.\nStays attached to the terminal; stop with Ctrl-C."},
 			{Flag: "install", Desc: "Write " + bin.Name + "'s instructions into the files your coding\nagents read (Claude Code, Cursor, AGENTS.md). Previews every\nchange and asks before writing.\n  --hooks   also run the loop automatically: report the\n            architectural delta at the end of a session, but only\n            if the change introduced a regression. Opt-in,\n            because hooks run commands.\n  --global  configure this user rather than this repository.\n  --dry-run show what would change and write nothing."},
 			{Flag: "uninstall", Desc: "Remove everything \"install\" wrote, leaving the rest of each\nfile byte-for-byte as it was."},
 			{Flag: "baseline", Desc: "Manage the diff baseline — the \"before\" your changes are graded\nagainst. \"pin\" snapshots the repository and freezes it (no separate\n--generate needed), \"show\" reports what the current baseline\ndescribes, \"clear\" removes it. The baseline is stored per-repository,\nin that repo's output dir, so several repos each keep their own."},
@@ -138,8 +137,7 @@ func DefaultHelp(bin Binary) HelpSpec {
 		},
 		ConfigDoc: "Path to the config file (default: mcp-arch.yaml). Set `repos:` in it to\n  name a multi-repo cluster; entries resolve relative to the config file, so\n  a checked-in cluster config means the same thing wherever it is run from.",
 		Examples: []Example{
-			{Comment: "Start the dashboard in the background and open it", Command: bin.Name + " dashboard --open"},
-			{Comment: "Find or stop a background dashboard", Command: bin.Name + " dashboard status  # or: " + bin.Name + " dashboard stop"},
+			{Comment: "Start the dashboard and open it (Ctrl-C to stop)", Command: bin.Name + " dashboard --open"},
 			{Comment: "Start MCP server with default config", Command: bin.Name},
 			{Comment: "Start MCP server with custom config", Command: bin.Name + " my-config.yaml"},
 			{Comment: "Generate a snapshot and exit", Command: bin.Name + " --generate"},
@@ -223,16 +221,14 @@ func dashboardSection(bin Binary) Section {
 	return Section{
 		Title: "DASHBOARD",
 		Body: fmt.Sprintf(`  Run "%s dashboard [repo_path|config_path]" to serve the latest snapshot
-  without starting an MCP server; add --open to launch the browser. It starts in the
-  background, "dashboard status" prints its URL, and "dashboard stop" stops it;
-  --foreground retains the attached Ctrl-C workflow. The normal MCP
+  without starting an MCP server; add --open to launch the browser. It stays attached
+  to the terminal until Ctrl-C. The normal MCP
   server also exposes the same read-only dashboard. Data refresh is explicit, so an
   investigation is never interrupted. Run "--status" to find its URL, or pass
   "--no-dashboard" to disable it.
 
   In an interactive terminal, "--generate", "--refresh", and "check --write"
-  each print an "Explore this snapshot" command using "dashboard --open" and
-  the matching stop command. CI,
+  each print an "Explore this snapshot" command using "dashboard --open". CI,
   redirected output, hooks, and ENOLA_NO_PROMPTS=1 suppress the hint.
 `, bin.Name),
 	}
