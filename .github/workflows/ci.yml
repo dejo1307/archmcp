@@ -209,8 +209,22 @@ jobs:
       # the database from vuln.go.dev at run time, so a CVE disclosed today still
       # fails this job tomorrow. What the pin removes is the other axis — a new
       # analyser release changing its verdict on unchanged code.
+      #
+      # The pin has a FLOOR as well as a ceiling, which is what makes it a decision
+      # rather than a preference. govulncheck carries its own golang.org/x/tools, and a
+      # release whose type checker predates this module's `go` directive refuses every
+      # package with "package requires newer Go version go1.25 (application built with
+      # go1.24)" — a total failure that reads nothing like a vulnerability report, and
+      # exits non-zero for a reason no one would guess from the job name. v1.1.4 was
+      # such a release: it refused all 126 packages here for as long as `go` had been
+      # past 1.24, so this job reported on nothing while staying red.
+      #
+      # Raising `go` in go.mod means checking this line too. Nothing enforces that
+      # offline — the constraint lives inside govulncheck's own dependency tree, not in
+      # anything this repository can read — so the guard is this comment plus a job that
+      # fails loudly rather than silently passing.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
       - name: Run govulncheck
         run: govulncheck ./...
