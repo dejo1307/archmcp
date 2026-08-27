@@ -823,11 +823,17 @@ The dashboard is organized into five tabs:
 
 It is strictly a viewer: every request reads through the same concurrency-safe accessors the MCP tools use and never mutates server state. It binds loopback only and serves nothing but the dashboard. Use **Refresh data** when you want to reload the currently available state. Pass `--no-dashboard` to skip the dashboard attached to an MCP server.
 
+The dashboard is not a separate CLI subcommand: there is no `enola dashboard` or `enola dashboard --open`. Start the MCP server normally and use the URL printed at startup, or recover the URL with `enola --status`.
+
+`enola --generate` is different: it generates the snapshot files and exits, without starting an MCP server or dashboard and without registering a running instance. A later MCP server can auto-load those files when it starts. A dashboard that is already running still describes its own process and its own in-memory graph; a separate `--generate` invocation does not turn that dashboard into a viewer for the generator process.
+
 #### Several servers at once
 
 Agent tooling starts one enola server per session, so opening four terminals means four servers - each with its own graph, its own dashboard, and its own ephemeral port. Two things keep that legible.
 
 **One bookmarkable URL.** Besides its own port, every server competes for a fixed **shared URL**, `http://127.0.0.1:7171` by default. The first to start wins it; when that one exits another takes over within a few seconds, so the address keeps working for as long as any server is up. Whichever server answers there lists all the others. Set `ENOLA_DASHBOARD_PORT` (or `dashboard.port` in the config) to move it, or `ENOLA_DASHBOARD_PORT=off` to keep only the ephemeral ports.
+
+There is no standalone dashboard process. When the last agent session closes, the last MCP server and its dashboard exit too, so the shared URL stops responding. When a new session starts, its server claims the shared URL again. As sessions start and stop, click **Refresh data** on an open dashboard to update the server list; joining servers appear and departed servers disappear on that request.
 
 **Every page describes its own server.** The PID, uptime, repos and per-server call counts on a page belong to the process serving it - never to whichever server happened to start last. If a page shows a graph you did not expect, the switcher tells you which server holds the one you want.
 

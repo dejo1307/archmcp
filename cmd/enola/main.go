@@ -321,7 +321,7 @@ func main() {
 	}
 	tracker.PersistStartup()
 
-	if err := srv.Run(ctx); err != nil {
+	if err := srv.Run(ctx); err != nil && !isNormalServerShutdown(err) {
 		// Deregister explicitly: log.Fatalf exits without running deferred calls.
 		tracker.Close()
 		log.Fatalf("server error: %v", err)
@@ -330,6 +330,15 @@ func main() {
 	// A server run peaks while snapshotting on behalf of a tool call, so its watch
 	// spans the whole session and reports once on clean shutdown.
 	memWatch.Report(os.Stderr, factCount(eng))
+}
+
+// isNormalServerShutdown distinguishes the cancellation signal.NotifyContext
+// sends on Ctrl-C/SIGTERM from an actual transport failure. The MCP server
+// returns context.Canceled when that context closes; reporting it through
+// log.Fatalf made an orderly, fully-cleaned-up shutdown look like a crash and
+// exit with status 1.
+func isNormalServerShutdown(err error) bool {
+	return errors.Is(err, context.Canceled)
 }
 
 // startMemWatch pulls the memory-instrumentation flags off the argument list and,
