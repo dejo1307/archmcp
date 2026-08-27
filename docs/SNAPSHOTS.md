@@ -14,6 +14,10 @@ is computed, and what happens to the one before it. What the graph actually cont
 What enola produces is not the graph. It is a verdict on a change: *this edit closed a dependency
 cycle between `billing` and `invoice`, and nothing else moved.*
 
+Snapshot and graph receipts may also carry `call_resolution`, an additive quality report separating
+resolved, unresolved, runtime, and external invocation counts. Its absence means the producing
+version did not report call-resolution quality; it does not mean every call resolved.
+
 A verdict of that shape is a function of two states. You cannot compute it from the current
 structure of the code, however accurate that structure is, because "your change made this worse" is
 not a property of the code in front of you — it is a relation between the code in front of you and

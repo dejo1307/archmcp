@@ -10,6 +10,21 @@ import (
 	"testing"
 )
 
+func TestParseFacts_AcceptsCallClassificationRelations(t *testing.T) {
+	for _, relation := range []string{"calls_unresolved", "calls_runtime", "calls_external"} {
+		t.Run(relation, func(t *testing.T) {
+			input := `{"kind":"symbol","name":"caller","props":{"resolution_level":"name-only"},"relations":[{"kind":"` + relation + `","target":"callee"}]}`
+			got, err := parseFacts([]byte(input))
+			if err != nil {
+				t.Fatalf("parseFacts: %v", err)
+			}
+			if len(got) != 1 || len(got[0].Relations) != 1 || got[0].Relations[0].Kind != relation {
+				t.Fatalf("parsed facts = %#v, want relation %q preserved", got, relation)
+			}
+		})
+	}
+}
+
 func TestParseFacts_HostileOutputs(t *testing.T) {
 	valid := `{"kind":"symbol","name":"x","props":{"resolution_level":"name-only"}}`
 	cases := map[string]struct {

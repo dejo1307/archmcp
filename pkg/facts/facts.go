@@ -30,18 +30,20 @@ type (
 	// because a consumer that derives anything from a snapshot's IDENTITY (the
 	// architecture history's epoch fingerprint and repo identity) needs the fields
 	// the Receipt projection drops, and must read them from the engine's own shape.
-	SnapshotMeta    = internal.SnapshotMeta
-	Receipt         = internal.Receipt
-	ReceiptQuality  = internal.ReceiptQuality
-	FileCensus      = internal.FileCensus
-	CensusCause     = internal.CensusCause
-	GraphReceipt    = internal.GraphReceipt
-	GraphRepoEntry  = internal.GraphRepoEntry
-	CoverageSummary = internal.CoverageSummary
-	ParseError      = internal.ParseError
-	GitInfo         = internal.GitInfo
-	ProviderRecord  = internal.ProviderRecord
-	ProviderCensus  = internal.ProviderCensus
+	SnapshotMeta          = internal.SnapshotMeta
+	Receipt               = internal.Receipt
+	ReceiptQuality        = internal.ReceiptQuality
+	FileCensus            = internal.FileCensus
+	CensusCause           = internal.CensusCause
+	GraphReceipt          = internal.GraphReceipt
+	GraphRepoEntry        = internal.GraphRepoEntry
+	CoverageSummary       = internal.CoverageSummary
+	CallResolutionCounts  = internal.CallResolutionCounts
+	CallResolutionSummary = internal.CallResolutionSummary
+	ParseError            = internal.ParseError
+	GitInfo               = internal.GitInfo
+	ProviderRecord        = internal.ProviderRecord
+	ProviderCensus        = internal.ProviderCensus
 )
 
 var RanProviders = internal.RanProviders
@@ -91,15 +93,18 @@ const (
 
 // Relation kind constants.
 const (
-	RelDeclares     = internal.RelDeclares
-	RelImports      = internal.RelImports
-	RelCalls        = internal.RelCalls
-	RelImplements   = internal.RelImplements
-	RelDependsOn    = internal.RelDependsOn
-	RelInstantiates = internal.RelInstantiates
-	RelInjects      = internal.RelInjects
-	RelHasMethod    = internal.RelHasMethod
-	RelHandledBy    = internal.RelHandledBy
+	RelDeclares        = internal.RelDeclares
+	RelImports         = internal.RelImports
+	RelCalls           = internal.RelCalls
+	RelCallsUnresolved = internal.RelCallsUnresolved
+	RelCallsRuntime    = internal.RelCallsRuntime
+	RelCallsExternal   = internal.RelCallsExternal
+	RelImplements      = internal.RelImplements
+	RelDependsOn       = internal.RelDependsOn
+	RelInstantiates    = internal.RelInstantiates
+	RelInjects         = internal.RelInjects
+	RelHasMethod       = internal.RelHasMethod
+	RelHandledBy       = internal.RelHandledBy
 )
 
 // Symbol kind property values.

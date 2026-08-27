@@ -190,6 +190,32 @@ func TestWriteAtomicAndReadPrior_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadGraphReceiptFile_CallResolutionIsAdditive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, []byte(`{"snapshot_id":"old"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, err := readGraphReceiptFile(path)
+	if err != nil {
+		t.Fatalf("read old receipt: %v", err)
+	}
+	if old.CallResolution != nil {
+		t.Fatalf("old receipt call resolution = %#v, want absent", old.CallResolution)
+	}
+
+	data := []byte(`{"snapshot_id":"new","call_resolution":{"invocations":9,"unique":7,"resolved":4,"unresolved":2,"runtime":2,"external":1},"future_field":true}`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current, err := readGraphReceiptFile(path)
+	if err != nil {
+		t.Fatalf("read current receipt with unknown additive field: %v", err)
+	}
+	if got := current.CallResolution; got == nil || got.Invocations != 9 || got.Unique != 7 || got.Resolved != 4 || got.Unresolved != 2 || got.Runtime != 2 || got.External != 1 {
+		t.Fatalf("call resolution = %#v, want all counters preserved", got)
+	}
+}
+
 func TestWriteGlobalReceipt_SingleRepoFallbackAndPersistence(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home) // os.UserHomeDir() resolves ~ from $HOME on unix

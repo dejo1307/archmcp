@@ -97,7 +97,7 @@ func (b *graphBuilder) relIDFor(kind string) uint16 {
 
 // Edge represents a directed relationship between two facts.
 type Edge struct {
-	RelKind string // "imports", "calls", "declares", "implements", "depends_on", "has_method", "handled_by"
+	RelKind string // "imports", "calls", "calls_unresolved", "declares", "implements", "depends_on", "has_method", "handled_by"
 	Target  string // target fact name (forward) or source fact name (reverse)
 }
 

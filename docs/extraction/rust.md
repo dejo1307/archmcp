@@ -22,7 +22,10 @@ Route behaviour is covered by
 | `fn`, `struct`, `enum`, `trait`, `impl` block | a symbol with `symbol_kind` | `symbol` |
 | a method in an `impl` | a symbol with `receiver` and `static` | `symbol` |
 | `use crate::db::get_user;` | a dependency tagged `internal` / `external` | `dependency` |
-| a constructor call | an `instantiates` relation | relation |
+| a call resolved to a declared symbol | a `calls` relation | relation |
+| a call whose target cannot be proven | a `calls_unresolved` relation | relation |
+| `Foo()` / `Foo::new()` / `Foo { … }` | an `instantiates` relation | relation |
+| `Some(x)` / `None` / `Result::Ok(x)` | `constructs_variant` plus its referenced type | relation |
 | `.route("/x", get(h))` (Axum) | a server route **at its composed mount path** | `route` |
 | `.nest("/p", other::router())` | folds `/p` onto every route the nested router declares | — |
 | `#[utoipa::path(get, path = "/x")]` on a handler | a server route, one per declared verb | `route` |
@@ -52,6 +55,25 @@ dependency src -> crate::db::get_user  src/api.rs:3   props: source=internal
 
 `static=true` distinguishes an associated function (`User::new`) from a method taking
 `self` — they have different call sites and different impact when changed.
+
+## Calls, constructions, and resolution
+
+Enola keeps syntax activity separate from architectural coupling. Only `calls` edges
+whose target is a symbol declared in the indexed graph contribute to call fan-out and
+hotspot ranking. Identical caller-target pairs count once there; their source-level
+invocation count is retained separately in `call_frequencies`.
+
+Within a file, Enola resolves bare calls to same-directory functions, `self`/`Self`
+calls to methods on the enclosing type, associated calls to methods declared for that
+type, and calls on parameters whose declared receiver type identifies such a method.
+Other method calls are retained as `calls_unresolved` rather than connected to every
+same-named method. A later graph-wide pass separates runtime/prelude and imported-package
+calls into `calls_runtime` and `calls_external`.
+
+Construction is not a call dependency: tuple constructors, associated constructors and
+struct literals use `instantiates`; enum/sum-type variants use `constructs_variant`; the
+owning data type is retained with `references_type`. These relations remain queryable but
+do not inflate architectural fan-out.
 
 ## Routes — Axum `.nest()` composed across files
 
@@ -172,8 +194,11 @@ actually uses it to be worth building.
   verb builder. There is no method to infer, and a guessed one could false-match
   another repository's endpoint, so the route is skipped rather than invented.
 - **Non-literal paths and mounts**, per the degradation rule above.
-- **Trait dispatch.** A call through `dyn Trait` resolves to the trait method, not to
-  every `impl`.
+- **Trait and inferred dispatch.** Calls through `dyn Trait`, generic type parameters,
+  inferred local variables, returned values and builder chains usually remain
+  `calls_unresolved`; Enola does not guess an implementation. Explicitly typed parameters
+  and methods declared for a known local type can resolve. Compiler or rust-analyzer type
+  information would be needed to close the remaining cases reliably.
 - **`cfg`-gated code** is parsed as written; enola does not evaluate feature flags, so all
   branches contribute facts.
 

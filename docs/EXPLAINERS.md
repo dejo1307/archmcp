@@ -66,7 +66,11 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   a `forbid_reach` membership too large to walk, which degrades to a single `0.4`
   advisory rather than guessing.
 - **Outlier tests.** `god-class`, `hotspots` and `complexity-outliers` compute a
-  distribution over your repository and flag what sits above `mean + 2σ`.
+  distribution over your repository and flag what sits above `mean + 2σ`. Hotspot
+  fan-out counts unique `calls` targets that resolve to declared symbols. Constructors,
+  enum variants, type references, runtime/external calls and unresolved calls remain
+  queryable evidence but do not make a symbol look like an architectural pinch point;
+  repeated invocations likewise do not increase its degree.
 - **Graph shape.** `dependency-depth` measures the longest transitive import chain;
   `exported-surface` flags large modules that export nearly everything.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
@@ -126,9 +130,12 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   monolith's symbols unreachable, which is the receiver-typing gap showing through
   rather than a finding about the monolith, so that verdict is not shipped.
   `dead-methods` asks the narrower question that gap leaves open: it looks a Ruby
-  method's bare name up in every call edge the graph holds and reports the names
-  nothing uses, and the names only specs use. A name-based index under-reports, so
-  what it lists is a candidate to delete, never a verdict.
+  method's bare name up in resolved calls, unresolved short-name calls and explicit
+  name references, then reports the names nothing uses and the names only specs use.
+  An unresolved call is weak usage evidence: it can keep a same-named method alive but
+  never creates architectural fan-in. This deliberately under-reports rather than
+  accusing a method whose receiver type Enola could not infer; every result remains a
+  candidate to delete, never a verdict.
 
   `vendored-candidates` is the one that reports so it will not have to act. It names
   directories that look like in-tree copies of another project — a licence file of

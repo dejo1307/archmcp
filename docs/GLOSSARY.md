@@ -16,7 +16,17 @@ by a model, never retrieved by similarity.
 
 **Relation / edge** — a typed link between facts: `imports`, `calls`, `declares`,
 `implements`. Relations live inside the fact that owns them, which is why two graphs can
-have identical fact counts and still differ.
+have identical fact counts and still differ. Calls use four confidence classes: `calls`
+lands on a symbol declared in the indexed graph, `calls_unresolved` records an invocation
+whose target is unknown, `calls_runtime` names a language runtime/standard-library/prelude
+operation, and `calls_external` lands in an imported package outside the graph.
+
+**Architectural degree vs invocation frequency** — degree asks how many *different*
+things a symbol connects to, so identical relation-target pairs count once. Invocation
+frequency asks how often the source contains that call and is retained separately in the
+fact's `call_frequencies` property. Repeating `send()` ten times is one possible dependency
+and ten invocations; unresolved, runtime, and external calls do not increase architectural
+centrality.
 
 **Extractor** — the per-language component that turns source into facts. One per
 language, each documented with the code that produces which fact in
@@ -43,14 +53,14 @@ vocabulary you type, not internals:
 | `unused-routes` | no client in this snapshot calls this route |
 | `messaging-coverage` | a messaging contract and the code implementing it do not match |
 | `god-class` | this symbol is depended on by far more than the average |
-| `hotspots` | this symbol is a pinch point — high fan-in *and* high fan-out |
+| `hotspots` | this symbol is a pinch point — high fan-in *and* unique resolved-call fan-out |
 | `dependency-depth` | this module sits at the end of an unusually long import chain |
 | `exported-surface` | this module is large and exports nearly all of it |
 | `complexity-outliers` | this function's cyclomatic complexity is an outlier for this repository |
 | `domain` | what a framework's declarations say about the data and the API |
 | `query-loops` | a database query issued once per iteration of a data-sized loop |
 | `entry-points` | a framework invokes this symbol directly, so reachability has a root here |
-| `dead-methods` | a Ruby method whose name no call edge in the graph uses, or only spec files use |
+| `dead-methods` | a Ruby method whose name no resolved or unresolved call evidence uses, or only spec files use |
 | `vendored-candidates` | a directory carrying its own licence under a conventional dependency parent — reported so you can decide, never excluded |
 
 Only the first four ever reach confidence `1.0`. The rest estimate — see

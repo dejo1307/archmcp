@@ -22,7 +22,7 @@ type Fact struct {
 
 // Relation represents a directed edge between two facts.
 type Relation struct {
-	Kind   string `json:"kind"`   // e.g. "declares", "imports", "calls", "implements", "depends_on"
+	Kind   string `json:"kind"`   // e.g. "declares", "imports", "calls", "calls_unresolved", "implements", "depends_on"
 	Target string `json:"target"` // Target fact name
 }
 

@@ -172,15 +172,18 @@ var allowedFactKinds = map[string]bool{
 // constants in internal/facts — an edge kind nothing traverses is an edge
 // nothing can act on, so it is rejected at the seam instead of aging silently.
 var allowedRelationKinds = map[string]bool{
-	facts.RelDeclares:     true,
-	facts.RelImports:      true,
-	facts.RelCalls:        true,
-	facts.RelImplements:   true,
-	facts.RelDependsOn:    true,
-	facts.RelInstantiates: true,
-	facts.RelInjects:      true,
-	facts.RelHasMethod:    true,
-	facts.RelHandledBy:    true,
+	facts.RelDeclares:        true,
+	facts.RelImports:         true,
+	facts.RelCalls:           true,
+	facts.RelCallsUnresolved: true,
+	facts.RelCallsRuntime:    true,
+	facts.RelCallsExternal:   true,
+	facts.RelImplements:      true,
+	facts.RelDependsOn:       true,
+	facts.RelInstantiates:    true,
+	facts.RelInjects:         true,
+	facts.RelHasMethod:       true,
+	facts.RelHandledBy:       true,
 }
 
 // Validate checks the configured provider list's shape at config load, with

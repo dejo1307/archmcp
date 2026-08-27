@@ -633,7 +633,7 @@ type queryFactsArgs struct {
 	Kind      string `json:"kind,omitempty" jsonschema:"Filter by fact kind: module, symbol, route, storage, dependency, or service (service = a whole repo, used as a node in the cross-repo graph)"`
 	File      string `json:"file,omitempty" jsonschema:"Filter by file path"`
 	Name      string `json:"name,omitempty" jsonschema:"Filter by name using substring match"`
-	Relation  string `json:"relation,omitempty" jsonschema:"Filter by relation kind: declares, imports, calls, implements, or depends_on"`
+	Relation  string `json:"relation,omitempty" jsonschema:"Filter by relation kind: declares, imports, calls, calls_unresolved, calls_runtime, calls_external, implements, or depends_on"`
 	Prop      string `json:"prop,omitempty" jsonschema:"Filter by property name (e.g. source, symbol_kind, exported, framework, storage_kind, role, method, unmatched_by_clients). output_mode=summary surfaces notable boolean flags (like unmatched_by_clients) present in the result set."`
 	PropValue string `json:"prop_value,omitempty" jsonschema:"Filter by property value (requires prop to be set)"`
 
@@ -1515,7 +1515,7 @@ func (s *Server) registerTools() {
 		Description: "Walk the dependency/call graph from a starting node. " +
 			"direction='forward' answers \"what does X depend on?\"; direction='reverse' answers \"what depends on X?\". " +
 			"start= accepts substring match plus scoped prefixes (repo:, kind:, file:) and package-qualified names (e.g. 'domain/cart.CartService') to disambiguate; returns ranked candidates with confidence when ambiguous. " +
-			"relation_kinds filter: imports, calls, declares, implements, depends_on, has_method. " +
+			"relation_kinds filter: imports, calls, calls_unresolved, calls_runtime, calls_external, declares, implements, depends_on, has_method. " +
 			"Forward traversal from a struct/interface follows has_method edges to its methods (and then their calls). " +
 			"Reverse traversal from a struct/interface automatically includes its methods and constructor as origins, so it surfaces callers (including cross-repo) that reference the type only through a method — matching impact_analysis. " +
 			"Note: interface method calls cannot be statically bound to a concrete implementation, so such call edges may be absent or appear as unresolved nodes. " +
@@ -2845,7 +2845,7 @@ type exploreArgs struct {
 type traverseArgs struct {
 	Start         string   `json:"start" jsonschema:"required,Starting node name (fact name, module name, or symbol name). Substring match; supports scoped prefixes repo:/kind:/file: to disambiguate (e.g. 'repo:go-auth kind:struct AuthHandler')."`
 	Direction     string   `json:"direction,omitempty" jsonschema:"'forward' follows outgoing relations (what does X depend on?), 'reverse' follows incoming relations (what depends on X?). Default: forward."`
-	RelationKinds []string `json:"relation_kinds,omitempty" jsonschema:"Filter to specific relation types: imports, calls, declares, implements, depends_on, has_method. Default: all."`
+	RelationKinds []string `json:"relation_kinds,omitempty" jsonschema:"Filter to specific relation types: imports, calls, calls_unresolved, calls_runtime, calls_external, declares, implements, depends_on, has_method. Default: all."`
 	MaxDepth      int      `json:"max_depth,omitempty" jsonschema:"Maximum traversal depth (1-20). Default: 5."`
 	MaxNodes      int      `json:"max_nodes,omitempty" jsonschema:"Maximum nodes to return (1-500). Traversal stops when this limit is reached. Default: 100."`
 	NodeKinds     []string `json:"node_kinds,omitempty" jsonschema:"Filter results to specific fact kinds: module, symbol, dependency, route, storage. Default: all."`

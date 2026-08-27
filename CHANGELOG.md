@@ -7,6 +7,25 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
+## Unreleased
+
+### Migration: call relations and receipt quality
+
+`calls` now means a call resolved to a symbol declared in the indexed graph. Calls that
+cannot be proven to land on such a symbol are retained under one of three additive
+relation kinds: `calls_unresolved` (target unknown), `calls_runtime` (language runtime,
+standard library, or prelude), and `calls_external` (an imported package outside the
+indexed graph). Degree and hotspot metrics deduplicate identical relation-target pairs;
+repeated invocation counts remain available in the source fact's `call_frequencies`
+property. Consumers that previously treated every call-like edge as architectural should
+continue to use only `calls`; consumers showing raw activity may include all four kinds.
+
+`snapshot.meta.json`, the per-snapshot `receipt.json`, and the graph receipt add an
+optional `call_resolution` object. It reports `invocations`, `unique`, `resolved`,
+`unresolved`, `runtime`, and `external`, plus the same counters under `by_language`.
+These are additive JSON fields and are omitted when unavailable; readers should ignore
+unknown fields and treat an absent object as “not reported,” not as zero unresolved calls.
+
 ## v0.4.8 — 2026-08-25
 
 **Declared dependencies become facts, and the gate reports how much of the law is excused**
@@ -594,4 +613,3 @@ A release remains a GitHub draft until binaries and checksums exist for every su
 ## v0.0.1
 
 **First public release**
-
