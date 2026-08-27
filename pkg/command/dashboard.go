@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/dashboard"
 	"github.com/enola-labs/enola/pkg/status"
@@ -89,7 +88,7 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	wd, _ := os.Getwd()
 	tracker.SetIdentity(status.Identity{
 		Binary:     r.name() + " dashboard",
-		Version:    version.Version,
+		Version:    r.buildVersion(),
 		ConfigPath: t.cfgPath,
 		WorkDir:    wd,
 	})
@@ -97,7 +96,13 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	defer tracker.Close()
 
 	port := dashboard.ResolveStablePort(t.engine.Config().Dashboard.Port)
-	dash, err := dashboard.Start(t.engine, dashboard.Options{Tracker: tracker, StablePort: port})
+	// The binary's own options — title, overlay panels, and the InsightLabels
+	// admission list that decides which explainers' findings the page will show at
+	// all. Tracker and StablePort are this command's to set, and are stamped over
+	// whatever the callback returned: they describe THIS process, not the binary.
+	opts := r.dashboardOptions(t.engine)
+	opts.Tracker, opts.StablePort = tracker, port
+	dash, err := dashboard.Start(t.engine, opts)
 	if err != nil {
 		r.dashboardFatal("starting dashboard: %v", err)
 	}

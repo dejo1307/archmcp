@@ -401,6 +401,7 @@ func binary() cli.Binary {
 		Name:       "enola",
 		CmdPackage: "./cmd/enola",
 		VersionVar: "github.com/enola-labs/enola/internal/version.Version",
+		Version:    version.Version,
 	}
 }
 
