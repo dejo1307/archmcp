@@ -17,7 +17,6 @@ import (
 	"github.com/enola-labs/enola/internal/diff"
 	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/internal/facts"
-	"github.com/enola-labs/enola/internal/updatecheck"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/check"
 	"github.com/enola-labs/enola/pkg/cli"
@@ -333,7 +332,14 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 			fmt.Printf("\n%s\n", verdict.Detail())
 		}
 	default:
-		out, err := verdict.Write(outFormat, outHost, *link)
+		out, err := verdict.Write(check.Output{
+			Format: outFormat,
+			Host:   outHost,
+			Link:   *link,
+			// A SARIF document is uploaded and attributed, so it names the
+			// binary that actually graded the change. See check.Tool.
+			Tool: check.Tool{Name: r.name(), Version: r.buildVersion()},
+		})
 		if err != nil {
 			r.checkFatal("failed to encode verdict: %v", err)
 		}
@@ -348,7 +354,7 @@ func (r *Runner) Check(ctx context.Context, args []string) {
 	if *write && cli.ShowDashboardHint(os.Stderr) {
 		fmt.Fprint(os.Stderr, cli.DashboardHint(r.name(), arg))
 	}
-	updatecheck.Fprint(os.Stderr, engine.ExtractorVersion())
+	r.updateNotice(os.Stderr)
 	os.Exit(verdict.ExitCode())
 }
 
@@ -414,7 +420,7 @@ func (r *Runner) cmdFatal(cmd, format string, args ...any) {
 // After the error, never before it: what failed is what they need first.
 func (r *Runner) writeFatal(w io.Writer, cmd, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, r.name()+" "+cmd+": "+format+"\n", args...)
-	updatecheck.Fprint(w, engine.ExtractorVersion())
+	r.updateNotice(w)
 }
 
 // runBaseline is `enola baseline pin|show|clear` — the CLI half of the loop, so the

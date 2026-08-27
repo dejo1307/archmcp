@@ -61,25 +61,38 @@ func ParseHost(s string) (Host, error) {
 	return "", fmt.Errorf("unknown host %q: expected buildkite or github", s)
 }
 
+// Output is everything a writer needs besides the verdict itself: which format
+// to render, and the two things only some formats read — the CI host the
+// annotations writer targets, and the tool identity the SARIF driver block is
+// attributed to. The zero value renders text as enola.
+type Output struct {
+	Format Format
+	Host   Host
+	Link   string
+	// Tool attributes a SARIF document to the binary that produced it. Ignored
+	// by every other format. Zero means enola; see Tool.
+	Tool Tool
+}
+
 // Write renders the verdict in the named format. Text is Render, JSON is JSON;
 // the two host writers are the new rows. Annotations need a host, because
 // without one there is no markup to write and an empty document would read
 // as "no findings".
-func (v Verdict) Write(format Format, host Host, link string) ([]byte, error) {
-	switch format {
+func (v Verdict) Write(o Output) ([]byte, error) {
+	switch o.Format {
 	case FormatText:
 		return []byte(v.Render()), nil
 	case FormatJSON:
 		return v.JSON()
 	case FormatSARIF:
-		return v.SARIF()
+		return v.SARIF(o.Tool)
 	case FormatAnnotations:
-		if host == HostNone {
+		if o.Host == HostNone {
 			return nil, fmt.Errorf("-format annotations needs -host buildkite or -host github")
 		}
-		return v.Annotations(host, link)
+		return v.Annotations(o.Host, o.Link)
 	}
-	return nil, fmt.Errorf("unknown format %q", format)
+	return nil, fmt.Errorf("unknown format %q", o.Format)
 }
 
 // bucket is one named section of the verdict, with the level a host should

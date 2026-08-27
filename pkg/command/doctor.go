@@ -13,7 +13,6 @@ import (
 	"github.com/enola-labs/enola/internal/hookstate"
 	"github.com/enola-labs/enola/internal/providers"
 	"github.com/enola-labs/enola/internal/updatecheck"
-	"github.com/enola-labs/enola/internal/version"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/check"
 )
@@ -71,7 +70,13 @@ func (r *Runner) Doctor(args []string) {
 	baselineIssue := r.baselineUsability(repoDir, outDir)
 
 	memLimit, memSource := bootstrap.MemoryLimit()
-	update := updatecheck.For(engine.ExtractorVersion())
+	// Zero — "nothing to say" — for a binary this manifest does not describe, so the
+	// --json contract carries the same silence the text output does rather than an
+	// answer to a question that was not asked. See Runner.selfUpgrades.
+	var update updatecheck.Notice
+	if r.selfUpgrades() {
+		update = updatecheck.For(engine.ExtractorVersion())
+	}
 
 	if *asJSON {
 		out := map[string]any{
@@ -96,7 +101,7 @@ func (r *Runner) Doctor(args []string) {
 	// at the top of every command's output, which is where it used to be.
 	fmt.Println("Runtime")
 	fmt.Printf("  %s\n", bootstrap.MemoryLimitLine())
-	fmt.Printf("  enola %s (extractors %s)\n", version.Version, engine.ExtractorVersion())
+	fmt.Printf("  %s %s (extractors %s)\n", r.name(), r.buildVersion(), engine.ExtractorVersion())
 	fmt.Println()
 
 	fmt.Println("Providers carried by this binary")
@@ -111,6 +116,12 @@ func (r *Runner) Doctor(args []string) {
 	// than leaving to be inferred from silence.
 	fmt.Println("Updates")
 	switch {
+	case !r.selfUpgrades():
+		// The manifest this check reads advertises enola releases. A wrapper ships
+		// on its own schedule with its own version numbers, so comparing the two
+		// would not report an upgrade — it would report the distance between two
+		// unrelated release streams. See Runner.selfUpgrades.
+		fmt.Printf("  not checked (%s ships through its own release path)\n", r.name())
 	case updatecheck.Suppressed():
 		fmt.Println("  not checked (disabled, or this is a dev build)")
 	case update.Available:

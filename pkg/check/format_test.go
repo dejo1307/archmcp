@@ -40,7 +40,7 @@ func formatVerdict() Verdict {
 }
 
 func TestSARIF_ShapeAndContents(t *testing.T) {
-	out, err := formatVerdict().SARIF()
+	out, err := formatVerdict().SARIF(Tool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,25 +195,25 @@ func TestAnnotations_GitHubWorkflowCommandsAndEscaping(t *testing.T) {
 func TestWrite_IsDeterministicAndTextAndJSONUnchanged(t *testing.T) {
 	v := formatVerdict()
 	for _, f := range []Format{FormatSARIF, FormatAnnotations} {
-		a, err := v.Write(f, HostGitHub, "")
+		a, err := v.Write(Output{Format: f, Host: HostGitHub})
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, _ := v.Write(f, HostGitHub, "")
+		b, _ := v.Write(Output{Format: f, Host: HostGitHub})
 		if !bytes.Equal(a, b) {
 			t.Fatalf("%s differs between two runs", f)
 		}
 	}
-	text, _ := v.Write(FormatText, HostNone, "")
+	text, _ := v.Write(Output{Format: FormatText})
 	if string(text) != v.Render() {
 		t.Fatal("text format must be Render, byte for byte")
 	}
-	js, _ := v.Write(FormatJSON, HostNone, "")
+	js, _ := v.Write(Output{Format: FormatJSON})
 	want, _ := v.JSON()
 	if !bytes.Equal(js, want) {
 		t.Fatal("json format must be JSON, byte for byte")
 	}
-	if _, err := v.Write(FormatAnnotations, HostNone, ""); err == nil {
+	if _, err := v.Write(Output{Format: FormatAnnotations}); err == nil {
 		t.Fatal("annotations without a host must refuse, never print an empty document")
 	}
 	if _, err := ParseFormat("yaml"); err == nil {

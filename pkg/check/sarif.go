@@ -94,6 +94,40 @@ const (
 	fingerprintKey = "enola/v1"
 )
 
+// Tool identifies the binary that produced a verdict, for the SARIF driver block
+// a consumer attributes its findings to.
+//
+// It is a parameter rather than the constant it used to be because a wrapper
+// binary produces verdicts too, and a SARIF document is uploaded rather than
+// read locally: GitHub code scanning keys alerts on the driver name, so an
+// `enola-enterprise check --format sarif` that declared itself "enola" would
+// merge its alerts into another tool's and stamp them with a version it was
+// never built at — enola's internal/version, which no wrapper stamps, so "dev".
+//
+// The zero value is enola, which is what keeps every existing caller correct.
+type Tool struct {
+	Name           string
+	Version        string
+	InformationURI string
+}
+
+// resolve fills the enola defaults for whatever the caller left empty.
+func (t Tool) resolve() Tool {
+	if t.Name == "" {
+		t.Name = "enola"
+	}
+	if t.Version == "" {
+		t.Version = version.Version
+	}
+	if t.InformationURI == "" {
+		// The engine's project page, deliberately, even for a wrapper: it is
+		// where the rules a reader has just been shown are documented.
+		t.InformationURI = "https://github.com/enola-labs/enola"
+	}
+	t.Version = strings.TrimPrefix(t.Version, "v")
+	return t
+}
+
 // SARIF renders the verdict as one SARIF 2.1.0 run: a rule per distinct rule
 // id with the team's reason as its short description, a result per finding in
 // every bucket, the region from the evidence the explainer measured, the
@@ -102,7 +136,8 @@ const (
 // position they had is on the baseline side and the tree may no longer have
 // that line. Suppressed and exempted findings carry the excuse that kept them
 // out of the gate, as a SARIF suppression.
-func (v Verdict) SARIF() ([]byte, error) {
+func (v Verdict) SARIF(tool Tool) ([]byte, error) {
+	driver := tool.resolve()
 	places := v.placements()
 	reasons := map[string]string{}
 	for _, p := range places {
@@ -158,9 +193,9 @@ func (v Verdict) SARIF() ([]byte, error) {
 		Version: sarifVer,
 		Runs: []sarifRun{{
 			Tool: sarifTool{Driver: sarifDriver{
-				Name:           "enola",
-				Version:        strings.TrimPrefix(version.Version, "v"),
-				InformationURI: "https://github.com/enola-labs/enola",
+				Name:           driver.Name,
+				Version:        driver.Version,
+				InformationURI: driver.InformationURI,
 				Rules:          rules,
 			}},
 			Results: results,
