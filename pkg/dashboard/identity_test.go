@@ -96,6 +96,64 @@ func TestPageListsLiveInstances(t *testing.T) {
 	}
 }
 
+// TestPageTracksInstancesJoiningAndLeaving exercises the lifecycle a user gets
+// from opening and closing agent tabs. The dashboard rebuilds its page model on
+// every request, so a sibling must appear without restarting the front door and
+// disappear again as soon as its registry record is removed.
+func TestPageTracksInstancesJoiningAndLeaving(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	tr := status.NewTracker("/tmp/my-repo")
+	tr.SetStartTime(time.Now())
+	tr.SetDashboardPort(8080)
+	tr.SetIdentity(status.Identity{Binary: "enola"})
+	tr.PersistStartup()
+	defer tr.Close()
+
+	s := newTestServer(8080, fakeArtifacts{}, Options{Tracker: tr})
+	render := func() string {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		return rec.Body.String()
+	}
+
+	if body := render(); strings.Contains(body, "joining-repo") {
+		t.Fatal("sibling is visible before it starts")
+	}
+
+	sibling := status.Instance{
+		PID:           os.Getppid(),
+		StartTime:     time.Now().Add(-time.Minute),
+		Heartbeat:     time.Now(),
+		Binary:        "enola",
+		DashboardPort: 54545,
+		Repos:         []status.InstanceRepo{{Label: "joining-repo", Path: "/tmp/joining"}},
+	}
+	registerForeign(t, sibling)
+	if body := render(); !strings.Contains(body, "joining-repo") ||
+		!strings.Contains(body, "http://127.0.0.1:54545") {
+		t.Fatal("new sibling did not appear on the next dashboard request")
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(home, ".enola", "instances",
+		fmt.Sprintf("%d-%d.json", sibling.PID, sibling.StartTime.UnixNano()))
+	if err := os.Remove(record); err != nil {
+		t.Fatal(err)
+	}
+	if body := render(); strings.Contains(body, "joining-repo") ||
+		strings.Contains(body, "http://127.0.0.1:54545") {
+		t.Fatal("departed sibling remained visible on the next dashboard request")
+	}
+}
+
 // TestPageWithoutTrackerStillRenders guards the zero-Options path: a caller that
 // supplies no tracker (as the tests and any minimal embedder do) must still get a
 // page rather than a nil dereference.

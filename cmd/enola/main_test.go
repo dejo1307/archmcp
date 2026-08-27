@@ -1,9 +1,25 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 )
+
+func TestIsNormalServerShutdown(t *testing.T) {
+	for _, err := range []error{context.Canceled, fmt.Errorf("transport stopped: %w", context.Canceled)} {
+		if !isNormalServerShutdown(err) {
+			t.Errorf("isNormalServerShutdown(%v) = false, want true", err)
+		}
+	}
+	for _, err := range []error{nil, context.DeadlineExceeded, errors.New("stdio failed")} {
+		if isNormalServerShutdown(err) {
+			t.Errorf("isNormalServerShutdown(%v) = true, want false", err)
+		}
+	}
+}
 
 // The memory flags are stripped before every other parser in this binary sees the
 // argument list, so the risk they carry is not their own behaviour but what they

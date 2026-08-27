@@ -36,6 +36,5 @@ func DashboardHint(binName, target string) string {
 	if target != "" {
 		open += fmt.Sprintf(" %q", target)
 	}
-	return fmt.Sprintf("\nExplore this snapshot in your browser:\n  %s\nIt starts in the background; stop it later with: %s dashboard stop\n",
-		open, binName)
+	return fmt.Sprintf("\nExplore this snapshot in your browser:\n  %s\nIt stays attached to the terminal; press Ctrl-C to stop it.\n", open)
 }

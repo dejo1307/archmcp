@@ -84,15 +84,17 @@ func TestDefaultHelp_DocumentsGateCommands(t *testing.T) {
 func TestDefaultHelp_PromotesDashboardLifecycle(t *testing.T) {
 	out := renderDefault(t)
 	for _, want := range []string{
-		"dashboard [--open] [--foreground]",
-		"dashboard <status|stop>",
+		"dashboard [--open]",
 		"dashboard --open",
-		"dashboard status",
-		"dashboard stop",
-		"--foreground",
+		"stop with Ctrl-C",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dashboard help %q missing:\n%s", want, out)
+		}
+	}
+	for _, removed := range []string{"dashboard status", "dashboard stop", "--foreground"} {
+		if strings.Contains(out, removed) {
+			t.Errorf("dashboard help still advertises removed command %q:\n%s", removed, out)
 		}
 	}
 
