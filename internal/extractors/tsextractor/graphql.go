@@ -99,6 +99,247 @@ func extractGraphQLClientOps(text, relFile, source string) []facts.Fact {
 	return out
 }
 
+// GraphQL server SDL — the server half of the seam for schema-first Node
+// GraphQL servers (Apollo, Yoga, Mercurius, express-graphql, graphql-http, and
+// schemas assembled with GraphQL Tools or GraphQL.js).
+//
+// A schema-first server names its SDL as a plain string or a gql-tagged
+// template (`type Query { … }`), which is a different
+// grammar from an operation document: a field carries a return type after `:`
+// or an argument list after `(`, where an operation's root field carries
+// neither. Root fields on Query/Mutation/Subscription (including `extend type`,
+// how a modular schema splits its root fields across files) become server-role
+// route facts, joinable against the same client route facts gql tags and
+// .graphql documents already produce. Resolver-to-field binding is a separate,
+// later capability — this reads only the schema surface, the way the
+// graphql-ruby field DSL does on the Ruby side.
+
+// graphqlServerSignal is deliberately a set of high-confidence constructor,
+// registration, and package-import signals. Package strings cover APIs whose
+// local import may be aliased; call shapes cover GraphQL.js and GraphQL Tools.
+// Apollo stops at the constructor name because TypeScript may insert a generic
+// argument list (`new ApolloServer<MyContext>(...)`).
+var graphqlServerSignal = regexp.MustCompile(`(?m)(?:\bnew\s+(?:ApolloServer|GraphQLServer)\b|\b(?:buildSchema|makeExecutableSchema|graphqlHTTP)\s*\(|["'](?:@apollo/server|apollo-server(?:-[a-z]+)?|graphql-yoga|mercurius|express-graphql|graphql-http|@graphql-tools/schema)(?:/[^"']*)?["'])`)
+
+// detectGraphQLServerUsage establishes repository context before files are
+// scanned in parallel. This lets schema.ts contribute typeDefs even when the
+// server construction lives in server.ts, without treating every client
+// repository's copied schema as a server surface.
+func detectGraphQLServerUsage(repoPath string, files []string) bool {
+	for _, relFile := range files {
+		if facts.IsTestPath(relFile) {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err == nil && graphqlServerSignal.Match(src) {
+			return true
+		}
+	}
+	return false
+}
+
+// serverSDLOpen matches a typeDefs/schema binding or direct buildSchema call
+// through its opening backtick. Both gql-tagged and plain templates are valid.
+var serverSDLOpen = regexp.MustCompile("(?:\\b(?:typeDefs|schema)\\s*[:=]\\s*(?:(?:gql|graphql)\\s*)?|\\bbuildSchema\\s*\\(\\s*)`")
+
+// sdlTypeBlock matches a Query/Mutation/Subscription root type declaration
+// through its opening brace.
+var sdlTypeBlock = regexp.MustCompile(`(?m)^\s*(?:extend\s+)?type\s+(Query|Mutation|Subscription)\b[^{]*\{`)
+
+// extractGraphQLServerSDL returns one server route per root field in candidate
+// SDL templates. The caller owns the repository-level server gate.
+func extractGraphQLServerSDL(src []byte, relFile string) []facts.Fact {
+	text := string(src)
+	var out []facts.Fact
+	seen := map[string]bool{}
+	for _, m := range serverSDLOpen.FindAllStringIndex(text, -1) {
+		open := m[1] - 1 // the backtick itself
+		body, _ := templateBody(text, open)
+		baseLine := 1 + strings.Count(text[:open], "\n")
+		for _, f := range sdlRootFields(body, relFile, baseLine) {
+			if seen[f.Name] {
+				continue
+			}
+			seen[f.Name] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// sdlRootFields returns one route fact per root field declared inside every
+// Query/Mutation/Subscription block of an SDL document, with line numbers
+// relative to baseLine (the document's own start line in its enclosing file).
+func sdlRootFields(body, relFile string, baseLine int) []facts.Fact {
+	var out []facts.Fact
+	for _, tm := range sdlTypeBlock.FindAllStringSubmatchIndex(body, -1) {
+		kind := body[tm[2]:tm[3]] // Query, Mutation, or Subscription
+		blockStart := tm[1]       // just after the opening brace
+		blockEnd := matchingBrace(body, blockStart)
+		blockLine := baseLine + strings.Count(body[:blockStart], "\n")
+		for _, field := range sdlFieldNames(body[blockStart:blockEnd]) {
+			out = append(out, facts.Fact{
+				Kind: facts.KindRoute,
+				Name: kind + "." + field.name,
+				File: relFile,
+				Line: blockLine + field.lineOffset,
+				Props: map[string]any{
+					"language":          "typescript",
+					"framework":         "graphql-sdl",
+					facts.PropRole:      facts.RoleServer,
+					facts.PropRouteType: facts.RouteTypeGraphQL,
+					facts.PropSource:    facts.RouteSourceGraphQLSDL,
+				},
+			})
+		}
+	}
+	return out
+}
+
+// matchingBrace returns the index into text of the closing brace matching the
+// opening one just before start (start is the position right after it), or
+// len(text) if the block is unterminated. Comments and string/block-string
+// values are skipped so braces in descriptions or default values do not alter
+// the structural depth.
+func matchingBrace(text string, start int) int {
+	depth := 1
+	i := start
+	for i < len(text) && depth > 0 {
+		switch text[i] {
+		case '#':
+			i = skipSDLComment(text, i)
+			continue
+		case '"':
+			i = skipSDLString(text, i)
+			continue
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
+		i++
+	}
+	if depth != 0 {
+		return len(text)
+	}
+	return i - 1
+}
+
+type sdlField struct {
+	name       string
+	lineOffset int
+}
+
+// sdlFieldNames reads direct field declarations in a root type body. It tracks
+// argument and nested-value depth so multiline arguments cannot masquerade as
+// fields, and skips GraphQL comments and string/block-string descriptions.
+func sdlFieldNames(block string) []sdlField {
+	var fields []sdlField
+	parenDepth, braceDepth, line := 0, 0, 0
+	for i := 0; i < len(block); {
+		switch {
+		case block[i] == '\n':
+			line++
+			i++
+		case block[i] == '#':
+			i = skipSDLComment(block, i)
+		case block[i] == '"':
+			next := skipSDLString(block, i)
+			line += strings.Count(block[i:next], "\n")
+			i = next
+		case block[i] == '(':
+			parenDepth++
+			i++
+		case block[i] == ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+			i++
+		case block[i] == '{':
+			braceDepth++
+			i++
+		case block[i] == '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+			i++
+		case parenDepth == 0 && braceDepth == 0 && isSDLIdentStart(block[i]):
+			start := i
+			i++
+			for i < len(block) && isSDLIdentChar(block[i]) {
+				i++
+			}
+			next := skipSDLTrivia(block, i)
+			if !precededBySDLDirective(block, start) && next < len(block) && (block[next] == '(' || block[next] == ':') {
+				fields = append(fields, sdlField{name: block[start:i], lineOffset: line})
+			}
+		default:
+			i++
+		}
+	}
+	return fields
+}
+
+func precededBySDLDirective(text string, i int) bool {
+	for i > 0 {
+		i--
+		if text[i] == ' ' || text[i] == '\t' || text[i] == '\r' || text[i] == '\n' || text[i] == ',' {
+			continue
+		}
+		return text[i] == '@'
+	}
+	return false
+}
+
+func skipSDLComment(text string, i int) int {
+	for i < len(text) && text[i] != '\n' {
+		i++
+	}
+	return i
+}
+
+func skipSDLString(text string, i int) int {
+	if strings.HasPrefix(text[i:], `"""`) {
+		if end := strings.Index(text[i+3:], `"""`); end >= 0 {
+			return i + 3 + end + 3
+		}
+		return len(text)
+	}
+	for i++; i < len(text); i++ {
+		if text[i] == '\\' {
+			i++
+			continue
+		}
+		if i < len(text) && text[i] == '"' {
+			return i + 1
+		}
+	}
+	return len(text)
+}
+
+func skipSDLTrivia(text string, i int) int {
+	for i < len(text) {
+		if text[i] == ',' || text[i] == ' ' || text[i] == '\t' || text[i] == '\r' || text[i] == '\n' {
+			i++
+			continue
+		}
+		if text[i] == '#' {
+			i = skipSDLComment(text, i)
+			continue
+		}
+		break
+	}
+	return i
+}
+
+func isSDLIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isSDLIdentChar(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
 // gqlTagOpen matches the opening of a gql`…` / graphql`…` tagged template.
 //
 // The leading class is load-bearing: a tag sits where an expression starts, so

@@ -253,12 +253,14 @@ const (
 	RouteSourceOpenAPI           = "openapi"            // OpenAPI/Swagger spec
 	RouteSourceOpenAPITypeScript = "openapi-typescript" // generated TS client from a spec
 
-	// GraphQL contract sources: the graphql-ruby field DSL (server), gql-tagged
-	// template literals (hand-written client operations), standalone .graphql
-	// operation documents (Apollo codegen inputs — client operations), and
-	// Ruby operation-string literals (a Rails service calling a sibling
-	// service's GraphQL API — client operations).
+	// GraphQL contract sources: the graphql-ruby field DSL (server), a
+	// schema-first Node server SDL (server), gql-tagged template
+	// literals (hand-written client operations), standalone .graphql operation
+	// documents (Apollo codegen inputs — client operations), and Ruby
+	// operation-string literals (a Rails service calling a sibling service's
+	// GraphQL API — client operations).
 	RouteSourceGraphQLRubyDSL    = "graphql-ruby-dsl"
+	RouteSourceGraphQLSDL        = "graphql-sdl"
 	RouteSourceGraphQLTag        = "graphql-tag"
 	RouteSourceGraphQLOperation  = "graphql-operation-file"
 	RouteSourceGraphQLRubyString = "graphql-ruby-string"
@@ -343,6 +345,7 @@ var NativeAppClientSources = map[string]bool{
 // and never telling the linker.
 var AllRouteSources = map[string]bool{
 	RouteSourceGraphQLRubyDSL:    true,
+	RouteSourceGraphQLSDL:        true,
 	RouteSourceGraphQLTag:        true,
 	RouteSourceGraphQLOperation:  true,
 	RouteSourceGraphQLRubyString: true,

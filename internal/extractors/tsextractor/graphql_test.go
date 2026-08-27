@@ -25,6 +25,177 @@ func TestGraphQLTag_ClientRootFields(t *testing.T) {
 	}
 }
 
+func TestGraphQLServerSDL_RootFieldsBecomeServerRoutes(t *testing.T) {
+	src := []byte(`import { ApolloServer } from '@apollo/server';
+const typeDefs = gql` + "`" + `
+  type Query {
+    books: [Book]
+    book(id: ID!): Book
+  }
+  type Mutation {
+    addBook(title: String!): Book
+  }
+` + "`" + `;
+const server = new ApolloServer({ typeDefs, resolvers });
+`)
+	ff := extractGraphQLServerSDL(src, "src/server.ts")
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+		if f.Props[facts.PropRole] != facts.RoleServer || f.Props[facts.PropRouteType] != facts.RouteTypeGraphQL ||
+			f.Props[facts.PropSource] != facts.RouteSourceGraphQLSDL {
+			t.Errorf("props = %v", f.Props)
+		}
+	}
+	want := []string{"Query.books", "Query.book", "Mutation.addBook"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+}
+
+func TestGraphQLServerSDL_PlainStringTypeDefs(t *testing.T) {
+	// Apollo Server accepts a plain (non-gql-tagged) template literal too.
+	src := []byte(`import { ApolloServer } from '@apollo/server';
+const typeDefs = ` + "`" + `
+  type Query {
+    ping: String
+  }
+` + "`" + `;
+new ApolloServer({ typeDefs });
+`)
+	ff := extractGraphQLServerSDL(src, "src/server.ts")
+	if len(ff) != 1 || ff[0].Name != "Query.ping" {
+		t.Fatalf("ff = %+v, want exactly Query.ping", ff)
+	}
+}
+
+func TestGraphQLServerSDL_InlineObjectShorthand(t *testing.T) {
+	// typeDefs declared directly inside the ApolloServer constructor call.
+	src := []byte(`new ApolloServer({
+  typeDefs: gql` + "`" + `
+    type Query {
+      viewer: User
+    }
+  ` + "`" + `,
+  resolvers,
+});
+`)
+	ff := extractGraphQLServerSDL(src, "src/server.ts")
+	if len(ff) != 1 || ff[0].Name != "Query.viewer" {
+		t.Fatalf("ff = %+v, want exactly Query.viewer", ff)
+	}
+}
+
+func TestGraphQLServerSDL_ExtendedType(t *testing.T) {
+	// A modular schema splits its root fields across files with "extend type".
+	src := []byte(`new ApolloServer({ typeDefs: gql` + "`" + `
+  extend type Query {
+    reviews: [Review]
+  }
+` + "`" + ` });
+`)
+	ff := extractGraphQLServerSDL(src, "src/reviews-schema.ts")
+	if len(ff) != 1 || ff[0].Name != "Query.reviews" {
+		t.Fatalf("ff = %+v, want exactly Query.reviews", ff)
+	}
+}
+
+func TestDetectGraphQLServerUsage_NoServerEmitsNothing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "schema.ts"), []byte("const typeDefs = gql`type Query { unrelated: String }`;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if detectGraphQLServerUsage(dir, []string{"schema.ts"}) {
+		t.Fatal("schema-only client repository was identified as a GraphQL server")
+	}
+}
+
+func TestGraphQLServerSDL_ArgsAndDirectivesDoNotProduceExtraFields(t *testing.T) {
+	src := []byte(`new ApolloServer({ typeDefs: gql` + "`" + `
+  type Query {
+    book(id: ID!, format: String = "hardcover"): Book @deprecated(reason: "use books")
+  }
+` + "`" + ` });
+`)
+	ff := extractGraphQLServerSDL(src, "src/server.ts")
+	if len(ff) != 1 || ff[0].Name != "Query.book" {
+		t.Fatalf("ff = %+v, want exactly one field Query.book (args/directives must not surface as fields)", ff)
+	}
+}
+
+func TestGraphQLServerSDL_MultilineArgumentsDoNotBecomeFields(t *testing.T) {
+	src := []byte("const typeDefs = gql`\n  type Query {\n    search(\n      query: String!\n      limit: Int\n    ): Results\n  }\n`;")
+	ff := extractGraphQLServerSDL(src, "src/schema.ts")
+	if len(ff) != 1 || ff[0].Name != "Query.search" {
+		t.Fatalf("ff = %+v, want exactly Query.search", ff)
+	}
+}
+
+func TestGraphQLServerSDL_BlockDescriptionsAndBracesInStrings(t *testing.T) {
+	src := []byte("const typeDefs = gql`\n  type Query {\n    \"\"\"Description: with { braces }\"\"\"\n    greeting(format: String = \"{name}\"): String\n    goodbye: String\n  }\n`;")
+	ff := extractGraphQLServerSDL(src, "src/schema.ts")
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+	}
+	want := []string{"Query.greeting", "Query.goodbye"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
+func TestDetectGraphQLServerUsage_ModularAndGenericConstructor(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "server.ts"), []byte("new ApolloServer<MyContext>({ typeDefs });"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "schema.ts"), []byte("export const typeDefs = gql`type Query { ping: String }`;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !detectGraphQLServerUsage(dir, []string{"server.ts", "schema.ts"}) {
+		t.Fatal("generic ApolloServer constructor was not detected repo-wide")
+	}
+	ff := extractGraphQLServerSDL([]byte("export const typeDefs = gql`type Query { ping: String }`;"), "schema.ts")
+	if len(ff) != 1 || ff[0].Name != "Query.ping" {
+		t.Fatalf("modular schema facts = %+v, want Query.ping", ff)
+	}
+}
+
+func TestGraphQLServerSDL_FrameworkNeutralForms(t *testing.T) {
+	src := []byte("const schema = gql`type Query { yoga: String }`;\nconst other = buildSchema(`type Mutation { publish: Boolean }`);")
+	ff := extractGraphQLServerSDL(src, "src/schema.ts")
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+		if f.Props["framework"] != "graphql-sdl" || f.Props[facts.PropSource] != facts.RouteSourceGraphQLSDL {
+			t.Fatalf("framework-neutral props = %v", f.Props)
+		}
+	}
+	want := []string{"Query.yoga", "Mutation.publish"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
+func TestDetectGraphQLServerUsage_CommonFrameworks(t *testing.T) {
+	for _, source := range []string{
+		`import { createYoga } from "graphql-yoga"`,
+		`import mercurius from "mercurius"`,
+		`import { graphqlHTTP } from "express-graphql"`,
+		`import { createHandler } from "graphql-http/lib/use/express"`,
+		`makeExecutableSchema({ typeDefs, resolvers })`,
+		`buildSchema(typeDefs)`,
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "server.ts"), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !detectGraphQLServerUsage(dir, []string{"server.ts"}) {
+			t.Errorf("server signal not detected in %q", source)
+		}
+	}
+}
+
 func TestGraphQLDoc_OperationFileAndSchemaCopy(t *testing.T) {
 	ops := extractGraphQLClientOps("query Profile {\n  me {\n    name\n  }\n}\n", "graphql/Profile.graphql", facts.RouteSourceGraphQLOperation)
 	if len(ops) != 1 || ops[0].Name != "Query.me" {
