@@ -211,6 +211,10 @@ func TestDetectGraphQLServerUsage_CommonFrameworks(t *testing.T) {
 		`import { createHandler } from "graphql-http/lib/use/express"`,
 		`makeExecutableSchema({ typeDefs, resolvers })`,
 		`buildSchema(typeDefs)`,
+		`import { Resolver, Query } from "@nestjs/graphql"`,
+		`import { Resolver, Query } from "type-graphql"`,
+		`import { queryField } from "nexus"`,
+		`import SchemaBuilder from "@pothos/core"`,
 	} {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, "server.ts"), []byte(source), 0o644); err != nil {
@@ -219,6 +223,87 @@ func TestDetectGraphQLServerUsage_CommonFrameworks(t *testing.T) {
 		if !detectGraphQLServerUsage(dir, []string{"server.ts"}).enabled {
 			t.Errorf("server signal not detected in %q", source)
 		}
+	}
+}
+
+func TestGraphQLCodeFirst_NestAndTypeGraphQLDecorators(t *testing.T) {
+	src := []byte(`import { Resolver, Query, Mutation, Subscription } from "@nestjs/graphql";
+@Resolver()
+class BooksResolver {
+  @Query(() => Book)
+  book() {}
+
+  @Mutation(() => Book, { name: "publishBook" })
+  publish() {}
+
+  @Subscription("bookChanged")
+  changed() {}
+}`)
+	ff := extractGraphQLCodeFirst(src, "src/books.resolver.ts")
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+	}
+	want := []string{"Query.book", "Mutation.publishBook", "Subscription.bookChanged"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
+func TestGraphQLCodeFirst_NexusAndPothosFields(t *testing.T) {
+	src := []byte(`import { queryField, mutationField } from "nexus";
+import SchemaBuilder from "@pothos/core";
+queryField("viewer", { type: "User", resolve() {} });
+mutationField("saveUser", { type: "User", resolve() {} });
+const builder = new SchemaBuilder({});
+builder.queryField("health", (t) => t.string({ resolve: () => "ok" }));
+builder.mutationField("publish", (t) => t.boolean({ resolve: () => true }));`)
+	ff := extractGraphQLCodeFirst(src, "src/schema.ts")
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+	}
+	want := []string{"Query.viewer", "Mutation.saveUser", "Query.health", "Mutation.publish"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
+func TestGraphQLCodeFirst_RequiresPackageProvenance(t *testing.T) {
+	src := []byte(`class Store { @Query() rows() {} }
+builder.queryField("notGraphQL", () => value);`)
+	if ff := extractGraphQLCodeFirst(src, "src/store.ts"); len(ff) != 0 {
+		t.Fatalf("unrelated APIs emitted GraphQL routes: %+v", ff)
+	}
+}
+
+func TestGraphQLClientCalls_GraphQLRequestAndPlainFetch(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"graphql-request", `import { request } from "graphql-request";
+const document = ` + "`query Viewer { viewer { id } }`" + `;
+request(endpoint, document);`, "Query.viewer"},
+		{"plain fetch", `fetch("/graphql", { method: "POST", body: JSON.stringify({
+  query: "mutation Save { save { id } }"
+}) });`, "Mutation.save"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ff := extractGraphQLClientCallFacts([]byte(tc.src), "src/client.ts")
+			if len(ff) != 1 || ff[0].Name != tc.want {
+				t.Fatalf("facts = %+v, want exactly %s", ff, tc.want)
+			}
+		})
+	}
+}
+
+func TestGraphQLClientCalls_RequireClientProvenance(t *testing.T) {
+	src := []byte("const documentation = `query Example { fake }`;")
+	if ff := extractGraphQLClientCallFacts(src, "src/docs.ts"); len(ff) != 0 {
+		t.Fatalf("unrelated operation-looking string emitted routes: %+v", ff)
 	}
 }
 

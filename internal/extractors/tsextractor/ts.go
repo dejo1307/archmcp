@@ -542,8 +542,10 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// the copies that predated it had drifted apart in both directions.
 	if !facts.IsTestPath(relFile) {
 		result = append(result, extractGraphQLTagFacts(src, relFile)...)
+		result = append(result, extractGraphQLClientCallFacts(src, relFile)...)
 		if graphqlServer.enabled {
 			result = append(result, extractGraphQLServerSDL(src, relFile)...)
+			result = append(result, extractGraphQLCodeFirst(src, relFile)...)
 		}
 		result = append(result, extractHTTPClientFacts(src, relFile)...)
 		// Call-registered server routes (Express/Fastify/Hono/Koa). Same test-path

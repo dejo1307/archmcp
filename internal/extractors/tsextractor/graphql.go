@@ -127,6 +127,8 @@ var graphqlServerPackages = map[string]bool{
 	"apollo-server-fastify": true, "apollo-server-koa": true,
 	"graphql-yoga": true, "mercurius": true, "express-graphql": true,
 	"graphql-http": true, "@graphql-tools/schema": true,
+	"@nestjs/graphql": true, "type-graphql": true, "nexus": true,
+	"@pothos/core": true,
 }
 
 type graphqlServerContext struct {
@@ -175,12 +177,180 @@ func possibleGraphQLServerSignal(src []byte) bool {
 		"ApolloServer", "GraphQLServer", "buildSchema", "makeExecutableSchema", "graphqlHTTP",
 		"@apollo/server", "apollo-server", "graphql-yoga", "mercurius", "express-graphql",
 		"graphql-http", "@graphql-tools/schema",
+		"@nestjs/graphql", "type-graphql", "nexus", "@pothos/core",
 	} {
 		if strings.Contains(text, token) {
 			return true
 		}
 	}
 	return false
+}
+
+// extractGraphQLCodeFirst reads root fields from the high-confidence code-first
+// APIs used by NestJS/TypeGraphQL, Nexus, and Pothos. Package provenance and
+// syntax are both required: a method called queryField, or an unrelated @Query
+// decorator, must not become a GraphQL route merely because its spelling fits.
+func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
+	text := string(src)
+	if !strings.Contains(text, "@nestjs/graphql") && !strings.Contains(text, "type-graphql") &&
+		!strings.Contains(text, "from 'nexus'") && !strings.Contains(text, `from "nexus"`) &&
+		!strings.Contains(text, "@pothos/core") {
+		return nil
+	}
+
+	lang := typescript.LanguageTypescript()
+	if strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx") {
+		lang = typescript.LanguageTSX()
+	}
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
+		return nil
+	}
+	tree := parser.Parse(src, nil)
+	defer tree.Close()
+	kinds := tsKindsFor(strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx"))
+
+	seen := map[string]bool{}
+	var out []facts.Fact
+	add := func(kind, name string, line int, source string) {
+		if name == "" {
+			return
+		}
+		full := kind + "." + name
+		if seen[full] {
+			return
+		}
+		seen[full] = true
+		out = append(out, facts.Fact{Kind: facts.KindRoute, Name: full, File: relFile, Line: line, Props: map[string]any{
+			"language": "typescript", "framework": "graphql-code-first",
+			facts.PropRole: facts.RoleServer, facts.PropRouteType: facts.RouteTypeGraphQL,
+			facts.PropSource: source,
+		}})
+	}
+
+	var walk func(*sitter.Node)
+	emitDecoratedMember := func(member *sitter.Node, decorators []*sitter.Node) {
+		method := findChildByKind(kinds, member, "property_identifier")
+		if method == nil {
+			method = findChildByKind(kinds, member, "identifier")
+		}
+		if method == nil {
+			return
+		}
+		for _, d := range decorators {
+			name, args := decoratorNameArgs(kinds, d, src)
+			root := map[string]string{"Query": "Query", "Mutation": "Mutation", "Subscription": "Subscription"}[name]
+			if root == "" {
+				continue
+			}
+			field := nodeText(method, src)
+			argText := ""
+			if args != nil {
+				argText = nodeText(args, src)
+			}
+			if explicit := graphqlDecoratorFieldName(argText); explicit != "" {
+				field = explicit
+			}
+			add(root, field, int(d.StartPosition().Row)+1, "graphql-decorator")
+		}
+	}
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		switch kindOf(kinds, n) {
+		case "class_body":
+			var pending []*sitter.Node
+			for i := range n.ChildCount() {
+				member := n.Child(i)
+				if kindOf(kinds, member) == "decorator" {
+					pending = append(pending, member)
+					continue
+				}
+				if !member.IsNamed() || kindOf(kinds, member) == "comment" {
+					continue
+				}
+				if kindOf(kinds, member) == "method_definition" || kindOf(kinds, member) == "public_field_definition" {
+					emitDecoratedMember(member, pending)
+				}
+				pending = nil
+			}
+		case "method_definition", "public_field_definition":
+			method := findChildByKind(kinds, n, "property_identifier")
+			if method == nil {
+				method = findChildByKind(kinds, n, "identifier")
+			}
+			if method != nil {
+				for i := range n.ChildCount() {
+					d := n.Child(i)
+					if kindOf(kinds, d) != "decorator" {
+						continue
+					}
+					emitDecoratedMember(n, []*sitter.Node{d})
+				}
+			}
+		case "call_expression":
+			fn := n.ChildByFieldName("function")
+			args := n.ChildByFieldName("arguments")
+			if fn != nil && args != nil {
+				callee := nodeText(fn, src)
+				field := firstGraphQLStringArgument(nodeText(args, src))
+				switch {
+				case strings.HasSuffix(callee, ".queryField"):
+					add("Query", field, int(n.StartPosition().Row)+1, "pothos")
+				case strings.HasSuffix(callee, ".mutationField"):
+					add("Mutation", field, int(n.StartPosition().Row)+1, "pothos")
+				case strings.HasSuffix(callee, ".subscriptionField"):
+					add("Subscription", field, int(n.StartPosition().Row)+1, "pothos")
+				case callee == "queryField":
+					add("Query", field, int(n.StartPosition().Row)+1, "nexus")
+				case callee == "mutationField":
+					add("Mutation", field, int(n.StartPosition().Row)+1, "nexus")
+				case callee == "subscriptionField":
+					add("Subscription", field, int(n.StartPosition().Row)+1, "nexus")
+				}
+			}
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(tree.RootNode())
+	return out
+}
+
+var graphqlDecoratorName = regexp.MustCompile(`\bname\s*:\s*["']([_A-Za-z][_0-9A-Za-z]*)["']`)
+var graphqlLeadingString = regexp.MustCompile(`^\s*\(\s*["']([_A-Za-z][_0-9A-Za-z]*)["']`)
+
+func graphqlDecoratorFieldName(args string) string {
+	if m := graphqlDecoratorName.FindStringSubmatch(args); m != nil {
+		return m[1]
+	}
+	// TypeGraphQL supports @Query(() => Type, { name: "field" }); NestJS also
+	// permits @Query("field"). The latter is the only positional string form.
+	if m := graphqlLeadingString.FindStringSubmatch(args); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+func firstGraphQLStringArgument(args string) string {
+	args = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(args), "("), ")"))
+	if len(args) < 2 || (args[0] != '\'' && args[0] != '"') {
+		return ""
+	}
+	quote := args[0]
+	for i := 1; i < len(args); i++ {
+		if args[i] == '\\' {
+			i++
+			continue
+		}
+		if args[i] == quote {
+			return args[1:i]
+		}
+	}
+	return ""
 }
 
 func isHasuraSDLPath(path string) bool {
@@ -604,5 +774,79 @@ func extractGraphQLTagFacts(src []byte, relFile string) []facts.Fact {
 		}
 		at = end
 	}
+	return out
+}
+
+// extractGraphQLClientCallFacts covers clients that accept a document without
+// a gql tag: graphql-request/urql request calls and plain fetch bodies with a
+// `query` property. Only static string/template nodes containing an explicit
+// operation are read. The package or fetch-body evidence is mandatory, keeping
+// GraphQL examples in arbitrary strings inert.
+func extractGraphQLClientCallFacts(src []byte, relFile string) []facts.Fact {
+	text := string(src)
+	knownClient := strings.Contains(text, "graphql-request") || strings.Contains(text, "@urql/") ||
+		strings.Contains(text, `from "urql"`) || strings.Contains(text, "from 'urql'")
+	fetchBody := strings.Contains(text, "fetch(") && strings.Contains(text, "query:")
+	if !knownClient && !fetchBody {
+		return nil
+	}
+
+	lang := typescript.LanguageTypescript()
+	if strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx") {
+		lang = typescript.LanguageTSX()
+	}
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
+		return nil
+	}
+	tree := parser.Parse(src, nil)
+	defer tree.Close()
+	kinds := tsKindsFor(strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx"))
+	seen := map[string]bool{}
+	var out []facts.Fact
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		kind := kindOf(kinds, n)
+		if kind == "string" || kind == "template_string" {
+			eligible := knownClient
+			if !eligible && fetchBody {
+				if parent := n.Parent(); parent != nil && kindOf(kinds, parent) == "pair" {
+					pair := strings.TrimSpace(nodeText(parent, src))
+					eligible = strings.HasPrefix(pair, "query:") || strings.HasPrefix(pair, `"query":`) || strings.HasPrefix(pair, `'query':`)
+				}
+			}
+			if !eligible {
+				for i := range n.ChildCount() {
+					walk(n.Child(i))
+				}
+				return
+			}
+			start := int(n.StartByte())
+			prefix := text[max(0, start-12):start]
+			// gql`...` and graphql`...` are handled by extractGraphQLTagFacts.
+			if !strings.HasSuffix(strings.TrimSpace(prefix), "gql") && !strings.HasSuffix(strings.TrimSpace(prefix), "graphql") {
+				body := nodeText(n, src)
+				if len(body) >= 2 {
+					body = body[1 : len(body)-1]
+					for _, f := range extractGraphQLClientOps(body, relFile, "graphql-client-call") {
+						if seen[f.Name] {
+							continue
+						}
+						seen[f.Name] = true
+						f.Line += int(n.StartPosition().Row)
+						out = append(out, f)
+					}
+				}
+			}
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(tree.RootNode())
 	return out
 }
