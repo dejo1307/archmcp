@@ -469,12 +469,17 @@ against a server's root fields. This is the client half of the seam.
 
 The server half reads SDL used by Apollo Server, GraphQL Yoga, Mercurius,
 express-graphql, graphql-http, GraphQL Tools, and GraphQL.js `buildSchema`. A schema may
-be a plain template literal or a `gql`-tagged one, assigned through `typeDefs` or
-`schema`. Each `Query`/`Mutation`/`Subscription` root field (including one declared with
-`extend type`) becomes a server-role route fact with the same name shape as the client
-side. Detection is repository-wide, so a constructor in `server.ts` activates a modular
-SDL definition in `schema.ts`; a client-only repository carrying a schema copy remains
-inert because it has no GraphQL server signal.
+be a plain template literal or a `gql`-tagged one, assigned through `typeDefs`, `schema`,
+or conventional suffixed bindings such as `gqlSchema` and `userTypeDefs`; TypeScript
+annotations such as `const schema: string = ...` are accepted. Standalone `.graphql` and
+`.gql` schema documents are read when a server file imports them or they live under
+Hasura's metadata convention; unrelated benchmark and schema-copy documents stay inert. Each
+`Query`/`Mutation`/`Subscription` root field (including one declared with `extend type`)
+becomes a server-role route fact with the same name shape as the client side. Detection
+is repository-wide and syntax-based, so a constructor in `server.ts` activates a modular
+SDL definition in `schema.ts`, while a `buildSchema(...)` example in documentation does
+not. A client-only repository carrying a schema copy remains inert because it has no
+GraphQL server signal.
 
 This reads the schema surface only: which root fields exist, not which resolver
 implements one. Resolver-to-field binding — matching a `resolvers.Query.book` handler

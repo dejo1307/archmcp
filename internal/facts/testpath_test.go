@@ -20,6 +20,7 @@ func TestIsTestPath(t *testing.T) {
 		{"go testdata", "internal/engine/testdata/repos/x/main.go", true},
 		{"test-support package", "internal/testutil/helpers.go", true},
 		{"fixtures tree", "src/dashboard/fixtures/mockNativeFilters.ts", true},
+		{"camel-case integration tests", "integrationTests/node/index.mjs", true},
 		{"python shared test support", "tests_common/pytest_plugins.py", true},
 
 		// Filename conventions — ONLY the tool-enforced ones. A compiler or runner

@@ -105,7 +105,7 @@ func TestDetectGraphQLServerUsage_NoServerEmitsNothing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "schema.ts"), []byte("const typeDefs = gql`type Query { unrelated: String }`;"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if detectGraphQLServerUsage(dir, []string{"schema.ts"}) {
+	if detectGraphQLServerUsage(dir, []string{"schema.ts"}).enabled {
 		t.Fatal("schema-only client repository was identified as a GraphQL server")
 	}
 }
@@ -152,7 +152,7 @@ func TestDetectGraphQLServerUsage_ModularAndGenericConstructor(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "schema.ts"), []byte("export const typeDefs = gql`type Query { ping: String }`;"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !detectGraphQLServerUsage(dir, []string{"server.ts", "schema.ts"}) {
+	if !detectGraphQLServerUsage(dir, []string{"server.ts", "schema.ts"}).enabled {
 		t.Fatal("generic ApolloServer constructor was not detected repo-wide")
 	}
 	ff := extractGraphQLServerSDL([]byte("export const typeDefs = gql`type Query { ping: String }`;"), "schema.ts")
@@ -177,6 +177,32 @@ func TestGraphQLServerSDL_FrameworkNeutralForms(t *testing.T) {
 	}
 }
 
+func TestGraphQLServerSDL_TypedAndSuffixedBindings(t *testing.T) {
+	src := []byte("const schema: string = `type Query { viewer: User }`;\nexport const userTypeDefs: SDL = gql`type Mutation { save: Boolean }`;\nconst gqlSchema = `type Subscription { changed: Event }`;")
+	ff := extractGraphQLServerSDL(src, "src/schema.ts")
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+	}
+	want := []string{"Query.viewer", "Mutation.save", "Subscription.changed"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
+func TestGraphQLServerSDL_StandaloneSchemaDocument(t *testing.T) {
+	src := []byte("type Query {\n  lastOffers: [Offer!]!\n}\n\ntype Mutation {\n  publish(id: ID!): Boolean!\n}\n")
+	ff := extractGraphQLServerSDLDocument(src, "hasura/metadata/actions.graphql")
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+	}
+	want := []string{"Query.lastOffers", "Mutation.publish"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
 func TestDetectGraphQLServerUsage_CommonFrameworks(t *testing.T) {
 	for _, source := range []string{
 		`import { createYoga } from "graphql-yoga"`,
@@ -190,9 +216,48 @@ func TestDetectGraphQLServerUsage_CommonFrameworks(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "server.ts"), []byte(source), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if !detectGraphQLServerUsage(dir, []string{"server.ts"}) {
+		if !detectGraphQLServerUsage(dir, []string{"server.ts"}).enabled {
 			t.Errorf("server signal not detected in %q", source)
 		}
+	}
+}
+
+func TestDetectGraphQLServerUsage_CommentsDoNotActivateServer(t *testing.T) {
+	dir := t.TempDir()
+	src := []byte("/** Example: const schema = buildSchema(`type Query { fake: String }`); */\nexport function validate() {}")
+	if err := os.WriteFile(filepath.Join(dir, "library.ts"), src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if detectGraphQLServerUsage(dir, []string{"library.ts"}).enabled {
+		t.Fatal("buildSchema documentation example activated GraphQL server detection")
+	}
+	if ff := extractGraphQLServerSDL(src, "library.ts"); len(ff) != 0 {
+		t.Fatalf("documentation example emitted server routes: %+v", ff)
+	}
+}
+
+func TestDetectGraphQLServerUsage_StandaloneSDLRequiresProvenance(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"server.ts":                `import schema from "./schema.graphql"; buildSchema(schema)`,
+		"schema.graphql":           `type Query { real: String }`,
+		"benchmark/github.graphql": `type Query { fixture: String }`,
+	}
+	for path, body := range files {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := detectGraphQLServerUsage(dir, []string{"server.ts", "schema.graphql", "benchmark/github.graphql"})
+	if !ctx.sdlDocuments["schema.graphql"] {
+		t.Fatal("server-imported schema.graphql lacks provenance")
+	}
+	if ctx.sdlDocuments["benchmark/github.graphql"] {
+		t.Fatal("unreferenced benchmark schema was promoted to a server schema")
 	}
 }
 

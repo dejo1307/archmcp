@@ -6,8 +6,11 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/gqlscan"
+	sitter "github.com/tree-sitter/go-tree-sitter"
+	typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
 // GraphQL client operations — the client half of the GraphQL seam.
@@ -119,28 +122,149 @@ func extractGraphQLClientOps(text, relFile, source string) []facts.Fact {
 // local import may be aliased; call shapes cover GraphQL.js and GraphQL Tools.
 // Apollo stops at the constructor name because TypeScript may insert a generic
 // argument list (`new ApolloServer<MyContext>(...)`).
-var graphqlServerSignal = regexp.MustCompile(`(?m)(?:\bnew\s+(?:ApolloServer|GraphQLServer)\b|\b(?:buildSchema|makeExecutableSchema|graphqlHTTP)\s*\(|["'](?:@apollo/server|apollo-server(?:-[a-z]+)?|graphql-yoga|mercurius|express-graphql|graphql-http|@graphql-tools/schema)(?:/[^"']*)?["'])`)
+var graphqlServerPackages = map[string]bool{
+	"@apollo/server": true, "apollo-server": true, "apollo-server-express": true,
+	"apollo-server-fastify": true, "apollo-server-koa": true,
+	"graphql-yoga": true, "mercurius": true, "express-graphql": true,
+	"graphql-http": true, "@graphql-tools/schema": true,
+}
 
-// detectGraphQLServerUsage establishes repository context before files are
-// scanned in parallel. This lets schema.ts contribute typeDefs even when the
-// server construction lives in server.ts, without treating every client
-// repository's copied schema as a server surface.
-func detectGraphQLServerUsage(repoPath string, files []string) bool {
+type graphqlServerContext struct {
+	enabled      bool
+	sdlDocuments map[string]bool
+}
+
+// detectGraphQLServerUsage establishes repository context through syntax, not
+// text: examples in comments and strings must not turn a library into a server.
+// It also records standalone SDL documents with direct provenance (an import by
+// a server-construction file, or Hasura's metadata convention).
+func detectGraphQLServerUsage(repoPath string, files []string) graphqlServerContext {
+	ctx := graphqlServerContext{sdlDocuments: map[string]bool{}}
 	for _, relFile := range files {
 		if facts.IsTestPath(relFile) {
 			continue
 		}
+		if isGraphQLDocFile(relFile) {
+			if isHasuraSDLPath(relFile) {
+				ctx.enabled = true
+				ctx.sdlDocuments[filepath.ToSlash(relFile)] = true
+			}
+			continue
+		}
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
-		if err == nil && graphqlServerSignal.Match(src) {
+		if err != nil {
+			continue
+		}
+		if !possibleGraphQLServerSignal(src) {
+			continue
+		}
+		server, imports := graphQLServerASTSignals(src, relFile)
+		if server {
+			ctx.enabled = true
+			for _, imported := range imports {
+				ctx.sdlDocuments[imported] = true
+			}
+		}
+	}
+	return ctx
+}
+
+func possibleGraphQLServerSignal(src []byte) bool {
+	text := string(src)
+	for _, token := range []string{
+		"ApolloServer", "GraphQLServer", "buildSchema", "makeExecutableSchema", "graphqlHTTP",
+		"@apollo/server", "apollo-server", "graphql-yoga", "mercurius", "express-graphql",
+		"graphql-http", "@graphql-tools/schema",
+	} {
+		if strings.Contains(text, token) {
 			return true
 		}
 	}
 	return false
 }
 
-// serverSDLOpen matches a typeDefs/schema binding or direct buildSchema call
-// through its opening backtick. Both gql-tagged and plain templates are valid.
-var serverSDLOpen = regexp.MustCompile("(?:\\b(?:typeDefs|schema)\\s*[:=]\\s*(?:(?:gql|graphql)\\s*)?|\\bbuildSchema\\s*\\(\\s*)`")
+func isHasuraSDLPath(path string) bool {
+	p := "/" + strings.ToLower(filepath.ToSlash(path)) + "/"
+	return strings.Contains(p, "/hasura/metadata/")
+}
+
+func graphQLServerASTSignals(src []byte, relFile string) (bool, []string) {
+	lang := typescript.LanguageTypescript()
+	if strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx") {
+		lang = typescript.LanguageTSX()
+	}
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
+		return false, nil
+	}
+	tree := parser.Parse(src, nil)
+	defer tree.Close()
+	kinds := tsKindsFor(strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx"))
+	root := tree.RootNode()
+	server := false
+	var gqlImports []string
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		switch kindOf(kinds, n) {
+		case "import_statement":
+			if source := findChildByKind(kinds, n, "string"); source != nil {
+				path := strings.Trim(nodeText(source, src), `"'`)
+				base := path
+				if strings.HasPrefix(base, "@") {
+					parts := strings.Split(base, "/")
+					if len(parts) >= 2 {
+						base = parts[0] + "/" + parts[1]
+					}
+				} else if i := strings.IndexByte(base, '/'); i >= 0 {
+					base = base[:i]
+				}
+				if graphqlServerPackages[base] {
+					server = true
+				}
+				if isGraphQLDocFile(path) && strings.HasPrefix(path, ".") {
+					gqlImports = append(gqlImports, factpath.Clean(factpath.Join(factpath.Dir(relFile), path)))
+				}
+			}
+		case "new_expression":
+			if ctor := n.ChildByFieldName("constructor"); ctor != nil {
+				name := nodeText(ctor, src)
+				if i := strings.IndexByte(name, '<'); i >= 0 {
+					name = name[:i]
+				}
+				if name == "ApolloServer" || name == "GraphQLServer" {
+					server = true
+				}
+			}
+		case "call_expression":
+			if fn := n.ChildByFieldName("function"); fn != nil {
+				name := nodeText(fn, src)
+				if name == "buildSchema" || name == "makeExecutableSchema" || name == "graphqlHTTP" {
+					server = true
+				}
+			}
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	if !server {
+		return false, nil
+	}
+	return true, gqlImports
+}
+
+// serverSDLOpen matches an SDL binding/object property or direct buildSchema
+// call through its opening backtick. Bindings may carry a TypeScript annotation
+// (`const schema: string = ...`) and modular schemas commonly use suffixed names
+// (`gqlSchema`, `userTypeDefs`). Object properties stay restricted to the
+// conventional schema/typeDefs keys so an arbitrary fooSchema property is not
+// promoted merely because the repository also runs a GraphQL server.
+var serverSDLOpen = regexp.MustCompile("(?:(?:\\b(?:typeDefs|schema|[A-Za-z_$][A-Za-z0-9_$]*(?:TypeDefs|Schema))\\s*(?::\\s*[^=\\n]+)?\\s*=)|(?:\\b(?:typeDefs|schema)\\s*:)|(?:\\bbuildSchema\\s*\\())\\s*(?:(?:gql|graphql)\\s*)?`")
 
 // sdlTypeBlock matches a Query/Mutation/Subscription root type declaration
 // through its opening brace.
@@ -149,7 +273,14 @@ var sdlTypeBlock = regexp.MustCompile(`(?m)^\s*(?:extend\s+)?type\s+(Query|Mutat
 // extractGraphQLServerSDL returns one server route per root field in candidate
 // SDL templates. The caller owns the repository-level server gate.
 func extractGraphQLServerSDL(src []byte, relFile string) []facts.Fact {
-	text := string(src)
+	raw := string(src)
+	if !strings.Contains(raw, "`") ||
+		(!strings.Contains(raw, "schema") && !strings.Contains(raw, "Schema") &&
+			!strings.Contains(raw, "typeDefs") && !strings.Contains(raw, "TypeDefs") &&
+			!strings.Contains(raw, "buildSchema")) {
+		return nil
+	}
+	text := string(blankTSComments(src, relFile))
 	var out []facts.Fact
 	seen := map[string]bool{}
 	for _, m := range serverSDLOpen.FindAllStringIndex(text, -1) {
@@ -165,6 +296,48 @@ func extractGraphQLServerSDL(src []byte, relFile string) []facts.Fact {
 		}
 	}
 	return out
+}
+
+func blankTSComments(src []byte, relFile string) []byte {
+	lang := typescript.LanguageTypescript()
+	if strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx") {
+		lang = typescript.LanguageTSX()
+	}
+	parser := sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
+		return src
+	}
+	tree := parser.Parse(src, nil)
+	defer tree.Close()
+	out := append([]byte(nil), src...)
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		if n.Kind() == "comment" {
+			for i := int(n.StartByte()); i < int(n.EndByte()) && i < len(out); i++ {
+				if out[i] != '\n' && out[i] != '\r' {
+					out[i] = ' '
+				}
+			}
+			return
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(tree.RootNode())
+	return out
+}
+
+// extractGraphQLServerSDLDocument handles schema-first servers that load SDL
+// from standalone .graphql/.gql files (Hasura metadata and loader-based Node
+// servers are common examples). Repository context is established by the
+// caller; this function only parses the document surface.
+func extractGraphQLServerSDLDocument(src []byte, relFile string) []facts.Fact {
+	return sdlRootFields(string(src), relFile, 1)
 }
 
 // sdlRootFields returns one route fact per root field declared inside every
