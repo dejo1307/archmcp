@@ -17,21 +17,49 @@ byte-stable across runs on an unchanged tree.
 | `repo` | string | always | Repository label: the repository's own name taken from its git remote, or its directory name when there is no usable remote. A single-repo snapshot carries it too, with the same value on every fact — a snapshot is multi-repo when more than one distinct value appears, not when the field is present |
 | `props` | object | when set | Kind-specific properties — per-kind sections below |
 | `relations` | array of Relation | when set | Directed edges to other facts |
+| `id` | string, 32 hex chars | always | This fact's identity — [Identity and ids](#identity-and-ids). Emitted last on every line |
 
 ## Relation object
 
 | Field | Type | Meaning |
 |---|---|---|
 | `kind` | string | Relation kind — [Relation kinds](#relation-kinds) |
-| `target` | string | The target fact's **name** (not a file path, not an ID) |
+| `target` | string | The target fact's **name** |
+| `target_id` | string, 32 hex chars, when set | The `id` of the fact this target names, when the name resolves to exactly one — [Identity and ids](#identity-and-ids) |
 
-Targets are resolved by name within the snapshot. A consumer that links edges
-must match `target` against fact names, preferring facts in the same repo when
-a name occurs in several.
+Link an edge by `target_id` where it is present: it names the fact directly, and
+no name matching is involved. Where it is absent the name did not resolve to one
+fact, and the consumer decides what to do with `target` — the same position every
+consumer was in before ids existed.
 
-## Identity and name rules
+Absent is the normal case for a target that names something the snapshot does
+not contain: a standard-library or third-party symbol has no fact to point at.
+Measured on a 20,808-fact snapshot: of 48,225 relations, 57.1% carry a
+`target_id`, 42.8% name something outside the snapshot, and 0.05% are genuinely
+ambiguous.
 
-`(repo, kind, name)` is the identity CONVENTION — what enola's own resolution
+## Identity and ids
+
+Every fact carries an `id`: `sha256(repo \0 kind \0 name \0 file)`, truncated to
+128 bits and written as 32 lowercase hex characters. It is a pure function of
+those four fields, so the same tree yields the same ids on any machine and in any
+run, and it excludes `line`, so an id survives code moving down a file.
+
+An id is an IDENTITY, not a serial number. Facts that agree on all four fields
+share one — a file importing the same target at two statements, two overloads
+declared at different lines. Measured on a 20,808-fact snapshot: 482 ids cover
+706 facts. Those repeats are the same thing recorded twice, so a consumer keying
+nodes on `id` merges them, which is the outcome you want. Adding `line` to the id
+would not make it unique either (244 repeats survive it) and would cost the
+stability above.
+
+Ids are for consumers. Nothing inside enola reads them: its own graph is keyed on
+`name`, so the ids are computed when the file is written and never held in
+memory.
+
+### The name rules underneath
+
+`(repo, kind, name)` is the older identity CONVENTION — what enola's own resolution
 keys on, and what a relation `target` spells. It is not a uniqueness guarantee.
 `facts.jsonl` is the log of what the extractors emitted, not a deduplicated node
 set, so the same triple can occur on several lines: two symbols sharing a name
@@ -39,14 +67,12 @@ in different files, or one import edge reached from several files. In a large
 snapshot a few percent of triples repeat, most of them `dependency` facts, and
 the repeats usually differ in `file`/`line`.
 
-A consumer that keys nodes on the triple therefore MERGES those repeats into one
-node and keeps whichever `file`/`line` it saw first. That is lossy but sound for
-the questions the triple answers (which module depends on which). A consumer
-that needs the finer distinction keys on `(repo, kind, name, file)` and must
-then accept that a relation `target`, which carries only the name, resolves to a
-SET of nodes rather than to one — the ambiguity enola resolves internally and
-this format currently discards. Dropping `repo` from the key is never correct:
-in a multi-repo snapshot it merges facts from different repositories.
+A consumer that keys nodes on the triple therefore merges same-named facts from
+different files into one node — two functions called `main`, a type and a
+function sharing a name. Keying on `id` instead is what separates them, and is
+the reason to prefer it: the id is the triple plus `file`. Dropping `repo` is
+never correct either way; in a multi-repo snapshot it merges facts from different
+repositories.
 
 Name normalization: for path-shaped kinds (`module`, `test_ref`, `file_ref`)
 the store normalizes `name` to forward slashes. No other kind's name is

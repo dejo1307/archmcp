@@ -877,6 +877,13 @@ func (s *Store) Graph() *Graph {
 	return s.graph
 }
 
+// Byte cost of the two wire-only id fields, for the size estimate: `,"id":"…"`
+// with a 32-character value, and `,"target_id":"…"` likewise.
+const (
+	idFieldBytes       = len(`,"id":""`) + 2*idBytes
+	idTargetFieldBytes = len(`,"target_id":""`) + 2*idBytes
+)
+
 // estimateJSONLSize guesses the serialized size of ff by marshalling a sample and
 // extrapolating, so WriteJSONL can allocate its buffer once.
 //
@@ -901,7 +908,11 @@ func estimateJSONLSize(ff []Fact) int {
 		if err != nil {
 			continue // the real pass reports it; the estimate just skips it
 		}
-		total += len(b) + 1 // + the newline
+		// A Fact marshals without the two id fields the wire shape adds, so
+		// count them here. Assuming every relation resolves over-estimates (most
+		// corpora resolve about half), which is the safe direction: too small
+		// restores the append growth this exists to avoid.
+		total += len(b) + 1 + idFieldBytes + idTargetFieldBytes*len(ff[i].Relations)
 		n++
 	}
 	if n == 0 {
@@ -916,6 +927,10 @@ func estimateJSONLSize(ff []Fact) int {
 // a given commit, so the snapshot is reproducible and incremental regenerations
 // don't churn the file. Relations are sorted on a copy so the in-memory store is
 // left untouched.
+//
+// This is also where each fact's id and each relation's target_id are computed
+// (see wire.go and id.go). They are written and never stored, so no internal
+// reader can come to depend on them.
 func (s *Store) WriteJSONL(w io.Writer) error {
 	s.mu.RLock()
 
@@ -936,19 +951,35 @@ func (s *Store) WriteJSONL(w io.Writer) error {
 	// Over-estimating slightly is cheaper than either.
 	buf := make([]byte, 0, estimateJSONLSize(s.facts))
 	starts := make([]int, 0, len(s.facts)+1)
+	// One scratch relation slice for the whole pass. Relations are marshalled
+	// immediately, so the previous fact's are dead by the time the next one
+	// overwrites them, and a per-fact allocation here would be paid 39M times on
+	// the largest graph.
+	rels := make([]wireRelation, 0, 8)
+	var idScratch []byte
+	var factID string
 	for _, f := range s.facts {
-		if len(f.Relations) > 1 {
-			rels := make([]Relation, len(f.Relations))
-			copy(rels, f.Relations)
+		rels = rels[:0]
+		for _, r := range f.Relations {
+			wr := wireRelation{Relation: r}
+			if t := s.targetFactFor(r.Target, f.Repo); t >= 0 {
+				tf := s.facts[t]
+				wr.TargetID, idScratch = factIDInto(idScratch, tf.Repo, tf.Kind, tf.Name, tf.File)
+			}
+			rels = append(rels, wr)
+		}
+		if len(rels) > 1 {
 			sort.Slice(rels, func(i, j int) bool {
 				if rels[i].Kind != rels[j].Kind {
 					return rels[i].Kind < rels[j].Kind
 				}
 				return rels[i].Target < rels[j].Target
 			})
-			f.Relations = rels
 		}
-		b, err := json.Marshal(f)
+		// f is a copy, and its own Relations field is shadowed by the one below,
+		// so neither the store's facts nor their relation slices are touched.
+		factID, idScratch = factIDInto(idScratch, f.Repo, f.Kind, f.Name, f.File)
+		b, err := json.Marshal(wireFact{Fact: f, Relations: rels, ID: factID})
 		if err != nil {
 			s.mu.RUnlock()
 			return fmt.Errorf("encoding fact %q: %w", f.Name, err)

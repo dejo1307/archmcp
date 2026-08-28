@@ -29,10 +29,16 @@ database from exactly these files.
   when a new one lands undocumented, because these pages are the contract.
 - The prop keys and values that form a cross-package contract, the constants in
   `internal/facts/contract.go` and `internal/facts/model.go`.
-- The identity convention: a fact is identified by `(repo, kind, name)`, and a
-  relation target references a fact by `name`. It is a convention, not a
-  uniqueness guarantee — [facts.md, Identity and name rules](facts.md#identity-and-name-rules)
-  says what a consumer keying on it merges.
+- Fact ids: every fact carries an `id`, and a relation carries `target_id` when
+  its target name resolves to exactly one fact. The id is
+  `sha256(repo, kind, name, file)` truncated to 128 bits — a pure function of the
+  tree, identical on every machine. Link edges by `target_id` where it is
+  present; where it is absent, resolve `target` by name as before.
+  [facts.md, Identity and ids](facts.md#identity-and-ids) covers what an id does
+  and does not promise.
+- The identity convention underneath: a fact is named by `(repo, kind, name)`,
+  and a relation target references a fact by `name`. It is a convention, not a
+  uniqueness guarantee.
 
 ## What is not stable
 
@@ -49,7 +55,9 @@ the receipt describes. Current value: **1**.
 
 - Additive changes — a new optional field, a new kind or prop value — do not
   bump it. A consumer that does not know about them ignores them, which is the
-  correct behavior for optional data.
+  correct behavior for optional data. Fact ids arrived this way: `format_version`
+  stayed at 1, and a consumer detects them by their presence rather than by the
+  number.
 - Renaming or removing a documented field, changing the identity convention,
   or redefining an existing value's meaning bumps it. A bump ships in a major
   release and is called out in CHANGELOG.md, because consumers that pin an
