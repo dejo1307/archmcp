@@ -17,6 +17,7 @@ import (
 var testSegments = map[string]bool{
 	"test": true, "tests": true, "testing": true,
 	"testutil": true, "testutils": true, "testdata": true,
+	"integrationTests": true, "integration_tests": true,
 	"mock": true, "mocks": true,
 	"fixture": true, "fixtures": true,
 	"spec": true, "specs": true,

@@ -253,7 +253,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// the parallel pass because a client's stub and its call sites usually live
 	// in different files.
 	grpcStubs := buildGRPCStubIndex(repoPath, tsFiles)
-	hasGraphQLServer := detectGraphQLServerUsage(repoPath, tsFiles)
+	graphqlServer := detectGraphQLServerUsage(repoPath, tsFiles)
 
 	perFile := parallel.MapFiles(ctx, tsFiles, func(relFile string) tsFileResult {
 		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
@@ -270,7 +270,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 		aliases := aliasesForDir(aliasRoots, factpath.Dir(relFile))
 		var res tsFileResult
-		res.facts, res.angular, res.angularRouter, res.angularInline, res.angularHTTP = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, hasGraphQLServer, orms, aliases, knownFiles, nuxtAutoComponents, grpcStubs)
+		res.facts, res.angular, res.angularRouter, res.angularInline, res.angularHTTP = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, graphqlServer, orms, aliases, knownFiles, nuxtAutoComponents, grpcStubs)
 		// Routers, mounts and held-back routes for the repo-wide mount pass below.
 		// Collected here because resolving an import needs this file's path aliases,
 		// which are in scope only during the per-file walk. Same test-path gate as
@@ -479,7 +479,7 @@ type extractCtx struct {
 	aliases     map[string]tsAlias  // this directory's tsconfig path aliases, for resolving an import written as a bare specifier
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, hasGraphQLServer bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, nuxtAutoComponents map[string]string, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate, *angularHTTPFile) {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, graphqlServer graphqlServerContext, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, nuxtAutoComponents map[string]string, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate, *angularHTTPFile) {
 	// The grammar is chosen here, so the kind table is too: TypeScript and TSX assign
 	// different meanings to the same symbol ids, and everything below reads node kinds
 	// through this table. See kinds.go.
@@ -495,6 +495,11 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	if isGraphQLDocFile(relFile) {
 		if facts.IsTestPath(relFile) {
 			return nil, angularCounts{}, nil, nil, nil
+		}
+		if graphqlServer.sdlDocuments[filepath.ToSlash(relFile)] {
+			if routes := extractGraphQLServerSDLDocument(src, relFile); len(routes) > 0 {
+				return routes, angularCounts{}, nil, nil, nil
+			}
 		}
 		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation), angularCounts{}, nil, nil, nil
 	}
@@ -537,7 +542,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// the copies that predated it had drifted apart in both directions.
 	if !facts.IsTestPath(relFile) {
 		result = append(result, extractGraphQLTagFacts(src, relFile)...)
-		if hasGraphQLServer {
+		if graphqlServer.enabled {
 			result = append(result, extractGraphQLServerSDL(src, relFile)...)
 		}
 		result = append(result, extractHTTPClientFacts(src, relFile)...)
