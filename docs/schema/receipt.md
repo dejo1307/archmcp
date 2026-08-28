@@ -1,56 +1,53 @@
 # receipt.json
 
-A single JSON object: the compact, machine-readable manifest of what a
-snapshot was generated over and how complete the extraction was. It is a
-projection of `snapshot.meta.json` (the internal superset, which adds the
-per-file hash list and is not a stable contract).
+`receipt.json` describes a generated snapshot and its extraction quality. It is
+a projection of the internal `snapshot.meta.json` artifact.
 
-Do not confuse it with `~/.enola/receipt.json` — the graph-wide manifest of
-the current multi-repo "graph of graphs" (which repos compose it, when each
-entered). That file is machine-global state, not a per-snapshot artifact.
+This repository-local artifact is separate from `~/.enola/receipt.json`, which
+describes the current graph across repositories.
 
 ## Fields
 
 | Field | Type | Meaning |
 |---|---|---|
-| `snapshot_id` | string, `"sha256:..."` | Content fingerprint: SHA-256 over the byte-stable fact serialization plus the enola version and effective config hash. Same inputs → same ID, on any machine |
-| `format_version` | int | The generation of the artifact format this receipt describes — [README, Versioning](README.md#versioning). Current: 1. Zero means not stamped by the current writer; treat as unknown |
-| `enola_version` | string | The build that produced the snapshot (`dev` for local builds) |
-| `extractor_version` | string, when set | The extraction BEHAVIOUR — bumped whenever an extractor starts reading something differently. Differs from `enola_version` for every local build, where the latter is the constant `dev` |
-| `generated_at` | string, RFC3339 | When the snapshot was written |
-| `duration` | string | How long generation took |
-| `repo_path` | string | Absolute path of the analyzed repository |
-| `git` | object, when a git repo | `{ref, commit, dirty, remote}` — the VCS state at snapshot time. `remote` is normalized to a comparable identity (`github.com/org/repo` — no scheme, credentials, port or `.git` suffix) |
-| `extractors` / `explainers` / `renderers` | array of string | The plugin sets actually used |
-| `providers` | array, when set | One record per configured external fact provider. `name`, `fact_count`, and `version` / `skipped` / `reason` when set are the contract — skips are recorded rather than dropped. A record may carry further diagnostic counters (cache reuse, a per-provider census, agreement with the extractor's own reading of the same call sites); those are reporting detail, not contract, and a consumer must not branch on them |
-| `config_hash` | string, `"sha256:..."`, when set | Hash of the effective configuration (extractors, explainers, renderers, globs, output). A differing hash between two snapshots explains churn that is a config change rather than a code change |
-| `ignore_glob_hash` | string, `"sha256:..."`, when set | Hash of the sorted ignore+test globs (a subset of `config_hash`) |
-| `output_hashes` | object, when set | Artifact name → `"sha256:"` hash of its written bytes (`facts.jsonl`, `insights.json`, renderer outputs) |
-| `fact_count` / `insight_count` | int | Totals in this snapshot |
-| `quality` | object | Extraction-completeness metrics — below |
+| `snapshot_id` | string, `"sha256:..."` | SHA-256 fingerprint of the fact serialization, enola version, and effective configuration hash |
+| `format_version` | int | Artifact format generation. Current value: `1`; treat `0` as unknown |
+| `enola_version` | string | Build that produced the snapshot; local builds use `dev` |
+| `extractor_version` | string, when set | Extraction-behavior version used for cache and compatibility checks |
+| `generated_at` | string, RFC3339 | Snapshot write time |
+| `duration` | string | Generation duration |
+| `repo_path` | string | Absolute analyzed repository path |
+| `git` | object, when a Git repository | `{ref, commit, dirty, remote}` at snapshot time. `remote` is normalized without scheme, credentials, port, or `.git` suffix |
+| `extractors` / `explainers` / `renderers` | array of string | Plugins used during generation |
+| `providers` | array, when set | External provider records. Contract fields are `name`, `fact_count`, and, when set, `version`, `skipped`, and `reason`; other counters are diagnostic |
+| `config_hash` | string, `"sha256:..."`, when set | Hash of the effective configuration |
+| `ignore_glob_hash` | string, `"sha256:..."`, when set | Hash of sorted ignore and test globs |
+| `output_hashes` | object, when set | Artifact filename to SHA-256 hash of written bytes |
+| `fact_count` / `insight_count` | int | Artifact record counts |
+| `quality` | object | Extraction-quality fields described below |
+
+`snapshot_id` remains stable when its fact serialization, enola version, and
+configuration hash remain stable. Repository labels are part of fact identity;
+without a usable Git remote they depend on the checkout directory name.
+
+The receipt itself is not byte-stable because `generated_at`, `duration`, and
+`repo_path` can change between runs or machines.
 
 ## quality
 
 | Field | Meaning |
 |---|---|
-| `files_seen` | Source files the walker enumerated (excludes ignored) |
+| `files_seen` | Source files enumerated by the walker, excluding ignored files |
 | `files_parsed` | Distinct files that produced at least one fact |
-| `files_skipped` / `dirs_skipped` | Ignored files visited / ignored directories pruned whole (their contents are counted nowhere else) |
-| `skipped_sample` | A capped sample of both, each naming the glob that matched it |
-| `parse_errors` | Count of extractor detect/parse failures (non-fatal) |
-| `parse_error_sample` | A capped sample: `{extractor, file?, msg}` |
-| `heuristic_insights` | Count of insights with confidence < 1.0 (heuristics, vs structural findings) |
-| `coverage` | object, multi-repo mode only — `{services_total, coverage_gaps, unresolved_edges, external_edges?, extractors_reporting?, extraction_unresolved?}`: the cross-repo edge-coverage rollup |
-| `census` | object — per-file walk accounting: `{files_walked, parsed, excluded_by_ignore, excluded_by_kind, excluded_kinds?, skipped_with_cause, top_skip_causes?}`. The buckets sum back to `files_walked`, so no file can quietly fall out of the account |
+| `files_skipped` / `dirs_skipped` | Ignored files visited and ignored directories pruned |
+| `skipped_sample` | Capped sample of skipped paths and their matching globs |
+| `parse_errors` | Non-fatal extractor detection or parsing failures |
+| `parse_error_sample` | Capped sample of `{extractor, file?, msg}` records |
+| `heuristic_insights` | Insights with confidence below `1.0` |
+| `coverage` | Multi-repo coverage summary: `{services_total, coverage_gaps, unresolved_edges, external_edges?, extractors_reporting?, extraction_unresolved?}` |
+| `census` | File accounting: `{files_walked, parsed, excluded_by_ignore, excluded_by_kind, excluded_kinds?, skipped_with_cause, top_skip_causes?}` |
 
-The receipt's own field names are pinned by `internal/facts/wireformat_test.go`,
-like the other artifacts': renaming one — `format_version` above all, which is
-how a consumer decides whether it can read the rest — fails the build.
-
-## Reading quality
-
-A consumer that trusts a graph should read `quality` first: `parse_errors > 0`,
-a small `files_parsed` against `files_seen`, or a non-empty `excluded_kinds`
-names the files and languages this graph is blind to. A zero everywhere is a
-real answer ("could not see: nothing"), which is why the object is written even
-then.
+Read `quality` before accepting a snapshot. `parse_errors`, the relationship
+between `files_parsed` and `files_seen`, and `census.excluded_kinds` indicate
+possible extraction gaps. They are signals to surface, not universal rejection
+thresholds.

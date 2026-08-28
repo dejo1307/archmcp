@@ -1,14 +1,14 @@
 # facts.jsonl
 
-One fact per line, JSON. Facts are sorted before serialization, so the file is
-byte-stable across runs on an unchanged tree.
+One JSON fact per line. Facts and their relations are sorted before
+serialization.
 
 ## Fact object
 
 | Field | Type | Present when | Meaning |
 |---|---|---|---|
 | `kind` | string | always | Fact kind — [Fact kinds](#fact-kinds) |
-| `name` | string | always | Canonical name. For path-shaped kinds (`module`, `test_ref`, `file_ref`) the name IS a repo-relative path |
+| `name` | string | always | Canonical name. For path-shaped kinds (`module`, `test_ref`, `file_ref`), this is a repo-relative path |
 | `file` | string | when set | Source file, relative to the repo root; prefixed `<repo>/` in multi-repo mode |
 | `line` | int | when measured | 1-based start line |
 | `end_line` | int | when measured | 1-based end line of the span |
@@ -17,7 +17,7 @@ byte-stable across runs on an unchanged tree.
 | `repo` | string | always | Repository label: the repository's own name taken from its git remote, or its directory name when there is no usable remote. A single-repo snapshot carries it too, with the same value on every fact — a snapshot is multi-repo when more than one distinct value appears, not when the field is present |
 | `props` | object | when set | Kind-specific properties — per-kind sections below |
 | `relations` | array of Relation | when set | Directed edges to other facts |
-| `id` | string, 32 hex chars | always | This fact's identity — [Identity and ids](#identity-and-ids). Emitted last on every line |
+| `id` | string, 32 lowercase hex chars | current writers: always; historical version-1 writers: when supported | Fact identity — [Identity and IDs](#identity-and-ids) |
 
 ## Relation object
 
@@ -25,54 +25,48 @@ byte-stable across runs on an unchanged tree.
 |---|---|---|
 | `kind` | string | Relation kind — [Relation kinds](#relation-kinds) |
 | `target` | string | The target fact's **name** |
-| `target_id` | string, 32 hex chars, when set | The `id` of the fact this target names, when the name resolves to exactly one — [Identity and ids](#identity-and-ids) |
+| `target_id` | string, 32 lowercase hex chars, when set | Resolved target identity — [Relation target resolution](#relation-target-resolution) |
 
-Link an edge by `target_id` where it is present: it names the fact directly, and
-no name matching is involved. Where it is absent the name did not resolve to one
-fact, and the consumer decides what to do with `target` — the same position every
-consumer was in before ids existed.
+Use `target_id` when present. When absent, preserve `target` as an unresolved
+reference. It may name an external target, be ambiguous, or come from a
+historical writer that did not emit IDs.
 
-Absent is the normal case for a target that names something the snapshot does
-not contain: a standard-library or third-party symbol has no fact to point at.
-Measured on a 20,808-fact snapshot: of 48,225 relations, 57.1% carry a
-`target_id`, 42.8% name something outside the snapshot, and 0.05% are genuinely
-ambiguous.
+### Relation target resolution
 
-## Identity and ids
+Current writers resolve `target_id` using the source fact's repository:
 
-Every fact carries an `id`: `sha256(repo \0 kind \0 name \0 file)`, truncated to
-128 bits and written as 32 lowercase hex characters. It is a pure function of
-those four fields, so the same tree yields the same ids on any machine and in any
-run, and it excludes `line`, so an id survives code moving down a file.
+1. Find facts named `target` in the source fact's repository.
+2. Emit an ID if all local matches have the same identity.
+3. If there is no local match, emit an ID only if all matches across the
+   snapshot have the same identity.
 
-An id is an IDENTITY, not a serial number. Facts that agree on all four fields
-share one — a file importing the same target at two statements, two overloads
-declared at different lines. Measured on a 20,808-fact snapshot: 482 ids cover
-706 facts. Those repeats are the same thing recorded twice, so a consumer keying
-nodes on `id` merges them, which is the outcome you want. Adding `line` to the id
-would not make it unique either (244 repeats survive it) and would cost the
-stability above.
+Do not choose an arbitrary fact when `target_id` is absent.
 
-Ids are for consumers. Nothing inside enola reads them: its own graph is keyed on
-`name`, so the ids are computed when the file is written and never held in
-memory.
+## Identity and IDs
+
+Current writers compute `id` as `sha256(repo \0 kind \0 name \0 file)`, truncated
+to 128 bits and written as 32 lowercase hex characters. The ID excludes source
+positions, so it remains stable when code moves within the same file.
+
+The ID identifies `(repo, kind, name, file)`; it does not uniquely identify a
+JSONL record. Facts with the same four values share an ID. A consumer
+materializing one node per ID must combine relations and define how it retains
+locations and conflicting props. Preserve the original JSONL records when raw
+record fidelity is required.
+
+ID stability requires all four inputs to remain stable. `repo` normally comes
+from the Git remote's repository name and falls back to the checkout directory
+name when no usable remote exists. Remote-less checkouts under different
+directory names therefore produce different IDs.
 
 ### The name rules underneath
 
-`(repo, kind, name)` is the older identity CONVENTION — what enola's own resolution
-keys on, and what a relation `target` spells. It is not a uniqueness guarantee.
-`facts.jsonl` is the log of what the extractors emitted, not a deduplicated node
-set, so the same triple can occur on several lines: two symbols sharing a name
-in different files, or one import edge reached from several files. In a large
-snapshot a few percent of triples repeat, most of them `dependency` facts, and
-the repeats usually differ in `file`/`line`.
+Enola's internal graph resolves relation targets by name. `facts.jsonl` is not a
+deduplicated node set, so `(repo, kind, name)` and `name` are not uniqueness
+guarantees.
 
-A consumer that keys nodes on the triple therefore merges same-named facts from
-different files into one node — two functions called `main`, a type and a
-function sharing a name. Keying on `id` instead is what separates them, and is
-the reason to prefer it: the id is the triple plus `file`. Dropping `repo` is
-never correct either way; in a multi-repo snapshot it merges facts from different
-repositories.
+Use `id` rather than `(repo, kind, name)` to keep same-named facts from different
+files separate. Retain `repo`; removing it merges identities across repositories.
 
 Name normalization: for path-shaped kinds (`module`, `test_ref`, `file_ref`)
 the store normalizes `name` to forward slashes. No other kind's name is
@@ -91,7 +85,7 @@ fact's name exactly as that fact carries it.
 | `storage` | table / bucket / topic name | yes (`declares`) | Databases, object stores, messaging topics |
 | `dependency` | `<importer> -> <target>` for an import edge; the package name for a declared external package | yes (`imports`) | Import edges and declared packages |
 | `service` | repository label | yes (`depends_on`) | A whole repo — multi-repo (append) mode only |
-| `intent` | the declared entry's name | yes | DECLARED architecture from enola-intent.yaml — stated, not measured from source |
+| `intent` | the declared entry's name | yes | Architecture declared in `enola-intent.yaml`, not measured from source |
 | `extraction` | `<extractor>:<account>` (e.g. `ruby:calls`) | no | An extractor's own coverage account for one repo |
 | `association` | `Model#macro` (e.g. `Order#items`) or `Child<Parent` for an STI chain | no | A framework model relationship (Rails belongs_to/has_many, ...) |
 | `test_ref` | test file path | yes (`calls`, `instantiates`) | Reference-only: which production symbols a test exercises. Test files are otherwise excluded from indexing |
@@ -132,16 +126,16 @@ Contract props:
 
 ### dependency
 
-- `source`: where the import RESOLVES TO — `internal` | `external` | `stdlib`.
+- `source`: where the import resolves — `internal` | `external` | `stdlib`.
   This is a second, unrelated vocabulary on the same prop key as route's
   `source`, discriminated by the fact's kind. Reading `source` without first
   checking kind gets a value from the wrong vocabulary.
-- `type`: `package` marks a DECLARED external package (read from a manifest)
+- `type`: `package` marks a declared external package read from a manifest
   rather than an import edge between this repository's own modules. In
   multi-repo mode two further values name cross-repo facts: `cross_repo` is a
   real directional edge (one repo imports or calls the other) and is the only
-  one carrying a `depends_on` relation, while `cross_repo_shared_code` is a
-  SYMMETRIC coupling — two repos declaring the same distinctive type names,
+  one carrying a `depends_on` relation. `cross_repo_shared_code` is a
+  symmetric coupling: two repos declaring the same distinctive type names,
   with no relation attached, because shared code is not a dependency and does
   not compose across hops.
 - `ecosystem`: the packaging system a declared package was declared in — `go` |
@@ -151,7 +145,7 @@ Contract props:
   resolves by name alone.
 - `via`: how a cross-repo edge was established — [Via kinds](#via-kinds)
   (multi-repo mode).
-- `coupling_kind`: on a SYNTHETIC module-coupling edge (one derived from
+- `coupling_kind`: on a synthetic module-coupling edge derived from
   references rather than read from an import statement), which reference
   produced it — `reference` (constant-receiver call), `inheritance`, `mixin`,
   `association` (ActiveRecord has_many/belongs_to, which is bidirectional by
@@ -227,7 +221,7 @@ adding them to coupling metrics.
 
 | Kind | Meaning |
 |---|---|
-| `declares` | Source is DECLARED IN target: the edge is emitted on the declared fact (a symbol, route or storage) and points at the `module` that contains it. There is no module-to-symbol edge in the other direction — a consumer building a containment tree must read this edge child-to-parent |
+| `declares` | Source is declared in target. A symbol, route, or storage fact points to its containing `module`; no inverse module-to-child relation is emitted |
 | `imports` | Source imports/depends on target (module or package) |
 | `calls` | Source calls target |
 | `implements` | Source implements/extends target (an interface, a base class) |
@@ -244,7 +238,7 @@ adding them to coupling metrics.
 The `source` prop on a route fact: which extractor pass or contract format
 produced it.
 
-Hand-written HTTP call sites (a human wrote the request):
+HTTP client call sites:
 
 | Value | Meaning |
 |---|---|
@@ -260,7 +254,7 @@ Hand-written HTTP call sites (a human wrote the request):
 | `scala-http-client` | sttp / Play WS / http4s client |
 | `dart-http-client` | Dart package:http / dio / chopper call site or annotated interface |
 
-Hand-written gRPC call sites: `go-grpc-client`, `ts-grpc-client`,
+gRPC client call sites: `go-grpc-client`, `ts-grpc-client`,
 `python-grpc-client`.
 
 Contract-derived routes (read from a spec or IDL — an interface, not a call
@@ -293,8 +287,6 @@ edge was established.
 ## Descriptive props
 
 Props outside the contract — `language`, `exported`, `handler`, `superclass`,
-line counts, complexity metrics — are metadata. Extractors add and remove them
-freely; a consumer must not branch on their presence or values. The contract
-props are exactly the ones documented above, registered in
-`internal/facts/contract.go` and `internal/facts/model.go`, with conformance
-tests that fail the build when a writer invents an unregistered value.
+line counts, complexity metrics — are metadata. Extractors can add or remove
+them without changing `format_version`; consumers must not require them. The
+contract props are the ones documented above.

@@ -6,6 +6,7 @@ Start with the page closest to what you need:
 - **Installing, configuring or scripting it?** Use [CLI.md](CLI.md).
 - **Want to see the loop once, end to end?** Follow [FIRST-CHANGE.md](FIRST-CHANGE.md).
 - **More than one repository?** Follow [CLUSTERS.md](CLUSTERS.md).
+- **Building a tool on Enola's graph?** Read [INTEGRATING.md](INTEGRATING.md).
 - **Using Rails specifically?** Follow [RAILS.md](RAILS.md).
 - **Understanding the engine?** Read [ARCHITECTURE.md](../ARCHITECTURE.md).
 
@@ -40,6 +41,12 @@ Start with the page closest to what you need:
 |---|---|
 | [INTENT.md](INTENT.md) | Declaring services, layers, dependencies and cross-repository seams in repository, cluster or page metadata. |
 | [CONSTRAINTS.md](CONSTRAINTS.md) | Components, architecture rules, enforcement modes, exemptions, recipes and Ruby-authored laws. |
+
+## Building on Enola
+
+| Page | Covers |
+|---|---|
+| [INTEGRATING.md](INTEGRATING.md) | Run Enola as a subprocess and load its snapshot artifacts into another store. |
 
 ## Extending the graph
 
