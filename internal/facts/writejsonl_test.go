@@ -29,18 +29,26 @@ func referenceWriteJSONL(t *testing.T, s *Store, w io.Writer) {
 	t.Helper()
 	lines := make([]string, 0, s.Count())
 	for _, f := range s.FactsRef() {
-		if len(f.Relations) > 1 {
-			rels := make([]Relation, len(f.Relations))
-			copy(rels, f.Relations)
+		// The wire shape, built the naive way: a fresh slice per fact, an id per
+		// call, no scratch reuse. WriteJSONL reuses both, and the two must still
+		// produce identical bytes.
+		rels := make([]wireRelation, 0, len(f.Relations))
+		for _, r := range f.Relations {
+			wr := wireRelation{Relation: r}
+			if t := s.targetFactFor(r.Target, f.Repo); t >= 0 {
+				wr.TargetID = s.FactsRef()[t].Identity()
+			}
+			rels = append(rels, wr)
+		}
+		if len(rels) > 1 {
 			sort.Slice(rels, func(i, j int) bool {
 				if rels[i].Kind != rels[j].Kind {
 					return rels[i].Kind < rels[j].Kind
 				}
 				return rels[i].Target < rels[j].Target
 			})
-			f.Relations = rels
 		}
-		b, err := json.Marshal(f)
+		b, err := json.Marshal(wireFact{Fact: f, Relations: rels, ID: f.Identity()})
 		if err != nil {
 			t.Fatal(err)
 		}

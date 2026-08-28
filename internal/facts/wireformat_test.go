@@ -369,3 +369,44 @@ func hasVocabularyPrefix(name string) bool {
 	}
 	return false
 }
+
+// TestWireFormat_WireFactFields pins the shape facts.jsonl actually carries.
+//
+// TestWireFormat_FactFields above pins the in-memory Fact; this pins the wire
+// shape built from it, which is that plus the two ids. The pair is the point:
+// they must differ by exactly `id` and `target_id` and nothing else, so a field
+// added to Fact reaches consumers (both tests change) while a field added only
+// here is caught as an undeclared divergence (one test changes).
+func TestWireFormat_WireFactFields(t *testing.T) {
+	full := wireFact{
+		Fact: Fact{
+			Kind: KindModule, Name: "cmd/enola", File: "cmd/enola", Line: 1,
+			EndLine: 2, Column: 3, EndColumn: 4, Repo: "enola",
+			Props: map[string]any{"language": "go"},
+		},
+		Relations: []wireRelation{{Relation: Relation{Kind: RelImports, Target: "context"}}},
+		ID:        "0123456789abcdef0123456789abcdef",
+	}
+	assertKeys(t, full, []string{
+		"kind", "name", "file", "line", "end_line", "column", "end_column",
+		"repo", "props", "relations", "id",
+	})
+
+	// id has no omitempty: every fact carries one, so a consumer may key on it
+	// unconditionally. A minimal fact is the struct's keys plus exactly that.
+	assertKeys(t, wireFact{Fact: Fact{Kind: KindModule, Name: "cmd/enola"}},
+		[]string{"kind", "name", "id"})
+}
+
+// TestWireFormat_WireRelationFields pins the edge shape. target_id IS omitempty:
+// most targets name something outside the snapshot, and an empty string would
+// make "nothing to point at" indistinguishable from "here is the answer".
+func TestWireFormat_WireRelationFields(t *testing.T) {
+	assertKeys(t, wireRelation{
+		Relation: Relation{Kind: RelCalls, Target: "foo"},
+		TargetID: "0123456789abcdef0123456789abcdef",
+	}, []string{"kind", "target", "target_id"})
+
+	assertKeys(t, wireRelation{Relation: Relation{Kind: RelCalls, Target: "foo"}},
+		[]string{"kind", "target"})
+}
