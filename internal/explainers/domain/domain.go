@@ -350,6 +350,37 @@ func namespacesOf(models []string) map[string]bool {
 	return out
 }
 
+// outboundEvidence cites the route fact behind each endpoint label.
+//
+// It does not use evidenceFor, and that is the whole point. evidenceFor puts the
+// string it is given in Evidence.Fact, which means "a fact's name" — and these
+// strings are display labels with the HTTP method glued on the front, so every
+// one of them named a fact that does not exist. Measured on one repository, 46
+// of its evidence entries pointed at nothing. The label still drives the count
+// and the prose; only the citation changes, and the method it carried moves into
+// the detail so a reader does not lose it.
+//
+// The route's file and line ride along, which evidenceFor could never supply:
+// these findings previously gave a reader no way to reach the call site.
+func outboundEvidence(labels []string, byLabel map[string]facts.Fact) []facts.Evidence {
+	if len(labels) > maxEvidence {
+		labels = labels[:maxEvidence]
+	}
+	out := make([]facts.Evidence, 0, len(labels))
+	for _, label := range labels {
+		fact, ok := byLabel[label]
+		if !ok {
+			continue
+		}
+		detail := "called from here"
+		if method, _ := fact.Props["method"].(string); method != "" {
+			detail = method + " " + detail
+		}
+		out = append(out, facts.Evidence{Fact: fact.Name, File: fact.File, Line: fact.Line, Detail: detail})
+	}
+	return out
+}
+
 func evidenceFor(items []string, detail string) []facts.Evidence {
 	if len(items) > maxEvidence {
 		items = items[:maxEvidence]
@@ -421,7 +452,12 @@ func stdDev(xs []float64) float64 {
 func outboundIntegrations(store *facts.Store) []facts.Insight {
 	type integration struct {
 		endpoints []string
-		hints     map[string]bool
+		// byLabel keeps the ROUTE FACT behind each display label. The label
+		// ("DELETE /v1/datasets/{}") is what the finding counts and prints; the
+		// fact is what its evidence has to cite, because evidence names a fact
+		// and no fact is called "DELETE /v1/datasets/{}".
+		byLabel map[string]facts.Fact
+		hints   map[string]bool
 	}
 	byComponent := map[string]*integration{}
 
@@ -460,10 +496,14 @@ func outboundIntegrations(store *facts.Store) []facts.Insight {
 		}
 		entry := byComponent[component]
 		if entry == nil {
-			entry = &integration{hints: map[string]bool{}}
+			entry = &integration{byLabel: map[string]facts.Fact{}, hints: map[string]bool{}}
 			byComponent[component] = entry
 		}
-		entry.endpoints = append(entry.endpoints, strings.TrimSpace(method+" "+fact.Name))
+		label := strings.TrimSpace(method + " " + fact.Name)
+		entry.endpoints = append(entry.endpoints, label)
+		if _, seen := entry.byLabel[label]; !seen {
+			entry.byLabel[label] = fact
+		}
 		if hint, _ := props["target_hint"].(string); hint != "" {
 			entry.hints[hint] = true
 		}
@@ -503,7 +543,7 @@ func outboundIntegrations(store *facts.Store) []facts.Insight {
 					"when the other side changes, and it is not visible from this repository's own routes.",
 				component, len(endpoints), named),
 			Confidence: 0.9,
-			Evidence:   evidenceFor(endpoints, "called from here"),
+			Evidence:   outboundEvidence(endpoints, entry.byLabel),
 		})
 	}
 	return out

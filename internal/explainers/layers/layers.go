@@ -1418,17 +1418,26 @@ func (e *LayerExplainer) detectViolations(scoped []facts.Fact, pattern *archPatt
 			{File: v.file, Detail: fmt.Sprintf("import of %s", v.targetModule)},
 		}
 		seenEntity := make(map[string]bool, 4)
-		addEntity := func(name, detail string) {
+		addEntity := func(name, file, detail string) {
 			if name == "" || seenEntity[name] {
 				return
 			}
 			seenEntity[name] = true
-			evidence = append(evidence, facts.Evidence{Fact: name, Detail: detail})
+			evidence = append(evidence, facts.Evidence{Fact: name, File: file, Detail: detail})
 		}
-		addEntity(v.depName, "import edge")
-		addEntity(v.rawTarget, "import edge target")
-		addEntity(v.sourceModule, "importing module")
-		addEntity(v.targetModule, "imported module")
+		// Only the dependency fact is known to live in v.file: it IS that import
+		// statement, so the file is its own. The other three name things declared
+		// elsewhere, and stamping the importing file on them would send a reader
+		// to the wrong place.
+		//
+		// It matters beyond the reader. One module can import the same target from
+		// several files, so the dependency NAME alone can belong to more than one
+		// fact — 459 such names in one measured repository — and a citation that
+		// carries no file leaves a consumer unable to tell which one is meant.
+		addEntity(v.depName, v.file, "import edge")
+		addEntity(v.rawTarget, "", "import edge target")
+		addEntity(v.sourceModule, "", "importing module")
+		addEntity(v.targetModule, "", "imported module")
 
 		insights = append(insights, facts.Insight{
 			// The taxonomy is named because a polyglot repository now gets one

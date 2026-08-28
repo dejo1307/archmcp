@@ -219,3 +219,89 @@ func TestWriteJSONL_IDsSurviveShuffling(t *testing.T) {
 		t.Error("reversing the insertion order changed the serialized ids")
 	}
 }
+
+// TestMarshalInsights_ResolvesEvidence covers each outcome an evidence citation
+// can have, including the two that must NOT be treated as failures.
+func TestMarshalInsights_ResolvesEvidence(t *testing.T) {
+	s := NewStore()
+	s.Add(
+		Fact{Kind: KindModule, Name: "app", File: "app", Repo: "r"},
+		Fact{Kind: KindSymbol, Name: "app.Run", File: "app/main.go", Repo: "r"},
+		// Same name in two files: no honest single answer.
+		Fact{Kind: KindSymbol, Name: "Split", File: "a.go", Repo: "r"},
+		Fact{Kind: KindSymbol, Name: "Split", File: "b.go", Repo: "r"},
+	)
+	want := s.FactsRef()[1].Identity()
+
+	out, err := s.MarshalInsights([]Insight{{
+		Title: "t", Description: "d", Confidence: 1,
+		Evidence: []Evidence{
+			{Symbol: "app.Run", Detail: "cited by symbol"},
+			{Fact: "app", Detail: "cited by fact"},
+			{Symbol: "NoResultFound", Detail: "third-party: nothing to point at"},
+			{Symbol: "Split", Detail: "ambiguous"},
+			{File: "app/main.go", Detail: "file only, cites no fact"},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	ev := got[0]["evidence"].([]any)
+	ids := make([]string, len(ev))
+	for i, e := range ev {
+		id, _ := e.(map[string]any)["fact_id"].(string)
+		ids[i] = id
+	}
+	if ids[0] != want {
+		t.Errorf("symbol citation got fact_id %q, want %q", ids[0], want)
+	}
+	if ids[1] == "" {
+		t.Error("a citation by fact name got no fact_id")
+	}
+	for i, why := range map[int]string{2: "third-party name", 3: "ambiguous name", 4: "no citation at all"} {
+		if ids[i] != "" {
+			t.Errorf("evidence %d (%s) got fact_id %q, want none", i, why, ids[i])
+		}
+	}
+}
+
+// TestMarshalInsights_LeavesTheDocumentAlone — adding ids must change nothing
+// else about insights.json, including the shapes that marshal as null. Callers
+// promised those before this existed.
+func TestMarshalInsights_LeavesTheDocumentAlone(t *testing.T) {
+	s := NewStore()
+	s.Add(Fact{Kind: KindModule, Name: "app", File: "app", Repo: "r"})
+
+	for _, tc := range []struct {
+		name string
+		in   []Insight
+		want string
+	}{
+		{"nil slice", nil, "null"},
+		{"empty slice", []Insight{}, "[]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := s.MarshalInsights(tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(out) != tc.want {
+				t.Errorf("marshalled %q, want %q", out, tc.want)
+			}
+		})
+	}
+
+	// Nil evidence stays null rather than becoming []: the same document as before.
+	out, err := s.MarshalInsights([]Insight{{Title: "t", Description: "d", Confidence: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"evidence": null`) {
+		t.Errorf("nil evidence did not stay null:\n%s", out)
+	}
+}
