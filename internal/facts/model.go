@@ -15,7 +15,7 @@ type Fact struct {
 	EndLine   int            `json:"end_line,omitempty"`   // 1-based end line, when the extractor measured a span
 	Column    int            `json:"column,omitempty"`     // 1-based start column, when measured
 	EndColumn int            `json:"end_column,omitempty"` // 1-based column one past the span's end, when measured
-	Repo      string         `json:"repo,omitempty"`       // Repository label (set in multi-repo/append mode)
+	Repo      string         `json:"repo,omitempty"`       // Repository label; set on every fact, single-repo snapshots included (see RepoLabel)
 	Props     map[string]any `json:"props,omitempty"`      // Kind-specific properties
 	Relations []Relation     `json:"relations,omitempty"`  // Edges to other facts
 }
@@ -64,7 +64,8 @@ const (
 	// targets" belongs in a report, not in an untraversable edge.
 	KindAssociation = "association"
 	// KindTestRef is a reference-only fact emitted from a test/spec file. It carries
-	// solely RelCalls relations naming the production symbols the test exercises
+	// only reference relations — RelCalls, and RelInstantiates where the reference is
+	// a constructor call — naming the production symbols the test exercises
 	// (Name/File are the test file path). Test files are excluded from normal
 	// indexing, so their symbols never become facts; this kind lets the dead-code
 	// detector still see that a production symbol is referenced by a test, without
@@ -72,10 +73,11 @@ const (
 	KindTestRef = "test_ref"
 	// KindFileRef is a reference-only fact holding call edges made in file-scope
 	// (top-level) code — fixtures, initializers, and plugin registration blocks —
-	// that have no enclosing symbol to attach to. Like KindTestRef it carries solely
-	// RelCalls relations (Name/File are the source file path) and is consumed only by
-	// the dead-code detector, so top-level references mark a production symbol used
-	// without perturbing the coupling graph or any other explainer.
+	// that have no enclosing symbol to attach to. Like KindTestRef it carries only
+	// reference relations — RelCalls and RelInstantiates — (Name/File are the source
+	// file path) and is consumed only by the dead-code detector, so top-level
+	// references mark a production symbol used without perturbing the coupling graph
+	// or any other explainer.
 	KindFileRef = "file_ref"
 
 	// KindLint is a finding an external linter reported, brought in through the
@@ -122,6 +124,10 @@ const (
 
 // Relation kind constants.
 const (
+	// RelDeclares is emitted on the DECLARED fact and points at the module that
+	// contains it (symbol -> module, route -> module): read it as "declared in".
+	// Nothing emits the module -> symbol direction, so a consumer building a
+	// containment tree walks this edge child-to-parent.
 	RelDeclares      = "declares"
 	RelImports       = "imports"
 	RelCalls         = "calls"
@@ -681,6 +687,17 @@ type CoverageSummary struct {
 	ExtractionUnresolved int `json:"extraction_unresolved,omitempty"`
 }
 
+// ArtifactFormatVersion is the generation of the snapshot artifact format —
+// the JSON shapes documented in docs/schema/ — that this build writes. It is
+// stamped on every receipt so a consumer can branch on format behavior without
+// guessing from the enola version. Bump it when a documented field is renamed
+// or removed, when the identity convention changes, or when an existing value's
+// meaning is redefined; additive fields and new vocabulary values do not bump
+// it, because a consumer that does not know about them ignores them. A zero
+// value means "not stamped by the current writer" (a receipt reconstructed from
+// a shared history payload), which a consumer must treat as unknown, not v0.
+const ArtifactFormatVersion = 1
+
 // Receipt is the compact, machine-readable manifest written to receipt.json — a
 // projection of SnapshotMeta that proves what the deterministic graph was
 // generated over (version, git, id, plugin sets, ignore-glob hash, output
@@ -689,6 +706,11 @@ type CoverageSummary struct {
 // list that lives in snapshot.meta.json (the internal superset).
 type Receipt struct {
 	SnapshotID string `json:"snapshot_id"`
+	// FormatVersion identifies which generation of the artifact format this
+	// receipt describes (docs/schema/README.md, "Versioning"). A consumer that
+	// cannot read it should fail loudly rather than partially parse an unknown
+	// format into a graph that looks complete but is not.
+	FormatVersion int `json:"format_version"`
 	// EnolaVersion is the build; ExtractorVersion is what that build EXTRACTS LIKE. They
 	// differ for every local build, where the former is the constant "dev". See
 	// SnapshotMeta.ExtractorVersion.
@@ -730,6 +752,7 @@ type ReceiptQuality struct {
 func (m SnapshotMeta) Receipt() Receipt {
 	return Receipt{
 		SnapshotID:       m.SnapshotID,
+		FormatVersion:    ArtifactFormatVersion,
 		EnolaVersion:     m.EnolaVersion,
 		ExtractorVersion: m.ExtractorVersion,
 		GeneratedAt:      m.GeneratedAt,
