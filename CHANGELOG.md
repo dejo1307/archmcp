@@ -7,6 +7,40 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
+## v0.4.10 — 2026-08-28
+
+**Snapshot artifacts now have a documented, versioned contract**
+
+The three supported snapshot artifacts — `facts.jsonl`, `insights.json`, and
+`receipt.json` — are documented under `docs/schema/`. The reference covers their fields,
+fact and relation kinds, contract props, identity rules, and compatibility policy. CI
+verifies the documented field names and vocabularies.
+
+`receipt.json` now carries `format_version: 1`. Current writers add an `id` to every fact,
+derived from `(repo, kind, name, file)`. Relations carry `target_id` when enola can
+resolve the target without ambiguity, preferring candidates in the source fact's
+repository. Multiple fact records can share an ID when those four identity fields are
+equal.
+
+Insight evidence can carry `fact_id`. Evidence resolution uses `symbol` when present,
+otherwise `fact`, and uses `file` to narrow candidates. Unresolved relations and evidence
+remain unresolved rather than selecting an arbitrary fact. The MCP and on-disk forms of
+an empty insights array are now both `[]`.
+
+The schema documentation also corrects existing assumptions: `repo` is present on
+single-repository facts, `declares` points from a declared fact to its containing module,
+and `(repo, kind, name)` is not a uniqueness guarantee. It also documents optional route
+provenance, test and file reference relations, coupling kinds, cross-repository types,
+and messaging props.
+
+`docs/INTEGRATING.md` documents how to pin an enola release, run generation, validate the
+receipt, and load the artifacts into another store.
+
+`cacheVersion` remains `v257`, so existing extraction caches remain valid. Snapshot IDs
+change after upgrading because fact IDs are part of the serialized facts. Baselines
+containing the corrected insight evidence may report content-only changes; no findings
+are added or removed.
+
 ## v0.4.9 — 2026-08-27
 
 **A dashboard you can start on its own, and a change routed to the people who own what it touched**
@@ -669,4 +703,3 @@ A release remains a GitHub draft until binaries and checksums exist for every su
 ## v0.0.1
 
 **First public release**
-
