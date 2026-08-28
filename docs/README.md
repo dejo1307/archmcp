@@ -53,6 +53,7 @@ Start with the page closest to what you need:
 
 | Page | Covers |
 |---|---|
+| [schema/](schema/README.md) | The documented on-disk format of the snapshot artifacts (facts.jsonl, insights.json, receipt.json): field names, kind and relation vocabularies, the identity convention, and how format changes are versioned. |
 | [GLOSSARY.md](GLOSSARY.md) | Terms used in Enola output, including findings, baselines, receipts, coverage gaps and incidental shifts. |
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | The fact model, pipeline, graph, MCP tools and value model. |
 | [CHANGELOG.md](../CHANGELOG.md) | Every released version, newest first. |
