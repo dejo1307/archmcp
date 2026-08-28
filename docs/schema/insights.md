@@ -1,52 +1,42 @@
 # insights.json
 
-A JSON array of findings produced by enola's explainers (dependency cycles,
-layer violations, unused routes, god-classes, hotspots, ...). The file is
-always an array: a repository with no findings produces `[]`, never `null`.
+A JSON array of findings produced by enola's explainers. The file always
+contains an array; a snapshot with no findings contains `[]`.
 
 ## Insight object
 
 | Field | Type | Present when | Meaning |
 |---|---|---|---|
-| `title` | string | always | One-line summary of the finding |
-| `source` | string | when set | The explainer that produced it (e.g. `cycles`, `unused-routes`) |
-| `description` | string | always | What the finding says and why it matters. Prose: shaped for a reader, regenerated every run |
-| `confidence` | number 0–1 | always | 1.0 = structural/exact (a cycle is a cycle); below 1.0 = heuristic, a candidate to verify rather than a verdict |
-| `evidence` | array of Evidence | always (may be empty) | The facts/files/symbols the finding cites |
-| `suggested_actions` | array of string | when set | What to do about it |
-| `informational` | bool | when true | The finding DESCRIBES the graph rather than complaining about it (a declared layer order, an intent override). Never gradeable |
-| `metrics` | object | when set | The numbers the finding computed, as data. Mirrors the description — the prose keeps the same numbers; read values through tolerant numeric parsing, because after a JSON round-trip every number is a float |
+| `title` | string | always | One-line finding summary |
+| `source` | string | when set | Explainer that produced the finding, such as `cycles` or `unused-routes` |
+| `description` | string | always | Presentation text describing the finding; not a stable identifier |
+| `confidence` | number from 0 to 1 | always | `1.0` for structural findings; less than `1.0` for heuristic findings |
+| `evidence` | array of Evidence | always; may be empty | Facts, files, or symbols cited by the finding |
+| `suggested_actions` | array of string | when set | Suggested responses to the finding |
+| `informational` | bool | when true | Indicates that the finding describes the graph and is not gradeable |
+| `metrics` | object | when set | Machine-readable values used by the finding; consumers should accept integer or floating-point JSON numbers |
 
 ## Evidence object
 
 | Field | Type | Present when | Meaning |
 |---|---|---|---|
-| `file` | string | when set | Repo-relative file the evidence points at |
-| `symbol` | string | when set | A fact's name, cited as a symbol |
-| `fact` | string | when set | A fact's name, cited by kind-agnostic reference (modules and other non-symbol facts) |
-| `detail` | string | when set | One line explaining what this piece of evidence shows |
-| `line` / `end_line` / `column` / `end_column` | int | when the extractor measured a span | The position of the cited fact. Never derived from a name: a reader that prints a frame shows the line the extractor saw, or none |
-| `fact_id` | string, 32 hex chars | when the citation resolves | The `id` of the fact this entry cites — the same identity `facts.jsonl` carries. See [facts.md, Identity and ids](facts.md#identity-and-ids) |
+| `file` | string | when set | Repo-relative evidence file |
+| `symbol` | string | when set | Fact name cited as a symbol |
+| `fact` | string | when set | Fact name cited without assuming a fact kind |
+| `detail` | string | when set | One-line description of the evidence |
+| `line` / `end_line` / `column` / `end_column` | int | when measured | Source span recorded by the producer |
+| `fact_id` | string, 32 lowercase hex chars | when resolved and supported by the writer | ID from `facts.jsonl` — [Identity and IDs](facts.md#identity-and-ids) |
 
-An evidence entry cites at most one of `symbol`/`fact`, plus an optional
-`file`. Link it by `fact_id` where that is present; the name fields stay for
-readability.
+An evidence entry may contain `symbol`, `fact`, or both. Current writers resolve
+`fact_id` as follows:
 
-## When fact_id is absent
+1. Use `symbol` when non-empty; otherwise use `fact` as the reference name.
+2. If `file` is present and facts with that name and file exist, emit an ID only
+   when those matches have the same identity.
+3. Otherwise, emit an ID only when every fact with the reference name has the
+   same identity.
 
-Absent is a normal outcome and must not be read as a defect. Three ways it
-happens, and only the first is about resolution failing:
-
-- The name matches facts of more than one identity, so there is no honest single
-  answer. Rare: one entry in 872 in a measured corpus.
-- The entry cites something the snapshot does not contain — a third-party symbol
-  the repository calls but does not declare. Same condition as a relation whose
-  `target` names a standard-library function.
-- **The finding is ABOUT the absence.** A finding that a route names a handler
-  which is not defined here cites a name no fact carries, on purpose. Its
-  evidence resolving to nothing is the finding being true, and a consumer that
-  treats a missing `fact_id` as a parse failure would discard exactly the
-  findings that matter most.
-
-Measured on a 20,808-fact snapshot: of 872 evidence entries, 88.5% carry a
-`fact_id`.
+Use `fact_id` when present. When absent, preserve the readable reference fields.
+Absence can mean that the reference is ambiguous, outside the snapshot, or
+intentionally missing. For example, a finding about an undefined handler cites
+a name for which no fact exists.
