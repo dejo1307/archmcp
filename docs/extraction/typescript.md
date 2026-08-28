@@ -468,7 +468,11 @@ fact (`Query.pageViews`) — the joinable name the cross-repo `graphql` signal m
 against a server's root fields. This is the client half of the seam.
 
 The server half reads SDL used by Apollo Server, GraphQL Yoga, Mercurius,
-express-graphql, graphql-http, GraphQL Tools, and GraphQL.js `buildSchema`. A schema may
+express-graphql, graphql-http, GraphQL Tools, and GraphQL.js `buildSchema`. It also reads
+code-first root fields declared by NestJS GraphQL and TypeGraphQL
+`@Query`/`@Mutation`/`@Subscription` decorators, Nexus `queryField`/`mutationField`, and
+Pothos builder root-field calls. Package provenance is required, so unrelated decorators
+or builder methods with those generic names remain inert. A schema may
 be a plain template literal or a `gql`-tagged one, assigned through `typeDefs`, `schema`,
 or conventional suffixed bindings such as `gqlSchema` and `userTypeDefs`; TypeScript
 annotations such as `const schema: string = ...` are accepted. Standalone `.graphql` and
@@ -480,6 +484,11 @@ is repository-wide and syntax-based, so a constructor in `server.ts` activates a
 SDL definition in `schema.ts`, while a `buildSchema(...)` example in documentation does
 not. A client-only repository carrying a schema copy remains inert because it has no
 GraphQL server signal.
+
+Relay's `graphql` tag and the `gql` tags commonly used by Apollo, urql, and
+graphql-request share the same operation extraction. Static untagged operation strings
+are also read in graphql-request/urql modules and when they are the `query` property of a
+plain `fetch` JSON body; arbitrary operation-looking strings elsewhere remain inert.
 
 This reads the schema surface only: which root fields exist, not which resolver
 implements one. Resolver-to-field binding — matching a `resolvers.Query.book` handler
