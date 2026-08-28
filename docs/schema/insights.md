@@ -26,7 +26,27 @@ always an array: a repository with no findings produces `[]`, never `null`.
 | `fact` | string | when set | A fact's name, cited by kind-agnostic reference (modules and other non-symbol facts) |
 | `detail` | string | when set | One line explaining what this piece of evidence shows |
 | `line` / `end_line` / `column` / `end_column` | int | when the extractor measured a span | The position of the cited fact. Never derived from a name: a reader that prints a frame shows the line the extractor saw, or none |
+| `fact_id` | string, 32 hex chars | when the citation resolves | The `id` of the fact this entry cites — the same identity `facts.jsonl` carries. See [facts.md, Identity and ids](facts.md#identity-and-ids) |
 
 An evidence entry cites at most one of `symbol`/`fact`, plus an optional
-`file`. A consumer that links evidence to graph nodes matches by fact name
-within the snapshot, as with relation targets.
+`file`. Link it by `fact_id` where that is present; the name fields stay for
+readability.
+
+## When fact_id is absent
+
+Absent is a normal outcome and must not be read as a defect. Three ways it
+happens, and only the first is about resolution failing:
+
+- The name matches facts of more than one identity, so there is no honest single
+  answer. Rare: one entry in 872 in a measured corpus.
+- The entry cites something the snapshot does not contain — a third-party symbol
+  the repository calls but does not declare. Same condition as a relation whose
+  `target` names a standard-library function.
+- **The finding is ABOUT the absence.** A finding that a route names a handler
+  which is not defined here cites a name no fact carries, on purpose. Its
+  evidence resolving to nothing is the finding being true, and a consumer that
+  treats a missing `fact_id` as a parse failure would discard exactly the
+  findings that matter most.
+
+Measured on a 20,808-fact snapshot: of 872 evidence entries, 88.5% carry a
+`fact_id`.

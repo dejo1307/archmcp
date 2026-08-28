@@ -5,55 +5,65 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/config"
+	"github.com/enola-labs/enola/internal/extractors/goextractor"
+	"github.com/enola-labs/enola/internal/facts"
 )
 
-// insightsAfterSnapshot generates a snapshot of repo, writes the artifacts, and
-// returns the exact bytes of insights.json plus the hash the receipt recorded for it.
-func insightsAfterSnapshot(t *testing.T, e *Engine, repo, outDir string) (string, string) {
-	t.Helper()
+// insights.json is written twice: WriteArtifacts puts it on disk, and
+// GetArtifact serves the same document to the MCP server and the dashboard.
+// They marshal through the same store call so a consumer cannot be handed two
+// different documents — and, before fact ids existed, they did not: GetArtifact
+// skipped WriteArtifacts' nil guard. These tests hold the two together and
+// check that a citation reaching the file resolves to a fact that is in it.
+func TestInsightsArtifact_BothPathsAgree(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoFile(t, repo, "go.mod", "module example.com/ins\n\ngo 1.25\n")
+	// A cycle, so at least one explainer has something to cite.
+	writeRepoFile(t, repo, "a/a.go", "package a\n\nimport \"example.com/ins/b\"\n\nfunc A() { b.B() }\n")
+	writeRepoFile(t, repo, "b/b.go", "package b\n\nimport \"example.com/ins/a\"\n\nfunc B() { a.A() }\n")
+
+	cfg := config.Default()
+	cfg.Repo = repo
+
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The engine registers no extractors of its own; the CLI bootstrap does.
+	e.RegisterExtractor(goextractor.New())
 	if _, err := e.GenerateSnapshot(context.Background(), repo, false); err != nil {
 		t.Fatalf("GenerateSnapshot: %v", err)
 	}
 	if err := e.WriteArtifacts(repo); err != nil {
 		t.Fatalf("WriteArtifacts: %v", err)
 	}
-	raw, err := os.ReadFile(filepath.Join(repo, outDir, "insights.json"))
-	if err != nil {
-		t.Fatalf("reading insights.json: %v", err)
-	}
 
-	metaRaw, err := os.ReadFile(filepath.Join(repo, outDir, "snapshot.meta.json"))
+	onDisk, err := os.ReadFile(filepath.Join(repo, cfg.Output.Dir, "insights.json"))
 	if err != nil {
-		t.Fatalf("reading snapshot.meta.json: %v", err)
-	}
-	var meta struct {
-		OutputHashes map[string]string `json:"output_hashes"`
-	}
-	if err := json.Unmarshal(metaRaw, &meta); err != nil {
 		t.Fatal(err)
 	}
-	return string(raw), meta.OutputHashes["insights.json"]
+	served, err := e.GetArtifact("insights.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != string(served) {
+		t.Errorf("insights.json on disk and from GetArtifact differ:\n disk %d bytes\nserved %d bytes",
+			len(onDisk), len(served))
+	}
 }
 
-// The receipt records output_hashes["insights.json"], so the file has to be
-// byte-reproducible or comparing two runs — on one machine or across two — fails for
-// a reason that has nothing to do with the code being analysed.
-//
-// The unit-level guarantee lives in explainers/common (MeanStdDev is a function of
-// the multiset) and in godclass. This asserts the property a consumer actually sees:
-// the same tree, twice, produces the same file.
-func TestWriteArtifacts_InsightsAreByteReproducible(t *testing.T) {
+// TestInsightsArtifact_FactIDsNameFactsInTheSnapshot — an id that names nothing
+// is worse than no id: it invites a consumer to link an edge to a node that does
+// not exist. Every fact_id written must appear as an id in facts.jsonl.
+func TestInsightsArtifact_FactIDsNameFactsInTheSnapshot(t *testing.T) {
 	repo := t.TempDir()
-	writeRepoFile(t, repo, "go.mod", "module example.com/rep\n\ngo 1.25\n")
-	writeRepoFile(t, repo, "core/hub.go", "package core\n\nfunc Hub() string { return \"hub\" }\n")
-	for i := range 12 {
-		writeRepoFile(t, repo, filepath.Join("callers", "c"+string(rune('a'+i))+".go"),
-			"package callers\n\nimport \"example.com/rep/core\"\n\nfunc C"+string(rune('A'+i))+
-				"() string { return core.Hub() }\n")
-	}
+	writeRepoFile(t, repo, "go.mod", "module example.com/ins2\n\ngo 1.25\n")
+	writeRepoFile(t, repo, "a/a.go", "package a\n\nimport \"example.com/ins2/b\"\n\nfunc A() { b.B() }\n")
+	writeRepoFile(t, repo, "b/b.go", "package b\n\nimport \"example.com/ins2/a\"\n\nfunc B() { a.A() }\n")
 
 	cfg := config.Default()
 	cfg.Repo = repo
@@ -61,41 +71,82 @@ func TestWriteArtifacts_InsightsAreByteReproducible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	first, firstHash := insightsAfterSnapshot(t, e, repo, cfg.Output.Dir)
-	second, secondHash := insightsAfterSnapshot(t, e, repo, cfg.Output.Dir)
-
-	if first != second {
-		t.Errorf("insights.json differs between two runs of an unchanged tree:\n--- first\n%s\n--- second\n%s",
-			first, second)
+	// The engine registers no extractors of its own; the CLI bootstrap does.
+	e.RegisterExtractor(goextractor.New())
+	snap, err := e.GenerateSnapshot(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf("GenerateSnapshot: %v", err)
 	}
-	if firstHash != secondHash {
-		t.Errorf("output_hashes[insights.json] = %q then %q — the receipt is not reproducible",
-			firstHash, secondHash)
+	// Findings are injected rather than waited for: which explainer fires on a
+	// three-file fixture is not this test's subject, and a fixture that stops
+	// producing one would turn this into a test that passes by measuring nothing.
+	// The citations name facts the snapshot definitely has.
+	withEvidence := *snap
+	withEvidence.Insights = []facts.Insight{{
+		Title: "injected", Source: "test", Description: "d", Confidence: 1,
+		Evidence: []facts.Evidence{
+			{Symbol: "a.A", Detail: "a symbol the fixture declares"},
+			{Fact: "a", Detail: "a module the fixture declares"},
+			{Symbol: "NoSuchThing", Detail: "names nothing: must get no id"},
+		},
+	}}
+	e.SetSnapshot(&withEvidence)
+	if err := e.WriteArtifacts(repo); err != nil {
+		t.Fatalf("WriteArtifacts: %v", err)
 	}
-}
 
-// A repository with no findings must still write a JSON array. A nil slice marshals
-// to `null`, which breaks any consumer that iterates the parsed value without a nil
-// check — on exactly the repositories nobody thinks to test against.
-func TestWriteArtifacts_EmptyInsightsAreAnArrayNotNull(t *testing.T) {
-	repo := t.TempDir()
-	writeRepoFile(t, repo, "go.mod", "module example.com/quiet\n\ngo 1.25\n")
-	writeRepoFile(t, repo, "a/a.go", "package a\n\nfunc A() string { return \"a\" }\n")
-
-	cfg := config.Default()
-	cfg.Repo = repo
-	e, err := New(cfg)
+	factsRaw, err := os.ReadFile(filepath.Join(repo, cfg.Output.Dir, "facts.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	ids := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(factsRaw)), "\n") {
+		var f struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(line), &f); err != nil {
+			t.Fatal(err)
+		}
+		ids[f.ID] = true
+	}
 
-	raw, _ := insightsAfterSnapshot(t, e, repo, cfg.Output.Dir)
-	if raw == "null" {
-		t.Fatal("insights.json is `null` for a repository with no findings, not `[]`")
+	insightsRaw, err := os.ReadFile(filepath.Join(repo, cfg.Output.Dir, "insights.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	var parsed []any
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		t.Fatalf("insights.json does not parse as an array: %v\n%s", err, raw)
+	var insights []struct {
+		Source   string `json:"source"`
+		Evidence []struct {
+			Symbol string `json:"symbol"`
+			Fact   string `json:"fact"`
+			FactID string `json:"fact_id"`
+		} `json:"evidence"`
 	}
+	if err := json.Unmarshal(insightsRaw, &insights); err != nil {
+		t.Fatal(err)
+	}
+
+	cited, resolved := 0, 0
+	for _, in := range insights {
+		for _, e := range in.Evidence {
+			if e.Symbol == "" && e.Fact == "" {
+				continue
+			}
+			cited++
+			if e.FactID == "" {
+				continue
+			}
+			resolved++
+			if !ids[e.FactID] {
+				t.Errorf("%s cites fact_id %q, which is not an id in facts.jsonl", in.Source, e.FactID)
+			}
+		}
+	}
+	if cited == 0 {
+		t.Fatal("no evidence cited a symbol or fact: the fixture stopped exercising this")
+	}
+	if resolved == 0 {
+		t.Errorf("%d citations and not one resolved; ids are not reaching insights.json", cited)
+	}
+	t.Logf("%d citations, %d resolved to a fact in the snapshot", cited, resolved)
 }

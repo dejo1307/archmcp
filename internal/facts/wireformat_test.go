@@ -1,6 +1,7 @@
 package facts
 
 import (
+	"bytes"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
@@ -409,4 +410,87 @@ func TestWireFormat_WireRelationFields(t *testing.T) {
 
 	assertKeys(t, wireRelation{Relation: Relation{Kind: RelCalls, Target: "foo"}},
 		[]string{"kind", "target"})
+}
+
+// TestWireFormat_WireInsightFields pins the insights.json shape, the same way
+// TestWireFormat_WireFactFields pins facts.jsonl: the model's keys plus exactly
+// the one id field.
+func TestWireFormat_WireInsightFields(t *testing.T) {
+	full := wireInsight{
+		Title: "Dependency cycle", Source: "cycles", Description: "a -> b -> a",
+		Confidence: 1.0, Evidence: []wireEvidence{{}}, Actions: []string{"break it"},
+		Informational: true, Metrics: map[string]any{"modules": 2},
+	}
+	assertKeys(t, full, []string{
+		"title", "source", "description", "confidence", "evidence",
+		"suggested_actions", "informational", "metrics",
+	})
+
+	assertKeys(t, wireInsight{Title: "t", Description: "d", Confidence: 1.0, Evidence: []wireEvidence{}},
+		[]string{"title", "description", "confidence", "evidence"})
+}
+
+// TestWireFormat_WireEvidenceFields pins the evidence shape. fact_id is
+// omitempty: a citation that resolves to nothing is a normal and sometimes
+// correct outcome — a finding about a handler that is not defined here cites a
+// name no fact carries, and that absence IS the finding.
+func TestWireFormat_WireEvidenceFields(t *testing.T) {
+	assertKeys(t, wireEvidence{
+		Evidence: Evidence{File: "a.go", Symbol: "A", Fact: "mod/a", Detail: "d",
+			Line: 1, EndLine: 2, Column: 3, EndColumn: 4},
+		FactID: "0123456789abcdef0123456789abcdef",
+	}, []string{"file", "symbol", "fact", "detail", "line", "end_line", "column", "end_column", "fact_id"})
+
+	assertKeys(t, wireEvidence{Evidence: Evidence{File: "a.go"}}, []string{"file"})
+}
+
+// TestWireFormat_InsightKeyOrderIsUnchanged is why wireInsight restates its
+// fields instead of embedding Insight.
+//
+// encoding/json emits an embedded struct's promoted fields before the outer
+// struct's own, so shadowing `evidence` would silently move it from the middle
+// of every insight object to the end — rewriting every line of every insights
+// golden and burying the one changed finding a reviewer is trying to see. This
+// fails if anyone converts wireInsight to the embedded form.
+func TestWireFormat_InsightKeyOrderIsUnchanged(t *testing.T) {
+	model := Insight{
+		Title: "t", Source: "s", Description: "d", Confidence: 1.0,
+		Evidence: []Evidence{{}}, Actions: []string{"a"},
+		Informational: true, Metrics: map[string]any{"n": 1},
+	}
+	wire := wireInsight{
+		Title: "t", Source: "s", Description: "d", Confidence: 1.0,
+		Evidence: []wireEvidence{{}}, Actions: []string{"a"},
+		Informational: true, Metrics: map[string]any{"n": 1},
+	}
+	got, want := keyOrder(t, wire), keyOrder(t, model)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("insights.json key order changed\n got %v\nwant %v", got, want)
+	}
+}
+
+// keyOrder returns v's top-level JSON keys in the order they are emitted.
+func keyOrder(t *testing.T, v any) []string {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshaling %T: %v", v, err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if _, err := dec.Token(); err != nil { // opening brace
+		t.Fatalf("reading %T: %v", v, err)
+	}
+	var keys []string
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("reading %T: %v", v, err)
+		}
+		keys = append(keys, tok.(string))
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			t.Fatalf("reading %T: %v", v, err)
+		}
+	}
+	return keys
 }

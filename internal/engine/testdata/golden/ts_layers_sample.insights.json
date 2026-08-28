@@ -45,6 +45,7 @@
       },
       {
         "fact": "src/lib -\u003e src/components/sites/chabad-website",
+        "file": "src/lib/site-blocks.ts",
         "detail": "import edge"
       },
       {

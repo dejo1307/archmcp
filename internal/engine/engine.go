@@ -1407,7 +1407,7 @@ func (e *Engine) WriteArtifacts(repoPath string) error {
 	if insights == nil {
 		insights = []facts.Insight{}
 	}
-	insightsJSON, err := json.MarshalIndent(insights, "", "  ")
+	insightsJSON, err := b.store.MarshalInsights(insights)
 	if err != nil {
 		return fmt.Errorf("marshaling insights: %w", err)
 	}
@@ -1541,7 +1541,16 @@ func (e *Engine) GetArtifact(name string) ([]byte, error) {
 		}
 		return buf.Bytes(), nil
 	case "insights.json":
-		return json.MarshalIndent(b.snapshot.Insights, "", "  ")
+		// The same nil guard WriteArtifacts applies. Without it this path served
+		// `null` where the file said `[]`, so a repository with no findings
+		// handed the MCP server and the dashboard a document that breaks any
+		// consumer iterating the parsed value — and handed it a DIFFERENT
+		// document from the one on disk.
+		insights := b.snapshot.Insights
+		if insights == nil {
+			insights = []facts.Insight{}
+		}
+		return b.store.MarshalInsights(insights)
 	case "snapshot.meta.json":
 		return json.MarshalIndent(b.snapshot.Meta, "", "  ")
 	case "receipt.json":
