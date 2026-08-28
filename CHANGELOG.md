@@ -7,6 +7,81 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
+## v0.4.9 — 2026-08-27
+
+**A dashboard you can start on its own, and a change routed to the people who own what it touched**
+
+`enola dashboard` serves the latest snapshot in the read-only local dashboard without
+also starting an MCP server, with `--open` to launch the browser. It regenerates
+nothing: a missing snapshot produces the generate-first guidance before any listener is
+bound, so no half-started process registers itself. The command stays attached to the
+terminal and stops on Ctrl-C — an earlier iteration of this release ran it in the
+background with `status` and `stop` subcommands, and that was withdrawn, because a
+server whose lifetime is the terminal's is the one nobody has to remember to clean up.
+A dashboard-only process registers as an active session like the MCP startup path does,
+so Activity does not report zero sessions while serving the very page a reader is
+looking at, and it installs no tool callback: this process answers no MCP calls, so its
+session count truthfully stays at zero. In an interactive terminal, `--generate`,
+`--refresh` and `check --write` each print one line pointing at `dashboard --open` for
+the path they just wrote; CI, redirected output, hooks and `ENOLA_NO_PROMPTS=1` suppress
+it. Ctrl-C on the MCP server no longer reports the cancellation as a server error and
+exits 1.
+
+`enola check --reviewers` reports, per module the change touched, who owns it and
+whether the author is a stranger to it while owning something that imports it. That
+pairing is the major-minor-dependency from Bird, Nagappan, Murphy, Gall and Devanbu,
+[*Don't Touch My Code!*](https://dl.acm.org/doi/10.1145/2025113.2025119) (ESEC/FSE
+2011), and spotting it needs the import graph rather than the commit log alone. It is
+never graded, is not in the snapshot, and is off by default: without the flag no git
+author name is read, computed or printed. The paper's 5% minor-contributor line is a
+correlation measured over Windows Vista binaries averaging some 900 commits, not a rule
+any repository declared, and a module needs five commits in the window before its shares
+are read as evidence of anything — measured on one open-source repository, the top
+major-minor-dependency was a module holding its 100% on a single drive-by edit.
+`--reviewer-window` sets how many recent commits authorship is measured over (500), and
+`--author` names whose change it is when git's identity is not the answer.
+
+Dated rules now grade by git blame rather than by the architecture history, which
+annotates them instead. The two answer different questions — whether a finding was
+present at the date, versus whether its witness line was last changed before it — and
+they disagree whenever an old breach's witness was renamed, moved or reformatted.
+Grading with the history made the verdict depend on a per-machine record: the same
+commit graded one way on a laptop holding a local history and another in a fresh CI
+clone. What decides a verdict has to be reproducible from the checkout. The history's
+better answer is still reported, and never subtracted from the failures.
+
+A repository-scoped extraction fact carries the repository's directory name in `File`
+rather than a path, and `changedFiles` handed it to callers that read `File` as
+something somebody edited. Reviewer routing and guidance then opened with a line about
+the root module, measured over the whole repository, on any change that moved an
+extractor's coverage counters. It is filtered in `changedFiles` rather than at the
+source, since `File` is part of a fact's identity in every snapshot and diff.
+
+A wrapper binary now reports its own version. `pkg/command` read `internal/version`,
+which only enola's own release stamps, so a wrapper said "dev" in three places at once:
+`doctor`, the SARIF driver it uploads under, and its dashboard instance record.
+`cli.Binary` carries the version, and whether a binary can upgrade itself is derived
+from the subcommands it dispatches for itself rather than from a new field — `upgrade`
+being in that list already is the question. That also gates the update notice, since the
+release manifest describes enola releases and measuring another version series against
+it would report the distance between two unrelated streams as an upgrade.
+
+Six of the seventeen subcommands — `log`, `show`, `diff`, `blame`, `gc` and `history`,
+which is the whole of the architecture-history feature — had been absent from the CLI
+reference for as long as they existed, with every other check in the repository passing.
+A docslint test now ties the command table in `docs/CLI.md` to what the binary actually
+dispatches, in both directions, matching on the table's command column rather than
+anywhere in the prose, because a bare `log` or `diff` occurs in ordinary English on
+nearly every page. `docs/DASHBOARD.md` and `docs/FIRST-CHANGE.md` are new, clusters and
+constraints gained the sections their pages assumed, and the README was cut back.
+`govulncheck` moves to v1.7.0: the pin has a floor as well as a ceiling, and v1.1.4
+carried a type checker predating this module's `go` directive, refusing all 126 packages
+with an error that reads nothing like a vulnerability report — the job stayed red while
+reporting on nothing.
+
+`cacheVersion` stays at `v257`. Nothing re-extracts, and a pinned baseline does not
+churn.
+
 ## v0.4.8 — 2026-08-25
 
 **Declared dependencies become facts, and the gate reports how much of the law is excused**
