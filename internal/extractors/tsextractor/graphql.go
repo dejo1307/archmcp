@@ -680,6 +680,8 @@ func graphQLServerASTSignals(src []byte, relFile string) (bool, []string) {
 				if graphqlServerPackages[base] {
 					server = true
 				}
+				// TODO: Resolve tsconfig path aliases before accepting non-relative
+				// .graphql/.gql imports, then add positive and ambiguous-alias tests.
 				if isGraphQLDocFile(path) && strings.HasPrefix(path, ".") {
 					gqlImports = append(gqlImports, factpath.Clean(factpath.Join(factpath.Dir(relFile), path)))
 				}
@@ -1086,6 +1088,8 @@ func extractGraphQLTagFacts(src []byte, relFile string) []facts.Fact {
 
 // extractGraphQLTagFactsAST finds template literals through syntax, so examples
 // in comments and ordinary strings cannot masquerade as gql/graphql tags.
+// TODO: Once Relay synthesized operations are modeled, cover @refetchable
+// fragments and their generated query/root-field semantics with tests.
 func extractGraphQLTagFactsAST(src []byte, relFile string, kinds *tsutil.KindTable, root *sitter.Node) []facts.Fact {
 	var out []facts.Fact
 	var walk func(*sitter.Node)
