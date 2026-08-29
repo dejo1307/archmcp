@@ -592,12 +592,17 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	if !facts.IsTestPath(relFile) {
 		result = append(result, extractGraphQLTagFactsAST(src, relFile, kinds, root)...)
 		text := string(src)
-		fetchBody := strings.Contains(text, "fetch(") && strings.Contains(text, "query:")
-		if strings.Contains(text, "graphql-request") || fetchBody {
-			result = append(result, extractGraphQLClientCallFactsAST(src, relFile, kinds, root, fetchBody)...)
+		fetchBody := hasGraphQLFetchBodyCandidate(text)
+		clientCandidate := strings.Contains(text, "graphql-request") || fetchBody
+		var graphqlBindings graphqlImportBindings
+		if clientCandidate || graphqlServer.enabled {
+			graphqlBindings = collectGraphQLImportBindings(kinds, root, src)
+		}
+		if clientCandidate {
+			result = append(result, extractGraphQLClientCallFactsAST(src, relFile, kinds, root, fetchBody, graphqlBindings)...)
 		}
 		if graphqlServer.enabled {
-			result = append(result, extractGraphQLCodeFirstAST(src, relFile, kinds, root)...)
+			result = append(result, extractGraphQLCodeFirstAST(src, relFile, kinds, root, graphqlBindings)...)
 		}
 		result = append(result, extractTSKafkaFacts(kinds, root, src, relFile)...)
 	}

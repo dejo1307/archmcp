@@ -1,6 +1,9 @@
 // Package gqlscan lexes the operation surface shared by GraphQL extractors.
 package gqlscan
 
+// TODO: Add benchmarks and large hostile-input tests for the shared lexer,
+// including multi-megabyte malformed strings and deeply nested selections.
+
 // OperationHeads returns regexp-compatible index tuples: full start/end,
 // followed by the operation-kind start/end.
 func OperationHeads(text string) [][]int {
@@ -25,7 +28,7 @@ func OperationHeads(text string) [][]int {
 			}
 		}
 		for i := line; i+2 < lineEnd; i++ {
-			if text[i:i+3] == `"""` && (i == 0 || text[i-1] != '\\') {
+			if text[i:i+3] == `"""` && !isEscaped(text, i) {
 				inBlockString = !inBlockString
 				i += 2
 			}
@@ -205,7 +208,7 @@ func skipDelimited(text string, i int, open, close byte) (int, bool) {
 func skipString(text string, i int) int {
 	if i+2 < len(text) && text[i:i+3] == `"""` {
 		for i += 3; i+2 < len(text); i++ {
-			if text[i:i+3] == `"""` {
+			if text[i:i+3] == `"""` && !isEscaped(text, i) {
 				return i + 3
 			}
 		}
@@ -221,6 +224,14 @@ func skipString(text string, i int) int {
 		}
 	}
 	return i
+}
+
+func isEscaped(text string, i int) bool {
+	backslashes := 0
+	for i--; i >= 0 && text[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%2 != 0
 }
 
 func skipToken(text string, i int) int {

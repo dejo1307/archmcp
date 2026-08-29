@@ -143,6 +143,10 @@ var graphqlRootByDeclaration = map[string]string{
 	"queryType": "Query", "mutationType": "Mutation", "subscriptionType": "Subscription",
 }
 
+var graphqlRootByFieldCall = map[string]string{
+	"queryField": "Query", "mutationField": "Mutation", "subscriptionField": "Subscription",
+}
+
 var graphqlRootNames = map[string]string{
 	"Query": "Query", "Mutation": "Mutation", "Subscription": "Subscription",
 }
@@ -356,11 +360,11 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
 	kinds := tsKindsFor(strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx"))
-	return extractGraphQLCodeFirstAST(src, relFile, kinds, tree.RootNode())
+	root := tree.RootNode()
+	return extractGraphQLCodeFirstAST(src, relFile, kinds, root, collectGraphQLImportBindings(kinds, root, src))
 }
 
-func extractGraphQLCodeFirstAST(src []byte, relFile string, kinds *tsutil.KindTable, rootNode *sitter.Node) []facts.Fact {
-	bindings := collectGraphQLImportBindings(kinds, rootNode, src)
+func extractGraphQLCodeFirstAST(src []byte, relFile string, kinds *tsutil.KindTable, rootNode *sitter.Node, bindings graphqlImportBindings) []facts.Fact {
 	decoratorEnabled := bindings.hasPackage("@nestjs/graphql") || bindings.hasPackage("type-graphql")
 	nexusEnabled := bindings.hasPackage("nexus")
 	pothosEnabled := bindings.hasPackage("@pothos/core")
@@ -448,30 +452,17 @@ func extractGraphQLCodeFirstAST(src []byte, relFile string, kinds *tsutil.KindTa
 				nexusCall := bindings.callExport(kinds, fn, src, "nexus")
 				pothosCall := importedReceiverCall(kinds, fn, src, pothosBuilders)
 				switch {
-				case pothosEnabled && pothosCall == "queryField":
-					add("Query", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
-				case pothosEnabled && pothosCall == "mutationField":
-					add("Mutation", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
-				case pothosEnabled && pothosCall == "subscriptionField":
-					add("Subscription", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
-				case nexusEnabled && nexusCall == "queryField":
-					add("Query", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
+				case pothosEnabled && graphqlRootByFieldCall[pothosCall] != "":
+					add(graphqlRootByFieldCall[pothosCall], field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
+				case nexusEnabled && graphqlRootByFieldCall[nexusCall] != "":
+					root := graphqlRootByFieldCall[nexusCall]
+					add(root, field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
 					for _, f := range nexusCallbackFields(kinds, args, src) {
-						add("Query", f.name, f.line, facts.RouteSourceGraphQLNexus)
-					}
-				case nexusEnabled && nexusCall == "mutationField":
-					add("Mutation", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
-					for _, f := range nexusCallbackFields(kinds, args, src) {
-						add("Mutation", f.name, f.line, facts.RouteSourceGraphQLNexus)
-					}
-				case nexusEnabled && nexusCall == "subscriptionField":
-					add("Subscription", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
-					for _, f := range nexusCallbackFields(kinds, args, src) {
-						add("Subscription", f.name, f.line, facts.RouteSourceGraphQLNexus)
+						add(root, f.name, f.line, facts.RouteSourceGraphQLNexus)
 					}
 				case nexusEnabled && (nexusCall == "queryType" || nexusCall == "mutationType" || nexusCall == "subscriptionType" || nexusCall == "extendType"):
 					root := graphqlRootByDeclaration[nexusCall]
-					obj := firstChildOfKind(kinds, args, "object")
+					obj := findChildByKind(kinds, args, "object")
 					if nexusCall == "extendType" && obj != nil {
 						root = objectStringProp(kinds, obj, src, "type")
 						if root != "Query" && root != "Mutation" && root != "Subscription" {
@@ -552,19 +543,6 @@ type graphqlNamedLine struct {
 }
 
 var nexusNonFieldMethods = map[string]bool{"implements": true, "modify": true}
-
-func firstChildOfKind(kinds *tsutil.KindTable, node *sitter.Node, kind string) *sitter.Node {
-	if node == nil {
-		return nil
-	}
-	for i := range node.ChildCount() {
-		child := node.Child(i)
-		if kindOf(kinds, child) == kind {
-			return child
-		}
-	}
-	return nil
-}
 
 func nexusDefinitionFields(kinds *tsutil.KindTable, obj *sitter.Node, src []byte) []graphqlNamedLine {
 	if obj == nil {
@@ -698,15 +676,7 @@ func graphQLServerASTSignals(src []byte, relFile string) (bool, []string) {
 		case "import_statement":
 			if source := findChildByKind(kinds, n, "string"); source != nil {
 				path := strings.Trim(nodeText(source, src), `"'`)
-				base := path
-				if strings.HasPrefix(base, "@") {
-					parts := strings.Split(base, "/")
-					if len(parts) >= 2 {
-						base = parts[0] + "/" + parts[1]
-					}
-				} else if i := strings.IndexByte(base, '/'); i >= 0 {
-					base = base[:i]
-				}
+				base := graphqlPackageBase(path)
 				if graphqlServerPackages[base] {
 					server = true
 				}
@@ -1158,7 +1128,7 @@ func extractGraphQLTagFactsAST(src []byte, relFile string, kinds *tsutil.KindTab
 func extractGraphQLClientCallFacts(src []byte, relFile string) []facts.Fact {
 	text := string(src)
 	possibleGraphQLRequest := strings.Contains(text, "graphql-request")
-	fetchBody := strings.Contains(text, "fetch(") && strings.Contains(text, "query:")
+	fetchBody := hasGraphQLFetchBodyCandidate(text)
 	if !possibleGraphQLRequest && !fetchBody {
 		return nil
 	}
@@ -1175,12 +1145,17 @@ func extractGraphQLClientCallFacts(src []byte, relFile string) []facts.Fact {
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
 	kinds := tsKindsFor(strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx"))
-	return extractGraphQLClientCallFactsAST(src, relFile, kinds, tree.RootNode(), fetchBody)
+	root := tree.RootNode()
+	return extractGraphQLClientCallFactsAST(src, relFile, kinds, root, fetchBody, collectGraphQLImportBindings(kinds, root, src))
 }
 
-func extractGraphQLClientCallFactsAST(src []byte, relFile string, kinds *tsutil.KindTable, rootNode *sitter.Node, fetchBody bool) []facts.Fact {
+func hasGraphQLFetchBodyCandidate(text string) bool {
+	return strings.Contains(text, "fetch(") && strings.Contains(text, "query:")
+}
+
+func extractGraphQLClientCallFactsAST(src []byte, relFile string, kinds *tsutil.KindTable, rootNode *sitter.Node, fetchBody bool, bindings graphqlImportBindings) []facts.Fact {
 	text := string(src)
-	knownClient := collectGraphQLImportBindings(kinds, rootNode, src).hasPackage("graphql-request")
+	knownClient := bindings.hasPackage("graphql-request")
 	if !knownClient && !fetchBody {
 		return nil
 	}
