@@ -68,13 +68,6 @@ func TestOperationHeads_RejectsSDLFieldsAndDescriptionProse(t *testing.T) {
   query: String
 }
 
-func TestOperationHeads_RejectsOperationExampleInBlockDescription(t *testing.T) {
-	doc := "type Query {\n  viewer: User\n}\n\"\"\"Example:\nquery Fake { viewer }\n\"\"\"\ntype User { id: ID! }"
-	if got := OperationHeads(doc); len(got) != 0 {
-		t.Fatalf("operation example in block description produced heads: %v", got)
-	}
-}
-
 """
 query is going to be used by a client.
 """
@@ -83,6 +76,29 @@ type Bicycle {
 }`
 	if got := OperationHeads(doc); len(got) != 0 {
 		t.Fatalf("SDL text produced operation heads: %v", got)
+	}
+}
+
+func TestOperationHeads_RejectsOperationExampleInBlockDescription(t *testing.T) {
+	doc := "type Query {\n  viewer: User\n}\n\"\"\"Example:\nquery Fake { viewer }\n\"\"\"\ntype User { id: ID! }"
+	if got := OperationHeads(doc); len(got) != 0 {
+		t.Fatalf("operation example in block description produced heads: %v", got)
+	}
+}
+
+func TestOperationHeads_BlockDescriptionClosingAfterEscapedBackslash(t *testing.T) {
+	doc := "\"\"\"description ending in \\\\\n\"\"\"\nquery Real { viewer }"
+	heads := OperationHeads(doc)
+	if len(heads) != 1 || doc[heads[0][2]:heads[0][3]] != "query" {
+		t.Fatalf("want operation after block description, got %v", heads)
+	}
+}
+
+func TestOperationHeads_EscapedTripleQuoteInVariableBlockString(t *testing.T) {
+	doc := "query Real($value: String = \"\"\"before \\\"\"\" after\"\"\") { viewer }"
+	heads := OperationHeads(doc)
+	if len(heads) != 1 {
+		t.Fatalf("want operation containing escaped triple quote, got %v", heads)
 	}
 }
 
