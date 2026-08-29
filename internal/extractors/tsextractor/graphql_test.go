@@ -9,6 +9,19 @@ import (
 	"github.com/enola-labs/enola/internal/facts"
 )
 
+func detectGraphQLServerUsageForTest(t *testing.T, dir string, files []string) graphqlServerContext {
+	t.Helper()
+	sources := make(map[string][]byte, len(files))
+	for _, file := range files {
+		data, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources[file] = data
+	}
+	return detectGraphQLServerUsage(files, sources)
+}
+
 func TestGraphQLTag_ClientRootFields(t *testing.T) {
 	src := []byte("import gql from 'graphql-tag';\nconst Q = gql`\n  query PageStats($id: ID!) {\n    pageViews(companyId: $id) {\n      total\n    }\n    visitors: uniqueVisitors {\n      count\n    }\n  }\n`;\nconst M = gql`\n  mutation {\n    trackEvent(input: {}) {\n      ok\n    }\n  }\n`;\n")
 	ff := extractGraphQLTagFacts(src, "src/queries/stats.js")
@@ -105,7 +118,7 @@ func TestDetectGraphQLServerUsage_NoServerEmitsNothing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "schema.ts"), []byte("const typeDefs = gql`type Query { unrelated: String }`;"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if detectGraphQLServerUsage(dir, []string{"schema.ts"}).enabled {
+	if detectGraphQLServerUsageForTest(t, dir, []string{"schema.ts"}).enabled {
 		t.Fatal("schema-only client repository was identified as a GraphQL server")
 	}
 }
@@ -144,6 +157,22 @@ func TestGraphQLServerSDL_BlockDescriptionsAndBracesInStrings(t *testing.T) {
 	}
 }
 
+func TestGraphQLServerSDL_BlockDescriptionSchemaExampleIsNotAType(t *testing.T) {
+	src := []byte("const typeDefs = gql`\n\"\"\"Example:\n  type Query { fake: String }\n\"\"\"\ntype Query { real: String }\n`;")
+	ff := extractGraphQLServerSDL(src, "src/schema.ts")
+	if len(ff) != 1 || ff[0].Name != "Query.real" {
+		t.Fatalf("description example emitted as schema: %+v", ff)
+	}
+}
+
+func TestGraphQLServerSDL_RedeclaredFieldAcrossTemplatesIsPreserved(t *testing.T) {
+	src := []byte("const firstTypeDefs = gql`type Query { viewer: User }`;\nconst secondTypeDefs = gql`extend type Query { viewer: User }`;")
+	ff := extractGraphQLServerSDL(src, "src/schema.ts")
+	if len(ff) != 2 || ff[0].Name != "Query.viewer" || ff[1].Name != "Query.viewer" || ff[0].Line == ff[1].Line {
+		t.Fatalf("separate declarations must remain separately evidenced: %+v", ff)
+	}
+}
+
 func TestDetectGraphQLServerUsage_ModularAndGenericConstructor(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "server.ts"), []byte("new ApolloServer<MyContext>({ typeDefs });"), 0o644); err != nil {
@@ -152,7 +181,7 @@ func TestDetectGraphQLServerUsage_ModularAndGenericConstructor(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "schema.ts"), []byte("export const typeDefs = gql`type Query { ping: String }`;"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !detectGraphQLServerUsage(dir, []string{"server.ts", "schema.ts"}).enabled {
+	if !detectGraphQLServerUsageForTest(t, dir, []string{"server.ts", "schema.ts"}).enabled {
 		t.Fatal("generic ApolloServer constructor was not detected repo-wide")
 	}
 	ff := extractGraphQLServerSDL([]byte("export const typeDefs = gql`type Query { ping: String }`;"), "schema.ts")
@@ -174,6 +203,14 @@ func TestGraphQLServerSDL_FrameworkNeutralForms(t *testing.T) {
 	want := []string{"Query.yoga", "Mutation.publish"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
+func TestGraphQLServerSDL_YogaDocumentedTypeDefinitionsBinding(t *testing.T) {
+	src := []byte("import { createSchema } from 'graphql-yoga';\nconst typeDefinitions = `type Query { hello: String! }`;\ncreateSchema({ typeDefs: [typeDefinitions] });")
+	ff := extractGraphQLServerSDL(src, "src/schema.ts")
+	if len(ff) != 1 || ff[0].Name != "Query.hello" {
+		t.Fatalf("Yoga documented typeDefinitions binding = %+v, want Query.hello", ff)
 	}
 }
 
@@ -220,7 +257,7 @@ func TestDetectGraphQLServerUsage_CommonFrameworks(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "server.ts"), []byte(source), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if !detectGraphQLServerUsage(dir, []string{"server.ts"}).enabled {
+		if !detectGraphQLServerUsageForTest(t, dir, []string{"server.ts"}).enabled {
 			t.Errorf("server signal not detected in %q", source)
 		}
 	}
@@ -270,10 +307,15 @@ builder.mutationField("publish", (t) => t.boolean({ resolve: () => true }));`)
 }
 
 func TestGraphQLCodeFirst_RequiresPackageProvenance(t *testing.T) {
-	src := []byte(`class Store { @Query() rows() {} }
-builder.queryField("notGraphQL", () => value);`)
-	if ff := extractGraphQLCodeFirst(src, "src/store.ts"); len(ff) != 0 {
-		t.Fatalf("unrelated APIs emitted GraphQL routes: %+v", ff)
+	for _, src := range []string{
+		`class Store { @Query() rows() {} }
+builder.queryField("notGraphQL", () => value);`,
+		`// import { Query } from "@nestjs/graphql"
+class Store { @Query() rows() {} }`,
+	} {
+		if ff := extractGraphQLCodeFirst([]byte(src), "src/store.ts"); len(ff) != 0 {
+			t.Fatalf("unrelated APIs emitted GraphQL routes: %+v", ff)
+		}
 	}
 }
 
@@ -301,9 +343,14 @@ request(endpoint, document);`, "Query.viewer"},
 }
 
 func TestGraphQLClientCalls_RequireClientProvenance(t *testing.T) {
-	src := []byte("const documentation = `query Example { fake }`;")
-	if ff := extractGraphQLClientCallFacts(src, "src/docs.ts"); len(ff) != 0 {
-		t.Fatalf("unrelated operation-looking string emitted routes: %+v", ff)
+	for _, src := range []string{
+		"const documentation = `query Example { fake }`;",
+		"// import { request } from 'graphql-request'\nconst documentation = `query Example { fake }`;",
+		"import { gql } from 'urql';\nconst documentation = `query Example { fake }`;",
+	} {
+		if ff := extractGraphQLClientCallFacts([]byte(src), "src/docs.ts"); len(ff) != 0 {
+			t.Fatalf("unproven operation-looking string emitted routes: %+v", ff)
+		}
 	}
 }
 
@@ -313,7 +360,7 @@ func TestDetectGraphQLServerUsage_CommentsDoNotActivateServer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "library.ts"), src, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if detectGraphQLServerUsage(dir, []string{"library.ts"}).enabled {
+	if detectGraphQLServerUsageForTest(t, dir, []string{"library.ts"}).enabled {
 		t.Fatal("buildSchema documentation example activated GraphQL server detection")
 	}
 	if ff := extractGraphQLServerSDL(src, "library.ts"); len(ff) != 0 {
@@ -337,7 +384,7 @@ func TestDetectGraphQLServerUsage_StandaloneSDLRequiresProvenance(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	ctx := detectGraphQLServerUsage(dir, []string{"server.ts", "schema.graphql", "benchmark/github.graphql"})
+	ctx := detectGraphQLServerUsageForTest(t, dir, []string{"server.ts", "schema.graphql", "benchmark/github.graphql"})
 	if !ctx.sdlDocuments["schema.graphql"] {
 		t.Fatal("server-imported schema.graphql lacks provenance")
 	}

@@ -470,8 +470,9 @@ against a server's root fields. This is the client half of the seam.
 The server half reads SDL used by Apollo Server, GraphQL Yoga, Mercurius,
 express-graphql, graphql-http, GraphQL Tools, and GraphQL.js `buildSchema`. It also reads
 code-first root fields declared by NestJS GraphQL and TypeGraphQL
-`@Query`/`@Mutation`/`@Subscription` decorators, Nexus `queryField`/`mutationField`, and
-Pothos builder root-field calls. Package provenance is required, so unrelated decorators
+`@Query`/`@Mutation`/`@Subscription` decorators, Nexus's named `queryField`,
+`mutationField`, and `subscriptionField` shorthands, and the corresponding singular
+Pothos builder methods. Package provenance is required, so unrelated decorators
 or builder methods with those generic names remain inert. A schema may
 be a plain template literal or a `gql`-tagged one, assigned through `typeDefs`, `schema`,
 or conventional suffixed bindings such as `gqlSchema` and `userTypeDefs`; TypeScript
@@ -487,7 +488,7 @@ GraphQL server signal.
 
 Relay's `graphql` tag and the `gql` tags commonly used by Apollo, urql, and
 graphql-request share the same operation extraction. Static untagged operation strings
-are also read in graphql-request/urql modules and when they are the `query` property of a
+are also read in graphql-request modules and when they are the `query` property of a
 plain `fetch` JSON body; arbitrary operation-looking strings elsewhere remain inert.
 
 This reads the schema surface only: which root fields exist, not which resolver
