@@ -65,7 +65,7 @@ func (e *TSExtractor) DetectFiles(repoPath string, files []string) (bool, error)
 	if _, found := findTSRoot(repoPath); found {
 		return true, nil
 	}
-	if detectGraphQLDocs(repoPath) {
+	if hasGraphQLDocs(files) {
 		return true, nil
 	}
 	for _, rel := range files {
@@ -252,13 +252,31 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// `client.method(...)` call to its "/pkg.Service/Method" route. Built before
 	// the parallel pass because a client's stub and its call sites usually live
 	// in different files.
-	grpcStubs := buildGRPCStubIndex(repoPath, tsFiles)
-	graphqlServer := detectGraphQLServerUsage(repoPath, tsFiles)
+	// Read each source once, in parallel. GraphQL context needs a repository-wide
+	// view before extraction, but it consumes these bytes rather than performing a
+	// serial pre-pass that rereads every file from disk.
+	type sourceResult struct {
+		src []byte
+		err error
+	}
+	readSources := parallel.MapFiles(ctx, tsFiles, func(relFile string) sourceResult {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		return sourceResult{src: src, err: err}
+	})
+	sources := make(map[string][]byte, len(tsFiles))
+	for i, read := range readSources {
+		if read.err != nil {
+			log.Printf("[ts-extractor] error reading %s: %v", tsFiles[i], read.err)
+			continue
+		}
+		sources[tsFiles[i]] = read.src
+	}
+	grpcStubs := buildGRPCStubIndex(tsFiles, sources)
+	graphqlServer := detectGraphQLServerUsage(tsFiles, sources)
 
 	perFile := parallel.MapFiles(ctx, tsFiles, func(relFile string) tsFileResult {
-		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
-		if err != nil {
-			log.Printf("[ts-extractor] error reading %s: %v", relFile, err)
+		src := sources[relFile]
+		if src == nil {
 			return tsFileResult{}
 		}
 		if isMinifiedSource(src) {
@@ -281,6 +299,8 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 		return res
 	})
+	readSources = nil
+	sources = nil
 
 	// Templates are scanned in parallel with no parser: an Angular template is not
 	// HTML once its @if/@for blocks are in it, and both dialects are live in the

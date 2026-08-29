@@ -1,11 +1,11 @@
 package tsextractor
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"github.com/enola-labs/enola/internal/factpath"
 	"github.com/enola-labs/enola/internal/facts"
 	"github.com/enola-labs/enola/internal/gqlscan"
@@ -30,44 +30,22 @@ func isGraphQLDocFile(path string) bool {
 	return strings.HasSuffix(path, ".graphql") || strings.HasSuffix(path, ".gql")
 }
 
-// detectGraphQLDocs probes for .graphql/.gql operation documents. A Swift or
+// hasGraphQLDocs probes the engine's existing file list for .graphql/.gql
+// operation documents. A Swift or
 // Kotlin repository carries its Apollo operation documents with no
 // package.json anywhere (an iOS app being the measured case: 41 documents,
 // zero TypeScript), so doc presence must activate the extractor on its own —
 // the rest of the TypeScript machinery no-ops with no TS files to read, and
 // schema COPIES stay inert because type-definition blocks emit nothing.
-// Search depth adapts exactly as findTSRoot's does: Gradle nests Apollo
-// documents deep (Android projects keep them at app/src/main/graphql/), so a
-// deep-nested project searches further.
-func detectGraphQLDocs(repoPath string) bool {
-	maxDepth := 3
-	if isDeepNestedProject(repoPath) {
-		maxDepth = 8
+// The engine has already applied ignored-directory policy, so walking the
+// repository again here only repeated work and could disagree with that list.
+func hasGraphQLDocs(files []string) bool {
+	for _, path := range files {
+		if isGraphQLDocFile(strings.ToLower(path)) {
+			return true
+		}
 	}
-	found := false
-	root := filepath.Clean(repoPath) //factpath:host
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || found {
-			return filepath.SkipAll
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if path != root && (strings.HasPrefix(name, ".") || tsSkipDirs[name]) {
-				return filepath.SkipDir
-			}
-			rel, _ := filepath.Rel(root, path)
-			if rel != "." && strings.Count(filepath.ToSlash(rel), "/") >= maxDepth {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if isGraphQLDocFile(path) {
-			found = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return found
+	return false
 }
 
 // extractGraphQLClientOps scans text (a gql template body or a .graphql file)
@@ -140,7 +118,7 @@ type graphqlServerContext struct {
 // text: examples in comments and strings must not turn a library into a server.
 // It also records standalone SDL documents with direct provenance (an import by
 // a server-construction file, or Hasura's metadata convention).
-func detectGraphQLServerUsage(repoPath string, files []string) graphqlServerContext {
+func detectGraphQLServerUsage(files []string, sources map[string][]byte) graphqlServerContext {
 	ctx := graphqlServerContext{sdlDocuments: map[string]bool{}}
 	for _, relFile := range files {
 		if facts.IsTestPath(relFile) {
@@ -153,8 +131,8 @@ func detectGraphQLServerUsage(repoPath string, files []string) graphqlServerCont
 			}
 			continue
 		}
-		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
-		if err != nil {
+		src := sources[relFile]
+		if src == nil {
 			continue
 		}
 		if !possibleGraphQLServerSignal(src) {
@@ -210,6 +188,14 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
 	kinds := tsKindsFor(strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx"))
+	decoratorEnabled := importsGraphQLPackage(kinds, tree.RootNode(), src, map[string]bool{
+		"@nestjs/graphql": true, "type-graphql": true,
+	})
+	nexusEnabled := importsGraphQLPackage(kinds, tree.RootNode(), src, map[string]bool{"nexus": true})
+	pothosEnabled := importsGraphQLPackage(kinds, tree.RootNode(), src, map[string]bool{"@pothos/core": true})
+	if !decoratorEnabled && !nexusEnabled && !pothosEnabled {
+		return nil
+	}
 
 	seen := map[string]bool{}
 	var out []facts.Fact
@@ -231,6 +217,9 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 
 	var walk func(*sitter.Node)
 	emitDecoratedMember := func(member *sitter.Node, decorators []*sitter.Node) {
+		if !decoratorEnabled {
+			return
+		}
 		method := findChildByKind(kinds, member, "property_identifier")
 		if method == nil {
 			method = findChildByKind(kinds, member, "identifier")
@@ -245,14 +234,10 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 				continue
 			}
 			field := nodeText(method, src)
-			argText := ""
-			if args != nil {
-				argText = nodeText(args, src)
-			}
-			if explicit := graphqlDecoratorFieldName(argText); explicit != "" {
+			if explicit := graphqlDecoratorFieldName(kinds, args, src); explicit != "" {
 				field = explicit
 			}
-			add(root, field, int(d.StartPosition().Row)+1, "graphql-decorator")
+			add(root, field, int(d.StartPosition().Row)+1, facts.RouteSourceGraphQLDecorator)
 		}
 	}
 	walk = func(n *sitter.Node) {
@@ -276,39 +261,25 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 				}
 				pending = nil
 			}
-		case "method_definition", "public_field_definition":
-			method := findChildByKind(kinds, n, "property_identifier")
-			if method == nil {
-				method = findChildByKind(kinds, n, "identifier")
-			}
-			if method != nil {
-				for i := range n.ChildCount() {
-					d := n.Child(i)
-					if kindOf(kinds, d) != "decorator" {
-						continue
-					}
-					emitDecoratedMember(n, []*sitter.Node{d})
-				}
-			}
 		case "call_expression":
 			fn := n.ChildByFieldName("function")
 			args := n.ChildByFieldName("arguments")
 			if fn != nil && args != nil {
 				callee := nodeText(fn, src)
-				field := firstGraphQLStringArgument(nodeText(args, src))
+				field := firstStringArg(kinds, args, src)
 				switch {
-				case strings.HasSuffix(callee, ".queryField"):
-					add("Query", field, int(n.StartPosition().Row)+1, "pothos")
-				case strings.HasSuffix(callee, ".mutationField"):
-					add("Mutation", field, int(n.StartPosition().Row)+1, "pothos")
-				case strings.HasSuffix(callee, ".subscriptionField"):
-					add("Subscription", field, int(n.StartPosition().Row)+1, "pothos")
-				case callee == "queryField":
-					add("Query", field, int(n.StartPosition().Row)+1, "nexus")
-				case callee == "mutationField":
-					add("Mutation", field, int(n.StartPosition().Row)+1, "nexus")
-				case callee == "subscriptionField":
-					add("Subscription", field, int(n.StartPosition().Row)+1, "nexus")
+				case pothosEnabled && strings.HasSuffix(callee, ".queryField"):
+					add("Query", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
+				case pothosEnabled && strings.HasSuffix(callee, ".mutationField"):
+					add("Mutation", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
+				case pothosEnabled && strings.HasSuffix(callee, ".subscriptionField"):
+					add("Subscription", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
+				case nexusEnabled && callee == "queryField":
+					add("Query", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
+				case nexusEnabled && callee == "mutationField":
+					add("Mutation", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
+				case nexusEnabled && callee == "subscriptionField":
+					add("Subscription", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
 				}
 			}
 		}
@@ -320,34 +291,22 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 	return out
 }
 
-var graphqlDecoratorName = regexp.MustCompile(`\bname\s*:\s*["']([_A-Za-z][_0-9A-Za-z]*)["']`)
-var graphqlLeadingString = regexp.MustCompile(`^\s*\(\s*["']([_A-Za-z][_0-9A-Za-z]*)["']`)
-
-func graphqlDecoratorFieldName(args string) string {
-	if m := graphqlDecoratorName.FindStringSubmatch(args); m != nil {
-		return m[1]
-	}
-	// TypeGraphQL supports @Query(() => Type, { name: "field" }); NestJS also
-	// permits @Query("field"). The latter is the only positional string form.
-	if m := graphqlLeadingString.FindStringSubmatch(args); m != nil {
-		return m[1]
-	}
-	return ""
-}
-
-func firstGraphQLStringArgument(args string) string {
-	args = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(args), "("), ")"))
-	if len(args) < 2 || (args[0] != '\'' && args[0] != '"') {
+func graphqlDecoratorFieldName(kinds *tsutil.KindTable, args *sitter.Node, src []byte) string {
+	if args == nil {
 		return ""
 	}
-	quote := args[0]
-	for i := 1; i < len(args); i++ {
-		if args[i] == '\\' {
-			i++
-			continue
-		}
-		if args[i] == quote {
-			return args[1:i]
+	// NestJS's schema-first overload accepts @Query("field").
+	if name := firstStringArg(kinds, args, src); name != "" {
+		return name
+	}
+	// Code-first NestJS and TypeGraphQL put an override in the options object,
+	// commonly after a return-type arrow: @Query(() => T, { name: "field" }).
+	for i := range args.ChildCount() {
+		arg := args.Child(i)
+		if kindOf(kinds, arg) == "object" {
+			if name := objectStringProp(kinds, arg, src, "name"); name != "" {
+				return name
+			}
 		}
 	}
 	return ""
@@ -434,7 +393,7 @@ func graphQLServerASTSignals(src []byte, relFile string) (bool, []string) {
 // (`gqlSchema`, `userTypeDefs`). Object properties stay restricted to the
 // conventional schema/typeDefs keys so an arbitrary fooSchema property is not
 // promoted merely because the repository also runs a GraphQL server.
-var serverSDLOpen = regexp.MustCompile("(?:(?:\\b(?:typeDefs|schema|[A-Za-z_$][A-Za-z0-9_$]*(?:TypeDefs|Schema))\\s*(?::\\s*[^=\\n]+)?\\s*=)|(?:\\b(?:typeDefs|schema)\\s*:)|(?:\\bbuildSchema\\s*\\())\\s*(?:(?:gql|graphql)\\s*)?`")
+var serverSDLOpen = regexp.MustCompile("(?:(?:\\b(?:typeDefs|typeDefinitions|schema|[A-Za-z_$][A-Za-z0-9_$]*(?:TypeDefs|TypeDefinitions|Schema))\\s*(?::\\s*[^=\\n]+)?\\s*=)|(?:\\b(?:typeDefs|schema)\\s*:)|(?:\\bbuildSchema\\s*\\())\\s*(?:(?:gql|graphql)\\s*)?`")
 
 // sdlTypeBlock matches a Query/Mutation/Subscription root type declaration
 // through its opening brace.
@@ -447,21 +406,17 @@ func extractGraphQLServerSDL(src []byte, relFile string) []facts.Fact {
 	if !strings.Contains(raw, "`") ||
 		(!strings.Contains(raw, "schema") && !strings.Contains(raw, "Schema") &&
 			!strings.Contains(raw, "typeDefs") && !strings.Contains(raw, "TypeDefs") &&
+			!strings.Contains(raw, "typeDefinitions") && !strings.Contains(raw, "TypeDefinitions") &&
 			!strings.Contains(raw, "buildSchema")) {
 		return nil
 	}
 	text := string(blankTSComments(src, relFile))
 	var out []facts.Fact
-	seen := map[string]bool{}
 	for _, m := range serverSDLOpen.FindAllStringIndex(text, -1) {
 		open := m[1] - 1 // the backtick itself
 		body, _ := templateBody(text, open)
 		baseLine := 1 + strings.Count(text[:open], "\n")
 		for _, f := range sdlRootFields(body, relFile, baseLine) {
-			if seen[f.Name] {
-				continue
-			}
-			seen[f.Name] = true
 			out = append(out, f)
 		}
 	}
@@ -515,7 +470,8 @@ func extractGraphQLServerSDLDocument(src []byte, relFile string) []facts.Fact {
 // relative to baseLine (the document's own start line in its enclosing file).
 func sdlRootFields(body, relFile string, baseLine int) []facts.Fact {
 	var out []facts.Fact
-	for _, tm := range sdlTypeBlock.FindAllStringSubmatchIndex(body, -1) {
+	structural := blankSDLNonStructuralText(body)
+	for _, tm := range sdlTypeBlock.FindAllStringSubmatchIndex(structural, -1) {
 		kind := body[tm[2]:tm[3]] // Query, Mutation, or Subscription
 		blockStart := tm[1]       // just after the opening brace
 		blockEnd := matchingBrace(body, blockStart)
@@ -537,6 +493,31 @@ func sdlRootFields(body, relFile string, baseLine int) []facts.Fact {
 		}
 	}
 	return out
+}
+
+// blankSDLNonStructuralText removes comments, quoted strings, and block-string
+// descriptions while preserving byte offsets and newlines. Root declarations
+// shown inside a `"""..."""` description are prose, not schema structure.
+func blankSDLNonStructuralText(text string) string {
+	out := []byte(text)
+	for i := 0; i < len(out); {
+		start := i
+		switch out[i] {
+		case '#':
+			i = skipSDLComment(text, i)
+		case '"':
+			i = skipSDLString(text, i)
+		default:
+			i++
+			continue
+		}
+		for j := start; j < i; j++ {
+			if out[j] != '\n' && out[j] != '\r' {
+				out[j] = ' '
+			}
+		}
+	}
+	return string(out)
 }
 
 // matchingBrace returns the index into text of the closing brace matching the
@@ -784,10 +765,9 @@ func extractGraphQLTagFacts(src []byte, relFile string) []facts.Fact {
 // GraphQL examples in arbitrary strings inert.
 func extractGraphQLClientCallFacts(src []byte, relFile string) []facts.Fact {
 	text := string(src)
-	knownClient := strings.Contains(text, "graphql-request") || strings.Contains(text, "@urql/") ||
-		strings.Contains(text, `from "urql"`) || strings.Contains(text, "from 'urql'")
+	possibleGraphQLRequest := strings.Contains(text, "graphql-request")
 	fetchBody := strings.Contains(text, "fetch(") && strings.Contains(text, "query:")
-	if !knownClient && !fetchBody {
+	if !possibleGraphQLRequest && !fetchBody {
 		return nil
 	}
 
@@ -803,6 +783,10 @@ func extractGraphQLClientCallFacts(src []byte, relFile string) []facts.Fact {
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
 	kinds := tsKindsFor(strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx"))
+	knownClient := importsGraphQLPackage(kinds, tree.RootNode(), src, map[string]bool{"graphql-request": true})
+	if !knownClient && !fetchBody {
+		return nil
+	}
 	seen := map[string]bool{}
 	var out []facts.Fact
 	var walk func(*sitter.Node)
@@ -832,7 +816,7 @@ func extractGraphQLClientCallFacts(src []byte, relFile string) []facts.Fact {
 				body := nodeText(n, src)
 				if len(body) >= 2 {
 					body = body[1 : len(body)-1]
-					for _, f := range extractGraphQLClientOps(body, relFile, "graphql-client-call") {
+					for _, f := range extractGraphQLClientOps(body, relFile, facts.RouteSourceGraphQLClientCall) {
 						if seen[f.Name] {
 							continue
 						}
@@ -849,4 +833,34 @@ func extractGraphQLClientCallFacts(src []byte, relFile string) []facts.Fact {
 	}
 	walk(tree.RootNode())
 	return out
+}
+
+func importsGraphQLPackage(kinds *tsutil.KindTable, root *sitter.Node, src []byte, packages map[string]bool) bool {
+	found := false
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil || found {
+			return
+		}
+		if kindOf(kinds, n) == "import_statement" {
+			if source := findChildByKind(kinds, n, "string"); source != nil {
+				path := strings.Trim(nodeText(source, src), `"'`)
+				base := path
+				if strings.HasPrefix(base, "@") {
+					parts := strings.Split(base, "/")
+					if len(parts) >= 2 {
+						base = parts[0] + "/" + parts[1]
+					}
+				} else if i := strings.IndexByte(base, '/'); i >= 0 {
+					base = base[:i]
+				}
+				found = packages[base]
+			}
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	return found
 }

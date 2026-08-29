@@ -2,8 +2,6 @@ package tsextractor
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -144,10 +142,10 @@ func looksLikeGRPCStub(src []byte) bool {
 }
 
 // buildGRPCStubIndex scans the TS files for generated gRPC client stubs and
-// returns the class→service index used to resolve call sites. It reads files
-// itself (a cheap marker check skips non-stub files) because the index must be
-// complete before the per-file extraction pass runs.
-func buildGRPCStubIndex(repoPath string, tsFiles []string) *grpcStubIndex {
+// returns the class→service index used to resolve call sites. The source map is
+// shared with the repository-context and extraction passes so indexing does not
+// reread every TypeScript file from disk.
+func buildGRPCStubIndex(tsFiles []string, sources map[string][]byte) *grpcStubIndex {
 	idx := &grpcStubIndex{
 		byClass:          map[string]*grpcService{},
 		byService:        map[string]*grpcService{},
@@ -156,8 +154,8 @@ func buildGRPCStubIndex(repoPath string, tsFiles []string) *grpcStubIndex {
 	}
 
 	for _, rel := range tsFiles {
-		src, err := os.ReadFile(filepath.Join(repoPath, rel))
-		if err != nil {
+		src := sources[rel]
+		if src == nil {
 			continue
 		}
 		if !looksLikeGRPCStub(src) {

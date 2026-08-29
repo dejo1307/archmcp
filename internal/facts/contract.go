@@ -264,6 +264,10 @@ const (
 	RouteSourceGraphQLTag        = "graphql-tag"
 	RouteSourceGraphQLOperation  = "graphql-operation-file"
 	RouteSourceGraphQLRubyString = "graphql-ruby-string"
+	RouteSourceGraphQLDecorator  = "graphql-code-first-decorator"
+	RouteSourceGraphQLNexus      = "graphql-nexus"
+	RouteSourceGraphQLPothos     = "graphql-pothos"
+	RouteSourceGraphQLClientCall = "graphql-client-call"
 	RouteSourceSymfonyConfig     = "symfony-config" // Symfony YAML/XML route config
 
 	// Scala. The Play routes file is a DSL of its own rather than Scala source, and
@@ -300,6 +304,10 @@ const (
 var HandWrittenClientSources = map[string]bool{
 	RouteSourceGraphQLTag:        true,
 	RouteSourceGraphQLRubyString: true,
+	RouteSourceGraphQLDecorator:  true,
+	RouteSourceGraphQLNexus:      true,
+	RouteSourceGraphQLPothos:     true,
+	RouteSourceGraphQLClientCall: true,
 	RouteSourceGoHTTPClient:      true,
 	RouteSourceTSHTTPClient:      true,
 	RouteSourceRubyHTTPClient:    true,
