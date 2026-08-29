@@ -6,6 +6,8 @@ import (
 	"github.com/enola-labs/enola/internal/extractors/tsutil"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -132,7 +134,10 @@ func hasPkgDependency(dir, pkg string) bool {
 
 // detectNuxtRoute checks if a .vue file path corresponds to a Nuxt route.
 func detectNuxtRoute(relFile string) *facts.Fact {
-	if !strings.HasSuffix(relFile, ".vue") {
+	ext := filepath.Ext(relFile)
+	switch strings.ToLower(ext) {
+	case ".vue", ".js", ".jsx", ".mjs", ".ts", ".tsx":
+	default:
 		return nil
 	}
 
@@ -142,7 +147,13 @@ func detectNuxtRoute(relFile string) *facts.Fact {
 		if p == "pages" && i < len(parts)-1 {
 			remaining := parts[i+1:]
 			fileName := remaining[len(remaining)-1]
-			baseName := strings.TrimSuffix(fileName, ".vue")
+			baseName := strings.TrimSuffix(fileName, ext)
+			// Nuxt's client/server page suffixes affect rendering, not the URL.
+			baseName = strings.TrimSuffix(strings.TrimSuffix(baseName, ".client"), ".server")
+			// A named view (child@sidebar.vue) shares the default view's URL.
+			if at := strings.IndexByte(baseName, '@'); at >= 0 {
+				baseName = baseName[:at]
+			}
 
 			routeParts := make([]string, 0, len(remaining))
 			for j, rp := range remaining {
@@ -150,7 +161,8 @@ func detectNuxtRoute(relFile string) *facts.Fact {
 					if baseName != "index" {
 						routeParts = append(routeParts, baseName)
 					}
-				} else {
+				} else if !(strings.HasPrefix(rp, "(") && strings.HasSuffix(rp, ")")) {
+					// Nuxt route groups organize files without contributing a URL segment.
 					routeParts = append(routeParts, rp)
 				}
 			}
@@ -174,6 +186,236 @@ func detectNuxtRoute(relFile string) *facts.Fact {
 	}
 
 	return nil
+}
+
+var (
+	vueInterpolationRe  = regexp.MustCompile(`(?s)\{\{(.*?)\}\}`)
+	vueDirectiveValueRe = regexp.MustCompile(`(?is)(?:^|\s)(?:v-[\w-]+(?::[\w-]+)?(?:\.[\w-]+)*|[@:#][^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+	vueComponentTagRe   = regexp.MustCompile(`(?i)<\s*([A-Z][A-Za-z0-9_.-]*|[a-z][a-z0-9]*-[a-z0-9_.-]+)\b`)
+)
+
+var vueCompilerMacroNames = map[string]bool{
+	"defineProps": true, "defineEmits": true, "defineSlots": true,
+	"defineModel": true, "defineExpose": true, "defineOptions": true,
+}
+
+// buildVueImportBindings maps a template's local import spelling to the symbol
+// the imported file actually declares. Default imports may be freely renamed,
+// while a named import may have a different local alias.
+func buildVueImportBindings(kinds *tsutil.KindTable, root *sitter.Node, src []byte, relFile string, aliases map[string]tsAlias) emberImportBindings {
+	b := emberImportBindings{internal: map[string]string{}, external: map[string]string{}, modules: map[string]string{}}
+	fileDir := factpath.Dir(relFile)
+	for i := range root.ChildCount() {
+		stmt := root.Child(i)
+		if kindOf(kinds, stmt) != "import_statement" {
+			continue
+		}
+		source := findChildByKind(kinds, stmt, "string")
+		clause := findChildByKind(kinds, stmt, "import_clause")
+		if source == nil || clause == nil {
+			continue
+		}
+		importPath := strings.Trim(nodeText(source, src), `"'`)
+		resolved, external := resolveImportPath(importPath, fileDir, aliases)
+		moduleDir := factpath.Dir(resolved)
+		bind := func(local, target string) {
+			if local == "" {
+				return
+			}
+			b.modules[local] = resolved
+			if external {
+				b.external[local] = importPath
+			} else {
+				b.internal[local] = target
+			}
+		}
+		for j := range clause.ChildCount() {
+			child := clause.Child(j)
+			switch kindOf(kinds, child) {
+			case "identifier":
+				bind(nodeText(child, src), moduleDir+"."+fileSymbolName(resolved))
+			case "named_imports":
+				for k := range child.ChildCount() {
+					spec := child.Child(k)
+					if kindOf(kinds, spec) != "import_specifier" {
+						continue
+					}
+					name := spec.ChildByFieldName("name")
+					if name == nil {
+						continue
+					}
+					exported := nodeText(name, src)
+					local := exported
+					if alias := spec.ChildByFieldName("alias"); alias != nil {
+						local = nodeText(alias, src)
+					}
+					bind(local, moduleDir+"."+exported)
+				}
+			}
+		}
+	}
+	return b
+}
+
+// nuxtAutoComponentIndex returns only unambiguous convention-derived component
+// names. Both basename and path-prefixed forms are indexed because Nuxt projects
+// may configure pathPrefix off.
+func nuxtAutoComponentIndex(knownFiles map[string]bool) map[string]string {
+	candidates := make(map[string]map[string]bool)
+	for file := range knownFiles {
+		if !isVueFile(file) {
+			continue
+		}
+		parts := strings.Split(filepath.ToSlash(file), "/")
+		componentAt := -1
+		for i, part := range parts {
+			if part == "components" {
+				componentAt = i
+			}
+		}
+		if componentAt < 0 || componentAt == len(parts)-1 {
+			continue
+		}
+		target := factpath.Dir(file) + "." + fileSymbolName(file)
+		names := []string{fileSymbolName(file)}
+		var prefixed strings.Builder
+		for _, part := range parts[componentAt+1:] {
+			prefixed.WriteString(toPascal(strings.TrimSuffix(part, filepath.Ext(part))))
+		}
+		if prefixed.Len() > 0 {
+			names = append(names, prefixed.String())
+		}
+		for _, name := range names {
+			if candidates[name] == nil {
+				candidates[name] = make(map[string]bool)
+			}
+			candidates[name][target] = true
+		}
+	}
+	index := make(map[string]string)
+	for name, targets := range candidates {
+		if len(targets) == 1 {
+			for target := range targets {
+				index[name] = target
+			}
+		}
+	}
+	return index
+}
+
+// vueTemplateContent returns the first SFC template body. Vue permits at most one
+// top-level template block; malformed/unclosed blocks deliberately produce no refs.
+func vueTemplateContent(src []byte) []byte {
+	start := indexCaseInsensitive(src, []byte("<template"))
+	if start < 0 {
+		return nil
+	}
+	openEnd := bytes.IndexByte(src[start:], '>')
+	if openEnd < 0 {
+		return nil
+	}
+	openEnd += start
+	closeStart := indexCaseInsensitive(src[openEnd+1:], []byte("</template>"))
+	if closeStart < 0 {
+		return nil
+	}
+	closeStart += openEnd + 1
+	return src[openEnd+1 : closeStart]
+}
+
+// vueTemplateRefs resolves names used by a Vue template against declarations and
+// imports visible to that SFC. Filtering through those two exact scopes avoids
+// turning HTML text, property names, v-for locals, and native tags into graph edges.
+func vueTemplateRefs(rawSrc []byte, relFile string, extracted []facts.Fact, bindings emberImportBindings, autoComponents map[string]string) []string {
+	template := vueTemplateContent(rawSrc)
+	if len(template) == 0 {
+		return nil
+	}
+	dir := factpath.Dir(relFile)
+	visible := make(map[string]string)
+	for _, f := range extracted {
+		if f.Kind != facts.KindSymbol || f.File != relFile {
+			continue
+		}
+		if dot := strings.LastIndexByte(f.Name, '.'); dot >= 0 {
+			visible[f.Name[dot+1:]] = f.Name
+		}
+	}
+	for local, target := range bindings.internal {
+		visible[local] = target
+	}
+	for local, target := range autoComponents {
+		if visible[local] == "" {
+			visible[local] = target
+		}
+	}
+
+	seen := make(map[string]bool)
+	addExpr := func(expr []byte) {
+		for _, name := range identTokens(string(expr)) {
+			if target := visible[name]; target != "" && target != dir+"."+fileSymbolName(relFile) {
+				seen[target] = true
+			}
+		}
+	}
+	for _, m := range vueInterpolationRe.FindAllSubmatch(template, -1) {
+		addExpr(m[1])
+	}
+	for _, m := range vueDirectiveValueRe.FindAllSubmatch(template, -1) {
+		if len(m[1]) > 0 {
+			addExpr(m[1])
+		} else {
+			addExpr(m[2])
+		}
+	}
+	for _, m := range vueComponentTagRe.FindAllSubmatch(template, -1) {
+		name := string(m[1])
+		if dot := strings.IndexByte(name, '.'); dot >= 0 {
+			name = name[:dot]
+		}
+		if target := visible[name]; target != "" {
+			seen[target] = true
+			continue
+		}
+		if target := visible[toPascal(name)]; target != "" {
+			seen[target] = true
+		}
+	}
+	targets := make([]string, 0, len(seen))
+	for target := range seen {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	return targets
+}
+
+// collectVueCompilerMacros reads actual call-expression nodes, so macro-looking
+// text in a comment or string cannot manufacture component metadata.
+func collectVueCompilerMacros(kinds *tsutil.KindTable, root *sitter.Node, src []byte) []string {
+	seen := make(map[string]bool)
+	var walk func(*sitter.Node)
+	walk = func(node *sitter.Node) {
+		if node == nil {
+			return
+		}
+		if kindOf(kinds, node) == "call_expression" {
+			if fn := node.ChildByFieldName("function"); fn != nil && kindOf(kinds, fn) == "identifier" {
+				if name := nodeText(fn, src); vueCompilerMacroNames[name] {
+					seen[name] = true
+				}
+			}
+		}
+		for i := range node.ChildCount() {
+			walk(node.Child(i))
+		}
+	}
+	walk(root)
+	macros := make([]string, 0, len(seen))
+	for macro := range seen {
+		macros = append(macros, macro)
+	}
+	sort.Strings(macros)
+	return macros
 }
 
 func isVueFile(path string) bool {
@@ -200,16 +442,40 @@ func containsCreateRouterCall(kinds *tsutil.KindTable, node *sitter.Node, src []
 }
 
 // extractVueSFC extracts architectural facts from a Vue Single File Component.
-func (e *TSExtractor) extractVueSFC(kinds *tsutil.KindTable, rawSrc []byte, relFile string, isNuxt bool, aliases map[string]tsAlias) []facts.Fact {
+func (e *TSExtractor) extractVueSFC(kinds *tsutil.KindTable, rawSrc []byte, relFile string, isNuxt bool, aliases map[string]tsAlias, nuxtAutoComponents map[string]string) []facts.Fact {
 	var result []facts.Fact
 	blocks := extractVueScriptBlocks(rawSrc)
+	allBindings := emberImportBindings{internal: map[string]string{}, external: map[string]string{}, modules: map[string]string{}}
+	macroSet := make(map[string]bool)
+	macroContracts := make(map[string]map[string]bool)
+	macroTypes := make(map[string]string)
 
 	isSetup := false
 	for _, block := range blocks {
 		if block.IsSetup {
 			isSetup = true
 		}
-		result = append(result, e.extractVueScriptBlock(kinds, block, relFile, isNuxt, aliases)...)
+		blockFacts, bindings, macros, contracts, declaredTypes := e.extractVueScriptBlock(kinds, block, relFile, isNuxt, aliases)
+		result = append(result, blockFacts...)
+		for name, target := range bindings.internal {
+			allBindings.internal[name] = target
+		}
+		if block.IsSetup {
+			for _, macro := range macros {
+				macroSet[macro] = true
+			}
+			for contract, names := range contracts {
+				if macroContracts[contract] == nil {
+					macroContracts[contract] = make(map[string]bool)
+				}
+				for _, name := range names {
+					macroContracts[contract][name] = true
+				}
+			}
+			for contract, declared := range declaredTypes {
+				macroTypes[contract] = declared
+			}
+		}
 	}
 
 	dir := factpath.Dir(relFile)
@@ -255,6 +521,60 @@ func (e *TSExtractor) extractVueSFC(kinds *tsutil.KindTable, rawSrc []byte, relF
 		}
 		result = append(result, compFact)
 	}
+	if len(macroSet) > 0 {
+		macros := make([]string, 0, len(macroSet))
+		for macro := range macroSet {
+			macros = append(macros, macro)
+		}
+		sort.Strings(macros)
+		for i := range result {
+			if result[i].Kind != facts.KindSymbol || result[i].Name != factName {
+				continue
+			}
+			result[i].Props["vue_macros"] = macros
+			for _, macro := range macros {
+				result[i].Props["vue_"+strings.TrimPrefix(strings.ToLower(macro), "define")] = true
+			}
+			for contract, names := range macroContracts {
+				var ordered []string
+				for name := range names {
+					ordered = append(ordered, name)
+				}
+				sort.Strings(ordered)
+				result[i].Props[contract] = ordered
+			}
+			if len(macroTypes) > 0 {
+				declared := make([]string, 0, len(macroTypes))
+				for contract, typeText := range macroTypes {
+					declared = append(declared, contract+"="+typeText)
+				}
+				sort.Strings(declared)
+				result[i].Props["vue_contract_types"] = declared
+			}
+			break
+		}
+	}
+
+	// A binding used only from the template is still a real architectural use.
+	// Attach those exact, scope-resolved references to the component itself.
+	autoComponents := map[string]string(nil)
+	if isNuxt {
+		autoComponents = nuxtAutoComponents
+	}
+	templateTargets := vueTemplateRefs(rawSrc, relFile, result, allBindings, autoComponents)
+	if len(templateTargets) > 0 {
+		for i := range result {
+			if result[i].Kind != facts.KindSymbol || result[i].Name != factName {
+				continue
+			}
+			for _, target := range templateTargets {
+				if target != factName && !result[i].HasRelation(facts.RelCalls, target) {
+					result[i].Relations = append(result[i].Relations, facts.Relation{Kind: facts.RelCalls, Target: target})
+				}
+			}
+			break
+		}
+	}
 
 	if isNuxt {
 		if routeFact := detectNuxtRoute(relFile); routeFact != nil {
@@ -267,7 +587,7 @@ func (e *TSExtractor) extractVueSFC(kinds *tsutil.KindTable, rawSrc []byte, relF
 
 // extractVueScriptBlock parses a single <script> block from a Vue SFC and
 // returns the extracted facts with line numbers adjusted to the original file.
-func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueScriptBlock, relFile string, isNuxt bool, aliases map[string]tsAlias) []facts.Fact {
+func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueScriptBlock, relFile string, isNuxt bool, aliases map[string]tsAlias) ([]facts.Fact, emberImportBindings, []string, map[string][]string, map[string]string) {
 	isTSX := block.Lang == "tsx"
 	lang := typescript.LanguageTypescript()
 	if isTSX {
@@ -277,13 +597,17 @@ func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueS
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(lang)); err != nil {
-		return nil
+		return nil, emberImportBindings{}, nil, nil, nil
 	}
 
 	tree := parser.Parse(block.Content, nil)
 	defer tree.Close()
 
 	root := tree.RootNode()
+	bindings := buildVueImportBindings(kinds, root, block.Content, relFile, aliases)
+	macros := collectVueCompilerMacros(kinds, root, block.Content)
+	contracts := vueMacroContracts(kinds, root, block.Content)
+	declaredTypes := vueMacroDeclaredTypes(kinds, root, block.Content)
 
 	var result []facts.Fact
 	result = append(result, e.extractImports(kinds, root, block.Content, relFile, aliases)...)
@@ -312,6 +636,9 @@ func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueS
 		}
 	}
 	result = append(result, decls...)
+	// Script setup executes at component scope, so its top-level calls and values
+	// are real uses even though they are not inside a function declaration.
+	result = append(result, e.collectTSFileRefs(kinds, root, ctx, aliases, facts.KindFileRef)...)
 
 	if block.StartLine > 0 {
 		for i := range result {
@@ -321,5 +648,5 @@ func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueS
 		}
 	}
 
-	return result
+	return result, bindings, macros, contracts, declaredTypes
 }

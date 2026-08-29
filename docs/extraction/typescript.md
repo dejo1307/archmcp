@@ -24,6 +24,10 @@ Fixtures: [`ts_sample`](../../internal/engine/testdata/repos/ts_sample/) ·
 | `@controller(…)` (InversifyJS) | a server route | `route` |
 | `fetch("/x")`, `axios.post("/y")` | a client route with `role: client` | `route` |
 | `pages/about.vue` (Nuxt) | a route derived from the file path | `route` |
+| a Vue template's `<UserCard @submit="save" />` | resolved component and handler edges | `symbol` |
+| Vue `defineProps` / `defineEmits` / `defineSlots` macros | component public-surface markers | `symbol` |
+| Vue Router `{ path, component, children }` records | composed page routes and `handled_by` component edges | `route` |
+| a Nuxt auto-imported `useAuth()` | a call to its unique `composables/` declaration | `file_ref` / `symbol` |
 | `src/routes/blog/[slug]/+page.svelte` | a route derived from the file path | `route` |
 | a Prisma / TypeORM / Drizzle model | an entity with its table name | `storage` |
 | a `.gts`/`.gjs` Glimmer component | a component symbol with its template's references | `symbol` |
