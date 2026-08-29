@@ -41,7 +41,16 @@ func isGraphQLDocFile(path string) bool {
 // repository again here only repeated work and could disagree with that list.
 func hasGraphQLDocs(files []string) bool {
 	for _, path := range files {
-		if isGraphQLDocFile(strings.ToLower(path)) {
+		if isGraphQLDocFile(strings.ToLower(path)) && !hasGraphQLBuildSegment(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGraphQLBuildSegment(path string) bool {
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		if tsSkipDirs[segment] {
 			return true
 		}
 	}
@@ -53,7 +62,8 @@ func hasGraphQLDocs(files []string) bool {
 func extractGraphQLClientOps(text, relFile, source string) []facts.Fact {
 	var out []facts.Fact
 	seen := map[string]bool{}
-	for _, m := range gqlscan.OperationHead.FindAllStringSubmatchIndex(text, -1) {
+	heads := gqlscan.OperationHeads(text)
+	for _, m := range heads {
 		kind := text[m[2]:m[3]]
 		kindName := strings.ToUpper(kind[:1]) + kind[1:]
 		for _, field := range gqlscan.RootFields(text[m[1]:]) {
@@ -75,6 +85,26 @@ func extractGraphQLClientOps(text, relFile, source string) []facts.Fact {
 					facts.PropSource:    source,
 				},
 			})
+		}
+	}
+	// GraphQL's query shorthand omits the `query` keyword and operation name.
+	// It is unambiguous inside an operation-bearing tag/string/document.
+	if len(heads) == 0 {
+		start := 0
+		for start < len(text) && strings.ContainsRune(" \t\r\n,", rune(text[start])) {
+			start++
+		}
+		if start < len(text) && text[start] == '{' {
+			for _, field := range gqlscan.RootFields(text[start+1:]) {
+				full := "Query." + field
+				if !seen[full] {
+					seen[full] = true
+					out = append(out, facts.Fact{Kind: facts.KindRoute, Name: full, File: relFile, Line: 1 + strings.Count(text[:start], "\n"), Props: map[string]any{
+						"language": "typescript", "framework": "graphql", facts.PropRole: facts.RoleClient,
+						facts.PropRouteType: facts.RouteTypeGraphQL, facts.PropSource: source,
+					}})
+				}
+			}
 		}
 	}
 	return out
@@ -107,6 +137,151 @@ var graphqlServerPackages = map[string]bool{
 	"graphql-http": true, "@graphql-tools/schema": true,
 	"@nestjs/graphql": true, "type-graphql": true, "nexus": true,
 	"@pothos/core": true,
+}
+
+var graphqlRootByDeclaration = map[string]string{
+	"queryType": "Query", "mutationType": "Mutation", "subscriptionType": "Subscription",
+}
+
+var graphqlRootNames = map[string]string{
+	"Query": "Query", "Mutation": "Mutation", "Subscription": "Subscription",
+}
+
+type graphqlImportBindings struct {
+	packages   map[string]bool
+	named      map[string]map[string]string // package -> local -> exported
+	namespaces map[string]map[string]bool   // package -> local namespace
+	defaults   map[string]map[string]bool   // package -> local default binding
+}
+
+func collectGraphQLImportBindings(kinds *tsutil.KindTable, root *sitter.Node, src []byte) graphqlImportBindings {
+	b := graphqlImportBindings{packages: map[string]bool{}, named: map[string]map[string]string{}, namespaces: map[string]map[string]bool{}, defaults: map[string]map[string]bool{}}
+	for i := range root.ChildCount() {
+		stmt := root.Child(i)
+		if kindOf(kinds, stmt) != "import_statement" {
+			continue
+		}
+		source := findChildByKind(kinds, stmt, "string")
+		if source == nil {
+			continue
+		}
+		pkg := graphqlPackageBase(strings.Trim(nodeText(source, src), `"'`))
+		if !graphqlServerPackages[pkg] && pkg != "graphql-request" {
+			continue
+		}
+		b.packages[pkg] = true
+		if b.named[pkg] == nil {
+			b.named[pkg] = map[string]string{}
+		}
+		if b.namespaces[pkg] == nil {
+			b.namespaces[pkg] = map[string]bool{}
+		}
+		if b.defaults[pkg] == nil {
+			b.defaults[pkg] = map[string]bool{}
+		}
+		clause := findChildByKind(kinds, stmt, "import_clause")
+		if clause == nil {
+			continue
+		}
+		for j := range clause.ChildCount() {
+			child := clause.Child(j)
+			switch kindOf(kinds, child) {
+			case "identifier":
+				b.defaults[pkg][nodeText(child, src)] = true
+			case "namespace_import":
+				if id := findChildByKind(kinds, child, "identifier"); id != nil {
+					b.namespaces[pkg][nodeText(id, src)] = true
+				}
+			case "named_imports":
+				for k := range child.ChildCount() {
+					spec := child.Child(k)
+					if kindOf(kinds, spec) != "import_specifier" {
+						continue
+					}
+					name := spec.ChildByFieldName("name")
+					if name == nil {
+						continue
+					}
+					exported, local := nodeText(name, src), nodeText(name, src)
+					if alias := spec.ChildByFieldName("alias"); alias != nil {
+						local = nodeText(alias, src)
+					}
+					b.named[pkg][local] = exported
+				}
+			}
+		}
+	}
+	return b
+}
+
+func graphqlPackageBase(path string) string {
+	parts := strings.Split(path, "/")
+	if strings.HasPrefix(path, "@") && len(parts) >= 2 {
+		return parts[0] + "/" + parts[1]
+	}
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return path
+}
+
+func (b graphqlImportBindings) hasPackage(pkg string) bool { return b.packages[pkg] }
+
+func (b graphqlImportBindings) exportedName(local string, packages ...string) string {
+	for _, pkg := range packages {
+		if exported := b.named[pkg][local]; exported != "" {
+			return exported
+		}
+	}
+	return ""
+}
+
+func (b graphqlImportBindings) callExport(kinds *tsutil.KindTable, fn *sitter.Node, src []byte, pkg string) string {
+	if kindOf(kinds, fn) == "identifier" {
+		return b.named[pkg][nodeText(fn, src)]
+	}
+	if kindOf(kinds, fn) == "member_expression" {
+		obj, prop := fn.ChildByFieldName("object"), fn.ChildByFieldName("property")
+		if obj != nil && prop != nil && b.namespaces[pkg][nodeText(obj, src)] {
+			return nodeText(prop, src)
+		}
+	}
+	return ""
+}
+
+func collectPothosBuilders(kinds *tsutil.KindTable, root *sitter.Node, src []byte, bindings graphqlImportBindings) map[string]bool {
+	out := map[string]bool{}
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		if kindOf(kinds, n) == "variable_declarator" {
+			name, value := n.ChildByFieldName("name"), n.ChildByFieldName("value")
+			if name != nil && value != nil && kindOf(kinds, value) == "new_expression" {
+				ctor := value.ChildByFieldName("constructor")
+				if ctor != nil && bindings.defaults["@pothos/core"][nodeText(ctor, src)] {
+					out[nodeText(name, src)] = true
+				}
+			}
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	return out
+}
+
+func importedReceiverCall(kinds *tsutil.KindTable, fn *sitter.Node, src []byte, receivers map[string]bool) string {
+	if kindOf(kinds, fn) != "member_expression" {
+		return ""
+	}
+	obj, prop := fn.ChildByFieldName("object"), fn.ChildByFieldName("property")
+	if obj == nil || prop == nil || !receivers[nodeText(obj, src)] {
+		return ""
+	}
+	return nodeText(prop, src)
 }
 
 type graphqlServerContext struct {
@@ -169,13 +344,6 @@ func possibleGraphQLServerSignal(src []byte) bool {
 // syntax are both required: a method called queryField, or an unrelated @Query
 // decorator, must not become a GraphQL route merely because its spelling fits.
 func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
-	text := string(src)
-	if !strings.Contains(text, "@nestjs/graphql") && !strings.Contains(text, "type-graphql") &&
-		!strings.Contains(text, "from 'nexus'") && !strings.Contains(text, `from "nexus"`) &&
-		!strings.Contains(text, "@pothos/core") {
-		return nil
-	}
-
 	lang := typescript.LanguageTypescript()
 	if strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx") {
 		lang = typescript.LanguageTSX()
@@ -188,14 +356,18 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
 	kinds := tsKindsFor(strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx"))
-	decoratorEnabled := importsGraphQLPackage(kinds, tree.RootNode(), src, map[string]bool{
-		"@nestjs/graphql": true, "type-graphql": true,
-	})
-	nexusEnabled := importsGraphQLPackage(kinds, tree.RootNode(), src, map[string]bool{"nexus": true})
-	pothosEnabled := importsGraphQLPackage(kinds, tree.RootNode(), src, map[string]bool{"@pothos/core": true})
+	return extractGraphQLCodeFirstAST(src, relFile, kinds, tree.RootNode())
+}
+
+func extractGraphQLCodeFirstAST(src []byte, relFile string, kinds *tsutil.KindTable, rootNode *sitter.Node) []facts.Fact {
+	bindings := collectGraphQLImportBindings(kinds, rootNode, src)
+	decoratorEnabled := bindings.hasPackage("@nestjs/graphql") || bindings.hasPackage("type-graphql")
+	nexusEnabled := bindings.hasPackage("nexus")
+	pothosEnabled := bindings.hasPackage("@pothos/core")
 	if !decoratorEnabled && !nexusEnabled && !pothosEnabled {
 		return nil
 	}
+	pothosBuilders := collectPothosBuilders(kinds, rootNode, src, bindings)
 
 	seen := map[string]bool{}
 	var out []facts.Fact
@@ -229,12 +401,19 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 		}
 		for _, d := range decorators {
 			name, args := decoratorNameArgs(kinds, d, src)
-			root := map[string]string{"Query": "Query", "Mutation": "Mutation", "Subscription": "Subscription"}[name]
+			name = bindings.exportedName(name, "@nestjs/graphql", "type-graphql")
+			root := graphqlRootNames[name]
 			if root == "" {
 				continue
 			}
 			field := nodeText(method, src)
-			if explicit := graphqlDecoratorFieldName(kinds, args, src); explicit != "" {
+			if explicit, overridden := graphqlDecoratorFieldName(kinds, args, src); overridden {
+				// A computed override is the runtime GraphQL name, but cannot be
+				// resolved statically. Falling back to the method name would invent
+				// a route that does not exist.
+				if explicit == "" {
+					continue
+				}
 				field = explicit
 			}
 			add(root, field, int(d.StartPosition().Row)+1, facts.RouteSourceGraphQLDecorator)
@@ -265,21 +444,45 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 			fn := n.ChildByFieldName("function")
 			args := n.ChildByFieldName("arguments")
 			if fn != nil && args != nil {
-				callee := nodeText(fn, src)
 				field := firstStringArg(kinds, args, src)
+				nexusCall := bindings.callExport(kinds, fn, src, "nexus")
+				pothosCall := importedReceiverCall(kinds, fn, src, pothosBuilders)
 				switch {
-				case pothosEnabled && strings.HasSuffix(callee, ".queryField"):
+				case pothosEnabled && pothosCall == "queryField":
 					add("Query", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
-				case pothosEnabled && strings.HasSuffix(callee, ".mutationField"):
+				case pothosEnabled && pothosCall == "mutationField":
 					add("Mutation", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
-				case pothosEnabled && strings.HasSuffix(callee, ".subscriptionField"):
+				case pothosEnabled && pothosCall == "subscriptionField":
 					add("Subscription", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLPothos)
-				case nexusEnabled && callee == "queryField":
+				case nexusEnabled && nexusCall == "queryField":
 					add("Query", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
-				case nexusEnabled && callee == "mutationField":
+					for _, f := range nexusCallbackFields(kinds, args, src) {
+						add("Query", f.name, f.line, facts.RouteSourceGraphQLNexus)
+					}
+				case nexusEnabled && nexusCall == "mutationField":
 					add("Mutation", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
-				case nexusEnabled && callee == "subscriptionField":
+					for _, f := range nexusCallbackFields(kinds, args, src) {
+						add("Mutation", f.name, f.line, facts.RouteSourceGraphQLNexus)
+					}
+				case nexusEnabled && nexusCall == "subscriptionField":
 					add("Subscription", field, int(n.StartPosition().Row)+1, facts.RouteSourceGraphQLNexus)
+					for _, f := range nexusCallbackFields(kinds, args, src) {
+						add("Subscription", f.name, f.line, facts.RouteSourceGraphQLNexus)
+					}
+				case nexusEnabled && (nexusCall == "queryType" || nexusCall == "mutationType" || nexusCall == "subscriptionType" || nexusCall == "extendType"):
+					root := graphqlRootByDeclaration[nexusCall]
+					obj := firstChildOfKind(kinds, args, "object")
+					if nexusCall == "extendType" && obj != nil {
+						root = objectStringProp(kinds, obj, src, "type")
+						if root != "Query" && root != "Mutation" && root != "Subscription" {
+							root = ""
+						}
+					}
+					if root != "" {
+						for _, f := range nexusDefinitionFields(kinds, obj, src) {
+							add(root, f.name, f.line, facts.RouteSourceGraphQLNexus)
+						}
+					}
 				}
 			}
 		}
@@ -287,29 +490,182 @@ func extractGraphQLCodeFirst(src []byte, relFile string) []facts.Fact {
 			walk(n.Child(i))
 		}
 	}
-	walk(tree.RootNode())
+	walk(rootNode)
 	return out
 }
 
-func graphqlDecoratorFieldName(kinds *tsutil.KindTable, args *sitter.Node, src []byte) string {
+// graphqlDecoratorFieldName returns the static override and whether an override
+// was supplied. An empty name with overridden=true denotes a computed name.
+func graphqlDecoratorFieldName(kinds *tsutil.KindTable, args *sitter.Node, src []byte) (string, bool) {
 	if args == nil {
-		return ""
+		return "", false
 	}
 	// NestJS's schema-first overload accepts @Query("field").
 	if name := firstStringArg(kinds, args, src); name != "" {
-		return name
+		return name, true
 	}
 	// Code-first NestJS and TypeGraphQL put an override in the options object,
 	// commonly after a return-type arrow: @Query(() => T, { name: "field" }).
 	for i := range args.ChildCount() {
 		arg := args.Child(i)
-		if kindOf(kinds, arg) == "object" {
-			if name := objectStringProp(kinds, arg, src, "name"); name != "" {
-				return name
+		if kindOf(kinds, arg) == "template_string" {
+			text := nodeText(arg, src)
+			if strings.Contains(text, "${") {
+				return "", true
+			}
+			return strings.Trim(text, "`"), true
+		}
+		if kindOf(kinds, arg) != "object" {
+			continue
+		}
+		for j := range arg.ChildCount() {
+			pair := arg.Child(j)
+			if kindOf(kinds, pair) != "pair" {
+				continue
+			}
+			key := pair.ChildByFieldName("key")
+			if key == nil || strings.Trim(nodeText(key, src), `"'`) != "name" {
+				continue
+			}
+			value := pair.ChildByFieldName("value")
+			if value == nil {
+				return "", true
+			}
+			switch kindOf(kinds, value) {
+			case "string":
+				return strings.Trim(nodeText(value, src), `"'`), true
+			case "template_string":
+				text := nodeText(value, src)
+				if !strings.Contains(text, "${") {
+					return strings.Trim(text, "`"), true
+				}
+			}
+			return "", true
+		}
+	}
+	return "", false
+}
+
+type graphqlNamedLine struct {
+	name string
+	line int
+}
+
+var nexusNonFieldMethods = map[string]bool{"implements": true, "modify": true}
+
+func firstChildOfKind(kinds *tsutil.KindTable, node *sitter.Node, kind string) *sitter.Node {
+	if node == nil {
+		return nil
+	}
+	for i := range node.ChildCount() {
+		child := node.Child(i)
+		if kindOf(kinds, child) == kind {
+			return child
+		}
+	}
+	return nil
+}
+
+func nexusDefinitionFields(kinds *tsutil.KindTable, obj *sitter.Node, src []byte) []graphqlNamedLine {
+	if obj == nil {
+		return nil
+	}
+	for i := range obj.ChildCount() {
+		member := obj.Child(i)
+		switch kindOf(kinds, member) {
+		case "method_definition":
+			name := member.ChildByFieldName("name")
+			if name != nil && nodeText(name, src) == "definition" {
+				return nexusFieldsInFunction(kinds, member, src)
+			}
+		case "pair":
+			key := member.ChildByFieldName("key")
+			if key == nil || strings.Trim(nodeText(key, src), `"'`) != "definition" {
+				continue
+			}
+			value := member.ChildByFieldName("value")
+			if value != nil {
+				return nexusFieldsInFunction(kinds, value, src)
 			}
 		}
 	}
-	return ""
+	return nil
+}
+
+func nexusCallbackFields(kinds *tsutil.KindTable, args *sitter.Node, src []byte) []graphqlNamedLine {
+	if args == nil {
+		return nil
+	}
+	for i := range args.ChildCount() {
+		arg := args.Child(i)
+		if kindOf(kinds, arg) == "arrow_function" || kindOf(kinds, arg) == "function_expression" {
+			return nexusFieldsInFunction(kinds, arg, src)
+		}
+	}
+	return nil
+}
+
+func nexusFieldsInFunction(kinds *tsutil.KindTable, fn *sitter.Node, src []byte) []graphqlNamedLine {
+	params := fn.ChildByFieldName("parameters")
+	if params == nil {
+		params = fn.ChildByFieldName("parameter")
+	}
+	builder := firstDescendantOfKind(kinds, params, "identifier")
+	if builder == nil {
+		return nil
+	}
+	prefix := nodeText(builder, src) + "."
+	body := fn.ChildByFieldName("body")
+	if body == nil {
+		return nil
+	}
+	var out []graphqlNamedLine
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		// A nested closure is a different lexical scope. In particular, its `t`
+		// may shadow the Nexus definition builder and must not declare root fields.
+		if n != body && tsIsFunctionLike(kindOf(kinds, n)) {
+			return
+		}
+		if kindOf(kinds, n) == "call_expression" {
+			callee := n.ChildByFieldName("function")
+			args := n.ChildByFieldName("arguments")
+			calleeText, method := nodeText(callee, src), ""
+			if callee != nil && kindOf(kinds, callee) == "member_expression" {
+				if prop := callee.ChildByFieldName("property"); prop != nil {
+					method = nodeText(prop, src)
+				}
+			}
+			if strings.HasPrefix(calleeText, prefix) && method != "" && !nexusNonFieldMethods[method] {
+				if name := firstStringArg(kinds, args, src); name != "" {
+					out = append(out, graphqlNamedLine{name: name, line: int(n.StartPosition().Row) + 1})
+				}
+			}
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(body)
+	return out
+}
+
+func firstDescendantOfKind(kinds *tsutil.KindTable, node *sitter.Node, kind string) *sitter.Node {
+	if node == nil {
+		return nil
+	}
+	if kindOf(kinds, node) == kind {
+		return node
+	}
+	for i := range node.ChildCount() {
+		if found := firstDescendantOfKind(kinds, node.Child(i), kind); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 func isHasuraSDLPath(path string) bool {
@@ -758,6 +1114,42 @@ func extractGraphQLTagFacts(src []byte, relFile string) []facts.Fact {
 	return out
 }
 
+// extractGraphQLTagFactsAST finds template literals through syntax, so examples
+// in comments and ordinary strings cannot masquerade as gql/graphql tags.
+func extractGraphQLTagFactsAST(src []byte, relFile string, kinds *tsutil.KindTable, root *sitter.Node) []facts.Fact {
+	var out []facts.Fact
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		if kindOf(kinds, n) == "template_string" {
+			parent := n.Parent()
+			if parent != nil && kindOf(kinds, parent) == "call_expression" {
+				fn := parent.ChildByFieldName("function")
+				if fn != nil {
+					tag := nodeText(fn, src)
+					if tag == "gql" || tag == "graphql" {
+						body := nodeText(n, src)
+						if len(body) >= 2 {
+							body = body[1 : len(body)-1]
+							for _, f := range extractGraphQLClientOps(body, relFile, facts.RouteSourceGraphQLTag) {
+								f.Line += int(n.StartPosition().Row)
+								out = append(out, f)
+							}
+						}
+					}
+				}
+			}
+		}
+		for i := range n.ChildCount() {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	return out
+}
+
 // extractGraphQLClientCallFacts covers clients that accept a document without
 // a gql tag: graphql-request/urql request calls and plain fetch bodies with a
 // `query` property. Only static string/template nodes containing an explicit
@@ -783,7 +1175,12 @@ func extractGraphQLClientCallFacts(src []byte, relFile string) []facts.Fact {
 	tree := parser.Parse(src, nil)
 	defer tree.Close()
 	kinds := tsKindsFor(strings.HasSuffix(relFile, ".tsx") || strings.HasSuffix(relFile, ".jsx"))
-	knownClient := importsGraphQLPackage(kinds, tree.RootNode(), src, map[string]bool{"graphql-request": true})
+	return extractGraphQLClientCallFactsAST(src, relFile, kinds, tree.RootNode(), fetchBody)
+}
+
+func extractGraphQLClientCallFactsAST(src []byte, relFile string, kinds *tsutil.KindTable, rootNode *sitter.Node, fetchBody bool) []facts.Fact {
+	text := string(src)
+	knownClient := collectGraphQLImportBindings(kinds, rootNode, src).hasPackage("graphql-request")
 	if !knownClient && !fetchBody {
 		return nil
 	}
@@ -831,36 +1228,6 @@ func extractGraphQLClientCallFacts(src []byte, relFile string) []facts.Fact {
 			walk(n.Child(i))
 		}
 	}
-	walk(tree.RootNode())
+	walk(rootNode)
 	return out
-}
-
-func importsGraphQLPackage(kinds *tsutil.KindTable, root *sitter.Node, src []byte, packages map[string]bool) bool {
-	found := false
-	var walk func(*sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n == nil || found {
-			return
-		}
-		if kindOf(kinds, n) == "import_statement" {
-			if source := findChildByKind(kinds, n, "string"); source != nil {
-				path := strings.Trim(nodeText(source, src), `"'`)
-				base := path
-				if strings.HasPrefix(base, "@") {
-					parts := strings.Split(base, "/")
-					if len(parts) >= 2 {
-						base = parts[0] + "/" + parts[1]
-					}
-				} else if i := strings.IndexByte(base, '/'); i >= 0 {
-					base = base[:i]
-				}
-				found = packages[base]
-			}
-		}
-		for i := range n.ChildCount() {
-			walk(n.Child(i))
-		}
-	}
-	walk(root)
-	return found
 }

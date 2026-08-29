@@ -561,11 +561,8 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// resolving test-ness here rather than with a local suffix list is deliberate —
 	// the copies that predated it had drifted apart in both directions.
 	if !facts.IsTestPath(relFile) {
-		result = append(result, extractGraphQLTagFacts(src, relFile)...)
-		result = append(result, extractGraphQLClientCallFacts(src, relFile)...)
 		if graphqlServer.enabled {
 			result = append(result, extractGraphQLServerSDL(src, relFile)...)
-			result = append(result, extractGraphQLCodeFirst(src, relFile)...)
 		}
 		result = append(result, extractHTTPClientFacts(src, relFile)...)
 		// Call-registered server routes (Express/Fastify/Hono/Koa). Same test-path
@@ -593,6 +590,15 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 
 	root := tree.RootNode()
 	if !facts.IsTestPath(relFile) {
+		result = append(result, extractGraphQLTagFactsAST(src, relFile, kinds, root)...)
+		text := string(src)
+		fetchBody := strings.Contains(text, "fetch(") && strings.Contains(text, "query:")
+		if strings.Contains(text, "graphql-request") || fetchBody {
+			result = append(result, extractGraphQLClientCallFactsAST(src, relFile, kinds, root, fetchBody)...)
+		}
+		if graphqlServer.enabled {
+			result = append(result, extractGraphQLCodeFirstAST(src, relFile, kinds, root)...)
+		}
 		result = append(result, extractTSKafkaFacts(kinds, root, src, relFile)...)
 	}
 
