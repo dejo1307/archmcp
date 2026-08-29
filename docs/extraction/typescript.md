@@ -470,8 +470,9 @@ against a server's root fields. This is the client half of the seam.
 The server half reads SDL used by Apollo Server, GraphQL Yoga, Mercurius,
 express-graphql, graphql-http, GraphQL Tools, and GraphQL.js `buildSchema`. It also reads
 code-first root fields declared by NestJS GraphQL and TypeGraphQL
-`@Query`/`@Mutation`/`@Subscription` decorators, Nexus's named `queryField`,
-`mutationField`, and `subscriptionField` shorthands, and the corresponding singular
+`@Query`/`@Mutation`/`@Subscription` decorators; Nexus's `queryType`, `mutationType`,
+`subscriptionType`, root `extendType` definitions, and named or callback
+`queryField`/`mutationField`/`subscriptionField` shorthands; and the corresponding singular
 Pothos builder methods. Package provenance is required, so unrelated decorators
 or builder methods with those generic names remain inert. A schema may
 be a plain template literal or a `gql`-tagged one, assigned through `typeDefs`, `schema`,

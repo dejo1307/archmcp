@@ -1,6 +1,7 @@
 package tsextractor
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -35,6 +36,42 @@ func TestGraphQLTag_ClientRootFields(t *testing.T) {
 	want := []string{"Query.pageViews", "Query.uniqueVisitors", "Mutation.trackEvent"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("names = %v, want %v — aliases resolve to the FIELD, nested fields are not roots", names, want)
+	}
+}
+
+func TestGraphQLTag_ASTIgnoresCommentExamples(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := []byte("// docs: graphql`query Fake { fake }`\nconst real = graphql`query Real { viewer }`;\n")
+	if err := os.WriteFile(filepath.Join(dir, "src", "app.ts"), src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ff, err := New().Extract(context.Background(), dir, []string{"src/app.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routes []string
+	for _, f := range ff {
+		if f.Kind == facts.KindRoute && f.Props[facts.PropRouteType] == facts.RouteTypeGraphQL {
+			routes = append(routes, f.Name)
+		}
+	}
+	if !reflect.DeepEqual(routes, []string{"Query.viewer"}) {
+		t.Fatalf("GraphQL routes = %v, want only Query.viewer", routes)
+	}
+}
+
+func TestGraphQLClientOps_AnonymousQueryShorthand(t *testing.T) {
+	ff := extractGraphQLClientOps("{ viewer { id } aliased: node(id: 1) { id } }", "query.graphql", facts.RouteSourceGraphQLOperation)
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+	}
+	want := []string{"Query.viewer", "Query.node"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
 	}
 }
 
@@ -287,6 +324,17 @@ class BooksResolver {
 	}
 }
 
+func TestGraphQLCodeFirst_ComputedDecoratorNameIsNotInvented(t *testing.T) {
+	src := []byte("import { Query } from \"type-graphql\";\n" +
+		"class ResourceResolver {\n" +
+		"  @Query(() => Resource, { name: `${resourceName}s` }) getAll() {}\n" +
+		"  @Query(`${resourceName}`) getOne() {}\n" +
+		"}")
+	if ff := extractGraphQLCodeFirst(src, "src/resource.resolver.ts"); len(ff) != 0 {
+		t.Fatalf("computed GraphQL name emitted a literal or fallback route: %+v", ff)
+	}
+}
+
 func TestGraphQLCodeFirst_NexusAndPothosFields(t *testing.T) {
 	src := []byte(`import { queryField, mutationField } from "nexus";
 import SchemaBuilder from "@pothos/core";
@@ -306,16 +354,75 @@ builder.mutationField("publish", (t) => t.boolean({ resolve: () => true }));`)
 	}
 }
 
+func TestGraphQLCodeFirst_NexusRootDefinitionsAndCallbacks(t *testing.T) {
+	src := []byte(`import { queryType, mutationType, subscriptionType, extendType, queryField } from "nexus";
+export const Query = queryType({
+  definition(t) {
+    t.field("viewer", { type: "User" });
+    t.nonNull.string("status", { resolve: () => "ok" });
+		t.nonNull.list.field("drafts", { type: "Post" });
+		t.customScalar("score", { resolve: () => 1 });
+		t.implements("Node");
+  },
+});
+export const Mutation = mutationType({ definition(t) { t.boolean("ok", { resolve: () => true }); } });
+export const Subscription = subscriptionType({ definition: (t) => { t.field("events", { type: "Event" }); } });
+export const MoreQueryFields = extendType({
+  type: "Query",
+  definition(t) { t.int("protectedField", { resolve: () => 1 }); },
+});
+export const Users = queryField(t => {
+  t.connectionField("users", { type: "User", nodes() { return []; } });
+});`)
+	ff := extractGraphQLCodeFirst(src, "src/schema.ts")
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+	}
+	want := []string{"Query.viewer", "Query.status", "Query.drafts", "Query.score", "Mutation.ok", "Subscription.events", "Query.protectedField", "Query.users"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
 func TestGraphQLCodeFirst_RequiresPackageProvenance(t *testing.T) {
 	for _, src := range []string{
 		`class Store { @Query() rows() {} }
 builder.queryField("notGraphQL", () => value);`,
 		`// import { Query } from "@nestjs/graphql"
 class Store { @Query() rows() {} }`,
+		`import { Resolver } from "type-graphql";
+function Query(): MethodDecorator { return () => {}; }
+class Store { @Query() rows() {} }`,
 	} {
 		if ff := extractGraphQLCodeFirst([]byte(src), "src/store.ts"); len(ff) != 0 {
 			t.Fatalf("unrelated APIs emitted GraphQL routes: %+v", ff)
 		}
+	}
+}
+
+func TestGraphQLCodeFirst_ImportAliasesSubpathsAndScopes(t *testing.T) {
+	src := []byte(`import { Query as GQuery } from "@nestjs/graphql/dist/decorators";
+import { queryType as qt, queryField as qf } from "nexus/dist/index";
+import SchemaBuilder from "@pothos/core";
+class Resolver { @GQuery(() => String) health() {} }
+qt({ definition(t) {
+  t.string("viewer");
+  function nested(t) { t.string("notARootField"); }
+} });
+qf("node", { type: "Node" });
+const builder = new SchemaBuilder({});
+const unrelated = { queryField(name) {} };
+builder.queryField("pothosHealth", t => t.string({ resolve: () => "ok" }));
+unrelated.queryField("notPothos", () => {});`)
+	ff := extractGraphQLCodeFirst(src, "src/schema.ts")
+	var names []string
+	for _, f := range ff {
+		names = append(names, f.Name)
+	}
+	want := []string{"Query.health", "Query.viewer", "Query.node", "Query.pothosHealth"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
 	}
 }
 
@@ -455,6 +562,17 @@ func TestGraphQLDocDetect_NoTSRoot(t *testing.T) {
 	}
 	if found {
 		t.Fatal("a repo with neither TS markers nor GraphQL documents must not detect")
+	}
+}
+
+func TestGraphQLDocDetect_IgnoresNestedBuildOutputs(t *testing.T) {
+	for _, dir := range []string{"dist", "build", "out", ".next", "target", "vendor", "node_modules"} {
+		if hasGraphQLDocs([]string{"packages/foo/" + dir + "/stray.graphql"}) {
+			t.Errorf("%s GraphQL output activated the TypeScript extractor", dir)
+		}
+	}
+	if !hasGraphQLDocs([]string{"packages/foo/src/live.graphql"}) {
+		t.Fatal("source GraphQL document did not activate the extractor")
 	}
 }
 
