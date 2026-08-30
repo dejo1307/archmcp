@@ -175,9 +175,10 @@ func balancedEnd(s string, start int, open, close byte) int {
 	for i := start; i < len(s); i++ {
 		c := s[i]
 		if quote != 0 {
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == quote {
+			case quote:
 				quote = 0
 			}
 			continue
@@ -186,9 +187,10 @@ func balancedEnd(s string, start int, open, close byte) int {
 			quote = c
 			continue
 		}
-		if c == open {
+		switch c {
+		case open:
 			depth++
-		} else if c == close {
+		case close:
 			depth--
 			if depth == 0 {
 				return i
@@ -211,9 +213,10 @@ func vueTopLevelKeys(shape string) []string {
 	for i := start; i < len(shape); i++ {
 		c := shape[i]
 		if quote != 0 {
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == quote {
+			case quote:
 				quote = 0
 			}
 			continue
@@ -237,7 +240,7 @@ func vueTopLevelKeys(shape string) []string {
 			memberStart = true
 			continue
 		}
-		if depth != 1 || !memberStart || !(c == '_' || c == '$' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z') {
+		if depth != 1 || !memberStart || c != '_' && c != '$' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
 			continue
 		}
 		match := vueIdentifierRe.FindString(shape[i:])

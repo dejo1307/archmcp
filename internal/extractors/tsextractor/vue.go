@@ -161,7 +161,7 @@ func detectNuxtRoute(relFile string) *facts.Fact {
 					if baseName != "index" {
 						routeParts = append(routeParts, baseName)
 					}
-				} else if !(strings.HasPrefix(rp, "(") && strings.HasSuffix(rp, ")")) {
+				} else if !strings.HasPrefix(rp, "(") || !strings.HasSuffix(rp, ")") {
 					// Nuxt route groups organize files without contributing a URL segment.
 					routeParts = append(routeParts, rp)
 				}
