@@ -2327,7 +2327,28 @@ import (
 // excalidraw's resolved dependencies as unpinned. Cargo's `[dependencies.name]`
 // table sections are read too: tokio declares windows-sys only that way, so the
 // list form alone lost the dependency rather than its version.
-const cacheVersion = "v257"
+// v258: a Vue Single File Component's TEMPLATE becomes edges. Interpolations and
+// directive values are resolved against the SFC's own declarations, and component
+// tags through default/named imports, local aliases and unambiguous Nuxt
+// `components/` auto-import conventions; the references that resolve become
+// `calls` edges on the component, so a handler or child used only from the
+// template stops reading as an orphan. `<script setup>` macros (defineProps,
+// defineEmits, defineSlots, defineModel, defineExpose, defineOptions) are
+// recorded on the component as `vue_macros` plus a boolean per macro, with the
+// statically declared names in `vue_*_names` and generic declaration text in
+// `vue_contract_types`. Nuxt page routes cover the other supported page
+// extensions, omit route-group directories, and drop named-view/client/server
+// suffixes from the URL; Vue Router `createRouter({ routes })` records with
+// literal paths emit composed page routes whose statically or lazily imported
+// components become `handled_by` edges. A Nuxt auto-imported `useXxx()` call is
+// rebound to its unique exported declaration under `composables/`. Every Vue and
+// Nuxt repository gains facts, and existing ones change shape.
+//
+// Resolution is deliberately narrow where it cannot be sure: macro-looking text
+// inside comments and strings is ignored, HTML text and CSS tokens are not read
+// as code, and an ambiguous auto-imported composable — two layers exporting the
+// same name — stays unresolved rather than binding to whichever was seen first.
+const cacheVersion = "v258"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
