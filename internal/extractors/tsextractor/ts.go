@@ -242,6 +242,10 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 			htmlFiles = append(htmlFiles, relFile)
 		}
 	}
+	var nuxtAutoComponents map[string]string
+	if isNuxt {
+		nuxtAutoComponents = nuxtAutoComponentIndex(knownFiles)
+	}
 
 	// Repo-wide pre-pass: resolve generated gRPC-web client stubs (service FQN +
 	// RPC methods + client class) so per-file call-site detection can map a
@@ -265,7 +269,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 		aliases := aliasesForDir(aliasRoots, factpath.Dir(relFile))
 		var res tsFileResult
-		res.facts, res.angular, res.angularRouter, res.angularInline, res.angularHTTP = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, orms, aliases, knownFiles, grpcStubs)
+		res.facts, res.angular, res.angularRouter, res.angularInline, res.angularHTTP = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, orms, aliases, knownFiles, nuxtAutoComponents, grpcStubs)
 		// Routers, mounts and held-back routes for the repo-wide mount pass below.
 		// Collected here because resolving an import needs this file's path aliases,
 		// which are in scope only during the per-file walk. Same test-path gate as
@@ -342,6 +346,9 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// Serial post-pass: propagate the per-body io_direct flag transitively across the
 	// call graph into performs_io, so wrapper-hidden network/file I/O is visible to the
 	// enterprise performance analyzer. Mirrors the Swift extractor's computePerformsIO.
+	if isNuxt {
+		resolveNuxtAutoComposableCalls(allFacts)
+	}
 	computeTSPerformsIO(allFacts)
 
 	// Engine-relative routes compose onto their mount point here, where every
@@ -471,7 +478,7 @@ type extractCtx struct {
 	aliases     map[string]tsAlias  // this directory's tsconfig path aliases, for resolving an import written as a bare specifier
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate, *angularHTTPFile) {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, nuxtAutoComponents map[string]string, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate, *angularHTTPFile) {
 	// The grammar is chosen here, so the kind table is too: TypeScript and TSX assign
 	// different meanings to the same symbol ids, and everything below reads node kinds
 	// through this table. See kinds.go.
@@ -479,7 +486,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	kinds := tsKindsFor(isTSX)
 
 	if isVueFile(relFile) {
-		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases), angularCounts{}, nil, nil, nil
+		return e.extractVueSFC(kinds, src, relFile, isNuxt, aliases, nuxtAutoComponents), angularCounts{}, nil, nil, nil
 	}
 	if isSvelteFile(relFile) {
 		return e.extractSvelteSFC(kinds, src, relFile, isSvelteKit, aliases), angularCounts{}, nil, nil, nil
@@ -658,6 +665,15 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 				"framework": "vue",
 			},
 		})
+		result = append(result, extractVueRouterRoutes(kinds, root, src, relFile, aliases)...)
+	}
+	// Nuxt accepts render-function pages in addition to .vue SFCs. Vue pages take
+	// the early SFC return above and are emitted by extractVueSFC; emit the other
+	// supported extensions here.
+	if isNuxt && !isVueFile(relFile) {
+		if route := detectNuxtRoute(relFile); route != nil {
+			result = append(result, *route)
+		}
 	}
 
 	return result, angular, router, inlineTemplates, httpFile

@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -213,8 +215,8 @@ func TestDetectNuxtRoute_NonPage(t *testing.T) {
 	if got := detectNuxtRoute("src/components/Button.vue"); got != nil {
 		t.Error("non-page .vue file should return nil")
 	}
-	if got := detectNuxtRoute("pages/about.ts"); got != nil {
-		t.Error(".ts file should return nil")
+	if got := detectNuxtRoute("pages/about.css"); got != nil {
+		t.Error("unsupported page extension should return nil")
 	}
 }
 
@@ -345,6 +347,203 @@ function greet() { return 'hi' }
 	}
 }
 
+func TestExtract_VueTemplateReferencesScriptAndImportedComponents(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"src/components/UserCard.vue": `<template><article>User</article></template>`,
+		"src/components/Dashboard.vue": `<script setup lang="ts">
+import UserCard from './UserCard.vue'
+function save() {}
+const title = 'Dashboard'
+</script>
+<template>
+  <UserCard :title="title" @submit="save" />
+  <p>{{ title }}</p>
+</template>`,
+	}, false)
+
+	dashboard, ok := findFact(ff, "src/components.Dashboard")
+	if !ok {
+		t.Fatalf("expected Dashboard component; got %v", factNames(ff))
+	}
+	for _, target := range []string{"src/components.UserCard", "src/components.save"} {
+		if !dashboard.HasRelation(facts.RelCalls, target) {
+			t.Errorf("Dashboard template lost reference to %s; relations: %+v", target, dashboard.Relations)
+		}
+	}
+}
+
+func TestExtract_VueTemplateResolvesRenamedDefaultImport(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"src/components/UserCard.vue": `<template><article>User</article></template>`,
+		"src/components/Dashboard.vue": `<script setup lang="ts">
+import Card from './UserCard.vue'
+</script>
+<template><Card /></template>`,
+	}, false)
+	dashboard, ok := findFact(ff, "src/components.Dashboard")
+	if !ok {
+		t.Fatal("expected Dashboard component")
+	}
+	if !dashboard.HasRelation(facts.RelCalls, "src/components.UserCard") {
+		t.Errorf("renamed default import did not resolve to its file component: %+v", dashboard.Relations)
+	}
+	if dashboard.HasRelation(facts.RelCalls, "src/components.Card") {
+		t.Errorf("renamed default import invented a Card declaration: %+v", dashboard.Relations)
+	}
+}
+
+func TestExtract_VueTemplateResolvesNamedImportAlias(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"src/components/cards.ts": `export function UserCard() {}`,
+		"src/components/Dashboard.vue": `<script setup lang="ts">
+import { UserCard as Card } from './cards'
+</script>
+<template><Card /></template>`,
+	}, false)
+	dashboard, ok := findFact(ff, "src/components.Dashboard")
+	if !ok || !dashboard.HasRelation(facts.RelCalls, "src/components.UserCard") {
+		t.Fatalf("named import alias did not resolve to exported symbol: %+v", dashboard.Relations)
+	}
+}
+
+func TestExtract_NuxtTemplateResolvesAutoImportedComponent(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"app/components/UserCard.vue": `<template><article>User</article></template>`,
+		"app/pages/index.vue":         `<template><UserCard /></template>`,
+	}, true)
+	page, ok := findFact(ff, "app/pages.PagesIndex")
+	if !ok {
+		t.Fatalf("expected page component; got %v", factNames(ff))
+	}
+	if !page.HasRelation(facts.RelCalls, "app/components.UserCard") {
+		t.Errorf("Nuxt auto-imported component was not resolved: %+v", page.Relations)
+	}
+}
+
+func TestExtract_NuxtTemplateSkipsAmbiguousAutoImportedComponent(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"app/components/admin/Card.vue": `<template><article>Admin</article></template>`,
+		"app/components/user/Card.vue":  `<template><article>User</article></template>`,
+		"app/pages/index.vue":           `<template><Card /></template>`,
+	}, true)
+	page, ok := findFact(ff, "app/pages.PagesIndex")
+	if !ok {
+		t.Fatal("expected page component")
+	}
+	for _, r := range page.Relations {
+		if r.Kind == facts.RelCalls && strings.HasSuffix(r.Target, ".Card") {
+			t.Errorf("ambiguous Nuxt basename was guessed: %+v", page.Relations)
+		}
+	}
+}
+
+func TestExtract_VueCompilerMacros(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"src/Field.vue": `<script setup lang="ts">
+defineProps<{ label: string }>()
+defineEmits<{ change: [value: string] }>()
+defineSlots<{ default(): unknown }>()
+defineModel<string>()
+</script>
+<template><slot /></template>`,
+	}, false)
+	field, ok := findFact(ff, "src.Field")
+	if !ok {
+		t.Fatal("expected Field component")
+	}
+	for _, prop := range []string{"vue_props", "vue_emits", "vue_slots", "vue_model"} {
+		if field.Props[prop] != true {
+			t.Errorf("%s = %v, want true; props: %+v", prop, field.Props[prop], field.Props)
+		}
+	}
+	wants := map[string][]string{
+		"vue_prop_names":  {"label"},
+		"vue_emit_names":  {"change"},
+		"vue_slot_names":  {"default"},
+		"vue_model_names": {"modelValue"},
+	}
+	for prop, want := range wants {
+		if got, _ := field.Props[prop].([]string); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %v, want %v", prop, got, want)
+		}
+	}
+	declared, _ := field.Props["vue_contract_types"].([]string)
+	for _, want := range []string{
+		"props={ label: string }",
+		"emits={ change: [value: string] }",
+		"slots={ default(): unknown }",
+		"model:modelValue=string",
+	} {
+		if !hasTarget(declared, want) {
+			t.Errorf("vue_contract_types missing %q: %v", want, declared)
+		}
+	}
+}
+
+func TestExtract_VueCompilerMacroRuntimeAndReferencedContracts(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"src/Action.vue": `<script setup lang="ts">
+interface Props { label: string; disabled?: boolean }
+defineProps<Props>()
+defineEmits(['save', 'cancel'])
+defineModel<boolean>('checked')
+defineExpose({ focus, reset })
+function focus() {}
+function reset() {}
+</script><template><button>{{ label }}</button></template>`,
+	}, false)
+	action, ok := findFact(ff, "src.Action")
+	if !ok {
+		t.Fatal("expected Action component")
+	}
+	wants := map[string][]string{
+		"vue_prop_names":    {"disabled", "label"},
+		"vue_emit_names":    {"cancel", "save"},
+		"vue_model_names":   {"checked"},
+		"vue_exposed_names": {"focus", "reset"},
+	}
+	for prop, want := range wants {
+		if got, _ := action.Props[prop].([]string); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %v, want %v", prop, got, want)
+		}
+	}
+}
+
+func TestExtract_VueCompilerMacrosIgnoreCommentsAndStrings(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"src/Plain.vue": `<script setup lang="ts">
+// defineProps<{ fake: true }>()
+const example = "defineEmits(['fake'])"
+</script>
+<template><p>{{ example }}</p></template>`,
+	}, false)
+	plain, ok := findFact(ff, "src.Plain")
+	if !ok {
+		t.Fatal("expected Plain component")
+	}
+	if _, exists := plain.Props["vue_macros"]; exists {
+		t.Errorf("comment/string manufactured Vue macros: %+v", plain.Props)
+	}
+}
+
+func TestExtract_VueTemplateIgnoresTextNativeTagsAndStyle(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"src/Card.vue": `<script setup lang="ts">
+function scroll() {}
+</script>
+<template><div class="scroll">scroll</div></template>
+<style>.scroll { overflow: scroll }</style>`,
+	}, false)
+
+	card, ok := findFact(ff, "src.Card")
+	if !ok {
+		t.Fatal("expected Card component")
+	}
+	if card.HasRelation(facts.RelCalls, "src.scroll") {
+		t.Errorf("plain text/CSS invented a template call: %+v", card.Relations)
+	}
+}
+
 // --- Composable classification ---
 
 func TestExtract_VueComposable(t *testing.T) {
@@ -418,6 +617,38 @@ const title = 'About'
 	}
 }
 
+func TestDetectNuxtRoute_ModernConventions(t *testing.T) {
+	tests := []struct {
+		file string
+		want string
+	}{
+		{"app/pages/(marketing)/about.vue", "/about"},
+		{"app/pages/users/[id].ts", "/users/[id]"},
+		{"app/pages/parent/child@sidebar.vue", "/parent/child"},
+		{"app/pages/account.client.vue", "/account"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.file, func(t *testing.T) {
+			got := detectNuxtRoute(tt.file)
+			if got == nil || got.Name != tt.want {
+				t.Fatalf("detectNuxtRoute(%q) = %#v, want %q", tt.file, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtract_NuxtTypeScriptPage(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"app/pages/status.ts": `export default defineComponent({ render: () => null })`,
+	}, true)
+	for _, f := range ff {
+		if f.Kind == facts.KindRoute && f.Name == "/status" {
+			return
+		}
+	}
+	t.Fatalf("expected route for a TypeScript Nuxt page; got %v", factNames(ff))
+}
+
 // --- Vue Router config detection ---
 
 func TestExtract_VueRouterConfig(t *testing.T) {
@@ -441,6 +672,69 @@ export default router`,
 	}
 	if !found {
 		t.Errorf("expected vue router_config route fact; routes: %v", routes)
+	}
+}
+
+func TestExtract_VueRouterRecords(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"src/views/HomeView.vue":    `<template><h1>Home</h1></template>`,
+		"src/views/UserView.vue":    `<template><h1>User</h1></template>`,
+		"src/views/ProfileView.vue": `<template><h1>Profile</h1></template>`,
+		"src/router/index.ts": `import { createRouter, createWebHistory } from 'vue-router'
+import Home from '../views/HomeView.vue'
+
+const children = [
+  { path: 'profile', component: () => import('../views/ProfileView.vue') },
+]
+const routes = [
+  { path: '/', component: Home },
+  { path: '/users/:id', component: () => import('../views/UserView.vue'), children },
+]
+createRouter({ history: createWebHistory(), routes })`,
+	}, false)
+	wants := map[string]string{
+		"/":                  "src/views.HomeView",
+		"/users/:id":         "src/views.UserView",
+		"/users/:id/profile": "src/views.ProfileView",
+	}
+	for path, handler := range wants {
+		var found bool
+		for _, f := range ff {
+			if f.Kind == facts.KindRoute && f.Name == path && f.HasRelation(facts.RelHandledBy, handler) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing Vue Router route %s handled by %s", path, handler)
+		}
+	}
+}
+
+func TestExtract_NuxtAutoImportedComposable(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"app/composables/useAuth.ts": `export function useAuth() { return { user: null } }`,
+		"app/pages/index.vue": `<script setup lang="ts">
+const auth = useAuth()
+</script><template><p>{{ auth.user }}</p></template>`,
+	}, true)
+	targets := fileRefTargets(ff, "app/pages/index.vue")
+	if !hasTarget(targets, "app/composables.useAuth") {
+		t.Errorf("top-level Nuxt auto-import call was not resolved: %v", targets)
+	}
+	if hasTarget(targets, "app/pages.useAuth") {
+		t.Errorf("dangling same-directory composable target survived: %v", targets)
+	}
+}
+
+func TestExtract_NuxtAmbiguousAutoImportedComposableIsNotGuessed(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"layers/a/composables/useAuth.ts": `export function useAuth() {}`,
+		"layers/b/composables/useAuth.ts": `export function useAuth() {}`,
+		"app/pages/index.vue":             `<script setup lang="ts">useAuth()</script><template><p /></template>`,
+	}, true)
+	targets := fileRefTargets(ff, "app/pages/index.vue")
+	if hasTarget(targets, "layers/a/composables.useAuth") || hasTarget(targets, "layers/b/composables.useAuth") {
+		t.Errorf("ambiguous Nuxt composable was guessed: %v", targets)
 	}
 }
 
