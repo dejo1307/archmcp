@@ -7,6 +7,45 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
+## v0.4.11 — 2026-08-30
+
+**A Vue component's template is code, and enola now reads it**
+
+Vue and Nuxt extraction stops at the `<script>` block no longer. A Single File
+Component's TEMPLATE is where a handler is wired to a button and a child component is
+placed, so a component used only from a template read as an orphan and a `@click`
+handler read as dead. Interpolations and directive values are now resolved against the
+SFC's own declarations, and component tags through default imports, named imports, local
+aliases and unambiguous Nuxt `components/` auto-import conventions. The references that
+resolve become `calls` edges on the component, and `traverse`, `find_path`,
+`impact_analysis` and orphan analysis see them. Resolution is narrow where it cannot be
+sure: HTML text, native tags and CSS tokens are not read as code, and a tag two Nuxt
+layers could both supply stays unresolved rather than binding to whichever was walked
+first.
+
+`<script setup>` compiler macros are recorded as the component's public surface.
+`defineProps`, `defineEmits`, `defineSlots`, `defineModel`, `defineExpose` and
+`defineOptions` land in `vue_macros` with a boolean prop per macro; the statically
+declared prop, emit, slot, model and exposed names land in the matching `vue_*_names`
+lists, and generic declaration text is kept in `vue_contract_types`. Macro-looking text
+inside a comment or a string is ignored.
+
+Routing covers what the frameworks actually ship. Nuxt file-based routes are emitted for
+every supported page extension rather than `.vue` alone, route-group directories are
+omitted from the URL, and named-view, `.client` and `.server` suffixes no longer leak
+into it. Vue Router `createRouter({ routes })` records with literal paths emit page
+routes, nested `children` paths compose onto their parent, and a statically or lazily
+imported component becomes a `handled_by` edge; the configuration file keeps its
+`router_config` marker fact. A Nuxt auto-imported `useXxx()` call is rebound to its
+unique exported declaration under `composables/`, and left unresolved when two layers
+export the name.
+
+`cacheVersion` moves to `v258`. Every Vue and Nuxt repository gains facts and existing
+ones change shape, so extraction caches from earlier releases are invalidated and the
+first snapshot after upgrading re-extracts. Baselines taken on a Vue or Nuxt repository
+should be re-pinned: the new template edges can resolve orphan findings and can surface
+coupling that was previously invisible.
+
 ## v0.4.10 — 2026-08-28
 
 **Snapshot artifacts now have a documented, versioned contract**
