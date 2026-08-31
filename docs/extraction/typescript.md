@@ -491,6 +491,9 @@ Relay's `graphql` tag and the `gql` tags commonly used by Apollo, urql, and
 graphql-request share the same operation extraction. Static untagged operation strings
 are also read in graphql-request modules and when they are the `query` property of a
 plain `fetch` JSON body; arbitrary operation-looking strings elsewhere remain inert.
+In Vue and Nuxt single-file components the same extraction runs inside `<script>` and
+`<script setup>`, covering Nuxt Apollo calls such as ``useAsyncQuery(gql`…`)`` and
+``useMutation(gql`…`)`` while preserving the operation's line in the `.vue` file.
 
 This reads the schema surface only: which root fields exist, not which resolver
 implements one. Resolver-to-field binding — matching a `resolvers.Query.book` handler
