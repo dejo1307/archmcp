@@ -299,7 +299,6 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 		return res
 	})
-	readSources = nil
 	sources = nil
 
 	// Templates are scanned in parallel with no parser: an Angular template is not
