@@ -48,15 +48,7 @@ func stubIndex(t *testing.T, ordered ...[2]string) *grpcStubIndex {
 		}
 		rel = append(rel, pair[0])
 	}
-	sources := make(map[string][]byte, len(rel))
-	for _, file := range rel {
-		data, err := os.ReadFile(filepath.Join(dir, file))
-		if err != nil {
-			t.Fatal(err)
-		}
-		sources[file] = data
-	}
-	return buildGRPCStubIndex(rel, sources)
+	return buildGRPCStubIndex(dir, rel)
 }
 
 // A service name declared in two proto packages cannot be resolved from the

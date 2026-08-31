@@ -2348,13 +2348,7 @@ import (
 // inside comments and strings is ignored, HTML text and CSS tokens are not read
 // as code, and an ambiguous auto-imported composable — two layers exporting the
 // same name — stays unresolved rather than binding to whichever was seen first.
-//
-// v259: schema-first GraphQL servers emit their Query/Mutation/Subscription
-// surface from typed and suffixed TypeScript SDL bindings (`schema: string`,
-// `gqlSchema`, `userTypeDefs`) and provenance-backed standalone .graphql/.gql
-// documents (a server-file import or Hasura metadata). Server activation comes
-// from the TypeScript AST, not comments; integrationTests is test-only.
-const cacheVersion = "v259"
+const cacheVersion = "v258"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

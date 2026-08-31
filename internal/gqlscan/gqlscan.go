@@ -1,254 +1,131 @@
-// Package gqlscan lexes the operation surface shared by GraphQL extractors.
+// Package gqlscan reads GraphQL operation documents with an exact text
+// scanner, shared by every extractor that meets client-side GraphQL —
+// TypeScript gql tags and .graphql documents, and Ruby query strings. One
+// scanner means one definition of "an operation's root fields", so the same
+// document yields the same route names no matter which language carried it.
 package gqlscan
 
-// TODO: Add benchmarks and large hostile-input tests for the shared lexer,
-// including multi-megabyte malformed strings and deeply nested selections.
+import "regexp"
 
-// OperationHeads returns regexp-compatible index tuples: full start/end,
-// followed by the operation-kind start/end.
-func OperationHeads(text string) [][]int {
-	var out [][]int
-	inBlockString := false
-	for line := 0; line < len(text); {
-		lineEnd := line
-		for lineEnd < len(text) && text[lineEnd] != '\n' {
-			lineEnd++
-		}
-		start := line
-		for start < len(text) && (text[start] == ' ' || text[start] == '\t' || text[start] == '\r') {
-			start++
-		}
-		kindEnd := scanName(text, start)
-		if !inBlockString && kindEnd > start {
-			kind := text[start:kindEnd]
-			if kind == "query" || kind == "mutation" || kind == "subscription" {
-				if end, ok := scanOperationHeader(text, kindEnd); ok {
-					out = append(out, []int{line, end, start, kindEnd})
-				}
-			}
-		}
-		for i := line; i+2 < lineEnd; i++ {
-			if text[i:i+3] == `"""` && !isEscaped(text, i) {
-				inBlockString = !inBlockString
-				i += 2
-			}
-		}
-		next := lineEnd
-		if next < len(text) {
-			next++
-		}
-		if next <= line {
-			break
-		}
-		line = next
-	}
-	return out
+// OperationHead matches the start of a GraphQL operation — the kind keyword
+// through its opening brace — at statement position.
+//
+// A `${…}` in the variable list is stepped over rather than treated as that
+// brace. A mobile client declares `$pageviewFilters: [${filterType}!]`, and
+// stopping at the interpolation's brace put the body start INSIDE it: the
+// scanner then read `filterType` as the operation's first root field and every
+// real field after it at the wrong depth. The two ends have to agree —
+// RootFields skips interpolations too — or the fix only moves where the desync
+// begins.
+var OperationHead = regexp.MustCompile(`(?m)^\s*(query|mutation|subscription)\b(?:\$\{[^{}]*\}|[^{])*\{`)
+
+// RootFields returns the depth-1 field names of an operation body starting
+// just after its opening brace. Fragment spreads, directives and arguments are
+// skipped; a field is the identifier that opens a depth-1 selection. For an
+// `alias: field` selection the FIELD is the contract name, the alias local.
+func isIdentChar(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
-func scanOperationHeader(text string, i int) (int, bool) {
-	i = skipIgnored(text, i)
-	if i < len(text) && text[i] != '(' && text[i] != '@' && text[i] != '{' {
-		next := scanName(text, i)
-		if next == i {
-			return i, false
-		}
-		i = skipIgnored(text, next)
-	}
-	if i < len(text) && text[i] == '(' {
-		var ok bool
-		i, ok = skipDelimited(text, i, '(', ')')
-		if !ok {
-			return i, false
-		}
-		i = skipIgnored(text, i)
-	}
-	for i < len(text) && text[i] == '@' {
-		i++
-		next := scanName(text, i)
-		if next == i {
-			return i, false
-		}
-		i = skipIgnored(text, next)
-		if i < len(text) && text[i] == '(' {
-			var ok bool
-			i, ok = skipDelimited(text, i, '(', ')')
-			if !ok {
-				return i, false
-			}
-			i = skipIgnored(text, i)
-		}
-	}
-	return i + 1, i < len(text) && text[i] == '{'
-}
-
-// RootFields returns the fields immediately inside an operation selection set.
 func RootFields(body string) []string {
-	fields, _ := scanSelectionSet(body, 0, true)
-	return fields
-}
-
-func scanSelectionSet(text string, i int, collect bool) ([]string, int) {
 	var fields []string
-	for i < len(text) {
-		i = skipIgnoredAndInterpolations(text, i)
-		if i >= len(text) || text[i] == '}' {
-			return fields, i + 1
-		}
-		if i+2 < len(text) && text[i:i+3] == "..." {
-			i = skipIgnored(text, i+3)
-			i = scanName(text, i)
-			i = skipIgnored(text, i)
-			if next := scanName(text, i); next > i {
-				i = next
-			}
-			i = skipDirectives(text, i)
-			if i < len(text) && text[i] == '{' {
-				_, i = scanSelectionSet(text, i+1, false)
-			}
-			continue
-		}
-		end := scanName(text, i)
-		if end == i {
-			i = skipToken(text, i)
-			continue
-		}
-		field := text[i:end]
-		i = skipIgnored(text, end)
-		if i < len(text) && text[i] == ':' {
-			i = skipIgnored(text, i+1)
-			end = scanName(text, i)
-			if end == i {
-				continue
-			}
-			field, i = text[i:end], end
-		}
-		if collect {
-			fields = append(fields, field)
-		}
-		i = skipIgnored(text, i)
-		if i < len(text) && text[i] == '(' {
-			i, _ = skipDelimited(text, i, '(', ')')
-		}
-		i = skipDirectives(text, i)
-		if i < len(text) && text[i] == '{' {
-			_, i = scanSelectionSet(text, i+1, false)
-		}
-	}
-	return fields, i
-}
-
-func skipDirectives(text string, i int) int {
-	for {
-		i = skipIgnoredAndInterpolations(text, i)
-		if i >= len(text) || text[i] != '@' {
-			return i
-		}
-		i = scanName(text, i+1)
-		i = skipIgnored(text, i)
-		if i < len(text) && text[i] == '(' {
-			i, _ = skipDelimited(text, i, '(', ')')
-		}
-	}
-}
-
-func skipIgnored(text string, i int) int {
-	for i < len(text) {
-		switch text[i] {
-		case ' ', '\t', '\r', '\n', ',':
-			i++
-		case '#':
-			for i < len(text) && text[i] != '\n' {
+	depth := 1
+	i := 0
+	expectField := true
+	for i < len(body) && depth > 0 {
+		c := body[i]
+		switch {
+		case c == '$' && i+1 < len(body) && body[i+1] == '{':
+			// A JavaScript template interpolation, not GraphQL. Its braces are
+			// not selection sets and its identifier is not a field: a mobile
+			// client declares `[${filterType}!]` in a variable list and a web
+			// frontend writes `${inOverview ? '' : '…'}` inside one, and both
+			// arrived in the graph as root fields named Query.filterType and
+			// Query.inOverview. Worse than the two false facts is what counting
+			// `${` as a depth increase does to everything after it — a
+			// `${FRAGMENT}` spread at depth 1 desynchronises the counter, and
+			// nested fields start reporting as root ones.
+			//
+			// Skipped brace-balanced rather than to the first `}`, because an
+			// interpolation routinely contains its own object or nested
+			// template.
+			i += 2
+			braces := 1
+			for i < len(body) && braces > 0 {
+				switch body[i] {
+				case '{':
+					braces++
+				case '}':
+					braces--
+				}
 				i++
 			}
-		default:
-			return i
-		}
-	}
-	return i
-}
-
-func skipIgnoredAndInterpolations(text string, i int) int {
-	for {
-		i = skipIgnored(text, i)
-		if i+1 >= len(text) || text[i:i+2] != "${" {
-			return i
-		}
-		i, _ = skipDelimited(text, i+1, '{', '}')
-	}
-}
-
-func skipDelimited(text string, i int, open, close byte) (int, bool) {
-	if i >= len(text) || text[i] != open {
-		return i, false
-	}
-	depth := 1
-	for i++; i < len(text); {
-		if text[i] == '"' {
-			i = skipString(text, i)
-			continue
-		}
-		if text[i] == '#' {
-			i = skipIgnored(text, i)
-			continue
-		}
-		if text[i] == open {
+			expectField = depth == 1
+		case c == '{':
 			depth++
-		}
-		if text[i] == close {
-			depth--
-			if depth == 0 {
-				return i + 1, true
-			}
-		}
-		i++
-	}
-	return i, false
-}
-
-func skipString(text string, i int) int {
-	if i+2 < len(text) && text[i:i+3] == `"""` {
-		for i += 3; i+2 < len(text); i++ {
-			if text[i:i+3] == `"""` && !isEscaped(text, i) {
-				return i + 3
-			}
-		}
-		return len(text)
-	}
-	for i++; i < len(text); i++ {
-		if text[i] == '\\' {
+			expectField = depth == 1
 			i++
-			continue
+		case c == '}':
+			depth--
+			expectField = depth == 1
+			i++
+		case c == '#':
+			for i < len(body) && body[i] != '\n' {
+				i++
+			}
+		case c == '(':
+			par := 1
+			i++
+			for i < len(body) && par > 0 {
+				switch body[i] {
+				case '(':
+					par++
+				case ')':
+					par--
+				}
+				i++
+			}
+		case c == '@':
+			// A directive, not a field. `candidatesConnection(…)\n @connection(…)`
+			// puts a newline between the field and its directive, and a newline
+			// is what resets the scanner to expect a field — so `connection`
+			// was read as a second root field on seven mobile-client documents.
+			i++
+			for i < len(body) && isIdentChar(body[i]) {
+				i++
+			}
+			expectField = false
+		case c == '.':
+			// A fragment spread's name is not a field either, and the same
+			// newline reset would otherwise take it.
+			expectField = false
+			i++
+		case depth == 1 && expectField && (c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')):
+			j := i
+			for j < len(body) && (body[j] == '_' || (body[j] >= 'a' && body[j] <= 'z') ||
+				(body[j] >= 'A' && body[j] <= 'Z') || (body[j] >= '0' && body[j] <= '9')) {
+				j++
+			}
+			word := body[i:j]
+			k := j
+			for k < len(body) && (body[k] == ' ' || body[k] == '\t') {
+				k++
+			}
+			if k < len(body) && body[k] == ':' {
+				i = k + 1
+				continue
+			}
+			if word != "on" && word != "fragment" {
+				fields = append(fields, word)
+			}
+			expectField = false
+			i = j
+		case c == '\n' || c == ',':
+			expectField = depth == 1
+			i++
+		default:
+			i++
 		}
-		if i < len(text) && text[i] == '"' {
-			return i + 1
-		}
 	}
-	return i
+	return fields
 }
-
-func isEscaped(text string, i int) bool {
-	backslashes := 0
-	for i--; i >= 0 && text[i] == '\\'; i-- {
-		backslashes++
-	}
-	return backslashes%2 != 0
-}
-
-func skipToken(text string, i int) int {
-	if i < len(text) && text[i] == '"' {
-		return skipString(text, i)
-	}
-	return i + 1
-}
-
-func scanName(text string, i int) int {
-	if i >= len(text) || !isNameStart(text[i]) {
-		return i
-	}
-	for i++; i < len(text) && isNameContinue(text[i]); i++ {
-	}
-	return i
-}
-
-func isNameStart(c byte) bool    { return c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' }
-func isNameContinue(c byte) bool { return isNameStart(c) || c >= '0' && c <= '9' }

@@ -261,13 +261,9 @@ Contract-derived routes (read from a spec or IDL — an interface, not a call
 site): `grpc-proto` (.proto service definition), `openapi`,
 `openapi-typescript` (generated TS client from a spec).
 
-GraphQL: `graphql-ruby-dsl` (server field DSL), `graphql-sdl` (schema-first
-server SDL), `graphql-code-first-decorator` (NestJS GraphQL or TypeGraphQL root
-decorator), `graphql-nexus` and `graphql-pothos` (code-first builder APIs),
-`graphql-tag` (client operations in tagged templates), `graphql-client-call`
-(static document passed through a GraphQL client or HTTP request),
-`graphql-operation-file` (standalone .graphql documents), and
-`graphql-ruby-string` (Ruby operation-string literals).
+GraphQL: `graphql-ruby-dsl` (server field DSL), `graphql-tag` (client
+operations in tagged templates), `graphql-operation-file` (standalone
+.graphql documents), `graphql-ruby-string` (Ruby operation-string literals).
 
 Framework route declarations: `symfony-config` (Symfony YAML/XML),
 `play-routes` (Play conf/routes), `pekko-http`, `http4s`, `angular-router`.

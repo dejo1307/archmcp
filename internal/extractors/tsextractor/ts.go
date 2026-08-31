@@ -65,7 +65,7 @@ func (e *TSExtractor) DetectFiles(repoPath string, files []string) (bool, error)
 	if _, found := findTSRoot(repoPath); found {
 		return true, nil
 	}
-	if hasGraphQLDocs(files) {
+	if detectGraphQLDocs(repoPath) {
 		return true, nil
 	}
 	for _, rel := range files {
@@ -252,31 +252,12 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 	// `client.method(...)` call to its "/pkg.Service/Method" route. Built before
 	// the parallel pass because a client's stub and its call sites usually live
 	// in different files.
-	// Read each source once, in parallel. GraphQL context needs a repository-wide
-	// view before extraction, but it consumes these bytes rather than performing a
-	// serial pre-pass that rereads every file from disk.
-	type sourceResult struct {
-		src []byte
-		err error
-	}
-	readSources := parallel.MapFiles(ctx, tsFiles, func(relFile string) sourceResult {
-		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
-		return sourceResult{src: src, err: err}
-	})
-	sources := make(map[string][]byte, len(tsFiles))
-	for i, read := range readSources {
-		if read.err != nil {
-			log.Printf("[ts-extractor] error reading %s: %v", tsFiles[i], read.err)
-			continue
-		}
-		sources[tsFiles[i]] = read.src
-	}
-	grpcStubs := buildGRPCStubIndex(tsFiles, sources)
-	graphqlServer := detectGraphQLServerUsage(tsFiles, sources)
+	grpcStubs := buildGRPCStubIndex(repoPath, tsFiles)
 
 	perFile := parallel.MapFiles(ctx, tsFiles, func(relFile string) tsFileResult {
-		src := sources[relFile]
-		if src == nil {
+		src, err := os.ReadFile(filepath.Join(repoPath, relFile))
+		if err != nil {
+			log.Printf("[ts-extractor] error reading %s: %v", relFile, err)
 			return tsFileResult{}
 		}
 		if isMinifiedSource(src) {
@@ -288,7 +269,7 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 		aliases := aliasesForDir(aliasRoots, factpath.Dir(relFile))
 		var res tsFileResult
-		res.facts, res.angular, res.angularRouter, res.angularInline, res.angularHTTP = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, graphqlServer, orms, aliases, knownFiles, nuxtAutoComponents, grpcStubs)
+		res.facts, res.angular, res.angularRouter, res.angularInline, res.angularHTTP = e.extractFile(src, relFile, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular, orms, aliases, knownFiles, nuxtAutoComponents, grpcStubs)
 		// Routers, mounts and held-back routes for the repo-wide mount pass below.
 		// Collected here because resolving an import needs this file's path aliases,
 		// which are in scope only during the per-file walk. Same test-path gate as
@@ -299,7 +280,6 @@ func (e *TSExtractor) Extract(ctx context.Context, repoPath string, files []stri
 		}
 		return res
 	})
-	sources = nil
 
 	// Templates are scanned in parallel with no parser: an Angular template is not
 	// HTML once its @if/@for blocks are in it, and both dialects are live in the
@@ -498,7 +478,7 @@ type extractCtx struct {
 	aliases     map[string]tsAlias  // this directory's tsconfig path aliases, for resolving an import written as a bare specifier
 }
 
-func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, graphqlServer graphqlServerContext, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, nuxtAutoComponents map[string]string, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate, *angularHTTPFile) {
+func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, isNuxt, isSvelteKit, isEmber, isReactNav, isAngular bool, orms ormFlags, aliases map[string]tsAlias, knownFiles map[string]bool, nuxtAutoComponents map[string]string, grpcStubs *grpcStubIndex) ([]facts.Fact, angularCounts, *angularRouterFile, map[string]*angularTemplate, *angularHTTPFile) {
 	// The grammar is chosen here, so the kind table is too: TypeScript and TSX assign
 	// different meanings to the same symbol ids, and everything below reads node kinds
 	// through this table. See kinds.go.
@@ -514,11 +494,6 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	if isGraphQLDocFile(relFile) {
 		if facts.IsTestPath(relFile) {
 			return nil, angularCounts{}, nil, nil, nil
-		}
-		if graphqlServer.sdlDocuments[filepath.ToSlash(relFile)] {
-			if routes := extractGraphQLServerSDLDocument(src, relFile); len(routes) > 0 {
-				return routes, angularCounts{}, nil, nil, nil
-			}
 		}
 		return extractGraphQLClientOps(string(src), relFile, facts.RouteSourceGraphQLOperation), angularCounts{}, nil, nil, nil
 	}
@@ -560,9 +535,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 	// resolving test-ness here rather than with a local suffix list is deliberate —
 	// the copies that predated it had drifted apart in both directions.
 	if !facts.IsTestPath(relFile) {
-		if graphqlServer.enabled {
-			result = append(result, extractGraphQLServerSDL(src, relFile)...)
-		}
+		result = append(result, extractGraphQLTagFacts(src, relFile)...)
 		result = append(result, extractHTTPClientFacts(src, relFile)...)
 		// Call-registered server routes (Express/Fastify/Hono/Koa). Same test-path
 		// gate: an e2e suite that spins up its own app would otherwise contribute
@@ -589,20 +562,6 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 
 	root := tree.RootNode()
 	if !facts.IsTestPath(relFile) {
-		result = append(result, extractGraphQLTagFactsAST(src, relFile, kinds, root)...)
-		text := string(src)
-		fetchBody := hasGraphQLFetchBodyCandidate(text)
-		clientCandidate := strings.Contains(text, "graphql-request") || fetchBody
-		var graphqlBindings graphqlImportBindings
-		if clientCandidate || graphqlServer.enabled {
-			graphqlBindings = collectGraphQLImportBindings(kinds, root, src)
-		}
-		if clientCandidate {
-			result = append(result, extractGraphQLClientCallFactsAST(src, relFile, kinds, root, fetchBody, graphqlBindings)...)
-		}
-		if graphqlServer.enabled {
-			result = append(result, extractGraphQLCodeFirstAST(src, relFile, kinds, root, graphqlBindings)...)
-		}
 		result = append(result, extractTSKafkaFacts(kinds, root, src, relFile)...)
 	}
 
