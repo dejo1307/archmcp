@@ -744,9 +744,7 @@ func extractGraphQLServerSDL(src []byte, relFile string) []facts.Fact {
 		open := m[1] - 1 // the backtick itself
 		body, _ := templateBody(text, open)
 		baseLine := 1 + strings.Count(text[:open], "\n")
-		for _, f := range sdlRootFields(body, relFile, baseLine) {
-			out = append(out, f)
-		}
+		out = append(out, sdlRootFields(body, relFile, baseLine)...)
 	}
 	return out
 }
