@@ -460,6 +460,46 @@ storage  src.orders    src/schema.ts:4          props: framework=drizzle, table=
 `Session` class keeps its class name. That distinction matters when the same database is
 reached from another repository in another language.
 
+## GraphQL — client operations and schema-first Node servers
+
+A `gql`-tagged template literal or a standalone `.graphql` operation document names its
+operation kind and root fields literally; each root field becomes a client-role route
+fact (`Query.pageViews`) — the joinable name the cross-repo `graphql` signal matches
+against a server's root fields. This is the client half of the seam.
+
+The server half reads SDL used by Apollo Server, GraphQL Yoga, Mercurius,
+express-graphql, graphql-http, GraphQL Tools, and GraphQL.js `buildSchema`. It also reads
+code-first root fields declared by NestJS GraphQL and TypeGraphQL
+`@Query`/`@Mutation`/`@Subscription` decorators; Nexus's `queryType`, `mutationType`,
+`subscriptionType`, root `extendType` definitions, and named or callback
+`queryField`/`mutationField`/`subscriptionField` shorthands; and the corresponding singular
+Pothos builder methods. Package provenance is required, so unrelated decorators
+or builder methods with those generic names remain inert. A schema may
+be a plain template literal or a `gql`-tagged one, assigned through `typeDefs`, `schema`,
+or conventional suffixed bindings such as `gqlSchema` and `userTypeDefs`; TypeScript
+annotations such as `const schema: string = ...` are accepted. Standalone `.graphql` and
+`.gql` schema documents are read when a server file imports them or they live under
+Hasura's metadata convention; unrelated benchmark and schema-copy documents stay inert. Each
+`Query`/`Mutation`/`Subscription` root field (including one declared with `extend type`)
+becomes a server-role route fact with the same name shape as the client side. Detection
+is repository-wide and syntax-based, so a constructor in `server.ts` activates a modular
+SDL definition in `schema.ts`, while a `buildSchema(...)` example in documentation does
+not. A client-only repository carrying a schema copy remains inert because it has no
+GraphQL server signal.
+
+Relay's `graphql` tag and the `gql` tags commonly used by Apollo, urql, and
+graphql-request share the same operation extraction. Static untagged operation strings
+are also read in graphql-request modules and when they are the `query` property of a
+plain `fetch` JSON body; arbitrary operation-looking strings elsewhere remain inert.
+In Vue and Nuxt single-file components the same extraction runs inside `<script>` and
+`<script setup>`, covering Nuxt Apollo calls such as ``useAsyncQuery(gql`…`)`` and
+``useMutation(gql`…`)`` while preserving the operation's line in the `.vue` file.
+
+This reads the schema surface only: which root fields exist, not which resolver
+implements one. Resolver-to-field binding — matching a `resolvers.Query.book` handler
+back to its schema field, the way Kafka call sites bind to AsyncAPI operations — is a
+separate, later capability.
+
 ## Kafka and AsyncAPI contracts
 
 Files importing KafkaJS, node-rdkafka, or kafka-node emit directional topic facts
@@ -498,6 +538,10 @@ production messaging operations.
 - **Ember names the default resolver cannot map.** Addon components (they resolve
   into `node_modules`), pods layout, custom resolvers, and engine mount points
   produce no edge; the misses are recorded in `ember_unresolved`, not guessed at.
+- **GraphQL resolver maps.** A `resolvers` object passed alongside SDL
+  is not read, so a root field's implementing function is not (yet) part of the graph —
+  only that the field exists. Code-first schemas (decorators or builder APIs with no SDL
+  string) are not detected either.
 
 ---
 

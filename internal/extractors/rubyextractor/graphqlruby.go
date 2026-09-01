@@ -141,7 +141,7 @@ func extractGraphQLRubyClientOps(src []byte, relFile string) []facts.Fact {
 			continue
 		}
 		body := text[bodyStart : bodyStart+end[0]]
-		if om := gqlscan.OperationHead.FindStringSubmatchIndex(body); om != nil {
+		for _, om := range gqlscan.OperationHeads(body) {
 			emit(body[om[2]:om[3]], body[om[1]:], bodyStart+om[0])
 		}
 	}

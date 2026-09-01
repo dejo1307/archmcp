@@ -583,6 +583,59 @@ func TestExtract_NuxtComposable(t *testing.T) {
 	}
 }
 
+func TestExtract_NuxtApolloOperationsInVueScriptSetup(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"pages/books.vue": `<template><div>{{ data }}</div></template>
+
+<script setup lang="ts">
+import gql from 'graphql-tag'
+
+const { data } = await useAsyncQuery(gql` + "`" + `
+  query BooksPage {
+    books { id title }
+  }
+` + "`" + `)
+
+const { mutate } = useMutation(gql` + "`" + `
+  mutation AddBook($title: String!) {
+    addBook(title: $title) { id }
+  }
+` + "`" + `)
+</script>
+`,
+	}, true)
+
+	want := map[string]int{"Query.books": 7, "Mutation.addBook": 13}
+	got := map[string]int{}
+	for _, f := range ff {
+		if f.Kind != facts.KindRoute || f.Props[facts.PropRouteType] != facts.RouteTypeGraphQL {
+			continue
+		}
+		got[f.Name] = f.Line
+		if f.Props[facts.PropRole] != facts.RoleClient || f.Props[facts.PropSource] != facts.RouteSourceGraphQLTag {
+			t.Errorf("%s props = %v", f.Name, f.Props)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("GraphQL routes = %v, want %v", got, want)
+	}
+}
+
+func TestExtract_NuxtApolloIgnoresUntaggedVueTemplateStrings(t *testing.T) {
+	ff := extractVue(t, map[string]string{
+		"pages/docs.vue": `<script setup lang="ts">
+const example = ` + "`" + `query Fake { fake }` + "`" + `
+</script>
+<template><pre>{{ example }}</pre></template>`,
+	}, true)
+
+	for _, f := range ff {
+		if f.Kind == facts.KindRoute && f.Props[facts.PropRouteType] == facts.RouteTypeGraphQL {
+			t.Fatalf("untagged example emitted GraphQL route: %+v", f)
+		}
+	}
+}
+
 // --- Nuxt page extraction ---
 
 func TestExtract_NuxtPage(t *testing.T) {
