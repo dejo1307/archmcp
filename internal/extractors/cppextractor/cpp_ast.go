@@ -166,6 +166,9 @@ type astWalker struct {
 	repeatDepth  int
 	selfName     string
 	selfShort    string
+	// receiverTypes maps explicit parameter/local names in the current function
+	// body to their simple project type. Empty values mark conflicting declarations.
+	receiverTypes map[string]string
 }
 
 // cppBodyMetrics accumulates per-function complexity signals during the single
@@ -733,7 +736,7 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 	// the stable index (the pointer may be invalidated if the body walk grows w.out).
 	savedMetrics, savedDepth := w.metrics, w.loopDepth
 	savedScaling, savedRepeat := w.scalingDepth, w.repeatDepth
-	savedName, savedShort := w.selfName, w.selfShort
+	savedName, savedShort, savedReceiverTypes := w.selfName, w.selfShort, w.receiverTypes
 	w.metrics = &cppBodyMetrics{}
 	w.loopDepth = 0
 	w.scalingDepth = 0
@@ -741,6 +744,7 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 	w.selfName = symbolName
 	w.selfShort = shortName
 	if body := node.ChildByFieldName("body"); body != nil {
+		w.receiverTypes = collectExplicitReceiverTypes(w.kinds, fdecl, body, w.src)
 		w.walkForCalls(body)
 	}
 	m := w.metrics
@@ -773,6 +777,7 @@ func (w *astWalker) handleFunctionDefinition(node *sitter.Node) {
 	w.metrics, w.loopDepth = savedMetrics, savedDepth
 	w.scalingDepth, w.repeatDepth = savedScaling, savedRepeat
 	w.selfName, w.selfShort = savedName, savedShort
+	w.receiverTypes = savedReceiverTypes
 	for range outOfLineScopes {
 		w.popType()
 	}
@@ -1704,10 +1709,17 @@ func (w *astWalker) handleCall(node *sitter.Node) {
 			w.recordCallMetrics(target)
 		}
 	case kind == calleeField:
-		// obj->method() / obj.method() on a non-this receiver: no graph edge (the
-		// receiver's type is not tracked), but its name feeds the in-loop metric so
-		// the enterprise analyzer can reason about per-iteration work. Skip obviously
-		// cheap container/iterator methods to keep calls_in_loop focused.
+		// Resolve only a simple receiver with one explicit, unambiguous parameter or
+		// local type. Project-wide canonicalization later verifies that the type and
+		// method actually exist; auto, templates, fields and expressions stay unknown.
+		if typ := w.receiverTypes[root]; typ != "" {
+			target := typ + "::" + name
+			w.addOwnerEdge(relReceiverCallCandidate, target)
+			w.recordCallMetrics(target)
+			break
+		}
+		// Unknown receiver calls still feed the in-loop metric. Skip obviously cheap
+		// container/iterator methods to keep calls_in_loop focused.
 		if !cppCheapMethods[name] {
 			tgt := name
 			if root != "" {
@@ -1716,6 +1728,56 @@ func (w *astWalker) handleCall(node *sitter.Node) {
 			w.recordInLoop(tgt)
 		}
 	}
+}
+
+// collectExplicitReceiverTypes finds parameter and local declarations whose type
+// is a simple project class/struct name. It intentionally ignores auto, builtins,
+// template wrappers (a unique_ptr<T> receiver is not a T), nested lambdas and any
+// variable declared with conflicting types in the same function.
+func collectExplicitReceiverTypes(kinds *tsutil.KindTable, fdecl, body *sitter.Node, src []byte) map[string]string {
+	out := map[string]string{}
+	addDeclaration := func(node *sitter.Node) {
+		typeNode := node.ChildByFieldName("type")
+		typ := simpleTypeName(typeNode, src)
+		if typ == "" || !isTypeName(typ) || (typeNode != nil && strings.Contains(nodeText(typeNode, src), "<")) {
+			return
+		}
+		for i := uint(0); i < node.ChildCount(); i++ {
+			if node.FieldNameForChild(uint32(i)) != "declarator" {
+				continue
+			}
+			name := declaratorLeafName(kinds, node.Child(i), src)
+			if name == "" {
+				continue
+			}
+			if prior, exists := out[name]; !exists {
+				out[name] = typ
+			} else if prior != typ {
+				out[name] = ""
+			}
+		}
+	}
+	if params := fdecl.ChildByFieldName("parameters"); params != nil {
+		for i := uint(0); i < params.ChildCount(); i++ {
+			if p := params.Child(i); kindOf(kinds, p) == "parameter_declaration" {
+				addDeclaration(p)
+			}
+		}
+	}
+	var visit func(*sitter.Node)
+	visit = func(node *sitter.Node) {
+		if node == nil || kindOf(kinds, node) == "lambda_expression" {
+			return
+		}
+		if kindOf(kinds, node) == "declaration" {
+			addDeclaration(node)
+		}
+		for i := uint(0); i < node.ChildCount(); i++ {
+			visit(node.Child(i))
+		}
+	}
+	visit(body)
+	return out
 }
 
 // cppStlLambda returns the lambda argument of an STL-iterator call

@@ -29,6 +29,11 @@ const (
 // appears in emitted facts.
 const relFuncPtrCandidate = "func_ptr_candidate"
 
+// relReceiverCallCandidate is emitted for obj.method()/ptr->method() when the
+// file AST gives obj an explicit type. The project pass keeps it as a real call
+// only when that type and qualified method resolve uniquely.
+const relReceiverCallCandidate = "receiver_call_candidate"
+
 // CppExtractor extracts architectural facts from C and C++ source code using
 // tree-sitter AST parsing (see cpp_ast.go for the walker implementation). It owns
 // both languages: a per-file grammar choice (see parsedLanguage) routes .c files
@@ -243,8 +248,8 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 	// recovers free functions declared through headers without guessing among
 	// overloads or common helper names.
 	resolution := canonicalizeTargets(allFacts, typeIndex, indexFunctionNames(allFacts), buildIncludeVisibility(allFacts, headerIndex))
-	log.Printf("[cpp-extractor] call resolution: total=%d exact=%d type_scoped=%d unique_short=%d qualified_suffix=%d rejected_no_include_path=%d unresolved=%d",
-		resolution.total, resolution.exact, resolution.typeScoped, resolution.uniqueShort, resolution.qualifiedSuffix, resolution.noIncludePath, resolution.unresolved)
+	log.Printf("[cpp-extractor] call resolution: total=%d exact=%d type_scoped=%d unique_short=%d qualified_suffix=%d receiver_resolved=%d receiver_rejected=%d rejected_no_include_path=%d unresolved=%d",
+		resolution.total, resolution.exact, resolution.typeScoped, resolution.uniqueShort, resolution.qualifiedSuffix, resolution.receiverResolved, resolution.receiverRejected, resolution.noIncludePath, resolution.unresolved)
 
 	// Propagate the direct-I/O signal transitively over the (now-canonical) call
 	// graph, so a function reaching a file/socket primitive through a wrapper is
@@ -432,7 +437,8 @@ func mergeSymbol(dst *facts.Fact, src facts.Fact) {
 // false instantiation edges. RelImplements / RelCalls to unknown (external) names
 // are kept, since cross-module/external inheritance and calls are meaningful.
 type callResolutionStats struct {
-	total, exact, typeScoped, uniqueShort, qualifiedSuffix, noIncludePath, unresolved int
+	total, exact, typeScoped, uniqueShort, qualifiedSuffix        int
+	receiverResolved, receiverRejected, noIncludePath, unresolved int
 }
 
 func canonicalizeTargets(allFacts []facts.Fact, typeIndex map[string]string, functions functionNames, visibility *includeVisibility) callResolutionStats {
@@ -462,6 +468,29 @@ func canonicalizeTargets(allFacts []facts.Fact, typeIndex map[string]string, fun
 					}
 					r.Target = dir + "." + r.Target
 				}
+			case relReceiverCallCandidate:
+				stats.total++
+				typ, _, ok := strings.Cut(r.Target, "::")
+				dir := typeIndex[typ]
+				if !ok || dir == "" {
+					stats.receiverRejected++
+					continue
+				}
+				candidate := dir + "." + r.Target
+				if known[candidate] {
+					r.Kind = facts.RelCalls
+					r.Target = candidate
+					stats.receiverResolved++
+					break
+				}
+				canonical := functions.qualified[r.Target]
+				if canonical == "" || !visibility.allows(allFacts[i].File, canonical) {
+					stats.receiverRejected++
+					continue
+				}
+				r.Kind = facts.RelCalls
+				r.Target = canonical
+				stats.receiverResolved++
 			case facts.RelCalls:
 				stats.total++
 				if known[r.Target] {

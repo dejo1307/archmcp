@@ -309,6 +309,57 @@ void Worker::run() {
 	}
 }
 
+func TestExplicitParameterAndLocalReceiverCalls(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/worker.cpp": `
+class Worker { public: void step(); };
+void Worker::step() {}
+void run(Worker &parameter) {
+  Worker local;
+  Worker *pointer = &local;
+  parameter.step();
+  local.step();
+  pointer->step();
+}`,
+	})
+	run := mustFact(t, ff, "src.run")
+	if !hasRelation(run, facts.RelCalls, "src.Worker::step") {
+		t.Fatalf("explicit receiver calls were not resolved: %+v", run.Relations)
+	}
+}
+
+func TestReceiverTypingRefusesAutoAndTemplateWrappers(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/worker.cpp": `
+class Worker { public: void step(); };
+void Worker::step() {}
+void run(Worker source) {
+  auto inferred = source;
+  Box<Worker> wrapped;
+  inferred.step();
+  wrapped.step();
+}`,
+	})
+	run := mustFact(t, ff, "src.run")
+	if hasRelation(run, facts.RelCalls, "src.Worker::step") {
+		t.Fatalf("auto or template wrapper was treated as Worker: %+v", run.Relations)
+	}
+}
+
+func TestReceiverTypingDropsMissingMethods(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"src/worker.cpp": `
+class Worker {};
+void run(Worker worker) { worker.missing(); }`,
+	})
+	run := mustFact(t, ff, "src.run")
+	for _, rel := range run.Relations {
+		if rel.Kind == facts.RelCalls || rel.Kind == relReceiverCallCandidate {
+			t.Fatalf("unconfirmed receiver call leaked into the graph: %+v", run.Relations)
+		}
+	}
+}
+
 func TestBareCallResolvesToUniqueFunctionInAnotherDirectory(t *testing.T) {
 	ff := extractProject(t, map[string]string{
 		"lib/check.h":   `bool check(int);`,
