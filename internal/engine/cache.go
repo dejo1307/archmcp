@@ -2354,7 +2354,11 @@ import (
 // `gqlSchema`, `userTypeDefs`) and provenance-backed standalone .graphql/.gql
 // documents (a server-file import or Hasura metadata). Server activation comes
 // from the TypeScript AST, not comments; integrationTests is test-only.
-const cacheVersion = "v259"
+// v260: C++ calls on explicitly typed parameter and local-variable receivers
+// resolve to a uniquely declared method on that type. Auto-deduced, wrapped,
+// unknown and ambiguous receiver types remain unresolved rather than being
+// guessed, and a receiver call binds only when the method actually exists.
+const cacheVersion = "v260"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //
