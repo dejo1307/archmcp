@@ -1440,11 +1440,19 @@ func (w *astWalker) handleInclude(node *sitter.Node) {
 	if pathNode == nil {
 		return
 	}
-	if kindOf(w.kinds, pathNode) != "string_literal" {
-		// system_lib_string (<vector>) and other forms are external — skip.
+	style := ""
+	switch kindOf(w.kinds, pathNode) {
+	case "string_literal":
+		style = "quoted"
+	case "system_lib_string":
+		// ClickHouse and many CMake projects use <Project/header.h> for their own
+		// headers. Emit it provisionally; the project-wide header index later keeps
+		// repository-owned paths and drops actual system headers such as <vector>.
+		style = "angle"
+	default:
 		return
 	}
-	inc := strings.Trim(nodeText(pathNode, w.src), `"`)
+	inc := strings.Trim(nodeText(pathNode, w.src), `"<>`)
 	if inc == "" {
 		return
 	}
@@ -1454,9 +1462,10 @@ func (w *astWalker) handleInclude(node *sitter.Node) {
 		File: w.relFile,
 		Line: int(node.StartPosition().Row) + 1,
 		Props: map[string]any{
-			"language": w.lang,
-			"include":  inc,
-			"source":   "internal",
+			"language":      w.lang,
+			"include":       inc,
+			"include_style": style,
+			"source":        "internal",
 		},
 		Relations: []facts.Relation{{Kind: facts.RelImports, Target: inc}},
 	})

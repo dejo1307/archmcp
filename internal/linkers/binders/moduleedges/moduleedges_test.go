@@ -177,3 +177,45 @@ func TestBind_InjectionDoesNotRestateAnExtractorEdge(t *testing.T) {
 		t.Errorf("restated an edge the extractor already carries: %v", edges)
 	}
 }
+
+func TestClassifyUnresolvedTarget(t *testing.T) {
+	known := map[string]bool{
+		"src.Widget::run":  true,
+		"src.Other::run":   true,
+		"spec.Helper#call": true,
+		"src.Unique::save": true,
+	}
+	short := map[string]int{}
+	for name := range known {
+		short[symbolShortName(name)]++
+	}
+
+	tests := []struct {
+		target, want string
+	}{
+		{"spec.Helper#call", reasonKnownUnplaced},
+		{"wrong.Scope::save", reasonUniqueShort},
+		{"wrong.Scope::run", reasonAmbiguousShort},
+		{"external::send", reasonUnknown},
+	}
+	for _, tt := range tests {
+		if got := classifyUnresolvedTarget(tt.target, known, short); got != tt.want {
+			t.Errorf("classifyUnresolvedTarget(%q) = %q, want %q", tt.target, got, tt.want)
+		}
+	}
+}
+
+func TestFormatBreakdown_IsStableAndLeadsWithLargestGap(t *testing.T) {
+	got := formatBreakdown(map[string]int{"cpp/calls/no_symbol_match": 9, "cpp/calls/unique_short_name_match": 3, "c/calls/no_symbol_match": 9})
+	want := "c/calls/no_symbol_match=9, cpp/calls/no_symbol_match=9, cpp/calls/unique_short_name_match=3"
+	if got != want {
+		t.Fatalf("formatBreakdown = %q, want %q", got, want)
+	}
+}
+
+func TestFormatTopTargets_IsStableAndBounded(t *testing.T) {
+	got := formatTopTargets(map[string]int{"z": 2, "b": 4, "a": 4, "c": 1}, 3)
+	if want := "a=4, b=4, z=2"; got != want {
+		t.Fatalf("formatTopTargets = %q, want %q", got, want)
+	}
+}

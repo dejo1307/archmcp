@@ -309,6 +309,64 @@ void Worker::run() {
 	}
 }
 
+func TestBareCallResolvesToUniqueFunctionInAnotherDirectory(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"lib/check.h":   `bool check(int);`,
+		"lib/check.cpp": `bool check(int n) { return n > 0; }`,
+		"app/run.cpp": `#include "../lib/check.h"
+void run() { check(1); }`,
+	})
+	run := mustFact(t, ff, "app.run")
+	if !hasRelation(run, facts.RelCalls, "lib.check") {
+		t.Fatalf("unique cross-directory free function was not resolved: %+v", run.Relations)
+	}
+}
+
+func TestBareCallDoesNotResolveToInvisibleUniqueFunction(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"lib/check.cpp": `bool check(int n) { return n > 0; }`,
+		"app/run.cpp":   `void run() { check(1); }`,
+	})
+	run := mustFact(t, ff, "app.run")
+	if !hasRelation(run, facts.RelCalls, "app.check") {
+		t.Fatalf("call without an include path to the declaration should remain unresolved: %+v", run.Relations)
+	}
+	if hasRelation(run, facts.RelCalls, "lib.check") {
+		t.Fatalf("invisible unique function was guessed: %+v", run.Relations)
+	}
+}
+
+func TestBareCallDoesNotGuessBetweenDuplicateFunctionNames(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"one/check.cpp": `bool check(int n) { return n > 0; }`,
+		"two/check.cpp": `bool check(int n) { return n < 0; }`,
+		"app/run.cpp":   `void run() { check(1); }`,
+	})
+	run := mustFact(t, ff, "app.run")
+	if !hasRelation(run, facts.RelCalls, "app.check") {
+		t.Fatalf("ambiguous bare call should retain its unresolved local candidate: %+v", run.Relations)
+	}
+	if hasRelation(run, facts.RelCalls, "one.check") || hasRelation(run, facts.RelCalls, "two.check") {
+		t.Fatalf("ambiguous bare call was guessed: %+v", run.Relations)
+	}
+}
+
+func TestQualifiedCallResolvesByUniqueQualifiedSuffix(t *testing.T) {
+	ff := []facts.Fact{
+		{Kind: facts.KindSymbol, Name: "lib.DB::Util::check", File: "lib/check.cpp", Props: map[string]any{"symbol_kind": facts.SymbolMethod}},
+		{Kind: facts.KindSymbol, Name: "app.run", File: "app/run.cpp", Props: map[string]any{"symbol_kind": facts.SymbolFunc}, Relations: []facts.Relation{{Kind: facts.RelCalls, Target: "Util::check"}}},
+	}
+	visibility := &includeVisibility{edges: map[string]map[string]bool{"app": {"lib": true}}, cache: map[string]map[string]bool{}}
+	stats := canonicalizeTargets(ff, map[string]string{"Util": "lib"}, indexFunctionNames(ff), visibility)
+	run := mustFact(t, ff, "app.run")
+	if !hasRelation(run, facts.RelCalls, "lib.DB::Util::check") {
+		t.Fatalf("unique qualified cross-directory function was not resolved: %+v", run.Relations)
+	}
+	if stats.qualifiedSuffix != 1 || stats.unresolved != 0 {
+		t.Fatalf("resolution stats = %+v", stats)
+	}
+}
+
 // --- Templates ---
 
 func TestTemplates(t *testing.T) {
@@ -399,6 +457,50 @@ void use() {}
 	}
 	if !found {
 		t.Errorf("expected a dependency fact for #include \"other.h\"")
+	}
+}
+
+func TestProjectAngleIncludeIsInternalButSystemHeaderIsDropped(t *testing.T) {
+	ff := extractProject(t, map[string]string{
+		"include/project/thing.h": `class Thing {};`,
+		"src/use.cpp": `#include <project/thing.h>
+#include <vector>
+Thing makeThing() { return Thing(); }`,
+	})
+	var project, system bool
+	for _, f := range ff {
+		if f.Kind != facts.KindDependency {
+			continue
+		}
+		switch f.PropString("include") {
+		case "project/thing.h":
+			project = f.PropString("source") == "internal" && f.PropString("include_style") == "angle"
+		case "vector":
+			system = true
+		}
+	}
+	if !project {
+		t.Error("repository-owned angle include was not retained as internal")
+	}
+	if system {
+		t.Error("unresolved system angle include should not become a dependency")
+	}
+}
+
+func TestHeaderPathIndexDoesNotCrossVendoredLibrariesByBasename(t *testing.T) {
+	index := buildHeaderPathIndex([]string{
+		"third_party/jemalloc/include/jemalloc/internal/mutex.h",
+		"third_party/re2/util/mutex.h",
+		"third_party/jemalloc/include/jemalloc/internal/assert.h",
+	})
+	if got := index.resolve("third_party/jemalloc/src/arena.c", "jemalloc/internal/mutex.h", "quoted"); got != "third_party/jemalloc/include/jemalloc/internal" {
+		t.Fatalf("path-qualified jemalloc header resolved to %q", got)
+	}
+	if got := index.resolve("third_party/re2/re2/re2.cc", "assert.h", "angle"); got != "" {
+		t.Fatalf("bare system angle header resolved into vendored code: %q", got)
+	}
+	if got := index.resolve("src/use.cpp", "mutex.h", "quoted"); got != "" {
+		t.Fatalf("ambiguous bare header basename was guessed: %q", got)
 	}
 }
 

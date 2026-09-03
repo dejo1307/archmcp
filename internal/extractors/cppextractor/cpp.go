@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -121,7 +122,6 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 	modules := make(map[string]bool)
 	dirLang := make(map[string]string)              // dir -> module language ("c"/"cpp")
 	typeIndex := make(map[string]string)            // simple type name -> dir
-	headerIndex := make(map[string]string)          // header/source basename -> dir
 	funcNames := make(map[string]bool)              // short names of all functions/methods
 	moduleRefs := make(map[string][]facts.Relation) // dir -> file-scope macro-call refs
 
@@ -134,6 +134,7 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 			langByFile[relFile] = lang
 		}
 	}
+	headerIndex := buildHeaderPathIndex(cppFiles)
 
 	// Pre-pass: build a project-wide #define table (parallel scan), so a file-scope
 	// macro invocation (CONFIGFS_ATTR, DEVICE_ATTR_RO, …) can be expanded using the
@@ -183,7 +184,6 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 		}
 
 		modules[dir] = true
-		headerIndex[filepath.Base(relFile)] = dir
 		// A directory mixing C and C++ sources is treated as a C++ module; a
 		// C-only directory stays "c".
 		if langByFile[relFile] == langCpp {
@@ -237,8 +237,14 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 	// Merge header method declarations with source definitions.
 	allFacts = dedupeSymbols(allFacts)
 
-	// Canonicalise bare edge targets to "<dir>.<...>".
-	canonicalizeTargets(allFacts, typeIndex)
+	// Canonicalise edge targets. A bare call is initially scoped to its caller's
+	// directory; when that name is not declared there but exactly one function in
+	// the repository has the same short name, bind it to that declaration. This
+	// recovers free functions declared through headers without guessing among
+	// overloads or common helper names.
+	resolution := canonicalizeTargets(allFacts, typeIndex, indexFunctionNames(allFacts), buildIncludeVisibility(allFacts, headerIndex))
+	log.Printf("[cpp-extractor] call resolution: total=%d exact=%d type_scoped=%d unique_short=%d qualified_suffix=%d rejected_no_include_path=%d unresolved=%d",
+		resolution.total, resolution.exact, resolution.typeScoped, resolution.uniqueShort, resolution.qualifiedSuffix, resolution.noIncludePath, resolution.unresolved)
 
 	// Propagate the direct-I/O signal transitively over the (now-canonical) call
 	// graph, so a function reaching a file/socket primitive through a wrapper is
@@ -247,7 +253,7 @@ func (e *CppExtractor) Extract(ctx context.Context, repoPath string, files []str
 	computeCppPerformsIO(allFacts)
 
 	// Resolve quoted #include targets to module dirs.
-	resolveIncludeDependencies(allFacts, headerIndex)
+	allFacts = resolveIncludeDependencies(allFacts, headerIndex)
 
 	return allFacts, nil
 }
@@ -425,7 +431,18 @@ func mergeSymbol(dst *facts.Fact, src facts.Fact) {
 // Malloc, List_Nbr), not a constructor — keeping them would flood the graph with
 // false instantiation edges. RelImplements / RelCalls to unknown (external) names
 // are kept, since cross-module/external inheritance and calls are meaningful.
-func canonicalizeTargets(allFacts []facts.Fact, typeIndex map[string]string) {
+type callResolutionStats struct {
+	total, exact, typeScoped, uniqueShort, qualifiedSuffix, noIncludePath, unresolved int
+}
+
+func canonicalizeTargets(allFacts []facts.Fact, typeIndex map[string]string, functions functionNames, visibility *includeVisibility) callResolutionStats {
+	var stats callResolutionStats
+	known := make(map[string]bool)
+	for i := range allFacts {
+		if allFacts[i].Kind == facts.KindSymbol {
+			known[allFacts[i].Name] = true
+		}
+	}
 	for i := range allFacts {
 		rels := allFacts[i].Relations
 		kept := rels[:0]
@@ -446,18 +463,196 @@ func canonicalizeTargets(allFacts []facts.Fact, typeIndex map[string]string) {
 					r.Target = dir + "." + r.Target
 				}
 			case facts.RelCalls:
+				stats.total++
+				if known[r.Target] {
+					stats.exact++
+					break
+				}
+				resolved := false
 				if !strings.Contains(r.Target, ".") {
 					// "Scope::name" — resolve the scope (a class/namespace type) to its dir.
 					if idx := strings.Index(r.Target, "::"); idx >= 0 {
 						if dir, ok := typeIndex[r.Target[:idx]]; ok {
 							r.Target = dir + "." + r.Target
+							if known[r.Target] {
+								stats.typeScoped++
+								resolved = true
+							}
+						} else if canonical := functions.qualified[r.Target]; canonical != "" {
+							if visibility.allows(allFacts[i].File, canonical) {
+								r.Target = canonical
+								stats.qualifiedSuffix++
+								resolved = true
+							} else {
+								stats.noIncludePath++
+							}
 						}
 					}
+				}
+				if !resolved && !known[r.Target] {
+					// A type-index rewrite may already have supplied the declaring
+					// directory while omitting an enclosing namespace (dir.Type::m
+					// versus dir.DB::Type::m). Resolve its qualified suffix first.
+					if dot := strings.Index(r.Target, "."); dot >= 0 {
+						candidate := r.Target[dot+1:]
+						if strings.Contains(candidate, "::") {
+							if canonical := functions.qualified[candidate]; canonical != "" {
+								if visibility.allows(allFacts[i].File, canonical) {
+									r.Target = canonical
+									stats.qualifiedSuffix++
+									resolved = true
+								} else {
+									stats.noIncludePath++
+								}
+							}
+						}
+					}
+					// resolveCall scopes an unqualified call to the current directory.
+					// Only rewrite that exact shape; qualified calls have different C++
+					// lookup rules and need their own evidence.
+					dir := factpath.Dir(allFacts[i].File)
+					prefix := dir + "."
+					if !resolved && strings.HasPrefix(r.Target, prefix) {
+						candidate := strings.TrimPrefix(r.Target, prefix)
+						if strings.Contains(candidate, "::") {
+							if canonical := functions.qualified[candidate]; canonical != "" {
+								if visibility.allows(allFacts[i].File, canonical) {
+									r.Target = canonical
+									stats.qualifiedSuffix++
+									resolved = true
+								} else {
+									stats.noIncludePath++
+								}
+							}
+						} else {
+							if canonical := functions.short[candidate]; canonical != "" {
+								if visibility.allows(allFacts[i].File, canonical) {
+									r.Target = canonical
+									stats.uniqueShort++
+									resolved = true
+								} else {
+									stats.noIncludePath++
+								}
+							}
+						}
+					}
+				}
+				if !resolved && !known[r.Target] {
+					stats.unresolved++
 				}
 			}
 			kept = append(kept, r)
 		}
 		allFacts[i].Relations = kept
+	}
+	return stats
+}
+
+type includeVisibility struct {
+	edges map[string]map[string]bool
+	cache map[string]map[string]bool
+}
+
+// buildIncludeVisibility records the module graph established by quoted includes.
+// It deliberately uses the same basename index as resolveIncludeDependencies, so
+// call resolution and the module graph cannot disagree about what an include names.
+func buildIncludeVisibility(allFacts []facts.Fact, headerIndex headerPathIndex) *includeVisibility {
+	v := &includeVisibility{edges: map[string]map[string]bool{}, cache: map[string]map[string]bool{}}
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindDependency {
+			continue
+		}
+		inc := f.PropString("include")
+		target := headerIndex.resolve(f.File, inc, f.PropString("include_style"))
+		source := factpath.Dir(f.File)
+		if source == "" || target == "" || source == target {
+			continue
+		}
+		if v.edges[source] == nil {
+			v.edges[source] = map[string]bool{}
+		}
+		v.edges[source][target] = true
+	}
+	return v
+}
+
+func (v *includeVisibility) allows(sourceFile, targetName string) bool {
+	source := factpath.Dir(sourceFile)
+	dot := strings.Index(targetName, ".")
+	if dot < 0 {
+		return false
+	}
+	target := targetName[:dot]
+	if source == target {
+		return true
+	}
+	if reachable, ok := v.cache[source]; ok {
+		return reachable[target]
+	}
+	reachable := map[string]bool{}
+	queue := []string{source}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for next := range v.edges[cur] {
+			if reachable[next] {
+				continue
+			}
+			reachable[next] = true
+			queue = append(queue, next)
+		}
+	}
+	v.cache[source] = reachable
+	return reachable[target]
+}
+
+type functionNames struct {
+	short, qualified map[string]string
+}
+
+// indexFunctionNames maps both short names and namespace/class-qualified suffixes
+// to canonical fact names. A value is usable only when the repository declares
+// that spelling once; an empty value marks ambiguity.
+func indexFunctionNames(allFacts []facts.Fact) functionNames {
+	out := functionNames{short: map[string]string{}, qualified: map[string]string{}}
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol {
+			continue
+		}
+		kind := f.PropString("symbol_kind")
+		if kind != facts.SymbolFunc && kind != facts.SymbolMethod {
+			continue
+		}
+		short := lastScopeComponent(f.Name)
+		if short == "" {
+			continue
+		}
+		indexUniqueName(out.short, short, f.Name)
+		if dot := strings.Index(f.Name, "."); dot >= 0 && dot+1 < len(f.Name) {
+			qualified := f.Name[dot+1:]
+			if strings.Contains(qualified, "::") {
+				// A call site can omit enclosing namespaces that are active through
+				// its lexical context or a using declaration. Index every qualified
+				// suffix (DB::Type::method and Type::method), but only a suffix unique
+				// across the repository remains resolvable.
+				for candidate := qualified; strings.Contains(candidate, "::"); {
+					indexUniqueName(out.qualified, candidate, f.Name)
+					i := strings.Index(candidate, "::")
+					candidate = candidate[i+2:]
+				}
+			}
+		}
+	}
+	return out
+}
+
+func indexUniqueName(index map[string]string, key, canonical string) {
+	if prior, exists := index[key]; !exists {
+		index[key] = canonical
+	} else if prior != canonical {
+		index[key] = ""
 	}
 }
 
@@ -465,18 +660,20 @@ func canonicalizeTargets(allFacts []facts.Fact, typeIndex map[string]string) {
 // header paths) to the module dir that declares the header. Includes that resolve
 // to a different module are kept as inter-module edges; same-dir and unresolved
 // (external/vendored/system) includes are marked accordingly.
-func resolveIncludeDependencies(allFacts []facts.Fact, headerIndex map[string]string) {
+func resolveIncludeDependencies(allFacts []facts.Fact, headerIndex headerPathIndex) []facts.Fact {
+	kept := allFacts[:0]
 	for i := range allFacts {
 		f := &allFacts[i]
 		if f.Kind != facts.KindDependency {
+			kept = append(kept, *f)
 			continue
 		}
 		inc, _ := f.Props["include"].(string)
 		if inc == "" {
+			kept = append(kept, *f)
 			continue
 		}
-		base := filepath.Base(inc)
-		if dir, ok := headerIndex[base]; ok {
+		if dir := headerIndex.resolve(f.File, inc, f.PropString("include_style")); dir != "" {
 			for j := range f.Relations {
 				if f.Relations[j].Kind == facts.RelImports {
 					f.Relations[j].Target = dir
@@ -484,9 +681,53 @@ func resolveIncludeDependencies(allFacts []facts.Fact, headerIndex map[string]st
 			}
 			f.Props["source"] = "internal"
 		} else {
+			if f.PropString("include_style") == "angle" {
+				continue
+			}
 			f.Props["source"] = "external"
 		}
+		kept = append(kept, *f)
 	}
+	return kept
+}
+
+type headerPathIndex map[string]string
+
+// buildHeaderPathIndex maps every path suffix to a module only while that suffix
+// is unique. Thus "jemalloc/internal/mutex.h" cannot be stolen by re2's mutex.h,
+// while a genuinely unambiguous local "other.h" remains resolvable.
+func buildHeaderPathIndex(files []string) headerPathIndex {
+	index := headerPathIndex{}
+	for _, file := range files {
+		if !isHeaderExt(file) {
+			continue
+		}
+		for suffix := path.Clean(filepath.ToSlash(file)); suffix != "."; {
+			indexUniqueName(index, suffix, factpath.Dir(file))
+			i := strings.IndexByte(suffix, '/')
+			if i < 0 {
+				break
+			}
+			suffix = suffix[i+1:]
+		}
+	}
+	return index
+}
+
+func (index headerPathIndex) resolve(sourceFile, include, style string) string {
+	include = path.Clean(filepath.ToSlash(include))
+	if include == "." || include == "" {
+		return ""
+	}
+	// A bare <assert.h> or <stdint.h> denotes the toolchain even when a vendored
+	// library happens to contain a file with that basename.
+	if style == "angle" && !strings.ContainsRune(include, '/') {
+		return ""
+	}
+	if relative := path.Clean(path.Join(factpath.Dir(sourceFile), include)); index[relative] != "" {
+		return index[relative]
+	}
+	return index[include]
 }
 
 // lastScopeComponent returns the final "::"-separated component of a "<dir>.<...>"
