@@ -2358,7 +2358,26 @@ import (
 // resolve to a uniquely declared method on that type. Auto-deduced, wrapped,
 // unknown and ambiguous receiver types remain unresolved rather than being
 // guessed, and a receiver call binds only when the method actually exists.
-const cacheVersion = "v260"
+// v261: a Python import that names a module in the importer's OWN package is
+// classified internal and bound to that sibling file module. Previously the
+// directory index could only match the shared parent — the importer's own dir —
+// and a self-match was abandoned, so `from app.db import x` written inside app/
+// was recorded as a THIRD-PARTY dependency with an unresolved dotted target. Every
+// such edge was missing from the module graph, including a package __init__.py's
+// re-exports of its own submodules, which truncated any import-closure walk at the
+// barrel. Inheritance bound through such an import (and through every relative
+// import, latent until now) also resolves: the composed "<module>.<symbol>" is
+// already canonical when the module is a slash path, so it no longer goes to the
+// dotted resolver that cannot read one.
+// v262: a Python absolute import binds to the MODULE it names, not to the package
+// directory that also matches one segment shorter — `from pkg.shared.logging import
+// x` resolves to pkg/shared/logging, where it previously resolved to pkg/shared and
+// became indistinguishable from an import of the package itself. This is the
+// granularity the extractor's own relative-import handling has always produced, and
+// the one TypeScript and Ruby produce for their file-addressed imports; the package
+// directory remains the answer when the dotted path names a package. Module-level
+// metrics are unchanged, since explainers roll a file target up to its directory.
+const cacheVersion = "v262"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

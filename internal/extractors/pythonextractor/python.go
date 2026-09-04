@@ -151,10 +151,18 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 	// sqlalchemy`.
 	pkgDirs := packageDirs(pyFiles)
 
+	// The file modules ("app/db" for app/db.py) let an absolute import that names a
+	// module in the importer's OWN package bind to that sibling file; the directory
+	// index alone can only reach the shared parent, which is the importer itself.
+	fileModules := make(map[string]bool, len(pyFiles))
+	for _, f := range pyFiles {
+		fileModules[strings.TrimSuffix(f, ".py")] = true
+	}
+
 	// Resolve dotted import targets to internal module slash paths (and classify
 	// stdlib/external) now that the full module set is known. Without this,
 	// Python imports never match module Names downstream.
-	resolveImports(allFacts, modules, pkgDirs)
+	resolveImports(allFacts, modules, fileModules, pkgDirs)
 
 	// Parse pyproject.toml entry-points (console_scripts, plugin groups) into
 	// reference edges, so functions registered as entry points — loaded by name by
@@ -166,10 +174,6 @@ func (e *PythonExtractor) Extract(ctx context.Context, repoPath string, files []
 	// canonical slash symbol names (dropping stdlib/third-party edges) now that the
 	// full file set is known. Without this, functions reached via absolute imports
 	// have no incoming edge and read as dead code.
-	fileModules := make(map[string]bool, len(pyFiles))
-	for _, f := range pyFiles {
-		fileModules[strings.TrimSuffix(f, ".py")] = true
-	}
 	resolveCallTargets(allFacts, fileModules, pkgDirs)
 	resolveImplementsTargets(allFacts, fileModules, pkgDirs)
 

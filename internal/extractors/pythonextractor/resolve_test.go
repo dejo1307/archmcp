@@ -57,7 +57,7 @@ func TestResolveImports_AbsoluteMultiSourceRoot(t *testing.T) {
 		depFact("airflow-core/src/airflow/dag.py", "airflow.providers.foo"),
 		depFact("airflow-core/src/airflow/dag.py", "airflow.utils"),
 	}
-	resolveImports(ff, modules, nil)
+	resolveImports(ff, modules, nil, nil)
 
 	if got := importTarget(ff[0]); got != "airflow-core/src/airflow/models" {
 		t.Errorf("airflow.models.dag resolved to %q, want airflow-core/src/airflow/models", got)
@@ -85,7 +85,7 @@ func TestResolveImports_ShortestSourceRootWinsDeterministic(t *testing.T) {
 	)
 	for run := 0; run < 3; run++ {
 		ff := []facts.Fact{depFact("src/pkg/x.py", "pkg.models")}
-		resolveImports(ff, modules, nil)
+		resolveImports(ff, modules, nil, nil)
 		if got := importTarget(ff[0]); got != "src/pkg/models" {
 			t.Fatalf("run %d: pkg.models resolved to %q, want src/pkg/models", run, got)
 		}
@@ -105,7 +105,7 @@ func TestResolveImports_Relative(t *testing.T) {
 	}
 	for _, c := range cases {
 		ff := []facts.Fact{depFact("pkg/a/b/mod.py", c.raw)}
-		resolveImports(ff, modules, nil)
+		resolveImports(ff, modules, nil, nil)
 		got := importTarget(ff[0])
 		if c.want == ".|self" {
 			if got != c.raw {
@@ -128,7 +128,7 @@ func TestResolveImports_StdlibAndExternal(t *testing.T) {
 		depFact("pkg/app/x.py", "requests"),
 		depFact("pkg/app/x.py", "sqlalchemy.orm"),
 	}
-	resolveImports(ff, modules, nil)
+	resolveImports(ff, modules, nil, nil)
 
 	wantSource := []string{"stdlib", "stdlib", "external", "external"}
 	for i, f := range ff {
@@ -153,7 +153,7 @@ func TestResolveImports_StdlibNotShadowedByInternalDir(t *testing.T) {
 	ff := []facts.Fact{
 		depFact("providers/http/src/airflow/providers/http/hooks/http.py", "typing"),
 	}
-	resolveImports(ff, modules, nil)
+	resolveImports(ff, modules, nil, nil)
 	if got := source(ff[0]); got != "stdlib" {
 		t.Errorf("import typing source = %q, want stdlib", got)
 	}
@@ -167,7 +167,7 @@ func TestResolveImports_SelfImportNoSelfEdge(t *testing.T) {
 	// the target to that dir (which would create a self-coupling edge).
 	modules := modSet("pkg/app", "pkg")
 	ff := []facts.Fact{depFact("pkg/app/x.py", "pkg.app")}
-	resolveImports(ff, modules, nil)
+	resolveImports(ff, modules, nil, nil)
 	if got := importTarget(ff[0]); got == "pkg/app" {
 		t.Errorf("self import resolved to own dir %q (self-edge); should be left as dotted", got)
 	}
@@ -539,7 +539,7 @@ func TestResolveImports_NestedLookalikeDoesNotCaptureThirdParty(t *testing.T) {
 	)
 	ff := []facts.Fact{depFact("cognee/api/client.py", "sqlalchemy")}
 
-	resolveImports(ff, modules, pkgDirs)
+	resolveImports(ff, modules, nil, pkgDirs)
 
 	if got := ff[0].Props["source"]; got != "external" {
 		t.Errorf("source = %v, want external (a nested subpackage cannot satisfy a top-level import)", got)
@@ -557,7 +557,7 @@ func TestResolveImports_MultiSourceRootSurvivesPackageBoundaryRule(t *testing.T)
 	pkgDirs := modSet("airflow-core/src/airflow", "airflow-core/src/airflow/models")
 	ff := []facts.Fact{depFact("other/consumer.py", "airflow.models")}
 
-	resolveImports(ff, modules, pkgDirs)
+	resolveImports(ff, modules, nil, pkgDirs)
 
 	if got, want := ff[0].Relations[0].Target, "airflow-core/src/airflow/models"; got != want {
 		t.Errorf("target = %q, want %q", got, want)
@@ -573,7 +573,7 @@ func TestResolveImports_SubpackageNotReachableByBareName(t *testing.T) {
 	pkgDirs := modSet("airflow-core/src/airflow", "airflow-core/src/airflow/models")
 	ff := []facts.Fact{depFact("other/consumer.py", "models")}
 
-	resolveImports(ff, modules, pkgDirs)
+	resolveImports(ff, modules, nil, pkgDirs)
 
 	if got := ff[0].Props["source"]; got != "external" {
 		t.Errorf("source = %v, want external (models is a subpackage of airflow)", got)
@@ -758,5 +758,171 @@ func TestResolveCallTargets_SiblingImportInNonPackageDir(t *testing.T) {
 	}
 	if got := callTarget(ff[1]); got != "" {
 		t.Errorf("third-party import must still be dropped, got %q", got)
+	}
+}
+
+// TestResolveImports_SamePackageAbsoluteIsInternal is the regression guard for
+// same-package absolute imports being reported as third-party. `from app.db import
+// x` written inside app/ has no directory to bind to other than app/ itself — the
+// importer's own dir — so the resolver used to give up and fall through to
+// "external", counting this repository's own code as a third-party dependency.
+func TestResolveImports_SamePackageAbsoluteIsInternal(t *testing.T) {
+	modules := modSet("app")
+	fileModules := modSet("app/api", "app/db")
+	ff := []facts.Fact{depFact("app/api.py", "app.db")}
+	resolveImports(ff, modules, fileModules, nil)
+	if got := source(ff[0]); got != "internal" {
+		t.Errorf("app.db from app/api.py source = %q, want internal (it is first-party code)", got)
+	}
+	if got := importTarget(ff[0]); got != "app/db" {
+		t.Errorf("app.db resolved to %q, want app/db (the sibling file module)", got)
+	}
+}
+
+// TestResolveImports_PackageInitBarrelReachesSubmodule covers the shape that hid an
+// 830 ms transitive dependency in a real repository: a package's own __init__.py
+// re-exporting from its submodules by absolute path. Every such edge was dropped,
+// so an import-closure walk stopped dead at the barrel.
+func TestResolveImports_PackageInitBarrelReachesSubmodule(t *testing.T) {
+	modules := modSet("pkg", "pkg/infra", "pkg/infra/llm")
+	fileModules := modSet("pkg/infra/llm/__init__", "pkg/infra/llm/config", "pkg/infra/llm/gateway")
+	ff := []facts.Fact{
+		depFact("pkg/infra/llm/__init__.py", "pkg.infra.llm.config"),
+		depFact("pkg/infra/llm/__init__.py", "pkg.infra.llm.gateway"),
+	}
+	resolveImports(ff, modules, fileModules, nil)
+	for i, want := range []string{"pkg/infra/llm/config", "pkg/infra/llm/gateway"} {
+		if got := source(ff[i]); got != "internal" {
+			t.Errorf("fact %d source = %q, want internal", i, got)
+		}
+		if got := importTarget(ff[i]); got != want {
+			t.Errorf("fact %d resolved to %q, want %q", i, got, want)
+		}
+	}
+}
+
+// TestResolveImports_SelfPackageImportStaysInternalWithoutTarget pins the half of
+// the fix that has no target to offer: importing the package itself binds to no
+// distinct module, so the target is left dotted (no self-edge) — but the import is
+// still first-party and must not be classified external.
+func TestResolveImports_SelfPackageImportStaysInternalWithoutTarget(t *testing.T) {
+	modules := modSet("pkg/app", "pkg")
+	ff := []facts.Fact{depFact("pkg/app/x.py", "pkg.app")}
+	resolveImports(ff, modules, modSet("pkg/app/x"), nil)
+	if got := importTarget(ff[0]); got == "pkg/app" {
+		t.Errorf("self import resolved to own dir %q (self-edge)", got)
+	}
+	if got := source(ff[0]); got != "internal" {
+		t.Errorf("source = %q, want internal — pkg.app is this repo's own package", got)
+	}
+}
+
+// TestResolveImports_ExternalStillExternal guards the blast radius: widening the
+// internal classification must not swallow third-party or stdlib imports.
+func TestResolveImports_ExternalStillExternal(t *testing.T) {
+	modules := modSet("app")
+	fileModules := modSet("app/api")
+	ff := []facts.Fact{
+		depFact("app/api.py", "sqlalchemy.orm"),
+		depFact("app/api.py", "os.path"),
+	}
+	resolveImports(ff, modules, fileModules, nil)
+	if got := source(ff[0]); got != "external" {
+		t.Errorf("sqlalchemy.orm source = %q, want external", got)
+	}
+	if got := source(ff[1]); got != "stdlib" {
+		t.Errorf("os.path source = %q, want stdlib", got)
+	}
+}
+
+// TestExtract_PythonResolvesInheritanceViaRelativeImport covers inheritance bound
+// through a RELATIVE import. Its import target has always resolved to a slash
+// module path, so the composed "<module>.<symbol>" was already canonical and the
+// dotted resolver could never read it — the edge was dropped long before
+// same-package absolute imports resolved to slash paths too.
+func TestExtract_PythonResolvesInheritanceViaRelativeImport(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"pkg/__init__.py":    "",
+		"pkg/wrongparent.py": "class Parent:\n    pass\n",
+		"pkg/parent.py":      "class Parent:\n    pass\n",
+		"pkg/child.py":       "from .parent import Parent\n\nclass Child(Parent):\n    pass\n",
+	}
+	var rel []string
+	for name, content := range files {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rel = append(rel, name)
+	}
+	all, err := New().Extract(context.Background(), dir, rel)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	for _, f := range all {
+		if f.Kind != facts.KindSymbol || f.Name != "pkg/child.Child" {
+			continue
+		}
+		if hasRel(f, facts.RelImplements, "pkg/parent.Parent") {
+			return
+		}
+		t.Fatalf("Child inheritance target = %v, want pkg/parent.Parent", f.Relations)
+	}
+	t.Fatal("missing pkg/child.Child symbol")
+}
+
+// TestResolveImports_AbsoluteBindsToModuleNotPackage pins the granularity: an
+// import naming a module resolves to that module, not to the package directory
+// that also matches one segment shorter. Resolving to the directory made every
+// import of `pkg.shared.logging` indistinguishable from an import of `pkg.shared`
+// itself, so a file-level import closure could not be derived from the graph.
+func TestResolveImports_AbsoluteBindsToModuleNotPackage(t *testing.T) {
+	modules := modSet("pkg", "pkg/shared")
+	fileModules := modSet("pkg/api", "pkg/shared/logging", "pkg/shared/__init__")
+	ff := []facts.Fact{depFact("pkg/api.py", "pkg.shared.logging")}
+	resolveImports(ff, modules, fileModules, nil)
+	if got := importTarget(ff[0]); got != "pkg/shared/logging" {
+		t.Errorf("pkg.shared.logging resolved to %q, want pkg/shared/logging (the module, not the package dir)", got)
+	}
+	if got := source(ff[0]); got != "internal" {
+		t.Errorf("source = %q, want internal", got)
+	}
+}
+
+// TestResolveImports_AbsolutePackageStillResolvesToDir is the counterpart: when the
+// dotted path names a PACKAGE and no module of that name exists, the directory is
+// still the right answer. Preferring file modules must not break package imports.
+func TestResolveImports_AbsolutePackageStillResolvesToDir(t *testing.T) {
+	modules := modSet("pkg", "pkg/shared")
+	fileModules := modSet("pkg/api", "pkg/shared/logging", "pkg/shared/__init__")
+	ff := []facts.Fact{depFact("pkg/api.py", "pkg.shared")}
+	resolveImports(ff, modules, fileModules, nil)
+	if got := importTarget(ff[0]); got != "pkg/shared" {
+		t.Errorf("pkg.shared resolved to %q, want pkg/shared (a package has no module file)", got)
+	}
+}
+
+// TestResolveImports_AbsoluteAndRelativeAgree is the consistency guard the whole
+// change exists for: the same module imported both ways must produce the same
+// target. Relative imports have always resolved to file paths; absolute ones now
+// do too.
+func TestResolveImports_AbsoluteAndRelativeAgree(t *testing.T) {
+	modules := modSet("pkg", "pkg/shared")
+	fileModules := modSet("pkg/shared/logging", "pkg/shared/other", "pkg/shared/__init__")
+	ff := []facts.Fact{
+		depFact("pkg/shared/other.py", "pkg.shared.logging"),
+		depFact("pkg/shared/other.py", ".logging"),
+	}
+	resolveImports(ff, modules, fileModules, nil)
+	abs, rel := importTarget(ff[0]), importTarget(ff[1])
+	if abs != rel {
+		t.Errorf("absolute resolved to %q but relative to %q — the same import must not depend on how it is spelled", abs, rel)
+	}
+	if abs != "pkg/shared/logging" {
+		t.Errorf("resolved to %q, want pkg/shared/logging", abs)
 	}
 }

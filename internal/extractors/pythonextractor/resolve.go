@@ -18,8 +18,9 @@ import (
 // Names, so without this pass Python imports never resolve to internal modules
 // and coupling collapses to zero. This mirrors the Go extractor, which resolves
 // imports to slash paths at extraction time by stripping the go.mod module path.
-func resolveImports(allFacts []facts.Fact, modules map[string]bool, pkgDirs map[string]bool) {
+func resolveImports(allFacts []facts.Fact, modules map[string]bool, fileModules map[string]bool, pkgDirs map[string]bool) {
 	idx := buildSuffixIndex(modules, pkgDirs)
+	fileIdx := buildSuffixIndex(fileModules, pkgDirs)
 	topPkgs := importableRoots(modules, pkgDirs)
 
 	for i := range allFacts {
@@ -44,10 +45,18 @@ func resolveImports(allFacts []facts.Fact, modules map[string]bool, pkgDirs map[
 				}
 				source = "internal"
 			default:
-				if dir := resolveAbsolute(raw, idx, topPkgs, importerDir); dir != "" {
-					rel.Target = dir
+				dir, internal := resolveAbsolute(raw, idx, topPkgs, importerDir, fileIdx)
+				switch {
+				case internal:
+					// A self-referential import stays first-party even when it
+					// binds to no distinct module: the target is left dotted so no
+					// self-edge is emitted, but calling it "external" would count
+					// this repository's own code as a third-party dependency.
+					if dir != "" {
+						rel.Target = dir
+					}
 					source = "internal"
-				} else if pyStdlib[firstSeg(raw)] {
+				case pyStdlib[firstSeg(raw)]:
 					source = "stdlib"
 				}
 			}
@@ -180,6 +189,15 @@ func resolveImplementsTargets(allFacts []facts.Fact, fileModules map[string]bool
 				continue
 			}
 			if imported := importedByFile[f.File][rel.Target]; imported != "" {
+				// The composed name is "<import target>.<symbol>", and that import
+				// target is a slash module path whenever resolveImports bound it to
+				// one (every relative import, and now same-package absolute ones).
+				// Such a name is already canonical — handing it to the DOTTED
+				// resolver, which cannot read a slash path, drops the edge.
+				if symbols[imported] {
+					rel.Target = imported
+					continue
+				}
 				if resolved, keep := resolveDottedTarget(imported, fileIdx, topPkgs, fileDir(f.File), reexports, symbols); keep && symbols[resolved] {
 					rel.Target = resolved
 				}
@@ -292,7 +310,9 @@ func (r reexportIndex) lookup(modulePrefix, symbol string, topPkgs map[string]bo
 	if len(r.byDir) == 0 {
 		return ""
 	}
-	dir := resolveAbsolute(modulePrefix, r.dirs, topPkgs, importerDir)
+	// nil fileIdx: this index is keyed by package DIRECTORY, so the sibling-file
+	// fallback has nothing to bind against here.
+	dir, _ := resolveAbsolute(modulePrefix, r.dirs, topPkgs, importerDir, nil)
 	if dir == "" {
 		return ""
 	}
@@ -543,9 +563,21 @@ func resolveModuleExact(dotted string, idx suffixIndex, topPkgs map[string]bool,
 // is used only to skip a self-match. It tries the most specific dotted path
 // first, then drops trailing segments (so "from a.b import c" — Target "a.b" —
 // and "import a.b.c" both resolve to the package dir).
-func resolveAbsolute(dotted string, idx suffixIndex, topPkgs map[string]bool, importerDir string) string {
+// It reports whether the import is internal at all, separately from the module it
+// binds to: an import that names the importer's OWN package is first-party even
+// when it yields no distinct target to point at. Collapsing the two — returning
+// only a dir, and reading "" as "not internal" — is what made same-package
+// absolute imports (`from app.db import x` inside app/) report as third-party
+// dependencies.
+//
+// fileIdx, when non-nil, is a suffix index over file modules ("app/db" for
+// app/db.py). It is consulted only after the directory index yields nothing but a
+// self-match, so directory resolution keeps its existing precedence everywhere it
+// already works; the fallback exists because a dotted path whose last segment
+// names a MODULE in the importer's own package has no directory to match.
+func resolveAbsolute(dotted string, idx suffixIndex, topPkgs map[string]bool, importerDir string, fileIdx suffixIndex) (string, bool) {
 	if dotted == "" {
-		return ""
+		return "", false
 	}
 	segs := strings.Split(dotted, ".")
 	if pyStdlib[segs[0]] {
@@ -553,25 +585,62 @@ func resolveAbsolute(dotted string, idx suffixIndex, topPkgs map[string]bool, im
 		// import, even if some internal directory happens to share that name
 		// (e.g. a tests/.../typing dir). Suffix-matching such names produces
 		// phantom couplings, so classify as stdlib instead.
-		return ""
+		return "", false
 	}
 	if !topPkgs[segs[0]] {
-		return "" // first segment is not an internal directory → not internal
+		return "", false // first segment is not an internal directory → not internal
 	}
 	for end := len(segs); end >= 1; end-- {
 		cand := strings.Join(segs[:end], ".")
+		// A Python import addresses a MODULE or a package, and `from a.b.c import X`
+		// where a/b/c.py exists names the module — so bind to it rather than falling
+		// through to the package directory that also matches, one segment shorter.
+		// Resolving to the directory answers a coarser question than the import
+		// asked, and disagrees with this extractor's own relative-import handling,
+		// which has always produced file paths. (A module and a package of the same
+		// name cannot coexist in one directory, so this competes with the directory
+		// pass only across separate source roots, where the same nearest-root
+		// ordering breaks the tie.)
+		for _, f := range fileIdx[cand] {
+			if f != importerDir {
+				return f, true
+			}
+		}
 		bucket := idx[cand]
 		if len(bucket) == 0 {
 			continue
 		}
 		for _, dir := range bucket {
 			if dir != importerDir {
-				return dir // pre-sorted: nearest source root wins
+				return dir, true // pre-sorted: nearest source root wins
 			}
 		}
-		// Only a self-match at this candidate; treat as no internal target so we
-		// never emit a self-coupling edge.
+		// Only a self-match at this candidate: the import names the importer's own
+		// package. Bind it to the sibling file module the dotted path names, which
+		// is a distinct node (app/api.py -> app/db, not app/ -> app/). Failing
+		// that, report internal with no target rather than emitting a self-edge.
+		if f := resolveSelfFileModule(segs, fileIdx, importerDir); f != "" {
+			return f, true
+		}
+		return "", true
+	}
+	return "", false
+}
+
+// resolveSelfFileModule binds a dotted path to a file module under the importer's
+// own directory — the `from app.db import x` written inside app/ that names
+// app/db.py. Only a match strictly below importerDir is accepted, so this can
+// never reintroduce the self-edge the directory pass just declined to emit.
+func resolveSelfFileModule(segs []string, fileIdx suffixIndex, importerDir string) string {
+	if len(fileIdx) == 0 {
 		return ""
+	}
+	for end := len(segs); end >= 1; end-- {
+		for _, f := range fileIdx[strings.Join(segs[:end], ".")] {
+			if f != importerDir && strings.HasPrefix(f, importerDir+"/") {
+				return f
+			}
+		}
 	}
 	return ""
 }
