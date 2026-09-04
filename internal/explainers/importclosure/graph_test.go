@@ -1,6 +1,7 @@
 package importclosure
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/enola-labs/enola/internal/facts"
@@ -102,5 +103,104 @@ func TestBuild_ClosureIsShortestPath(t *testing.T) {
 	)
 	if got := g.Closure("pkg/a.py")["pkg/d.py"]; got != 1 {
 		t.Errorf("depth of pkg/d.py = %d, want 1 (direct edge, not the 3-hop route)", got)
+	}
+}
+
+// TestBuild_ParentPackagesAreOnThePath covers Python's implicit package execution:
+// importing a.b.c runs a/__init__.py and a/b/__init__.py first. No import statement
+// names them, so an edge-for-edge reading of the source misses them entirely.
+func TestBuild_ParentPackagesAreOnThePath(t *testing.T) {
+	g := build(
+		sym("app.py"), sym("a/__init__.py"), sym("a/b/__init__.py"), sym("a/b/c.py"),
+		dep("app.py", "a/b/c", false),
+	)
+	c := g.Closure("app.py")
+	for _, want := range []string{"a/__init__.py", "a/b/__init__.py", "a/b/c.py"} {
+		if _, ok := c[want]; !ok {
+			t.Errorf("%s not on the import path", want)
+		}
+	}
+}
+
+// TestBuild_ParentPackageGatesItsSubtree is why this matters more than its own file
+// count: a package __init__.py that re-exports pulls in modules the importer never
+// named, and without it that whole subtree is invisible.
+func TestBuild_ParentPackageGatesItsSubtree(t *testing.T) {
+	g := build(
+		sym("app.py"), sym("a/__init__.py"), sym("a/leaf.py"), sym("a/router.py"), sym("a/deep.py"),
+		dep("app.py", "a/leaf", false),
+		dep("a/__init__.py", "a/router", false), // the barrel re-export
+		dep("a/router.py", "a/deep", false),
+	)
+	c := g.Closure("app.py")
+	for _, want := range []string{"a/router.py", "a/deep.py"} {
+		if _, ok := c[want]; !ok {
+			t.Errorf("%s unreachable — the parent package's re-export was not followed", want)
+		}
+	}
+}
+
+// TestBuild_NamespacePackageExecutesNothing — a directory with no __init__.py is a
+// namespace package. Nothing runs for it, so it must not become a node.
+func TestBuild_NamespacePackageExecutesNothing(t *testing.T) {
+	g := build(
+		sym("app.py"), sym("ns/pkg/__init__.py"), sym("ns/pkg/mod.py"),
+		dep("app.py", "ns/pkg/mod", false),
+	)
+	c := g.Closure("app.py")
+	if _, ok := c["ns/__init__.py"]; ok {
+		t.Error("ns/ has no __init__.py but was put on the import path")
+	}
+	if _, ok := c["ns/pkg/__init__.py"]; !ok {
+		t.Error("ns/pkg is a real package and must be on the path")
+	}
+}
+
+// TestBuild_PackageDoesNotImportItself guards the self-edge a package's own
+// __init__.py would take from importing one of its submodules.
+func TestBuild_PackageDoesNotImportItself(t *testing.T) {
+	g := build(
+		sym("a/__init__.py"), sym("a/mod.py"),
+		dep("a/__init__.py", "a/mod", false),
+	)
+	for _, to := range g.Edges["a/__init__.py"] {
+		if to == "a/__init__.py" {
+			t.Error("a/__init__.py imports itself")
+		}
+	}
+}
+
+// TestBuild_DeferredImportCarriesNoParents — a lazy import runs nothing, so it does
+// not pay for its target's parent packages either.
+func TestBuild_DeferredImportCarriesNoParents(t *testing.T) {
+	g := build(
+		sym("app.py"), sym("a/__init__.py"), sym("a/b/__init__.py"), sym("a/b/c.py"),
+		dep("app.py", "a/b/c", true),
+	)
+	if c := g.Closure("app.py"); len(c) != 1 {
+		t.Errorf("closure = %v, want only the entry point", c)
+	}
+}
+
+// TestBuild_FromPackageImportSubmodule covers `from pkg import submodule`, where the
+// bound name is a MODULE Python loads, not an attribute of the package. The import
+// target names only the package, so without the re-exported names the submodule — and
+// anything it pulls in — is invisible.
+func TestBuild_FromPackageImportSubmodule(t *testing.T) {
+	d := dep("app.py", "pkg", false)
+	d.Props["from"] = true
+	d.Props["reexports"] = []any{"submod", "a_function"}
+	g := build(
+		sym("app.py"), sym("pkg/__init__.py"), sym("pkg/submod.py"), d,
+	)
+	c := g.Closure("app.py")
+	if _, ok := c["pkg/submod.py"]; !ok {
+		t.Error("pkg/submod.py not loaded — the re-exported submodule was not followed")
+	}
+	// "a_function" names no file, so nothing may be invented for it.
+	for f := range c {
+		if strings.HasSuffix(f, "a_function.py") {
+			t.Errorf("invented a file for the non-module name: %s", f)
+		}
 	}
 }

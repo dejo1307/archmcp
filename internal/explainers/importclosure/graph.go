@@ -75,15 +75,27 @@ func Build(store *facts.Store) *Graph {
 				target = common.ResolveRelativeImport(fileDir(dep.File), target)
 			}
 			to := g.resolveFile(target)
-			if to == "" || to == dep.File {
+			// `from pkg import submodule` binds a MODULE, not an attribute of the
+			// package, so Python loads pkg/submodule.py as well — but the import
+			// target names only pkg, and the submodule appears nowhere in the edge.
+			// The re-exported names recover it, and requiring a file of that name to
+			// exist keeps an ordinary `from pkg import a_function` from inventing one.
+			for _, sub := range g.reexportedSubmodules(dep, to) {
+				g.addEdge(seen, dep.File, sub)
+			}
+			if to == "" {
 				continue
 			}
-			key := [2]string{dep.File, to}
-			if seen[key] {
-				continue
+			// Importing a.b.c executes a/__init__.py and a/b/__init__.py before
+			// a/b/c.py — no import statement names them, but they run, and one that
+			// re-exports pulls in a whole subtree the leaf never mentions. They are
+			// attributed to the importer rather than chained through each other,
+			// because a single import statement is what causes all of them; a chain
+			// would claim a/__init__.py imports a/b/__init__.py, which it need not.
+			for _, anc := range g.ancestorPackages(to) {
+				g.addEdge(seen, dep.File, anc)
 			}
-			seen[key] = true
-			g.Edges[dep.File] = append(g.Edges[dep.File], to)
+			g.addEdge(seen, dep.File, to)
 		}
 	}
 	for f := range g.Edges {
@@ -133,4 +145,82 @@ func fileDir(p string) string {
 		return p[:i]
 	}
 	return ""
+}
+
+// addEdge records from -> to once, skipping the self-edge a package's own
+// __init__.py would otherwise get from importing one of its submodules.
+func (g *Graph) addEdge(seen map[[2]string]bool, from, to string) {
+	if from == to {
+		return
+	}
+	key := [2]string{from, to}
+	if seen[key] {
+		return
+	}
+	seen[key] = true
+	g.Edges[from] = append(g.Edges[from], to)
+}
+
+// ancestorPackages returns the __init__.py files Python executes on the way to a
+// target, outermost first.
+//
+// Only ancestors that are real packages count: a directory with no __init__.py is a
+// namespace package, which executes nothing. An __init__.py that is empty executes
+// nothing either, and produces no facts, so it is not a known file and cannot be
+// named here — a bounded imprecision, since a file that runs no code can only ever be
+// a missing leaf and never gates what lies beneath it.
+func (g *Graph) ancestorPackages(target string) []string {
+	dir := fileDir(target)
+	if dir == "" {
+		return nil
+	}
+	parts := strings.Split(dir, "/")
+	var out []string
+	for i := 1; i <= len(parts); i++ {
+		init := strings.Join(parts[:i], "/") + "/__init__.py"
+		if init == target || !g.Files[init] {
+			continue
+		}
+		out = append(out, init)
+	}
+	return out
+}
+
+// reexportedSubmodules returns the submodule files a from-import binds by name.
+//
+// `from pkg import thing` is ambiguous in the source: thing may be an attribute pkg
+// already defines, or a module pkg/thing.py that Python imports as a side effect. The
+// extractor records the bound names on a package's own imports as `reexports`; a name
+// matching a real file under the package is the module case, and anything else is an
+// attribute and yields nothing.
+//
+// The package is taken from the resolved target where there is one, and otherwise
+// from the importing file itself, which covers a package __init__.py importing its own
+// submodules by absolute path — the target there names the package the importer IS,
+// so it resolves to no distinct file.
+func (g *Graph) reexportedSubmodules(dep facts.Fact, resolved string) []string {
+	raw, ok := dep.Props["reexports"].([]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	pkgDir := ""
+	switch {
+	case strings.HasSuffix(resolved, "/__init__.py"):
+		pkgDir = fileDir(resolved)
+	case resolved == "" && strings.HasSuffix(dep.File, "/__init__.py"):
+		pkgDir = fileDir(dep.File)
+	default:
+		return nil
+	}
+	var out []string
+	for _, r := range raw {
+		name, _ := r.(string)
+		if name == "" || strings.Contains(name, ".") {
+			continue // a dotted entry is the module path, not a bound short name
+		}
+		if f := g.resolveFile(pkgDir + "/" + name); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
