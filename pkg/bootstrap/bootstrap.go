@@ -27,6 +27,7 @@ import (
 	"github.com/enola-labs/enola/internal/explainers/entrypoints"
 	"github.com/enola-labs/enola/internal/explainers/godclass"
 	"github.com/enola-labs/enola/internal/explainers/hotspots"
+	"github.com/enola-labs/enola/internal/explainers/importclosure"
 	"github.com/enola-labs/enola/internal/explainers/intentcheck"
 	"github.com/enola-labs/enola/internal/explainers/layers"
 	"github.com/enola-labs/enola/internal/explainers/messagingcoverage"
@@ -503,6 +504,7 @@ func registerOSSPlugins(eng *engine.Engine, cfg *config.Config) {
 	eng.RegisterExplainer(intentcheck.New())
 	eng.RegisterExplainer(constraints.New())
 	eng.RegisterExplainer(vendoredcandidates.New())
+	eng.RegisterExplainer(importclosure.New())
 
 	// Register all OSS renderers
 	eng.RegisterRenderer(llmcontext.New(cfg.Output.MaxContextTokens))

@@ -2385,7 +2385,12 @@ import (
 // `try: import x` is indented yet runs, a TYPE_CHECKING import is indented and does
 // not. Also fixes a method-local import being emitted twice with disagreeing props,
 // because walkNestedScope registers body imports a second time.
-const cacheVersion = "v263"
+// v264: the Python stdlib set is completed against Python's own
+// sys.stdlib_module_names. Forty-two modules were missing — atexit, binascii,
+// colorsys, optparse, curses among them — and a stdlib name absent from that set is
+// classified as a third-party dependency, so it appeared in dependency breakdowns and
+// on import paths as a package the project had taken on.
+const cacheVersion = "v264"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

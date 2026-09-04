@@ -40,10 +40,10 @@ find*. It is **what happens to a finding after you have found it** — and that 
 entirely on the thing [SNAPSHOTS.md](SNAPSHOTS.md) describes: whether your graph is a
 value you can compare against another one, or a picture of right now.
 
-## Eighteen explainers: three proofs and fifteen estimates
+## Nineteen explainers: three proofs and sixteen estimates
 
 An explainer reads the fact graph and emits **findings** — a claim, a confidence, and
-the entities the claim is about. There are eighteen, and they fall into six kinds:
+the entities the claim is about. There are nineteen, and they fall into six kinds:
 
 - **The proofs.** `cycles` runs Tarjan's SCC over the resolved import edges — a cycle
   either exists or it does not. `intent` diffs DECLARED architecture (a repo's
@@ -68,7 +68,12 @@ the entities the claim is about. There are eighteen, and they fall into six kind
 - **Outlier tests.** `god-class`, `hotspots` and `complexity-outliers` compute a
   distribution over your repository and flag what sits above `mean + 2σ`.
 - **Graph shape.** `dependency-depth` measures the longest transitive import chain;
-  `exported-surface` flags large modules that export nearly everything.
+  `exported-surface` flags large modules that export nearly everything; `import-closure`
+  measures what a Python package executes when it is imported, and which of its own
+  `__init__.py` files account for most of that. It is the one that reads a graph of its
+  own — the same dependency facts at FILE granularity, since the module graph resolves
+  both ends of an edge up to the enclosing package and so cannot say which modules
+  beneath one were paid for.
 - **Convention matching.** `layers` recognises an architecture by matching module paths
   against fourteen known taxonomies, then flags imports that run the wrong way through it.
   Each taxonomy is scored over the modules whose LANGUAGE it describes, and one is
@@ -140,10 +145,18 @@ the entities the claim is about. There are eighteen, and they fall into six kind
   one hands the reader the evidence and the `ignore:` globs, and the config — which
   the reader writes and can read back — stays the only thing that excludes anything.
 
+  `import-closure` is the one that measures a cost rather than a shape. It answers what
+  `import yourpackage` actually executes — including the package `__init__.py` files no
+  import statement names, which Python runs anyway. That makes visible a barrel written
+  for convenience: each import in the chain is individually reasonable, so no
+  file-by-file check can see that importing the public API also loads a scraping
+  library. It reports the initialisations responsible for the most of it, because that
+  is the part splitting one would give back.
+
 What each one computes, every threshold it uses and what it deliberately ignores is in
 [ARCHITECTURE.md → Insights](../ARCHITECTURE.md#insights-explainers). The distinction
-that matters here is smaller and blunter: **three of the eighteen prove something. The
-other fifteen estimate.** A cycle is a fact about your import graph. A god class is an opinion
+that matters here is smaller and blunter: **three of the nineteen prove something. The
+other sixteen estimate.** A cycle is a fact about your import graph. A god class is an opinion
 about your repository, expressed as a number, and reasonable people can disagree with
 it.
 
@@ -211,7 +224,7 @@ Comparing findings across two snapshots gives three outcomes, not two:
 
 The third bucket prevents statistical movement from being attributed to the change.
 
-Most of the eighteen explainers are relative to your repository. `mean + 2σ` moves when the
+Most of the nineteen explainers are relative to your repository. `mean + 2σ` moves when the
 population moves. A ranked top-N list has fixed membership size, so when a worse
 offender is deleted the next module rises into the window — and a finding "appears" for
 a module nobody edited. Both are real effects of statistics, not of your work.

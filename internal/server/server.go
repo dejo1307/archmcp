@@ -2271,7 +2271,7 @@ func (s *Server) currentRepoPath() string {
 }
 
 type queryInsightsArgs struct {
-	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: cycles, layers, crossrepo, coverage, unused-routes, messaging-coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers, intent, constraints, domain, query-loops, entry-points, dead-methods, vendored-candidates. Empty = all."`
+	Explainer     string  `json:"explainer,omitempty" jsonschema:"Filter to insights produced by this explainer. One of: cycles, layers, crossrepo, coverage, unused-routes, messaging-coverage, god-class, hotspots, dependency-depth, exported-surface, complexity-outliers, intent, constraints, domain, query-loops, entry-points, dead-methods, vendored-candidates, import-closure. Empty = all."`
 	Repo          string  `json:"repo,omitempty" jsonschema:"Filter to insights about this repo label. In multi-repo snapshots this matches the repo-prefix path segment of each insight's evidence files (so 'golf' matches golf/... but not golf-ui/...); single-repo snapshots fall back to a substring match. Empty = all repos."`
 	MinConfidence float64 `json:"min_confidence,omitempty" jsonschema:"Only return insights with confidence >= this (0.0-1.0). Default 0 (all). Unused-routes is emitted at 0.6 as a review candidate."`
 	OutputMode    string  `json:"output_mode,omitempty" jsonschema:"'summary' (DEFAULT — one row per insight: explainer, confidence, title) → 'compact' (adds description, evidence sample, actions) → 'full' (complete JSON)."`

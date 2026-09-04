@@ -926,3 +926,19 @@ func TestResolveImports_AbsoluteAndRelativeAgree(t *testing.T) {
 		t.Errorf("resolved to %q, want pkg/shared/logging", abs)
 	}
 }
+
+// TestResolveImports_StdlibListIsComplete guards the classification the whole
+// dependency breakdown rests on. A stdlib module missing from pyStdlib is reported as
+// a third-party package, so the project appears to depend on something it never took
+// on — and it lands on import paths as if it were an external cost.
+func TestResolveImports_StdlibListIsComplete(t *testing.T) {
+	// A sample of names that were absent, spanning the reasons they are reached:
+	// ordinary application use, Windows-only, and POSIX-only.
+	for _, name := range []string{"atexit", "binascii", "colorsys", "optparse", "curses", "winreg", "grp"} {
+		ff := []facts.Fact{depFact("app/api.py", name)}
+		resolveImports(ff, modSet("app"), modSet("app/api"), nil)
+		if got := source(ff[0]); got != "stdlib" {
+			t.Errorf("import %q classified %q, want stdlib", name, got)
+		}
+	}
+}

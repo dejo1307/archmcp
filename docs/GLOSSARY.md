@@ -52,6 +52,7 @@ vocabulary you type, not internals:
 | `entry-points` | a framework invokes this symbol directly, so reachability has a root here |
 | `dead-methods` | a Ruby method whose name no call edge in the graph uses, or only spec files use |
 | `vendored-candidates` | a directory carrying its own licence under a conventional dependency parent — reported so you can decide, never excluded |
+| `import-closure` | what `import yourpackage` actually executes, and the package `__init__.py` files responsible for most of it |
 
 Only the first four ever reach confidence `1.0`. The rest estimate — see
 [docs/EXPLAINERS.md](EXPLAINERS.md) for what each computes and why that distinction is

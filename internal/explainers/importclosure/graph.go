@@ -224,3 +224,103 @@ func (g *Graph) reexportedSubmodules(dep facts.Fact, resolved string) []string {
 	}
 	return out
 }
+
+// EntryPoints returns the __init__.py of every TOP-LEVEL package: a package whose
+// parent directory is not itself a package. These are the files an outside importer
+// names, so they are the only ones whose closure is a cost somebody actually pays.
+// Test packages are excluded — their import cost is nobody's dependency.
+func (g *Graph) EntryPoints() []string {
+	var out []string
+	for f := range g.Files {
+		if !strings.HasSuffix(f, "/__init__.py") {
+			continue
+		}
+		// Nested packages are not entry points — nobody imports them from outside.
+		// Every ancestor is checked, not just the immediate parent: an empty
+		// __init__.py produces no facts and so is not a known file, and testing only
+		// the parent made every package under one look top-level.
+		nested := false
+		for dir := fileDir(fileDir(f)); dir != ""; dir = fileDir(dir) {
+			if g.Files[dir+"/__init__.py"] {
+				nested = true
+				break
+			}
+		}
+		if nested {
+			continue
+		}
+		if facts.IsTestPath(f) {
+			continue
+		}
+		out = append(out, f)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// packageFileCount is how many Python files live under a package, the denominator for
+// "how much of this package does importing it load".
+func (g *Graph) packageFileCount(pkg string) int {
+	n := 0
+	for f := range g.Files {
+		if strings.HasPrefix(f, pkg+"/") || f == pkg+"/__init__.py" {
+			n++
+		}
+	}
+	return n
+}
+
+// Path returns one shortest import chain from entry to target, inclusive, or nil when
+// target is unreachable. It re-walks rather than caching parents in Closure, because
+// the chain is wanted for a handful of findings and the closure for every file.
+func (g *Graph) Path(entry, target string) []string {
+	if entry == target {
+		return []string{entry}
+	}
+	parent := map[string]string{entry: ""}
+	queue := []string{entry}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, next := range g.Edges[cur] {
+			if _, ok := parent[next]; ok {
+				continue
+			}
+			parent[next] = cur
+			if next == target {
+				var rev []string
+				for f := target; f != ""; f = parent[f] {
+					rev = append(rev, f)
+				}
+				for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
+					rev[i], rev[j] = rev[j], rev[i]
+				}
+				return rev
+			}
+			queue = append(queue, next)
+		}
+	}
+	return nil
+}
+
+// ClosureWithout is Closure with one file removed from the graph — the counterfactual
+// that measures what reaching through that file is responsible for.
+func (g *Graph) ClosureWithout(entry, excluded string) map[string]int {
+	depth := map[string]int{entry: 0}
+	queue := []string{entry}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, next := range g.Edges[cur] {
+			if next == excluded {
+				continue
+			}
+			if _, ok := depth[next]; ok {
+				continue
+			}
+			depth[next] = depth[cur] + 1
+			queue = append(queue, next)
+		}
+	}
+	return depth
+}

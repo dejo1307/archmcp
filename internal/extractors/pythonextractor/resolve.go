@@ -751,4 +751,17 @@ var pyStdlib = map[string]bool{
 	"uuid": true, "venv": true, "warnings": true, "wave": true, "weakref": true,
 	"webbrowser": true, "xml": true, "xmlrpc": true, "zipapp": true, "zipfile": true,
 	"zipimport": true, "zlib": true, "zoneinfo": true,
+	// Completed against Python's own sys.stdlib_module_names. A stdlib module absent
+	// from this set is classified as a third-party dependency, so it showed up in
+	// dependency breakdowns and on import paths as if the project had taken on a
+	// package it never depended on.
+	"antigravity": true, "atexit": true, "bdb": true, "binascii": true, "cProfile": true,
+	"code": true, "codeop": true, "colorsys": true, "compileall": true, "curses": true,
+	"dbm": true, "ensurepip": true, "genericpath": true, "grp": true, "idlelib": true,
+	"modulefinder": true, "msvcrt": true, "netrc": true, "nt": true, "ntpath": true,
+	"nturl2path": true, "opcode": true, "optparse": true, "poplib": true, "posix": true,
+	"pyclbr": true, "pydoc": true, "pydoc_data": true, "pyexpat": true, "readline": true,
+	"rlcompleter": true, "sre_compile": true, "sre_constants": true, "sre_parse": true, "syslog": true,
+	"tabnanny": true, "this": true, "turtle": true, "turtledemo": true, "winreg": true,
+	"winsound": true, "wsgiref": true,
 }

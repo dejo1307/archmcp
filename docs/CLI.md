@@ -609,7 +609,7 @@ Pin when you start a piece of work and the answer stays "what has this branch do
 
 **A stale baseline warns; it never blocks.** Past three days it tells you exactly how stale and what that means (the delta now also contains whatever the repo itself changed in between) - then grades anyway, because a long-lived baseline is a legitimate way to measure a multi-day refactor and only you know which you meant.
 
-**Nothing fails by default.** A bare `enola check` runs all eighteen explainers, reports every finding the change introduced, and exits `0` - saying in its own output that no policy was in effect, because a gate that enforces nothing must never be mistaken for a gate that found nothing. What breaks the build is what you name:
+**Nothing fails by default.** A bare `enola check` runs all nineteen explainers, reports every finding the change introduced, and exits `0` - saying in its own output that no policy was in effect, because a gate that enforces nothing must never be mistaken for a gate that found nothing. What breaks the build is what you name:
 
 ```bash
 enola check --fail-on=layers                               # fail on a declared layer order
@@ -672,10 +672,10 @@ and this is neither.
 
 **The verdict has four writers, and all four read the same verdict.** `--format` picks `text` (the default), `json` (what `--json` means), `sarif` or `annotations`; nothing is recomputed for a writer, so a fifth is a table row. SARIF carries one rule per declared rule id with the team's `because` as its description, one result per finding in every bucket (failures as errors, advisories and declared findings as warnings, resolved findings at no level and with no region, suppressed and exempted findings with the ledger entry or exemption that excused them), the evidence span as the region, and the finding's stable identity under `partialFingerprints.enola/v1`. Annotations place every finding that has a measured position on its file and line, as Buildkite markdown grouped by file (`--link` takes the pull request's files view so each line links into the diff) or as GitHub workflow commands; findings without a position are counted at the end and never placed. The host is a flag and never read from the environment, so a run on a laptop renders exactly what the run in CI rendered.
 
-The eighteen names `--fail-on` accepts are `cycles`, `layers`, `intent`, `constraints`,
+The nineteen names `--fail-on` accepts are `cycles`, `layers`, `intent`, `constraints`,
 `crossrepo`, `coverage`, `unused-routes`, `messaging-coverage`, `god-class`, `hotspots`,
 `dependency-depth`, `exported-surface`, `complexity-outliers`, `domain`, `query-loops`,
-`entry-points`, `dead-methods` and `vendored-candidates`.
+`entry-points`, `dead-methods`, `vendored-candidates` and `import-closure`.
 
 **A name it does not recognise is refused, not ignored.** `--fail-on=cyles` exits `2`
 and names what it could not match, rather than exiting `0` while enforcing nothing —
