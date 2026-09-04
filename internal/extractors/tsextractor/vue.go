@@ -391,25 +391,15 @@ func vueTemplateRefs(rawSrc []byte, relFile string, extracted []facts.Fact, bind
 
 // collectVueCompilerMacros reads actual call-expression nodes, so macro-looking
 // text in a comment or string cannot manufacture component metadata.
-func collectVueCompilerMacros(kinds *tsutil.KindTable, root *sitter.Node, src []byte) []string {
+func collectVueCompilerMacros(kinds *tsutil.KindTable, calls []*sitter.Node, src []byte) []string {
 	seen := make(map[string]bool)
-	var walk func(*sitter.Node)
-	walk = func(node *sitter.Node) {
-		if node == nil {
-			return
-		}
-		if kindOf(kinds, node) == "call_expression" {
-			if fn := node.ChildByFieldName("function"); fn != nil && kindOf(kinds, fn) == "identifier" {
-				if name := nodeText(fn, src); vueCompilerMacroNames[name] {
-					seen[name] = true
-				}
+	for _, node := range calls {
+		if fn := node.ChildByFieldName("function"); fn != nil && kindOf(kinds, fn) == "identifier" {
+			if name := nodeText(fn, src); vueCompilerMacroNames[name] {
+				seen[name] = true
 			}
 		}
-		for i := range node.ChildCount() {
-			walk(node.Child(i))
-		}
 	}
-	walk(root)
 	macros := make([]string, 0, len(seen))
 	for macro := range seen {
 		macros = append(macros, macro)
@@ -605,9 +595,14 @@ func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueS
 
 	root := tree.RootNode()
 	bindings := buildVueImportBindings(kinds, root, block.Content, relFile, aliases)
-	macros := collectVueCompilerMacros(kinds, root, block.Content)
-	contracts := vueMacroContracts(kinds, root, block.Content)
-	declaredTypes := vueMacroDeclaredTypes(kinds, root, block.Content)
+	// All three passes below look for the same thing — the compiler-macro call sites
+	// — so the tree is matched ONCE and the results shared. Each used to walk the
+	// whole script block in Go, which costs a heap allocation per node visited
+	// regardless of traversal idiom (see tsutil.QueryNodes).
+	calls := tsutil.QueryNodes(tsGrammarKey(isTSX), tsGrammarLanguage(isTSX), "(call_expression) @c", root)
+	macros := collectVueCompilerMacros(kinds, calls, block.Content)
+	contracts := vueMacroContracts(kinds, root, calls, block.Content)
+	declaredTypes := vueMacroDeclaredTypes(kinds, calls, block.Content)
 
 	var result []facts.Fact
 	result = append(result, e.extractImports(kinds, root, block.Content, relFile, aliases)...)
@@ -616,7 +611,7 @@ func (e *TSExtractor) extractVueScriptBlock(kinds *tsutil.KindTable, block *vueS
 	// Nuxt Apollo composables such as useAsyncQuery(gql`...`) and useMutation,
 	// while retaining the tag extractor's comment/string false-positive guards.
 	if !facts.IsTestPath(relFile) {
-		result = append(result, extractGraphQLTagFactsAST(block.Content, relFile, kinds, root)...)
+		result = append(result, extractGraphQLTagFactsAST(block.Content, relFile, kinds, isTSX, root)...)
 	}
 
 	ctx := &extractCtx{

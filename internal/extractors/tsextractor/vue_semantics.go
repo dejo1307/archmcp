@@ -21,7 +21,7 @@ var (
 // vueMacroContracts extracts statically named parts of script-setup contracts.
 // The values are names, not inferred TypeScript types: keeping those separate
 // avoids claiming type resolution where the extractor only read declarations.
-func vueMacroContracts(kinds *tsutil.KindTable, root *sitter.Node, src []byte) map[string][]string {
+func vueMacroContracts(kinds *tsutil.KindTable, root *sitter.Node, calls []*sitter.Node, src []byte) map[string][]string {
 	types := make(map[string]string)
 	for i := range root.ChildCount() {
 		n := root.Child(i)
@@ -41,12 +41,8 @@ func vueMacroContracts(kinds *tsutil.KindTable, root *sitter.Node, src []byte) m
 		}
 		sets[contract][name] = true
 	}
-	var walk func(*sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n == nil {
-			return
-		}
-		if kindOf(kinds, n) == "call_expression" {
+	for _, n := range calls {
+		{
 			fn := n.ChildByFieldName("function")
 			if fn != nil && kindOf(kinds, fn) == "identifier" {
 				macro := nodeText(fn, src)
@@ -90,11 +86,7 @@ func vueMacroContracts(kinds *tsutil.KindTable, root *sitter.Node, src []byte) m
 				}
 			}
 		}
-		for i := range n.ChildCount() {
-			walk(n.Child(i))
-		}
 	}
-	walk(root)
 	out := make(map[string][]string)
 	for contract, names := range sets {
 		for name := range names {
@@ -107,14 +99,10 @@ func vueMacroContracts(kinds *tsutil.KindTable, root *sitter.Node, src []byte) m
 
 // vueMacroDeclaredTypes preserves the source-declared generic payload. This is
 // deliberately declaration text rather than claimed fully-resolved TS types.
-func vueMacroDeclaredTypes(kinds *tsutil.KindTable, root *sitter.Node, src []byte) map[string]string {
+func vueMacroDeclaredTypes(kinds *tsutil.KindTable, calls []*sitter.Node, src []byte) map[string]string {
 	out := make(map[string]string)
-	var walk func(*sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n == nil {
-			return
-		}
-		if kindOf(kinds, n) == "call_expression" {
+	for _, n := range calls {
+		{
 			fn := n.ChildByFieldName("function")
 			if fn != nil && kindOf(kinds, fn) == "identifier" {
 				macro := nodeText(fn, src)
@@ -139,11 +127,7 @@ func vueMacroDeclaredTypes(kinds *tsutil.KindTable, root *sitter.Node, src []byt
 				}
 			}
 		}
-		for i := range n.ChildCount() {
-			walk(n.Child(i))
-		}
 	}
-	walk(root)
 	return out
 }
 

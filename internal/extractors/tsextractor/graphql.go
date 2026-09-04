@@ -1088,14 +1088,12 @@ func extractGraphQLTagFacts(src []byte, relFile string) []facts.Fact {
 // in comments and ordinary strings cannot masquerade as gql/graphql tags.
 // TODO: Once Relay synthesized operations are modeled, cover @refetchable
 // fragments and their generated query/root-field semantics with tests.
-func extractGraphQLTagFactsAST(src []byte, relFile string, kinds *tsutil.KindTable, root *sitter.Node) []facts.Fact {
+func extractGraphQLTagFactsAST(src []byte, relFile string, kinds *tsutil.KindTable, isTSX bool, root *sitter.Node) []facts.Fact {
 	var out []facts.Fact
-	var walk func(*sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n == nil {
-			return
-		}
-		if kindOf(kinds, n) == "template_string" {
+	// Tagged templates are matched by tree-sitter rather than found by walking every
+	// node in the file; see tsutil.QueryNodes.
+	for _, n := range tsutil.QueryNodes(tsGrammarKey(isTSX), tsGrammarLanguage(isTSX), "(template_string) @t", root) {
+		{
 			parent := n.Parent()
 			if parent != nil && kindOf(kinds, parent) == "call_expression" {
 				fn := parent.ChildByFieldName("function")
@@ -1114,11 +1112,7 @@ func extractGraphQLTagFactsAST(src []byte, relFile string, kinds *tsutil.KindTab
 				}
 			}
 		}
-		for i := range n.ChildCount() {
-			walk(n.Child(i))
-		}
 	}
-	walk(root)
 	return out
 }
 

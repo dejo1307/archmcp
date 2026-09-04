@@ -589,7 +589,7 @@ func (e *TSExtractor) extractFile(src []byte, relFile string, isNextJS, isVue, i
 
 	root := tree.RootNode()
 	if !facts.IsTestPath(relFile) {
-		result = append(result, extractGraphQLTagFactsAST(src, relFile, kinds, root)...)
+		result = append(result, extractGraphQLTagFactsAST(src, relFile, kinds, isTSX, root)...)
 		text := string(src)
 		fetchBody := hasGraphQLFetchBodyCandidate(text)
 		clientCandidate := strings.Contains(text, "graphql-request") || fetchBody
@@ -3431,4 +3431,22 @@ func resolveTSCall(kinds *tsutil.KindTable, call *sitter.Node, src []byte, dir, 
 		}
 	}
 	return ""
+}
+
+// tsGrammarKey and tsGrammarLanguage name the grammar a tree was parsed with, so a
+// cached query is never reused across the two. TypeScript and TSX are separate
+// grammars with separate symbol ids, and a query compiled for one cannot be run
+// against a tree parsed by the other.
+func tsGrammarKey(isTSX bool) string {
+	if isTSX {
+		return "tsx"
+	}
+	return "typescript"
+}
+
+func tsGrammarLanguage(isTSX bool) *sitter.Language {
+	if isTSX {
+		return sitter.NewLanguage(typescript.LanguageTSX())
+	}
+	return sitter.NewLanguage(typescript.LanguageTypescript())
 }
