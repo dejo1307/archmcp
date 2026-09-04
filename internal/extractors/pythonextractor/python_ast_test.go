@@ -2048,3 +2048,95 @@ def handler():
 		}
 	}
 }
+
+// TestExtract_DeferredImportProp pins which imports run when the module is
+// imported. An import-closure walk is only meaningful if it can exclude the ones
+// that do not, and indentation cannot draw that line: a module-level
+// `try: import x` is indented yet runs, while a `if TYPE_CHECKING:` import is
+// indented and never runs at all.
+func TestExtract_DeferredImportProp(t *testing.T) {
+	src := `import os
+from typing import TYPE_CHECKING
+
+try:
+    import fast_json as json
+except ImportError:
+    import json
+
+if TYPE_CHECKING:
+    from collections import OrderedDict
+
+def loader():
+    import heavy_module
+    return heavy_module
+
+class Holder:
+    def method(self):
+        from decimal import Decimal
+        return Decimal
+`
+	ff, _ := extractFileAST([]byte(src), "pkg/mod.py", false, false, false, nil)
+
+	want := map[string]bool{ // target -> deferred
+		"os":           false,
+		"typing":       false,
+		"fast_json":    false, // module-level try: runs at import
+		"json":         false, // except arm: also runs at import
+		"collections":  true,  // TYPE_CHECKING: never runs
+		"heavy_module": true,  // function-local
+		"decimal":      true,  // method-local
+	}
+	seen := map[string]bool{}
+	for _, f := range ff {
+		if f.Kind != facts.KindDependency {
+			continue
+		}
+		for _, r := range f.Relations {
+			if r.Kind != facts.RelImports {
+				continue
+			}
+			exp, tracked := want[r.Target]
+			if !tracked {
+				continue
+			}
+			seen[r.Target] = true
+			got, _ := f.Props["deferred"].(bool)
+			if got != exp {
+				t.Errorf("import %q: deferred = %v, want %v", r.Target, got, exp)
+			}
+		}
+	}
+	for target := range want {
+		if !seen[target] {
+			t.Errorf("no dependency fact emitted for import %q", target)
+		}
+	}
+}
+
+// TestExtract_MethodLocalImportEmittedOnce guards against a method body being
+// registered twice — once by handleFunction, once by walkNestedScope reached through
+// the class body's call walk — and emitting the import fact both times. Each pass
+// needs the importMap binding; only one may emit, or the import is double-counted by
+// every consumer that sums dependency facts.
+func TestExtract_MethodLocalImportEmittedOnce(t *testing.T) {
+	src := `class Holder:
+    def build(self):
+        from app.registry import registry
+        return registry
+`
+	ff, _ := extractFileAST([]byte(src), "app/holder.py", false, false, false, nil)
+	n := 0
+	for _, f := range ff {
+		if f.Kind != facts.KindDependency {
+			continue
+		}
+		for _, r := range f.Relations {
+			if r.Kind == facts.RelImports && r.Target == "app.registry" {
+				n++
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("method-local import emitted %d dependency facts, want exactly 1", n)
+	}
+}

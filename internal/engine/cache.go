@@ -2377,7 +2377,15 @@ import (
 // the one TypeScript and Ruby produce for their file-addressed imports; the package
 // directory remains the answer when the dotted path names a package. Module-level
 // metrics are unchanged, since explainers roll a file target up to its directory.
-const cacheVersion = "v262"
+// v263: Python import facts carry Props["deferred"]=true when the import does not
+// run at module-import time — a function/class-body (lazy) import, or an
+// `if TYPE_CHECKING:` block, which never executes at all. Absence means the import
+// IS on the import path, following `from`. This is the distinction an import-closure
+// walk needs and the one source indentation cannot draw: a module-level
+// `try: import x` is indented yet runs, a TYPE_CHECKING import is indented and does
+// not. Also fixes a method-local import being emitted twice with disagreeing props,
+// because walkNestedScope registers body imports a second time.
+const cacheVersion = "v263"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

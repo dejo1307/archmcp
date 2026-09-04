@@ -81,6 +81,21 @@ type pyWalker struct {
 	// reliable for the module-level imports that precede the definitions it guards.
 	importsModal bool
 
+	// emittedImports holds the start byte of every import statement that has already
+	// produced a dependency fact. A method body is registered TWICE — once by
+	// handleFunction, once by walkNestedScope reached through the class body's call
+	// walk — and each pass needs the importMap binding, but the fact must be emitted
+	// only once or the import is double-counted.
+	emittedImports map[uint]bool
+
+	// importDeferred is set while registering imports that do NOT run when the
+	// module is imported: a function/class-body (lazy) import, or a
+	// `if TYPE_CHECKING:` block, which never executes at runtime at all. Both are
+	// off the import path, which is the distinction an import-closure walk needs
+	// and the one indentation cannot draw — a module-level `try: import x` is
+	// indented too, yet runs. Recorded as Props["deferred"], set only when true.
+	importDeferred bool
+
 	// importFallback is set while walking an except_clause: its imports are the
 	// fallback arm of the try/except ImportError dual-import idiom and must not
 	// clobber the try-branch binding (the relative/canonical form resolves to a
@@ -396,12 +411,34 @@ func (w *pyWalker) walkStatement(node *sitter.Node) {
 		// a dead-code false positive. Module-level *calls* and assignment value
 		// refs in these blocks are still collected by walkTopLevelCalls, which
 		// descends through compound statements.
+		// `if TYPE_CHECKING:` is the one module-level conditional that never runs:
+		// its imports exist for the type checker only, so they are off the import
+		// path even though every other module-level if/try is on it.
+		prevDeferred := w.importDeferred
+		if isTypeCheckingGuard(node, w.src) {
+			w.importDeferred = true
+		}
 		w.registerBodyImports(node)
+		w.importDeferred = prevDeferred
 	}
+}
+
+// isTypeCheckingGuard reports whether an if_statement is guarded by
+// typing.TYPE_CHECKING, whose body is never executed at runtime.
+func isTypeCheckingGuard(node *sitter.Node, src []byte) bool {
+	if kindOf(node) != "if_statement" {
+		return false
+	}
+	cond := node.ChildByFieldName("condition")
+	if cond == nil {
+		return false
+	}
+	return strings.Contains(pyText(cond, src), "TYPE_CHECKING")
 }
 
 // handleImport handles `import foo.bar` — emits KindDependency + RelImports.
 func (w *pyWalker) handleImport(node *sitter.Node) {
+	emit := w.claimImport(node)
 	for i := uint(0); i < uint(node.ChildCount()); i++ {
 		c := node.Child(i)
 		if kindOf(c) == "dotted_name" || kindOf(c) == "aliased_import" {
@@ -421,16 +458,18 @@ func (w *pyWalker) handleImport(node *sitter.Node) {
 			}
 			w.noteModalImport(name)
 			target := w.module + " -> " + name
-			w.out = append(w.out, facts.Fact{
-				Kind:  facts.KindDependency,
-				Name:  target,
-				File:  w.relFile,
-				Line:  int(node.StartPosition().Row) + 1,
-				Props: map[string]any{"language": "python"},
-				Relations: []facts.Relation{
-					{Kind: facts.RelImports, Target: name},
-				},
-			})
+			if emit {
+				w.out = append(w.out, facts.Fact{
+					Kind:  facts.KindDependency,
+					Name:  target,
+					File:  w.relFile,
+					Line:  int(node.StartPosition().Row) + 1,
+					Props: w.importProps(nil),
+					Relations: []facts.Relation{
+						{Kind: facts.RelImports, Target: name},
+					},
+				})
+			}
 			local := alias
 			if local == "" {
 				if dot := strings.LastIndex(name, "."); dot >= 0 {
@@ -461,17 +500,19 @@ func (w *pyWalker) handleFromImport(node *sitter.Node) {
 		strings.HasPrefix(pyText(node, w.src), "from .")
 
 	target := w.module + " -> " + moduleName
-	depProps := map[string]any{"language": "python", "from": true}
-	w.out = append(w.out, facts.Fact{
-		Kind:  facts.KindDependency,
-		Name:  target,
-		File:  w.relFile,
-		Line:  int(node.StartPosition().Row) + 1,
-		Props: depProps,
-		Relations: []facts.Relation{
-			{Kind: facts.RelImports, Target: moduleName},
-		},
-	})
+	depProps := w.importProps(map[string]any{"from": true})
+	if w.claimImport(node) {
+		w.out = append(w.out, facts.Fact{
+			Kind:  facts.KindDependency,
+			Name:  target,
+			File:  w.relFile,
+			Line:  int(node.StartPosition().Row) + 1,
+			Props: depProps,
+			Relations: []facts.Relation{
+				{Kind: facts.RelImports, Target: moduleName},
+			},
+		})
+	}
 
 	// For __init__.py, record the imported short names so the dead-code tool can
 	// treat them as re-exported (part of the package's public surface) and not
@@ -995,7 +1036,10 @@ func (w *pyWalker) handleFunction(node *sitter.Node, decorators []string) {
 		// through a name imported inside the body (a common circular-import
 		// workaround) resolves to an edge. Must run before collectParamTypes/
 		// collectLocalTypes so those see the local imports too.
+		prevDeferred := w.importDeferred
+		w.importDeferred = true
 		w.registerBodyImports(bodyNode)
+		w.importDeferred = prevDeferred
 		w.localTypes = collectParamTypes(node.ChildByFieldName("parameters"), w.src, w.importMap, w.module)
 		for k, v := range collectLocalTypes(bodyNode, w.src, w.importMap, w.module) {
 			w.localTypes[k] = v
@@ -1509,8 +1553,14 @@ func (w *pyWalker) walkNestedScope(node *sitter.Node) {
 		if body != nil {
 			walkLocalBoundNames(body, w.src, bound)
 			// Function-local (lazy) imports resolve for this subtree, matching
-			// registerBodyImports' treatment of top-level function bodies.
+			// registerBodyImports' treatment of top-level function bodies — including
+			// their deferral, since this is a nested function body by construction.
+			// Without the flag a method-local import is emitted once here and once
+			// from handleFunction, and the two facts disagree about `deferred`.
+			prevDeferred := w.importDeferred
+			w.importDeferred = true
 			w.registerBodyImports(body)
+			w.importDeferred = prevDeferred
 		}
 		types := make(map[string]string, len(savedTypes)+4)
 		for k, v := range savedTypes {
@@ -2491,4 +2541,38 @@ var pyBuiltins = map[string]bool{
 	"TypeError": true, "KeyError": true, "IndexError": true,
 	"AttributeError": true, "RuntimeError": true, "StopIteration": true,
 	"GeneratorExit": true, "SystemExit": true, "KeyboardInterrupt": true,
+}
+
+// importProps builds the Props for an import dependency fact, carrying `deferred`
+// only when the import does not run at module-import time. Following `from`, the
+// prop is written only when true: absence means the import IS on the import path,
+// which is the overwhelming majority.
+func (w *pyWalker) importProps(extra map[string]any) map[string]any {
+	p := map[string]any{"language": "python"}
+	for k, v := range extra {
+		p[k] = v
+	}
+	if w.importDeferred {
+		p["deferred"] = true
+	}
+	return p
+}
+
+// claimImport reports whether this import statement should emit a dependency fact,
+// recording it so a second registration pass over the same body does not emit a
+// duplicate. Both passes still register the importMap binding, which is what they
+// are each there for; only the fact is once-per-statement.
+func (w *pyWalker) claimImport(node *sitter.Node) bool {
+	if node == nil {
+		return true
+	}
+	if w.emittedImports == nil {
+		w.emittedImports = map[uint]bool{}
+	}
+	start := uint(node.StartByte())
+	if w.emittedImports[start] {
+		return false
+	}
+	w.emittedImports[start] = true
+	return true
 }
