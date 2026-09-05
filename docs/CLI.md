@@ -38,6 +38,7 @@ Because your agent launches enola as a long-lived MCP server process, an upgrade
 - **Claude Code** - restart the session, or re-register with `claude mcp remove enola && claude mcp add enola enola`.
 - **Cursor** - toggle the enola server off and back on in **Settings → MCP** (or reload the window).
 - **GitHub Copilot (VS Code)** - restart the server from the `.vscode/mcp.json` editor (the **Restart** CodeLens above the server entry), or reload the window.
+- **opencode** - quit and restart it; it loads its configuration once at startup and never reloads it.
 
 ### Configuration (optional)
 
@@ -92,6 +93,10 @@ When you do pass a config, its `repo:` is only the *default* repository - you ca
   }
 }
 ```
+
+**opencode** - `enola install --targets opencode` writes the registration itself, because it is already editing the same file to register enola's instructions. It uses an existing `opencode.json` if there is one and otherwise creates `.opencode/opencode.json`, and it leaves a server entry you wrote yourself exactly as it is, in both directions: not overwritten on install, not deleted on uninstall. A `.jsonc` config is skipped rather than rewritten, since the comments in it would not survive. opencode reads its configuration once at startup, so restart it afterwards.
+
+With `--hooks` the same target installs `.opencode/plugin/enola.js`. opencode has no hook configuration in the shape Claude Code and Codex accept, so the plugin does a narrower job: it names the enola tool that answers a structural question in the descriptions of `grep`, `glob` and `list`, repeats that in the system prompt where it also reaches subagents, and refuses the first searches of a session outright with the tool to call instead. That last part blocks, so it is bounded twice: it gives up after two refusals, and it gives up the moment any enola tool is called, including one that failed. `ENOLA_OPENCODE_GATE=off` disables the refusals and leaves the rest.
 
 **GitHub Copilot (VS Code)** - add enola to `.vscode/mcp.json` in your workspace (or your user-level MCP config via **MCP: Open User Configuration**). Note the top-level key is `servers` (not `mcpServers`), and the config path in `args` is optional - drop it to use defaults:
 
@@ -516,10 +521,30 @@ enola uninstall               # remove it all again
 | Codex · Copilot · Pi | `AGENTS.md` *(marked block, only if it already exists)* | — |
 | Codex | `.codex/hooks.json` *(managed entries, `--hooks` only)*, covered by `AGENTS.md` otherwise | `~/.codex/AGENTS.md` *(marked block)*, `~/.codex/hooks.json` *(managed entries, `--hooks` only)* |
 | Pi | *covered by `AGENTS.md`* | `~/.pi/agent/AGENTS.md` *(marked block)* |
+| opencode | `.opencode/enola.md` *(owned)* + its entry in `opencode.json`, or covered by `AGENTS.md` | `~/.config/opencode/enola.md` *(owned)* + its entry in `~/.config/opencode/opencode.json` |
+| opencode | `mcp.enola` in the same config *(the one target that registers the server itself)* | same |
+| opencode | `.opencode/plugin/enola.js` *(owned, `--hooks` only)* | `~/.config/opencode/plugin/enola.js` *(owned, `--hooks` only)* |
 
-**Codex, Copilot and Pi all read the repository's `AGENTS.md`**, so locally one block serves all three - enola won't write a second repo-local file for them, which would only put the same instruction into the same context window twice. Their `--global` entries add what `AGENTS.md` can't: guidance in projects where nobody has run `enola install`. Those are written only when the tool's config directory already exists, so enola never creates `~/.codex` for someone who doesn't use Codex.
+**Codex, Copilot, Pi and opencode all read the repository's `AGENTS.md`**, so locally one block serves all four - enola won't write a second repo-local file for them, which would only put the same instruction into the same context window twice. Their `--global` entries add what `AGENTS.md` can't: guidance in projects where nobody has run `enola install`. Those are written only when the tool's config directory already exists, so enola never creates `~/.codex` for someone who doesn't use Codex.
 
-Restrict the run with `--targets=claude,copilot` if you only want some.
+**`--targets` is for narrowing, not for choosing.** The default is every target, and that
+is almost always what you want: each one writes only into files its own agent reads, and
+a target whose agent is not installed skips itself and says so, so installing "everywhere"
+costs nothing but a few small files in your repository. Reach for `--targets` when you
+have a specific reason - you are trying one agent out, a colleague objects to a directory
+appearing in the repo, or you are re-running after fixing one target's configuration:
+
+```bash
+enola install --targets=claude,copilot   # only these two
+enola install --targets opencode         # only opencode
+```
+
+One consequence worth knowing, because it is not obvious: enola skips a target's own
+instruction file when the repository's `AGENTS.md` already carries the block, since
+writing both would put the same paragraphs into the same context window twice. With
+`--targets opencode` the `agents` target is not part of the run, so that check asks
+whether the block is actually in `AGENTS.md` rather than whether the file exists - a
+narrowed run never leaves an agent with a registration and no instructions.
 
 **It never surprises you.** Every run previews what it will touch and asks before writing. It never creates an `AGENTS.md` that wasn't already there. Re-running reports `unchanged` rather than churning files. And `uninstall` restores shared files byte-for-byte - the block is delimited by explicit `<!-- enola:begin -->` / `<!-- enola:end -->` markers, and if those markers have been hand-edited into an unbalanced state, enola refuses to write rather than guess where its section ends.
 
@@ -529,10 +554,22 @@ Restrict the run with `--targets=claude,copilot` if you only want some.
 enola install --hooks
 ```
 
-This installs both halves of the loop, so it runs without anyone remembering to:
+Without it you get instructions and nothing else: a paragraph telling the agent the graph
+exists, which it is free to read and then ignore. That is the honest description of the
+default, and on a small local model it is often what happens. `--hooks` is what makes the
+loop run whether or not the agent remembers to.
+
+In Claude Code and Codex that means two session hooks:
 
 - **`SessionStart`** freezes the architecture as a baseline when a session begins - the "before".
 - **`Stop`** grades what the session changed when your agent finishes a turn, and hands the verdict back **only if** there is something to say: a structural regression under the policy you set, or - since the default policy is empty - a finding enola measured exactly and did not enforce.
+
+**In opencode it means something different**, because opencode has no hook configuration
+of that shape. There `--hooks` installs `.opencode/plugin/enola.js`, which works on the
+other end of the session: rather than grading the change afterwards, it pushes the first
+move towards the index. See the opencode section above for what it does and how to turn
+the blocking half off. Neither the baseline nor the grading is installed there, so
+`enola doctor` is not part of that setup and will not report on it.
 
 The agent gets a chance to fix the layer it crossed before telling you it's done, rather than you finding it in review.
 

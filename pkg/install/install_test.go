@@ -213,11 +213,31 @@ func TestInstall_HooksMergeWithoutDisturbingTheUsersConfig(t *testing.T) {
 // misdescribes itself is worse than one that says nothing, because the user then
 // troubleshoots behaviour that was never installed.
 func TestHookSummary_DescribesExactlyWhatIsInstalled(t *testing.T) {
-	if len(HookSummary()) != len(installedHooks) {
-		t.Fatalf("HookSummary has %d entries for %d installed hooks", len(HookSummary()), len(installedHooks))
+	o := opts(t, true)
+
+	// Scoped to the targets that actually carry the session hooks: with every target
+	// selected the summary also describes opencode's plugin, which is a different
+	// mechanism and is asserted separately below.
+	sessionOnly := o
+	sessionOnly.Targets = []string{"claude"}
+	if len(HookSummary(sessionOnly)) != len(installedHooks) {
+		t.Fatalf("HookSummary has %d entries for %d installed hooks", len(HookSummary(sessionOnly)), len(installedHooks))
 	}
 
-	o := opts(t, true)
+	// The same rule one target further along: opencode gets a plugin and no session
+	// hooks, so it must be described as neither more nor less than that.
+	opencodeOnly := o
+	opencodeOnly.Targets = []string{"opencode"}
+	if got := HookSummary(opencodeOnly); len(got) != 1 {
+		t.Fatalf("opencode alone should be described by exactly its plugin, got %d entries: %v", len(got), got)
+	}
+	if InstallsSessionHooks(opencodeOnly) {
+		t.Error("opencode is reported as installing session hooks, which it cannot")
+	}
+	if got := HookSummary(o); len(got) != len(installedHooks)+1 {
+		t.Errorf("a full install should describe every hook and the plugin, got %d entries", len(got))
+	}
+
 	if _, err := Install(o); err != nil {
 		t.Fatal(err)
 	}

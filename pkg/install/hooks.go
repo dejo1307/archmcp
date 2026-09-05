@@ -49,14 +49,35 @@ var installedHooks = []hookSpec{{
 		"comparable so nothing could be graded at all",
 }}
 
-// HookSummary describes what --hooks will actually configure, for callers that need to
-// tell the user before writing anything.
-func HookSummary() []string {
-	out := make([]string, 0, len(installedHooks))
-	for _, h := range installedHooks {
-		out = append(out, h.Description)
+// HookSummary describes what --hooks will actually configure for THIS run, for callers
+// that need to tell the user before writing anything.
+//
+// It takes the options rather than reading off installedHooks alone because the answer
+// now depends on which targets were selected. `--targets opencode` writes a plugin and
+// no session hooks at all, and announcing the session hooks there would be the same
+// defect this summary exists to prevent, one target further along.
+func HookSummary(o Options) []string {
+	if !o.Hooks {
+		return nil
 	}
-	return out
+	var out []string
+	if InstallsSessionHooks(o) {
+		for _, h := range installedHooks {
+			out = append(out, h.Description)
+		}
+	}
+	return append(out, gateSummary(o)...)
+}
+
+// InstallsSessionHooks reports whether this run writes the session hooks, which only
+// the targets with a hook configuration enola can write do: Claude Code and Codex.
+func InstallsSessionHooks(o Options) bool {
+	for _, t := range o.selectedTargets() {
+		if t == "claude" || t == "codex" {
+			return true
+		}
+	}
+	return false
 }
 
 // writeHooks merges enola's hooks into Claude Code's settings.json, or removes them.
