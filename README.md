@@ -97,7 +97,8 @@ This writes enola's instructions into the files your agents already read - Claud
 | **Claude Code** | `claude mcp add enola enola` |
 | **Copilot (VS Code)** | `code --add-mcp '{"name":"enola","command":"enola"}'` |
 | **Cursor** | add the block below to `.cursor/mcp.json` (or `~/.cursor/mcp.json` for every project) |
-| **Codex, or any other MCP client** | add the same block to its MCP config |
+| **Codex** | `codex mcp add enola -- enola` |
+| **Other MCP clients** | add the block below to its MCP config |
 
 <details>
 <summary>MCP config block</summary>
