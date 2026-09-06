@@ -5,6 +5,24 @@ on:
     tags:
       - "v*"
 
+  # The TestPyPI rehearsal. Trusted Publishing is verified against the workflow
+  # FILENAME, so the dry run has to live in this file rather than a throwaway one
+  # beside it: a separate workflow would be refused no matter how identical.
+  #
+  # The dispatch path deliberately does not touch GitHub releases. It runs test
+  # and build, then publishes only to TestPyPI; every job that writes to the
+  # repository is gated on the event being a tag push, so a dry run cannot create
+  # a release, cannot move `latest`, and cannot reach production PyPI.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version for the TestPyPI rehearsal, e.g. 0.0.1. Must be bare
+          MAJOR.MINOR.PATCH, and must not have been uploaded to TestPyPI before,
+          since an index refuses to replace a file it already has.
+        required: true
+        type: string
+
 permissions:
   contents: write
 
@@ -33,18 +51,28 @@ jobs:
           - os: ubuntu-latest      # linux/amd64
             goos: linux
             goarch: amd64
+            manylinux: quay.io/pypa/manylinux_2_28_x86_64
+            wheel_tag: manylinux_2_17_x86_64
           - os: ubuntu-24.04-arm   # linux/arm64 — native arm64 runner
             goos: linux
             goarch: arm64
+            manylinux: quay.io/pypa/manylinux_2_28_aarch64
+            wheel_tag: manylinux_2_17_aarch64
           - os: macos-15-intel     # darwin/amd64 — native Intel runner
             goos: darwin
             goarch: amd64
+            manylinux: ""
+            wheel_tag: macosx_12_0_x86_64
           - os: macos-latest       # darwin/arm64 — native Apple Silicon
             goos: darwin
             goarch: arm64
+            manylinux: ""
+            wheel_tag: macosx_12_0_arm64
           - os: windows-latest     # windows/amd64
             goos: windows
             goarch: amd64
+            manylinux: ""
+            wheel_tag: win_amd64
     steps:
       - uses: actions/checkout@v7
 
@@ -54,27 +82,98 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # On a tag this is the tag without its leading v. On a dispatch there is no
+      # tag at all (GITHUB_REF_NAME would be the branch), so the rehearsal version
+      # is supplied as an input instead.
       - name: Compute version
         id: version
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "version=${INPUT_VERSION#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
 
+      # Python builds the wheels further down. Pinned rather than left to whatever
+      # the runner image ships, so the packaging step does not change under us.
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # WHERE a cgo binary is linked decides which systems can run it, and both
+      # platforms needed fixing. Neither is wheel-specific: the tarball published
+      # to the GitHub release comes from this same binary.
+      #
+      # LINUX. cgo links against the glibc of whatever built it. On ubuntu-latest
+      # (glibc 2.39) the result requires 2.34 at run time, which excludes RHEL and
+      # Rocky 8, Amazon Linux 2, Ubuntu 20.04 and Debian 11. The identical source
+      # built inside manylinux_2_28 requires only 2.17, and links nothing outside
+      # the manylinux policy list. Both numbers are measured, not assumed; see
+      # packaging/pypi/linux_test.sh, which reproduces this locally.
+      #
+      # The container gets the runner's own Go toolchain mounted in rather than
+      # downloading one, so the compiler is exactly the version go.mod pins and
+      # setup-go already fetched. Module and build caches are deliberately NOT
+      # mounted: the container runs as root, and root-owned files in those
+      # directories would break setup-go's cache save at the end of the job.
+      #
+      # MACOS. With cgo the link goes through clang, which stamps
+      # LC_BUILD_VERSION minos with the runner's SDK version unless
+      # MACOSX_DEPLOYMENT_TARGET says otherwise. A binary built on the macOS 15
+      # runner therefore claims to need macOS 15 and refuses to launch on 12, 13
+      # or 14. 12.0 is Go's own oldest supported macOS release, so it is the
+      # floor that can actually be stood behind.
       - name: Build binary
         shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: |
           BINARY="enola-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}"
           EXT=""
           if [ "${{ matrix.goos }}" = "windows" ]; then
             EXT=".exe"
           fi
-          go build \
-            -ldflags "-s -w -X github.com/enola-labs/enola/internal/version.Version=${{ steps.version.outputs.version }}" \
-            -o "${BINARY}${EXT}" \
-            ./cmd/enola
+          LDFLAGS="-s -w -X github.com/enola-labs/enola/internal/version.Version=${{ steps.version.outputs.version }}"
+          # The wheel's copy differs by one linker flag, and it is not cosmetic.
+          # internal/upgrade refuses to self-update when InstallMethod is "pip",
+          # because pip records the file's hash and would silently undo the
+          # replacement. The tarball must NOT carry that stamp: nothing owns that
+          # copy, so `enola upgrade` is exactly right there. One binary cannot be
+          # both, hence two.
+          PIPFLAGS="$LDFLAGS -X github.com/enola-labs/enola/internal/version.InstallMethod=pip"
+
+          mkdir -p wheelbin
+
+          if [ -n "${{ matrix.manylinux }}" ]; then
+            # Both builds in ONE container. The build cache lives inside it and is
+            # not mounted (see above), so a second `docker run` would recompile
+            # every package from scratch; back to back in one shell, the second
+            # build is only a relink.
+            docker run --rm \
+              -v "$PWD:/src" \
+              -v "$(go env GOROOT):/usr/local/go:ro" \
+              -w /src \
+              -e CGO_ENABLED=1 \
+              -e "GOOS=${GOOS}" \
+              -e "GOARCH=${GOARCH}" \
+              -e GOFLAGS=-buildvcs=false \
+              -e "LDFLAGS=$LDFLAGS" \
+              -e "PIPFLAGS=$PIPFLAGS" \
+              -e "OUT=${BINARY}${EXT}" \
+              "${{ matrix.manylinux }}" \
+              /bin/sh -c '/usr/local/go/bin/go build -ldflags "$LDFLAGS" -o "$OUT" ./cmd/enola &&
+                          /usr/local/go/bin/go build -ldflags "$PIPFLAGS" -o wheelbin/enola ./cmd/enola'
+          else
+            go build -ldflags "$LDFLAGS" -o "${BINARY}${EXT}" ./cmd/enola
+            go build -ldflags "$PIPFLAGS" -o "wheelbin/enola${EXT}" ./cmd/enola
+          fi
 
       - name: Create tarball
         shell: bash
@@ -99,7 +198,38 @@ jobs:
           tar czf "${BINARY}.tar.gz" "${BINARY}${EXT}" LICENSE NOTICE
           sha256sum "${BINARY}.tar.gz" > "${BINARY}.sha256"
 
+      # Packages the pip-stamped binary from the build step, not the one in the
+      # tarball. Same source, same compiler, same container, one linker flag
+      # apart; see the build step for why they cannot be the same file.
+      #
+      # The tag is fixed per matrix leg rather than derived here, because deriving
+      # it would mean this step could quietly downgrade portability if a future
+      # toolchain raised the floor. packaging/pypi/linux_test.sh is what checks
+      # the claim, and it fails loudly when the measurement stops matching.
+      - name: Build wheel
+        shell: bash
+        run: |
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            EXT=".exe"
+          fi
+          python packaging/pypi/build_wheel.py \
+            --binary "wheelbin/enola${EXT}" \
+            --version "${{ steps.version.outputs.version }}" \
+            --platform-tag "${{ matrix.wheel_tag }}" \
+            --outdir dist
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v6
+        with:
+          name: wheels-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.whl
+          if-no-files-found: error
+
       - name: Upload to release
+        # Tag pushes only. A dispatch is a wheel rehearsal and has no release to
+        # attach anything to.
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
           # Stays a draft until the publish job confirms every platform made it.
@@ -114,6 +244,10 @@ jobs:
   # silently shipping a partial set of binaries.
   publish:
     needs: build
+    # Tag pushes only, which also keeps pypi-publish out of a dispatch run: a job
+    # whose dependency is skipped is skipped too. That is belt, and the explicit
+    # condition on pypi-publish is braces.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Compute version
@@ -179,3 +313,95 @@ jobs:
         run: |
           gh release edit "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" --draft=false
+
+  # PyPI is downstream of the GitHub release, not parallel to it.
+  #
+  # `needs: publish` rather than `needs: build` keeps the dependency pointing one
+  # way: a PyPI failure cannot block or unpublish the GitHub release, but a
+  # release that failed the asset check above never reaches PyPI either. That
+  # asymmetry matters because `enola upgrade` and internal/updatecheck both
+  # resolve against GitHub, so a version on PyPI that GitHub does not have would
+  # be one users can install and then cannot upgrade away from.
+  pypi-publish:
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    # Named by the Trusted Publisher configuration on PyPI. Publishing uses no
+    # API token: the id-token permission below mints a short-lived OIDC
+    # credential that PyPI verifies against this exact workflow and environment.
+    environment:
+      name: pypi
+
+    # Overrides the workflow-level `contents: write`. Nothing here writes to the
+    # repository, and the token that could is not one this job should hold.
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v6
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      # One per platform. A missing leg means a platform silently has no wheel
+      # for this version, and pip would answer "no matching distribution" on a
+      # machine that worked yesterday.
+      - name: Verify every platform wheel is present
+        run: |
+          expected=5
+          found="$(find dist -name '*.whl' | wc -l)"
+          find dist -name '*.whl' -exec basename {} \;
+          if [ "$found" -ne "$expected" ]; then
+            echo "::error::expected $expected wheels, found $found"
+            exit 1
+          fi
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # The rehearsal. Same wheels, same OIDC handshake, same five-wheel check, a
+  # different index and a different environment.
+  #
+  # What this actually proves, and nothing local could: that Windows and Intel
+  # macOS wheels build at all, since neither can be produced on the development
+  # machine, and that the Trusted Publisher configuration is correct. A
+  # misconfigured publisher fails here, on a version nobody depends on, instead of
+  # on the first real release.
+  testpypi-publish:
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    environment:
+      name: testpypi
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v6
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify every platform wheel is present
+        run: |
+          expected=5
+          found="$(find dist -name '*.whl' | wc -l)"
+          find dist -name '*.whl' -exec basename {} \;
+          if [ "$found" -ne "$expected" ]; then
+            echo "::error::expected $expected wheels, found $found"
+            exit 1
+          fi
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

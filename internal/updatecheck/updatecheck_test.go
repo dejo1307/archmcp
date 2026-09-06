@@ -466,3 +466,40 @@ func TestDue(t *testing.T) {
 		}
 	})
 }
+
+// TestHumanLineNamesPipForAPipInstall pins the other half of the pip guard.
+//
+// internal/upgrade refuses to self-update a pip install, which makes "Run `enola
+// upgrade`" actively wrong there: it sends the user to a command whose entire
+// response is to send them somewhere else. The imperative still has to be an
+// imperative though, since that is what HumanLine exists for, so the check is
+// that the sentence changed rather than that it went away.
+func TestHumanLineNamesPipForAPipInstall(t *testing.T) {
+	path := isolate(t, "0.3.2")
+	seed(t, path, state{
+		CheckedAt: time.Now().UTC(),
+		Manifest:  Manifest{Version: "0.3.12", ExtractorVersion: "v193"},
+	})
+
+	if human := HumanLine("v193"); !strings.Contains(human, "Run `enola upgrade`.") {
+		t.Fatalf("a source build should still be told to self-update:\n%s", human)
+	}
+
+	prev := version.InstallMethod
+	version.InstallMethod = "pip"
+	t.Cleanup(func() { version.InstallMethod = prev })
+
+	human := HumanLine("v193")
+	if !strings.Contains(human, "Run `pip install -U enola-cli`.") {
+		t.Errorf("pip build not told how to actually upgrade:\n%s", human)
+	}
+	if strings.Contains(human, "enola upgrade") {
+		t.Errorf("pip build still pointed at the command that refuses it:\n%s", human)
+	}
+
+	// The agent notice names no command in either case, so switching install
+	// method must not have quietly given it one.
+	if agent := AgentLine("v193"); strings.Contains(strings.ToLower(agent), "pip install") {
+		t.Errorf("agent notice gained a command an agent will run:\n%s", agent)
+	}
+}
