@@ -21,6 +21,18 @@ This installs `enola` to `~/.local/bin`. If that's not on your `PATH`, add it:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+It is also on PyPI and RubyGems. Same binary, same `enola` command:
+
+```bash
+pip install enola-cli
+```
+
+```ruby
+gem "enola"   # then: bundle exec enola
+```
+
+`enola-cli` is the PyPI project name because `enola` was taken; the installed command is unaffected. The gems live at [enola-labs/enola-rb](https://github.com/enola-labs/enola-rb).
+
 Binaries are published for Linux, macOS (amd64/arm64), and Windows (amd64). You can also download a specific build from the [Releases page](https://github.com/enola-labs/enola/releases), or [build from source](#build-from-source).
 
 ### Upgrade

@@ -7,6 +7,44 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
+## v0.4.15 — 2026-09-06
+
+**Linux wheels answer to the older tag name as well**
+
+The linux wheels 0.4.14 published were tagged `manylinux_2_17`, which is the PEP 600
+spelling, and pip only learned to read it in 20.3. RHEL 8, Rocky 8 and Amazon Linux 2
+ship pip 20.2.4, so on exactly the systems the low glibc floor was chosen to reach, the
+wheel was invisible and `pip install enola-cli` answered "no matching distribution
+found". The linux wheels now carry a compressed tag set naming both the PEP 600 form and
+the legacy `manylinux2014` alias, so one file answers to either spelling. Verified
+against stock pip 20.2.4 on glibc 2.28.
+
+Nothing else changed. Binaries and extraction are identical to 0.4.14; 0.4.14 itself
+keeps the single tag, because an index will not accept a replacement file for a version
+it already has.
+
+## v0.4.14 — 2026-09-06
+
+**enola installs with pip, and the binaries reach older systems than they used to**
+
+enola is on PyPI as `enola-cli`, the name `enola` having been taken by someone else. The
+command it installs is still `enola`. The wheel carries the same compiled binary the
+release tarball does, with no Python launcher in front of it and no Python needed at run
+time, so a `pip install enola-cli` costs nothing at startup that `install.sh` does not.
+Wheels are published for linux, macOS and Windows on amd64 and arm64.
+
+Because pip records the file it installed, `enola upgrade` refuses on a pip install and
+names `pip install -U enola-cli` instead. Replacing the binary there would appear to work
+and then be undone by the next pip operation, with the version silently reverting.
+
+The two portability fixes this uncovered apply to `install.sh` and `enola upgrade` as
+much as to the wheels, since every route ships the same binary. The linux binaries are
+now compiled inside a manylinux_2_28 image rather than on the CI runner, which lowers
+what they require at run time from glibc 2.34 to 2.17: RHEL and Rocky 8, Amazon Linux 2,
+Ubuntu 20.04 and Debian 11 could not run a 0.4.13 binary and can run this one. The macOS
+binaries now declare a deployment target of 12.0, which is Go's own oldest supported
+release, rather than inheriting whatever SDK version the build machine happened to have.
+
 ## v0.4.13 — 2026-09-04
 
 **Python imports bind to the module they name**

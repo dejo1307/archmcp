@@ -72,6 +72,18 @@ That drops one binary into `~/.local/bin`. If the next command comes back `enola
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+Or install it from a package index. Every route delivers the same binary, and the command is always `enola`:
+
+```bash
+pip install enola-cli
+```
+
+```ruby
+gem "enola"   # then: bundle exec enola
+```
+
+The PyPI project is called `enola-cli` because `enola` was already taken there. The Ruby gems are maintained at [enola-labs/enola-rb](https://github.com/enola-labs/enola-rb) and fetch the same release on first use.
+
 **Ruby and Rails?** There is a community-maintained gem that wraps the same release, fetches the binary on first use and forwards every command - and `enola-rb` adds a Rails generator plus `enola:snapshot` / `enola:check` rake tasks:
 
 ```bash
