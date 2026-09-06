@@ -98,7 +98,8 @@ This writes enola's instructions into the files your agents already read - Claud
 | **Copilot (VS Code)** | `code --add-mcp '{"name":"enola","command":"enola"}'` |
 | **Cursor** | add the block below to `.cursor/mcp.json` (or `~/.cursor/mcp.json` for every project) |
 | **opencode** | already done by step 2 - it is the one client `enola install` registers for you |
-| **Codex, or any other MCP client** | add the same block to its MCP config |
+| **Codex** | `codex mcp add enola -- enola` |
+| **Other MCP clients** | add the block below to its MCP config |
 
 <details>
 <summary>MCP config block</summary>
