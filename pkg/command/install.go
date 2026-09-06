@@ -117,7 +117,7 @@ func (r *Runner) Install(args []string, remove bool) {
 			// Described by the installer itself, so this can never announce a hook that
 			// is not actually configured.
 			fmt.Println("Hooks:      yes")
-			for _, d := range install.HookSummary() {
+			for _, d := range install.HookSummary(opts) {
 				for i, line := range wrap(d, 66) {
 					prefix := "            · "
 					if i > 0 {
@@ -126,7 +126,15 @@ func (r *Runner) Install(args []string, remove bool) {
 					fmt.Println(prefix + line)
 				}
 			}
-			fmt.Println("            Never blocks, and never interrupts on failure.")
+			if install.InstallsSessionHooks(opts) {
+				fmt.Println("            Never blocks, and never interrupts on failure.")
+			}
+		} else if install.InstallsOpencodePlugin(opts) && !install.InstallsSessionHooks(opts) {
+			// opencode's --hooks is a plugin, not the grading loop. Offering "the loop"
+			// here would name a mechanism this run cannot install however it is re-run.
+			fmt.Println("Hooks:      no — instructions only, which an agent is free to ignore.")
+			fmt.Println("            Re-run with --hooks for opencode's plugin, which points a")
+			fmt.Println("            session's first searches at the index instead.")
 		} else {
 			fmt.Println("Hooks:      no — instructions only. Re-run with --hooks to automate the loop.")
 		}
@@ -174,7 +182,12 @@ func (r *Runner) Install(args []string, remove bool) {
 			switch {
 			case remove:
 				clearHookHeartbeat(repoDir, outDir)
-			case opts.Hooks:
+			case install.InstallsSessionHooks(opts):
+				// Only the session hooks, not every --hooks run. The heartbeat is what
+				// `doctor` compares against to say "configured on this date, never fired
+				// since", and opencode's plugin never invokes `enola hook` at all — so
+				// recording an opencode-only install here would manufacture exactly the
+				// broken-hook report this file exists to make trustworthy.
 				hookstate.RecordInstalled(outDir, opts.HookCommand)
 			}
 		}
@@ -182,11 +195,36 @@ func (r *Runner) Install(args []string, remove bool) {
 
 	if !remove && opts.Hooks {
 		fmt.Println("\nRestart your agent session for the hooks to take effect.")
-		fmt.Printf("Then `%s doctor` will tell you whether they are actually firing.\n", r.name())
+		// `doctor` reads the heartbeat the session hooks write, and only they write it.
+		// Offering it after an opencode-only install would send the user to a report
+		// that can only ever say the hooks have never fired.
+		if install.InstallsSessionHooks(opts) {
+			fmt.Printf("Then `%s doctor` will tell you whether they are actually firing.\n", r.name())
+		}
 		if touchedCodexHooks(applied) {
 			fmt.Println("Codex also requires you to approve a new hook once before it runs — inside Codex, run `/hooks`.")
 		}
 	}
+	if !remove && touchedOpencode(applied) {
+		// Said whether or not hooks were installed: opencode reads its config once at
+		// startup and never reloads it, so an instruction file and an MCP server
+		// registered mid-session are both invisible until it is restarted.
+		fmt.Println("\nopencode loads its configuration once at startup — quit and restart it for these to take effect.")
+	}
+}
+
+// touchedOpencode reports whether this run changed anything opencode reads.
+func touchedOpencode(rs []install.Result) bool {
+	for _, r := range rs {
+		if r.Action != install.ActionCreated && r.Action != install.ActionUpdated {
+			continue
+		}
+		p := filepath.ToSlash(r.Path)
+		if strings.Contains(p, "/.opencode/") || strings.Contains(p, "/.config/opencode/") {
+			return true
+		}
+	}
+	return false
 }
 
 // touchedCodexHooks reports whether this run wrote or updated Codex's hooks.json.

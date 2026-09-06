@@ -126,3 +126,48 @@ func body(o Options) string {
 	}
 	return out
 }
+
+// OpencodeGateNote replaces HooksNote for opencode, whose hooks are a plugin doing a
+// different job. Describing the Claude and Codex session hooks there would be the one
+// thing a config writer must never do: announce a mechanism it did not install.
+const OpencodeGateNote = `
+
+enola's opencode plugin is installed for this project. It does one thing: for the first
+searches of a session, ` + "`grep`" + `, ` + "`glob`" + ` and ` + "`list`" + ` are refused with a message naming the
+enola tool that answers the same question from the index. It stops as soon as any enola
+tool is called, and it gives up on its own after two refusals, so it can delay an answer
+but never prevent one. If enola reports no facts for the repository, run
+` + "`generate_snapshot`" + ` once and carry on.`
+
+// opencodeInstructions is the body of the file opencode loads through its `instructions`
+// list. Same text as every other target, with the plugin note in place of the hooks one.
+func opencodeInstructions(o Options) string {
+	out := Instructions
+	if o.Hooks {
+		out += OpencodeGateNote
+	}
+	if extra := strings.TrimSpace(o.ExtraInstructions); extra != "" {
+		out += "\n\n" + extra
+	}
+	return header() + out + "\n"
+}
+
+// gateSummary describes the opencode plugin for the installer's preview, alongside
+// HookSummary's description of the session hooks. Empty unless the plugin is actually
+// going to be written, for the same reason HookSummary lives next to the hook specs:
+// the preview must describe what this run configures, not what the tool can configure.
+func gateSummary(o Options) []string {
+	if !o.Hooks {
+		return nil
+	}
+	for _, t := range o.selectedTargets() {
+		if t == "opencode" {
+			return []string{
+				"in opencode, the first grep/glob/list of a session is refused with the " +
+					"enola tool that answers it from the index instead — bounded to two " +
+					"refusals, and dropped as soon as any enola tool is called",
+			}
+		}
+	}
+	return nil
+}

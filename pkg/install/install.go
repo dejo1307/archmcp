@@ -59,11 +59,11 @@ func (o Options) hookCommand() string {
 // user-level files, and Copilot's own owned-file format. Writing a second repo-local file
 // for a tool that already reads AGENTS.md would duplicate the instruction into the same
 // context window twice.
-var TargetNames = []string{"claude", "cursor", "agents", "codex", "copilot", "pi"}
+var TargetNames = []string{"claude", "cursor", "agents", "codex", "copilot", "pi", "opencode"}
 
 // agentsMdReaders are the tools served by the repo-root AGENTS.md, named in output so a
 // user can tell what coverage they actually got.
-const agentsMdReaders = "Codex, Copilot, Pi and other AGENTS.md-aware agents"
+const agentsMdReaders = "Codex, Copilot, Pi, opencode and other AGENTS.md-aware agents"
 
 // Install writes the instructions, and the hooks when asked, returning one Result per
 // file so the caller can show exactly what happened.
@@ -129,6 +129,8 @@ func runTarget(name string, o Options, remove bool) ([]Result, error) {
 		return globalAgentsTarget(o, remove, "pi", filepath.Join(".pi", "agent", "AGENTS.md"))
 	case "copilot":
 		return copilotTarget(o, remove)
+	case "opencode":
+		return opencodeTarget(o, remove)
 	default:
 		return nil, fmt.Errorf("unknown target %q", name)
 	}

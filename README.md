@@ -88,7 +88,7 @@ Both Ruby fact providers are on by default there. The gems are maintained by [Mu
 enola install --hooks
 ```
 
-This writes enola's instructions into the files your agents already read - Claude Code, Cursor, Copilot, Codex, Pi - and `--hooks` adds the two hooks that grade each session for you. It previews every change and asks before writing, never creates a shared file like `AGENTS.md` that wasn't already there, and `enola uninstall` reverses everything byte-for-byte, including the files and directories it created itself.
+This writes enola's instructions into the files your agents already read - Claude Code, Cursor, Copilot, Codex, Pi, opencode - and `--hooks` adds the two hooks that grade each session for you. In opencode, which has no hook configuration of that shape, `--hooks` installs a plugin instead: the first `grep`, `glob` or `list` of a session is refused with the enola tool that answers it from the index, bounded to two refusals and dropped the moment any enola tool is called. Without `--hooks` you get instructions and nothing else, which an agent is free to read and then ignore - on a small local model it usually does. It previews every change and asks before writing, never creates a shared file like `AGENTS.md` that wasn't already there, and `enola uninstall` reverses everything byte-for-byte, including the files and directories it created itself.
 
 **3. Give your agent the graph over MCP.** Pick your client:
 
@@ -97,6 +97,7 @@ This writes enola's instructions into the files your agents already read - Claud
 | **Claude Code** | `claude mcp add enola enola` |
 | **Copilot (VS Code)** | `code --add-mcp '{"name":"enola","command":"enola"}'` |
 | **Cursor** | add the block below to `.cursor/mcp.json` (or `~/.cursor/mcp.json` for every project) |
+| **opencode** | already done by step 2 - it is the one client `enola install` registers for you |
 | **Codex** | `codex mcp add enola -- enola` |
 | **Other MCP clients** | add the block below to its MCP config |
 
