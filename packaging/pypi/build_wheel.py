@@ -55,6 +55,11 @@ PLATFORM_TAG_RE = re.compile(
     r"^(?:"
     r"macosx_\d{1,2}_\d{1,2}_(?:arm64|x86_64)"
     r"|manylinux_2_\d{1,2}_(?:aarch64|x86_64)"
+    # The legacy alias for manylinux_2_17. Not redundant: pip only learned the
+    # PEP 600 manylinux_<major>_<minor> spelling in 20.3, and RHEL and Rocky 8
+    # ship pip 20.2.4, so a wheel tagged only manylinux_2_17 is invisible to
+    # stock pip on exactly the distros the low glibc floor exists to reach.
+    r"|manylinux2014_(?:aarch64|x86_64)"
     r"|musllinux_1_\d{1,2}_(?:aarch64|x86_64)"
     r"|win_amd64|win_arm64"
     r")$"
@@ -153,14 +158,18 @@ def build_metadata(version: str, description: str) -> bytes:
     return ("\n".join(headers) + "\n\n" + description).encode("utf-8")
 
 
-def build_wheel_file(platform_tag: str) -> bytes:
-    return (
-        "Wheel-Version: 1.0\n"
-        "Generator: enola build_wheel.py\n"
+def build_wheel_file(tags: list[str]) -> bytes:
+    """WHEEL lists one Tag line per platform, even though the filename joins them
+    with dots. Both spellings describe the same file; the filename is a compressed
+    tag set and this is its expansion."""
+    lines = [
+        "Wheel-Version: 1.0",
+        "Generator: enola build_wheel.py",
         # False because the payload is a platform binary, not pure Python.
-        "Root-Is-Purelib: false\n"
-        f"Tag: py3-none-{platform_tag}\n"
-    ).encode("utf-8")
+        "Root-Is-Purelib: false",
+    ]
+    lines += [f"Tag: py3-none-{t}" for t in tags]
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
 def main() -> int:
@@ -193,9 +202,15 @@ def main() -> int:
         )
         return 2
 
-    if not PLATFORM_TAG_RE.match(args.platform_tag):
+    # A "compressed tag set": several platform tags in one wheel, joined by dots
+    # in the filename and listed one per line in WHEEL. It is how a single file
+    # answers to both the modern and the legacy spelling of the same platform.
+    tags = args.platform_tag.split(".")
+    bad = [t for t in tags if not PLATFORM_TAG_RE.match(t)]
+    if bad:
         print(
-            f"error: {args.platform_tag!r} is not a well-formed platform tag.\n"
+            f"error: {', '.join(repr(t) for t in bad)} "
+            f"{'is not a well-formed platform tag' if len(bad) == 1 else 'are not well-formed platform tags'}.\n"
             "A wheel with a tag nothing matches installs nowhere and fails "
             "silently, so the shape is checked before the wheel is written.",
             file=sys.stderr,
@@ -215,7 +230,7 @@ def main() -> int:
     info_dir = f"{DIST_NAME}-{args.version}.dist-info"
     # pip installs this name verbatim into the script directory, so it is the
     # command users end up typing.
-    command = "enola.exe" if args.platform_tag.startswith("win") else "enola"
+    command = "enola.exe" if tags[0].startswith("win") else "enola"
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     out = args.outdir / f"{DIST_NAME}-{args.version}-py3-none-{args.platform_tag}.whl"
@@ -223,7 +238,7 @@ def main() -> int:
     w = WheelWriter(out)
     w.add(f"{data_dir}/{command}", binary, executable=True)
     w.add(f"{info_dir}/METADATA", build_metadata(args.version, description))
-    w.add(f"{info_dir}/WHEEL", build_wheel_file(args.platform_tag))
+    w.add(f"{info_dir}/WHEEL", build_wheel_file(tags))
     # The vendored Swift and Dart tree-sitter grammars are MIT, and MIT requires
     # the notice to travel with copies of the software. The release tarball
     # already carries both files for exactly this reason; the wheel is the copy
