@@ -226,7 +226,13 @@ step "Phase 3.2  Wheels, tagged at the floor each binary actually needs"
 declare -a WHEELS=()
 for m in "${MEASURED[@]}"; do
   IMAGE="${m%%|*}"; rest="${m#*|}"; MAX="${rest%%|*}"; OUT_NAME="${rest#*|}"
+  # Dual-tagged, matching the release workflow. pip only understands the PEP 600
+  # manylinux_<major>_<minor> spelling from 20.3 onward, and RHEL and Rocky 8 ship
+  # pip 20.2.4, so the legacy manylinux2014 alias is what reaches them.
   TAG="manylinux_${MAX//./_}_${WHEEL_ARCH}"
+  if [ "$MAX" = "2.17" ]; then
+    TAG="${TAG}.manylinux2014_${WHEEL_ARCH}"
+  fi
   if python3 "$REPO_ROOT/packaging/pypi/build_wheel.py" \
       --binary "$WORK/out/$OUT_NAME" --version "$VERSION" \
       --platform-tag "$TAG" --outdir "$WORK/dist" >/dev/null 2>&1; then
