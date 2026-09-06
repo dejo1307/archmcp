@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/enola-labs/enola/internal/version"
 )
 
 func TestVerifyChecksum(t *testing.T) {
@@ -219,4 +222,60 @@ func buildTarGz(t *testing.T, name string, data []byte) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+// TestExternallyManagedRefusesAPipInstall pins the guard that keeps `enola
+// upgrade` from fighting pip for ownership of the binary.
+//
+// The failure this prevents is not a crash. Replacing the file WORKS, once: the
+// user gets the new version and nothing complains, and then some later pip
+// operation quietly puts the old one back. So the test asserts the two things
+// that make the guard useful rather than merely present, namely that it names
+// the command that does work, and that it names the PyPI project rather than the
+// command name (`enola-cli` and `enola` differ, because `enola` was taken).
+func TestExternallyManagedRefusesAPipInstall(t *testing.T) {
+	if msg := externallyManaged(); msg != "" {
+		t.Fatalf("a source build must be free to self-update, got:\n%s", msg)
+	}
+
+	prev := version.InstallMethod
+	version.InstallMethod = "pip"
+	t.Cleanup(func() { version.InstallMethod = prev })
+
+	msg := externallyManaged()
+	if msg == "" {
+		t.Fatal("expected a pip install to be refused")
+	}
+	if !strings.Contains(msg, "pip install -U enola-cli") {
+		t.Errorf("message does not name the command that works:\n%s", msg)
+	}
+	if strings.Contains(msg, "enola upgrade") {
+		t.Errorf("message points back at the command being refused:\n%s", msg)
+	}
+}
+
+// TestRunOnAPipInstallNeverReachesTheNetwork pins WHERE the guard sits.
+//
+// Checking after the release lookup would still refuse the upgrade, so a test
+// that only asserted the refusal would pass on a version of this that spends a
+// GitHub API round trip first. It would also inherit that call's failure modes:
+// offline, or rate limited by a shared IP, would turn a message the user needs
+// into an error about something irrelevant.
+func TestRunOnAPipInstallNeverReachesTheNetwork(t *testing.T) {
+	prev := version.InstallMethod
+	version.InstallMethod = "pip"
+	t.Cleanup(func() { version.InstallMethod = prev })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		t.Errorf("pip install still contacted the network: %s", r.URL)
+	}))
+	defer srv.Close()
+
+	prevAPI, prevDL := apiBase, downloadBase
+	apiBase, downloadBase = srv.URL, srv.URL
+	t.Cleanup(func() { apiBase, downloadBase = prevAPI, prevDL })
+
+	if err := Run(context.Background(), "0.4.12"); err != nil {
+		t.Fatalf("refusing to self-update is not an error condition, got %v", err)
+	}
 }

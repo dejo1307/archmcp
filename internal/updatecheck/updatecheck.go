@@ -245,7 +245,21 @@ func HumanLine(extractorVersion string) string {
 	if n.ExtractorMoved {
 		msg += " — extractors changed since your build, so this graph is missing facts a current enola would extract"
 	}
-	return msg + ". Run `enola upgrade`."
+	return msg + ". " + upgradeImperative()
+}
+
+// upgradeImperative names the command that actually works for how this build was
+// installed.
+//
+// The imperative is the point of HumanLine, so it cannot simply be dropped for a
+// pip install, and it cannot stay `enola upgrade` either: that command refuses on
+// a pip install (see internal/upgrade.externallyManaged), so telling someone to
+// run it would cost them a round trip to be told to do something else.
+func upgradeImperative() string {
+	if version.InstallMethod == "pip" {
+		return "Run `pip install -U enola-cli`."
+	}
+	return "Run `enola upgrade`."
 }
 
 // Fprint writes HumanLine to w, set off by a blank line, when there is something to
