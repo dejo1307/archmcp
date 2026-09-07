@@ -217,10 +217,11 @@
   <div class="topbar">
     <div class="brand"><h1>{{.Title}}<span class="brand-dot">.</span>{{if .HasReceipt}} <span class="note">· {{.Snapshot.RepoName}}{{if .Snapshot.Age}} · updated {{.Snapshot.Age}}{{end}}</span>{{end}}</h1></div>
     <div class="top-actions">
-      <span class="note" id="refresh-status" title="Auto-checks for a new snapshot every 5s"></span>
-      <button class="secondary-action" type="button" onclick="refreshSnapshot(true)" title="Reload the latest snapshot from disk">Refresh</button>
+      <button class="secondary-action" type="button" onclick="location.reload()" title="Reload the latest snapshot from disk">Refresh</button>
     </div>
   </div>
+
+  {{if .RefreshError}}<div class="snapshot-alert" role="alert">{{.RefreshError}}</div>{{end}}
 
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
     <button class="tab active" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview" onclick="selectTab('overview')">Findings</button>
@@ -237,7 +238,7 @@
   <section class="hero">
     <div class="section-kicker">Repository intelligence</div>
     <h1>{{if .HasGraph}}Your architecture is mapped.{{else}}Ready to map this repository.{{end}}</h1>
-    {{if .HasGraph}}<p>Review findings, changes, and the architecture captured for this repository.</p>{{else}}<p>No snapshot exists for this repository yet. Generate one and this page will update automatically.</p>{{if .GenerateCommand}}<p><code>{{.GenerateCommand}}</code></p>{{end}}{{end}}
+    {{if .HasGraph}}<p>Review findings, changes, and the architecture captured for this repository.</p>{{else}}<p>No snapshot exists for this repository yet. Generate one, then use Refresh to load it here.</p>{{if .GenerateCommand}}<p><code>{{.GenerateCommand}}</code></p>{{end}}{{end}}
     <div class="hero-meta">
       {{if .HasReceipt}}{{with .Receipt}}<span class="chip">{{.FactCount}} facts</span><span class="chip">{{.InsightCount}} findings</span>{{end}}{{end}}
       {{if .Insights}}<button type="button" class="primary-action" onclick="openModal('insights-modal')">Review findings</button>{{end}}
@@ -588,7 +589,7 @@
       <h3>Insights</h3>
       <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
     </div>
-    <div class="insight-summary">{{.InsightStructural}} <span title="Confidence 100% — a proven, code-verified finding">structural</span> &middot; {{.InsightCandidate}} <span title="Confidence below 100% — a heuristic suggestion worth reviewing">candidate{{if ne .InsightCandidate 1}}s{{end}}</span> &mdash; grouped by explainer, click a row to expand</div>
+    <div class="insight-summary">{{.InsightStructural}} <span title="Confidence 100% — a proven, code-verified finding">structural</span> &middot; {{.InsightCandidate}} <span title="Confidence below 100% — a heuristic suggestion worth reviewing">candidate{{if ne .InsightCandidate 1}}s{{end}}</span>{{if .InsightInformational}} &middot; {{.InsightInformational}} context{{end}} &mdash; grouped by explainer, click a row to expand</div>
     <div class="insight-filter">
       <label for="insight-band">Confidence</label>
       <select id="insight-band" onchange="filterInsights(this.value)">
@@ -597,6 +598,7 @@
         <option value="high">High (85&ndash;99%)</option>
         <option value="medium">Medium (65&ndash;84%)</option>
         <option value="low">Low (&lt;65%)</option>
+        <option value="informational">Context</option>
       </select>
       <span class="note"><span id="insight-shown">{{.InsightTotal}}</span> shown</span>
     </div>
@@ -610,7 +612,7 @@
       <div class="table-scroll"><table>
         <thead><tr><th>Title</th><th class="num">Confidence</th><th>Evidence</th></tr></thead>
         <tbody>
-          {{range .Items}}<tr data-conf="{{.Confidence}}"><td class="title">{{.Title}}{{if .Action}}<div class="finding-action">→ {{.Action}}</div>{{end}}</td><td class="num">{{.Confidence}}%{{if .Structural}}<span class="structural-chip" title="Confidence 100% — a proven, code-verified finding">structural</span>{{else if .Informational}}<span class="structural-chip" title="Describes the architecture — not a problem to fix">context</span>{{end}}</td><td>{{.Evidence}}</td></tr>{{end}}
+          {{range .Items}}<tr data-band="{{.Band}}"><td class="title">{{.Title}}{{if .Action}}<div class="finding-action">→ {{.Action}}</div>{{end}}</td><td class="num">{{.Confidence}}%{{if .Structural}}<span class="structural-chip" title="Confidence 100% — a proven, code-verified finding">structural</span>{{else if .Informational}}<span class="structural-chip" title="Describes the architecture — not a problem to fix">context</span>{{end}}</td><td>{{.Evidence}}</td></tr>{{end}}
         </tbody>
       </table></div>
     </details>
@@ -704,22 +706,6 @@
 {{block "extra-modals" $}}{{end}}
 
 <script>
-  function setRefreshStatus(text) {
-    var status = document.getElementById('refresh-status');
-    if (status) status.textContent = text;
-  }
-  function refreshSnapshot(manual) {
-    fetch('/api/refresh', {cache: 'no-store'})
-      .then(function(response) { return response.json(); })
-      .then(function(result) {
-        if (result.changed || manual) { location.reload(); return; }
-        setRefreshStatus('Checked ' + new Date().toLocaleTimeString());
-      })
-      .catch(function() {
-        if (manual) { location.reload(); return; }
-        setRefreshStatus('Check failed');
-      });
-  }
   function selectTab(name, updateHash) {
     var panel = document.getElementById('panel-' + name);
     var tab = document.getElementById('tab-' + name);
@@ -753,15 +739,8 @@
     }
   }
 
-  // insightBandMatch reports whether a row's confidence percent falls in the band.
-  function insightBandMatch(band, c) {
-    switch (band) {
-      case 'structural': return c >= 100;
-      case 'high':       return c >= 85 && c < 100;
-      case 'medium':     return c >= 65 && c < 85;
-      case 'low':        return c < 65;
-      default:           return true; // all
-    }
+  function insightBandMatch(selected, rowBand) {
+    return selected === 'all' || selected === rowBand;
   }
   // filterInsights shows only rows in the chosen confidence band, then rescales each
   // explainer group's count and bar to the visible rows and hides emptied groups.
@@ -774,7 +753,7 @@
     groups.forEach(function (g) {
       var n = 0;
       g.querySelectorAll('tbody tr').forEach(function (r) {
-        var show = insightBandMatch(band, parseInt(r.getAttribute('data-conf'), 10));
+        var show = insightBandMatch(band, r.getAttribute('data-band'));
         r.style.display = show ? '' : 'none';
         if (show) n++;
       });
@@ -819,7 +798,19 @@
     graphNodes().forEach(function(n) { n.classList.remove('active', 'dim'); });
     graphEdges().forEach(function(e) { e.classList.remove('active', 'dim'); });
   }
+  function resetInspectorContent() {
+    ['module-detail-name', 'module-detail-file', 'module-detail-in', 'module-detail-out'].forEach(function(id) {
+      var field = document.getElementById(id);
+      if (field) field.textContent = '';
+    });
+    var members = document.getElementById('module-detail-members');
+    if (members) {
+      members.innerHTML = '';
+      members.hidden = true;
+    }
+  }
   function openInspector() {
+    resetInspectorContent();
     var empty = document.getElementById('inspector-empty');
     var detail = document.getElementById('module-detail');
     var clearBtn = document.getElementById('inspector-clear');
@@ -830,6 +821,7 @@
   }
   function clearInspector() {
     clearGraphFocus();
+    resetInspectorContent();
     document.querySelectorAll('.finding-button').forEach(function(b) { b.classList.remove('active'); });
     var detail = document.getElementById('module-detail');
     var empty = document.getElementById('inspector-empty');
@@ -1016,8 +1008,6 @@
   window.addEventListener('hashchange', initialTab);
   initialTab();
   restoreFindingInspector();
-  setRefreshStatus('Checked ' + new Date().toLocaleTimeString());
-  window.setInterval(function() { refreshSnapshot(false); }, 5000);
 </script>
 </body>
 </html>

@@ -334,6 +334,18 @@ func (e *Engine) workspaceRepo(b *snapshotBundle) string {
 // snapshot is loaded.
 func (e *Engine) GraphReceipt() *facts.GraphReceipt {
 	b := e.current.Load()
+	return e.graphReceipt(b)
+}
+
+// DashboardState captures the store, snapshot, and graph receipt from one
+// published bundle. A concurrent regeneration may publish another bundle after
+// this returns, but these three values will continue to describe one generation.
+func (e *Engine) DashboardState() (*facts.Store, *facts.Snapshot, *facts.GraphReceipt) {
+	b := e.current.Load()
+	return b.store, b.snapshot, e.graphReceipt(b)
+}
+
+func (e *Engine) graphReceipt(b *snapshotBundle) *facts.GraphReceipt {
 	if b.snapshot == nil {
 		return nil
 	}

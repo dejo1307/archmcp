@@ -17,9 +17,10 @@ const insightGroupPreviewCap = 5
 // insightRow is one insight in a category group of the Insights modal.
 type insightRow struct {
 	Title         string
-	Confidence    int  // 0-100
-	Structural    bool // confidence >= 1.0 and not Informational — a proven, non-heuristic finding
-	Informational bool // describes the architecture rather than flagging a problem; never gradeable (see pkg/check)
+	Confidence    int    // 0-100
+	Band          string // structural | high | medium | low | informational
+	Structural    bool   // confidence >= 1.0 and not Informational — a proven, non-heuristic finding
+	Informational bool   // describes the architecture rather than flagging a problem; never gradeable (see pkg/check)
 	Evidence      string
 	Action        string // the finding's first suggested action, if any — the concrete "what to do about it"
 }
@@ -30,8 +31,8 @@ type insightGroup struct {
 	Source        string
 	Label         string
 	Count         int
-	BarPct        int  // 0-100, relative to the largest group
-	HasStructural bool // true if any item is a proven (Structural) finding — ranks the group ahead of larger but purely heuristic ones
+	BarPct        int          // 0-100, relative to the largest group
+	HasStructural bool         // true if any item is a proven (Structural) finding — ranks the group ahead of larger but purely heuristic ones
 	Items         []insightRow // full list, for the modal
 	Shown         []insightRow // capped to insightGroupPreviewCap, for the overview
 	Hidden        int          // len(Items) - len(Shown)
@@ -115,13 +116,21 @@ func insightDetails(ins []facts.Insight, labels map[string]string) (groups []ins
 		}
 		conf := int(math.Round(in.Confidence * 100))
 		isStructural := in.Confidence >= 1.0 && !in.Informational
+		band := "low"
 		switch {
 		case in.Informational:
+			band = "informational"
 			// Worth showing, but neither a proven problem nor a candidate to fix —
 			// pkg/check never grades these either. Counted in neither bucket.
 		case isStructural:
+			band = "structural"
 			structural++
 		default:
+			if in.Confidence >= 0.85 {
+				band = "high"
+			} else if in.Confidence >= 0.65 {
+				band = "medium"
+			}
 			candidate++
 		}
 		var action string
@@ -131,6 +140,7 @@ func insightDetails(ins []facts.Insight, labels map[string]string) (groups []ins
 		bySource[in.Source] = append(bySource[in.Source], insightRow{
 			Title:         in.Title,
 			Confidence:    conf,
+			Band:          band,
 			Structural:    isStructural,
 			Informational: in.Informational,
 			Evidence:      firstEvidence(in.Evidence),

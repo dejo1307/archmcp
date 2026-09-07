@@ -299,7 +299,7 @@ func main() {
 
 	// Start the localhost HTTP dashboard alongside the MCP server. It binds a
 	// free loopback port — plus the shared, bookmarkable one if it can claim it —
-	// and serves a read-only, auto-refreshing view of THIS server's graph and
+	// and serves a read-only view of THIS server's graph and
 	// activity, with links to every other server running. Non-fatal: a dashboard
 	// failure must never stop the MCP server. The port is recorded on the tracker
 	// BEFORE the startup write, so a separate --status invocation can print the
@@ -308,6 +308,7 @@ func main() {
 		opts := dashboard.Options{
 			Tracker:    tracker,
 			StablePort: dashboard.ResolveStablePort(cfg.Dashboard.Port),
+			HistoryDir: cfg.History.Dir,
 		}
 		if dash, err := dashboard.Start(eng, opts); err != nil {
 			log.Printf("dashboard: not started: %v (continuing without it)", err)

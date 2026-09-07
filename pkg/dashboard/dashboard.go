@@ -106,6 +106,10 @@ type Options struct {
 	SnapshotPath            string
 	GenerateCommand         string
 	CurrentExtractorVersion string
+
+	// HistoryDir is the configured history.dir override. Change summaries must
+	// read the same timeline that snapshot generation writes.
+	HistoryDir string
 }
 
 // defaultTitle is the product name shown when Options.Title is empty.
@@ -124,16 +128,10 @@ type engineView interface {
 	GetArtifact(name string) ([]byte, error)
 	ActiveRepo() string
 	OutputDir(repoPath string) string
-	// Store exposes the live fact store, from which the dashboard enumerates the
-	// service and cross-repo-edge lists behind the graph-receipt counters (the
-	// receipt itself stores only the counts). Reads are concurrency-safe.
-	Store() *facts.Store
-	// GraphReceipt describes the graph THIS engine holds, assembled in memory.
-	// It is what the graph panel renders, so that panel and the store-derived
-	// panels below it can never describe different repo sets — which reading the
-	// machine-wide ~/.enola/receipt.json would allow whenever a second server is
-	// running. Nil when no snapshot is loaded.
-	GraphReceipt() *facts.GraphReceipt
+	// DashboardState captures one immutable engine publication. Every snapshot
+	// panel in a response must use these returned values rather than independently
+	// loading live accessors that a concurrent regeneration could swap between.
+	DashboardState() (*facts.Store, *facts.Snapshot, *facts.GraphReceipt)
 }
 
 // Server is a running dashboard HTTP server bound to a loopback port.
@@ -187,7 +185,6 @@ func Start(eng *bootstrap.Engine, opts Options) (*Server, error) {
 
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/", s.handleIndex)
-	s.mux.HandleFunc("/api/refresh", s.handleRefresh)
 
 	go func() {
 		if err := http.Serve(ln, s.mux); err != nil {
@@ -284,43 +281,29 @@ func (s *Server) Port() int { return s.port }
 // URL returns the dashboard's localhost URL.
 func (s *Server) URL() string { return fmt.Sprintf("http://127.0.0.1:%d", s.port) }
 
-// handleIndex gathers live data on each request (so the periodic reload shows
-// fresh numbers) and renders the page. Only the root path is served.
+// handleIndex gathers live data on each request and renders the page. Only the
+// root path is served; the user decides when to refresh the displayed graph.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
 
+	var refreshErr error
 	if s.opts.Refresh != nil {
 		if _, err := s.opts.Refresh(); err != nil {
+			refreshErr = err
 			log.Printf("dashboard: refreshing snapshot: %v", err)
 		}
 	}
 	data := s.buildPageForModule(r.URL.Query().Get("module"))
+	if refreshErr != nil {
+		data.RefreshError = "Could not load the latest snapshot. The previously loaded graph is still shown."
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, data); err != nil {
 		log.Printf("dashboard: render failed: %v", err)
 	}
-}
-
-func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/api/refresh" {
-		http.NotFound(w, r)
-		return
-	}
-	changed := false
-	var err error
-	if s.opts.Refresh != nil {
-		changed, err = s.opts.Refresh()
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]any{"changed": false, "error": err.Error()})
-		return
-	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"changed": changed})
 }
 
 // titleOr returns the configured product name, or the default when unset.
@@ -446,6 +429,7 @@ type pageData struct {
 	SnapshotPath    string
 	GenerateCommand string
 	VersionNotice   string
+	RefreshError    string
 
 	// This server's own identity. Never sourced from the cross-process aggregate:
 	// with several agent terminals open, that would name a sibling process.
@@ -499,10 +483,11 @@ type pageData struct {
 
 	// Insights (grouped by explainer) back the clickable Insights card; the
 	// structural/candidate split is shown in the modal header.
-	Insights          []insightGroup
-	InsightStructural int
-	InsightCandidate  int
-	InsightTotal      int // structural + candidate; initial "shown" count for the modal filter
+	Insights             []insightGroup
+	InsightStructural    int
+	InsightCandidate     int
+	InsightInformational int
+	InsightTotal         int
 
 	// Extraction-quality proof data: per-service coverage and the unmatched-route
 	// list (from the live store), plus the capped skip/parse-error samples (from the
@@ -533,6 +518,7 @@ func (s *Server) buildPageForModule(module string) pageData {
 	}
 
 	now := time.Now()
+	store, publishedSnapshot, graphReceipt := s.eng.DashboardState()
 
 	// Identity comes from THIS process's tracker. A user running one server per
 	// agent terminal must be able to tell, from the page alone, which one they are
@@ -581,7 +567,7 @@ func (s *Server) buildPageForModule(module string) pageData {
 
 	// Current-snapshot receipt: prefer the live in-memory receipt, falling back
 	// to the last-written one on disk (see currentReceipt).
-	if rv := s.currentReceipt(); rv != nil {
+	if rv := s.currentReceipt(publishedSnapshot); rv != nil {
 		data.HasReceipt = true
 		data.Receipt = rv
 		data.Snapshot = summarizeSnapshot(rv, now)
@@ -600,50 +586,61 @@ func (s *Server) buildPageForModule(module string) pageData {
 	// always describes the same store as the services/insights/coverage panels
 	// below it. Reading the shared ~/.enola/receipt.json here would show whichever
 	// repos another running server snapshotted last.
-	if gv := s.eng.GraphReceipt(); gv != nil {
+	if graphReceipt != nil {
 		data.HasGraph = true
-		data.Graph = gv
+		data.Graph = graphReceipt
 	} else {
 		data.GraphNote = "No graph loaded in this server yet — run generate_snapshot to populate this."
 	}
 
 	// Service and cross-repo-edge lists from the live store, backing the clickable
 	// counters. Empty (store not loaded) → the cards render as plain numbers.
-	data.Services, data.CrossRepoEdges = graphDetails(s.eng.Store())
+	data.Services, data.CrossRepoEdges = graphDetails(store)
 	data.EdgeDiagram = buildEdgeDiagram(data.Services, data.CrossRepoEdges)
 	currentSnapshotID := ""
 	if data.Receipt != nil {
 		currentSnapshotID = data.Receipt.SnapshotID
 	}
-	data.ModuleGraph = s.readModuleGraph(currentSnapshotID, module)
-	data.Changes = s.readChangeSummary(s.eng.ActiveRepo(), currentSnapshotID)
+	data.ModuleGraph = s.readModuleGraph(store, currentSnapshotID, module)
+	activeRepo := s.eng.ActiveRepo()
+	if publishedSnapshot != nil && publishedSnapshot.Meta.RepoPath != "" {
+		activeRepo = publishedSnapshot.Meta.RepoPath
+	}
+	data.Changes = s.readChangeSummary(activeRepo, currentSnapshotID)
 
 	// Insight list (grouped by explainer) backing the clickable Insights counter.
 	// Empty → the counter renders as a plain number.
-	data.Insights, data.InsightStructural, data.InsightCandidate = insightDetails(s.currentInsights(), s.labels)
-	data.InsightTotal = data.InsightStructural + data.InsightCandidate
+	data.Insights, data.InsightStructural, data.InsightCandidate = insightDetails(s.currentInsights(publishedSnapshot), s.labels)
+	for _, group := range data.Insights {
+		data.InsightTotal += group.Count
+		for _, item := range group.Items {
+			if item.Informational {
+				data.InsightInformational++
+			}
+		}
+	}
 
 	// Cross-repo coverage + unmatched routes from the live store, backing the
 	// clickable Extraction-quality coverage cards.
-	data.Coverage, data.UnresolvedRoutes = coverageDetails(s.eng.Store())
+	data.Coverage, data.UnresolvedRoutes = coverageDetails(store)
 
 	// Whatever a wrapper's overlay blocks render, recomputed per request from the
 	// same live store as everything above.
 	if s.opts.Extra != nil {
-		data.Extra = s.opts.Extra(s.eng.Store())
+		data.Extra = s.opts.Extra(store)
 	}
 
 	return data
 }
 
-func (s *Server) readModuleGraph(snapshotID, focus string) *moduleGraphView {
+func (s *Server) readModuleGraph(store *facts.Store, snapshotID, focus string) *moduleGraphView {
 	key := snapshotID + "\x00" + focus
 	s.graphMu.Lock()
 	defer s.graphMu.Unlock()
 	if snapshotID != "" && key == s.graphCacheKey {
 		return s.graphCache
 	}
-	result := buildModuleGraphFocused(s.eng.Store(), focus)
+	result := buildModuleGraphFocused(store, focus)
 	s.graphCacheKey, s.graphCache = key, result
 	return result
 }
@@ -654,16 +651,16 @@ func (s *Server) readChangeSummary(repoPath, snapshotID string) changeSummary {
 	if snapshotID != "" && snapshotID == s.changeCacheID {
 		return s.changeCache
 	}
-	result := readChangeSummary(repoPath, snapshotID, s.labels)
+	result := readChangeSummary(repoPath, snapshotID, s.opts.HistoryDir, s.labels)
 	s.changeCacheID, s.changeCache = snapshotID, result
 	return result
 }
 
-func readChangeSummary(repoPath, snapshotID string, labels map[string]string) changeSummary {
+func readChangeSummary(repoPath, snapshotID, historyDir string, labels map[string]string) changeSummary {
 	if repoPath == "" || snapshotID == "" {
 		return changeSummary{}
 	}
-	root, err := history.Root(repoPath, "")
+	root, err := history.Root(repoPath, historyDir)
 	if err != nil {
 		return changeSummary{}
 	}
@@ -842,7 +839,13 @@ func shortDigest(value string, n int) string {
 // generate_snapshot), but falls back to the last-written receipt on disk when the
 // in-memory one is missing or blank — the common case after a server restart,
 // where AutoLoadSnapshot restores facts without full receipt metadata.
-func (s *Server) currentReceipt() *facts.Receipt {
+func (s *Server) currentReceipt(snapshot *facts.Snapshot) *facts.Receipt {
+	if snapshot != nil {
+		rv := snapshot.Meta.Receipt()
+		if rv.SnapshotID != "" {
+			return &rv
+		}
+	}
 	if b, err := s.eng.GetArtifact("receipt.json"); err == nil {
 		var rv facts.Receipt
 		if err := json.Unmarshal(b, &rv); err == nil && rv.SnapshotID != "" {
@@ -870,10 +873,15 @@ func (s *Server) currentReceipt() *facts.Receipt {
 // falls back to the last-written insights.json on disk — AutoLoadSnapshot restores
 // facts without the snapshot's insights, so after a server restart the in-memory
 // list is empty while a full one persists at <repo>/.enola/insights.json.
-func (s *Server) currentInsights() []facts.Insight {
+func (s *Server) currentInsights(snapshot *facts.Snapshot) []facts.Insight {
+	// A published empty slice is authoritative: falling through to an older disk
+	// artifact would resurrect findings that the current generation resolved.
+	if snapshot != nil {
+		return snapshot.Insights
+	}
 	if b, err := s.eng.GetArtifact("insights.json"); err == nil {
 		var ins []facts.Insight
-		if err := json.Unmarshal(b, &ins); err == nil && len(ins) > 0 {
+		if err := json.Unmarshal(b, &ins); err == nil {
 			return ins
 		}
 	}

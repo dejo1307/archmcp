@@ -860,7 +860,7 @@ Open the latest snapshot directly:
 enola dashboard --open
 ```
 
-This serves only the dashboard and stays attached to the terminal until Ctrl-C. An MCP server is not required. Startup prints the selected snapshot directory and complete `http://` URL. Use `enola --status` in another terminal to list running sessions and their dashboard URLs. Starting the MCP server also starts the same **read-only dashboard** on a free loopback port (`127.0.0.1`), printed to stderr at startup. A standalone dashboard checks for newer snapshots written to its selected directory and reloads the page when one appears.
+This serves only the dashboard and stays attached to the terminal until Ctrl-C. An MCP server is not required. Startup prints the selected snapshot directory and complete `http://` URL. Use `enola --status` in another terminal to list running sessions and their dashboard URLs. Starting the MCP server also starts the same **read-only dashboard** on a free loopback port (`127.0.0.1`), printed to stderr at startup. A standalone dashboard keeps the current graph stable until you use **Refresh** to load a newer snapshot from its selected directory.
 
 The dashboard is organized into six tabs:
 
@@ -873,7 +873,7 @@ The dashboard is organized into six tabs:
 
 It is strictly a viewer: it never extracts source or writes snapshot data. It binds loopback only and serves nothing but the dashboard. **Refresh** checks the selected snapshot directory immediately. Pass `--no-dashboard` to skip the dashboard attached to an MCP server.
 
-`enola --generate` is different: it generates the snapshot files and exits, without starting an MCP server or dashboard and without registering a running instance. A running standalone dashboard notices that publication and reloads it. A normal repository dashboard restores only that repository's snapshot; pass an explicit cluster config to display a multi-repository graph.
+`enola --generate` is different: it generates the snapshot files and exits, without starting an MCP server or dashboard and without registering a running instance. Use **Refresh** in a running standalone dashboard to load that publication. A normal repository dashboard restores only that repository's snapshot; pass an explicit cluster config to display a multi-repository graph.
 
 #### Several servers at once
 

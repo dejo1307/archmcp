@@ -79,10 +79,11 @@ func TestAssessQualityEscalatesOnlyMaterialExtractorGaps(t *testing.T) {
 	}
 }
 
-func TestReadChangeSummaryMatchesLoadedSnapshot(t *testing.T) {
+func TestReadChangeSummaryMatchesLoadedSnapshotInConfiguredHistory(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := t.TempDir()
-	root, err := history.Root(repo, "")
+	const historyDir = ".enola/history"
+	root, err := history.Root(repo, historyDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,11 +106,11 @@ func TestReadChangeSummaryMatchesLoadedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := readChangeSummary(repo, "sha256:loaded", mergedLabels(nil))
+	got := readChangeSummary(repo, "sha256:loaded", historyDir, mergedLabels(nil))
 	if !got.Available || got.FactsAdded != 2 || got.EdgesAdded != 7 || got.FactsRemoved != 0 {
 		t.Fatalf("summary = %+v, want loaded snapshot rather than newest history entry", got)
 	}
-	if got := readChangeSummary(repo, "sha256:missing", mergedLabels(nil)); got.Available {
+	if got := readChangeSummary(repo, "sha256:missing", historyDir, mergedLabels(nil)); got.Available {
 		t.Fatalf("missing snapshot unexpectedly returned %+v", got)
 	}
 }
@@ -155,6 +156,7 @@ type fakeArtifacts struct {
 	activeRepo string
 	outputDir  string
 	store      *facts.Store
+	snapshot   *facts.Snapshot
 	graph      *facts.GraphReceipt
 }
 
@@ -172,9 +174,9 @@ func (f fakeArtifacts) ActiveRepo() string { return f.activeRepo }
 
 func (f fakeArtifacts) OutputDir(repoPath string) string { return f.outputDir }
 
-func (f fakeArtifacts) Store() *facts.Store { return f.store }
-
-func (f fakeArtifacts) GraphReceipt() *facts.GraphReceipt { return f.graph }
+func (f fakeArtifacts) DashboardState() (*facts.Store, *facts.Snapshot, *facts.GraphReceipt) {
+	return f.store, f.snapshot, f.graph
+}
 
 // newTestServer builds a Server exactly as Start does — parsed template and
 // merged insight labels included — but without binding a port. Constructing the
@@ -221,30 +223,27 @@ func TestHandlerDegradesGracefully(t *testing.T) {
 		"Ready to map this repository.",  // product-facing empty state
 		"No snapshot loaded yet",         // degraded current receipt
 		"No graph loaded in this server", // degraded graph receipt
-		"refreshSnapshot(false)",         // newer snapshots are discovered automatically
 	}
 	for _, want := range wantContains {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
 		}
 	}
+	if strings.Contains(body, "setInterval") || strings.Contains(body, "refreshSnapshot") {
+		t.Error("dashboard must refresh only when the user requests it")
+	}
 }
 
-func TestRefreshEndpointReportsPublishedSnapshot(t *testing.T) {
+func TestRefreshFailureIsVisibleAndKeepsServingThePage(t *testing.T) {
 	isolateHome(t)
-	calls := 0
 	s := newTestServer(54321, fakeArtifacts{}, Options{Refresh: func() (bool, error) {
-		calls++
-		return true, nil
+		return false, errors.New("restore failed")
 	}})
 
 	rec := httptest.NewRecorder()
-	s.handleRefresh(rec, httptest.NewRequest(http.MethodGet, "/api/refresh", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"changed":true`) {
-		t.Fatalf("refresh response = %d %s", rec.Code, rec.Body.String())
-	}
-	if calls != 1 {
-		t.Fatalf("refresh callback called %d times, want 1", calls)
+	s.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Could not load the latest snapshot") {
+		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -334,9 +333,43 @@ func TestReceiptDiskFallback(t *testing.T) {
 	}
 	s := newTestServer(9, fakeArtifacts{receipt: blank, activeRepo: repo, outputDir: outDir})
 
-	rv := s.currentReceipt()
+	rv := s.currentReceipt(nil)
 	if rv == nil || rv.SnapshotID != "sha256:ondisk" || rv.FactCount != 77 {
 		t.Fatalf("currentReceipt = %+v, want the on-disk receipt", rv)
+	}
+}
+
+func TestPublishedEmptyInsightsDoNotFallBackToStaleArtifact(t *testing.T) {
+	stale, err := json.Marshal([]facts.Insight{{Source: "cycles", Title: "resolved finding", Confidence: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServer(9, fakeArtifacts{insights: stale})
+	current := &facts.Snapshot{Insights: []facts.Insight{}}
+	if got := s.currentInsights(current); len(got) != 0 {
+		t.Fatalf("currentInsights = %+v, want authoritative empty publication", got)
+	}
+}
+
+func TestPageUsesOnePublishedDashboardState(t *testing.T) {
+	isolateHome(t)
+	st := facts.NewStore()
+	st.Add(facts.Fact{Kind: facts.KindService, Name: "fresh-service"})
+	fresh := &facts.Snapshot{Meta: facts.SnapshotMeta{SnapshotID: "fresh", FactCount: 1, RepoPath: "/fresh"}}
+	graph := &facts.GraphReceipt{SnapshotID: "fresh", ServiceCount: 1}
+	staleReceipt, err := json.Marshal(facts.Receipt{SnapshotID: "stale", FactCount: 99})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServer(9, fakeArtifacts{
+		receipt: staleReceipt, store: st, snapshot: fresh, graph: graph,
+	})
+	data := s.buildPageForModule("")
+	if data.Receipt == nil || data.Receipt.SnapshotID != "fresh" || data.Graph != graph {
+		t.Fatalf("page state = receipt %+v graph %+v, want one fresh publication", data.Receipt, data.Graph)
+	}
+	if len(data.Services) != 1 || data.Services[0].Name != "fresh-service" {
+		t.Fatalf("services = %+v, want store captured with fresh publication", data.Services)
 	}
 }
 
@@ -513,6 +546,9 @@ func TestInsightDetails(t *testing.T) {
 	if !groups[0].Items[0].Structural || groups[0].Items[0].Evidence != "foo" {
 		t.Errorf("cycles item = %+v, want structural + evidence foo", groups[0].Items[0])
 	}
+	if groups[0].Items[0].Band != "structural" {
+		t.Errorf("cycles band = %q, want structural", groups[0].Items[0].Band)
+	}
 	if groups[1].Source != "hotspots" || groups[1].Count != 3 || groups[1].BarPct != 100 || groups[1].HasStructural {
 		t.Errorf("group1 = %+v, want hotspots/3/100%%/not structural", groups[1])
 	}
@@ -522,6 +558,9 @@ func TestInsightDetails(t *testing.T) {
 	// Within hotspots, highest confidence first (85, 65, 65 by title).
 	if groups[1].Items[0].Title != "Alloc in loop" || groups[1].Items[0].Confidence != 85 {
 		t.Errorf("hotspots item0 = %+v, want Alloc in loop/85", groups[1].Items[0])
+	}
+	if groups[1].Items[0].Band != "high" || groups[1].Items[1].Band != "medium" {
+		t.Errorf("candidate bands = %q/%q, want high/medium", groups[1].Items[0].Band, groups[1].Items[1].Band)
 	}
 	if structural != 1 || candidate != 3 {
 		t.Errorf("split = %d structural / %d candidate, want 1/3", structural, candidate)
@@ -549,13 +588,30 @@ func TestInsightDetailsExcludesInformationalFromBothCounts(t *testing.T) {
 	for _, item := range groups[0].Items {
 		if item.Title == "Architecture pattern: declared" {
 			sawInformational = true
-			if !item.Informational || item.Structural {
+			if !item.Informational || item.Structural || item.Band != "informational" {
 				t.Errorf("informational item = %+v, want Informational=true, Structural=false", item)
 			}
 		}
 	}
 	if !sawInformational {
 		t.Fatalf("groups = %+v, want the informational item still present", groups)
+	}
+}
+
+func TestInsightBandUsesFindingSemanticsBeforeRoundedDisplay(t *testing.T) {
+	ins := []facts.Insight{
+		{Source: "hotspots", Title: "Near certain candidate", Confidence: 0.999},
+		{Source: "domain", Title: "Architecture context", Confidence: 1, Informational: true},
+	}
+	groups, _, _ := insightDetails(ins, mergedLabels(nil))
+	bands := map[string]string{}
+	for _, group := range groups {
+		for _, item := range group.Items {
+			bands[item.Title] = item.Band
+		}
+	}
+	if bands["Near certain candidate"] != "high" || bands["Architecture context"] != "informational" {
+		t.Fatalf("bands = %+v, want rounded 100%% candidate kept high and context kept informational", bands)
 	}
 }
 
@@ -702,8 +758,9 @@ func TestHandlerRendersInsightsModal(t *testing.T) {
 		// confidence-band filter wiring
 		`id="insight-band"`,
 		"Structural (100%)",
+		"Context",
 		`onchange="filterInsights(this.value)"`,
-		`data-conf="90"`,
+		`data-band="high"`,
 		`id="insight-shown"`,
 	} {
 		if !strings.Contains(body, want) {

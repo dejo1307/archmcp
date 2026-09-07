@@ -28,7 +28,7 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s dashboard [--open] [repo_path|config_path]\n\n", r.name())
 		fmt.Fprintln(os.Stderr, "Start a local dashboard for this repository. An MCP server is not required.")
-		fmt.Fprintln(os.Stderr, "The dashboard follows newer snapshots written by Enola automatically; it never regenerates source itself.")
+		fmt.Fprintln(os.Stderr, "Use Refresh to load a newer snapshot written by Enola; the dashboard never regenerates source itself.")
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Options:")
 		fmt.Fprintln(os.Stderr, "  --open         launch the dashboard in the default browser")
@@ -86,6 +86,7 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	opts.SnapshotPath = snapshotDir
 	opts.GenerateCommand = r.dashboardGenerateCommand(arg)
 	opts.CurrentExtractorVersion = engine.ExtractorVersion()
+	opts.HistoryDir = t.engine.Config().History.Dir
 	opts.Refresh = snapshotReloader(t.engine, snapshotDir)
 	dash, err := dashboard.Start(t.engine, opts)
 	if err != nil {

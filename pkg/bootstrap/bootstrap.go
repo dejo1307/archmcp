@@ -186,6 +186,12 @@ func (e *Engine) GraphReceipt() *facts.GraphReceipt {
 	return e.eng.GraphReceipt()
 }
 
+// DashboardState returns one immutable publication for a dashboard request.
+// Its store, snapshot, and graph receipt always describe the same generation.
+func (e *Engine) DashboardState() (*facts.Store, *facts.Snapshot, *facts.GraphReceipt) {
+	return e.eng.DashboardState()
+}
+
 // SetBaseline pins the current on-disk snapshot as the diff baseline.
 func (e *Engine) SetBaseline(repoPath string) error {
 	return e.eng.SetBaseline(repoPath)

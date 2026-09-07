@@ -1,7 +1,7 @@
 # The dashboard
 
 The dashboard displays snapshots produced by Enola's CLI and MCP tools. It opens on the
-findings and changes for the selected repository, follows newer snapshots written to disk,
+findings and changes for the selected repository, loads newer snapshots from disk when requested,
 and keeps process details out of the way unless you open Diagnostics.
 
 ![The Architecture tab showing the searchable module graph, dependency direction, inspector, and finding summary](images/DashboardArchitecture.png)
@@ -118,11 +118,11 @@ Lifetime activity aggregates completed and active sessions across repositories. 
 retains aggregate totals. Time and token savings estimate the repository reconstruction
 avoided by using snapshot data.
 
-## Automatic refresh
+## Refreshing the snapshot
 
-After another Enola process writes a newer snapshot, a standalone dashboard reloads it
-from disk and updates the page automatically. **Refresh** performs the same disk check
-immediately. An MCP-hosted dashboard reads its server's live graph.
+The dashboard keeps the graph stable while you inspect it. After another Enola process
+writes a newer snapshot, use **Refresh** to load it from disk. An MCP-hosted dashboard
+shows its server's current graph when you refresh the page.
 
 An ordinary repository launch shows only that repository's snapshot. A multi-repository
 graph is restored only when the dashboard is launched with an explicit cluster config.
