@@ -7,6 +7,33 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
+## v0.4.16 — 2026-09-08
+
+**Constraint checks now report cases they previously skipped**
+
+Three fixes address checks that returned incomplete or misleading results.
+`require_defines` now checks both `class` and `struct` symbols; previously, a rule over
+Go or another language with struct method owners could select a component without
+evaluating its members. `constraints lint` now includes facts compiled from knowledge
+pages when resolving components. Its `governed_by` results now agree with the explainer
+and constraint check. The intent explainer now emits one notice per policy page when its
+anchors name a repository that is not in the snapshot. The anchors remain unchecked,
+not dangling, because the referenced repository was not measured. The notice is useful
+for clones,
+worktrees and CI checkouts whose directory name differs from the repository label in the
+policy page.
+
+Yarn lockfile resolution now handles descriptors whose range contains an `@`, including
+npm aliases and `git+ssh` ranges. The parser previously split these descriptors at the
+last `@`, derived the wrong package name and reported a dependency as unpinned even when
+the committed `yarn.lock` pinned it. `cacheVersion` moves to `v265`, so existing
+extraction caches are rebuilt and pinned baselines may show a one-time change.
+
+The new `examples/policy-as-code` directory demonstrates a compliance boundary in a
+small Go module. Policy pages define which files are in scope, constraints cite the
+requirements they implement, exemptions include an owner, reason and date, and
+`run.sh` shows the checks before and after three policy violations.
+
 ## v0.4.15 — 2026-09-06
 
 **Linux wheels answer to the older tag name as well**
