@@ -1,0 +1,30 @@
+# GDPR, the two obligations of it that are structural properties of the code.
+#
+# Lawful basis, retention windows and cross-border transfer are decisions about
+# data, and none of them is in here: a snapshot measures what the code is
+# shaped like, not what it stores or where. What it can measure exactly is
+# which code reaches which other code, and which files a decision covers.
+components:
+  - name: personal-data
+    match: ["customers/**"]
+
+rules:
+  - id: gdpr-art-5-1-f-personal-data-never-reaches-the-log
+    forbid: personal-data
+    to_name: ["log.*"]
+    via: calls
+    mode: strict
+    because: >-
+      GDPR Art. 5(1)(f): integrity and confidentiality. A subject's name in an
+      application log is personal data in a system with a different retention
+      period, a different access list and no erasure path, which turns one
+      logging call into a second copy nobody can delete.
+
+  - id: gdpr-art-30-every-processing-file-has-a-record
+    require_governed: personal-data
+    mode: strict
+    because: >-
+      GDPR Art. 30: the controller maintains a record of processing activities.
+      A file that handles personal data and that no page anchors is processing
+      nobody wrote down, and the record is what the supervisory authority asks
+      for first.
