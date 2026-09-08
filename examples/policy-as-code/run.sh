@@ -1,9 +1,7 @@
 #!/bin/sh
-# Two compliance regimes declared as law over one small module, and one change
-# that breaches three of their controls.
+# Demonstrate PCI DSS and GDPR-inspired constraints on a small Go module.
 #
-# It runs in a COPY under /tmp, so the fixture in this repository is never
-# edited and the demo can be re-run as often as you like.
+# Work in a temporary copy so the example files remain unchanged.
 set -e
 cd "$(dirname "$0")"
 
@@ -22,30 +20,29 @@ cp -R . "$DEMO/policy-as-code"
 rm -rf "$DEMO/policy-as-code/.enola"
 DEMO="$DEMO/policy-as-code"
 
-echo "==> Indexing the module and freezing the architecture as it is now"
+echo "==> Indexing the module and saving its initial architecture"
 "$ENOLA" baseline pin "$DEMO" >/dev/null 2>&1
 
 echo
-echo "########## 1. What the declaration actually selects"
+echo "########## 1. Show what each selector matches"
 "$ENOLA" constraints lint "$DEMO" 2>/dev/null | sed -n '/Component resolution/,$p' || true
 
 echo
-echo "########## 2. Why this file is under this policy, and which selector said so"
+echo "########## 2. Explain which policies apply to cardholder/vault.go"
 "$ENOLA" constraints explain cardholder/vault.go "$DEMO" 2>/dev/null | head -18 || true
 
 echo
-echo "########## 3. The clean run: every control obeyed, two signed carve-outs"
+echo "########## 3. Check the initial state"
 "$ENOLA" check --fail-on=constraints "$DEMO" 2>/dev/null || true
 
 echo
-echo "########## 4. Which law governs the files we are about to touch"
+echo "########## 4. Preview the constraints for the files we will change"
 "$ENOLA" plan --paths analytics/report.go,cardholder/rotate.go "$DEMO" 2>/dev/null || true
 
 echo
-echo "==> Making the change: three edits, each of them reasonable in review"
+echo "==> Making three changes that violate the declared constraints"
 
-# Reporting reconciles a charge. Two hops later it is inside the cardholder
-# data environment, which is the thing the boundary exists to prevent.
+# Add an indirect path from analytics into the cardholder-data environment.
 cat > "$DEMO/analytics/report.go" <<'EOF'
 package analytics
 
@@ -66,7 +63,7 @@ func Reconcile(token string, cents int) bool {
 }
 EOF
 
-# A new file inside the audited boundary that no policy page anchors.
+# Add a file to the audited boundary without linking it from a policy page.
 cat > "$DEMO/cardholder/rotate.go" <<'EOF'
 package cardholder
 
@@ -76,9 +73,9 @@ func Rotate(oldToken, newToken string) Card {
 }
 EOF
 
-# One log line, in the package that holds personal data.
+# Log personal data from the customers package.
 cat > "$DEMO/customers/store.go" <<'EOF'
-// Package customers holds personal data, which is what makes the laws in
+// Package customers holds personal data, so the constraints in
 // enola/constraints/gdpr.yaml apply to it.
 package customers
 
@@ -107,20 +104,24 @@ func (s *ConsentStore) Erase(subject string) {
 EOF
 
 echo
-echo "########## 5. The toolchain is happy about all three edits"
-(cd "$DEMO" && go build ./... && go vet ./... && echo "compiler: fine") || true
+echo "########## 5. Check whether the Go toolchain accepts the changes"
+if command -v go >/dev/null 2>&1; then
+  (cd "$DEMO" && go build ./... && go vet ./... && echo "go build and go vet: passed") || true
+else
+  echo "Go is not installed; skipping go build and go vet"
+fi
 
 echo
-echo "########## 6. The gate is not (exit 1)"
+echo "########## 6. Run the constraint check again (expected exit: 1)"
 "$ENOLA" check --fail-on=constraints "$DEMO" 2>/dev/null || true
 
-# The ledger reads the snapshot on disk rather than the working tree, so both
-# halves of every ratio come from one state of the law. Re-index first.
+# The ledger reads the saved snapshot, so update it before generating the
+# summary.
 "$ENOLA" --generate "$DEMO" >/dev/null 2>&1
 
 echo
-echo "########## 7. How much of the law is being obeyed, and how much excused"
+echo "########## 7. Summarize compliance and exemptions"
 "$ENOLA" constraints ledger "$DEMO" 2>/dev/null || true
 
 echo
-echo "==> Read README.md for what each control is and what it cannot say."
+echo "==> See README.md for details and limitations."

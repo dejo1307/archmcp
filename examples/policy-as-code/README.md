@@ -1,148 +1,141 @@
-# Policy as code, with nothing added to enola
+# Policy as code
 
-Two compliance regimes declared as law over one small Go module, and one change
-that breaches three of their controls. Every construct on this page ships in
-the binary today: components, the rule forms, modes, exemptions, knowledge
-pages and the gate. Nothing here needed a new keyword.
+This example applies PCI DSS and GDPR-inspired constraints to a small Go
+module. The initial code passes every strict constraint, with two documented
+exemptions. The demo then makes three changes that violate those constraints.
+
+All of the features used here are already available in Enola: components,
+constraints, enforcement modes, exemptions, knowledge pages, and CI failure
+thresholds.
 
 ```bash
 ./run.sh
 ```
 
-It needs `enola` on your PATH and nothing else: no Go toolchain, no build. The binary you
-already have runs against this directory exactly the way it runs against your own code.
+You need `enola` on your `PATH`. Go is optional; it is only used in step 5 to
+show that `go build` and `go vet` do not catch these policy violations.
 
-## The module
+## Example layout
 
+```text
+cardholder/   stores card numbers
+gateway/      provides the approved path into cardholder/
+checkout/     handles tokens rather than card numbers
+analytics/    is outside the cardholder-data scope
+customers/    stores personal data
+legacy/       contains card storage allowed by an older policy
 ```
-cardholder/   the cardholder data environment: the only code that holds a PAN
-gateway/      the one sanctioned way in
-checkout/     ordinary application code, works with tokens
-analytics/    declared out of scope
-customers/    personal data
-legacy/       card storage the previous standard allowed
-```
 
-Three knowledge pages under `policy/` carry the decisions, and two files under
-`enola/constraints/` carry the law. One of the pages is `status: superseded`,
-which is how a retired version of a standard stays in the tree without still
-governing anything.
+The files in `policy/` document scope and ownership decisions. The files in
+`enola/constraints/` define the checks. One policy page has
+`status: superseded`, so it remains in the repository for reference without
+being treated as current policy.
 
-## The controls
+## Constraints
 
-| Control | Form | Mode | What it actually verdicts |
+| Control | Constraint | Mode | Check |
 |---|---|---|---|
-| PCI DSS 3.4 | `protect` / `owners` | strict | only `gateway/` may call into the vault |
-| PCI DSS 1.2 | `forbid_reach` | strict | `analytics/` cannot reach the vault by **any** measured path |
-| PCI DSS 12.5 | `require_governed` | strict | every file in the environment is anchored by a policy page |
-| PCI DSS 12.5.2 | `cap` | advisory | the audited boundary does not grow without a decision |
-| PCI DSS 6.5 | `forbid_fact` + `governed_by … status:superseded` | strict | code written under the retired policy is gone |
-| GDPR Art. 5(1)(f) | `forbid` / `to_name` | strict | personal data never reaches `log.*` |
-| GDPR Art. 30 | `require_governed` | strict | every file that processes personal data has a record |
+| PCI DSS 3.4 | `protect` / `owners` | strict | Only `gateway/` may call the card vault |
+| PCI DSS 1.2 | `forbid_reach` | strict | `analytics/` cannot reach the card vault through any measured call path |
+| PCI DSS 12.5 | `require_governed` | strict | Every file in the cardholder-data environment must be linked to a policy page |
+| PCI DSS 12.5.2 | `cap` | advisory | Expanding the audited boundary produces a warning |
+| PCI DSS 6.5 | `forbid_fact` + `governed_by ... status:superseded` | strict | Code covered only by the retired policy must be removed |
+| GDPR Art. 5(1)(f) | `forbid` / `to_name` | strict | Code that handles personal data cannot call `log.*` |
+| GDPR Art. 30 | `require_governed` | strict | Every file that handles personal data must be linked to a policy record |
 
-Two of those are worth reading twice.
+### Checking indirect access
 
-**`forbid_reach` is the control a compliance boundary actually needs.** Not
-"analytics does not read a PAN today" but "no measured path from analytics
-arrives at one". The change in `run.sh` adds a single call from reporting to
-`gateway.Charge`, which looks like reconciliation and is two hops from the
-vault. That is the finding:
+`forbid_reach` checks complete measured paths, not only direct calls. The demo
+adds a call from `analytics.Reconcile` to `gateway.Charge`. Although that looks
+like a normal reconciliation call, it reaches `cardholder.ReadPAN` two calls
+later:
 
-```
+```text
 Strict constraint pci-dss-1-2-analytics-stays-out-of-scope violated:
     analytics.Reconcile reaches cardholder.ReadPAN
       reachable in 2 hop(s)
 ```
 
-**`governed_by … status:superseded` names code by the decision behind it**
-rather than by where it sits. The component is "the files the retired page
-anchors", so the migration away from the old standard is a law with a witness
-per file, not a ticket.
+### Selecting code through policy pages
 
-## Scope is declared by the page, and checked from both ends
+`governed_by ... status:superseded` selects files linked to a superseded policy
+page. This lets the constraint identify legacy code by the decision that
+allowed it, without duplicating file paths in the constraint definition.
 
-`policy/pci-dss-cardholder-data.md` anchors the two files that are the
-cardholder data environment. Those anchors do two jobs at once:
+## How policy pages define scope
 
-- `require_governed` asks the reverse question. A file **inside** the boundary
-  that no page anchors is scope nobody documented, and the run's second breach
-  is exactly that: `cardholder/rotate.go` has no governing page.
-- `governed_by` turns a page into a component, so a rule can be written about
-  "the code this decision covers" without repeating its paths.
+`policy/pci-dss-cardholder-data.md` links to the two files in the
+cardholder-data environment. Those links are used in both directions:
 
-An anchor joins a path **exactly**. A directory anchor covers the package fact,
-not the files under it, which is why the pages here anchor both.
+- `require_governed` finds files inside the component that are not linked to a
+  policy page. The demo adds `cardholder/rotate.go` without adding it to the
+  policy page, which triggers this constraint.
+- `governed_by` turns the files linked from a policy page into a component that
+  other constraints can select.
 
-## The seven runs
+File links match exact paths. Linking a directory covers its package fact, not
+every file below it, so the policy pages link both the directory and its files.
 
-| | What it shows |
-|---|---|
-| 1. `constraints lint` | what each selector actually selects, before any verdict rests on it |
-| 2. `constraints explain <file>` | why this file is under this policy, and which selector admitted it |
-| 3. `check --fail-on=constraints` | the clean state: every control obeyed, two breaches signed off |
-| 4. `plan --paths …` | which controls govern the files about to be edited, **before** the edit |
-| 5. `go build && go vet` | the toolchain has no opinion about any of the three edits |
-| 6. `check --fail-on=constraints` | the same gate after the change: 3 strict breaches, exit 1 |
-| 7. `constraints ledger` | how much of the law is obeyed and how much is excused |
+## What the script does
 
-Run 4 is the one worth adopting first. It answers for a file that does not
-exist yet, so an agent asks what the compliance boundary requires while the
-tree is still clean rather than finding out in CI.
+| Step | Command | Purpose |
+|---|---|---|
+| 1 | `constraints lint` | Shows which members each selector matches |
+| 2 | `constraints explain <file>` | Explains which policies and selectors apply to a file |
+| 3 | `check --fail-on=constraints` | Checks the initial state |
+| 4 | `plan --paths ...` | Shows which constraints apply before the files are edited |
+| 5 | `go build && go vet` | Shows that the Go toolchain accepts the changes, when Go is installed |
+| 6 | `check --fail-on=constraints` | Finds three strict violations after the changes |
+| 7 | `constraints ledger` | Summarizes compliance and exemptions |
 
-Run 7 is the compliance question the gate cannot answer one verdict at a time:
+Step 4 also works for paths that do not exist yet. You can use it before
+creating a file to see which constraints will apply.
 
-```
+The ledger reports how many violations have exemptions and how old the oldest
+exemption is:
+
+```text
 law: 7 rules (6 strict, 1 advisory) · 6 breaches · 2 excused (33%) · oldest excuse 38 days
 ```
 
-Every excuse is signed. An exemption names the witness it covers, an owner, a
-reason and a date, and all four are mandatory, so a control that is being
-excused rather than obeyed shows up as a rate and an age instead of as silence.
+Each exemption must identify the affected finding, owner, reason, and date.
 
-## What this cannot say, and why that is the point
+## Limits of this example
 
-A compliance regime is not a set of structural properties, and most of one is
-not expressible here. Encryption at rest, key rotation, retention windows,
-lawful basis, access logging and cross-border transfer are properties of data
-and of running systems. Nothing in a snapshot measures them, and a control that
-reads as enforced while nothing checks it is worse than no control at all.
+This example checks repository structure. It cannot verify runtime or data
+properties such as encryption at rest, key rotation, retention periods, lawful
+basis, access logging, or cross-border transfers.
 
-What a fact graph verdicts exactly is **reachability and coverage**: which code
-can arrive at which other code, which files a decision covers, which packages
-are declared. That is a real and useful slice of a regime, and it is the slice
-that is invisible to every linter, because a violation here is a path across
-four files rather than a line.
+The fact graph can check reachability and coverage: which code can reach other
+code, which files are linked to a decision, and which packages are in scope.
+These relationships often span several files and are not visible to a
+line-oriented linter.
 
-Two more limits, both visible in this example:
+Two other limitations are important:
 
-- **The scope is asserted, not discovered.** enola does not find personal data.
-  A human declares that `customers/` holds it, and enola grades the code
-  against that declaration.
-- **The control identifier lives in prose.** `because:` carries "PCI DSS 4.0
-  req 3.4" as text, because a rule has no field for the obligation it
-  implements. Everything else on this page is data the graph can be queried
-  for; the citation is the one part that a report would have to parse out of a
-  sentence.
+- **Scope is declared, not discovered.** Enola does not detect personal data.
+  Someone must declare that `customers/` handles it, after which Enola checks
+  the code against that declaration.
+- **Control identifiers are plain text.** The `because:` field contains text
+  such as "PCI DSS 4.0 req 3.4" because constraints do not have a dedicated
+  control-ID field. A report would need to extract the identifier from that
+  text.
 
-## Three sharp edges you will meet
+## Current caveats
 
-- **`repos: ["."]`, not `repo: "."`.** Anchors join through a repo label, and a
-  plain single-repo snapshot carries none. With `repo:` the two `require_governed`
-  laws and the `governed_by` component resolve to nothing and hold vacuously.
-  `mcp-arch.yaml` says the same thing in a comment.
-- **`constraints lint` under-reports a `governed_by` component.** Run 1 prints
-  `retired-policy-code  0 member(s)` while the explainer resolves two members
-  and reports two breaches on them. Lint resolves components against the
-  declaration plus the snapshot's non-intent facts, so the compiled anchors are
-  not in the store it looks at. Trust the verdict, not that line.
-- **`require_defines` is Go-blind.** It verdicts members whose measured
-  `symbol_kind` is `class`, and Go structs are `struct`, so "every store defines
-  `Erase`" is not stated here: it would have compiled, linted clean and
-  verdicted nothing. In a Ruby, Python or TypeScript codebase it is one of the
-  strongest forms available.
+- **Use `repos: ["."]`, not `repo: "."`.** Policy-page links are joined through
+  a repository label, but a plain single-repository snapshot has no label.
+  With `repo:`, the `require_governed` constraints and the `governed_by`
+  component match nothing. `mcp-arch.yaml` includes the same note.
+- **`constraints lint` reports zero members for this `governed_by` component.**
+  In step 1, lint prints `retired-policy-code  0 member(s)`, although the
+  explainer and constraint check resolve two members. Lint does not include the
+  compiled policy-page links in the store it uses for component resolution.
+- **`require_defines` does not match Go structs.** It checks members whose
+  measured `symbol_kind` is `class`; Go structs use `struct`. A rule such as
+  "every store defines `Erase`" would therefore match nothing in this example.
+  The constraint can still be useful in Ruby, Python, or TypeScript projects.
 
----
-
-The vocabulary in full: **[docs/CONSTRAINTS.md](../../docs/CONSTRAINTS.md)**.
-Where declarations live and how findings are graded:
-**[docs/INTENT.md](../../docs/INTENT.md)**.
+For the full constraint vocabulary, see
+[docs/CONSTRAINTS.md](../../docs/CONSTRAINTS.md). For declaration locations and
+finding severity, see [docs/INTENT.md](../../docs/INTENT.md).
