@@ -237,6 +237,7 @@ available evidence can establish:
 | Declared dependency not measured | 0.8 | the package was removed and the declaration went stale, *or* its manifest form eluded the extractor |
 | Dangling relation (edge to an uncompiled page) | 0.8 | the target may be deleted or merely not opted in |
 | Dangling code anchor (a measurable path no fact touches) | 0.8 | the code moved or died — or this one file eluded extraction |
+| Anchors not checked (a page anchoring a repo the snapshot does not carry) | 0.4 | nothing was proven either way; the notice reports that the question was not asked |
 | Superseded intent still measured (edge covered only by a retired page) | 0.8 | the code may lag the superseding decision — or the successor's intent is undeclared |
 
 **Superseded pages retire from current intent.** Two signals mark a
@@ -288,6 +289,23 @@ that joins is silence — and the join is the point: it is the
 stale-citation check a wiki otherwise performs by hand, and it
 makes every anchored file's governing decisions reachable from the
 graph.
+
+**The first of those skips is reported, because it is the one you
+cannot see coming.** A page whose anchors name a repo this snapshot
+does not carry raises one `0.4` notice per page — *anchors not
+checked* — naming the repo it declared, the labels the snapshot does
+carry, and how many anchors went unchecked. The skip itself is still
+right: a citation into a repository nobody measured cannot be called
+stale. What it must not do is look like a page whose citations all
+held. A single-repository snapshot takes its label from that
+repository's **directory name**, so a clone, a worktree or a CI
+checkout under another name reaches this state with the declaration
+untouched. Note the asymmetry it makes visible: `governed_by` and
+`require_governed` still resolve those same anchors, because with one
+repository loaded they drop the label — there is nothing else the path
+could mean — while this check compares it. Two readings of one anchor,
+each conservative for its own question, and now only one of them is
+silent.
 
 Scope and affects, by contrast, are **not graded**: they
 speak the wiki's own repo vocabulary, and the mapping from that

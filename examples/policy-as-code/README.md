@@ -131,10 +131,10 @@ Two other limitations are important:
   intent explainer's dangling-anchor check does care, and it compares the two
   names. Run this tree from a directory called `policy-as-code` and an anchor
   pointing at a file that no longer exists reports `Dangling code anchor` at
-  0.80; run the same tree from a directory called anything else and that check
-  reports nothing at all, because an anchor whose repository is absent from the
-  graph is unasked rather than failed. The constraint verdicts are unaffected
-  either way.
+  0.80. Run the same tree from a directory called anything else and it reports
+  `Anchors not checked` at 0.40 for each page instead, because an anchor whose
+  repository is absent from the graph is unasked rather than failed. The
+  constraint verdicts are unaffected either way.
 
 Two caveats this example carried have been fixed and are recorded here because
 the recording of it predates them. `constraints lint` used to print

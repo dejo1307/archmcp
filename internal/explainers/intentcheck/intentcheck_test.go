@@ -193,11 +193,72 @@ func TestIntentCheck_AnchorJoinsOrDangles(t *testing.T) {
 		anchorFact("wiki/adrs/gone.md", "backend", "app/services/gone.rb"),
 		anchorFact("wiki/adrs/mob.md", "mobile", "src/App.tsx"),
 	)
-	if len(got) != 1 {
-		t.Fatalf("want exactly the one dangling anchor, got: %s", titles(got))
+	// Two: the one path this graph could prove untouched, and the notice that
+	// the page anchoring a repo this graph never loaded was not checked at all.
+	if len(got) != 2 {
+		t.Fatalf("want the dangling anchor and the unasked notice, got: %s", titles(got))
 	}
-	if !strings.Contains(got[0].Title, "gone.rb") || got[0].Confidence != danglingAnchorConfidence {
-		t.Fatalf("dangling anchor must name the path at capped confidence, got %+v", got[0])
+	var dangling, unasked facts.Insight
+	for _, i := range got {
+		switch {
+		case strings.HasPrefix(i.Title, "Dangling code anchor"):
+			dangling = i
+		case strings.HasPrefix(i.Title, "Anchors not checked"):
+			unasked = i
+		}
+	}
+	if !strings.Contains(dangling.Title, "gone.rb") || dangling.Confidence != danglingAnchorConfidence {
+		t.Fatalf("dangling anchor must name the path at capped confidence, got %+v", dangling)
+	}
+	if !strings.Contains(unasked.Title, "wiki/adrs/mob.md") || !strings.Contains(unasked.Title, "mobile") {
+		t.Fatalf("the notice must name the page and the repo it anchors, got %+v", unasked)
+	}
+	if unasked.Confidence != absentAnchorRepoConfidence {
+		t.Fatalf("the notice rates a question nobody asked, got %v", unasked.Confidence)
+	}
+}
+
+// TestIntentCheck_UnaskedAnchorsAreReportedNotSilent pins the fix for a skip
+// that said nothing. An anchor into a repository this snapshot does not carry
+// stays unasked — accusing its citations of going stale would verdict facts
+// nobody measured — but the skip is now reported, because a snapshot of one
+// repository takes its label from that repository's DIRECTORY name, so a clone
+// or a checkout under another name switched the stale-citation check off with
+// no output at all while governed_by and require_governed kept resolving the
+// same anchors.
+func TestIntentCheck_UnaskedAnchorsAreReportedNotSilent(t *testing.T) {
+	got := explain(t,
+		fileFact("checkout", "app/models/order.rb"),
+		anchorFact("policy/pci.md", "storefront", "app/models/order.rb"),
+		anchorFact("policy/pci.md", "storefront", "app/models/card.rb"),
+		anchorFact("policy/gdpr.md", "storefront", "app/models/person.rb"),
+	)
+	if len(got) != 2 {
+		t.Fatalf("want one notice per page, not per anchor, got: %s", titles(got))
+	}
+	if !strings.Contains(got[0].Title, "policy/gdpr.md") || !strings.Contains(got[1].Title, "policy/pci.md") {
+		t.Fatalf("notices must be ordered by page, got: %s", titles(got))
+	}
+	if !strings.Contains(got[1].Description, "2 anchor(s)") {
+		t.Fatalf("the notice must count the anchors it covers, got: %q", got[1].Description)
+	}
+	if !strings.Contains(got[1].Description, "carries checkout") {
+		t.Fatalf("the notice must name the labels this snapshot does carry, got: %q", got[1].Description)
+	}
+	for _, i := range got {
+		if i.Confidence != absentAnchorRepoConfidence {
+			t.Errorf("%q rates %v, want the unasked advisory confidence", i.Title, i.Confidence)
+		}
+	}
+
+	// The counterparty is loaded: the anchors are checked as usual and the
+	// notice does not fire.
+	got = explain(t,
+		fileFact("storefront", "app/models/order.rb"),
+		anchorFact("policy/pci.md", "storefront", "app/models/order.rb"),
+	)
+	if len(got) != 0 {
+		t.Fatalf("a resolved anchor in a loaded repo is silence, got: %s", titles(got))
 	}
 }
 
