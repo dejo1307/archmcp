@@ -1610,6 +1610,26 @@ func requireEdgeAntecedentSkipInsight(r rule, memberCount int) facts.Insight {
 	}
 }
 
+// definesMethods reports whether a symbol kind names a type that OWNS the
+// methods a repository writes for it, which is the only kind require_defines
+// can verdict. Two kinds qualify and the rest are excluded on purpose:
+//
+//   - class covers Ruby, Python, TypeScript, Java, Kotlin, PHP and the rest.
+//   - struct covers the languages whose method owner is not spelled "class" —
+//     Go, Rust, C++, C#. A Go struct that embeds another carries an implements
+//     relation, so composition is excluded by the same fail-closed rule that
+//     excludes an inheriting Ruby class, not by the kind gate.
+//
+// interface is excluded because it declares signatures rather than defining
+// them, so "does not define" is never a breach there, and type is excluded
+// because an alias defines nothing at all. Before struct was admitted this
+// form resolved its members on a Go repository, verdicted nothing and emitted
+// no advisory, which is the vacuous compliance the rest of this vocabulary
+// exists to make loud.
+func definesMethods(symbolKind string) bool {
+	return symbolKind == facts.SymbolClass || symbolKind == facts.SymbolStruct
+}
+
 // verdictRequireDefines emits one violation per class-kind member of the
 // component that visibly lacks a measured method symbol of the declared name,
 // in either qualified shape the extractors emit — <Class>#<method> (instance)
@@ -1625,7 +1645,7 @@ func (e *Explainer) verdictRequireDefines(r rule, memberFacts map[string][]facts
 		if f.Kind != facts.KindSymbol {
 			continue
 		}
-		if sk, _ := f.Props["symbol_kind"].(string); sk == facts.SymbolClass {
+		if sk, _ := f.Props["symbol_kind"].(string); definesMethods(sk) {
 			if _, seen := classKind[f.Name]; !seen {
 				classKind[f.Name] = true
 			}

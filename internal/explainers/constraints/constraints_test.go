@@ -1089,6 +1089,49 @@ func TestExplain_RequireDefinesComposingClassesAreOutOfScope(t *testing.T) {
 	}
 }
 
+// TestExplain_RequireDefinesVerdictsStructKinds pins the kinds this form ranges
+// over. Go, Rust, C++ and C# name the owner of a method "struct", and while the
+// gate admitted only "class" the form resolved its members on those repositories,
+// verdicted nothing and said nothing — a rule holding because it looked at
+// nothing, which is the one outcome this vocabulary must never produce.
+func TestExplain_RequireDefinesVerdictsStructKinds(t *testing.T) {
+	structSymbol := func(name, file string) facts.Fact {
+		return facts.Fact{Kind: facts.KindSymbol, Name: name, File: file,
+			Props: map[string]any{"symbol_kind": facts.SymbolStruct}}
+	}
+	store := facts.NewStore()
+	store.Add(
+		componentIntent("stores", "customers/**"),
+		ruleIntentProps("stores-erase", map[string]any{
+			"require_defines": "stores", "method": "Erase", "because": "a subject may demand erasure"}),
+		structSymbol("customers.ProfileStore", "customers/store.go"),
+		methodSymbol("customers.ProfileStore.Erase", "customers/store.go"),
+		structSymbol("customers.AuditStore", "customers/audit.go"),
+		methodSymbol("customers.AuditStore.Record", "customers/audit.go"),
+		// Embedding is Go's composition, and the extractor writes it as an
+		// implements relation: out of scope, the same as an inheriting class.
+		facts.Fact{Kind: facts.KindSymbol, Name: "customers.EmbeddingStore", File: "customers/embed.go",
+			Props:     map[string]any{"symbol_kind": facts.SymbolStruct},
+			Relations: []facts.Relation{{Kind: facts.RelImplements, Target: "customers.Base"}}},
+		// An interface declares signatures rather than defining them.
+		facts.Fact{Kind: facts.KindSymbol, Name: "customers.Eraser", File: "customers/iface.go",
+			Props: map[string]any{"symbol_kind": facts.SymbolInterface}},
+	)
+	insights, err := New().Explain(context.Background(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("insights = %d, want exactly the struct with no Erase: %+v", len(insights), insights)
+	}
+	if want := "Constraint stores-erase violated: customers.AuditStore does not define Erase"; insights[0].Title != want {
+		t.Errorf("title = %q, want %q", insights[0].Title, want)
+	}
+	if insights[0].Confidence != 1.0 {
+		t.Errorf("confidence = %v, want 1.0", insights[0].Confidence)
+	}
+}
+
 func TestExplain_RequireDefinesIsDeterministic(t *testing.T) {
 	build := func() *facts.Store {
 		store := facts.NewStore()

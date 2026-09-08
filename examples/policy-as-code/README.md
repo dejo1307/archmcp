@@ -123,18 +123,28 @@ Two other limitations are important:
 
 ## Current caveats
 
-- **Use `repos: ["."]`, not `repo: "."`.** Policy-page links are joined through
-  a repository label, but a plain single-repository snapshot has no label.
-  With `repo:`, the `require_governed` constraints and the `governed_by`
-  component match nothing. `mcp-arch.yaml` includes the same note.
-- **`constraints lint` reports zero members for this `governed_by` component.**
-  In step 1, lint prints `retired-policy-code  0 member(s)`, although the
-  explainer and constraint check resolve two members. Lint does not include the
-  compiled policy-page links in the store it uses for component resolution.
-- **`require_defines` does not match Go structs.** It checks members whose
-  measured `symbol_kind` is `class`; Go structs use `struct`. A rule such as
-  "every store defines `Erase`" would therefore match nothing in this example.
-  The constraint can still be useful in Ruby, Python, or TypeScript projects.
+- **The stale-anchor check depends on the directory name.** A snapshot labels
+  its facts with the repository directory's own name, and this example's pages
+  anchor `repo: policy-as-code`. The `governed_by` component and the two
+  `require_governed` constraints do not care: with one repository loaded they
+  join an anchor by dropping its first path segment, whatever the label is. The
+  intent explainer's dangling-anchor check does care, and it compares the two
+  names. Run this tree from a directory called `policy-as-code` and an anchor
+  pointing at a file that no longer exists reports `Dangling code anchor` at
+  0.80. Run the same tree from a directory called anything else and it reports
+  `Anchors not checked` at 0.40 for each page instead, because an anchor whose
+  repository is absent from the graph is unasked rather than failed. The
+  constraint verdicts are unaffected either way.
+
+Two caveats this example carried have been fixed and are recorded here because
+the recording of it predates them. `constraints lint` used to print
+`retired-policy-code  0 member(s)` while the explainer resolved two members and
+reported breaches against them; it now resolves the component through the
+compiled policy pages, like the explainer does. And `require_defines` used to
+verdict only members whose measured `symbol_kind` was `class`, so a rule over Go
+structs matched nothing and said nothing; it now covers `struct` as well, which
+means a law such as "every store of personal data defines `Erase`" is
+declarable here. This example does not declare one.
 
 For the full constraint vocabulary, see
 [docs/CONSTRAINTS.md](../../docs/CONSTRAINTS.md). For declaration locations and

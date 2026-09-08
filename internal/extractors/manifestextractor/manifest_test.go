@@ -426,6 +426,45 @@ lodash@^4.17.0:
 	}
 }
 
+// TestManifests_YarnLockResolvesAliasAndProtocolRanges covers the descriptors
+// whose range carries an `@` of its own. Reading the LAST `@` as the name/range
+// separator named the package `@typescript/native@npm:typescript`, which
+// resolves against nothing, so mastodon's two aliased dependencies were reported
+// unpinned while its committed lockfile pins both. A git range failed the same
+// way, on the `@` inside the URL.
+func TestManifests_YarnLockResolvesAliasAndProtocolRanges(t *testing.T) {
+	got := extract(t, map[string]string{
+		"package.json": `{"dependencies": {
+			"@typescript/native": "npm:typescript@7.0.2",
+			"emoji-mart": "npm:emoji-mart-lazyload@latest",
+			"tool": "git+ssh://git@github.com/acme/tool.git#v1.2.3"
+		}}`,
+		"yarn.lock": `"@typescript/native@npm:typescript@7.0.2, typescript@npm:^5.6 || 6 || 7":
+  version: 7.0.2
+  languageName: node
+
+"emoji-mart@npm:emoji-mart-lazyload@latest":
+  version: 3.0.1
+
+"tool@git+ssh://git@github.com/acme/tool.git#v1.2.3":
+  version: 1.2.3
+`,
+	})
+	for _, want := range []struct{ purl, version string }{
+		{"pkg:npm/@typescript/native", "7.0.2"},
+		{"pkg:npm/emoji-mart", "3.0.1"},
+		{"pkg:npm/tool", "1.2.3"},
+	} {
+		f := mustHave(t, got, want.purl)
+		if f.PropString("resolved_version") != want.version {
+			t.Errorf("%s resolved_version = %q, want %q: the lockfile pins it under an aliased descriptor", want.purl, f.PropString("resolved_version"), want.version)
+		}
+		if pinned, _ := f.Props["pinned"].(bool); !pinned {
+			t.Errorf("%s pinned = %v, want true: a lockfile resolved it", want.purl, f.Props["pinned"])
+		}
+	}
+}
+
 // A lockfile enola cannot read is a stated absence, not a claim of unpinned.
 // Answering anyway is how twelve packages in a yarn repository became twelve
 // false blocks, and a gate that blocks falsely is one nobody leaves enabled.

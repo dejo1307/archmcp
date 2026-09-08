@@ -481,11 +481,18 @@ func anchorVerdicts(store *facts.Store, present, retired map[string]bool) []fact
 		}
 	}
 	var out []facts.Insight
+	unasked := map[[2]string]int{}
 	for _, f := range anchors {
 		owner := f.PropString("intent_owner")
 		path := strings.TrimSuffix(f.PropString("path"), "/")
-		if owner == "" || path == "" || !present[owner] {
-			continue // no counterparty in this graph: not asked, never failed
+		if owner == "" || path == "" {
+			continue
+		}
+		if !present[owner] {
+			// No counterparty in this graph: not asked, never failed. Counted
+			// so the silence is reported below rather than left to be noticed.
+			unasked[[2]string{f.PropString("source"), owner}]++
+			continue
 		}
 		if ext := fileExt(path); ext != "" {
 			if !measuredExts[owner][ext] {
@@ -522,6 +529,67 @@ func anchorVerdicts(store *facts.Store, present, retired map[string]bool) []fact
 			Confidence:  danglingAnchorConfidence,
 			Evidence:    []facts.Evidence{{Fact: f.Name, Detail: "declared in " + f.PropString("source")}},
 			Actions:     []string{"Fix the path if the code moved", "Remove the anchor if the code is gone", "Record an extraction-gap verdict if the path is real but unparsed"},
+		})
+	}
+	return append(out, unaskedAnchorNotices(unasked, present)...)
+}
+
+// absentAnchorRepoConfidence rates the notice that a page's anchors were not
+// checked at all. It sits with the other advisories that report a question
+// nobody asked rather than an answer.
+const absentAnchorRepoConfidence = 0.4
+
+// unaskedAnchorNotices reports the pages whose anchors name a repository this
+// snapshot does not carry, so the stale-citation check skipped them.
+//
+// Skipping is right: a page legitimately anchors code in a repository that was
+// not indexed, and accusing its citations of being stale would be a verdict
+// about facts nobody measured. What was wrong is that the skip said nothing. A
+// snapshot of one repository labels its facts with that repository's DIRECTORY
+// name, so a clone, a worktree or a CI checkout under a different name silently
+// switches this check off while `governed_by` and `require_governed` keep
+// resolving the same anchors — they drop the label when one repository is
+// loaded, because there is nothing else an anchor path could mean there. The
+// notice is what keeps the two readings from being told apart only by someone
+// who already knew to look.
+func unaskedAnchorNotices(unasked map[[2]string]int, present map[string]bool) []facts.Insight {
+	if len(unasked) == 0 {
+		return nil
+	}
+	labels := make([]string, 0, len(present))
+	for label := range present {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	carried := "none"
+	if len(labels) > 0 {
+		carried = strings.Join(labels, ", ")
+	}
+
+	keys := make([][2]string, 0, len(unasked))
+	for k := range unasked {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i][0] != keys[j][0] {
+			return keys[i][0] < keys[j][0]
+		}
+		return keys[i][1] < keys[j][1]
+	})
+
+	out := make([]facts.Insight, 0, len(keys))
+	for _, k := range keys {
+		page, owner := k[0], k[1]
+		out = append(out, facts.Insight{
+			Title: fmt.Sprintf("Anchors not checked: %s names repo %s, absent from this snapshot", page, owner),
+			Description: fmt.Sprintf("%d anchor(s) on this page name the repo %s, and this snapshot carries %s. Their paths were neither joined nor reported dangling, because a snapshot cannot say whether a citation into a repository it never measured went stale. A single-repository snapshot takes its label from the repository directory's own name, so a clone or a checkout under a different name reaches this state without the declaration changing. Note that governed_by and require_governed still resolve these anchors: with one repository loaded they drop the label, since there is nothing else the path could mean.",
+				unasked[k], owner, carried),
+			Confidence: absentAnchorRepoConfidence,
+			Evidence:   []facts.Evidence{{Fact: "page: " + page, File: page, Detail: "anchors name repo " + owner + "; snapshot carries " + carried}},
+			Actions: []string{
+				"Index the repository these anchors name beside this one, so the citations are checked",
+				"Correct the anchors' repo if they mean the repository this snapshot measured",
+			},
 		})
 	}
 	return out

@@ -172,16 +172,37 @@ func yarnLock(text string) map[string]string {
 	return out
 }
 
-// yarnSpecName recovers the package name from one `name@range` spec. The `@`
-// that separates them is the LAST one, because a scoped package's name starts
-// with one; Berry additionally writes a `npm:` protocol after it, which is part
-// of the range rather than of the name.
+// yarnSpecName recovers the package name from one `name@range` spec.
+//
+// The separator is the last `@` BEFORE the range's protocol, not the last `@`
+// in the spec. A scoped package's name opens with one, so the separator is
+// never the first; and a Berry range carries a protocol (`npm:`, `patch:`,
+// `workspace:`, `git+ssh:`) whose selector may carry more `@` of its own. An
+// npm ALIAS is exactly that case: mastodon declares
+// `"@typescript/native": "npm:typescript@7.0.2"`, whose lock descriptor is
+// `@typescript/native@npm:typescript@7.0.2`. Reading the last `@` named the
+// package `@typescript/native@npm:typescript`, which resolves against nothing,
+// so a dependency the lockfile pins to exactly one version was reported as
+// unpinned. A git spec (`foo@git+ssh://git@github.com/x`) failed the same way,
+// on the `@` inside the URL.
+//
+// The colon is what locates the protocol. A classic-yarn spec has none
+// (`lodash@^4.17.0`), and there the last `@` is still the separator.
 func yarnSpecName(spec string) string {
-	spec = unquote(strings.TrimSpace(spec))
+	// A header quotes the WHOLE list when any spec in it needs quoting, so
+	// splitting on the comma leaves the first spec with a lone opening quote
+	// and the last with a lone closing one. unquote pairs them and so returns
+	// both unchanged; trimming each end independently is what a per-spec read
+	// needs. Mastodon's aliased typescript sits in exactly such a header.
+	spec = strings.Trim(unquote(strings.TrimSpace(spec)), `"'`)
 	if spec == "" {
 		return ""
 	}
-	at := strings.LastIndex(spec, "@")
+	search := spec
+	if colon := strings.IndexByte(spec, ':'); colon > 0 {
+		search = spec[:colon]
+	}
+	at := strings.LastIndex(search, "@")
 	if at <= 0 {
 		return ""
 	}

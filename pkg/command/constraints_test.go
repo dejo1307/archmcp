@@ -55,6 +55,61 @@ func lintCapturing(t *testing.T, repoPath string) (string, int) {
 	return string(out), count
 }
 
+// TestLintStoreKeepsPageCompiledIntent pins the store `constraints lint`
+// resolves components against. The snapshot's DECLARATION facts are replaced by
+// the working tree's, so an edit to a constraints file lints without
+// regenerating. The facts compiled from knowledge PAGES have no declaration
+// file to be re-read from, and a governed_by component resolves through exactly
+// those: while they were dropped with the rest, lint reported such a component
+// as matching nothing while the explainer resolved its members and reported
+// breaches against them.
+func TestLintStoreKeepsPageCompiledIntent(t *testing.T) {
+	pageFact := func(kind, name string, props map[string]any) facts.Fact {
+		props["intent_kind"] = kind
+		return facts.Fact{Kind: facts.KindIntent, Name: name, File: "policy/p.md", Props: props}
+	}
+	measured := []facts.Fact{
+		{Kind: facts.KindSymbol, Name: "legacy.Row", File: "legacy/cardstore.go", Repo: "shop"},
+		pageFact("page", "page: policy/p.md", map[string]any{"source": "policy/p.md", "status": "superseded"}),
+		pageFact("anchor", "anchor: shop legacy/cardstore.go", map[string]any{"source": "policy/p.md", "path": "legacy/cardstore.go"}),
+		pageFact("relation", "policy/p.md supersedes policy/q.md", map[string]any{"source": "policy/p.md", "rel": "supersedes", "to": "policy/q.md"}),
+		// A stale declaration fact from the snapshot: replaced by the working
+		// tree's, never carried forward.
+		{Kind: facts.KindIntent, Name: "component: stale", File: intent.RepoFileName,
+			Props: map[string]any{"intent_kind": "component", "component": "stale", "match": "gone/**"}},
+	}
+	declared := []facts.Fact{
+		{Kind: facts.KindIntent, Name: "component: retired", File: intent.RepoFileName,
+			Props: map[string]any{"intent_kind": "component", "component": "retired", "match": "legacy/**"}},
+	}
+
+	store := lintStore(measured, declared, "shop")
+
+	kinds := map[string]int{}
+	for _, f := range store.ByKind(facts.KindIntent) {
+		kinds[f.PropString("intent_kind")]++
+	}
+	for _, want := range []string{"page", "anchor", "relation"} {
+		if kinds[want] != 1 {
+			t.Errorf("intent_kind %q survived %d times, want 1: a governed_by component resolves through it", want, kinds[want])
+		}
+	}
+	if kinds["component"] != 1 {
+		t.Errorf("component facts = %d, want only the working tree's one", kinds["component"])
+	}
+	for _, f := range store.ByKind(facts.KindIntent) {
+		if f.Name == "component: stale" {
+			t.Error("the snapshot's own declaration must be replaced by the working tree's, not merged with it")
+		}
+		if f.PropString("component") == "retired" && f.Repo != "shop" {
+			t.Errorf("declared fact repo = %q, want the snapshot's label stamped on it", f.Repo)
+		}
+	}
+	if len(store.ByKind(facts.KindSymbol)) != 1 {
+		t.Error("measured facts must be kept as they are")
+	}
+}
+
 func TestConstraintsLintListsPerFileCounts(t *testing.T) {
 	repo := writeLintRepo(t, `
 components:
