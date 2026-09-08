@@ -1,0 +1,86 @@
+# PCI DSS, as much of it as a fact graph can honestly hold.
+#
+# What a static graph can verdict is REACHABILITY: which code can arrive at the
+# cardholder data environment, and by which route. Encryption at rest, key
+# rotation and retention windows are not in here, because nothing in a snapshot
+# measures them and a control that reads as enforced while nothing checks it is
+# worse than no control.
+components:
+  # The cardholder data environment, named by where it lives.
+  - name: cardholder-data
+    match: ["cardholder/**"]
+
+  # The one sanctioned way in.
+  - name: payment-gateway
+    match: ["gateway/**"]
+
+  # Declared out of scope. The law below is what keeps it that way.
+  - name: analytics
+    match: ["analytics/**"]
+
+  # Code written under a policy that has since been retired, named by the
+  # DECISION rather than by a path: the files a superseded page anchors, and no
+  # others. The path narrowing is required (a component needs a selector of its
+  # own); governed_by is what makes the set mean "the old standard's code".
+  - name: retired-policy-code
+    match: ["legacy/**"]
+    governed_by: "policy/*.md status:superseded"
+
+rules:
+  - id: pci-dss-3-4-vault-reached-only-through-the-gateway
+    protect: cardholder-data
+    owners: [payment-gateway]
+    via: calls
+    mode: strict
+    because: >-
+      PCI DSS 4.0 req 3.4: the PAN is readable in one place. Every other caller
+      works with a token, so a second reader is a second thing an assessor has
+      to audit and a second place the number can leak.
+
+  - id: pci-dss-1-2-analytics-stays-out-of-scope
+    forbid_reach: analytics
+    to: cardholder-data
+    mode: strict
+    because: >-
+      PCI DSS 4.0 req 1.2: reporting is outside the audited boundary. Not "does
+      not read a PAN today" but "cannot reach one by any measured path", because
+      a path that exists is a path an incident will find.
+
+  - id: pci-dss-12-5-every-in-scope-file-has-a-decision
+    require_governed: cardholder-data
+    mode: strict
+    because: >-
+      PCI DSS 4.0 req 12.5: the scope inventory is maintained. A file inside the
+      environment that no policy page anchors is scope nobody documented, and it
+      is invisible to the assessor until it is found the hard way.
+
+  - id: pci-dss-12-5-scope-does-not-creep
+    cap: cardholder-data
+    max_members: 4
+    mode: advisory
+    because: >-
+      PCI DSS 4.0 req 12.5.2: scope is confirmed, not assumed. Growth here is
+      the audited boundary getting larger, which is a decision. Advisory on
+      purpose: the right answer is often to accept the growth and re-declare
+      the number, and a gate cannot make that call.
+
+  - id: pci-dss-6-5-code-under-a-retired-policy-is-removed
+    forbid_fact: retired-policy-code
+    mode: strict
+    because: >-
+      The 3.2.1 page permitted card rows in legacy/ and the current page does
+      not. Superseding a policy does not delete the code written under it, so
+      the migration is stated here and stays visible until the directory is
+      empty.
+    exempt:
+      - witness: "legacy.Row is measured in retired-policy-code"
+        owner: dana
+        because: >-
+          The migration reads these rows until the token backfill finishes.
+          Tracked as CARD-4412, and the row type carries no PAN, only last four.
+        since: "2026-08-01"
+      - witness: "legacy.Append is measured in retired-policy-code"
+        owner: dana
+        because: >-
+          Written only by the backfill job, which is deleted with the type.
+        since: "2026-08-01"
