@@ -680,6 +680,19 @@ included concern) the store does not resolve through, and fail-closed
 means never guessing a composed definition absent. The form therefore
 verdicts exactly the classes whose omission is visible.
 
+**Class-kind means `class` or `struct`**, because the owner of a method
+is not spelled the same way in every language: Ruby, Python, TypeScript,
+Java, Kotlin and PHP write `class`, and Go, Rust, C++ and C# write
+`struct`. Composition is excluded on both — a Go struct that embeds
+another carries the same `implements` relation an inheriting Ruby class
+does, so it leaves the rule's scope by the fail-closed rule above rather
+than by its kind. An `interface` is excluded because it declares
+signatures rather than defining them, and a `type` alias because it
+defines nothing. While the gate admitted `class` alone, a rule written
+over Go structs resolved its members, verdicted nothing and raised no
+advisory, which is the vacuous compliance the rest of this vocabulary
+exists to make loud.
+
 `require_name` verdicts convention: every member fact's name must
 match the declared pattern. The dialect is deliberately bounded —
 `prefix*`, `*suffix`, or an exact name, never a general glob or

@@ -2390,7 +2390,17 @@ import (
 // colorsys, optparse, curses among them — and a stdlib name absent from that set is
 // classified as a third-party dependency, so it appeared in dependency breakdowns and
 // on import paths as a package the project had taken on.
-const cacheVersion = "v264"
+// v265: a yarn.lock descriptor whose range carries an `@` of its own resolves.
+// The name/range separator was read as the LAST `@` in the spec, so an npm alias
+// (`"@typescript/native": "npm:typescript@7.0.2"`, whose descriptor is
+// `@typescript/native@npm:typescript@7.0.2`) was named
+// `@typescript/native@npm:typescript`, matched no manifest entry, and the
+// dependency the committed lockfile pins to one version was reported unpinned —
+// two of mastodon's 298 direct packages, and every git+ssh range, on the `@`
+// inside the URL. The separator is now the last `@` before the range's protocol
+// colon, and a spec is unquoted per entry, since a multi-spec header quotes the
+// whole list and the comma split leaves each end with a lone quote.
+const cacheVersion = "v265"
 
 // ExtractorVersion is cacheVersion, named for callers outside this package.
 //

@@ -278,6 +278,56 @@ func (r *Runner) lintRepoDeclaration(clusterDecl *intent.Declaration, repoPath s
 // silence. A predicate component in an edge-walking role needs no snapshot to
 // refuse: it is a defect of the declaration alone, and the validation pass
 // above has already reported it.
+// pageCompiled reports whether an intent fact was compiled from a knowledge
+// page rather than from a declaration file. Pages are the one intent carrier
+// the working tree's declaration cannot reproduce, so these facts survive the
+// swap that re-reads components and rules from disk.
+func pageCompiled(f facts.Fact) bool {
+	switch f.PropString("intent_kind") {
+	case "page", "anchor", "relation":
+		return true
+	}
+	return false
+}
+
+// lintStore builds the store component resolution is reported against: every
+// measured fact from the snapshot, the intent facts compiled from knowledge
+// pages, and the DECLARATION read fresh from the working tree.
+//
+// The snapshot's own declaration facts are dropped so an edit to
+// enola-intent.yaml or a constraints file is linted without regenerating.
+// Page-compiled facts are not part of any declaration file and are kept: a
+// component selecting by governed_by resolves through exactly those, and
+// dropping them reported such a component as `0 member(s) — matches nothing;
+// every rule naming it holds vacuously` while the explainer resolved its
+// members and reported breaches against them. A lint that contradicts the
+// verdict it exists to preview is worse than no lint.
+//
+// Declared facts are stamped with the snapshot's repo label before they join.
+// The engine does the same thing (SetRepoRange over the extraction window),
+// and a declared layer is resolved against the modules of the repo that OWNS
+// it — so unlabelled intent facts beside labelled module facts resolve to
+// nothing at all, which is precisely the silent-empty answer this report
+// exists to expose.
+func lintStore(measured []facts.Fact, declared []facts.Fact, label string) *facts.Store {
+	store := facts.NewStore()
+	for _, f := range measured {
+		if f.Kind == facts.KindIntent && !pageCompiled(f) {
+			continue
+		}
+		store.Add(f)
+	}
+	if label != "" {
+		for i := range declared {
+			if declared[i].Repo == "" {
+				declared[i].Repo = label
+			}
+		}
+	}
+	store.Add(declared...)
+	return store
+}
+
 func (r *Runner) lintResolveComponents(eng *bootstrap.Engine, anchor string, declared *facts.Store) int {
 	if len(declared.ByKind(facts.KindIntent)) == 0 {
 		return 0
@@ -288,27 +338,7 @@ func (r *Runner) lintResolveComponents(eng *bootstrap.Engine, anchor string, dec
 		fmt.Printf("\nComponent resolution: no snapshot at %s - validation only.\n", outDir)
 		return 0
 	}
-	store := facts.NewStore()
-	for _, f := range snap.Facts {
-		if f.Kind == facts.KindIntent {
-			continue
-		}
-		store.Add(f)
-	}
-	// Declared facts are stamped with the snapshot's repo label before they join it.
-	// The engine does the same thing (SetRepoRange over the extraction window), and
-	// a declared layer is resolved against the modules of the repo that OWNS it — so
-	// unlabelled intent facts beside labelled module facts resolve to nothing at all,
-	// which is precisely the silent-empty answer this report exists to expose.
-	intentFacts := declared.ByKind(facts.KindIntent)
-	if label := snapshotLabel(snap); label != "" {
-		for i := range intentFacts {
-			if intentFacts[i].Repo == "" {
-				intentFacts[i].Repo = label
-			}
-		}
-	}
-	store.Add(intentFacts...)
+	store := lintStore(snap.Facts, declared.ByKind(facts.KindIntent), snapshotLabel(snap))
 
 	unevaluableList := constraints.UnevaluableSelectors(store)
 	unevaluable := map[string]bool{}
