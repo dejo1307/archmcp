@@ -99,6 +99,7 @@
     .explorer { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 500px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #07112d; }
     .inspector-pane { min-width: 0; border-left: 1px solid var(--border); background: #08112b; }
     .inspector-head { padding: .85rem 1rem; border-bottom: 1px solid var(--border); }
+    .inspector-head-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
     .inspector-head h3 { margin: 0; font-size: .88rem; }
     .inspector-head p { margin: .2rem 0 0; color: #7180aa; font-size: .68rem; }
     .inspector-empty { padding: .9rem 1rem; color: var(--muted); font-size: .75rem; }
@@ -117,18 +118,20 @@
     .graph-canvas { flex: 1; min-height: 420px; overflow: auto; padding: .5rem; background-image: radial-gradient(rgba(139,165,255,.13) .7px, transparent .7px); background-size: 18px 18px; }
     .module-graph { display: block; width: auto; min-width: 100%; height: auto; }
     .graph-canvas.fit .module-graph { width: 100%; min-width: 100%; }
-    .module-edge { stroke: #536a9f; stroke-width: 1.2; opacity: .34; transition: opacity .18s, stroke .18s; pointer-events: none; }
-    .module-edge-hit { stroke: transparent; stroke-width: 12; cursor: pointer; }
+    .module-edge { fill: none; stroke: #536a9f; stroke-width: 1.2; opacity: .34; transition: opacity .18s, stroke .18s; pointer-events: none; }
+    .module-edge-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: pointer; }
     .module-edge-hit:hover + .module-edge { opacity: 1; stroke: #9b75e8; stroke-width: 2; }
     .module-node { cursor: pointer; transition: opacity .18s; }
     .module-node rect { fill: #0d193b; stroke: #33456f; rx: 7; transition: fill .18s, stroke .18s; }
     .module-node text { fill: #cbd3eb; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; }
     .module-node:hover rect, .module-node.active rect { fill: #172657; stroke: #7d92e4; }
     .module-node[data-role="selected"] rect { fill: #23336b; stroke: #9b75e8; stroke-width: 2; }
+    .module-node[data-role="cluster"] rect { fill: #241c46; stroke: #8b6fe0; stroke-dasharray: 4 3; }
     .module-node.dim, .module-edge.dim { opacity: .12; }
     .module-edge.active { opacity: .9; stroke: #9b75e8; stroke-width: 1.8; }
     .module-detail { display: none; padding: .9rem 1rem; background: #0a1432; }
     .module-detail.open { display: block; }
+    .module-detail-members { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
     .module-detail b { display: block; font-size: .82rem; }
     .module-detail span { color: #8f9bbb; font-size: .7rem; }
     .module-stats { display: flex; flex-wrap: wrap; gap: .35rem .8rem; margin-top: .65rem; font: .65rem ui-monospace, SFMono-Regular, Menlo, monospace; color: #9bb4f5; }
@@ -204,6 +207,7 @@
     .insight-group .table-scroll { padding: .1rem .3rem .4rem; }
     td.title { white-space: normal; }
     .structural-chip { margin-left: .4rem; font-size: .72rem; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 .35rem; }
+    .finding-action { color: var(--muted); font-size: .78rem; margin-top: .15rem; }
     {{/* extra-styles: extension slot — see pkg/dashboard.Options.Overlay */}}
     {{block "extra-styles" $}}{{end}}
   </style>
@@ -211,32 +215,47 @@
 <body>
 <div class="wrap">
   <div class="topbar">
-    <div class="brand"><h1>{{.Title}}<span class="brand-dot">.</span></h1></div>
+    <div class="brand"><h1>{{.Title}}<span class="brand-dot">.</span>{{if .HasReceipt}} <span class="note">· {{.Snapshot.RepoName}}{{if .Snapshot.Age}} · updated {{.Snapshot.Age}}{{end}}</span>{{end}}</h1></div>
     <div class="top-actions">
-      {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">not running</span>{{end}}
-      <button class="secondary-action" type="button" onclick="location.reload()" title="Reload the dashboard from the currently loaded snapshot">Refresh data</button>
+      <button class="secondary-action" type="button" onclick="location.reload()" title="Reload the latest snapshot from disk">Refresh</button>
     </div>
   </div>
 
+  {{if .RefreshError}}<div class="snapshot-alert" role="alert">{{.RefreshError}}</div>{{end}}
+
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
-    <button class="tab active" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview" onclick="selectTab('overview')">Overview</button>
+    <button class="tab active" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview" onclick="selectTab('overview')">Findings</button>
     <button class="tab" id="tab-architecture" role="tab" aria-selected="false" aria-controls="panel-architecture" data-tab="architecture" onclick="selectTab('architecture')">Architecture</button>
-    <button class="tab" id="tab-snapshots" role="tab" aria-selected="false" aria-controls="panel-snapshots" data-tab="snapshots" onclick="selectTab('snapshots')">Snapshots</button>
-    <button class="tab" id="tab-activity" role="tab" aria-selected="false" aria-controls="panel-activity" data-tab="activity" onclick="selectTab('activity')">Activity</button>
+    <button class="tab" id="tab-snapshots" role="tab" aria-selected="false" aria-controls="panel-snapshots" data-tab="snapshots" onclick="selectTab('snapshots')">Snapshot</button>
+    <button class="tab" id="tab-activity" role="tab" aria-selected="false" aria-controls="panel-activity" data-tab="activity" onclick="selectTab('activity')">Lifetime usage</button>
     <button class="tab" id="tab-quality" role="tab" aria-selected="false" aria-controls="panel-quality" data-tab="quality" onclick="selectTab('quality')">Quality</button>
+    <button class="tab" id="tab-diagnostics" role="tab" aria-selected="false" aria-controls="panel-diagnostics" data-tab="diagnostics" onclick="selectTab('diagnostics')">Diagnostics</button>
   </nav>
 
   <main>
   <section class="tab-panel active" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+  {{if .VersionNotice}}<div class="snapshot-alert"><b>Snapshot update recommended.</b> {{.VersionNotice}} <code>{{.GenerateCommand}}</code></div>{{end}}
   <section class="hero">
     <div class="section-kicker">Repository intelligence</div>
     <h1>{{if .HasGraph}}Your architecture is mapped.{{else}}Ready to map this repository.{{end}}</h1>
-    <p>{{if .HasGraph}}See what Enola found and whether the analysis is complete enough to trust.{{else}}Generate a snapshot from your coding agent to reveal dependencies, hotspots, routes, and structural findings.{{end}}</p>
+    {{if .HasGraph}}<p>Review findings, changes, and the architecture captured for this repository.</p>{{else}}<p>No snapshot exists for this repository yet. Generate one, then use Refresh to load it here.</p>{{if .GenerateCommand}}<p><code>{{.GenerateCommand}}</code></p>{{end}}{{end}}
     <div class="hero-meta">
       {{if .HasReceipt}}{{with .Receipt}}<span class="chip">{{.FactCount}} facts</span><span class="chip">{{.InsightCount}} findings</span>{{end}}{{end}}
       {{if .Insights}}<button type="button" class="primary-action" onclick="openModal('insights-modal')">Review findings</button>{{end}}
     </div>
   </section>
+
+  {{if .Insights}}<div class="data-section">
+    <div class="section-kicker">Current snapshot</div><h2>Findings</h2>
+    <p class="insight-summary">{{.InsightStructural}} <span title="Confidence 100% — a proven, code-verified finding">structural</span> · {{.InsightCandidate}} <span title="Confidence below 100% — a heuristic suggestion worth reviewing">candidate{{if ne .InsightCandidate 1}}s{{end}}</span></p>
+    {{range $i, $g := .Insights}}<details class="insight-group"{{if or (eq $i 0) $g.HasStructural}} open{{end}}>
+      <summary><span class="ig-label">{{$g.Label}}</span><span class="ig-count">{{$g.Count}}</span></summary>
+      <div class="table-scroll"><table><thead><tr><th>Finding</th><th class="num">Confidence</th><th>Evidence</th></tr></thead>
+      <tbody>{{range $g.Shown}}<tr><td class="title">{{.Title}}{{if .Action}}<div class="finding-action">→ {{.Action}}</div>{{end}}</td><td class="num">{{.Confidence}}%</td><td>{{.Evidence}}</td></tr>{{end}}</tbody></table>
+      {{if $g.Hidden}}<button type="button" class="count-link" onclick="openModal('insights-modal')">+{{$g.Hidden}} more — review all</button>{{end}}
+      </div>
+    </details>{{end}}
+  </div>{{else if .HasReceipt}}<div class="data-section"><div class="section-kicker">Current snapshot</div><h2>No findings</h2><p class="note">No structural issues or review candidates found.</p></div>{{end}}
 
   <div class="data-section">
     <div class="section-kicker">Development feedback</div><h2>What changed?</h2>
@@ -244,7 +263,7 @@
       {{if .Changes.Incomparable}}
       <div class="snapshot-alert"><b>Comparison unavailable.</b> The current and previous snapshots used different extraction inputs, so their raw deltas would describe rebuild noise rather than a trustworthy code change.</div>
       {{else if .Changes.Initial}}
-      <p class="note">This is the first recorded architecture snapshot. The next snapshot will provide a change comparison.</p>
+      <p class="note">First recorded snapshot. The next one will show a comparison.</p>
       {{else}}
       <p class="note">Compared with the {{.Changes.ComparedTo}} · {{.Changes.Headline}}</p>
       <div class="grid">
@@ -254,7 +273,7 @@
         <div class="card"><div class="k">Dependencies added / removed</div><div class="v">+{{.Changes.EdgesAdded}} / −{{.Changes.EdgesRemoved}}</div></div>
       </div>
       {{end}}
-    {{else}}<p class="note">No earlier architecture snapshot is available yet. Generate another snapshot after a change to start tracking deltas.</p>{{end}}
+    {{else}}<p class="note">No earlier snapshot yet. Generate one after a change to track deltas.</p>{{end}}
   </div>
 
   <div class="grid">
@@ -291,24 +310,25 @@
     {{if $graph.Focused}}<span class="chip">Neighborhood of {{$graph.FocusName}}</span>{{else}}<span class="chip">Showing {{len $graph.Nodes}} of {{$graph.Total}} connected modules</span>{{end}}
     <span class="chip">{{len $graph.Edges}} visible module dependencies{{if $graph.OmittedEdges}} · {{$graph.OmittedEdges}} hidden for clarity{{end}}</span>
     {{if not $graph.Focused}}<span class="chip">Layered by dependency direction</span>{{end}}
+    {{if $graph.ClusterCount}}<span class="chip">{{$graph.ClusterCount}} cyclic cluster{{if ne $graph.ClusterCount 1}}s{{end}} collapsed</span>{{end}}
   </div>
-  <p class="note">Search covers {{if $graph.AllModulesTruncated}}the {{len $graph.AllModules}} most-connected of {{$graph.Total}}{{else}}all {{$graph.Total}}{{end}} connected modules. {{if $graph.Focused}}This view contains the selected module, its immediate incoming and outgoing dependencies, and the dependencies between them. <a href="/#architecture">Clear focus</a>.{{else}}Choose a module to replace this overview with its immediate dependency neighborhood.{{end}}</p>
+  <p class="note">Search covers {{if $graph.AllModulesTruncated}}the {{len $graph.AllModules}} most-connected of {{$graph.Total}}{{else}}all {{$graph.Total}}{{end}} connected modules. {{if $graph.Focused}}Shows the selected module and its direct dependencies. <a href="/#architecture">Clear focus</a>.{{else}}Select a module to see its dependency neighborhood.{{end}}{{if $graph.ClusterCount}} Dashed ⟲ nodes group a cycle of modules — click for members.{{end}}</p>
   <section class="explorer" aria-label="Architecture explorer">
     <div class="graph-pane">
       {{if $graph.Focused}}<div class="graph-columns"><span>Consumers</span><span>Selected module</span><span>Dependencies</span></div>{{end}}
       <div class="graph-canvas">
         <svg class="module-graph" width="{{$graph.Width}}" height="{{$graph.Height}}" viewBox="0 0 {{$graph.Width}} {{$graph.Height}}" role="img" aria-label="Module dependency graph">
           <defs><marker id="module-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#536a9f"/></marker></defs>
-          {{range $graph.Edges}}<line class="module-edge-hit" data-source="{{.Source}}" data-target="{{.Target}}" data-source-name="{{.SourceName}}" data-target-name="{{.TargetName}}" data-source-file="{{.SourceFile}}" data-target-file="{{.TargetFile}}" data-kind="{{.Kind}}" x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" onclick="selectDependency(this)"/><line class="module-edge" data-source="{{.Source}}" data-target="{{.Target}}" x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" marker-end="url(#module-arrow)"/>{{end}}
-          {{range $graph.Nodes}}<g class="module-node" data-id="{{.ID}}" data-role="{{.Role}}" data-name="{{.Name}}" data-file="{{.File}}" data-in="{{.FanIn}}" data-out="{{.FanOut}}" onclick="selectModule(this)"><title>{{.Name}}</title><rect x="{{.X}}" y="{{.Y}}" width="154" height="36"/><text x="{{.X}}" y="{{.Y}}" dx="9" dy="22">{{.Display}}</text></g>{{end}}
+          {{range $graph.Edges}}{{if .Curve}}<path class="module-edge-hit" data-source="{{.Source}}" data-target="{{.Target}}" data-source-name="{{.SourceName}}" data-target-name="{{.TargetName}}" data-source-file="{{.SourceFile}}" data-target-file="{{.TargetFile}}" data-kind="{{.Kind}}" d="M{{.X1}},{{.Y1}} Q{{.CX}},{{.CY}} {{.X2}},{{.Y2}}" onclick="selectDependency(this)"/><path class="module-edge" data-source="{{.Source}}" data-target="{{.Target}}" d="M{{.X1}},{{.Y1}} Q{{.CX}},{{.CY}} {{.X2}},{{.Y2}}" marker-end="url(#module-arrow)"/>{{else}}<line class="module-edge-hit" data-source="{{.Source}}" data-target="{{.Target}}" data-source-name="{{.SourceName}}" data-target-name="{{.TargetName}}" data-source-file="{{.SourceFile}}" data-target-file="{{.TargetFile}}" data-kind="{{.Kind}}" x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" onclick="selectDependency(this)"/><line class="module-edge" data-source="{{.Source}}" data-target="{{.Target}}" x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" marker-end="url(#module-arrow)"/>{{end}}{{end}}
+          {{range $graph.Nodes}}<g class="module-node" data-id="{{.ID}}" data-role="{{.Role}}" data-name="{{.Name}}" data-file="{{.File}}" data-in="{{.FanIn}}" data-out="{{.FanOut}}" data-members="{{.MembersAttr}}" onclick="selectModule(this)"><title>{{.Tooltip}}</title><rect x="{{.X}}" y="{{.Y}}" width="154" height="36"/><text x="{{.X}}" y="{{.Y}}" dx="9" dy="22">{{.Display}}</text></g>{{end}}
         </svg>
       </div>
       {{if $graph.Limited}}<div class="graph-note">{{if $graph.Focused}}This neighborhood is bounded to keep individual relationships inspectable.{{else}}This overview shows the most-connected modules and a representative dependency backbone. Search for any module to inspect its complete immediate neighborhood.{{end}}</div>{{end}}
     </div>
     <aside class="inspector-pane" aria-label="Architecture inspector">
-      <div class="inspector-head"><h3>Inspector</h3><p>Select a module, dependency, or finding to inspect it.</p></div>
+      <div class="inspector-head"><div class="inspector-head-row"><h3>Inspector</h3><button type="button" id="inspector-clear" class="count-link" hidden onclick="clearInspector()">Clear selection</button></div><p>Select a module, dependency, or finding to inspect it.</p></div>
       <div id="inspector-empty" class="inspector-empty">Nothing selected. Choose a node or edge on the map.</div>
-      <div id="module-detail" class="module-detail"><div><b id="module-detail-name"></b><span id="module-detail-file"></span></div><div class="module-stats"><span id="module-detail-in"></span><span id="module-detail-out"></span></div></div>
+      <div id="module-detail" class="module-detail"><div><b id="module-detail-name"></b><span id="module-detail-file"></span></div><div class="module-stats"><span id="module-detail-in"></span><span id="module-detail-out"></span></div><div id="module-detail-members" class="module-detail-members" hidden></div></div>
       {{if .Insights}}<div class="findings-pane">
       <h3>Findings <span class="note">({{.InsightTotal}})</span> <button type="button" class="count-link" onclick="openModal('insights-modal')">review all</button></h3>
       <div class="findings-groups">{{range .Insights}}
@@ -322,7 +342,7 @@
   </section>
 
   <div class="data-section"><h2>Most-connected modules in this view</h2>
-  <p class="note">These counts describe module imports. Symbol-level finding counts may be larger because many call sites can live inside one module.</p>
+  <p class="note">These are module-import counts. Symbol-level finding counts may be higher — one module can hold many call sites.</p>
   <div class="table-scroll"><table class="module-table">
     <thead><tr><th>Module</th><th>File</th><th class="num">Consumer modules</th><th class="num">Dependency modules</th><th class="num">Connections</th></tr></thead>
     <tbody>{{range $graph.Nodes}}<tr><td><button type="button" class="count-link" onclick="focusModule('{{.ID}}')">{{.Name}}</button></td><td>{{.File}}</td><td class="num">{{.FanIn}}</td><td class="num">{{.FanOut}}</td><td class="num">{{.Degree}}</td></tr>{{end}}</tbody>
@@ -354,10 +374,10 @@
     <div class="card"><div class="k">Extraction schema</div><div class="v">{{if .ExtractorVersion}}{{.ExtractorVersion}}{{else}}not recorded{{end}}</div></div>
     <div class="card"><div class="k">Analysis duration</div><div class="v">{{.Duration}}</div></div>
   </div>
-  {{if and .Git .Git.Dirty}}<p class="snapshot-alert">This snapshot was generated while the working tree had local changes. It describes that exact working state, not only commit <code>{{$.Snapshot.ShortCommit}}</code>.</p>{{end}}
+  {{if and .Git .Git.Dirty}}<p class="snapshot-alert">Generated with local changes present — reflects that working state, not just commit <code>{{$.Snapshot.ShortCommit}}</code>.</p>{{end}}
 
   <div class="data-section"><h2>Analysis scope</h2>
-    <p class="note">These extractors contributed facts. Quality details explain ignored and unsupported files.</p>
+    <p class="note">Extractors that contributed facts. See Quality for ignored and unsupported files.</p>
     {{if .Extractors}}<div class="chips">{{range .Extractors}}<span class="chip">{{.}}</span>{{end}}</div>{{else}}<p class="note">No extractors recorded.</p>{{end}}
     <p style="margin:.8rem 0 0"><button type="button" class="count-link" onclick="selectTab('quality')">Review analysis completeness →</button></p>
   </div>
@@ -395,30 +415,8 @@
   </section>
 
   <section class="tab-panel" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
-  <div class="panel-intro"><div class="section-kicker">Usage</div><h2>Activity</h2><p>Every active Enola session, this page's session, and lifetime activity across completed and running sessions.</p></div>
-
-  <div class="snapshot-head">
-    <div><h2>Active sessions</h2><p>{{len .Instances}} Enola server(s) running now. The highlighted row is the session serving this page.</p></div>
-  </div>
-  {{if .Instances}}<div class="table-scroll"><table>
-    <thead><tr><th>Session</th><th>Repositories</th><th>Uptime</th><th class="num">Calls</th><th>Dashboard</th></tr></thead>
-    <tbody>{{range .Instances}}<tr{{if .Self}} class="self-row"{{end}}><td>{{.Binary}} · PID {{.PID}}{{if .Self}} <span class="chip">this page</span>{{end}}</td><td>{{.Repos}}</td><td>{{.Uptime}}</td><td class="num">{{.Calls}}</td><td>{{if .URL}}<a href="{{.URL}}">open{{if .FrontDoor}} · shared{{end}}</a>{{else}}—{{end}}</td></tr>{{end}}</tbody>
-  </table></div>{{else}}<p class="note">No registered Enola server sessions are currently available.</p>{{end}}
-
-  <div class="snapshot-head data-section">
-    <div><h2>This page's session</h2><p>{{if .ReposLoaded}}{{.ReposLoaded}}{{else}}No repository label available{{end}}{{if .Uptime}} · running for {{.Uptime}}{{end}}</p></div>
-    {{if .Running}}<span class="badge on">running</span>{{else}}<span class="badge off">stopped</span>{{end}}
-  </div>
-  <div class="grid">
-    <div class="card"><div class="k">Tool calls this session</div><div class="v">{{.SessionCalls}}</div></div>
-    {{if .StartedAt}}<div class="card"><div class="k">Session started</div><div class="v">{{.StartedAt}}</div></div>{{end}}
-  </div>
-  {{if .SessionCalls}}<div class="data-section"><h2>Tools used this session</h2><div class="table-scroll"><table>
-    <thead><tr><th>Tool</th><th class="num">Calls</th></tr></thead>
-    <tbody>{{range .Tools}}{{if .Session}}<tr><td>{{.Name}}</td><td class="num">{{.Session}}</td></tr>{{end}}{{end}}</tbody>
-  </table></div></div>{{else}}<p class="note">No MCP tool calls have reached this server session yet. Snapshot generation performed by a separate command is recorded in lifetime activity, not here.</p>{{end}}
-
-  <div class="data-section"><div class="snapshot-head"><div><h2>Lifetime activity</h2><p>Aggregated across completed and active sessions · {{.ReposTracked}} repositories{{if .TrackingSince}} · tracked since {{.TrackingSince}}{{end}}. Individual completed-session records are not retained.</p></div></div>
+  <div class="panel-intro"><div class="section-kicker">All-time value</div><h2>Lifetime usage</h2><p>Usage accumulated across repositories and completed Enola sessions. These totals do not affect the snapshot shown elsewhere.</p></div>
+  <div class="data-section"><div class="snapshot-head"><div><h2>Tool activity</h2><p>{{.ReposTracked}} repositories tracked{{if .TrackingSince}} since {{.TrackingSince}}{{end}}.</p></div></div>
   {{if .Tools}}<div class="table-scroll"><table>
     <thead><tr><th>Tool</th><th class="num">Total calls</th></tr></thead>
     <tbody>{{range .Tools}}<tr><td>{{.Name}}</td><td class="num">{{.Total}}</td></tr>{{end}}</tbody>
@@ -429,11 +427,25 @@
     <tbody>{{range .Values}}<tr><td>{{.Label}}</td><td class="num">{{.Calls}}</td><td class="num">{{.TimeSaved}}</td><td class="num">{{.TokensSaved}}</td></tr>{{end}}<tr class="total"><td>{{.ValueTotal.Label}}</td><td class="num">{{.ValueTotal.Calls}}</td><td class="num">{{.ValueTotal.TimeSaved}}</td><td class="num">{{.ValueTotal.TokensSaved}}{{if $.BeyondContext}}+{{end}}</td></tr></tbody>
   </table></div>{{else}}<p class="note">No value recorded yet.</p>{{end}}</div>
 
-  <details class="technical-receipt"><summary>Runtime details</summary>
-  <div class="grid">
-    <div class="card"><div class="k">Server process</div><div class="v">{{if .Running}}PID {{.PID}}{{else}}stopped{{end}}</div></div>
+  </section>
+
+  <section class="tab-panel" id="panel-diagnostics" role="tabpanel" aria-labelledby="tab-diagnostics" hidden>
+  <div class="panel-intro"><div class="section-kicker">Troubleshooting</div><h2>Diagnostics</h2><p>Processes, paths, ports, and the exact data source for this page.</p></div>
+  <div class="snapshot-head"><div><h2>Active sessions</h2><p>{{len .Instances}} process(es) running. Highlighted row serves this page.</p></div></div>
+  {{if .Instances}}<div class="table-scroll"><table>
+    <thead><tr><th>Session</th><th>Repositories</th><th>Uptime</th><th class="num">Calls</th><th>Dashboard</th></tr></thead>
+    <tbody>{{range .Instances}}<tr{{if .Self}} class="self-row"{{end}}><td>{{.Binary}} · PID {{.PID}}{{if .Self}} <span class="chip">this page</span>{{end}}</td><td>{{.Repos}}</td><td>{{.Uptime}}</td><td class="num">{{.Calls}}</td><td>{{if .URL}}<a href="{{.URL}}">open{{if .FrontDoor}} · shared{{end}}</a>{{else}}—{{end}}</td></tr>{{end}}</tbody>
+  </table></div>{{else}}<p class="note">No registered Enola processes are available.</p>{{end}}
+  <div class="grid data-section">
+    <div class="card"><div class="k">This process</div><div class="v">{{if .Running}}PID {{.PID}}{{else}}stopped{{end}}</div></div>
     {{if .Binary}}<div class="card"><div class="k">Binary</div><div class="v">{{.Binary}}</div></div>{{end}}
     <div class="card"><div class="k">Dashboard port</div><div class="v">{{.Port}}</div></div>
+    <div class="card"><div class="k">Calls this session</div><div class="v">{{.SessionCalls}}</div></div>
+  </div>
+  <details class="technical-receipt"><summary>Paths and runtime details</summary>
+  <div class="grid">
+    {{if .SnapshotPath}}<div class="card path-card"><div class="k">Snapshot directory</div><div class="v">{{.SnapshotPath}}</div></div>{{end}}
+    {{if .GenerateCommand}}<div class="card path-card"><div class="k">Regenerate command</div><div class="v">{{.GenerateCommand}}</div></div>{{end}}
   </div>
   {{if .WorkDir}}<div class="card path-card" style="margin-top:.75rem"><div class="k">Working directory</div><div class="v">{{.WorkDir}}</div></div>{{end}}
   {{if .ConfigPath}}<div class="card path-card" style="margin-top:.75rem"><div class="k">Config path</div><div class="v">{{.ConfigPath}}</div></div>{{end}}
@@ -448,7 +460,7 @@
     <div><h2>{{$.Quality.Status}}</h2><p>{{$.Quality.Summary}}</p></div>
     <span class="badge {{$.Quality.StatusClass}}">{{if .Quality.ParseErrors}}{{.Quality.ParseErrors}} error(s){{else}}{{if $.Quality.CoverageLabel}}{{$.Quality.CoverageLabel}}{{else}}no parse errors{{end}}{{end}}</span>
   </div>
-  {{if $.Quality.Inactive}}<div class="snapshot-alert"><b>Extractor coverage detail:</b> {{range $i, $cause := $.Quality.Inactive}}{{if $i}} · {{end}}{{$cause.Count}} file(s) {{$cause.Cause}}{{end}}. This affects {{$.Quality.InactiveShare}} of the {{$.Quality.FilesWalked}} files walked and does not mean the rest of the snapshot failed.</div>{{end}}
+  {{if $.Quality.Inactive}}<div class="snapshot-alert"><b>Extractor coverage detail:</b> {{range $i, $cause := $.Quality.Inactive}}{{if $i}} · {{end}}{{$cause.Count}} file(s) {{$cause.Cause}}{{end}}. Affects {{$.Quality.InactiveShare}} of {{$.Quality.FilesWalked}} files walked; the rest of the snapshot is unaffected.</div>{{end}}
 
   {{if .Quality.Census}}{{with .Quality.Census}}
   <h2>File accounting</h2>
@@ -459,20 +471,20 @@
     <div class="quality-item"><span class="k">Non-source / unsupported</span><span class="v">{{.ExcludedByKind}}</span><span class="why">Assets, data, or file types without an extractor.</span></div>
     <div class="quality-item"><span class="k">No facts emitted</span><span class="v">{{.SkippedWithCause}}</span><span class="why">Recognized files that contained no indexable structure.</span></div>
   </div>
-  <p class="accounting-note ok">These categories account for every walked file. Ignored and non-source files are not parse failures.</p>
+  <p class="accounting-note ok">Accounts for every walked file. Ignored and non-source files aren't parse failures.</p>
 
-  {{if $.Quality.Potential}}<div class="data-section"><h2>Potential architecture blind spots</h2><p class="note">These file types can carry behavior or architecture, but are outside the current graph. Review whether they matter for this repository.</p><div class="table-scroll"><table>
+  {{if $.Quality.Potential}}<div class="data-section"><h2 title="File types that could carry architecture but aren't parsed">Potential architecture blind spots</h2><p class="note">These file types can carry behavior or architecture, but are outside the current graph. Review whether they matter for this repository.</p><div class="table-scroll"><table>
     <thead><tr><th>File kind</th><th class="num">Files</th><th>Why review it</th></tr></thead>
     <tbody>{{range $.Quality.Potential}}<tr><td>{{.Kind}}</td><td class="num">{{.Count}}</td><td class="title">{{.Reason}}</td></tr>{{end}}</tbody>
   </table></div></div>{{end}}
 
-  {{if $.Quality.NoFacts}}<div class="data-section"><h2>Recognized files with no facts</h2><p class="note">These were analyzed successfully but contained no indexable architecture.</p><div class="table-scroll"><table>
+  {{if $.Quality.NoFacts}}<div class="data-section"><h2>Recognized files with no facts</h2><p class="note">Analyzed successfully; no indexable architecture found.</p><div class="table-scroll"><table>
     <thead><tr><th>Reason</th><th class="num">Files</th></tr></thead>
     <tbody>{{range $.Quality.NoFacts}}<tr><td>{{.Cause}}</td><td class="num">{{.Count}}</td></tr>{{end}}</tbody>
   </table></div></div>{{end}}
 
   {{if $.Quality.ExpectedFiles}}<details class="technical-receipt"><summary>Expected non-source exclusions · {{$.Quality.ExpectedFiles}} files across {{$.Quality.ExpectedKinds}} kinds</summary>
-    <p class="note">Assets, fixtures, snapshots, certificates, and other file kinds that normally do not define application architecture.</p>
+    <p class="note">Assets, fixtures, certs, and other files that don't usually define architecture.</p>
     <div class="table-scroll"><table><thead><tr><th>File kind</th><th class="num">Files</th></tr></thead><tbody>
     {{range $.Quality.Expected}}<tr><td>{{.Kind}}</td><td class="num">{{.Count}}</td></tr>{{end}}
     </tbody></table></div>
@@ -496,7 +508,7 @@
   </div></div>
   {{if gt .Quality.ParseErrors 0}}
   <div class="snapshot-alert">
-    <b>Possible extractor gap.</b> Enola could not parse {{.Quality.ParseErrors}} source file(s). If the files contain valid source, this may be an extractor bug.
+    <b>Possible extractor gap.</b> Could not parse {{.Quality.ParseErrors}} source file(s) — may be an extractor bug if the source is valid.
     <a class="secondary-action" style="display:inline-block;margin-left:.55rem;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://github.com/enola-labs/enola/issues/new?title=Extraction%20gap%20in%20snapshot%20{{.SnapshotID}}&amp;body=Snapshot%3A%20{{.SnapshotID}}%0AEnola%20version%3A%20{{.EnolaVersion}}%0AParse%20errors%3A%20{{.Quality.ParseErrors}}%0A%0APlease%20describe%20the%20valid%20source%20Enola%20could%20not%20parse.">Report extraction issue</a>
   </div>
   {{end}}
@@ -577,7 +589,7 @@
       <h3>Insights</h3>
       <button type="button" class="modal-close" aria-label="Close" onclick="closeModal(this)">&times;</button>
     </div>
-    <div class="insight-summary">{{.InsightStructural}} structural &middot; {{.InsightCandidate}} candidate{{if ne .InsightCandidate 1}}s{{end}} &mdash; grouped by explainer, click a row to expand</div>
+    <div class="insight-summary">{{.InsightStructural}} <span title="Confidence 100% — a proven, code-verified finding">structural</span> &middot; {{.InsightCandidate}} <span title="Confidence below 100% — a heuristic suggestion worth reviewing">candidate{{if ne .InsightCandidate 1}}s{{end}}</span>{{if .InsightInformational}} &middot; {{.InsightInformational}} context{{end}} &mdash; grouped by explainer, click a row to expand</div>
     <div class="insight-filter">
       <label for="insight-band">Confidence</label>
       <select id="insight-band" onchange="filterInsights(this.value)">
@@ -586,6 +598,7 @@
         <option value="high">High (85&ndash;99%)</option>
         <option value="medium">Medium (65&ndash;84%)</option>
         <option value="low">Low (&lt;65%)</option>
+        <option value="informational">Context</option>
       </select>
       <span class="note"><span id="insight-shown">{{.InsightTotal}}</span> shown</span>
     </div>
@@ -599,7 +612,7 @@
       <div class="table-scroll"><table>
         <thead><tr><th>Title</th><th class="num">Confidence</th><th>Evidence</th></tr></thead>
         <tbody>
-          {{range .Items}}<tr data-conf="{{.Confidence}}"><td class="title">{{.Title}}</td><td class="num">{{.Confidence}}%{{if .Structural}}<span class="structural-chip">structural</span>{{end}}</td><td>{{.Evidence}}</td></tr>{{end}}
+          {{range .Items}}<tr data-band="{{.Band}}"><td class="title">{{.Title}}{{if .Action}}<div class="finding-action">→ {{.Action}}</div>{{end}}</td><td class="num">{{.Confidence}}%{{if .Structural}}<span class="structural-chip" title="Confidence 100% — a proven, code-verified finding">structural</span>{{else if .Informational}}<span class="structural-chip" title="Describes the architecture — not a problem to fix">context</span>{{end}}</td><td>{{.Evidence}}</td></tr>{{end}}
         </tbody>
       </table></div>
     </details>
@@ -726,15 +739,8 @@
     }
   }
 
-  // insightBandMatch reports whether a row's confidence percent falls in the band.
-  function insightBandMatch(band, c) {
-    switch (band) {
-      case 'structural': return c >= 100;
-      case 'high':       return c >= 85 && c < 100;
-      case 'medium':     return c >= 65 && c < 85;
-      case 'low':        return c < 65;
-      default:           return true; // all
-    }
+  function insightBandMatch(selected, rowBand) {
+    return selected === 'all' || selected === rowBand;
   }
   // filterInsights shows only rows in the chosen confidence band, then rescales each
   // explainer group's count and bar to the visible rows and hides emptied groups.
@@ -747,7 +753,7 @@
     groups.forEach(function (g) {
       var n = 0;
       g.querySelectorAll('tbody tr').forEach(function (r) {
-        var show = insightBandMatch(band, parseInt(r.getAttribute('data-conf'), 10));
+        var show = insightBandMatch(band, r.getAttribute('data-band'));
         r.style.display = show ? '' : 'none';
         if (show) n++;
       });
@@ -792,12 +798,37 @@
     graphNodes().forEach(function(n) { n.classList.remove('active', 'dim'); });
     graphEdges().forEach(function(e) { e.classList.remove('active', 'dim'); });
   }
+  function resetInspectorContent() {
+    ['module-detail-name', 'module-detail-file', 'module-detail-in', 'module-detail-out'].forEach(function(id) {
+      var field = document.getElementById(id);
+      if (field) field.textContent = '';
+    });
+    var members = document.getElementById('module-detail-members');
+    if (members) {
+      members.innerHTML = '';
+      members.hidden = true;
+    }
+  }
   function openInspector() {
+    resetInspectorContent();
     var empty = document.getElementById('inspector-empty');
     var detail = document.getElementById('module-detail');
+    var clearBtn = document.getElementById('inspector-clear');
     if (empty) empty.hidden = true;
     if (detail) detail.classList.add('open');
+    if (clearBtn) clearBtn.hidden = false;
     return detail;
+  }
+  function clearInspector() {
+    clearGraphFocus();
+    resetInspectorContent();
+    document.querySelectorAll('.finding-button').forEach(function(b) { b.classList.remove('active'); });
+    var detail = document.getElementById('module-detail');
+    var empty = document.getElementById('inspector-empty');
+    var clearBtn = document.getElementById('inspector-clear');
+    if (detail) detail.classList.remove('open');
+    if (empty) empty.hidden = false;
+    if (clearBtn) clearBtn.hidden = true;
   }
   function toggleGraphFit(button) {
     var canvas = document.querySelector('.graph-canvas');
@@ -827,6 +858,28 @@
       document.getElementById('module-detail-file').textContent = node.getAttribute('data-file') || '';
       document.getElementById('module-detail-in').textContent = node.getAttribute('data-in') + ' consumer modules';
       document.getElementById('module-detail-out').textContent = node.getAttribute('data-out') + ' dependency modules';
+    }
+    var membersBox = document.getElementById('module-detail-members');
+    if (membersBox) {
+      var membersAttr = node.getAttribute('data-members');
+      membersBox.innerHTML = '';
+      membersBox.hidden = !membersAttr;
+      if (membersAttr) {
+        var hint = document.createElement('p');
+        hint.className = 'note';
+        hint.style.width = '100%';
+        hint.style.margin = '0 0 .1rem';
+        hint.textContent = 'These modules import each other in a cycle. Click one to explore just that module:';
+        membersBox.appendChild(hint);
+        membersAttr.split('|').forEach(function(name) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'count-link';
+          btn.textContent = name;
+          btn.onclick = function() { window.location.assign('/?module=' + encodeURIComponent(name) + '#architecture'); };
+          membersBox.appendChild(btn);
+        });
+      }
     }
   }
   function selectDependency(hit) {

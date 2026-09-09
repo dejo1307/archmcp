@@ -2,13 +2,17 @@ package command
 
 import (
 	"context"
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
+	"github.com/enola-labs/enola/internal/engine"
 	"github.com/enola-labs/enola/pkg/bootstrap"
 	"github.com/enola-labs/enola/pkg/dashboard"
 	"github.com/enola-labs/enola/pkg/status"
@@ -23,8 +27,8 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	open := fs.Bool("open", false, "open the dashboard in the default browser")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s dashboard [--open] [repo_path|config_path]\n\n", r.name())
-		fmt.Fprintln(os.Stderr, "Explore an existing architecture snapshot in a read-only local web dashboard.")
-		fmt.Fprintln(os.Stderr, "Nothing is regenerated automatically; run `"+r.name()+" --generate` first when no snapshot exists.")
+		fmt.Fprintln(os.Stderr, "Start a local dashboard for this repository. An MCP server is not required.")
+		fmt.Fprintln(os.Stderr, "Use Refresh to load a newer snapshot written by Enola; the dashboard never regenerates source itself.")
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Options:")
 		fmt.Fprintln(os.Stderr, "  --open         launch the dashboard in the default browser")
@@ -53,10 +57,9 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	// Validate before binding a listener so a missing snapshot produces the useful
 	// generate-first guidance without briefly registering a dashboard process.
 	t := r.resolveTarget(arg)
-	if restored := bootstrap.AutoLoadSnapshot(t.engine, t.engine.Config()); restored == nil {
-		r.missingDashboardSnapshot(t.configNote, arg)
-	}
 	snapshotDir := t.engine.OutputDir(t.repoPaths[0])
+	fmt.Fprintf(os.Stderr, "Loading dashboard snapshot from %s...\n", snapshotDir)
+	bootstrap.LoadDashboardSnapshot(t.engine, t.engine.Config())
 	// A dashboard-only process is still an active Enola session. Register it just
 	// like the MCP startup path does so Activity does not claim zero sessions while
 	// the process serving that very page is running. No tool callback is installed:
@@ -80,6 +83,11 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	// whatever the callback returned: they describe THIS process, not the binary.
 	opts := r.dashboardOptions(t.engine)
 	opts.Tracker, opts.StablePort = tracker, port
+	opts.SnapshotPath = snapshotDir
+	opts.GenerateCommand = r.dashboardGenerateCommand(arg)
+	opts.CurrentExtractorVersion = engine.ExtractorVersion()
+	opts.HistoryDir = t.engine.Config().History.Dir
+	opts.Refresh = snapshotReloader(t.engine, snapshotDir)
 	dash, err := dashboard.Start(t.engine, opts)
 	if err != nil {
 		r.dashboardFatal("starting dashboard: %v", err)
@@ -87,7 +95,12 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	tracker.SetDashboardPort(dash.Port())
 	tracker.PersistStartup()
 	fmt.Fprintln(os.Stderr, "Dashboard running")
-	fmt.Fprintf(os.Stderr, "Snapshot: %s\n", snapshotDir)
+	if t.engine.Snapshot() == nil {
+		fmt.Fprintf(os.Stderr, "Snapshot: none yet (watching %s)\n", snapshotDir)
+		fmt.Fprintf(os.Stderr, "Generate: %s\n", opts.GenerateCommand)
+	} else {
+		fmt.Fprintf(os.Stderr, "Snapshot: %s\n", snapshotDir)
+	}
 	fmt.Fprintf(os.Stderr, "Open: %s\n", dash.URL())
 	if port > 0 {
 		fmt.Fprintf(os.Stderr, "Bookmarkable URL: http://127.0.0.1:%d\n", port)
@@ -101,14 +114,42 @@ func (r *Runner) Dashboard(ctx context.Context, args []string) {
 	<-ctx.Done()
 }
 
-func (r *Runner) missingDashboardSnapshot(subject, target string) {
-	generate := r.name() + " --generate"
-	open := r.name() + " dashboard --open"
+func (r *Runner) dashboardGenerateCommand(target string) string {
+	cmd := r.name() + " --generate"
 	if target != "" {
-		generate += fmt.Sprintf(" %q", target)
-		open += fmt.Sprintf(" %q", target)
+		cmd += fmt.Sprintf(" %q", target)
 	}
-	r.dashboardFatal("no snapshot found for %s\n\nCreate one:\n  %s\n\nThen open it:\n  %s", subject, generate, open)
+	return cmd
+}
+
+// snapshotReloader turns a dashboard-only process into a live view of the
+// selected persisted snapshot. Receipt writes complete after the rest of the
+// artifact bundle, so its digest is the publication marker. A mutex prevents a
+// manual refresh and the background browser poll from restoring concurrently.
+func snapshotReloader(eng *bootstrap.Engine, snapshotDir string) func() (bool, error) {
+	var mu sync.Mutex
+	last := snapshotMarker(snapshotDir)
+	return func() (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		next := snapshotMarker(snapshotDir)
+		if next == last || next == ([sha256.Size]byte{}) {
+			return false, nil
+		}
+		if !bootstrap.LoadDashboardSnapshot(eng, eng.Config()) {
+			return false, fmt.Errorf("snapshot artifacts appeared at %s but could not be loaded", snapshotDir)
+		}
+		last = next
+		return true, nil
+	}
+}
+
+func snapshotMarker(snapshotDir string) [sha256.Size]byte {
+	b, err := os.ReadFile(filepath.Join(snapshotDir, "receipt.json"))
+	if err != nil {
+		return [sha256.Size]byte{}
+	}
+	return sha256.Sum256(b)
 }
 
 func (r *Runner) dashboardFatal(format string, args ...any) {
@@ -116,15 +157,22 @@ func (r *Runner) dashboardFatal(format string, args ...any) {
 }
 
 func openBrowser(url string) error {
+	name, args := browserCommand(runtime.GOOS, url)
+	return exec.Command(name, args...).Start()
+}
+
+func browserCommand(goos, url string) (string, []string) {
 	var name string
 	var args []string
-	switch runtime.GOOS {
+	switch goos {
 	case "darwin":
-		name, args = "open", []string{url}
+		// Force LaunchServices to interpret the argument as a URL. Without -u,
+		// `open` may classify a localhost address as a filesystem path instead.
+		name, args = "open", []string{"-u", url}
 	case "windows":
 		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
 	default:
 		name, args = "xdg-open", []string{url}
 	}
-	return exec.Command(name, args...).Start()
+	return name, args
 }
