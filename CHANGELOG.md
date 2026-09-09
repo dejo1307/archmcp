@@ -7,6 +7,27 @@ The full per-release change lists — every Added, Changed and Fixed line — ar
 [enola.tech/changelog](https://enola.tech/changelog). This file is the same history at
 the resolution a reader of the repository needs.
 
+## v0.4.17 — 2026-09-09
+
+**Refresh loads a newer snapshot, and the dashboard opens on findings**
+
+`enola dashboard` re-reads its snapshot directory on Refresh, rather than only
+re-rendering what the process already held. The graph does not move until you ask for it,
+so a regeneration in another terminal cannot change the page under an open investigation.
+The replacement is published atomically and one request reads store, snapshot and receipt
+from a single publication. A repository launch restores that repository's own snapshot; a
+multi-repository graph needs an explicit cluster config.
+
+The tabs are now Findings, Architecture, Snapshots, Lifetime usage, Diagnostics and
+Quality: processes, ports and paths moved out of the usage tab into Diagnostics. The
+module graph condenses each dependency cycle into one node and curves the back edges.
+Change summaries read the configured `history.dir`.
+
+Python calls now bind to symbols a package defines in its own `__init__.py`, not only the
+ones it re-exports. `from pkg import helper` emitted the target `pkg.helper`, whose prefix
+names a directory rather than a module, so absolute resolution failed and the call bound
+to nothing.
+
 ## v0.4.16 — 2026-09-08
 
 **Constraint checks now report cases they previously skipped**
