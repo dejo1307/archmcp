@@ -1,8 +1,9 @@
 module github.com/enola-labs/enola
 
-go 1.25.13
+go 1.26.0
 
 require (
+	github.com/ebitengine/purego v0.10.2
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
 	github.com/tree-sitter-grammars/tree-sitter-kotlin v1.1.0
@@ -17,12 +18,11 @@ require (
 	github.com/tree-sitter/tree-sitter-rust v0.23.3
 	github.com/tree-sitter/tree-sitter-scala v0.24.1
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
-	github.com/ebitengine/purego v0.10.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/mattn/go-pointer v0.0.1 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
