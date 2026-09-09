@@ -840,6 +840,54 @@ func TestResolveImports_ExternalStillExternal(t *testing.T) {
 // module path, so the composed "<module>.<symbol>" was already canonical and the
 // dotted resolver could never read it — the edge was dropped long before
 // same-package absolute imports resolved to slash paths too.
+// TestExtract_PythonBindsCallToSymbolDefinedInInit covers a symbol DEFINED in a
+// package's __init__.py rather than re-exported by it. `from pkg import helper`
+// emits the call target "pkg.helper", whose module prefix names a directory and
+// so resolves to no module; the re-export index handled the case where __init__
+// imports the name from elsewhere, but not the case where __init__ defines it,
+// and the edge was left dangling. Measured on Airflow, every sampled function
+// defined in an __init__.py returned no callers at all.
+func TestExtract_PythonBindsCallToSymbolDefinedInInit(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"pkg/__init__.py": "def helper_in_init():\n    return 1\n",
+		"pkg/mod.py":      "def helper_in_module():\n    return 2\n",
+		"caller.py": "from pkg import helper_in_init\n" +
+			"from pkg.mod import helper_in_module\n\n" +
+			"def use():\n    return helper_in_init() + helper_in_module()\n",
+	}
+	var rel []string
+	for name, content := range files {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rel = append(rel, name)
+	}
+	all, err := New().Extract(context.Background(), dir, rel)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	for _, f := range all {
+		if f.Kind != facts.KindSymbol || f.Name != "caller.use" {
+			continue
+		}
+		// The sibling module is the control: it always bound correctly, so a
+		// failure on it means something other than this fix broke.
+		if !hasRel(f, facts.RelCalls, "pkg/mod.helper_in_module") {
+			t.Fatalf("control edge missing; call targets = %v", f.Relations)
+		}
+		if !hasRel(f, facts.RelCalls, "pkg/__init__.helper_in_init") {
+			t.Fatalf("call to __init__-defined symbol unresolved; targets = %v", f.Relations)
+		}
+		return
+	}
+	t.Fatal("missing caller.use symbol")
+}
+
 func TestExtract_PythonResolvesInheritanceViaRelativeImport(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{

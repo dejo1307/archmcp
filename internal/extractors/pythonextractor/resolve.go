@@ -295,6 +295,37 @@ func buildReexportIndex(allFacts []facts.Fact, pkgDirs map[string]bool) reexport
 		delete(byDir[dir], n)
 	}
 
+	// A package's __init__.py also DEFINES symbols, not only re-exports them, and
+	// those were invisible here. `from pkg import helper` emits the call target
+	// "pkg.helper", whose module prefix "pkg" names a directory rather than a
+	// module, so absolute resolution fails exactly as it does for a re-export. The
+	// difference is that the symbol lives in this file, so the defining module is
+	// the __init__ module itself and the fact is already named
+	// "pkg/__init__.helper".
+	//
+	// Registered after the re-export pass and unconditionally: a name a package
+	// both defines and imports is shadowed by the local definition at runtime, so
+	// the local one is the correct binding rather than an ambiguity to drop.
+	for i := range allFacts {
+		f := &allFacts[i]
+		if f.Kind != facts.KindSymbol || !isInitFile(f.File) {
+			continue
+		}
+		module := strings.TrimSuffix(f.File, ".py")
+		rest, ok := strings.CutPrefix(f.Name, module+".")
+		if !ok || rest == "" {
+			continue
+		}
+		// The call site looks up the FIRST dotted segment, so a method binds
+		// through the class name that owns it.
+		name := firstSeg(rest)
+		dir := fileDir(f.File)
+		if byDir[dir] == nil {
+			byDir[dir] = map[string]string{}
+		}
+		byDir[dir][name] = module
+	}
+
 	dirs := make(map[string]bool, len(byDir))
 	for d := range byDir {
 		if len(byDir[d]) > 0 {
